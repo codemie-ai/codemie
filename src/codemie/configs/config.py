@@ -373,6 +373,8 @@ class Config(BaseSettings):
         "gpt-5-2025-08-07",
         "gpt-5-mini-2025-08-07",
         "gpt-5-nano-2025-08-07",
+        "gpt-5-2-2025-12-11",
+        "gpt-5.4-2026-03-05",
     ]
     # LiteLLM args
     LLM_PROXY_MODE: Literal["internal", "lite_llm"] = "internal"
