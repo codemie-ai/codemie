@@ -44,7 +44,8 @@ from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.models.settings import SettingsBase
 from codemie.rest_api.security.user_context import get_current_user
 from codemie.service.mcp.client import MCPConnectClient, BUCKET_KEY
-from codemie.service.security.token_exchange_factory import token_exchange_factory
+from codemie.service.security.token_exchange_service import token_exchange_service
+from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 from codemie.service.mcp.models import MCPServerConfig, MCPToolLoadException, MCPExecutionContext
 from codemie.service.mcp.toolkit import MCPToolkit, MCPToolkitFactory, MCPTool, ContextAwareMCPTool
 from codemie.service.settings.base_settings import SearchFields
@@ -815,7 +816,9 @@ class MCPToolkitService:
         actual_config = (
             mcp_server.config.model_copy(deep=True)
             if mcp_server.config
-            else MCPServerConfig(command=mcp_server.command)
+            else MCPServerConfig(
+                command=mcp_server.command,
+            )
         )
 
         # Set basic configuration
@@ -1030,13 +1033,15 @@ class MCPToolkitService:
 
                 token = oidc_token_exchange_service.get_exchanged_token(audience)
             else:
-                token = token_exchange_factory.get_token_for_current_user()
+                token = token_exchange_service.get_token_for_current_user()
 
             if token:
                 env_vars_with_user['user']['token'] = token
                 logger.debug(f"Added user token to placeholder environment for user={current_user.username}")
             else:
                 logger.warning(f"Token placeholder detected but no token available for user={current_user.username}")
+        except BrokerAuthRequiredException:
+            raise
         except Exception as e:
             # SECURITY: Never log the token or exception details that might expose it
             logger.error(f"Failed to retrieve token for placeholder resolution: {type(e).__name__}", exc_info=True)
@@ -1088,7 +1093,6 @@ class MCPToolkitService:
         Returns:
             Processed string with placeholders resolved
         """
-        from codemie.service.tools.dynamic_value_utils import process_string
 
         normalized_string, found = cls._normalize_placeholders(source_string)
         if found:

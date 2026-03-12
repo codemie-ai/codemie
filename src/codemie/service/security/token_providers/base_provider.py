@@ -26,6 +26,19 @@ class TokenProviderException(Exception):
         super().__init__(message)
 
 
+class BrokerAuthRequiredException(TokenProviderException):
+    """
+    Raised when a broker token exchange endpoint returns an HTTP error.
+
+    Signals that the client must re-authenticate via the configured auth location.
+    The ``auth_location`` value is used as the ``x-user-mcp-auth-location`` response header.
+    """
+
+    def __init__(self, message: str, auth_location: str, details: str | None = None):
+        self.auth_location = auth_location
+        super().__init__(message=message, details=details)
+
+
 class BaseTokenProvider(ABC):
     """
     Abstract base class for token providers.

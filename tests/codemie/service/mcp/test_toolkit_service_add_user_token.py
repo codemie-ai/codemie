@@ -56,7 +56,7 @@ def test_no_placeholder_returns_early():
     env_vars = {"user": {}}
     headers = {"Authorization": "Bearer static-token", "X-Custom": "value"}
 
-    with patch("codemie.service.mcp.toolkit_service.token_exchange_factory") as mock_factory:
+    with patch("codemie.service.mcp.toolkit_service.token_exchange_service") as mock_factory:
         _call(headers, env_vars)
 
     mock_factory.get_token_for_current_user.assert_not_called()
@@ -70,7 +70,7 @@ def test_placeholder_no_user_logs_warning(mock_get_user):
     env_vars = {}
     headers = {"Authorization": "Bearer {{user.token}}"}
 
-    with patch("codemie.service.mcp.toolkit_service.token_exchange_factory") as mock_factory:
+    with patch("codemie.service.mcp.toolkit_service.token_exchange_service") as mock_factory:
         _call(headers, env_vars)
 
     mock_factory.get_token_for_current_user.assert_not_called()
@@ -79,12 +79,12 @@ def test_placeholder_no_user_logs_warning(mock_get_user):
 
 @patch("codemie.service.mcp.toolkit_service.get_current_user")
 def test_placeholder_no_audience_uses_factory(mock_get_user, mock_user):
-    """Placeholder present, no audience → uses token_exchange_factory, injects token."""
+    """Placeholder present, no audience → uses token_exchange_service, injects token."""
     mock_get_user.return_value = mock_user
     env_vars = {"user": {}}
     headers = {"Authorization": "Bearer {{user.token}}"}
 
-    with patch("codemie.service.mcp.toolkit_service.token_exchange_factory") as mock_factory:
+    with patch("codemie.service.mcp.toolkit_service.token_exchange_service") as mock_factory:
         mock_factory.get_token_for_current_user.return_value = "factory-token"
         _call(headers, env_vars, audience=None)
 
@@ -103,7 +103,7 @@ def test_placeholder_with_audience_uses_oidc_service(mock_get_user, mock_user):
         mock_config.TOKEN_EXCHANGE_URL = _TOKEN_EXCHANGE_URL
         with patch("codemie.service.security.oidc_token_exchange_service.oidc_token_exchange_service") as mock_oidc:
             mock_oidc.get_exchanged_token.return_value = "oidc-exchanged-token"
-            with patch("codemie.service.mcp.toolkit_service.token_exchange_factory") as mock_factory:
+            with patch("codemie.service.mcp.toolkit_service.token_exchange_service") as mock_factory:
                 _call(headers, env_vars, audience=_AUDIENCE)
 
     mock_factory.get_token_for_current_user.assert_not_called()
@@ -117,7 +117,7 @@ def test_token_none_logs_warning_no_injection(mock_get_user, mock_user):
     env_vars = {"user": {}}
     headers = {"Authorization": "Bearer {{user.token}}"}
 
-    with patch("codemie.service.mcp.toolkit_service.token_exchange_factory") as mock_factory:
+    with patch("codemie.service.mcp.toolkit_service.token_exchange_service") as mock_factory:
         mock_factory.get_token_for_current_user.return_value = None
         _call(headers, env_vars, audience=None)
 
@@ -131,7 +131,7 @@ def test_exception_during_fetch_continues(mock_get_user, mock_user):
     env_vars = {"user": {}}
     headers = {"Authorization": "Bearer {{user.token}}"}
 
-    with patch("codemie.service.mcp.toolkit_service.token_exchange_factory") as mock_factory:
+    with patch("codemie.service.mcp.toolkit_service.token_exchange_service") as mock_factory:
         mock_factory.get_token_for_current_user.side_effect = RuntimeError("boom")
         # Must not raise
         _call(headers, env_vars, audience=None)

@@ -70,7 +70,7 @@ def test_get_exchanged_token_cache_hit(mock_get_user, service, mock_user, mock_c
 
     assert result == "cached-token"
     mock_cache.get.assert_called_once_with(f"oidc_exchange:{mock_user.id}:{_AUDIENCE}")
-    # token_exchange_factory should never be reached
+    # token_exchange_service should never be reached
     mock_cache.__setitem__.assert_not_called()
 
 
@@ -80,7 +80,7 @@ def test_get_exchanged_token_no_idp_token(mock_get_user, service, mock_user, moc
     mock_get_user.return_value = mock_user
     mock_cache.get.return_value = None
 
-    with patch("codemie.service.security.token_exchange_factory.token_exchange_factory") as mock_factory:
+    with patch("codemie.service.security.token_exchange_service.token_exchange_service") as mock_factory:
         mock_factory.get_token_for_current_user.return_value = None
         result = service.get_exchanged_token(_AUDIENCE)
 
@@ -94,7 +94,7 @@ def test_get_exchanged_token_success_caches_result(mock_get_user, service, mock_
     mock_get_user.return_value = mock_user
     mock_cache.get.return_value = None
 
-    with patch("codemie.service.security.token_exchange_factory.token_exchange_factory") as mock_factory:
+    with patch("codemie.service.security.token_exchange_service.token_exchange_service") as mock_factory:
         mock_factory.get_token_for_current_user.return_value = "idp-token"
         with patch.object(service, "_run_async", return_value="exchanged-token"):
             result = service.get_exchanged_token(_AUDIENCE)

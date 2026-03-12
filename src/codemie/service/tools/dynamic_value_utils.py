@@ -313,8 +313,8 @@ def _resolve_dynamic_values_recursively(dynamic_values: dict[str, Any]) -> dict[
 def process_string(
     source: str,
     context: Optional[list[Any] | dict[str, str]],
-    initial_dynamic_vals: Optional[dict] = None,
-    enable_recursive_resolution: bool = None,
+    initial_dynamic_vals: dict | None = None,
+    enable_recursive_resolution: bool | None = None,
 ) -> str:
     """
     Process a string with dynamic context resolution.
@@ -410,8 +410,8 @@ def _resolve_source_values(source_values: dict, resolved_context: dict) -> dict:
 def process_values(
     source_values: dict,
     context: Optional[list[Any] | dict[str, str]],
-    initial_dynamic_vals: Optional[dict] = None,
-    enable_recursive_resolution: bool = None,
+    initial_dynamic_vals: dict | None = None,
+    enable_recursive_resolution: bool | None = None,
 ) -> dict:
     """
     Process source values with dynamic context resolution.

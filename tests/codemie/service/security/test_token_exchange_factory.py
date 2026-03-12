@@ -14,7 +14,7 @@
 
 import pytest
 from unittest.mock import MagicMock, patch
-from codemie.service.security.token_exchange_factory import TokenExchangeFactory
+from codemie.service.security.token_exchange_service import TokenExchangeService
 from codemie.service.security.token_providers.base_provider import TokenProviderException
 from codemie.rest_api.security.user import User
 
@@ -26,15 +26,15 @@ def mock_cache():
 
 @pytest.fixture
 def mock_context_provider():
-    with patch("codemie.service.security.token_exchange_factory.ContextTokenProvider") as mock:
+    with patch("codemie.service.security.token_exchange_service.ContextTokenProvider") as mock:
         yield mock.return_value
 
 
 @pytest.fixture
 def factory(mock_cache, mock_context_provider):
     # Reset singleton for each test
-    TokenExchangeFactory._instance = None
-    factory = TokenExchangeFactory()
+    TokenExchangeService._instance = None
+    factory = TokenExchangeService()
     factory._cache = mock_cache
     factory._default_provider = mock_context_provider
     return factory
@@ -48,20 +48,20 @@ def current_user():
 
 
 def test_singleton_pattern():
-    TokenExchangeFactory._instance = None
-    f1 = TokenExchangeFactory()
-    f2 = TokenExchangeFactory()
+    TokenExchangeService._instance = None
+    f1 = TokenExchangeService()
+    f2 = TokenExchangeService()
     assert f1 is f2
 
 
-@patch("codemie.service.security.token_exchange_factory.get_current_user")
+@patch("codemie.service.security.token_exchange_service.get_current_user")
 def test_get_token_no_user(mock_get_user, factory):
     mock_get_user.return_value = None
     token = factory.get_token_for_current_user()
     assert token is None
 
 
-@patch("codemie.service.security.token_exchange_factory.get_current_user")
+@patch("codemie.service.security.token_exchange_service.get_current_user")
 def test_get_token_cache_hit(mock_get_user, factory, current_user, mock_cache):
     mock_get_user.return_value = current_user
     mock_cache.get.return_value = "cached-token"
@@ -73,7 +73,7 @@ def test_get_token_cache_hit(mock_get_user, factory, current_user, mock_cache):
     factory._default_provider.get_token.assert_not_called()
 
 
-@patch("codemie.service.security.token_exchange_factory.get_current_user")
+@patch("codemie.service.security.token_exchange_service.get_current_user")
 def test_get_token_cache_miss(mock_get_user, factory, current_user, mock_cache, mock_context_provider):
     mock_get_user.return_value = current_user
     mock_cache.get.return_value = None
@@ -87,7 +87,7 @@ def test_get_token_cache_miss(mock_get_user, factory, current_user, mock_cache, 
     mock_cache.__setitem__.assert_called_once_with(f"auth_token:{current_user.id}", "new-token")
 
 
-@patch("codemie.service.security.token_exchange_factory.get_current_user")
+@patch("codemie.service.security.token_exchange_service.get_current_user")
 def test_get_token_provider_error(mock_get_user, factory, current_user, mock_cache, mock_context_provider):
     mock_get_user.return_value = current_user
     mock_cache.get.return_value = None
@@ -117,7 +117,7 @@ def test_get_cache_stats(factory, mock_cache):
     assert "cache_ttl" in stats
 
 
-@patch("codemie.service.security.token_exchange_factory.get_current_user")
+@patch("codemie.service.security.token_exchange_service.get_current_user")
 def test_get_token_provider_returns_none(mock_get_user, factory, current_user, mock_cache, mock_context_provider):
     """Provider returns None → None returned, token not stored in cache."""
     mock_get_user.return_value = current_user

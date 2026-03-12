@@ -34,11 +34,11 @@ from codemie.service.security.token_providers.context_token_provider import (
 )
 
 
-class TokenExchangeFactory:
+class TokenExchangeService:
     """
     Singleton service for token retrieval with caching.
 
-    This factory provides a centralized service for retrieving authentication
+    This service provides a centralized service for retrieving authentication
     tokens for the current user. It implements TTL-based caching to improve
     performance and reduce repeated lookups.
 
@@ -61,22 +61,22 @@ class TokenExchangeFactory:
         - ContextVar provides request-scoped isolation
 
     Usage:
-        from codemie.service.security.token_exchange_factory import token_exchange_factory
+        from codemie.service.security.token_exchange_service import token_exchange_service
 
         # Get token for current user (most common usage)
-        token = token_exchange_factory.get_token_for_current_user()
+        token = token_exchange_service.get_token_for_current_user()
 
         # Clear cache on logout
-        token_exchange_factory.clear_cache(user_id=user.id)
+        token_exchange_service.clear_cache(user_id=user.id)
 
         # Monitor cache performance
-        stats = token_exchange_factory.get_cache_stats()
+        stats = token_exchange_service.get_cache_stats()
     """
 
-    _instance: ClassVar[TokenExchangeFactory | None] = None
+    _instance: ClassVar[TokenExchangeService | None] = None
     _lock: ClassVar[threading.Lock] = threading.Lock()
 
-    def __new__(cls) -> TokenExchangeFactory:
+    def __new__(cls) -> TokenExchangeService:
         """
         Create or return singleton instance using double-checked locking.
 
@@ -85,12 +85,12 @@ class TokenExchangeFactory:
         by checking the instance twice: once without lock, once with lock.
 
         Returns:
-            The singleton TokenExchangeFactory instance
+            The singleton TokenExchangeService instance
         """
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = super(TokenExchangeFactory, cls).__new__(cls)
+                    cls._instance = super(TokenExchangeService, cls).__new__(cls)
                     cls._instance._initialize()
         return cls._instance
 
@@ -113,7 +113,7 @@ class TokenExchangeFactory:
             self._default_provider: BaseTokenProvider = BrokerTokenExchangeProvider()
         else:
             self._default_provider: BaseTokenProvider = ContextTokenProvider()
-        logger.info(f"TokenExchangeFactory initialized with cache_ttl={config.TOKEN_CACHE_TTL}s")
+        logger.info(f"TokenExchangeService initialized with cache_ttl={config.TOKEN_CACHE_TTL}s")
 
     def get_token_for_current_user(self) -> str | None:
         """
@@ -212,7 +212,7 @@ class TokenExchangeFactory:
                 - cache_ttl: Configured TTL in seconds
 
         Usage:
-            stats = token_exchange_factory.get_cache_stats()
+            stats = token_exchange_service.get_cache_stats()
             print(f"Cache size: {stats['cache_size']}, TTL: {stats['cache_ttl']}s")
         """
         return {
@@ -222,5 +222,5 @@ class TokenExchangeFactory:
 
 
 # Module-level singleton instance for convenient access
-# Import this in other modules to use the factory
-token_exchange_factory = TokenExchangeFactory()
+# Import this in other modules to use the service
+token_exchange_service = TokenExchangeService()

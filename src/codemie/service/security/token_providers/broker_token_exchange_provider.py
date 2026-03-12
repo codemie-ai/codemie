@@ -23,6 +23,7 @@ from codemie.configs.logger import logger
 from codemie.rest_api.security.user_context import get_current_auth_token, get_current_user
 from codemie.service.security.token_providers.base_provider import (
     BaseTokenProvider,
+    BrokerAuthRequiredException,
     TokenProviderException,
 )
 
@@ -191,7 +192,11 @@ class BrokerTokenExchangeProvider(BaseTokenProvider):
         except httpx.HTTPStatusError as e:
             error_msg = f"Broker token exchange failed with HTTP {e.response.status_code}"
             logger.error(f"{error_msg} for user_id={user_id}: {e.response.reason_phrase}")
-            raise TokenProviderException(message=error_msg, details=self._get_http_error_details(e)) from e
+            raise BrokerAuthRequiredException(
+                message=error_msg,
+                auth_location=config.BROKER_AUTH_LOCATION_URL,
+                details=self._get_http_error_details(e),
+            ) from e
 
         except httpx.RequestError as e:
             error_msg = "Broker token exchange request failed"

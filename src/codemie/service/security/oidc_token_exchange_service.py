@@ -181,7 +181,7 @@ class OIDCTokenExchangeService:
         Security:
             NEVER logs the token value — only logs ``user_id`` and ``audience``.
         """
-        from codemie.service.security.token_exchange_factory import token_exchange_factory
+        from codemie.service.security.token_exchange_service import token_exchange_service
 
         current_user = get_current_user()
         if not current_user:
@@ -198,7 +198,7 @@ class OIDCTokenExchangeService:
 
         logger.debug(f"OIDC exchange token cache miss for user_id={user_id} audience={audience}")
 
-        idp_token = token_exchange_factory.get_token_for_current_user()
+        idp_token = token_exchange_service.get_token_for_current_user()
         if not idp_token:
             logger.debug(f"No IdP token available for OIDC exchange for user_id={user_id}")
             return None

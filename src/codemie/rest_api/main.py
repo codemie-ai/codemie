@@ -44,6 +44,7 @@ from codemie.enterprise.plugin import (
 from codemie.configs.logger import set_logging_info, logger
 from codemie.core.constants import APP_DESCRIPTION
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 from codemie.rest_api.routers import (
     guardrail,
     index,
@@ -643,6 +644,26 @@ async def extended_http_exception_handler(request: Request, exc: ExtendedHTTPExc
         logger.warning(msg)
     return JSONResponse(
         status_code=exc.code, content={"error": {"message": exc.message, "details": exc.details, "help": exc.help}}
+    )
+
+
+@app.exception_handler(BrokerAuthRequiredException)
+async def broker_auth_required_handler(request: Request, exc: BrokerAuthRequiredException) -> JSONResponse:
+    """
+    Returns HTTP 401 when a broker token exchange fails.
+
+    Includes the ``x-user-mcp-auth-location`` header so clients know where
+    to re-authenticate. The header is omitted if ``BROKER_AUTH_LOCATION_URL``
+    is not configured.
+    """
+    logger.warning(f"Broker authentication required: {exc.details}")
+    headers = {}
+    if exc.auth_location:
+        headers["x-user-mcp-auth-location"] = exc.auth_location
+    return JSONResponse(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        content={"error": {"message": exc.message, "details": exc.details}},
+        headers=headers,
     )
 
 

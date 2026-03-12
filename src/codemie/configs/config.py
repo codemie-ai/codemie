@@ -209,6 +209,7 @@ class Config(BaseSettings):
     BROKER_TOKEN_REALMS: str = ""  # Comma-separated realm names for each hop
     BROKER_TOKEN_BROKERS: str = ""  # Comma-separated broker identifiers for each hop
     BROKER_TOKEN_TIMEOUT: float = 5.0
+    BROKER_AUTH_LOCATION_URL: str = ""  # Value for x-user-mcp-auth-location header on broker auth failures
 
     # OIDC Token Exchange configuration (RFC 8693)
     # Used when an MCP server requires an audience-scoped token via Keycloak token exchange
