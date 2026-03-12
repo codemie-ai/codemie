@@ -1,0 +1,386 @@
+# Default values for codemie.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# -- The number of AI/Run API pods to run
+replicaCount: 1
+
+## AI/Run API image
+image:
+  # -- Repository to use for the AI/Run API
+  repository: ""
+  # -- Image pull policy for the AI/Run API
+  pullPolicy: IfNotPresent
+  # -- Tag to use for the AI/Run API. Overrides the image tag whose default is the chart appVersion
+  tag: ""
+
+## Use Argo Rollouts for deployment
+argoRollout:
+  # -- Enable Argo Rollouts instead of standard Kubernetes deployment
+  enabled: false
+  # -- The time to wait before scaling down the old replica set
+  # Default: 120 seconds = 2 minutes
+  scaleDownDelaySeconds: 120
+
+# -- Secrets with credentials to pull images from a private registry
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- List of extra environment variables to be used by the AI/Run API
+# @default -- `[]`
+extraEnv:
+  # IMPORTANT: IF YOU ARE MAKING CHANGES IN THIS SECTION RUN `helm-docs` from project root to update README.md
+  - name: "AZURE_OPENAI_API_KEY"
+    valueFrom:
+      secretKeyRef:
+        key: key
+        name: secret-azure-openai-api-key
+
+  - name: AZURE_OPENAI_URL
+    value: ""
+  - name: MODELS_ENV
+    value: ""
+
+  - name: ENV
+    value: "dev"
+  - name: IDP_PROVIDER
+    value: 'keycloak'
+  - name: ENCRYPTION_TYPE
+    value: "gcp"
+  - name: API_ROOT_PATH
+    value: "/code-assistant-api"
+  - name: FILES_STORAGE_TYPE
+    value: "gcp"
+  - name: TRIGGER_ENGINE_ENABLED
+    value: "false"
+
+  - name: 'ADMIN_USER_ID'
+    valueFrom:
+      secretKeyRef:
+        name: admin-credentials
+        key: user-id
+  - name: 'GOOGLE_SEARCH_API_KEY'
+    valueFrom:
+      secretKeyRef:
+        name: codemie-api-search-secrets
+        key: google_search_api_key
+  - name: 'GOOGLE_SEARCH_CSE_ID'
+    valueFrom:
+      secretKeyRef:
+        name: codemie-api-search-secrets
+        key: google_search_cse_id
+  - name: 'TAVILY_API_KEY'
+    valueFrom:
+      secretKeyRef:
+        name: codemie-api-search-secrets
+        key: tavily_api_key
+
+  - name: 'AWS_ACCESS_KEY_ID'
+    valueFrom:
+      secretKeyRef:
+        name: aws-secrets
+        key: aws_access_key_id
+  - name: 'AWS_SECRET_ACCESS_KEY'
+    valueFrom:
+      secretKeyRef:
+        name: aws-secrets
+        key: aws_secret_access_key
+  - name: 'AWS_DEFAULT_REGION'
+    value: "us-west-2"
+
+  - name: GOOGLE_APPLICATION_CREDENTIALS
+    value: "/secrets/gcp-service-account.json"
+  - name: GOOGLE_PROJECT_ID
+    value: ""
+  - name: GOOGLE_REGION
+    value: "europe-west3"
+  - name: GOOGLE_KMS_PROJECT_ID
+    value: ""
+  - name: GOOGLE_KMS_REGION
+    value: "europe-west3"
+  - name: GOOGLE_VERTEXAI_REGION
+    value: "us-central1"
+  - name: GOOGLE_CLAUDE_VERTEXAI_REGION
+    value: "us-east5"
+
+  # HashiCorp Vault configuration
+  - name: VAULT_URL
+    value: ""  # Example: http://vault.example.com:8200
+  - name: VAULT_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: vault-credentials
+        key: token
+        optional: true
+  - name: VAULT_NAMESPACE
+    value: ""  # Optional: for Vault Enterprise
+  - name: VAULT_TRANSIT_KEY_NAME
+    value: "codemie"
+  - name: VAULT_TRANSIT_MOUNT_POINT
+    value: "transit"
+
+  - name: DALLE_API_URL
+    value: ""
+  - name: DALLE_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: secret-dalle-api-key
+        key: key
+
+  - name: AZURE_SPEECH_REGION
+    value: "westus2"
+  - name: AZURE_SPEECH_SERVICE_KEY
+    valueFrom:
+      secretKeyRef:
+        name: secret-azure-speech-service-api-key
+        key: key
+
+  - name: STT_API_DEPLOYMENT_NAME
+    value: "whisper"
+  - name: STT_MODEL_NAME
+    value: "whisper"
+  - name: STT_API_URL
+    value: ""
+    # Dalle API key is used because Whisper model is deployed to the same cognitive service in Azure
+  - name: STT_API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: secret-dalle-api-key
+        key: key
+
+  - name: GITHUB_IDENTIFIERS
+    value: '["github"]'
+  - name: GITLAB_IDENTIFIERS
+    value: '["gitlab"]'
+  - name: BITBUCKET_IDENTIFIERS
+    value: '["bitbucket"]'
+
+# -- List of custom extra environment variables to be used by the AI/Run API
+# Use this to add or override environment variables
+# @default -- `[]`
+customEnv:
+  - name: 'ELASTIC_USERNAME'
+    valueFrom:
+      secretKeyRef:
+        name: elasticsearch-master-credentials
+        key: username
+  - name: 'ELASTIC_PASSWORD'
+    valueFrom:
+      secretKeyRef:
+        name: elasticsearch-master-credentials
+        key: password
+  - name: 'ELASTIC_URL'
+    value: "https://elasticsearch-master.codemie-elastic-dev.svc.cluster.local:9200"
+  - name: 'KEYCLOAK_LOGOUT_URL'
+    value: ''
+  - name: LOG_LEVEL
+    value: 'debug'
+  - name: NATS_PLUGIN_KEY_CHECK_ENABLED
+    value: "true"
+  - name: NATS_SKIP_TLS_VERIFY
+    value: "false"
+  # Secret 'codemie-nats-secrets' is provided by the codemie-nats helm chart
+  - name: NATS_SERVERS_URI
+    valueFrom:
+      secretKeyRef:
+        name: codemie-nats-secrets
+        key: NATS_URL
+  - name: NATS_USER
+    valueFrom:
+      secretKeyRef:
+        name: codemie-nats-secrets
+        key: CODEMIE_USERNAME
+  - name: NATS_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: codemie-nats-secrets
+        key: CODEMIE_PASSWORD
+
+serviceAccount:
+  # -- Specifies whether a service account should be created
+  create: false
+  # -- Annotations applied to created service account
+  annotations: {}
+  # -- Service account name for AI/Run API pod
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+# -- Annotations to be added to AI/Run API pods
+podAnnotations: {}
+
+# -- Labels to be added to AI/Run UI pods.
+podLabels: {}
+
+# -- Toggle and define pod-level security context
+podSecurityContext: {}
+  # fsGroup: 2000
+
+# -- AI/Run API container-level security context
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+service:
+  # -- AI/Run API service type
+  type: ClusterIP
+  # -- AI/Run API service port
+  port: 8080
+  # -- AI/Run API service annotations
+  annotations: {}
+
+## AI/Run API ingress configuration
+ingress:
+  # -- Enable an ingress resource for the AI/Run API
+  enabled: true
+  # -- Additional ingress annotations
+  annotations:
+    nginx.ingress.kubernetes.io/auth-response-headers: X-Auth-Request-Access-Token,Authorization
+    nginx.ingress.kubernetes.io/auth-signin: https://$host/oauth2/start?rd=$escaped_request_uri
+    nginx.ingress.kubernetes.io/auth-url: http://oauth2-proxy.oauth2-proxy.svc.cluster.local:80/oauth2/auth
+    nginx.ingress.kubernetes.io/rewrite-target: /$1
+    nginx.ingress.kubernetes.io/proxy-body-size: 900m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-buffer-size: "64k"
+  # -- Ingress path type
+  pathType: ImplementationSpecific
+  # -- AI/Run API hostname
+  host: codemie.%%DOMAIN%%
+  # -- The path to AI/Run API
+  path: "/code-assistant-api/(.*)"
+  tls: []
+
+## AI/Run API ingress configuration for Swagger
+ingressSwagger:
+  # -- Additional ingress annotations
+  annotations: {}
+  # -- Ingress path type
+  pathType: ImplementationSpecific
+  # -- The path to AI/Run API for Swagger
+  path: "/openapi.json"
+
+## AI/Run API ingress configuration for Webhooks
+ingressWebHooks:
+  # -- Additional ingress annotations
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /v1/webhooks/$1
+  # -- Ingress path type
+  pathType: ImplementationSpecific
+  # -- The path to AI/Run API for Webhooks
+  path: "/code-assistant-api/v1/webhooks/(.*)"
+
+## AI/Run API ingress configuration for Callbacks Index
+ingressCallbacksIndex:
+  # -- Additional ingress annotations
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /v1/callbacks/index/$1
+  # -- Ingress path type
+  pathType: ImplementationSpecific
+  # -- The path to AI/Run API for Callbacks Index
+  path: "/code-assistant-api/v1/callbacks/index/(.*)"
+
+## Probes for the AI/Run API
+# Ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+#
+# Is used to avoid pod restarts when the pod is starting when we are executing the migration script.
+# Pod has 600 seconds to start and execute the migration script.
+# failureThreshold * periodSeconds = 60 * 10 = 600 seconds = 10 minutes
+startupProbe:
+  httpGet:
+    path: /v1/healthcheck
+    port: 8080
+  # -- Number of seconds after the container has started before probe is initiated
+  initialDelaySeconds: 20
+  # -- Minimum consecutive failures for the probe to be considered failed after having succeeded
+  failureThreshold: 60
+  # -- How often (in seconds) to perform the probe
+  periodSeconds: 10
+
+livenessProbe:
+  httpGet:
+    path: /v1/healthcheck
+    port: 8080
+  # -- Minimum consecutive failures for the probe to be considered failed after having succeeded
+  failureThreshold: 3
+  # -- Number of seconds after the container has started before probe is initiated
+  initialDelaySeconds: 20
+  # -- How often (in seconds) to perform the probe
+  periodSeconds: 30
+  # -- Minimum consecutive successes for the probe to be considered successful after having failed
+  successThreshold: 1
+  # -- Number of seconds after which the probe times out
+  timeoutSeconds: 1
+
+readinessProbe:
+  httpGet:
+    path: /v1/healthcheck
+    port: 8080
+  # -- Minimum consecutive failures for the probe to be considered failed after having succeeded
+  failureThreshold: 3
+  # -- Number of seconds after the container has started before probe is initiated
+  initialDelaySeconds: 20
+  # -- How often (in seconds) to perform the probe
+  periodSeconds: 30
+  # -- Minimum consecutive successes for the probe to be considered successful after having failed
+  successThreshold: 1
+  # -- Number of seconds after which the probe times out
+  timeoutSeconds: 1
+
+# -- Resource limits and requests for the AI/Run API pods
+resources:
+  limits:
+    cpu: 2
+    memory: 2048Mi
+  requests:
+    cpu: 100m
+    memory: 1024Mi
+
+# -- Mapping between IP and hostnames that will be injected as entries in the pod's hosts files
+hostAliases: []
+
+# -- Priority class for the AI/Run API pods
+priorityClassName: ""
+
+# -- Node selector to be added to the AI/Run API pods
+nodeSelector: {}
+
+# -- Node selector to be added to the AI/Run API pods
+tolerations: []
+
+# -- Assign affinity rules to the deployment
+affinity: {}
+
+# -- List of extra mounts to add (normally used with extraVolumes)
+extraVolumeMounts: |
+  - name: google-service-account
+    readOnly: true
+    mountPath: "/secrets/gcp-service-account.json"
+    subPath: gcp-service-account.json
+  - name: codemie-customer-config
+    mountPath: /app/config/customer
+
+# -- List of extra volumes to add
+extraVolumes: |
+  - name: google-service-account
+    secret:
+      secretName: google-service-account
+  - name: codemie-customer-config
+    configMap:
+      name: codemie-customer-config
+
+# -- Array of extra Kubernetes manifests to deploy
+extraObjects: []
+  # - apiVersion: external-secrets.io/v1beta1
+  #   kind: ExternalSecret
+  #   metadata:
+  #     name: example-secret-1
+  #   spec:
+  #     data:
+  #       - remoteRef:
+  #           key: /example/deploy-secrets
+  #           property: example-secret-1.username
+  #         secretKey: username

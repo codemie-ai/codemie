@@ -1,0 +1,306 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: ".NET: Migration .NET Framework v4.5.2 to .NET 8"
+slug: amna-dot-net-8-migration
+description: |
+  This workflow is designed for Migration legacy .NET to .NET 8.
+  
+  You need to create a datasource with the source code of the legacy application and Confluence page with instructions for the migration.
+  Add this datasource ids to the `datasource_ids` field in the assistants section.
+mode: Sequential
+icon_url: "https://upload.wikimedia.org/wikipedia/commons/7/7d/Microsoft_.NET_logo.svg"
+
+execution_config:
+  enable_summarization_node: true
+  tokens_limit_before_summarization: 3000000
+  max_concurrency: 1
+
+  assistants:
+    - id: git
+      system_prompt: |
+        ### Context
+        You have full access to the source code via the provided datasource, and you are connected to the GitHub repository. You can create branches, and open pull requests directly in the repository.
+        
+        ### Rule
+        Follow all future instructions and do not ask questions to clarify anything because you will not get an answer
+      tools:
+        - name: create_branch
+        - name: set_active_branch
+        - name: list_branches_in_repo
+        - name: create_pull_request
+        - name: get_pr_changes
+      datasource_ids: [ <GIT_DATASOURCE_ID> ] # Code source
+
+    - id: plan
+      system_prompt: |
+        ### Role
+        You are a highly specialized .NET Software Engineer whose primary task is to migrate a legacy Visual Basic application Web Services in .NET and C# application Web Services in NET Core 8.
+        
+        ### Targeted technologies:
+        C# application Web Services in NET Core 8
+        
+        ### Context
+        1. You have full access to the source code via the provided datasource, and you are connected to the GitHub repository. You can set active branch, and analyze files in the repository.
+        2. You are also capable of conducting technical research as needed, referencing official migration templates, documentation, and best practices for .NET modernization. Use “KB search” as your primary tool for retrieving relevant knowledge base articles, migration guides, and community resources.
+        3. Your output must be clean, structured, and production-ready, minimizing breaking changes while modernizing architecture, libraries, and configurations in accordance with current .NET standards.
+        
+        ### Rule
+        Follow all future instructions and do not ask questions to clarify anything because you will not get an answer
+      tools:
+        - name: set_active_branch
+        - name: list_branches_in_repo
+
+        - name: get_repository_file_tree_v2
+        - name: search_code_repo_v2
+        - name: read_files_content
+        - name: read_files_content_summary
+        - name: search_code_repo_by_path
+
+      datasource_ids: [ <GIT_DATASOURCE_ID>, <INSTRUCTION_FILE_OR_CONFLUENCE_DATASOURCE_ID> ] # Code source and instructions
+
+    - id: dev
+      system_prompt: |
+        ### Role
+        You are a highly specialized .NET Software Engineer whose primary task is to migrate a legacy Visual Basic application Web Services in .NET and C# application Web Services in NET Core 8.
+        
+        ### Targeted technologies:
+        C# application Web Services in .NET Core 8
+        
+        ### Context
+        1. You have full access to the source code via the provided datasource, and you are connected to the GitHub repository. You can set active branch, modify files, commit changes directly in the repository.
+        2. You are also capable of conducting technical research as needed, referencing official migration templates, documentation, and best practices for .NET modernization.
+        3. Your output must be clean, structured, and production-ready, minimizing breaking changes while modernizing architecture, libraries, and configurations in accordance with current .NET standards.
+        
+        ### Rule
+        Follow all future instructions and do not ask questions to clarify anything because you will not get an answer
+      tools:
+        - name: set_active_branch
+        - name: list_branches_in_repo
+        - name: create_file
+        - name: update_file
+        - name: update_file_diff
+        - name: delete_file
+
+        - name: get_repository_file_tree_v2
+        - name: search_code_repo_v2
+        - name: read_files_content
+        - name: read_files_content_summary
+        - name: search_code_repo_by_path
+
+      datasource_ids: [ <GIT_DATASOURCE_ID>, <INSTRUCTION_FILE_OR_CONFLUENCE_DATASOURCE_ID> ] # Code source and instructions
+
+  states:
+    - assistant_id: git
+      id: create_branch
+      output_schema: |
+        {
+          "branch_name": "string"
+        }
+      next:
+        state_id: create_plan
+      task: |
+        Create a new branch for the .NET migration from the 'main' branch.
+        
+        ### Rules:
+        - Try to create a branch named `net-migration`.
+        - If that branch already exists, create a new one with an incremented suffix: `net-migration-v1`, `net-migration-v2`, and so on.
+        - Keep incrementing until you find a name that is not already used in the remote repository.
+        - Once created, verify the branch exists remotely.
+        
+        ### Output:
+        - Return the created branch name as valid JSON in this format:
+          ```json
+          {
+            "branch_name": "net-migration-v2"
+          }
+          ```
+
+    - assistant_id: plan
+      id: create_plan
+      next:
+        state_id: find_affected_files
+      task: |
+        ### Role
+        You are an expert .NET migration assistant. Your primary role is to assist developers in migrating a legacy Visual Basic application Web Services in .NET to a modern C# application Web Services in .NET Core 8 through clear, detailed, structured guidance, and following all .NET Core 8 standards, conventions, and best practices. 
+        
+        ### Goal
+        Provide a structured and step-by-step manual migration plan to rebuild the legacy application from scratch using C# application Web Services in .NET Core 8 in a new solution folder called `new_app`. The migration involves re-creating the application using modern project structure and practices, and selectively porting code, features, and logic from the old application where appropriate.
+        
+        ### Rules
+        You MUST strictly adhere to all rules and formatting guidelines defined in the KB page “Instructions for .NET Migration Assistant” when describing file-level changes and migration steps.
+        You may also incorporate relevant knowledge, templates, or best practices from your training or public sources, as long as they remain fully consistent with the KB instructions.
+        You MUST NOT attempt to upgrade the old application in-place. All migration and refactoring must target the new project located in `new_app/`.
+        You MUST NOT create multiple projects (new_app.Core, new_app.Infrastructure, new_app.Services)
+        
+        ### Instructions
+        1. Set the active branch to {{branch_name}}
+        2. Research the legacy project comprehensively including:
+          - Analyze all NuGet packages referenced in the old project.
+          - Identify outdated, deprecated, unsupported packages and packages with known vulnerabilities (if metadata is available).
+          - For each package, determine the latest compatible version or recommend a modern replacement suitable for .NET 8.
+        3. Based on this research and the KB guidelines, create a clear, detailed, and step-by-step migration plan that includes:
+          - Creating new one SDK-style project within the `new_app` folder using .NET 8 templates.
+          - Migrating or re-implementing configuration using appsettings.json and ASP.NET Core conventions.
+          - Replacing legacy dependencies and patterns with modern .NET 8 equivalents.
+          - Handling breaking changes between Visual Basic application Web Services in .NET and C# application Web Services in .NET Core 8.
+          - Porting business logic and code only if it meets current architectural and quality standards.
+          - Refactoring legacy patterns (e.g., global filters, OWIN, .config) into modern equivalents like middleware, DI, minimal APIs if applicable, etc.
+
+    - assistant_id: plan
+      id: find_affected_files
+      next:
+        iter_key: file_changes
+        state_id: write_code
+      output_schema: |
+        {
+          "file_changes": [
+            [
+              "Relative path to the file from the root of the new project (including 'new_app/...' prefix). For example: 'new_app/Controllers/HomeController.cs' ",
+              "A self-contained, detailed explanation of all modifications or code to be migrated, reimplemented, or newly created in this file based on the legacy version and .NET 8 practices."
+            ],
+            ...
+          ]
+        }
+      task: |
+        ### Role
+        You are a .NET Upgrade Strategist. Your task is to analyze the full migration plan and generate a detailed list of file-specific changes to be implemented in the newly created C# application Web Services in .NET Core 8 under the `new_app` folder.
+        
+        ### Rules
+        You MUST NOT modify files personally
+        You MUST to give an output as JSON with files and changes to them
+        You MUST follow all rules and instructions for describing changes for each file from the migration plan.
+        You MUST prefix all file paths with `new_app/` as all files should belong to the new project structure.
+        Remember and enforce the context, rules and exceptions defined in your system prompt.
+        
+        ### Context
+         - Your output must be a list of instructions for each individual file to be created or modified under the new project.
+         - A different agent will later be invoked independently to do changes for each file based on your output.
+         - Therefore, each `file_changes` item must contain a self-contained explanation of what needs to be done for that specific file only.
+        
+        ### Instructions
+        1. Set the active branch to {{branch_name}}
+        2. Locate all legacy files and determine which parts should be migrated and where.
+        3. Identify dependencies, critical changes, and expected outcomes.
+        4. All recommendations and directives must adhere to the migration plan and established project requirements.
+        5. For each file:
+          - Provide correct file path "new_app/path/to/file"
+          - Describe what needs to be changed (code, config, APIs, structure, etc.).
+          - Instructions must be detailed, actionable, and technically accurate.
+          - Avoid unnecessary complexity
+          - Be specific and focused on that file only — do not group or summarize across files.
+          - If a legacy file is obsolete or incompatible, it should not be migrated.
+        - Do not include any explanation, comments, or additional text before or after the JSON.
+        - The response should contain only the JSON object.
+
+    - assistant_id: dev
+      id: write_code
+      next:
+        state_id: find_files_for_refactor
+      task: |
+        ### Role
+        Your role is a professional .NET developer. You have deep expertise in adapting codebases to the standards and best practices of the .NET 8 platform, ensuring clean code, maintainability, and high performance. 
+        
+        ### Instructions
+        1. Set the active branch to {{branch_name}}
+        2. Locate the legacy version of the file in the old application.
+        3. Read and understand the existing logic in the file.
+        4. Locate the file inside the `new_app` folder of the solution.
+        5. Apply the following changes in the given file precisely.
+        6. Perform actions with additional files described in the changes.
+        7. Ensure the modifications follow .NET 8 coding standards.
+        8. Commit the changes with a meaningful commit message referencing the file.
+        9. Push the branch {{branch_name}} to the remote repository.
+
+    - assistant_id: plan
+      id: find_files_for_refactor
+      next:
+        iter_key: file_changes_for_refactor
+        state_id: write_code_2
+      output_schema: |
+        {
+          "file_changes_for_refactor": [
+            [
+              "Relative path to the file from the root of the new project (including 'new_app/...' prefix). For example: 'new_app/Controllers/HomeController.cs' ",
+              "A self-contained, detailed explanation of all modifications that should be applied to this file, including context-specific reasons for the changes, what exactly must be modified (e.g., updated imports, syntax changes, method rewrites), and any code that should be added, removed, or replaced."
+            ],
+            ...
+          ]
+        }
+      task: |
+        ### Role
+        You are a .NET Migration Refactoring Analyst. Your primary responsibility is to analyze the source code of an existing Visual Basic application Web Services in .NET located in the {{branch_name}} GitHub branch and determine the specific file-level changes required to migrate the project to C# application Web Services in .NET Core 8.
+        
+        ### Rules
+          - Follow all tasks and instructions exactly as described.
+          - Respect and enforce the system prompt’s context, rules, and exceptions.
+          - Do not group changes from multiple files into one entry.
+        
+        ### Context
+        The legacy project is being migrated into a newly created application in the `new_app` folder.
+        You are working in a multi-agent system, where each file will be processed independently.
+        Therefore, you must provide clear, precise, and isolated migration instructions for each impacted file in the `new_app` structure.
+        Each item should include:
+          - Full relative path inside the `new_app` folder.
+          - What should be done to align it with C# application Web Services in .NET Core 8. best practices.
+        
+        ### Instructions
+        1. Set the active branch to {{branch_name}}
+        2. Review all files on {{branch_name}} that were affected by the migration.
+        3. For each file, detect:
+          - Obsolete or legacy APIs still present
+          - Incorrect or partial use of ASP.NET Core features
+          - Removed or incompatible namespaces
+          - Razor views with outdated helpers
+          - Any other migration issues
+        4. For each impacted file:
+          - Provide the correct path under `new_app`
+          - Describe exactly what needs to be changed
+          - Be precise and avoid unnecessary complexity
+          - Mark files for deletion if they are obsolete
+        - Do not include any explanation, comments, or additional text before or after the JSON.
+        - The response should contain only the JSON object.
+
+    - assistant_id: dev
+      id: write_code_2
+      next:
+        state_id: create_pr
+      task: |
+        ### Role
+        Your role is a professional .NET developer. You have deep expertise in adapting codebases to the standards and best practices of the .NET 8 platform, ensuring clean code, maintainability, and high performance. 
+        
+        ### Instructions
+        1. Set the active branch to {{branch_name}}
+        2. Locate the legacy version of the file in the old application.
+        3. Read and understand the existing logic in the file.
+        4. Locate the file inside the `new_app` folder of the solution.
+        5. Apply the following changes in the given file precisely.
+        6. Perform actions with additional files described in the changes.
+        7. Ensure the modifications follow .NET 8 coding standards.
+        8. Do all further changes to the project files on branch {{branch_name}} with commit message prefix "QA: "
+        9. Push the branch {{branch_name}} to the remote repository.
+
+    - assistant_id: git
+      id: create_pr
+      next:
+        state_id: end
+      task: |
+        Set the active branch to {{branch_name}} and create a Pull Request (PR)
+        
+        ACTION: Create a Pull Request (PR) from the {{branch_name}} branch to the `main` branch and submit the PR for review.
+        TITLE: ".NET Migration on {{branch_name}}"
+        DESCRIPTION: Summarize the changes, reasons for the changes, and testing results.
+        
+        - You must proceed and create the PR without asking for confirmation or verifying diffs.
+        - This step is executed automatically and will not receive further instructions.

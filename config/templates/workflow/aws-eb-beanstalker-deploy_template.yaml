@@ -1,0 +1,122 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-aws-eb-beanstalker-deploy
+name: "BeanStalker: AWS Elastic Beanstalk Deployment Automation"
+description: |
+  Automates the deployment of applications to AWS Elastic Beanstalk by analyzing the application structure,
+  configuring the Procfile, selecting the appropriate platform, and managing the deployment process.
+  In order to use this workflow, the following prerequisites must be satisfied:
+  1. A beanstalker environment has been set up with files from: https://github
+  .com/epam/EPAM-AI-RUN-Marketplace/tree/main/guide/workflows/resources/beanstalk-workflow
+  2. Codemie-plugins has been configured to have access to the above folder and is 
+  running with mcp servers: filesystem and cli-mcp-server, both of which require 
+  access to the said folder.
+mode: Sequential
+icon_url: "https://upload.wikimedia.org/wikipedia/commons/9/9d/Green_rhombic_dodecahedron.gif"
+execution_config:
+    enable_summarization_node: false
+    tokens_limit_before_summarization: 300000
+    recursion_limit: 500
+    max_concurrency: 1
+    retry_policy:
+      initial_interval_seconds: 66.0
+      backoff_factor: 5.0
+      max_interval_seconds: 500.0
+      max_attempts: 9
+
+    assistants:
+      - id: bean
+        assistant_id: PRECONFIGURED:amna-aws-eb-bean
+
+    states:
+      - assistant_id: bean
+        id: setup
+        task: |
+          1. Explore what files are in the allowed dir, especially the infrastructure/*
+          .yaml, deploy.sh and the config(s) in .ebextensions/ to get a firm 
+          understanding of the environment in which this app will be deployed.
+          2. Edit the Procfile to make sure that it will be ready to correctly launch the 
+          current application contained in the *_app folder in your allowed dir. It must 
+          make sense in light of the 
+          previously checked infrastructure defining files.
+        next:
+          state_id: deploy
+
+      - id: deploy
+        assistant_id: bean
+        task: |
+          1. Read the deploy.sh script to understand what command line arguments it 
+          takes, as you might need to pass a non default --platform flag, for example, if
+          it's java, use --platform corretto-17. Use the following table to 
+          choose the correct platform based on the application in the *_app folder:
+            {
+              ".py": "python-3.11",
+              ".java": "corretto-17",
+              ".jar": "corretto-17",
+              ".war": "tomcat-10-corretto-17",
+              ".js": "Node.js-20",
+              ".php": "PHP-8.2",
+              ".rb": "ruby-3.2",
+              ".go": "go-1",
+              "Dockerfile": "docker",
+              ".cs": "64bit-amazon-linux-2023-v3.5.3-running-.net-8"
+            }
+          2. Check the initial user prompt context to see if there is any directive about
+          using the --simple or --with-rds deployment type options, to uderstand which, 
+          if any needs to be included.
+          3. Deploy the infrastructure via the command: "./run_bg ./deploy.sh", this will
+          run the deploy script in the background and return a PID, remember this PID.
+          4. Output this {PID} as a valid JSON so it can be reused by the next state, as 
+          well as the boolean deployment_started, which will be false if the deployment 
+          failed. If deployment failed, try to assess why exactly it failed and include 
+          the report under the problem key in the JSON.
+        output_schema: |
+          {
+               "PID": "PID",
+               "deployment_started": "True | False",
+               "problem": ""
+           }
+        next:
+          condition:
+            expression: "deployment_started==True"
+            then: check
+            otherwise: end
+
+      - id: check
+        assistant_id: bean
+        task: |
+          1. Wait for 30 seconds
+          2. Check if the deployment is finished or still running with the command: "./check_bg {PID}"
+          3. Output a valid JSON with a success set to True if the previously checked PID
+          has finished, False otherwise. Also include the same {PID} in the JSON.
+        output_schema: |
+          {
+              "success": "True | False",
+              "PID": "PID"
+          }
+        next:
+          condition:
+            expression: "success==True"
+            then: done
+            otherwise: check
+
+      - id: done
+        assistant_id: bean
+        task: |
+          1. Read the contents of the deploy.log file and return it for the user to see, 
+          make sure it has the clickable url to the deployed website if it's available.
+          2. Print a success message.
+        next:
+          state_id: end

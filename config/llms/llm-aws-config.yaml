@@ -1,0 +1,94 @@
+# Configuration file for managing multiple LLM and embedding models
+llm_models:
+  - base_name: "claude-4-5-haiku"
+    deployment_name: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    label: "Bedrock Claude 4.5 Haiku"
+    multimodal: true
+    enabled: true
+    provider: "aws_bedrock"
+    max_output_tokens: 64000
+    cost:
+      input: 0.0000011
+      output: 0.0000055
+      cache_read_input_token_cost: 0.00000011
+      cache_creation_input_token_cost: 0.000001375
+
+  - base_name: "claude-4-5-sonnet"
+    deployment_name: "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    label: "Bedrock Claude 4.5 Sonnet"
+    multimodal: true
+    enabled: true
+    provider: "aws_bedrock"
+    max_output_tokens: 64000
+    cost:
+      input: 0.0000033
+      output: 0.0000165
+      cache_read_input_token_cost: 0.00000033
+      cache_creation_input_token_cost: 0.000004125
+
+  - base_name: "claude-sonnet-4-6"
+    deployment_name: "us.anthropic.claude-sonnet-4-6"
+    label: "Bedrock Claude Sonnet 4.6"
+    multimodal: true
+    enabled: true
+    default_for_categories: [global]
+    provider: "aws_bedrock"
+    max_output_tokens: 64000
+    cost:
+      input: 0.0000033
+      output: 0.0000165
+      cache_read_input_token_cost: 0.00000033
+      cache_creation_input_token_cost: 0.000004125
+
+  - base_name: "us.meta.llama4-maverick-17b-instruct-v1:0"
+    deployment_name: "us.meta.llama4-maverick-17b-instruct-v1:0"
+    label: "LLaMa Maverick Instruct 17B"
+    multimodal: false
+    react_agent: false
+    enabled: true
+    provider: "aws_bedrock"
+    max_output_tokens: 8192
+    features:
+      streaming: false
+      tools: true
+    cost:
+      input: 0.00000024
+      output: 0.00000097
+      cache_read_input_token_cost: 0.00000024
+
+  - base_name: "claude-opus-4-5-20251101"
+    deployment_name: "us.anthropic.claude-opus-4-5-20251101-v1:0"
+    label: "Bedrock Claude Opus 4.5"
+    multimodal: true
+    enabled: true
+    provider: "aws_bedrock"
+    max_output_tokens: 64000
+    cost:
+      input: 0.0000055
+      output: 0.0000275
+      cache_read_input_token_cost: 0.00000055
+      cache_creation_input_token_cost: 0.000006875
+
+  - base_name: "claude-opus-4-6-20260205"
+    deployment_name: "us.anthropic.claude-opus-4-6-v1"
+    label: "Bedrock Claude Opus 4.6"
+    multimodal: true
+    enabled: true
+    provider: "aws_bedrock"
+    max_output_tokens: 128000
+    cost:
+      input: 0.0000055
+      output: 0.0000275
+      cache_read_input_token_cost: 0.00000055
+      cache_creation_input_token_cost: 0.000006875
+
+embeddings_models:
+  - base_name: "titan"
+    deployment_name: "amazon.titan-embed-text-v2:0"
+    label: "Titan Embed Text v2.0"
+    enabled: true
+    default_for_categories: [global]
+    provider: "aws_bedrock"
+    cost:
+      input: 0.0000002
+      output: 0

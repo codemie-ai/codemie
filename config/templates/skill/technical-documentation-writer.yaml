@@ -1,0 +1,218 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: technical-documentation-writer
+description: >-
+  Create, update, and review technical documentation for Docusaurus-based documentation sites following project-specific standards. 
+  Use when writing user guides, admin documentation, deployment instructions, API references, configuration guides, feature documentation, 
+  troubleshooting content, or reviewing existing documentation. 
+  Triggers: "write documentation", "create docs", "update guide", "add documentation", "document this feature", "review documentation", 
+  "check docs standards", working with .md or .mdx files in docs/ directories.
+content: |-
+  # Docusaurus Technical Documentation
+
+  Create clear, comprehensive, and user-focused technical documentation for Docusaurus-based sites following established project standards.
+
+  ## Project-Specific Standards
+
+  ### File Structure and Organization
+
+  Store images locally in `images/` folders next to documentation files. Use numbered filenames for ordering (e.g., `01-overview.md`, `02-prerequisites.md`). Organize content in appropriate directories following existing patterns.
+
+  ### Front Matter Requirements
+
+  Every markdown file MUST include:
+
+  ```yaml
+  ---
+  id: clean-semantic-name  # NO numbers, used in sidebar references
+  title: Full Descriptive Page Title
+  sidebar_label: Short Sidebar Label
+  sidebar_position: 1
+  pagination_prev: parent/section/overview
+  pagination_next: section/next-page  # Or null for terminal pages
+  ---
+  ```
+
+  ### MDX Syntax Rules (CRITICAL)
+
+  **Angle Brackets**: MDX interprets `<text>` as JSX tags. Always wrap placeholders in backticks:
+
+  ```markdown
+  ✅ Replace `<your-domain>` with your domain
+  ❌ Replace <your-domain> with your domain  # Causes compilation error
+  ```
+
+  **Props Variables**:
+
+  ````markdown
+  ✅ Inline: <code>values-{props.cloudName}.yaml</code>
+  ❌ Inline: `values-{props.cloudName}.yaml`  # Won't interpolate
+
+  ✅ Code block: Use <CodeBlock> component with template literals
+  ❌ Code block: Standard ``` with {props.var}  # Won't interpolate
+  ````
+
+  **Admonitions**: Use Docusaurus syntax:
+
+  ```markdown
+  ✅ :::warning
+      Be careful with this setting
+      :::
+  ❌ <div class="warning">Be careful</div>
+  ```
+
+  ### Image and Link References
+
+  **Images** - Use relative paths:
+
+  ```markdown
+  ✅ ![Architecture](./images/architecture.png)
+  ❌ ![Architecture](/img/user-guide/architecture.png)  # Breaks in PR previews
+  ```
+
+  **Internal Links** - Use relative paths:
+
+  ```markdown
+  ✅ [Prerequisites](./prerequisites)
+  ✅ [AWS Guide](../deployment/aws/overview)
+  ❌ [Prerequisites](/docs/deployment-guide/gcp/prerequisites)  # Breaks
+  ```
+
+  **Path Calculation**: Count directory levels between source and target, use `../` for each level up.
+
+  ### Sidebar Configuration
+
+  Reference document `id` from front matter, NOT filename. Use nested categories with `type: 'category'` for directories with multiple files:
+
+  ```typescript
+  {
+    type: 'category',
+    label: 'Infrastructure',
+    link: { type: 'doc', id: 'admin/deployment/infrastructure/infrastructure-overview' },
+    collapsed: true,
+    items: ['admin/deployment/infrastructure/infrastructure-scripted']
+  }
+  ```
+
+  ### Code Blocks
+
+  Always specify language for syntax highlighting:
+
+  ````markdown
+  ✅ ```bash
+     kubectl get pods
+     ```
+  ❌ ```
+     kubectl get pods
+     ```
+  ````
+
+  ### Pagination Strategy
+
+  **Linear workflows**: Chain pages with both prev/next
+
+  ```yaml
+  pagination_prev: section/prerequisites
+  pagination_next: section/next-step
+  ```
+
+  **Section overviews**: Link to parent, forward to recommended entry
+
+  ```yaml
+  pagination_prev: parent/section/overview
+  pagination_next: section/first-topic
+  ```
+
+  **Terminal pages**: Link back, no forward
+
+  ```yaml
+  pagination_prev: section/overview
+  pagination_next: null
+  ```
+
+  ## Documentation Workflow
+
+  ### Creating New Documentation
+
+  1. **Plan Structure**: Identify target audience, determine appropriate section, plan logical flow
+  2. **Create Files**: Use numbered filenames, add complete front matter, create local `images/` folder if needed
+  3. **Write Content**: Follow MDX syntax rules, use relative paths, apply appropriate admonitions, include code blocks with language specification
+  4. **Update Sidebar**: Add document IDs to `sidebars.ts`, create nested categories for multi-page sections
+  5. **Validate**: Check paths, verify images display, test navigation, run `npm run build`, use `npm run check`
+
+  ### Content Quality Standards
+
+  **Clarity**: Write in clear, concise language. Define acronyms on first use. Use consistent terminology. Avoid ambiguous pronouns.
+
+  **Structure**: Start with overview/context. Use progressive disclosure (basic → advanced). Include clear prerequisites. Provide logical navigation through pagination.
+
+  **User-Focused**: Write from user's perspective. Include real-world examples and use cases. Anticipate common questions. Provide troubleshooting guidance. Include expected outcomes for each step.
+
+  **Visual Aids**: Use screenshots to illustrate UI elements. Create architecture diagrams. Store images locally. Use descriptive alt text. Keep images up-to-date.
+
+  **Code Examples**: Provide complete, runnable examples. Include expected output. Use syntax highlighting. Explain what the code does. Wrap placeholders in backticks: `` `<placeholder>` ``.
+
+  ## Quality Assurance Checklist
+
+  Before completing documentation:
+
+  - [ ] All front matter fields present and correct
+  - [ ] Document ID matches sidebar reference
+  - [ ] Images stored locally with relative paths
+  - [ ] All internal links use relative paths
+  - [ ] Angle brackets wrapped in backticks
+  - [ ] Code blocks specify language
+  - [ ] Admonitions use Docusaurus syntax
+  - [ ] Pagination configured appropriately
+  - [ ] Sidebar navigation works correctly
+  - [ ] Build completes without errors
+  - [ ] Content is clear, complete, and accurate
+  - [ ] Examples are tested and functional
+
+  ## Common Issues and Fixes
+
+  **MDX Compilation Errors**: "Expected closing tag for `<text>`"
+  - Cause: Unwrapped angle brackets
+  - Fix: Wrap in backticks: `` `<text>` ``
+
+  **Sidebar Errors**: "Document id does not exist"
+  - Cause: Referencing filename instead of front matter ID
+  - Fix: Use `id` field value, not filename
+
+  **Broken Links**: "Docusaurus found broken links"
+  - Cause: Incorrect relative path calculation
+  - Fix: Use `realpath` to verify, count directory levels correctly
+
+  **Missing Navigation**: Page exists but not in sidebar
+  - Cause: Flat sidebar structure for nested content
+  - Fix: Convert to nested category with dropdown
+
+  ## Commit Message Format
+
+  Use Conventional Commits:
+
+  ```
+  docs(scope): description
+
+  Valid scopes: aws, gcp, user-guide, deployment, getting-started, config, deps
+
+  Examples:
+  docs(aws): add infrastructure deployment section
+  docs(user-guide): update configuration guide
+  docs(config): add integration instructions
+project: codemie
+visibility: public
+categories:
+  - documentation

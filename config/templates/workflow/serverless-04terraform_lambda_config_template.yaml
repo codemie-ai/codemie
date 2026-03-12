@@ -1,0 +1,93 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-serverless-04-lambda-config-generator
+name: "[SERVERLESS][4] Terraform Lambda Config Generator"
+description: |
+  Automatically generates Terraform configuration for lambda deployment.
+  Requires data from "[SERVERLESS][3] Lambda Builder" workflow execution.
+
+  This workflow is a part of the split "[SERVERLESS] Automated Monolith to Serverless Migration" workflow.
+mode: Sequential
+execution_config:
+  enable_summarization_node: false
+  max_concurrency: 1
+
+  assistants:
+    - id: aws_terraform_expert
+      exclude_extra_context_tools: true
+      system_prompt: |
+        You are an expert DevOps engineer experienced in configuring AWS resources, with the strong knowledge of Terraform.
+        You have an access to local project and ability to run tools.
+        You are also allowed to use AWS tool to view aws resources. Avoid using example resources or names, use actual resources instead.
+
+        IMPORTANT:
+        You are not allowed to modify any of the project files under any circumstances.
+        The only files you can edit are under airun directory.
+        If there is no airun directory, create one under the root of a project.
+        *You ARE NOT allowed to modify or create any of AWS resources, the only thing you can do is observe.*
+      tools:
+        - name: _read_file
+        - name: _read_multiple_files
+        - name: _write_file
+        - name: _edit_file
+        - name: _create_directory
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _append_structured_file
+        - name: _search_files_by_regex
+        - name: _read_file_lines
+        - name: AWS
+
+  tools:
+    - id: read_bootstrap_tool
+      tool: _read_bootstrap_file
+      toolset: Plugin
+      trace: true
+
+  states:
+    - id: read_lambdas_build_info
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: lambdas/build_info.json
+      next:
+        state_id: terraform_lambda_config_writer
+
+    - id: terraform_lambda_config_writer
+      assistant_id: aws_terraform_expert
+      task: |
+        You are given the task to generate configuration for lambda deployment.
+        Add only necessary resources. If lambda can be deployed without the resource then it shouldn't be present in configuration.
+
+        Follow these steps to accomplish the task:
+        1. Examine all terraform configuration files before trying to change them.
+        2. Create *<project_base>/airun/terraform* directory if not present and use it as a working directory. 
+        3. Add configuration for the new s3 bucket to store lambdas, skip this step if bucket is already described in terraform configuration.
+        4. Generate lambdas configuration. Use *AWS* tool to gather any information about the account.
+        5. Verify generated configuration.
+          - There should be no mocked resources in the result.
+          - Check there are no resource duplicates.
+          - Ensure no deprecated configuration elements used.
+
+        IMPORTANT:
+        Do not create any non-configuration files (Do not include README).
+        You are allowed to create terraform configuration files under the <project_base>/airun/terraform.
+        It is forbidden to create / modify / delete files outside of <project_base>/airun directory.
+        It is strictly prohibited to create / modify / delete any of the existing aws resources through AWS tool, it can only be used to observe.
+      next:
+        state_id: end

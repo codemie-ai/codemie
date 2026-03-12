@@ -1,0 +1,4 @@
+[run]
+omit = 
+  */templates/*
+  */codemie/clients/provider/*

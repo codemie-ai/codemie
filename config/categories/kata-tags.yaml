@@ -1,0 +1,136 @@
+tags:
+  - id: "getting-started"
+    name: "Getting Started"
+    description: "Introduction to AI agents, LLMs, and platform fundamentals"
+
+  - id: "prompt-engineering"
+    name: "Prompt Engineering"
+    description: "Crafting effective prompts, system messages, and instructions for LLMs"
+
+  - id: "ai-agents"
+    name: "AI Agents"
+    description: "Building and orchestrating autonomous AI agents"
+
+  - id: "llm-integration"
+    name: "LLM Integration"
+    description: "Working with language models (OpenAI, Anthropic, Azure, AWS, GCP)"
+
+  - id: "langchain"
+    name: "LangChain"
+    description: "Using LangChain framework for agent development"
+
+  - id: "langgraph"
+    name: "LangGraph"
+    description: "Building stateful workflows and multi-agent systems with LangGraph"
+
+  - id: "rag"
+    name: "RAG (Retrieval-Augmented Generation)"
+    description: "Implementing RAG patterns with vector databases and embeddings"
+
+  - id: "vector-search"
+    name: "Vector Search"
+    description: "Embeddings, semantic search, and vector databases"
+
+  - id: "knowledge-base"
+    name: "Knowledge Base"
+    description: "Building and managing AI knowledge bases and context"
+
+  - id: "fine-tuning"
+    name: "Fine-tuning"
+    description: "Model fine-tuning and training techniques"
+
+  - id: "evaluation"
+    name: "Evaluation"
+    description: "Testing, evaluating, and monitoring AI agent performance"
+
+  - id: "multimodal"
+    name: "Multimodal AI"
+    description: "Working with images, audio, video, and text"
+
+  - id: "streaming"
+    name: "Streaming"
+    description: "Real-time streaming responses and server-sent events"
+
+  - id: "memory"
+    name: "Memory"
+    description: "Conversation memory, context management, and state persistence"
+
+  - id: "safety"
+    name: "Safety & Guardrails"
+    description: "Content filtering, safety guardrails, and responsible AI"
+
+  - id: "optimization"
+    name: "Optimization"
+    description: "Performance tuning, cost optimization, and latency reduction"
+
+  - id: "production"
+    name: "Production Agents"
+    description: "Deploying AI agents to production environments"
+
+  - id: "observability"
+    name: "Observability"
+    description: "Monitoring, logging, and debugging AI systems"
+
+  - id: "integration"
+    name: "Integration"
+    description: "Connecting with external services (Jira, Confluence, Slack, etc.)"
+
+  - id: "mcp"
+    name: "MCP (Model Context Protocol)"
+    description: "Building custom tools with Model Context Protocol"
+
+  - id: "api"
+    name: "API Development"
+    description: "Building and consuming REST APIs for AI agents"
+
+  - id: "automation"
+    name: "Automation"
+    description: "Automating workflows and business processes with AI"
+
+  - id: "codemie-datasources"
+    name: "CodeMie Datasources"
+    description: "How to work with CodeMie Datasources"
+
+  - id: "codemie-agents"
+    name: "CodeMie Agents"
+    description: "How to work with CodeMie Agents"
+
+  - id: "codemie-workflows"
+    name: "CodeMie Workflows"
+    description: "How to work with CodeMie Workflows"
+
+  - id: "conversational-ai"
+    name: "Conversational AI"
+    description: "Building chatbots and conversational interfaces"
+
+  - id: "code-generation"
+    name: "Code Generation"
+    description: "AI-assisted coding, code analysis, and generation"
+
+  - id: "coding-agents"
+    name: "Coding Agents"
+    description: "AI coding agents"
+
+  - id: "claude-code"
+    name: "Claude Code"
+    description: "Claude Code AI coding agent"
+
+  - id: "gemini-code"
+    name: "Gemini CLI"
+    description: "Gemini AI coding agent CLI"
+
+  - id: "codex-code"
+    name: "Codex CLI"
+    description: "Codex AI coding agent CLI"
+
+  - id: "codemie-code"
+    name: "CodeMie Code CLI"
+    description: "CodeMie Code CLI"
+
+  - id: "codemie"
+    name: "CodeMie"
+    description: "CodeMie Multiagents platform and marketplace"
+
+  - id: "codemie-sdk"
+    name: "CodeMie SDK"
+    description: "CodeMie SDK"

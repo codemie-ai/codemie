@@ -1,0 +1,222 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+---
+name: Python Unit Tests Generation
+description: |
+  Workflow for Python unit tests generation using local developer's environment.
+  The workflow consists of four specialized AI assistants, each with specific responsibilities:
+
+    1. Onboarder Assistant
+      - Analyzes the task requirements
+      - Prepares implementation plan
+      - Gathers all relevant dependencies and context
+    2. Tests Developer Assistant
+      - Implements unit tests based on the implementation plan
+      - Ensures tests follow coding standards and best practices
+      - Writes test files to the filesystem
+    3. Tests Runner Assistant
+      - Executes the generated tests
+      - Diagnoses and fixes failing tests
+      - Retries execution with a backoff strategy
+      - Prepares execution summary
+    4. Finalizer Assistant
+      - Reviews test execution results
+      - Removes any remaining failed tests
+      - Verifies final test execution
+      - Summarizes the outcome
+
+  Prerequisites:
+    1. Integrations for Jira and Plugin toolkits exists
+    2. Relevant datasource exists
+    3. Default datasource ID is replaced with one that is relevant for you
+    4. Development plugin (https://gitbud.epam.com/epm-cdme/codemie-plugins) is running on your local environment
+
+  Prompt Examples:
+    1. Using a Jira Task ID:
+       Initial Prompt: 'Implement the task: EPMCDME-4369'
+    2. Inline request for a whole file:
+       Initial Prompt: 'Please improve test coverage of a file src/codemie/rest_api/routers/user_settings.py'
+    3. Inline request for a specific part:
+       Initial Prompt: 'Please write a unit tests for a function get_image_object()' 
+mode: Sequential
+slug: template-python-unit-tests-generation-workflow
+icon_url: "https://epam-gen-ai-run.github.io/ai-run-install/docs/assets/ai/UnitTestsGenerationWorkflow.png"
+execution_config:
+  assistants:
+  - id: onboarder_assistant
+    model: gpt-4.1
+    datasource_ids:
+      - d15b8903-9559-4fb8-859e-636e1c573955
+    tools:
+      - name: generic_jira_tool
+    system_prompt: >
+      Assume the role of an expert on unit tests coverage analysis for Python software within the AI-empowered SDLC platform 'CodeMie'.
+
+      You MUST follow these steps:
+      1. Only if a Jira issue ID (for example EPMCDME-3333) is explicitly provided, retrieve the details from Jira. Otherwise, work directly with the task information provided by the user.
+      2. Gather all relevant details about the task and prepare a comprehensive implementation plan outlining what needs to be done.
+      3. Search for all required dependencies, models, classes and files to collect as much relevant information as possible for task implementation. Perform as many searches as necessary.
+      4. If the task requires writing tests for a file but the test file does not exist yet, provide instructions for creating it with the appropriate command line tool. Maintain the same relative path structure, but replace the 'src' folder with 'tests' folder.
+
+        For example: If there is no test file for "src/codemie/rest_api/routers/model.py", instruct to create it at "tests/codemie/rest_api/routers/test_model_routers.py" (incorporating one parent folder name in the test file name). Include instructions to create any missing folders as needed.
+
+      5. It's forbidden to modify anything except tests files.
+
+      Environment Configuration:
+      1. The PYTHONPATH is already set. Do not include "src" in "import" or "from" statements.
+
+      Constraints:
+      1. Do not write or include any example code.
+      2. Do not include examples or commands on test execution.
+      3. Do not search in Jira unless Jira issue or task ID (for example EPMCDME-3333) was provided to you.
+
+      Jira Context:
+      1. Project: EPMCDME (only relevant when working with Jira issues)
+  - id: tests_developer_assistant
+    model: claude-4-5-sonnet
+    datasource_ids:
+      - d15b8903-9559-4fb8-859e-636e1c573955
+    tools:
+      - name: _run_command_line_tool
+      - name: _read_file_from_file_system
+      - name: _write_file_to_file_system
+      - name: _list_directory_from_file_system
+    system_prompt: >
+      You are a software engineer with expertise in unit testing. You have access to tools for interacting with the filesystem, running tests, and modifying code.
+
+      Follow these steps:
+      1. Analyze the task implementation request.
+      2. Search for relevant context using repository tree and search tools. Plan your implementation approach, identifying all necessary dependencies, models, classes, and other files to gather relevant details.
+      3. Implement comprehensive unit tests without comments or TODOs.
+      4. Make changes to the filesystem using the provided tools (read the original file content before generating and writing new content).
+
+      Environment:
+      1. The PYTHONPATH is set, so do not include "src" in import or from statements.
+
+      Constraints:
+      1. Implement comprehensive unit tests that validate the expected behavior.
+      2. Only edit files within the tests folder.
+      3. Follow the implementation plan precisely.
+
+      Code guidelines:
+      1. Move repeating literals to constants.
+      2. Format code to keep lines under 120 characters.
+      3. Follow PEP coding standards and best practices.
+      4. Add an empty line at the end of each file.
+      5. Place all test files in the "tests" folder.
+  - id: tests_runner_assistant
+    model: claude-4-5-sonnet
+    datasource_ids:
+      - d15b8903-9559-4fb8-859e-636e1c573955
+    tools:
+      - name: _run_command_line_tool
+      - name: _read_file_from_file_system
+      - name: _write_file_to_file_system
+      - name: _list_directory_from_file_system
+    system_prompt: >
+      You are a software engineer with expertise in unit testing. You have access to tools for interacting with the filesystem, running tests, and modifying code.
+
+      Follow these steps:
+      1. Run the unit tests with "poetry run pytest --quiet --no-cov --no-header tests" command to verify successful compilation and execution.
+      2. If tests fail, analyze the root cause and update the tests. Use the file writing tool to make changes and run the tests again. Search for relevant context using repository tree and search tools if needed.
+      3. Run the tests again with: "poetry run pytest --quiet --no-cov --no-header tests".
+      4. Prepare a "tests_generation_summary" list with test names and their status, formatted as: '[{"test_update_chat_history": "pass"}, {"test_get_average_user_rating": "failed"}]'.
+
+      Environment:
+      1. The PYTHONPATH is set, so do not include "src" in import or from statements.
+
+      Constraints:
+      1. Only edit files within the tests folder.
+      2. You cannot remove tests to fix them.
+
+      Code guidelines:
+      1. Move repeating literals to constants.
+      2. Format code to keep lines under 120 characters.
+      3. Follow PEP coding standards and best practices.
+      4. Add an empty line at the end of each file.
+  - id: finalizer_assistant
+    model: gpt-4.1
+    datasource_ids:
+      - d15b8903-9559-4fb8-859e-636e1c573955
+    tools:
+      - name: _run_command_line_tool
+      - name: _read_file_from_file_system
+      - name: _write_file_to_file_system
+      - name: _diff_update_file_tool
+      - name: _list_directory_from_file_system
+    system_prompt: >
+      You are a smart software engineer with the ability to run shell commands and work with GitLab.
+
+      The previous assistant provided you with a list in 'tests_generation_summary' containing test names and their statuses.
+
+      Follow these steps:
+      1. Review the list in the 'tests_generation_summary' field.
+      2. If all tests have passed, skip step 3 and proceed to step 4.
+      3. If there are any failed tests, use the filesystem tool to locate these failed tests and remove them along with their related mocks (if any) from the filesystem.
+      4. Run the following command to verify that the code compiles and tests run successfully: "poetry run pytest --quiet --tb=no --no-cov --no-header tests"
+
+      Constraints:
+      1. Do not modify any code other than removing the failed tests and their related mocks.
+  states:
+    - assistant_id: onboarder_assistant
+      id: analyze_task_and_prepare_plan
+      next:
+        condition:
+          expression: success == True
+          otherwise: end
+          then: unit_tests_generation
+      output_schema: |
+        {
+          "success": "Boolean true | false. If you generated detailed plan successfully return true, otherwise false",
+          "task_plan": "Return generated detailed plan"
+        }
+      task: "Analyze and implement user request following the steps"
+    - assistant_id: tests_developer_assistant
+      id: unit_tests_generation
+      next:
+        condition:
+          expression: success == True
+          otherwise: end
+          then: run_and_fix_generated_tests
+      output_schema: |
+        {
+          "success": "Boolean true | false. If the list 'tests_generation_summary' contains sucessful test names even if some of them failed return true, otherwise (if all of them failed) - false",
+          "tests_generation_summary": "Return generated list",
+        }
+      task: "Your task is to implement unit tests based on the implementation plan provided in the 'task_plan' field."
+    - assistant_id: tests_runner_assistant
+      id: run_and_fix_generated_tests
+      next:
+        condition:
+          expression: success == True
+          otherwise: end
+          then: summarize_results
+      retry_policy:
+        initial_interval_seconds: 1.0
+        backoff_factor: 1.0
+        max_interval_seconds: 10.0
+        max_attempts: 5
+      output_schema: |
+        {
+          "success": "Boolean true | false. If the list 'tests_generation_summary' contains sucessful test names even if some of them failed return true, otherwise (if all of them failed) - false",
+          "tests_generation_summary": "Return generated list",
+        }
+      task: "Run and fix the generated tests until they pass or max attempts is reached"
+    - assistant_id: finalizer_assistant
+      id: summarize_results
+      next:
+        state_id: end
+      task: "Summarize results"
+

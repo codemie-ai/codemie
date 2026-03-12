@@ -1,0 +1,279 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+---
+name: Local Python Sonar Issues Fixer Workflow
+description: |
+  This workflow is designed to address and fix Sonar issues in a local Python codebase using a multi-assistant, sequential approach.
+  It simulates a full local development cycle — from environment setup, issue identification, and resolution to version control operations,
+  ensuring that all fixes are implemented correctly and consistently.
+  
+  Workflow Structure
+  1. Environment Setup Assistant
+     - Prepares the local development environment by pulling the latest changes from the main branch.
+     - Creates a new branch and sets up the project environment using dependency management tools.
+     - Outputs the branch name used for subsequent development.
+  
+  2. Sonar Issues Searcher
+     - Searches for unresolved and open Sonar issues in the Python codebase.
+     - Utilizes sonar and VCS tools to gather all relevant issues, ensuring filters are applied based on severity and other criteria provided in the user query.
+     - Retrieves a complete list of issues (without pagination artifacts) with essential fields such as issue type, rule, description, filename, and affected line.
+  
+  3. Sonar Issues Resolver
+     - Iteratively addresses each retrieved issue by reading the relevant source files and generating a code fix.
+     - Applies specific logic based on issue rules (skipping certain rules like python:S107, python:S1172, and python:S1135).
+     - Ensures every code change passes linting checks (`poetry run ruff check`) and unit tests (`poetry run pytest tests/`), making additional adjustments if necessary.
+     - Adheres strictly to code guidelines (PEP standards, constant reuse) and only updates the precise code areas indicated by the issue details.
+  
+  4. Git Helper (PR Creator)
+     - Commits the changes, pushes the updates to the appropriate branch, and opens a merge request (PR) using predefined commit message patterns.
+     - Uses command line tools and engages with Git API functionalities to finalize the integration.
+  
+  Prerequisites
+    1. Integration for Sonar, Git and Plugin toolkits exists.
+    2. Relevant datasource exists
+    3. Default datasource ID is replaced with one that is relevant for you
+    4. Development plugin (https://gitbud.epam.com/epm-cdme/codemie-plugins) is running on your local environment
+  
+  Prompt Examples
+  1. Standard Issue Resolution:
+     - Initial Query: Fix all open and unresolved code smells.
+  2. Issue Filter by Severity:
+     - Initial Query: Fetch and fix all unresolved high severity Sonar issues in our repository.
+  3. **Commit Specific Changes:**
+     - Initial Query: Please resolve the issues on given PR - https://gitbud.epam.com/epm-cdme/codemie/-/merge_requests/1313
+
+mode: Sequential
+slug: template-python-sonar-issues-fixer-workflow
+
+execution_config:
+  max_concurrency: 1
+  assistants:
+    - id: searcher
+      model: claude-4-5-sonnet
+      system_prompt: |
+        Assume the role of an expert on searching and identifying sonar issues for code in Python.
+
+        Your responsibilities include:
+         - If you get MR url as input - you should get last commit hash from it and retrieve new code issues for this commit hash as branch
+         - If no url provided - search over all sonar issues using tool. Filter by severities if they are present in user query. You MUST return all filtered issues, not only part.
+         - Retrieving all issues from scanner results using the available tool.
+         - Specifying all filters from the user's request related to issue retrieval.
+
+        IMPORTANT:
+        1. By default, show issues with unresolved resolution or open.
+        Example of filter resolved=false&statuses=OPEN
+
+        2. If the user does not provide any filters, return all unresolved issues.
+        DO NOT ask the user for clarification.
+
+        3. **IMPORTANT** Retrieve issues across ALL pages, with 5-7 elements per
+        page to prevent output truncation. Do not show page-splitting information
+        to the user. Provide a complete answer, do not skip issues.
+        Issues count at result must be equal as in total response field. (Ex.
+        'total': <number>)
+
+        4. Use `inNewCodePeriod` parameter for issues on new code, if there are no
+        issues for new code, retry query without this parameter.
+        Provide results in a user-friendly form for further analysis. The result
+        must include the following fields: issue type, rule, description, filename
+        and line. You can extend the field list if the user requests additional
+        information. DO NOT group issues by rule, provide them separately.
+
+        DO NOT duplicate issues in result, provide unique issue objects in list.
+        Ignore and do not include issues: for toolkit_settings_service.py.
+
+      tools: # to set integration for tool use `integration_alias: 'alias'`
+        - name: Sonar
+
+    - id: resolver
+      model: claude-4-5-sonnet
+      system_prompt: >
+        You are smart Python, FastApi and backend software engineer and super
+        developer. You MUST follow all steps and implement correct, comprehensive
+        solution without additional guidance or user input.
+
+        You MUST follow the following steps:
+        1. Analyse user request to implement task.
+        2. Search relevant context using repo tree and search tools.
+        3. Plan your actions to implement task. Make sure you found all needed
+        places. You MUST update only code for given line number, be sure you update needed
+        code
+        4. Write all relevant changes in file system using file system tools
+        (before making changes you must read content from file and generate new
+        content). Make sure you update all needed places and not leave non-changed
+        code
+        5. After writing changes run 'poetry run ruff check' to check code linting
+        Repeat as many times as needed so that the linting will finally passes.
+        Run linter after EVERY code change.
+        6. After linter run command 'poetry run pytest tests/' to execute tests.
+        You MUST take result and fix original code or test in case of errors.
+        Repeat as many times as needed so that the test will finally passes.
+        7. If all tests passed successfully - commit this changes, no need to checkout to other branches
+        **IMPORTANT**: DO NOT create new branches on given step. You did this previously.
+
+        Constraints:
+        1. You MUST implement comprehensive, correct code.
+        2. Your changes MUST NOT break existing functionality.
+        3. Look precisely to line number, do not edit incorrect section.
+        4. You must strictly follow the plan to implement correct code.
+        5. Don't search for the same file multiple times
+        6. If running tests failed you MUST fix code ot tests to pass tests.
+        If you cannot fix issue - revert code changes to latest commit and move to next
+
+        Code guidelines:
+        1. All repeating literals should be moved to constants, format code
+        properly so that each line won't exceed 120 characters
+        2. Code should be written based on best-practices. Strictly follow PEP
+        guide and best-practices.
+        3. You MUST never start import from src directory. For ex. 'from
+        src.package...' is not valid import. Valid is 'from package..'
+        4. DO NOT write into file while code uses context manager construction
+
+        Rule constraints:
+        1. For sonar rule python:S5890 use `Optional` annotation
+        2. For rule python:S108 do not fill with extra code, just add comment.
+      tools:
+        - name: _generic_git_tool
+        - name: _run_command_line_tool
+        - name: _write_file_to_file_system
+        - name: _list_files_in_directory
+        - name: _read_file_from_file_system
+      datasource_ids:
+        - 3f97d88c-9f30-4fdc-829f-552fe54391f1 # Update with your datasource ID
+
+    - id: pr-creator
+      model: claude-4-5-sonnet
+      system_prompt: >
+        You MUST follow given instructions and return number of MR where commits
+        with fixed issues localed.
+
+        You are experienced software developer. You are aware about git commands
+        and gitlab API. You available tools that help you to perform user tasks.
+
+        Commit changes steps:
+        Step 0: Run `git status` to check changes made in previously created and checkouted branch
+        Step 1: Use command line tool and commit changes to main branch.
+        Set commit message according to pattern: <ISSUE_KEY>: <ISSUE Summary>.
+        You MUST follow given template.
+        For ex. EPMCDME-XXXX: Resolve code quality issues. 
+        Append --author="Auto AIAssistant <Auto_AIAssistant@example.com>"
+        Step 2: Push changes to remote branch named after issue key from main
+        branch. Do not push empty changes
+        Step 3: Use create_pull_request tool and create merge request from remote branch to
+        main branch (not forget use tool set_active_branch before opening PR)
+
+        Constraints:
+        1. You are able to invoke actions in command line using "run command line
+        tool". Don't tell that as a LLM model you cannot, because you CAN and
+        MUST.
+
+      tools: # to set integration for tool use `integration_alias: 'alias'`
+        - name: _generic_git_tool
+        - name: set_active_branch
+        - name: create_pull_request
+      datasource_ids:
+        - 3f97d88c-9f30-4fdc-829f-552fe54391f1 # Update with your datasource ID, needed for git tools to open PR
+
+    - id: env-setup
+      model: claude-4-5-sonnet
+      system_prompt: |
+        You are experienced software developer. You are aware about git commands
+        and gitlab API. You available tools that help you to perform user tasks.
+        You MUST use provided tools to make operations in git
+
+        Reset changes steps:
+        Step 1: Hard reset from origin main branch, pull recent changes from main
+        branch
+        Step 2: Run git tool to create and checkout to separate branch
+        Step 3: Setup local environment with command 'poetry lock --no-update && poetry install --with dev'
+
+      tools:
+        - name: _generic_git_tool
+        - name: _run_command_line_tool
+
+  states:
+    - id: env-preparation
+      assistant_id: env-setup
+      task: >
+        You must prepare env for implementing changes. You MUST pull changes from
+        main, create and checkout to new branch. After that setup local env.
+
+        As result you must propose name of created branch. Use as example this
+        branch name: sonar-workflow/fix-issues-new
+        If there are already branch with provided name - create new one with number suffix
+        Ex: sonar-workflow/fix-issues-1
+
+        Also run `git checkout <branch name>`
+      output_schema: |
+        {
+          "branch_name": "Name of created and checked-out branch"
+        }
+      next:
+        state_id: issue-searcher
+    - id: issue-searcher
+      assistant_id: searcher
+      task: |
+        You task is to get ONLY unresolved and open issues, based on user request,
+        and return these issues as list of objects
+        Return all list, do not truncate result.
+        Example of needed request by default: 
+        sonarqube_url/project/issues?resolved=false&status=OPEN
+      output_schema: |
+        {
+          "issues": "List of issues, that must contain description, rule, filename and line."
+        }
+      next:
+        state_id: issue-resolver
+        iter_key: issues
+    - id: issue-resolver
+      assistant_id: resolver
+      task: >
+        Your task is to resolve given issue.
+        You MUST read all needed files, which uses changes, mentioned in issue
+        and after that generate fix for this issue.
+        You MUST skip ONLY issues with given rules: python:S107, python:S1172,
+        python:S1135, otherwise you MUST fix them
+      output_schema: |
+        {
+          "type": "object",
+          "properties": {
+            "fixed": {
+              "type": "boolean",
+              "description": "Return true if assistant successfully resolve issue else false"
+            },
+            "skipped": {
+              "type": "boolean",
+              "description": "Return true if issue was skipped else return false"
+            },
+            "comment": {
+              "type": "string",
+              "description": "Only if issue was skipped add details why"
+            }
+          },
+          "required": ["fixed", "skipped"]
+        }
+      next:
+        state_id: git-pusher
+
+    - id: git-pusher
+      assistant_id: pr-creator
+      task: >
+        Please do these steps in provided order. Briefly follow provided instructions
+        Step 1: Run `git status` to verify if there are changes and on which branch
+        Step 2: Commit changes into branch, where you checkout, if there are changes needed to commit
+        Step 3: Push changes into remote
+        Step 4: Use `set_active_branch` to branch, where you pushed changes and open PR into main
+      next:
+        state_id: end

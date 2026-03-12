@@ -1,0 +1,183 @@
+# Configuration file for managing multiple LLM and embedding models
+# Keep it up to date as some models can be deprecated
+# https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/model-retirements
+llm_models:
+  - base_name: "gpt-4.1"
+    deployment_name: "gpt-4.1-2025-04-14"
+    label: "GPT-4.1 2025-04-14"
+    multimodal: true
+    enabled: true
+    provider: "azure_openai"
+    max_output_tokens: 32768
+    features:
+      max_tokens: false
+    cost:
+      input: 0.000002
+      output: 0.000008
+      input_cost_per_token_batches: 0.000001
+      output_cost_per_token_batches: 0.000004
+      cache_read_input_token_cost: 0.0000005
+
+  - base_name: "gpt-4.1-mini"
+    deployment_name: "gpt-4.1-mini-2025-04-14"
+    label: "GPT-4.1 mini 2025-04-14"
+    multimodal: true
+    enabled: true
+    provider: "azure_openai"
+    max_output_tokens: 32768
+    features:
+      max_tokens: false
+    cost:
+      input: 0.0000004
+      output: 0.0000016
+      input_cost_per_token_batches: 0.0000002
+      output_cost_per_token_batches: 0.0000008
+      cache_read_input_token_cost: 0.0000001
+
+  - base_name: "gpt-5-2025-08-07"
+    deployment_name: "gpt-5-2025-08-07"
+    label: "GPT-5 2025-08-07"
+    default_for_categories: [global]
+    multimodal: true
+    enabled: true
+    provider: "azure_openai"
+    max_output_tokens: 128000
+    features:
+      max_tokens: false
+      temperature: false
+    cost:
+      input: 0.00000125
+      output: 0.000010
+      cache_read_input_token_cost: 0.000000125
+
+  - base_name: "gpt-5-mini-2025-08-07"
+    deployment_name: "gpt-5-mini-2025-08-07"
+    label: "GPT-5 Mini 2025-08-07"
+    multimodal: true
+    enabled: true
+    provider: "azure_openai"
+    max_output_tokens: 128000
+    features:
+      max_tokens: false
+      temperature: false
+    cost:
+      input: 0.00000025
+      output: 0.000002
+      cache_read_input_token_cost: 0.000000025
+
+  - base_name: "gpt-5-nano-2025-08-07"
+    deployment_name: "gpt-5-nano-2025-08-07"
+    label: "GPT-5 Nano 2025-08-07"
+    multimodal: true
+    enabled: true
+    provider: "azure_openai"
+    max_output_tokens: 128000
+    features:
+      max_tokens: false
+      temperature: false
+    cost:
+      input: 0.00000005
+      output: 0.0000004
+      cache_read_input_token_cost: 0.000000005
+
+  - base_name: "gpt-4-vision"
+    deployment_name: "gpt-4-vision-preview"
+    multimodal: false
+    enabled: false
+    provider: "azure_openai"
+    cost:
+      input: 0.00001
+      output: 0.00003
+
+  - base_name: "o3-mini"
+    deployment_name: "o3-mini-2025-01-31"
+    label: "o3 Mini 2025-01-31"
+    multimodal: false
+    react_agent: false
+    enabled: true
+    provider: "azure_openai"
+    max_output_tokens: 100000
+    features:
+      streaming: false
+      tools: true
+      temperature: false
+      parallel_tool_calls: false
+      system_prompt: false
+      max_tokens: false
+    cost:
+      input: 0.0000011
+      output: 0.0000044
+      cache_read_input_token_cost: 0.00000055
+
+  - base_name: "o1"
+    deployment_name: "o1-2024-12-17"
+    label: "o1 2024-12-17"
+    multimodal: false
+    react_agent: false
+    enabled: true
+    provider: "azure_openai"
+    max_output_tokens: 100000
+    features:
+      streaming: false
+      tools: true
+      temperature: false
+      parallel_tool_calls: false
+      system_prompt: false
+      max_tokens: false
+    cost:
+      input: 0.000015
+      output: 0.00006
+      cache_read_input_token_cost: 0.0000075
+
+  - base_name: "o3-2025-04-16"
+    deployment_name: "o3-2025-04-16"
+    label: "o3 2025-04-16"
+    multimodal: true
+    react_agent: false
+    enabled: true
+    provider: "azure_openai"
+    max_output_tokens: 100000
+    features:
+      streaming: true
+      tools: true
+      temperature: false
+      parallel_tool_calls: false
+      system_prompt: false
+      max_tokens: false
+      reasoning: true
+    cost:
+      input: 0.000002
+      output: 0.000008
+      cache_read_input_token_cost: 0.0000005
+
+  - base_name: "o4-mini-2025-04-16"
+    deployment_name: "o4-mini-2025-04-16"
+    label: "o4-mini 2025-04-16"
+    multimodal: true
+    react_agent: false
+    enabled: true
+    provider: "azure_openai"
+    max_output_tokens: 100000
+    features:
+      streaming: true
+      tools: true
+      temperature: false
+      parallel_tool_calls: false
+      system_prompt: false
+      max_tokens: false
+      reasoning: true
+    cost:
+      input: 0.0000011
+      output: 0.0000044
+      cache_read_input_token_cost: 0.000000275
+
+embeddings_models:
+  - base_name: "ada-002"
+    deployment_name: "text-embedding-ada-002"
+    label: "Text Embedding Ada"
+    enabled: true
+    default_for_categories: [global]
+    provider: "azure_openai"
+    cost:
+      input: 0.0000001
+      output: 0

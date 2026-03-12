@@ -1,0 +1,188 @@
+---
+components:
+  - id: "videoPortal"
+    settings:
+      name: "EPAM Video Portal"
+      enabled: false
+      url: "https://example-video-portal.com"
+      availableForExternal: false
+  - id: "youtubeChannel"
+    settings:
+      name: "YouTube Channel"
+      enabled: true
+      url: "https://www.youtube.com/@EPAMAIRunCodeMie"
+  - id: "learningCourses"
+    settings:
+      name: "CodeMie Learning Courses"
+      enabled: true
+      url: "https://learn.epam.com/catalog?filter=~(isUserContent~false)&search=EPAM%20AI%2FRun%20CodeMie%20in%20Action&sorting=~(~(field~%27RATING~direction~%27desc))&tab=catalog"
+      availableForExternal: false
+  - id: "userGuide"
+    settings:
+      name: "Documentation"
+      enabled: true
+      url: "https://codemie-ai.github.io/docs"
+  - id: "userGuideOld"
+    settings:
+      name: "Documentation"
+      enabled: true
+      url: "https://docs.google.com/document/d/1T8k-gud6DgpyC3xxtK860x42s9_0c6ED"
+  - id: "adminActions"
+    settings:
+      enabled: true
+  - id: "feedbackAssistant"
+    settings:
+      enabled: false
+  - id: "customerSupport"
+    settings:
+      enabled: true
+      availableForExternal: false
+      name: "Customer Support"
+      url: "https://epa.ms/codemie-support"
+  - id: "mcpConnect"
+    settings:
+      enabled: true
+  - id: "skills"
+    settings:
+      enabled: true
+      name: "Skills"
+      description: "Modular knowledge units that provide domain-specific instructions to assistants"
+  - id: "likeForm"
+    settings:
+      enabled: true
+  - id: "confluenceIntegrationMessage"
+    settings:
+      enabled: false
+  - id: "remoteAssistant"
+    settings:
+      enabled: false
+  - id: "defaultConversationAssistant"
+    settings:
+      enabled: true
+      slug: "ai-run-chatbot"
+  - id: "userSurvey"
+    settings:
+      name: "User Survey Form"
+      enabled: false
+      availableForExternal: false
+      url: "https://testsurvey.com/form"
+  - id: "workflowDocumentation"
+    settings:
+      name: "Documentation"
+      enabled: true
+      url: "https://docs.codemie.ai/user-guide/workflows/create-workflow"
+  - id: "workflowYamlDocumentation"
+    settings:
+      name: "Documentation"
+      enabled: true
+      url: "https://codemie-ai.github.io/docs/user-guide/workflows/configuration/"
+  - id: "applications:technology-copilot"
+    settings:
+      enabled: true
+      description: ""
+      name: "Technology Copilot"
+      url: "https://technology-qa.epmd-rdr.projects.epam.com/assets/copilot.js"
+      type: "module"
+      arguments:
+        apiUrl: "https://technology-qa.epmd-rdr.projects.epam.com/"
+        keycloakConfigPath: "https://technology-qa.epmd-rdr.projects.epam.com/keycloak.json"
+  - id: "applications:aice"
+    settings:
+      enabled: true
+      name: "AICE"
+      url: "http://localhost:5174"
+      type: "iframe"
+      description: "Advanced code analysis and exploration solution within the EPAM AI/Run platform"
+      icon_url: "https://raw.githubusercontent.com/alk-epam/test-repo/7f9196e4f37ff576f26cda782d785a3941bfce8c/aice.svg"
+      created_by: "AICE Team"
+  - id: "applications:angular-upgrade-app"
+    settings:
+      enabled: true
+      name: "Angular Upgrade App"
+      url: "http://localhost:4173/assets/AngularUpgradeAppRemote.js"
+      type: "module"
+      description: ""
+  - id: "applications:test-mate"
+    settings:
+      enabled: true
+      name: "AI TestMate"
+      url: "/aitestmate"
+      type: "link"
+      description: "Autonomous GenAI solution that automatically generates and commits unit tests, increasing coverage and reducing team effort in software development."
+      created_by: "DPEO"
+      icon_url: "https://github.com/alk-epam/test-repo/blob/0f6b0e1dde1df59f92aa95a5a40afbb78da87531/ai_testmate_small.png?raw=true"
+  - id: "aiAdoption"
+    settings:
+      enabled: true
+      name: "AI Adoption Analytics"
+      description: "AI Adoption Framework analytics for measuring and tracking AI maturity across dimensions"
+      availableForExternal: false
+  - id: "features:webSearch"
+    settings:
+      enabled: true
+      name: "Web Search"
+      description: "Enable web search capabilities including Google Search, Tavily Search, and Web Scraper"
+  - id: "features:dynamicCodeInterpreter"
+    settings:
+      enabled: true
+      name: "Code Interpreter"
+      description: "Enable Python code execution and data analysis capabilities"
+  - id: "features:generatedAssistantIcons"
+    settings:
+      enabled: true
+      name: "Generated Assistant Icons"
+      description: "Enable generated icons for assistants"
+
+preconfigured_assistants:
+  - id: "codemie-onboarding"
+    settings:
+      enabled: true
+      index_name: "codemie-onboarding"
+  - id: "ai-run-chatbot"
+    settings:
+      enabled: true
+  - id: "keycloak-manager"
+    settings:
+      enabled: false  # Disabled by default
+  - id: "prompt-engineer"
+    settings:
+      enabled: true
+  - id: "amna-junit-project-fixer"
+    settings:
+      enabled: false
+  - id: "amna-dotnet-project-fixer"
+    settings:
+      enabled: false
+  - id: "amna-aws-eb-bean"
+    settings:
+      enabled: false
+  - id: "amna-template-ba-assistant"
+    settings:
+      enabled: false
+  - id: "amna-template-code-reviewer-assistant"
+    settings:
+      enabled: false
+  - id: "amna-template-epic-user-story-composer-assistant"
+    settings:
+      enabled: false
+  - id: "amna-template-gitlab-cicd-assistant"
+    settings:
+      enabled: false
+  - id: "amna-js-project-fixer"
+    settings:
+      enabled: false
+  - id: "amna-template-developer-via-plugin-engine-assistant"
+    settings:
+      enabled: false
+  - id: "amna-template-qa-checklist-assistant"
+    settings:
+      enabled: false
+  - id: "amna-template-qa-test-case-assistant"
+    settings:
+      enabled: false
+  - id: "amna-template-release-manager-assistant"
+    settings:
+      enabled: false
+  - id: "amna-sct-tsql-to-pgsql-converter"
+    settings:
+      enabled: false

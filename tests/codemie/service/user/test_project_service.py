@@ -1,0 +1,389 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Unit tests for ProjectService shared project creation."""
+
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+from sqlalchemy.exc import IntegrityError
+
+from codemie.core.exceptions import ExtendedHTTPException
+from codemie.rest_api.security.user import User
+from codemie.service.user.project_service import ProjectService
+
+
+@pytest.fixture
+def regular_user() -> User:
+    return User(id="user-1", username="user1", email="user1@example.com", is_super_admin=False)
+
+
+@pytest.fixture
+def super_admin_user() -> User:
+    return User(id="admin-1", username="admin", email="admin@example.com", is_super_admin=True)
+
+
+class TestProjectServiceCreateSharedProject:
+    @patch("codemie.service.user.project_service.user_project_repository")
+    @patch("codemie.service.user.project_service.application_repository")
+    @patch("codemie.service.user.project_service.user_repository")
+    @patch("codemie.service.user.project_service.get_session")
+    def test_create_shared_project_success(
+        self,
+        mock_get_session,
+        mock_user_repository,
+        mock_application_repository,
+        mock_user_project_repository,
+        regular_user,
+    ):
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repository.get_active_by_id.return_value = MagicMock(project_limit=3)
+        mock_application_repository.count_shared_projects_created_by_user.return_value = 1
+        mock_application_repository.get_by_name_case_insensitive.return_value = None
+        project = SimpleNamespace(
+            name="DataPipeline",
+            description="Analytics pipeline",
+            project_type="shared",
+            created_by="user-1",
+            date=datetime(2026, 2, 10, tzinfo=UTC),
+        )
+        mock_application_repository.create.return_value = project
+
+        result = ProjectService.create_shared_project(
+            user=regular_user,
+            project_name="DataPipeline",
+            description="Analytics pipeline",
+        )
+
+        assert result is project
+        mock_application_repository.create.assert_called_once_with(
+            session=mock_session,
+            name="DataPipeline",
+            description="Analytics pipeline",
+            project_type="shared",
+            created_by="user-1",
+        )
+        mock_user_project_repository.add_project.assert_called_once_with(
+            session=mock_session,
+            user_id="user-1",
+            project_name="DataPipeline",
+            is_project_admin=True,
+        )
+        mock_session.commit.assert_called_once()
+
+    @patch("codemie.service.user.project_service.application_repository")
+    @patch("codemie.service.user.project_service.user_repository")
+    @patch("codemie.service.user.project_service.get_session")
+    def test_duplicate_error_uses_existing_project_casing(
+        self,
+        mock_get_session,
+        mock_user_repository,
+        mock_application_repository,
+        regular_user,
+    ):
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repository.get_active_by_id.return_value = MagicMock(project_limit=3)
+        mock_application_repository.count_shared_projects_created_by_user.return_value = 0
+        mock_application_repository.get_by_name_case_insensitive.return_value = SimpleNamespace(name="MyProject")
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project(
+                user=regular_user,
+                project_name="myproject",
+                description="desc",
+            )
+
+        assert exc_info.value.code == 409
+        assert exc_info.value.message == "Project 'MyProject' already exists. Please choose a different name."
+
+    @patch("codemie.service.user.project_service.application_repository")
+    @patch("codemie.service.user.project_service.user_repository")
+    @patch("codemie.service.user.project_service.get_session")
+    def test_integrity_error_conflict_is_chained_and_uses_existing_casing(
+        self,
+        mock_get_session,
+        mock_user_repository,
+        mock_application_repository,
+        regular_user,
+    ):
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repository.get_active_by_id.return_value = MagicMock(project_limit=3)
+        mock_application_repository.count_shared_projects_created_by_user.return_value = 0
+        mock_application_repository.get_by_name_case_insensitive.side_effect = [
+            None,
+            SimpleNamespace(name="MyProject"),
+        ]
+        integrity_error = IntegrityError("stmt", "params", Exception("duplicate"))
+        mock_application_repository.create.side_effect = integrity_error
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project(
+                user=regular_user,
+                project_name="myproject",
+                description="desc",
+            )
+
+        assert exc_info.value.code == 409
+        assert exc_info.value.message == "Project 'MyProject' already exists. Please choose a different name."
+        assert exc_info.value.__cause__ is integrity_error
+        mock_session.rollback.assert_called_once()
+
+    @patch("codemie.service.user.project_service.application_repository")
+    @patch("codemie.service.user.project_service.user_repository")
+    @patch("codemie.service.user.project_service.get_session")
+    def test_project_limit_reached_returns_403(
+        self,
+        mock_get_session,
+        mock_user_repository,
+        mock_application_repository,
+        regular_user,
+    ):
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repository.get_active_by_id.return_value = MagicMock(project_limit=1)
+        mock_application_repository.count_shared_projects_created_by_user.return_value = 1
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project(
+                user=regular_user,
+                project_name="NewProject",
+                description="desc",
+            )
+
+        assert exc_info.value.code == 403
+        assert (
+            exc_info.value.message
+            == "Project creation limit reached (1/1). Contact administrator to increase your limit."
+        )
+        mock_application_repository.create.assert_not_called()
+
+    @patch("codemie.service.user.project_service.application_repository")
+    @patch("codemie.service.user.project_service.user_repository")
+    @patch("codemie.service.user.project_service.get_session")
+    def test_grandfathered_limit_reached_returns_403_with_delete_guidance(
+        self,
+        mock_get_session,
+        mock_user_repository,
+        mock_application_repository,
+        regular_user,
+    ):
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repository.get_active_by_id.return_value = MagicMock(project_limit=3)
+        mock_application_repository.count_shared_projects_created_by_user.return_value = 5
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project(
+                user=regular_user,
+                project_name="LegacyHeavyUserProject",
+                description="desc",
+            )
+
+        assert exc_info.value.code == 403
+        assert (
+            exc_info.value.message
+            == "Project creation limit reached (5/3). Delete 2 or more projects to create new ones."
+        )
+        mock_application_repository.create.assert_not_called()
+
+    @patch("codemie.service.user.project_service.application_repository")
+    @patch("codemie.service.user.project_service.user_repository")
+    @patch("codemie.service.user.project_service.get_session")
+    def test_zero_limit_returns_403_with_zero_ratio_message(
+        self,
+        mock_get_session,
+        mock_user_repository,
+        mock_application_repository,
+        regular_user,
+    ):
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repository.get_active_by_id.return_value = MagicMock(project_limit=0)
+        mock_application_repository.count_shared_projects_created_by_user.return_value = 0
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project(
+                user=regular_user,
+                project_name="BlockedProject",
+                description="desc",
+            )
+
+        assert exc_info.value.code == 403
+        assert (
+            exc_info.value.message
+            == "Project creation limit reached (0/0). Contact administrator to increase your limit."
+        )
+        mock_application_repository.create.assert_not_called()
+
+    @patch("codemie.service.user.project_service.application_repository")
+    @patch("codemie.service.user.project_service.user_repository")
+    @patch("codemie.service.user.project_service.get_session")
+    def test_non_super_admin_with_null_limit_is_rejected(
+        self,
+        mock_get_session,
+        mock_user_repository,
+        mock_application_repository,
+        regular_user,
+    ):
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repository.get_active_by_id.return_value = MagicMock(project_limit=None)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project(
+                user=regular_user,
+                project_name="CorruptedLimitProject",
+                description="desc",
+            )
+
+        assert exc_info.value.code == 403
+        assert exc_info.value.message == "Invalid project limit configuration. Contact administrator."
+        mock_application_repository.count_shared_projects_created_by_user.assert_not_called()
+        mock_application_repository.create.assert_not_called()
+
+    @patch("codemie.service.user.project_service.user_repository")
+    @patch("codemie.service.user.project_service.get_session")
+    def test_missing_active_user_returns_401_account_is_deactivated(
+        self,
+        mock_get_session,
+        mock_user_repository,
+        regular_user,
+    ):
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repository.get_active_by_id.return_value = None
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project(
+                user=regular_user,
+                project_name="MyProject",
+                description="desc",
+            )
+
+        assert exc_info.value.code == 401
+        assert exc_info.value.message == "Account is deactivated"
+
+    @patch("codemie.service.user.project_service.user_project_repository")
+    @patch("codemie.service.user.project_service.application_repository")
+    @patch("codemie.service.user.project_service.user_repository")
+    @patch("codemie.service.user.project_service.get_session")
+    def test_super_admin_bypasses_project_limit(
+        self,
+        mock_get_session,
+        mock_user_repository,
+        mock_application_repository,
+        mock_user_project_repository,
+        super_admin_user,
+    ):
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_application_repository.get_by_name_case_insensitive.return_value = None
+        project = SimpleNamespace(
+            name="AdminProject",
+            description="desc",
+            project_type="shared",
+            created_by="admin-1",
+            date=datetime(2026, 2, 10, tzinfo=UTC),
+        )
+        mock_application_repository.create.return_value = project
+
+        result = ProjectService.create_shared_project(
+            user=super_admin_user,
+            project_name="AdminProject",
+            description="desc",
+        )
+
+        assert result is project
+        mock_user_repository.get_active_by_id.assert_not_called()
+        mock_application_repository.count_shared_projects_created_by_user.assert_not_called()
+        mock_user_project_repository.add_project.assert_called_once()
+
+
+class TestProjectServiceValidation:
+    @pytest.mark.parametrize("name", ["my project", "test.env", "project@work", "hello/world", "_private", "-draft"])
+    def test_invalid_name_pattern_returns_400(self, name):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project(
+                user=User(id="u1", username="u1", email="u1@example.com"),
+                project_name=name,
+                description="desc",
+            )
+
+        assert exc_info.value.code == 400
+        assert "Invalid project name" in exc_info.value.message
+
+    def test_name_too_short_returns_400(self):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project(
+                user=User(id="u1", username="u1", email="u1@example.com"),
+                project_name="ab",
+                description="desc",
+            )
+
+        assert exc_info.value.code == 400
+        assert exc_info.value.message == "Project name must be at least 3 characters"
+
+    def test_name_too_long_returns_400(self):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project(
+                user=User(id="u1", username="u1", email="u1@example.com"),
+                project_name="p" * 101,
+                description="desc",
+            )
+
+        assert exc_info.value.code == 400
+        assert exc_info.value.message == "Project name cannot exceed 100 characters"
+
+    @pytest.mark.parametrize(
+        "reserved_name",
+        ["Admin", "system", "Root", "API", "null", "Undefined", "DEFAULT", "test", "Demo"],
+    )
+    def test_reserved_name_returns_400(self, reserved_name):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project(
+                user=User(id="u1", username="u1", email="u1@example.com"),
+                project_name=reserved_name,
+                description="desc",
+            )
+
+        assert exc_info.value.code == 400
+        assert exc_info.value.message == f"Project name '{reserved_name}' is reserved and cannot be used"
+
+    @pytest.mark.parametrize("description", ["", "   "])
+    def test_empty_description_returns_400(self, description):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project(
+                user=User(id="u1", username="u1", email="u1@example.com"),
+                project_name="ValidName",
+                description=description,
+            )
+
+        assert exc_info.value.code == 400
+        assert exc_info.value.message == "Project description is required"
+
+    def test_description_too_long_returns_400(self):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.create_shared_project(
+                user=User(id="u1", username="u1", email="u1@example.com"),
+                project_name="ValidName",
+                description="a" * 501,
+            )
+
+        assert exc_info.value.code == 400
+        assert exc_info.value.message == "Project description cannot exceed 500 characters"

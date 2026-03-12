@@ -1,0 +1,74 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-serverless-03-lambda-builder
+name: "[SERVERLESS][3] Lambda Builder"
+description: |
+  Automatically builds generated Lambdas.
+  Requires data from "[SERVERLESS][1] Lambda Writer" workflow execution.
+
+  This workflow is a part of the split "[SERVERLESS] Automated Monolith to Serverless Migration" workflow.
+mode: Sequential
+execution_config:
+  enable_summarization_node: false
+  max_concurrency: 1
+
+  assistants:
+    - id: command_runner
+      exclude_extra_context_tools: true
+      system_prompt: |
+        You are an assistant designed to execute command line tools.
+      tools:
+        - name: _append_structured_file
+        - name: _move_file
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _list_allowed_directories
+        - name: _run_command
+        - name: _show_security_rules
+
+  tools:
+    - id: read_bootstrap_tool
+      tool: _read_bootstrap_file
+      toolset: Plugin
+      trace: true
+
+  states:
+    - id: read_lambdas_enriched_info
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: lambdas/lambda_info.json
+      next:
+        state_id: lambda_builder
+        iter_key: _
+
+    - id: lambda_builder
+      assistant_id: command_runner
+      task: |
+        1. Build lambda using {{build_sequence}}, from {{component_root_dir}}. Use _run_command tool to accomplish this task.
+        2. Create <project_base>/airun/lambdas/archives directory.
+        3. Move lambda archive to the airun/lambdas/archives directory.
+        4. Clean up.
+
+        Use _append_structured_file tool and write information about the lambda to airun/lambdas/build_info.json
+        Using the following output format:
+        {
+          "lambda_name": "{{component_name}}",
+          "lambda_archive_path": "Path to the archive, containing built lambda.",
+          "description": "Short description of it's functionality",
+          "endpoint_uri": "{{endpoint_uri}}",
+          "success": "Displays if archive with lambda was created successfully, true | false."
+        }
+      next:
+        state_id: end

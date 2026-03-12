@@ -1,0 +1,402 @@
+model_list:
+  # IMPORTANT
+  # To use LoadBalancing in Litellm, make sure the model_info.id is unique across all models
+  # IMPORTANT
+  #
+  # Azure OpenAI Models
+  - model_name: gpt-4.1
+    litellm_params:
+      model: azure/codemie-gpt-4.1-2025-04-14
+      litellm_credential_name: default_dial_credential
+    model_info:
+      id: gpt-4.1
+      base_model: azure/gpt-4.1-2025-04-14
+      label: "GPT-4.1 2025-04-14"
+      default_for_categories: [global]
+
+  - model_name: gpt-4.1-mini
+    litellm_params:
+      model: azure/codemie-gpt-4.1-mini-2025-04-14
+      litellm_credential_name: default_dial_credential
+    model_info:
+      id: gpt-4.1-mini
+      base_model: azure/gpt-4.1-mini-2025-04-14
+      label: "GPT-4.1 mini 2025-04-14"
+
+  - model_name: gpt-5-2025-08-07
+    litellm_params:
+      model: azure/codemie-gpt-5-2025-08-07
+      litellm_credential_name: default_dial_credential
+    model_info:
+      id: gpt-5-2025-08-07
+      base_model: azure/gpt-5-2025-08-07
+      label: "GPT-5 2025-08-07"
+      top_p: false
+
+  - model_name: gpt-5-mini-2025-08-07
+    litellm_params:
+      model: azure/codemie-gpt-5-mini-2025-08-07
+      litellm_credential_name: default_dial_credential
+    model_info:
+      id: gpt-5-mini-2025-08-07
+      base_model: azure/gpt-5-mini-2025-08-07
+      label: "GPT-5 Mini 2025-08-07"
+      top_p: false
+
+  - model_name: gpt-5-nano-2025-08-07
+    litellm_params:
+      model: azure/codemie-gpt-5-nano-2025-08-07
+      litellm_credential_name: default_dial_credential
+    model_info:
+      id: gpt-5-nano-2025-08-07
+      base_model: azure/gpt-5-nano-2025-08-07
+      label: "GPT-5 Nano 2025-08-07"
+      top_p: false
+
+  - model_name: gpt-5.4-2026-03-05
+    litellm_params:
+      model: azure/codemie-gpt-5.4-2026-03-05
+      api_base: https://codemie-eastus2-0.openai.azure.com/
+      litellm_credential_name: default_azure_openai_credential
+    model_info:
+      id: gpt-5-4-2026-03-05-eastus2-0
+      base_model: azure/gpt-5.4-2026-03-05
+      label: "GPT-5.4"
+
+  - model_name: o3-mini
+    litellm_params:
+      model: azure/codemie-o3-mini-2025-01-31
+      litellm_credential_name: default_dial_credential
+      api_version: 2024-12-01-preview
+    model_info:
+      id: o3-mini
+      base_model: azure/o3-mini-2025-01-31
+      label: "o3 Mini 2025-01-31"
+      supports_native_streaming: false
+
+  - model_name: o1
+    litellm_params:
+      model: azure/codemie-o1-2024-12-17
+      litellm_credential_name: default_dial_credential
+      api_version: 2024-12-01-preview
+    model_info:
+      id: o1
+      base_model: azure/o1-2024-12-17
+      label: "o1 2024-12-17"
+      supports_native_streaming: false
+
+  - model_name: o3-2025-04-16
+    litellm_params:
+      model: azure/codemie-o3-2025-04-16
+      litellm_credential_name: default_dial_credential
+      api_version: 2024-12-01-preview
+    model_info:
+      id: o3-2025-04-16
+      base_model: azure/o3-2025-04-16
+      label: "o3 2025-04-16"
+      supports_native_streaming: false
+
+  - model_name: o4-mini-2025-04-16
+    litellm_params:
+      model: azure/codemie-o4-mini-2025-04-16
+      litellm_credential_name: default_dial_credential
+      api_version: 2024-12-01-preview
+    model_info:
+      id: o4-mini-2025-04-16
+      base_model: azure/o4-mini-2025-04-16
+      label: "o4-mini 2025-04-16"
+      supports_native_streaming: false
+
+  - model_name: gpt-5.1-codex-2025-11-13
+    litellm_params:
+      model: azure/gpt-5.1-codex-2025-11-13
+      litellm_credential_name: default_dial_credential
+    model_info:
+      id: gpt-5-1-codex-2025-11-13
+      base_model: gpt-5-1-codex-2025-11-13
+      label: "Codex 5.1"
+      forbidden_for_web: true
+
+  - model_name: gpt-5.3-codex-2026-02-24
+    litellm_params:
+      model: azure/codemie-gpt-5.3-codex-2026-02-24
+      api_base: https://codemie-eastus2-0.openai.azure.com/
+      litellm_credential_name: default_azure_openai_credential
+    model_info:
+      id: gpt-5-3-codex-2026-02-24-eastus2-0
+      base_model: azure/gpt-5.3-codex
+      label: "GPT-5.3 Codex 2026-02-24"
+      forbidden_for_web: true
+
+  # Google Vertex AI Models
+  - model_name: gemini-3.1-pro
+    litellm_params:
+      model: vertex_ai/gemini-3.1-pro-preview
+      vertex_location: "global"
+    model_info:
+      id: gemini-3.1-pro-preview-global
+      base_model: gemini-3.1-pro-preview
+      label: "Gemini 3.1 Pro"
+
+  - model_name: claude-4-5-sonnet
+    litellm_params:
+      model: vertex_ai/claude-sonnet-4-5
+      vertex_ai_project: os.environ/VERTEX_PROJECT
+      vertex_ai_location: "europe-west1"
+    model_info:
+      id: claude-4-5-sonnet-europe-west1-vertex-ai
+      base_model: vertex_ai/claude-sonnet-4-5@20250929
+      label: "VertexAI Claude Sonnet 4.5"
+
+  # AWS Bedrock Models
+  - model_name: claude-4-5-haiku
+    litellm_params:
+      model: bedrock/converse/us.anthropic.claude-haiku-4-5-20251001-v1:0
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: us-west-2
+    model_info:
+      id: claude-4-5-haiku-us-west-2
+      base_model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+      label: "Bedrock Claude Haiku 4.5"
+
+  - model_name: claude-4-5-sonnet
+    litellm_params:
+      model: bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: us-west-2
+    model_info:
+      id: claude-4-5-sonnet-us-west-2
+      base_model: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+      label: "Bedrock Claude Sonnet 4.5"
+
+  - model_name: claude-4-5-sonnet
+    litellm_params:
+      model: bedrock/eu.anthropic.claude-sonnet-4-5-20250929-v1:0
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: eu-central-1
+    model_info:
+      id: claude-4-5-sonnet-eu-central-1
+      base_model: eu.anthropic.claude-sonnet-4-5-20250929-v1:0
+      label: "Bedrock Claude Sonnet 4.5"
+
+  - model_name: claude-4-5-sonnet
+    litellm_params:
+      model: bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: us-west-2
+    model_info:
+      id: claude-4-5-sonnet-global-us-west-2
+      base_model: global.anthropic.claude-sonnet-4-5-20250929-v1:0
+      label: "Bedrock Claude Sonnet 4.5"
+
+  - model_name: claude-4-5-sonnet
+    litellm_params:
+      model: bedrock/jp.anthropic.claude-sonnet-4-5-20250929-v1:0
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: ap-northeast-1
+    model_info:
+      id: claude-4-5-sonnet-ap-northeast-1
+      base_model: jp.anthropic.claude-sonnet-4-5-20250929-v1:0
+      label: "Bedrock Claude Sonnet 4.5"
+
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: bedrock/us.anthropic.claude-sonnet-4-6
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: us-east-1
+    model_info:
+      id: claude-sonnet-4-6-us-east-1
+      base_model: us.anthropic.claude-sonnet-4-6
+      label: "Bedrock Claude Sonnet 4.6"
+
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: bedrock/us.anthropic.claude-sonnet-4-6
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: us-east-2
+    model_info:
+      id: claude-sonnet-4-6-us-east-2
+      base_model: us.anthropic.claude-sonnet-4-6
+      label: "Bedrock Claude Sonnet 4.6"
+
+  - model_name: claude-opus-4-5-20251101
+    litellm_params:
+      model: bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: us-west-2
+    model_info:
+      id: claude-opus-4-5-20251101-us-west-2
+      base_model: us.anthropic.claude-opus-4-5-20251101-v1:0
+      label: "Bedrock Claude Opus 4.5"
+
+  - model_name: claude-opus-4-5-20251101
+    litellm_params:
+      model: bedrock/eu.anthropic.claude-opus-4-5-20251101-v1:0
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: eu-central-1
+    model_info:
+      id: claude-opus-4-5-20251101-eu-central-1
+      base_model: anthropic.claude-opus-4-5-20251101-v1:0
+      label: "Bedrock Claude Opus 4.5"
+
+  - model_name: claude-opus-4-6-20260205
+    litellm_params:
+      model: bedrock/us.anthropic.claude-opus-4-6-v1
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: us-west-2
+    model_info:
+      id: claude-opus-4-6-20260205-us-west-2
+      base_model: us.anthropic.claude-opus-4-6-v1
+      label: "Bedrock Claude Opus 4.6"
+
+  # Bedrock Qwen3 Coder 30B A3B
+  - model_name: qwen.qwen3-coder-30b-a3b-v1
+    litellm_params:
+      model: bedrock/qwen.qwen3-coder-30b-a3b-v1:0
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: us-west-2
+    model_info:
+      id: qwen-qwen3-coder-30b-a3b-v1-us-west-2
+      base_model: qwen.qwen3-coder-30b-a3b-v1:0
+      label: "Bedrock Qwen3 Coder 30B A3B"
+      forbidden_for_web: true
+
+  - model_name: qwen.qwen3-coder-30b-a3b-v1
+    litellm_params:
+      model: bedrock/qwen.qwen3-coder-30b-a3b-v1:0
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: eu-central-1
+    model_info:
+      id: qwen-qwen3-coder-30b-a3b-v1-eu-central-1
+      base_model: qwen.qwen3-coder-30b-a3b-v1:0
+      label: "Bedrock Qwen3 Coder 30B A3B"
+      forbidden_for_web: true
+
+  # Bedrock Qwen3 Coder 480B A35B
+  - model_name: qwen.qwen3-coder-480b-a35b-v1
+    litellm_params:
+      model: bedrock/qwen.qwen3-coder-480b-a35b-v1:0
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: us-west-2
+    model_info:
+      id: qwen-qwen3-coder-480b-a35b-v1-us-west-2
+      base_model: qwen.qwen3-coder-480b-a35b-v1:0
+      label: "Bedrock Qwen3 Coder 480B A35B"
+      forbidden_for_web: true
+
+  - model_name: qwen.qwen3-coder-480b-a35b-v1
+    litellm_params:
+      model: bedrock/qwen.qwen3-coder-480b-a35b-v1:0
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: eu-west-2
+    model_info:
+      id: qwen-qwen3-coder-480b-a35b-v1-eu-west-2
+      base_model: qwen.qwen3-coder-480b-a35b-v1:0
+      label: "Bedrock Qwen3 Coder 480B A35B"
+      forbidden_for_web: true
+
+  # Bedrock MoonshotAI Kimi K2.5
+  - model_name: moonshotai.kimi-k2.5
+    litellm_params:
+      model: bedrock/converse/moonshotai.kimi-k2.5
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: us-east-2
+    model_info:
+      id: moonshotai-kimi-k2.5-us-east-2
+      base_model: bedrock/moonshotai.kimi-k2.5
+      label: "Bedrock MoonshotAI Kimi K2.5"
+
+  - model_name: moonshotai.kimi-k2.5
+    litellm_params:
+      model: bedrock/converse/moonshotai.kimi-k2.5
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: us-west-2
+    model_info:
+      id: moonshotai-kimi-k2.5-us-west-2
+      base_model: bedrock/moonshotai.kimi-k2.5
+      label: "Bedrock MoonshotAI Kimi K2.5"
+
+  - model_name: deepseek-r1
+    litellm_params:
+      model: azure/deepseek-r1
+      litellm_credential_name: default_dial_credential
+    model_info:
+      id: deepseek-r1
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000003
+      label: "DeepSeek R1"
+      multimodal: true
+      react_agent: true
+      enabled: true
+      provider: "azure_openai"
+      mode: chat
+
+  # Embedding Models
+  - model_name: codemie-text-embedding-ada-002
+    litellm_params:
+      model: azure/codemie-text-embedding-ada-002
+      litellm_credential_name: default_dial_credential
+    model_info:
+      id: ada-002
+      base_model: azure/text-embedding-ada-002
+      label: "Text Embedding Ada"
+      default_for_categories: [global]
+      mode: embedding
+
+  - model_name: text-embedding-005
+    litellm_params:
+      model: vertex_ai/text-embedding-005
+      project: os.environ/VERTEX_PROJECT
+      location: us-central1
+    model_info:
+      id: gecko
+      base_model: text-embedding-005
+      label: "Text Embedding Gecko"
+
+  - model_name: amazon.titan-embed-text-v2:0
+    litellm_params:
+      model: bedrock/amazon.titan-embed-text-v2:0
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: us-west-2
+    model_info:
+      id: titan
+      base_model: amazon.titan-embed-text-v2:0
+      label: "Titan Embed Text v2.0"
+
+litellm_settings:
+  request_timeout: 600
+  set_verbose: False
+  json_logs: true
+  drop_params: true
+  vertex_project: os.environ/VERTEX_PROJECT
+  vertex_location: "us-central1"
+
+general_settings:
+  proxy_batch_write_at: 60
+  master_key: sk-1234
+  database_connection_pool_limit: 10
+  allow_requests_on_db_unavailable: True
+
+router_settings:
+  fallbacks: []
+
+credential_list:
+  - credential_name: default_aws_bedrock_credential
+    credential_info:
+      description: "Production credentials for AWS Bedrock models"
+    credential_values:
+      aws_access_key_id: os.environ/AWS_ACCESS_KEY_ID
+      aws_secret_access_key: os.environ/AWS_SECRET_ACCESS_KEY
+  - credential_name: default_dial_credential
+    credential_info:
+      description: "Production credentials for DIAL models"
+    credential_values:
+      api_base: https://ai-proxy.lab.epam.com
+      api_key: os.environ/DIAL_API_KEY
+  - credential_name: default_azure_openai_credential
+    credential_info:
+      description: "Production credentials for Azure OpenAI models from Azure account of Codemie"
+    credential_values:
+      tenant_id: os.environ/AZURE_TENANT_ID
+      client_id: os.environ/AZURE_CLIENT_ID
+      client_secret: os.environ/AZURE_CLIENT_SECRET

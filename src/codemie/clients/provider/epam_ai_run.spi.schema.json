@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "HealthResponse": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "providerVersion": {
+          "type": "string"
+        },
+        "uptime": {
+          "type": "integer",
+          "description": "Service uptime in seconds."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the health check."
+        },
+        "extra_info": {
+          "type": "object",
+          "description": "Additional information about a provider state.",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      }
+    },
+    "ToolkitConfiguration": {
+      "type": "object",
+      "properties": {
+        "configuration_type": {
+          "type": "string",
+          "description": "Type of the configuration. The configuration type is defined in the Service Provider Descriptor."
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Toolkit configuration parameters.",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      }
+    },
+    "ToolInvocationRequest": {
+      "type": "object",
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "description": "User ID of the data source owner."
+        },
+        "project_id": {
+          "type": "string",
+          "description": "Project ID of the data source."
+        },
+        "configuration": {
+          "$ref": "#/$defs/ToolkitConfiguration"
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Tool-specific configuration or input",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        },
+        "async": {
+          "type": "boolean",
+          "description": "If true, the tool invocation is asynchronous. The response will contain the invocation_id.",
+          "default": false
+        },
+        "callback_url": {
+          "type": "string",
+          "description": "URL to which the tool invocation response will be sent. Required if async is true."
+        }
+      },
+      "required": [
+        "parameters"
+      ]
+    },
+    "ToolInvocationResponse": {
+      "type": "object",
+      "properties": {
+        "invocation_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "Started",
+            "InProgress",
+            "Completed",
+            "Error"
+          ]
+        },
+        "result": {
+          "description": "Immediate result if the operation is synchronous"
+        },
+        "result_type": {
+          "type": "string",
+          "description": "Type of the result returned by the tool.",
+          "enum": [
+            "Integer",
+            "Float",
+            "String",
+            "Bytes",
+            "Bool",
+            "Json",
+            "Yaml"
+          ]
+        },
+        "warnings": {
+          "type": "string",
+          "description": "Warnings if any"
+        },
+        "errors": {
+          "type": "string",
+          "description": "Errors if any"
+        }
+      }
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "properties": {
+        "errorCode": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

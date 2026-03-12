@@ -1,0 +1,279 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-java-migration
+name: "JavaMig: Java Repository Migration/Modernization"
+description: |
+  Aims to migrate a Java 8 repository to Java 17 with springboot, creating a 
+  Pull Request 
+  into the main branch of the targeted repository at the end. To tailor this workflow
+  to different version of Java, the system prompts of both virtual assistants, as 
+  well as the first workflow state should be adjusted.
+mode: Sequential
+icon_url: "https://upload.wikimedia.org/wikipedia/commons/9/90/Coffee-2346113.svg"
+execution_config:
+    enable_summarization_node: false
+    tokens_limit_before_summarization: 3000000
+    recursion_limit: 300
+    max_concurrency: 1
+    retry_policy:
+      initial_interval_seconds: 5.0
+      backoff_factor: 5.0
+      max_interval_seconds: 50.0
+      max_attempts: 9
+
+    assistants:
+      - id: mason
+        system_prompt: |
+          You are an Expert Java Developer, able to deliver a fully functional Java app from start to finish.
+          You have all the necessary tools available for you to do this, as well as access to the repository in question.
+          Your task will be to build a new app in a folder called "new_app", but use the old app's code as a blueprint for the new.
+          Use all the target technologies to build this new app, according to their definition in the below migration plan.
+
+          Generalized Migration Ruleset: 
+          Migrate architecture: Convert Java EE/EJB to Spring Boot 3.4.5, transforming DAOs to Service beans using Spring Data JPA repositories instead of EntityManager, with H2 replacing Derby. 
+          Update web layer: Convert all JSF (.xhtml) files to Thymeleaf templates (.html) with proper syntax (#{key}), placing them in src/main/resources/templates with Bootstrap 5.3.6 CDN integration. 
+          Configure properly: Set up application.properties for H2 in-memory database with Hibernate auto-generation and internationalization support, ensuring consistent dependency versions in pom.xml. 
+          Follow conventions: Use Spring Boot package structure (repository, service), update validation imports to jakarta namespace, and implement proper error handling. 
+          Clean up: Remove tests, configuration files (.cmd, .sh, .gitignore), and unnecessary folders (etc, src/main/webapp) after migration is complete. 
+
+          Analysis of JavaEE Pet Clinic:
+          - Core entities: Owner, Pet, PetType, Specialty, Vet, Visit
+          - DAOs for entity persistence
+          - Services for business logic
+          - Web controllers for UI interactions
+          - JSF/JSP views for the frontend
+          - An embedded Apache Derby database
+          - Resource bundles for internationalization
+           
+          Migration Plan
+          - Set up a new Spring Boot project structure
+          - Migrate entities with JPA annotations
+          - Replace DAOs with Spring Data JPA repositories
+          - Migrate services to Spring-managed components
+          - Convert web controllers to Spring MVC controllers
+          - Configure H2 database
+          - Set up message bundles
+          - Set up proper Maven dependencies
+        tools:
+          - name: create_branch
+          - name: set_active_branch
+          - name: list_branches_in_repo
+          - name: create_file
+          - name: update_file
+          - name: update_file_diff
+          - name: delete_file
+          - name: create_pull_request
+          - name: get_pr_changes
+          - name: create_pr_change_comment
+          - name: github
+          - name: gitlab
+          - name: get_repository_file_tree_v2
+          - name: search_code_repo_v2
+          - name: read_files_content
+          - name: read_files_content_summary
+        datasource_ids: [ <GIT_DATASOURCE_ID> ] # Code source
+
+      - id: dev
+        system_prompt: |
+          You are an Expert Java Developer, able to deliver a fully functional Java app from start to finish.
+          You have all the necessary tools available for you to do this, as well as access to the repository in question.
+          Your task will be to build a new app in a folder called "new_app", but use the old app's code as a blueprint for the new.
+          Use all the target technologies to build this new app, according to their definition in the below migration plan.
+
+          Generalized Migration Ruleset: 
+          Migrate architecture: Convert Java EE/EJB to Spring Boot 3.4.5, transforming DAOs to Service beans using Spring Data JPA repositories instead of EntityManager, with H2 replacing Derby. 
+          Update web layer: Convert all JSF (.xhtml) files to Thymeleaf templates (.html) with proper syntax (#{key}), placing them in src/main/resources/templates with Bootstrap 5.3.6 CDN integration. 
+          Configure properly: Set up application.properties for H2 in-memory database with Hibernate auto-generation and internationalization support, ensuring consistent dependency versions in pom.xml. 
+          Follow conventions: Use Spring Boot package structure (repository, service), update validation imports to jakarta namespace, and implement proper error handling. 
+          Clean up: Remove tests, configuration files (.cmd, .sh, .gitignore), and unnecessary folders (etc, src/main/webapp) after migration is complete. 
+
+          Analysis of JavaEE Pet Clinic:
+          - Core entities: Owner, Pet, PetType, Specialty, Vet, Visit
+          - DAOs for entity persistence
+          - Services for business logic
+          - Web controllers for UI interactions
+          - JSF/JSP views for the frontend
+          - An embedded Apache Derby database
+          - Resource bundles for internationalization
+          
+          Migration Plan
+          - Set up a new Spring Boot project structure
+          - Migrate entities with JPA annotations
+          - Replace DAOs with Spring Data JPA repositories
+          - Migrate services to Spring-managed components
+          - Convert web controllers to Spring MVC controllers
+          - Configure H2 database
+          - Set up message bundles
+          - Set up proper Maven dependencies
+        tools:
+          - name: set_active_branch
+          - name: list_branches_in_repo
+          - name: create_file
+          - name: update_file
+          - name: update_file_diff
+          - name: delete_file
+          - name: create_pull_request
+          - name: get_pr_changes
+          - name: create_pr_change_comment
+          - name: github
+          - name: gitlab
+          - name: get_repository_file_tree_v2
+          - name: search_code_repo_v2
+          - name: read_files_content
+          - name: read_files_content_summary
+        datasource_ids: [ <GIT_DATASOURCE_ID> ] # Code source
+
+    states:
+      - id: initializer
+        assistant_id: mason
+        task: |
+          1. Create a new branch named {target-branch} from the {source-branch}
+          branch of the {source-repository} repository.
+          2. Confirm the branch was created successfully
+          3. Look at the project in this branch. Analyze the app, all of its 
+          functionality and components, all of its files. Understand what does what and how.
+          4. List all the files in this repository to have an accurate count of all the 
+          files.
+          5. Now generate a json list of file paths that start with the folder "new_app".
+          This list of files paths in json should contain ALL the expected files that a 
+          new version of the app would have if it would be built anew in Java 17, with springboot. This list of filepaths should be completely exhaustive, leaving nothing out. 
+          5. At the end of this JSON also add the name of this new branch so 
+          that it can be available for future states.
+        output_schema: |
+          {"files": [
+            "new_app/pom.xml",
+            "new_app/file.java",
+            "new_app/file.html",
+            ...
+          ],
+          "branch_name": {target-branch}
+          }
+        next:
+          state_id: developer
+          iter_key: files
+
+      - id: developer
+        assistant_id: dev
+        task: |
+          1. Checkout the {{branch_name}} branch
+          2. You have as input a file that needs to be created. 
+          Generate the code and ensure that the code in this file will be appropriate given the target modern techstack. You may check the old code that is outside of the "new_app" folder and use that as the blueprint to make this new file. The new app should have the same functionality.
+          3. Commit your changes with an appropriate commit message, that is short, 
+          lowercase alphabet letters with hyphens and underscores. Example: 
+          pom_xml--added-module-dependencies
+        next:
+          state_id: checker
+
+      - id: checker
+        assistant_id: dev
+        task: |
+          1. Checkout the {{branch_name}} branch
+          2. Compare the new app inside the "new_app" folder to the old app in the files 
+          outside of it. 
+          3. If you find any missing or problematic files which should be present or 
+          improved
+          to make sure the 
+          migrated code will be functional and a worthy and comprehensive update over the
+          old app, 
+          add them to the output json with 
+          their filepath (existing or planned)
+          and
+          the
+          task that should be completed for improvement.
+        output_schema: |
+          {"files":[
+             ["new_app/path/to/pom.xml", "missing stuff that was there in old pom.xml"],
+             ["new_app/another/path/another/file.java", "completely missing file.java 
+          that was doing something important"],
+             ["new_app/pages/page.html", "the PetOwner page is missing yet in the old app
+          it's present"],
+             ...
+          ]
+          }
+        next:
+          state_id: checker-dev
+          iter_key: files
+
+      - id: checker-dev
+        assistant_id: dev
+        task: |
+          1. Checkout the {{branch_name}} branch
+          2. You have as input a file and related task/description. Understand if this 
+          files needs to be created or 
+          what needs to change 
+          about this file according to the related task/description. Make these 
+          changes/creation, ensure that this file will be appropriate to make the new app 
+          functional.
+          3. Commit your changes with an appropriate commit message, that is short, 
+          lowercase alphabet letters with hyphens and underscores. Example: 
+          pom_xml--reworked-modules
+        next:
+          state_id: double-checker
+
+      - id: double-checker
+        assistant_id: dev
+        task: |
+          1. Checkout the {{branch_name}} branch
+          2. Compare the new app inside the "new_app" folder to the old app in the files 
+          outside of it. 
+          3. If you find any missing or problematic files in the new_app folder which should
+          be 
+          present or 
+          improved
+          to make the new app a worthy successor of the old app, having all the same 
+          functionality but with newer tech, 
+          add them to the output json with 
+          their filepath (existing or planned)
+          and
+          the
+          task that should be completed for improvement.
+        output_schema: |
+          {"files":[
+             ["new_app/path/to/pom.xml", "missing stuff that was there in old pom.xml"],
+             ["new_app/another/path/another/file.java", "completely missing file.java 
+          that was doing something important"],
+             ["new_app/pages/page.html", "the PetOwner page is missing yet in the old app
+          it's present"],
+             ...
+          ]
+          }
+        next:
+          state_id: double-checker-dev
+          iter_key: files
+
+      - id: double-checker-dev
+        assistant_id: dev
+        task: |
+          1. Checkout the {{branch_name}} branch
+          2. You have as input a file and related task/description. Understand if this 
+          files needs to be created or 
+          what needs to change 
+          about this file according to the related task/description. Make these 
+          changes/creation, ensure that this file will be appropriate to make the new app 
+          have all the functionality that was present in the old app, but with newer tech.
+          3. Commit your changes with an appropriate commit message, that is short, 
+          lowercase alphabet letters with hyphens and underscores. Example: 
+          pom_xml--reworked-modules
+        next:
+          state_id: finalizer
+
+      - id: finalizer
+        assistant_id: dev
+        task: |
+          1. Checkout the {{branch_name}} branch
+          2. Open a PR to the main branch with proper comments and the title: 
+          {{branch_name}}
+        next:
+          state_id: end

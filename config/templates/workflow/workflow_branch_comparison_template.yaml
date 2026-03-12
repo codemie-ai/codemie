@@ -1,0 +1,183 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+---
+name: Branch Comparison Workflow
+description: |
+  Workflow for comparing functionality between two branches - baseline and custom. 
+  Under the hood it uses two datasources to get information from and produces executive summary after comparison.
+  !IMPORTANT: FOR CUSTOMIZATION IT'S REQUIRED TO REPLACE IDs OF DATASOURCES and FOLDERS TO PROCESS. SEE CONFIG BELOW
+mode: Sequential
+slug: template-branch-comparison-workflow
+
+execution_config:
+  # Workflow for comparing functionality between two branches - baseline and custom.
+  # Under the hood it uses two datasources to get information from and produces executive summary after comparison.
+  # !IMPORTANT: FOR CUSTOMIZATION IT'S REQUIRED TO REPLACE IDs OF DATASOURCES and FOLDERS TO PROCESS. SEE CONFIG BELOW
+  enable_summarization_node: false
+  max_concurrency: 6
+  custom_nodes:
+    - id: documents_check_tree_node
+      custom_node_id: generate_documents_tree #PREDEFINED node name that takes all files from provided datasource and filters by pattern
+      config:
+        datasource_id: 465103c7-a79d-4735-acb3-d7c0c1180da9
+        include_content: true
+        output_key: documents_check_tree
+        documents_filter: | #OPTIONAL. Can be used if you need to analyze only some folders, but not entire repo. Supports (reversed) gitignore like format. Folders are included into processing, unless start with ! symbol 
+          src/codemie/workflows/*.py
+    - id: summary_of_summary
+      custom_node_id: state_processor_node
+      model: 'gpt-4.1'
+      config:
+        state_id: branch_comparator #OPTIONAL if specified; only states with ID starting with given prefix will be used for summary
+        output_template: |
+          {% set grouped_items = {} -%}
+          {% for item in items -%}
+              {%- if item and item.conclusion != "" and "file_path" in item %}
+                  {%- set directory = item.file_path.rsplit('/', 1)[0] -%}
+                  {%- set file_name = item.file_path.rsplit('/', 1)[1] -%}
+                  {%- if directory not in grouped_items %}
+                      {%- set _ = grouped_items.update({directory: {}}) -%}
+                  {%- endif %}
+                  {%- if file_name not in grouped_items[directory] %}
+                      {%- set _ = grouped_items[directory].update({file_name: []}) -%}
+                  {%- endif %}
+                  {%- set _ = grouped_items[directory][file_name].append(item.conclusion) -%}
+              {%- endif %}
+          {%- endfor -%}
+
+          {%- set sorted_directories = grouped_items.keys() | sort -%}
+          # Summary
+          ## File features check
+          {% for directory in sorted_directories %}
+          ### {{ directory }}
+          ---
+          {%- set sorted_files = grouped_items[directory].keys() | sort -%}
+          {%- for file_name in sorted_files %}
+          #### `{{ file_name }}`
+          {%- for conclusion in grouped_items[directory][file_name] %}
+            {{ conclusion | safe }}
+          {%- endfor %}
+          {%- endfor %}
+          {%- endfor %}
+  assistants:
+    - id: branch-comparator-assistant
+      datasource_ids:
+        - 146607f7-4e49-4ebb-a748-7a7dc41551e7  #REQUIRED. REPLACE WITH YOUR OWN DATASOURCE. ID of datasource of the baseline branch to compare with
+        - 465103c7-a79d-4735-acb3-d7c0c1180da9  #REQUIRED. REPLACE WITH YOUR OWN DATASOURCE. ID of datasource of the custom branch to compare on
+      tools:
+        - name: search_code_repo_by_path #OPTIONAL. Tool is used to search relevant files with LLM filtering capabilities
+      exclude_extra_context_tools: true
+      limit_tool_output_tokens: 100000
+      model: 'gpt-4.1'
+      system_prompt: |
+        As an expert developer in technology you recognize from code, compare a provided code chunk with the implementation in the "codemie-baseline" project (first provided datasource id) at the specified, reporting only the functional differences without including any code excerpts.
+        You are an expert with finding differences on given code fragment and found related code fragment from fetched documents.
+        DO NOT MISS any difference and clearly state where exact difference is addressed (in what function/method/class and what logic).
+        In output you must include at the top the file_path of compared code chunks and at the bottom the summary.
+
+  states:
+    - id: get_file_paths_from_datasource
+      custom_node_id: documents_check_tree_node
+      next:
+        state_id: branch_comparator
+        keep_history: false
+        iter_key: documents_check_tree
+    - id: branch_comparator
+      assistant_id: branch-comparator-assistant
+      task: >  # Update with your datasource names and customise for your needs 
+        Understanding the Query and Keywords:
+          1. Analyze the whole code text and understand its a code fragment of entire file.
+          2. First, comprehend the input code snippet provided as "text" and prepare the rich search QUERY (raw code lines: 2 lines from beginning/start of code text, 2 lines from middle of code text and 2 raw code lines from end of code text) and the KEYWORDS_LIST with at least 6 keywords, which should be logical names such as functions, classes, statics or methods - but use their names only if their definition/implementation is present in code text.
+        
+        Retrieval of Documents:
+          
+          For given file_path use the Search Code Repo By Path tool calling it with always 4 arguments: prepared search QUERY, KEYWORDS_LIST, limit_docs_count=2 and file_path passed as list of paths to successfully retrieve documents from the indexed documents in Elastic search as "codemie-baseline" (first configured) datasource.
+          Important: If no results from documents retrieval on first datasource, retry tool execution for first datasource, if still no results- conclude processing with Summary containing statement about missing document in "codemie-baseline" datasource, its file_path and short description of logic of core functionality and finalize the state with such report.
+          Given code text compare with analyzed fetched documents. Execute tool for given datasource only once if retrieved documents.
+          For a broader understanding of the snippet's functionality, after successful fetch of documents from first datasource (only if any documents fetched), execute the tool again with the same parameters, but targeting the second "codemie-custom" datasource, where the provided snippet originally comes from. This helps in understanding additional context and implementation variations.
+          You need to understand that provided code snippet is only the fragment of code, so for bigger picture/view/understanding of functionality for provided code snippet you can check these extra fetched documents form second datasource.
+          Use these extra documents only for better context to avoid reporting that in provided code snippet something is missing, whereas found in  fetched first "codemie-baseline" datasource documents and you can also find it in second "codemie-custom" datasource in different fragment.
+          This is possible because files can be cutted in different places, so you can compare documents that can start or end in different line.
+          For one datasource aggregate in order and merge fetched documents into logical bigger code fragment for each datasource. Localize code snippet in fetched first and in second datasources and look only for differences on this small piece of code (provided code snippet).
+          But you need to remember that the comparison should be focussed on the provided code snippet compared to found relevant code fragment under fetched documents from the first datasource, and these extra documents fetched from second datasource is to have better picture/view/understanding of functionality and you should only understand all pieces of code, but compare your given code chunk and report if anything differs, is missing or extra, but only if you see on overall picture of functionality
+          You are just checking the functionality from provided code snippet to the most relevant matched code fragment from retrieved documents from first datasource and match the exact place where it starts and ends, so clearly address the differences, comparing only on the provided code fragment as entire code snippet to matched code fragment of retrieved code as part of fetched documents from first "codemie-baseline" datasource.
+        
+        Retrieval of Documents shorten instructions:
+          - Use the Search Code Repo By Path tool with the prepared search query, keywords list, and a limit of 2 documents. Pass the file path as a list to retrieve relevant documents from the "codemie-baseline" datasource.
+          - Compare the code snippet with documents fetched from the first datasource. Limit execution of the tool to one successful for each datasource.
+          - For a broader understanding of the snippet's functionality, execute the tool again with the same parameters but targeting the "codemie-custom" datasource. This helps in understanding additional context and implementation variations.
+          - Note: Focus on comparing the provided snippet against the relevant code fragment from the first datasource documents. Use the documents from the second datasource to understand the broader functionality but do not include these in the comparison report.
+          - If you cannot retrieve relevant document(s) from first datasource, you cannot proceed to comparison step, so you must finalize the step with file_path and summary containing statement about missing functionality and short description of its logic.
+          - Don't compare code between fetched documents, make cmoparison on given code chunk to matched code on retrieved documents from first datasources.
+        
+        Comparison Strategy:
+          - Only can be done on given code chunk and matched code from fetched documents on first datasource.
+          - Treat it as an incoming change from "codemie-custom" to "codemie-baseline" branch
+          - Ignore comments and formatting differences. Focus solely on the logic and implementation within the code.
+          - Conduct a detailed comparison, focusing on functions and lines of code, ensuring no logical elements are missed.
+          - Repeat the comparison process three times to ensure accuracy.
+          - Compare logic piece to logic piece not text comparison, so your provided code fragment is only a part of document fetched from first datasource, compare directionally.
+          - When reporting difference, clearly state it with reflection to each repository.
+          - Repeat comparison with bigger picture of functionalities with fetched additional context and reduce any false positives reports that are not true.
+          - If you understand you have truncated code (which is possible because of limit size), do not speculate and do not mark about missing further line as missing functionality in comparison result, just mention that you could not verify it.
+        
+        Reporting Differences:
+          - Always include file_path of analyzed code chunk (for the same file_path for compared code chunks, do not repeat it)  and location identifiers, like function names or class etc.
+          - List all differences (excluding comments) between the provided snippet and the matched code fragment from the first datasource. Do not include code analysis or functionalities that don't differ.
+          - Keep the difference report concise, output should remain focused and within 800 characters.
+          - Handling Additional Functionalities in Documents:
+          - Additional functionalities in the documents should only be considered if they directly affect the compared code snippet's logic.
+          - Clearly state where exact difference is addressed (in what function/method/class and what logic).
+          - Compare line by line, but also with understanding the logic
+          - Do not include code excerpts, only object names when needed
+          - If you find extra implementation in fetched documents in first datasource that is not present in code snippet, ensure its not present in fetched documents from second datasource before reporting it as a difference.
+        
+        Key Points for Reporting Differences:
+          - Do not include code snippets in the report.
+          - Clearly identify the parts of the code being compared, specifying file paths and using identifiable markers such as function names or variables.
+          - Be specific about the nature of any differences found. If the logic remains unchanged, state this clearly.
+          - Incorporate keywords for clarity and ease of understanding.
+          
+         Output Schema for compared and found related code fragments:
+          File path: file path of given code chunk and found related code chunk for it 
+          Addressed location: function or class names to easier identifay what place of file it is representing
+          Found differences: Listed found only diffenreces, if not found just short sentence about not found any.
+          Summary: Short summary of report in 1-2 sentences.
+      next:
+        state_id: sum_of_sum
+    - id: sum_of_sum # Generate final one-pager summary based on output from branch_comparator node. Result will be returned in JSON format and processed via Jinja template
+      custom_node_id: summary_of_summary
+      next:
+        state_id: end
+      task: >
+        You are an expert with creating the difference summary report for comparison of two branches with given comparison report for each code chunk for analyzed file_path.
+         For given text, recognize 4 main sections file path, Addressed location, Found differences and Summary. Ignore difference analysis, extract only file_path and focus on analysing Summary section.
+         You do not change the original text.
+         If you understand, no relevant documents fetched/ file is not found in datasource, that is missing functionality, pass original summary section content to "conclusion" and conclude with final result.
+         Other than that, If you understand, that comparison was made and compared code fragments have no logical differences reported in "Summary" section (very often situation and taken as good result), like the functionality for both branches/datasources is consistent, conclude with original "file_path" and empty string for "conclusion" as format presented below.
+         Otherwise take Summary section content to "conclusion" and conclude with final result.
+         Once you have extracted "file_path" and filtered Summary content
+         {
+         "file_path": full file_path in plain text that was processed,
+         "conclusion": represents reduced comparison Summary section content that is filtered with only difference statements, it must be empty for no differences extracted from Summary section. It must be a string, if not empty- adjusted with \n\n characters at the beginning
+         }
+         NOTE: YOU MUST return valid JSON that complies with jinja template to load, also the conclusion text should comply the jinja template format, so enhance it if you find any characters that could be improperly loaded with keeping the original text/wording, only format you can change.
+         The format of summary should: all conclusions text should be kept within the same manner:
+         normal text, all first level bullets/points with the same style (number points style), for deeper level lists keep original format. Do not break indentations in conclusion, so the logic of bullets with indented sub-lists should be kept, either with different bullet points or another solution for jinja.
+         Carefully review the conclusion text and align consistency with text indentation and bullet style. Remove bolding from conclusion text.
+         Leave empty conclusion for No differences found.
+         If you citing code, use escape characters to let jinja template loader treat is as text.
+         The conclusion for each path should be structured in the same way, should use consistent formatting with indentation and bullets for lists. Enhance it if needed.
+         Each bullet point/sentence from list as a difference wrap with `` characters to do not escape any characters when jinja interprets text.

@@ -1,0 +1,97 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-junit02-coverage
+name: "JUNIT: coverage analyzer"
+description: |
+  Automatically determinces sources suitable for unit-testing
+mode: Sequential
+execution_config:
+    enable_summarization_node: false
+    tools:
+    - id: read_bootstrap_tool
+      tool: _read_bootstrap_file
+      trace: true
+      toolset: Plugin
+      integration_alias: amna-demo-plugin-integration
+
+    assistants:
+    - id: java_expert
+      system_prompt: |
+       You are a Java expert with access to local project and ability to run tools. Use _read_bootstrap_file tool to read 00project-info.json file and treat information from this file as part of your system prompt.
+       You should not produce any user-readable output as the user is unlikely to monitor your actions in real-time. Instead - if you find yourself unable to comply with the given task,
+       use _append_structured_file tool to add the description of the situation in structured format with necessary details to <project_base>/airun/99errors.json for later examination and finish the dialog.
+       If during your work you find something unusual, concerning or wrong in the project - don't concentrate on that, but use _append_structured_file tool and add your thoughts to <project_base>/airun/99sidetrack.json and continue your main task.
+      tools:
+          - name: _read_file
+            integration_alias: amna-demo-plugin-integration
+          - name: _read_multiple_files
+          - name: _list_directory
+          - name: _directory_tree
+          - name: _search_files
+          - name: _get_file_info
+          - name: _list_allowed_directories
+          - name: _read_bootstrap_file
+          - name: _append_file
+          - name: _append_structured_file
+      exclude_extra_context_tools: true
+    states:
+    - id: read_task
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: 02sources-for-tests.json
+      next:
+        state_id: analyze_coverage
+        iter_key: unused # unwraps to array, key is ignored
+
+    - id: analyze_coverage
+      assistant_id: java_expert
+      task: |
+         You are given a task to analyze a single file for test coverage enhancements. Please check the source file, the test source, and the JaCoCo report related to that file. Find and read those files and critically analyze
+          what testcases (if any) are missing in existing unit-test file for this class.
+    
+         Important considerations for your analysis:
+    
+         1. Explicitly avoid suggesting tests for standard library functionalities (such as java.sql, java.io, etc.) or external resources (e.g., databases, file systems, network calls).
+         2. Be cautious of classes that primarily wrap or manage interactions with standard libraries or external systems. These are often not suitable for unit testing and are better tested through integration or component tests.
+         3. Consider if the code is better suited for integration or component testing rather than unit testing. This is often the case for:
+         - Database access layers
+         - File system operations
+         - Network communication
+         - Classes that primarily coordinate between other components
+    
+         If unit testing is appropriate, generate a request for automatically adding missing test cases. Minimize the number of test cases required, but test all essential uncovered code paths. 
+         Do not write any tests - this would be done by a specialized agent. Your task is to identify and describe each test case strictly in the provided JSON format and append it to <basepath>/airun/03missing-test-cases.json
+    
+         Remember to always prioritize best practices in software testing and to critically evaluate the code before suggesting test cases.
+    
+         Important:
+          - If you decide the file is not suitable for writing unit tests (no meaningful tests could be written, or it is better suited for component/integration testing) do not generate any test cases, 
+            but remenber to append information to 99errors.json
+    
+         Your output format is:
+         {
+          sourceFile: "/full/path/to/source_file.java",
+          testFile: "/full/path/to/file_with_tests.java",
+          testCaseName: "testcase name in should<Pass or Fail>When<short case description>",
+          testCaseDescription: "Freetext description of the test case in human-readable format, short and concise"
+          testCaseGiven: "preconditions to implement: e.g. teacherDto with first name empty and other fields not set",
+          testCaseWhen: "main test action block: e.g. validate method called"
+          testCaseThen: "postconditons and asserts: e.g. assert that method return value equals to 'Firstname: Empty'"
+          testCaseImplementationSuggestions: "extra data you see required for successfully implementing the test besides given/when/then sections"
+         }
+
+      next:
+        include_in_llm_history: false
+        state_id: end

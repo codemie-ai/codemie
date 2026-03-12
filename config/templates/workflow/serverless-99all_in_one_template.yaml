@@ -1,0 +1,424 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-serverless99-all-in-one
+name: "[SERVERLESS] Automated Monolith to Serverless Migration"
+description: |
+  Automatically analyzes current project, migrates suitable parts to AWS Lambdas and generates Terraform api-gateway configuration.
+  
+  IMPORTANT: terraform_apply step requires manual confirmation, please, carefully review the suggested deployment plan before accepting it.
+  This stage will execute "terraform apply" command using provided AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY credentials.
+  Terraform configuration to be applied is stored under <project_root>/airun/terraform directory.
+  
+  Workflow requires filesystem, filesystem_ext and cli-mcp-server Plugin integrations, AWS integration (it is recommended to use read-only credentials),
+    nhrun and nhcheck scripts to be available in PATH
+    and terraform to be available on your machine.
+  
+  Prerequisites:
+   1. Workflow requires bash on your local machine to run properly.
+   2. Workflow uses <project_base>/airun directory as an output directory, make sure this directory is empty before run.
+   3. terraform should be installed on local machine (https://developer.hashicorp.com/terraform/install)
+   4. Add nhrun and nhcheck scripts (requires bash to run) in /usr/local/bin or similar directory from $PATH environment variable.
+   5. Set Plugin and AWS integrations.
+   6. Run plugins and give them access to the project tree:
+    - Set environment variables pointing to root of your project: ALLOWED_DIR, FILE_PATHS
+    - Set environment variables pointing to project_root/airun directory: PROJECT_BOOTSTRAP
+    - Set environment variables with AWS account credentials (for Terraform deployment) AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+    - Run plugin: codemie-plugins mcp run -s filesystem -e filesystem=FILE_PATHS
+    - Run plugin: codemie-plugins mcp run -s filesystem_ext -e filesystem_ext=ALLOWED_DIR,PROJECT_BOOTSTRAP
+    - Run plugin: codemie-plugins mcp run -s cli-mcp-server -e cli-mcp-server=ALLOWED_DIR,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY
+mode: Sequential
+execution_config:
+  enable_summarization_node: false
+  max_concurrency: 1
+
+  tools:
+    - id: read_bootstrap_tool
+      tool: _read_bootstrap_file
+      toolset: Plugin
+      trace: true
+
+  assistants:
+    - id: aws_lambda_expert
+      exclude_extra_context_tools: true
+      system_prompt: |
+        You are an expert Software Developer, experienced in monolith to serverless migrations 
+        with strong knowledge of AWS Lambdas, DynamoDB, API gateways and other AWS services.
+        
+        You have an access to local project and ability to run tools.
+        
+        IMPORTANT:
+        You are not allowed to modify any of the project files under any circumstances.
+        The only files you can edit are under airun directory.
+        If there is no airun directory, create one under the root of a project.
+      tools:
+        - name: _read_file
+        - name: _read_multiple_files
+        - name: _write_file
+        - name: _edit_file
+        - name: _create_directory
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _append_structured_file
+        - name: _search_files_by_regex
+        - name: _read_file_lines
+
+    - id: aws_terraform_expert
+      exclude_extra_context_tools: true
+      system_prompt: |
+        You are an expert DevOps engineer experienced in configuring AWS resources, with the strong knowledge of Terraform.
+        You have an access to local project and ability to run tools.
+        You are also allowed to use AWS tool to view aws resources. Avoid using example resources or names, use actual resources instead.
+
+        IMPORTANT:
+        You are not allowed to modify any of the project files under any circumstances.
+        The only files you can edit are under airun directory.
+        If there is no airun directory, create one under the root of a project.
+        *You ARE NOT allowed to modify or create any of AWS resources, the only thing you can do is observe.*
+      tools:
+        - name: _read_file
+        - name: _read_multiple_files
+        - name: _write_file
+        - name: _edit_file
+        - name: _create_directory
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _append_structured_file
+        - name: _search_files_by_regex
+        - name: _read_file_lines
+        - name: AWS
+
+    - id: command_runner
+      exclude_extra_context_tools: true
+      system_prompt: |
+        You are an assistant designed to execute command line tools.
+      tools:
+        - name: _append_structured_file
+        - name: _move_file
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _list_allowed_directories
+        - name: _run_command
+        - name: _show_security_rules
+  states:
+    - id: analysis
+      assistant_id: aws_lambda_expert
+      task: |
+        You are given the task to analyse the project and identify which components can be migrated to AWS lambdas and which can't.
+
+        If component is suitable/feasible for migration to lambda     - use _append_structured_file tool and write information about the file to <project_base>/airun/migratable.json
+        If component is NOT suitable/feasible for migration to lambda - use _append_structured_file tool and write information about the file to <project_base>/airun/non_migratable.json
+
+        The output format is:
+        {
+          "component_name": "Name of a desired lambda. Use Pascal case for the name.",
+          "description": "Short description of it's functionality",
+          "sources": [ "List of source files, which contains all the code needed by the new lambda." ],
+          "additional_information": "Any relevant information about the component."
+          "is_migratable": "true / false"
+          "reasoning": "A few sentences why you believe this component is suitable or unsuitable for AWS Lambda migration"
+          "language": "The most suitable language for the lambda conversion. (e.g. Python)",
+          "endpoint_uri": "Endpoint root URI (e.g. /admin)"
+        }
+      next:
+        state_ids:
+          - migratable
+
+    - id: migratable
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: migratable.json
+      next:
+        include_in_llm_history: false
+        state_id: lambda_writer
+        iter_key: _
+
+    - id: lambda_writer
+      assistant_id: aws_lambda_expert
+      task: |
+        You are given a component and where it is stored. You must convert it to AWS Lambda written in {{language}}.
+        Read the file, do the conversion and output the resulting {{language}} text.
+
+        Input parameters and output must be valid JSONs.
+
+        Create the only file with {{language}} AWS lambda code.
+        Your output will be passed to specialized assistant that will use AWS API to create Lambda from the code
+        fragment you provided.
+
+        If you successfully created lambda - use _append_structured_file tool and write information about the lambda to <project_base>/airun/lambdas/lambda_info.json
+        Using the following output format:
+        {
+          "lambda_name": "{{component_name}}",
+          "component_root_dir": "Generated lambda root directory (e.g. <project_base>/airun/lambdas/{{component_name}})",
+          "language": "{{language}}",
+          "description": "Short description of it's functionality",
+          "endpoint_uri": "{{endpoint_uri}}",
+        }
+
+        IMPORTANT:
+        You are allowed to create lambda files under the <project_base>/airun/lambdas/{{component_name}},
+        and you are not allowed to modify or create any files outside of the directory.
+        Do not create build script files, readme files or any other non-required files.
+      output_format: |
+        {
+          "lambda_name": "{{component_name}}",
+          "component_root_dir": "Generated lambda root directory (e.g. <project_base>/airun/lambdas/{{component_name}})",
+          "language": "{{language}}",
+          "description": "Short description of it's functionality",
+          "endpoint_uri": "{{endpoint_uri}}",
+        }
+      next:
+        state_id: read_lambdas_info
+
+    - id: read_lambdas_info
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: lambdas/lambda_info.json
+      next:
+        include_in_llm_history: false
+        state_id: api_gateway_config_generator
+        iter_key: _
+
+    - id: api_gateway_config_generator
+      assistant_id: aws_terraform_expert
+      task: |
+        You are given the task to update Terraform configuration files using tools with an api-gateway configuration for the provided lambda.
+        You are also allowed to use AWS tool to view aws resources. Avoid using example resources or names, use actual resources instead.
+
+        Follow these steps to accomplish the task:
+        1. Read existing terraform configuration stored at <project_base>/airun/terraform.
+        2. Read required to be added lambda.
+        3. Identify available aws regions and availability zones, use only one of each.
+        4. Update Terraform configuration for api-gateway, ensuring all lambda endpoints are added.
+        5. Read all of the terraform files and verify your solution:
+          - Ensure all resources used in api-gateway are present in Terraform configuration.
+          - Check there are no resource duplicates.
+          - Ensure no deprecated arguments used.
+
+        IMPORTANT:
+        Do not include anything besides api-gateway configuration, other parts will be added by different agent.
+        Do not create any non-configuration files (Do not include README).
+        Keep file structure clean. Use one file for one resource type.
+        *You ARE NOT allowed to modify or create any of AWS resources, the only thing you can do is to observe.*
+        You are not allowed to create / modify / delete any file outside of the <project_base>/airun/terraform directory.
+      next:
+        include_in_llm_history: false
+        state_id: build_sequence_enricher
+
+    - id: build_sequence_enricher
+      assistant_id: aws_lambda_expert
+      task: |
+        You are given the task to enrich each element of json array with the field "build_sequence".
+        Substitute $variable with actual values taken from the enriching element.
+    
+        Your steps must be the following:
+        1. Read <project_path>/airun/lambdas/lambda_info.json file.
+        2. Do for each element:
+          - Identify the language field.
+          - Enrich the element with the "build_sequence" field according to the language value.
+    
+        Python build sequence must be exactly the following (with substituted variables):
+        "build_sequence": [
+          "mkdir package",
+          "pip install -r requirements.txt -t package",
+          "cd package && zip -r $component_root_dir/$lambda_name.zip .",
+          "zip $lambda_name.zip lambda_function.py"
+        ]
+    
+        Java build sequence must be exactly the following:
+        "build_sequence": ["mvn package"]
+    
+        You should observe / modify only the <project_path>/airun/lambdas/lambda_info.json file.
+        You cannot read / modify / create / delete any other file or directory.
+      next:
+        state_id: read_lambdas_enriched_info
+
+    - id: read_lambdas_enriched_info
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: lambdas/lambda_info.json
+      next:
+        include_in_llm_history: false
+        state_id: lambda_builder
+        iter_key: _
+
+    - id: lambda_builder
+      assistant_id: command_runner
+      task: |
+        1. Build lambda using {{build_sequence}}, from {{component_root_dir}}. Use _run_command tool to accomplish this task.
+        2. Create <project_base>/airun/lambdas/archives directory.
+        3. Move lambda archive to the airun/lambdas/archives directory.
+        4. Clean up.
+
+        Use _append_structured_file tool and write information about the lambda to airun/lambdas/build_info.json
+        Using the following output format:
+        {
+          "lambda_name": "{{component_name}}",
+          "lambda_archive_path": "Path to the archive, containing built lambda.",
+          "description": "Short description of it's functionality",
+          "endpoint_uri": "{{endpoint_uri}}",
+          "success": "Displays if archive with lambda was created successfully, true | false."
+        }
+      next:
+        state_id: read_lambdas_build_info
+
+    - id: read_lambdas_build_info
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: lambdas/build_info.json
+      next:
+        include_in_llm_history: false
+        state_id: terraform_lambda_config_writer
+
+    - id: terraform_lambda_config_writer
+      assistant_id: aws_terraform_expert
+      task: |
+        You are given the task to generate configuration for lambda deployment.
+        Add only necessary resources. If lambda can be deployed without the resource then it shouldn't be present in configuration.
+
+        Follow these steps to accomplish the task:
+        1. Examine all terraform configuration files before trying to change them.
+        2. Create *<project_base>/airun/terraform* directory if not present and use it as a working directory. 
+        3. Add configuration for the new s3 bucket to store lambdas, skip this step if bucket is already described in terraform configuration.
+        4. Generate lambdas configuration. Use *AWS* tool to gather any information about the account.
+        5. Verify generated configuration.
+          - There should be no mocked resources in the result.
+          - Check there are no resource duplicates.
+          - Ensure no deprecated configuration elements used.
+
+        IMPORTANT:
+        Do not create any non-configuration files (Do not include README).
+        You are allowed to create terraform configuration files under the <project_base>/airun/terraform.
+        It is forbidden to create / modify / delete files outside of <project_base>/airun directory.
+        It is strictly prohibited to create / modify / delete any of the existing aws resources through AWS tool, it can only be used to observe.
+      next:
+        state_ids: [ dynamodb_module_read_lambdas_info ]
+
+    - id: dynamodb_module_read_lambdas_info
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: lambdas/build_info.json
+      next:
+        include_in_llm_history: false
+        state_id: dynamodb_module_fixer
+        iter_key: _
+
+    - id: dynamodb_module_fixer
+      assistant_id: aws_terraform_expert
+      task: |
+        You are given the task to validate the DynamoDB schemas 
+        presented AWS Lambda function located at the <project_base>/airun/lambdas/ directory
+        and corresponding terraform configuration avaliable in the <project_base>/airun/terraform/ directory.
+
+        Identify all issues present and fix the terraform configuration if found.
+        Do mot modify any other resource terraform configurations.
+
+        IMPORTANT:
+        You are not allowed to create / modify / delete any files except those in <project_base>/airun/terraform/ directory.
+        You are not allowed to create / modify / delete ANY resoures in the AWS account using tools.
+      next:
+        include_in_llm_history: false
+        state_id: terraform_plan
+
+    - id: terraform_plan
+      assistant_id: command_runner
+      task: |
+        You are given the task to run and observe terraform plan output.
+        
+        Steps to follow:
+        1. Change working directory to airun/terraform.
+        2. Execute "terraform init" command using tools within airun directory. 
+        3. Execute "terraform plan -no-color" command using tools within airun directory, skip this step if terraform init command failed.
+        4. Respond with a valid JSON.
+        
+        Output schema:
+        {
+          "success": "Boolean true | false. If terraform plan command executed without errors or warnings return true, otherwise false",
+          "log": "Exactly the output of the command execution log without ANY modifications.",
+          "executedCommand": "Return the last executed command."
+        }
+        
+        IMPORTANT:
+        Do not try to fix any issues appeared while running terraform commands.
+        *You MUST provide a valid JSON output only, without any decoration and thoughts.*
+      output_schema: |
+        {
+          "success": "Boolean true | false. If terraform plan command executed without errors or warnings return true, otherwise false",
+          "log": "Exactly the output of the command execution log without ANY modifications.",
+          "executedCommand": "Return the last executed command."
+        }
+      next:
+        condition:
+          expression: success == True
+          then: terraform_apply
+          otherwise: terraform_fixer
+
+    - id: terraform_apply
+      assistant_id: command_runner
+      wait_for_user_confirmation: true
+      task: |
+        You are given the task to run and observe terraform apply output.
+    
+        Follow these steps to accomplish the task:
+        1. Change working directory to airun/terraform.
+        2. Execute ```nhrun terraform apply -no-color -auto-approve``` command using _run_command tool.
+        3. Using output of the previous command identify PID_FILENAME and LOG_FILENAME from it's output.
+        4. Execute ```nhcheck <PID_FILENAME>``` to identify if the process is already finished. Retry this step if not. Do not try using other commands when timed out it is expected to happen.
+        5. Read LOG_FILENAME when process finishes.
+        6. Analyse log file and identify if there were any errors.
+        7. Respond with a valid JSON.
+        
+        Output format:
+        {
+          "success": "Boolean true | false. If process finished without any errors return true, otherwise false",
+          "log": "Exactly the output of the command execution log without ANY modifications."
+        }
+        
+        IMPORTANT:
+        Do not try to fix any issues appeared in log file.
+        You should not produce any user-readable output as the user is unlikely to monitor your actions in real-time.
+        *You MUST provide a valid JSON output only, without any decoration and thoughts.*
+      output_schema: |
+        {
+          "success": "Boolean true | false. If process finished without any errors return true, otherwise false",
+          "log": "Exactly the output of the command execution log without ANY modifications."
+        }
+      next:
+        condition:
+          expression: success == True
+          then: end
+          otherwise: terraform_fixer
+
+    - id: terraform_fixer
+      assistant_id: aws_terraform_expert
+      task: |
+        You are given the task to fix issues appeared while running the Terraform.
+        Terraform configuration is stored under the <project_base>/airun/terraform directory.
+        Analyse provided log and implement changes to address found errors.
+
+        IMPORTANT:
+        You are not allowed to create new directories or any non terraform files.
+        Implement changes without new files creation if possible.
+        Do not create temporary files, modify existing terraform configuration instead.
+      next:
+        include_in_llm_history: false
+        state_id: terraform_plan

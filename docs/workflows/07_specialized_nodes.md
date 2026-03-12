@@ -1,0 +1,423 @@
+# Specialized Node Types
+
+## 8. Specialized Node Types
+
+### 8.1 State Processor Node
+Process and aggregate outputs from multiple states.
+
+```yaml
+custom_nodes:
+  - id: summarizer
+    custom_node_id: state_processor_node
+    model: gpt-4.1-mini
+    config:
+      state_id: branch-processor  # Filter by state ID
+      states_status_filter:
+        - SUCCEEDED
+        - FAILED
+      output_template: |
+        # Processing Results
+        {% for item in items %}
+        ## {{ item.file_name }}
+        Status: {{ item.status }}
+        Result: {{ item.result }}
+        {% endfor %}
+```
+
+#### Use Cases:
+- Aggregate results from parallel branches
+- Generate summary reports
+- Filter and format outputs
+
+### 8.2 Bedrock Flow Node
+Integrate AWS Bedrock Flows for specialized AI workflows.
+
+```yaml
+custom_nodes:
+  - id: bedrock-processor
+    custom_node_id: bedrock_flow_node
+    config:
+      flow_id: arn:aws:bedrock:region:account:flow/id
+      flow_alias_id: alias-id
+      enable_trace: false
+```
+
+#### Features:
+- AWS Bedrock integration
+- Flow execution and tracing
+- Input/output transformation
+
+### 8.3 Document Tree Generator
+Generate structured document representations.
+
+```yaml
+custom_nodes:
+  - id: doc-tree
+    custom_node_id: generate_documents_tree
+    config:
+      datasource_ids:
+        - datasource-1
+      documents_filtering_pattern: "**/*.md"
+      documents_filter:
+        - id1
+        - id2
+```
+
+#### Configuration Options:
+- **datasource_ids**: Data sources to process
+- **documents_filtering_pattern**: Glob pattern for filtering
+- **documents_filter**: Specific document IDs
+- **max_depth**: Tree depth limit
+- **include_metadata**: Include document metadata
+
+### 8.4 Transform Node
+Transform and map data without LLM calls. Ideal for processing webhooks, extracting fields from complex JSON, and applying transformations.
+
+```yaml
+custom_nodes:
+  - id: transform_pr
+    custom_node_id: transform_node
+    name: Transform GitHub PR Event
+    config:
+      input_source: "context_store"
+      input_key: "github_event"
+
+      mappings:
+        # Extract label names from array
+        - output_field: "label_names"
+          type: "array_map"
+          source_path: "pull_request.labels"
+          item_field: "name"
+
+        # Check if WS label exists (references label_names from above)
+        - output_field: "has_ws_label"
+          type: "condition"
+          condition: "'WS' in label_names"
+          then_value: true
+          else_value: false
+
+        # Extract PR number
+        - output_field: "pr_number"
+          type: "extract"
+          source_path: "number"
+
+      # Optional: validate output structure
+      output_schema:
+        type: "object"
+        properties:
+          label_names:
+            type: "array"
+          has_ws_label:
+            type: "boolean"
+          pr_number:
+            type: "integer"
+        required: ["has_ws_label"]
+
+      on_error: "fail"
+```
+
+#### Configuration Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `input_source` | string | No | `context_store` | Source of input data: `context_store`, `messages`, `user_input`, `state_schema` |
+| `input_key` | string | No | - | Specific key to extract from input source |
+| `mappings` | array | Yes | - | List of transformation mappings |
+| `output_schema` | object | No | - | JSON Schema for output validation |
+| `on_error` | string | No | `fail` | Error strategy: `fail`, `skip`, `default`, `partial` |
+| `default_output` | object | No | `{}` | Default output when `on_error: default` |
+
+#### Input Key Path Extraction
+
+The `input_key` parameter controls how data is extracted from the context store and made available to your mappings.
+
+All examples below use this context store:
+
+```json
+{
+  "name": "Alice",
+  "age": 30,
+  "city": "NYC",
+  "user": {
+    "name": "Bob",
+    "age": 25
+  },
+  "api": {
+    "response": {
+      "data": {
+        "items": [1, 2, 3],
+        "total": 3
+      }
+    }
+  },
+  "stats": {
+    "total": {
+      "count": 42,
+      "sum": 1050,
+      "average": 25.0
+    }
+  },
+  "users": [
+    {"name": "Alice", "role": "admin"},
+    {"name": "Bob", "role": "user"}
+  ]
+}
+```
+
+##### Extraction Examples
+
+| Input Key | Extracted Value | Available Variables |
+|-----------|-----------------|---------------------|
+| *(null/omitted)* | Entire context | `name`=`"Alice"`, `age`=`30`, `city`=`"NYC"`, `user`=`{...}`, `api`=`{...}`, `stats`=`{...}`, `users`=`[...]` |
+| `age` | `30` | `age` = `30` |
+| `user` | `{"name": "Bob", "age": 25}` | `name` = `"Bob"`, `age` = `25` |
+| `users` | `[{"name": "Alice", ...}, ...]` | `users` = `[{"name": "Alice", "role": "admin"}, {"name": "Bob", "role": "user"}]` |
+| `api.response.data` | `{"items": [1,2,3], "total": 3}` | `data` = `{"items": [1, 2, 3], "total": 3}` |
+| `api.response.data.total` | `3` | `total` = `3` |
+| `stats.total` | `{"count": 42, "sum": 1050, ...}` | `total` = `{"count": 42, "sum": 1050, "average": 25.0}` |
+| `users[0]` | `{"name": "Alice", "role": "admin"}` | `users` = `{"name": "Alice", "role": "admin"}` |
+| `users[-1]` | `{"name": "Bob", "role": "user"}` | `users` = `{"name": "Bob", "role": "user"}` |
+| `users[0:2]` | `[{"name": "Alice", ...}, ...]` | `users` = `[{"name": "Alice", "role": "admin"}, {"name": "Bob", "role": "user"}]` |
+| `users[0].name` | `"Alice"` | `name` = `"Alice"` |
+| `users[1].role` | `"user"` | `role` = `"user"` |
+| `api.response.data.items[0]` | `1` | `items` = `1` |
+
+##### Behavior Rules
+
+1. **No key** (`null` or omitted): Entire context store merged - all top-level keys become variables
+2. **Simple key** (no dots):
+   - If value is **dict**: Contents unwrapped → dict keys become variables
+   - If value is **not dict**: Value wrapped with key name
+3. **Nested key** (with dots): Value always wrapped with **last part** of the path
+4. **Array indexing** (`[n]`, `[-n]`, `[start:end]`): Element/slice wrapped with **array name** (part before `[`)
+5. **Chained indexing** (e.g., `users[0].name`): Continues path after index, wraps with **last part** of remaining path
+
+#### Mapping Types
+
+Transform Node supports six mapping types:
+
+##### 1. Extract - Field Extraction
+Extract fields using dot notation for nested objects.
+
+```yaml
+- output_field: "user_name"
+  type: "extract"
+  source_path: "pull_request.user.login"
+  default: "unknown"  # Optional
+```
+
+##### 2. Array Map - Array Processing
+Extract fields from arrays of objects, with optional filtering.
+
+```yaml
+# Extract all label names
+- output_field: "label_names"
+  type: "array_map"
+  source_path: "pull_request.labels"
+  item_field: "name"
+
+# Extract only labels starting with "target-"
+- output_field: "target_labels"
+  type: "array_map"
+  source_path: "pull_request.labels"
+  item_field: "name"
+  filter_condition: "item.get('name', '').startswith('target-')"
+```
+
+##### 3. Condition - Conditional Logic
+Apply boolean logic to determine output values.
+
+```yaml
+- output_field: "is_actionable"
+  type: "condition"
+  condition: "action in ['opened', 'updated', 'reopened']"
+  then_value: true
+  else_value: false
+```
+
+##### 4. Template - Jinja2 Rendering
+Use Jinja2 templates for complex string formatting.
+
+```yaml
+- output_field: "summary"
+  type: "template"
+  template: "PR #{{ number }}: {{ title }} by @{{ author }}"
+```
+
+##### 5. Constant - Static Values
+Assign static values.
+
+```yaml
+- output_field: "source"
+  type: "constant"
+  value: "github_webhook"
+```
+
+##### 6. Script - Python Expressions
+Execute Python expressions with restricted namespace.
+
+```yaml
+- output_field: "priority_score"
+  type: "script"
+  script: "urgency * 2 + importance"
+```
+
+**Available Python Builtins:**
+
+For security, scripts run in a restricted environment with only these Python builtins:
+
+| Category | Available |
+|----------|-----------|
+| **Constants** | `True`, `False`, `None` |
+| **Type Constructors** | `str`, `int`, `float`, `bool` |
+| **Common Functions** | `len`, `min`, `max`, `sum`, `abs` |
+| **Collections** | `list`, `dict`, `set`, `tuple` |
+| **Utilities** | `any`, `all`, `isinstance` |
+
+**Note:** Import statements, file I/O, and other Python builtins are not available for security reasons.
+
+#### Sequential Processing
+
+**Important:** Mappings are processed sequentially. Later mappings can reference fields created by earlier mappings.
+
+```yaml
+mappings:
+  # Step 1: Extract array
+  - output_field: "tags"
+    type: "array_map"
+    source_path: "items"
+    item_field: "tag"
+
+  # Step 2: Count tags (uses 'tags' from Step 1)
+  - output_field: "tag_count"
+    type: "script"
+    script: "len(tags)"
+
+  # Step 3: Check count (uses 'tag_count' from Step 2)
+  - output_field: "has_many_tags"
+    type: "condition"
+    condition: "tag_count > 5"
+    then_value: true
+    else_value: false
+```
+
+#### Complete Example: GitHub PR Label Router
+
+```yaml
+execution_config:
+  custom_nodes:
+    - id: check_pr_labels
+      custom_node_id: transform_node
+      name: Extract and Check PR Labels
+      config:
+        input_source: "context_store"
+        input_key: "github_event"
+
+        mappings:
+          # Extract all label names
+          - output_field: "label_names"
+            type: "array_map"
+            source_path: "pull_request.labels"
+            item_field: "name"
+
+          # Extract only target labels
+          - output_field: "target_labels"
+            type: "array_map"
+            source_path: "pull_request.labels"
+            item_field: "name"
+            filter_condition: "item.get('name', '').startswith('target-')"
+
+          # Check for WS label
+          - output_field: "has_ws"
+            type: "condition"
+            condition: "'WS' in label_names"
+            then_value: true
+            else_value: false
+
+          # Check for any target label
+          - output_field: "has_target"
+            type: "condition"
+            condition: "len(target_labels) > 0"
+            then_value: true
+            else_value: false
+
+          # Extract PR info
+          - output_field: "pr_number"
+            type: "extract"
+            source_path: "number"
+
+          - output_field: "pr_title"
+            type: "extract"
+            source_path: "pull_request.title"
+
+          # Create summary
+          - output_field: "summary"
+            type: "template"
+            template: "PR #{{ pr_number }}: {{ pr_title }} - Labels: {{ label_names | join(', ') }}"
+
+        on_error: "fail"
+
+  states:
+    - id: extract_labels
+      custom_node_id: check_pr_labels
+      task: "Extract and process PR labels"
+      next:
+        state_id: route_by_labels
+        output_key: "pr_info"
+        store_in_context: true
+
+    - id: route_by_labels
+      assistant_id: processor
+      task: "Route based on labels"
+      next:
+        switch:
+          cases:
+            - condition: "has_ws == True"
+              state_id: ws_workflow
+            - condition: "has_target == True"
+              state_id: target_workflow
+          default: default_workflow
+```
+
+#### Use Cases
+
+- **Webhook Processing**: Transform GitHub, GitLab, Jira webhooks
+- **Array Operations**: Extract fields from collections (labels, assignees, tags)
+- **Data Validation**: Enforce structure with JSON schema
+- **Conditional Routing**: Route workflows based on transformed data
+- **API Response Mapping**: Transform external API responses
+- **Data Aggregation**: Combine data from multiple sources
+
+#### Benefits
+
+- **Fast**: No LLM calls - pure data transformation
+- **Deterministic**: Same input always produces same output
+- **Type-Safe**: Built-in validation and type coercion
+- **Sequential**: Reference previous mapping results
+- **Secure**: Restricted Python namespace prevents dangerous operations
+- **Flexible**: Six transformation types cover most use cases
+
+#### Error Handling
+
+Transform Node supports four error strategies:
+
+```yaml
+# Fail on any error (default)
+on_error: "fail"
+
+# Skip transformation and return empty dict
+on_error: "skip"
+
+# Return configured default output
+on_error: "default"
+default_output:
+  status: "error"
+  message: "Transformation failed"
+
+# Return partial results (skip failed mappings)
+on_error: "partial"
+```
+
+---
+
+

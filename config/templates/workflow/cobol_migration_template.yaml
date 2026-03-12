@@ -1,0 +1,265 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-cobol-migration-java
+name: "Automated COBOL to Java Migration"
+description: |
+  Automatically analyses the current COBOL project, generates Jira tickets for COBOL to Java migration, and migrates the application.
+
+  IMPORTANT:
+  Make sure to update all encounters of "EPMCDMETST" Jira project in the "business_analyst" assistant below with an actual Jira project.
+
+  Workflow requires filesystem, filesystem_ext and cli-mcp-server Plugin integrations, Jira integration,
+    nhrun and nhcheck scripts to be available in PATH.
+
+  Prerequisites:
+   1. Workflow requires bash on your local machine to run properly.
+   2. Workflow uses <project_base>/airun directory as an output directory, make sure this directory is empty before run.
+   3. Add nhrun and nhcheck scripts (requires bash to run) in /usr/local/bin or similar directory from $PATH environment variable.
+   4. Set Plugin and Jira integrations.
+   5. Run plugins and give them access to the project tree:
+    - Set environment variables pointing to root of your project: ALLOWED_DIR, FILE_PATHS
+    - Set environment variables pointing to project_root/airun directory: PROJECT_BOOTSTRAP
+    - Run plugin: codemie-plugins mcp run -s filesystem -e filesystem=FILE_PATHS
+    - Run plugin: codemie-plugins mcp run -s filesystem_ext -e filesystem_ext=ALLOWED_DIR,PROJECT_BOOTSTRAP
+    - Run plugin: codemie-plugins mcp run -s cli-mcp-server -e cli-mcp-server=ALLOWED_DIR
+mode: Sequential
+execution_config:
+  enable_summarization_node: false
+  max_concurrency: 1
+
+  assistants:
+    - id: cobol_expert
+      exclude_extra_context_tools: true
+      system_prompt: |
+        You are a senior COBOL analyst agent, expert in semantic understanding of legacy systems, technical transformation, pseudocode generation, and traceability.
+        You analyze any COBOL file, decide the best extraction strategy, structure and validate the result, generating faithful, readable, and fully traceable pseudocode.
+
+        You have an access to local project and ability to run tools.
+
+        IMPORTANT:
+        You are not allowed to modify any of the project files under any circumstances.
+        The only files you can edit are under airun directory.
+        If there is no airun directory, create one under the root of a project.
+      tools:
+        - name: _read_file
+        - name: _read_multiple_files
+        - name: _write_file
+        - name: _edit_file
+        - name: _create_directory
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _append_structured_file
+        - name: _search_files_by_regex
+        - name: _read_file_lines
+
+    - id: java_expert
+      exclude_extra_context_tools: true
+      system_prompt: |
+        You are a senior Java expert.
+        You have an access to local project and ability to run tools.
+
+        IMPORTANT:
+        You are not allowed to modify any of the project files under any circumstances.
+        The only files you can edit are under airun directory.
+        If there is no airun directory, create one under the root of a project.
+      tools:
+        - name: _read_file
+        - name: _read_multiple_files
+        - name: _write_file
+        - name: _edit_file
+        - name: _create_directory
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _append_structured_file
+        - name: _search_files_by_regex
+        - name: _read_file_lines
+        - name: _run_command
+        - name: _show_security_rules
+
+    - id: business_analyst
+      exclude_extra_context_tools: true
+      system_prompt: |
+        You are an expert business analyst as a part of AI-empowered SDLC platform 'EPAM AI/Run CodeMie'.
+        Your main goal is to generate and analyze requirements, create user stories, epics, tasks, etc.
+        You should use terms from documentation, when creating epics and stories, as well as answering specific questions about terms, do not use anything except it.
+        You work with Jira. You can create summary, description, and acceptance criteria for Epics and Stories.
+        For each ticket you must create a summary, description (including general purpose and value for the user), preconditions of use of the described functionality, scenarios of use of this functionality or steps to reproduce, expected result, affected areas by this functionality, acceptance criteria based on the provided text.
+        You have tools and functions to operate with Jira tasks.
+        You must talk in the same language as the user input.
+
+        Steps to follow:
+        1. Analyze provided user input. Identify the main goals.
+        2. You must use tool for searching additional project context when it's required.
+        3. Generate focused answer to user input.
+        4. Provide the final version of generated answer (it might be story, epic or task details).
+        5. Create Jira tickets.
+
+        CONSTRAINTS:
+        1. You must use the same language as the user input.
+        2. You must use ONLY project context for generating business requirements, tasks, etc.
+        3. Your answers should be focused, followed all user instructions.
+        4. You MUST always format content for Jira ticket according to Jira best practices.
+        5. You MUST always operate on Jira project specified below, unless user explicitly asks to use different project
+        6. You MUST use current_user as a "Reporter" in Jira, do not set "Auto EPMD-EDP AIAssistant" instead.
+
+        JIRA Context
+        1. {}IMPORTANT{}: You MUST always use "EPMCDMETST" Jira project
+        2. If you need to link issue to epic, use this custom field 'customfield_14500'. If you need to create an epic, use custom field "customfield_14501" as  Epic Name.
+        3. You MUST ALWAYS identify current_user and use it for all tickets as a "Reporter" in Jira and in the Chat.
+        4. Available types of priority: Major and Critical.
+        5. Add labels "AI-Generated", "AI/Run" for each issue.
+        6. If you need to update Jira status or transition through workflow status, you MUST query JIRA API for available workflow statuses first and using found context proceed with user request
+        7. IMPORTANT: You must put description, affected areas, preconditions of use, steps of the scenario or scenarios of use, expected result, acceptance criteria to description in proper formatting. Don't miss details for description.
+        8. The character '@' is a reserved JQL character. You must enclose it in a string or use the escape '@' for ex. while building search for assignee use - assignee="john_doe@epam.com"
+        9. AiAssistant name - 'Auto_EPMD-EDP_AIAssistant@epam.com'. If you asked to assign ticket to AiAssistant, use the provided name.
+        10. You MUST use PUT operation instead of POST if user asks to set release version for jira ticket
+        11. You must use current_user and <Jira project name> project if you asked to assign issues to me or to show my issues
+        12. You MUST search for tickets only with project = "EPMCDMETST". If no tickets found in "EPMCDMETST" project - inform user respectively.
+        13. When query the Jira API for tickets use following request structure: Example: {'method': 'GET', 'relative_url': '/rest/api/2/search', 'params': '
+
+        {"jql":"assignee="example@epam.com" AND project=ABC","maxResults": 100,"fields":"key,summary,issuetype"}
+        '}.
+        14. When listing the found jira tickets always show: key, summary, issuetype.
+        15. Build link to Jira issues using prefix URL "https://jiraeu.epam.com/browse/" + issue key. Ensure that no double slash before "browse" present.
+               Example:
+               Given issue key: ABC-123
+               Expected output: https://jiraeu.epam.com/browse/ABC-123
+      tools:
+        - name: _read_file
+        - name: _read_multiple_files
+        - name: _directory_tree
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _search_files_by_regex
+        - name: _read_file_lines
+        - name: generic_jira_tool
+  states:
+    - id: analyse
+      assistant_id: cobol_expert
+      task: |
+        You are given the task to analyse the COBOL project and provide a detailed overview on it migration to modern Java.
+
+        Create an airun/analysis.md file following the steps below:
+        1. Analyse reports stored in airun/mf_reports
+        2. Describe what the program does (its purpose).
+        3. Detail the structure (divisions, paragraphs).
+        4. Identify inputs and outputs.
+        5. Propose an overview of how it maps into modern Java logic using services, DTOs, and repositories.
+        6. Indicate the appropriate Domain Business Area, Domain, and Service Domain classification.
+        7. Analyze program structure (Divisions, Sections, Paragraphs).
+        8. Detect SQL operations (EXEC SQL, cursors, transactions).
+        9. Detect Stored Procedures (EXEC PROC).
+        10. Identify the most suitable Java technology stack for the migrated application.
+        11. Map external interactions to database models.
+        12. The names of the COBOL stored procedures must be preserved in the corresponding Java migration.
+      next:
+        state_id: plan
+
+    - id: plan
+      assistant_id: cobol_expert
+      task: |
+        You are given the task to create a migration plan for COBOL to Java migration of an application described in the airun/analysis.md file.
+        Carefully analyse the file and create a migration plan, use files store airun/mf_reports to gather clearer view on the application.
+
+        Migration plan must be stored under airun/migration_plan.json and must be written using "_append_structured_file" tool call, with the following structure:
+        {
+          "step_id": "short-step-name",
+          "step_seq_number": "1, 2, 3, ..."
+          "short_description": "Short end clear description of step's goals and how them should be achieved",
+          "objectives": ["A list of goals"],
+          "sub-steps": ["Sequence of sub-steps, leading to resolving the step"]
+        }
+
+        Create an airun/plan_details/${short-step-name}.md file with full description, goal, target technologies and examples for each step.
+      next:
+        state_ids: [jira, migrate]
+
+    - id: jira
+      assistant_id: business_analyst
+      task: |
+        You are given the task to generate Jira tickets according to the plan stored in airun/migration_plan.json.
+        Use tools to read airun/analysis.md and airun/plan_details/${step_id}.md to gather necessary information.
+      next:
+        state_id: end
+
+    - id: migrate
+      assistant_id: cobol_expert
+      task: |
+        You are given the task to migrate a COBOL application to Java following the plan.
+
+        Read airun/analysis.md and follow the provided plan step by step.
+        Additional information for each step is stored under the airun/plan_details/${step_id}.md.
+        Use files in the airun/mf_reports/ directory to gather additional information about the COBOL application structure.
+
+        IMPORTANT:
+        Result application must be stored under the *airun/app/* directory.
+      next:
+        include_in_llm_history: false
+        state_id: validate
+
+    - id: validate
+      assistant_id: java_expert
+      task: |
+        Read the airun/analysis.md and verify the solution, which is stored under the airun/app/ directory.
+        Ensure 100% completeness of generated code with NO TODOs, missing implementations, or compilation errors.
+
+        You need to store all thoughts in a airun/validate_log.md, make sure to clean it before giving your feedback.
+        Be as descriptive as you can while documenting the file.
+
+        Steps to follow:
+        1. Read the generated code and ensure it has been migrated completely, without TODOs or any placeholders.
+        2. All imports MUST be complete and correct
+        3. All annotations MUST be properly imported
+        4. All dependencies MUST be properly declared in pom.xml
+        5. Execute ```nhrun mvn clean test``` command using _run_command tool.
+        6. Using output of the previous command identify PID_FILENAME and LOG_FILENAME from it's output.
+        7. Execute ```nhcheck <PID_FILENAME (should be an absolute path)>``` to identify if the process is already finished. Retry this step if not. Do not try using other commands when timed out it is expected to happen.
+        8. Observe the last 50 lines of LOG_FILENAME and ensure command finished successfully.
+        9. Write down all observations to airun/validate_log.md
+
+        IMPORTANT:
+        It is forbidden to mark success = True if compilation fails
+      output_schema: |
+        {
+          "success": "True | False Represents a status of migration, if migration has been implemented at fullest, application builds and tests pass, true, otherwise - false",
+        }
+      next:
+        condition:
+          expression: success == True
+          then: end
+          otherwise: fix
+
+    - id: fix
+      assistant_id: java_expert
+      task: |
+        You are given the task to fix issues highlighted in airun/validate_log.md
+        Carefully review the issues, apply fixes and test the result.
+
+        To test the result follow the steps:
+        1. Execute ```nhrun mvn clean test``` command using _run_command tool.
+        2. Using output of the previous command identify PID_FILENAME and LOG_FILENAME from it's output.
+        3. Execute ```nhcheck <PID_FILENAME (should be an absolute path)>``` to identify if the process is already finished. Retry this step if not. Do not try using other commands when timed out it is expected to happen.
+        4. Observe the last 50 lines of LOG_FILENAME and ensure command finished successfully.
+      next:
+        state_id: validate

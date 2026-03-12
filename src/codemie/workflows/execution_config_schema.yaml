@@ -1,0 +1,205 @@
+---
+$schema: "https://json-schema.org/draft/2020-12/schema"
+
+properties:
+
+  messages_limit_before_summarization: {type: integer}
+  tokens_limit_before_summarization: {type: integer}
+  type: {type: string}
+  enable_summarization_node: {type: boolean}
+  recursion_limit: {type: integer}
+  max_concurrency: {type: integer}
+  verbose: {type: boolean}
+  max_iteration_key_output_limit: {type: integer}
+
+  assistants:
+    type: array
+    items:
+      $ref: "#/$defs/Assistant"
+
+  tools:
+    type: array
+    items:
+      $ref: "#/$defs/Tool"
+
+  custom_nodes:
+    type: array
+    items:
+      $ref: "#/$defs/CustomNode"
+
+  states:
+    type: array
+    items:
+      $ref: "#/$defs/State"
+
+  retry_policy:
+    type: object
+    properties:
+      initial_interval: {type: number}
+      backoff_factor: {type: number}
+      max_interval: {type: number}
+      max_attempts: {type: integer}
+
+$defs:
+
+  Assistant:
+    type: object
+    required: [id]
+    properties:
+      id: {type: string}
+      assistant_id: {type: string}
+      name: {type: string}
+      model: {type: string}
+      system_prompt: {type: string}
+      limit_tool_output_tokens: {type: integer}
+      tools:
+        type: array
+        items:
+          type: object
+          required: [name]
+          properties:
+            name: {type: string}
+            integration_alias: {type: string}
+      datasource_ids:
+        type: array
+        items:
+          type: string
+      exclude_extra_context_tools: {type: boolean, default: false}
+
+    anyOf:
+      - required: [assistant_id]
+      - required: [system_prompt]
+
+  Tool:
+    type: object
+    allOf:
+      - required: [id]
+      - required: [tool]
+    properties:
+      id: {type: string}
+      tool: {type: string}
+      tool_args: {type: object}
+      integration_alias: {type: string}
+      trace: {type: boolean}
+
+  CustomNode:
+    type: object
+    required: [id]
+    properties:
+      id: {type: string}
+      custom_node_id: {type: string}
+      name: {type: string}
+      model: {type: string}
+      system_prompt: {type: string}
+      config:
+        type: object
+        properties:
+          documents_filter: {type: string}
+          documents_filtering_pattern: {type: string}
+          not:
+            required: [documents_filter, documents_filtering_pattern]
+
+  State:
+    type: object
+    allOf:
+      - required: [id]
+      - required: [next]
+      - not:
+          required: [wait_for_user_confirmation, interrupt_before]
+    properties:
+      id: {type: string}
+      assistant_id: {type: string}
+      tool_id: {type: string}
+      custom_node_id: {type: string}
+      tool_args: {type: object}
+      task: {type: string}
+      finish_iteration: {type: boolean}
+      next:
+        type: object
+        properties:
+          state_id: {type: string}
+          state_ids: {type: array, items: {type: string}}
+          iter_key: {type: string}
+          output_key: {type: string}
+          keep_history:
+            type: boolean
+            deprecated: true
+            description: "Use include_in_llm_history instead"
+          store_in_context: {type: boolean, default: true}
+          include_in_llm_history: {type: boolean, default: true}
+          clear_prior_messages: {type: boolean, default: false}
+          clear_context_store:
+            oneOf:
+              - type: boolean
+              - type: string
+                enum: ["keep_current"]
+            default: false
+          override_task: {type: boolean, default: false}
+          reset_keys_in_context_store:
+            type: array
+            items: {type: string}
+          append_to_context: {type: boolean, default: false}
+          condition:
+            type: object
+            allOf:
+              - required: [expression]
+              - required: [then]
+              - required: [otherwise]
+            properties:
+              expression: {type: string}
+              then: {type: string}
+              otherwise: {type: string}
+          switch:
+            type: object
+            allOf:
+              - required: [cases]
+              - required: [default]
+            properties:
+              cases:
+                type: array
+                items:
+                  type: object
+                  allOf:
+                    - required: [condition]
+                    - required: [state_id]
+                  properties:
+                    condition: {type: string}
+                    state_id: {type: string}
+              default: {type: string}
+
+        allOf:
+          - not:
+              required: [condition, switch]
+          - not:
+              required: [state_id, state_ids]
+          - not:
+              required: [state_ids, iter_key]
+          - not:
+              required: [state_ids, condition]
+          - not:
+              required: [state_ids, switch]
+          - not:
+              required: [iter_key, condition]
+          - not:
+              required: [iter_key, switch]
+        dependentRequired:
+          iter_key: [state_id]
+
+      output_schema: {type: string}
+      retry_policy:
+        type: object
+        properties:
+          initial_interval: {type: number}
+          backoff_factor: {type: number}
+          max_interval: {type: number}
+          max_attempts: {type: integer}
+      wait_for_user_confirmation:
+        type: boolean
+        default: false
+        deprecated: true
+        description: "Use interrupt_before instead"
+      interrupt_before: {type: boolean, default: false}
+    oneOf:
+      - required: [assistant_id]
+      - required: [tool_id]
+      - required: [custom_node_id]

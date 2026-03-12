@@ -1,0 +1,134 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+---
+name: GitHub PR Event Transformer
+description: |
+  Workflow to transform GitHub Pull Request webhook events into structured data.
+
+  This workflow demonstrates the Transform Node capabilities for data mapping,
+  conditional logic, and field extraction from complex JSON structures.
+
+  Example Use Cases:
+    - Process GitHub webhook events
+    - Transform API responses
+    - Extract and restructure data from nested JSON
+    - Apply conditional logic to determine output values
+
+  Input Example (from webhook_payload in context_store):
+    {
+      "action": "opened",
+      "number": 11,
+      "pull_request": {
+        "url": "https://api.github.com/repos/codemie-ai/codemie-tools/pulls/11",
+        "id": 2998127940,
+        "title": "Add new feature",
+        "draft": false,
+        "user": {
+          "login": "developer",
+          "id": 12345
+        },
+        "created_at": "2024-01-15T10:30:00Z"
+      }
+    }
+
+  Output Example:
+    {
+      "result": true,
+      "number": 11,
+      "url": "https://api.github.com/repos/codemie-ai/codemie-tools/pulls/11",
+      "title": "Add new feature",
+      "author_login": "developer",
+      "action_type": "opened",
+      "summary": "PR #11: 'Add new feature' opened by @developer",
+      "is_draft": false
+    }
+
+mode: Sequential
+slug: template-github-pr-transform-workflow
+
+execution_config:
+  enable_summarization_node: false
+  custom_nodes:
+    - id: transform_pr_event
+      custom_node_id: transform_node
+      name: Transform GitHub PR Event
+      config:
+        # Transformation mappings
+        mappings:
+          # Conditional: Check if PR action is actionable (opened/updated/reopened)
+          - output_field: "result"
+            type: "condition"
+            condition: "action in ['opened', 'updated', 'reopened']"
+            then_value: true
+            else_value: false
+
+          # Extract: Simple field extraction
+          - output_field: "number"
+            type: "extract"
+            source_path: "number"
+
+          # Extract: Nested field extraction with dot notation
+          - output_field: "url"
+            type: "extract"
+            source_path: "pull_request.url"
+
+          - output_field: "title"
+            type: "extract"
+            source_path: "pull_request.title"
+
+          - output_field: "author_login"
+            type: "extract"
+            source_path: "pull_request.user.login"
+
+          - output_field: "action_type"
+            type: "extract"
+            source_path: "action"
+
+          # Template: Complex string formatting with Jinja2
+          - output_field: "summary"
+            type: "template"
+            template: "PR #{{ number }}: '{{ pull_request.title }}' {{ action }} by @{{ pull_request.user.login }}"
+
+          # Extract with default: Handle optional fields
+          - output_field: "is_draft"
+            type: "extract"
+            source_path: "pull_request.draft"
+            default: false
+
+        # Output validation (JSON Schema)
+        output_schema:
+          type: "object"
+          properties:
+            result:
+              type: "boolean"
+            number:
+              type: "integer"
+            url:
+              type: "string"
+          required: ["result", "number", "url"]
+
+        # Error handling strategy
+        on_error: "fail"
+
+  states:
+    # State 1: Transform the GitHub event
+    - id: transform_event
+      custom_node_id: transform_pr_event
+      task: "Transform GitHub PR event into structured format"
+      next:
+        state_id: end
+        output_key: "transformed_pr"
+        store_in_context: true
+        include_in_llm_history: false

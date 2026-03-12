@@ -1,0 +1,73 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: meeting-summary
+description: >-
+  Generate comprehensive, structured meeting summaries with participant analysis,
+  sentiment evaluation, action items, and effectiveness ratings. Use when user asks
+  to "summarize a meeting", "create meeting notes", "analyze meeting", "extract
+  action items from meeting", or provides meeting transcripts, recordings, or notes
+  to analyze.
+content: |-
+  # Meeting Summary
+
+  Generate a comprehensive and structured meeting summary based on the provided meeting details. Analyze participant engagement, sentiment, and extract action items. Evaluate the meeting's effectiveness and provide recommendations.
+
+  ## Required Sections
+
+  ### 1. Participant Analysis
+  - List each participant with their title/role
+  - Provide a concise description of their contributions (1-2 sentences)
+  - Rate their engagement level (High, Medium, Low)
+  - Analyze their sentiment (Positive, Neutral, Negative) with brief rationale
+  - Identify key stakeholders and decision makers
+
+  ### 2. Meeting Overview
+  - Meeting purpose and objectives
+  - Key discussion topics summarized (3-5 bullet points per topic)
+  - Critical decisions made
+  - Areas of consensus and disagreement
+  - Notable quotes or important statements
+
+  ### 3. Action Items
+  - List all action items in priority order
+  - For each action item include:
+    * Specific task description
+    * Responsible person(s)
+    * Deadline/timeline
+    * Dependencies or resources needed
+    * Status (if applicable)
+
+  ### 4. Meeting Evaluation
+  - Rate meeting effectiveness (1-5 scale)
+  - Assess whether objectives were achieved
+  - Analyze time management and agenda adherence
+  - Evaluate quality of discussion and decision-making process
+  - Identify what worked well and what could be improved
+
+  ### 5. Recommendations
+  - Specific suggestions for follow-up actions
+  - Recommendations for future meetings
+  - Process improvements
+  - Communication recommendations for specific roles/departments
+  - Suggestions for unresolved issues
+
+  ## Output Format
+  Present the summary in a professional, concise format using appropriate headings and bullet points for easy scanning. Use tables for action items if appropriate.
+project: codemie
+visibility: public
+categories:
+  - project_management
+  - business_analysis
+  - documentation

@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Option 3: Export to HTML Report
+
+Creates a beautiful HTML report with interactive charts (Chart.js).
+Opens automatically in your default browser.
+"""
+
+import sys
+from pathlib import Path
+
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
+
+import webbrowser
+
+from memory_analysis_helpers import get_recent_snapshots, export_to_html
+
+
+def main():
+    print("=" * 100)
+    print("📄 OPTION 3: Export to HTML Report")
+    print("=" * 100)
+    print()
+
+    # Get latest snapshot
+    snapshots = get_recent_snapshots(limit=1)
+
+    if not snapshots:
+        print("❌ No snapshots found!")
+        sys.exit(1)
+
+    snapshot = snapshots[0]
+    print(f"📊 Generating HTML report for snapshot: {snapshot.id[:8]}")
+    print(f"   Timestamp: {snapshot.timestamp}")
+    print(f"   Memory: {snapshot.current_memory_mb:.2f} MB")
+    print()
+
+    # Export to HTML
+    html_path = export_to_html(snapshot.id)
+
+    if html_path:
+        print("✅ HTML report generated successfully!")
+        print(f"   📁 File: {html_path}")
+        print()
+        print("📊 Report includes:")
+        print("   • Memory statistics cards")
+        print("   • Interactive bar chart (Chart.js)")
+        print("   • Detailed allocation table")
+        print("   • Top 30 memory consumers")
+        print()
+
+        # Open in browser
+        print("🌐 Opening report in your default browser...")
+        webbrowser.open(f"file://{Path(html_path).absolute()}")
+        print()
+        print("✅ Done! Check your browser.")
+    else:
+        print("❌ Failed to generate HTML report")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,122 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-py-unittest-gen-simple
+name: "PyUnittest: Simple Pytest Unittest Generator"
+description: |
+  Aims to increase test coverage by generating/appending unittests based on source code.
+mode: Sequential
+icon_url: "https://upload.wikimedia.org/wikipedia/commons/8/89/Python_logo_%282025%29.png"
+execution_config:
+    enable_summarization_node: false
+    tokens_limit_before_summarization: 100000
+    recursion_limit: 100
+    max_concurrency: 1
+    retry_policy:
+      initial_interval_seconds: 5.0
+      backoff_factor: 5.0
+      max_interval_seconds: 50.0
+      max_attempts: 9
+
+    assistants:
+      - id: py-unitbrancher
+        system_prompt: |
+          follow instructions
+        tools:
+          - name: create_branch
+          - name: set_active_branch
+          - name: list_branches_in_repo
+          - name: create_file
+          - name: update_file
+          - name: update_file_diff
+          - name: delete_file
+          - name: create_pull_request
+          - name: get_pr_changes
+          - name: create_pr_change_comment
+          - name: github
+          - name: gitlab
+          - name: get_repository_file_tree_v2
+          - name: search_code_repo_v2
+          - name: read_files_content
+          - name: read_files_content_summary
+        datasource_ids: [ <GIT_DATASOURCE_ID> ] # Code source
+
+      - id: py-unittester
+        system_prompt: |
+          follow instructions
+        tools:
+          - name: set_active_branch
+          - name: list_branches_in_repo
+          - name: create_file
+          - name: update_file
+          - name: update_file_diff
+          - name: delete_file
+          - name: create_pull_request
+          - name: get_pr_changes
+          - name: create_pr_change_comment
+          - name: github
+          - name: gitlab
+          - name: get_repository_file_tree_v2
+          - name: search_code_repo_v2
+          - name: read_files_content
+          - name: read_files_content_summary
+        datasource_ids: [ <GIT_DATASOURCE_ID> ] # Code source
+
+    states:
+      - id: discover
+        assistant_id: py-unitbrancher
+        task: |
+          1. Create a new branch named {target-branch} from the {source-branch} 
+          branch of the {source-repository} repository.
+          2. Analyze the repository's file structure.
+          3. Identify all Python source files that contain logic suitable for unit 
+          testing. Exclude files that are primarily for configuration, setup, framework 
+          boilerplate, or files that have been already properly testing in any existing 
+          tests.
+          4. Produce an exhaustive JSON list of the relative file paths for all files 
+          that python unittests can be written for.
+          5. On the bottom of this JSON include the name of the created branch.
+        output_schema: |
+          {"files": [
+            "folder01/file.py",
+            "sourcefile.py",
+            "another/place/testablefile.py",
+            ...
+          ],
+          "branch_name": {target-branch}
+          }
+        next:
+          state_id: process
+          keep_history: true
+          iter_key: files
+
+      - id: process
+        assistant_id: py-unittester
+        task: |
+          You are operating on a single source file: `{file}`. Your multi-step task is:
+          0. Set the {{branch_name}} as the active branch.
+          1.  **Analyze**: Analyze the provided source file to understand what needs to 
+          be done to write proper unit tests for it.
+          2.  **Generate/Update Tests**: Write the Python code for new `pytest` test cases
+          to cover this logic. If a test file already exists in /numpy_ml/tests/ that tests this logic, 
+          append the new tests to it, if the same ones don't already exist. Otherwise 
+          create a 
+          new test file for it inside /numpy_ml/tests/.
+          3. Commit these changes to the {{branch_name}} branch with an appropriate 
+          commit (39 characters max)
+          message in the
+          format: 'appended test.py to test process'
+        next:
+          state_id: end
+

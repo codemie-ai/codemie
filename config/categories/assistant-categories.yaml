@@ -1,0 +1,72 @@
+categories:
+  - id: "migration-modernization"
+    name: "Migration & Modernization"
+    description: "For assisting with cloud migrations, application modernization, legacy system updates, etc."
+
+  - id: "support"
+    name: "Support"
+    description: "For chatbots, virtual help desks, FAQ systems, and customer support automation."
+
+  - id: "business-analysis"
+    name: "Business Analysis"
+    description: "For analyzing business needs and gathering requirements."
+
+  - id: "product-management"
+    name: "Product management"
+    description: "For creating product roadmaps. Supports product lifecycle management, prioritization, and stakeholder collaboration."
+
+  - id: "data-analytics"
+    name: "Data Analytics"
+    description: "For tasks like data analysis, visualization, and drawing actionable insights from raw data."
+
+  - id: "engineering"
+    name: "Engineering"
+    description: "For supporting developers, full-stack engineers, and software engineering workflows."
+
+  - id: "quality-assurance"
+    name: "Quality Assurance"
+    description: "For testing, ensuring software reliability, and automating QA processes."
+
+  - id: "devops"
+    name: "DevOps"
+    description: "For managing cloud systems, networking, infrastructure, and DevOps workflows."
+
+  - id: "security"
+    name: "Security"
+    description: "For ensuring systems are secure."
+
+  - id: "compliance"
+    name: "Compliance"
+    description: "For complying with regulations and automating auditing processes."
+
+  - id: "project-management"
+    name: "Project Management"
+    description: "For planning, tracking, and assisting in project or task management tasks."
+
+  - id: "customer-experience"
+    name: "Customer Experience"
+    description: "For enhancing customer satisfaction and automating interactions like ticket routing or surveys."
+
+  - id: "monitoring-alerts"
+    name: "Monitoring & Alerts"
+    description: "For system health monitoring, alert generation, and proactive issue detection."
+
+  - id: "ui-ux-design"
+    name: "UI/UX Design"
+    description: "For assisting with prototyping, wireframing, and analyzing user experience research."
+
+  - id: "knowledge-management"
+    name: "Knowledge Management"
+    description: "For handling organizational knowledge, documentation, and retrieving relevant info efficiently."
+
+  - id: "training"
+    name: "Training"
+    description: "For onboarding, employee or developer training, and automating internal knowledge sharing."
+
+  - id: "architecture"
+    name: "Architecture"
+    description: "Focused on the design and implementation of scalable, reliable, and innovative technical architectures."
+
+  - id: "presales"
+    name: "Presales"
+    description: "Assists sales and pre-sales teams in managing client interactions, proposal generation, and solution demonstrations."

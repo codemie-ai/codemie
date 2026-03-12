@@ -1,0 +1,9 @@
+.venv
+venv
+.mypy_cache
+.vscode
+.env.*
+.envrc
+notebooks
+utils
+build

@@ -1,0 +1,145 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "AICE: Java Repository Migration/Modernization"
+slug: amna-aice-java-migration-template
+description: |
+  Aims to migrate a Java 8 repository to Java 17 with Spring Boot, creating a 
+  Pull Request into the main branch of the targeted repository at the end. 
+  To tailor this workflow to different versions of Java, the system prompts 
+  of both virtual assistants, as well as the first workflow state, 
+  should be adjusted.
+mode: Sequential
+icon_url: "https://upload.wikimedia.org/wikipedia/commons/9/90/Coffee-2346113.svg"
+execution_config:
+  enable_summarization_node: false
+  tokens_limit_before_summarization: 3000000
+  recursion_limit: 300
+  max_concurrency: 1
+  retry_policy:
+    initial_interval_seconds: 5.0
+    backoff_factor: 5.0
+    max_interval_seconds: 50.0
+    max_attempts: 9
+
+  assistants:
+    - id: mason
+      assistant_id: PRECONFIGURED:amna-aice-java-mason-migration-assistant
+    
+    - id: dev
+      assistant_id: PRECONFIGURED:amna-aice-java-dev-migration-assistant
+
+  states:
+    - id: initializer
+      assistant_id: mason
+      task: |
+        1. Create a new branch named {target-branch} from the {source-branch}
+          branch of the {source-repository} repository.
+        2. Confirm the branch was created successfully.
+        3. Use the results from the AICE tool's code exploration and analysis of the existing Java 8 codebase to gain a detailed understanding of the project. Analyze all components, functionality, and files in the app as derived through AICE.
+        4. Based on the AICE analysis results, list all files in this repository to confirm the comprehensive structure.
+        5. Generate a JSON list of file paths that start with the folder "new_app". Use the AICE analysis findings to ensure this list represents ALL files that the new app (migrated to Java 17 with Spring Boot) would have. The list should be exhaustive, leaving nothing out.
+        6. At the end of this JSON, add the name of the new branch to ensure it can be utilized by future states.
+      output_schema: |
+        {
+          "files": [
+            "new_app/pom.xml",
+            "new_app/file.java",
+            "new_app/file.html",
+            ...
+          ],
+          "branch_name": "{target-branch}"
+        }
+      next:
+        state_id: developer
+        iter_key: files
+
+    - id: developer
+      assistant_id: dev
+      task: |
+        1. Checkout the {{branch_name}} branch.
+        2. For the input file that needs to be created, rely on the AICE tool's code analysis to determine the corresponding functionality and structure from the Java 8 codebase. Use this information as a blueprint to create the file for the new Java 17 app. Ensure the new file corresponds accurately to the modern tech stack while maintaining the desired functionality.
+        3. Commit your changes with an appropriate commit message using hyphens and underscores. Example: pom_xml--added-module-dependencies.
+      next:
+        state_id: checker
+
+    - id: checker
+      assistant_id: dev
+      task: |
+        1. Checkout the {{branch_name}} branch.
+        2. Compare the "new_app" folder contents to the old app's files outside of it using AICE results, identifying any gaps or missing functionality.
+        3. If there are missing or problematic files necessary to make the migrated code functional and complete, add these to the output JSON. Ensure the gaps/errors identified align with the insights provided by the AICE analysis.
+      output_schema: |
+        {
+          "files": [
+            ["new_app/path/to/pom.xml", "missing dependencies identified using AICE"],
+            ["new_app/another/file.java", "missing file.java identified by AICE for handling XYZ"],
+            ["new_app/pages/page.html", "PetOwner page functionality missing per AICE analysis"],
+            ...
+          ]
+        }
+      next:
+        state_id: checker-dev
+        iter_key: files
+
+    - id: checker-dev
+      assistant_id: dev
+      task: |
+        1. Checkout the {{branch_name}} branch.
+        2. Use the file and related task/description input. Leverage AICE's analysis to confirm necessary changes or new creations required for this file. Ensure that updates align with the AICE findings to make the app functional and comply with the modern tech stack.
+        3. Commit your changes with appropriate commit messages using hyphens and underscores. Example: file_name--added-missing-functionality.
+      next:
+        state_id: double-checker
+
+    - id: double-checker
+      assistant_id: dev
+      task: |
+        1. Checkout the {{branch_name}} branch.
+        2. Perform a detailed comparison between the "new_app" folder and the old app files outside of it. Use AICE results to look for gaps or missing improvements required.
+        3. If there are missing/problematic files that should be added/improved for the new app, output a valid JSON with a to_double_check set to True and include them in the output JSON with their file path and associated task, False otherwise. Cross-check your findings with the AICE analysis.
+        
+      output_schema: |
+        {
+          "to_double_check": "True | False",
+          "files": [
+            ["new_app/path/to/pom.xml", "missing dependencies from AICE feedback"],
+            ["new_app/file_java", "feature file is missing - identified using AICE"],
+            ["new_app/template.html", "HTML template lacks updates flagged by AICE"],
+            ...
+          ]
+        }
+      next:
+        iter_key: files
+        condition:
+          expression: "to_double_check==True"
+          then: double-checker-dev
+          otherwise: finalizer
+
+    - id: double-checker-dev
+      assistant_id: dev
+      task: |
+        1. Checkout the {{branch_name}} branch.
+        2. For each input file and its related task/description, utilize AICE analysis to understand how the file should be created or updated. Ensure correctness and alignment with the AICE findings for a functional app utilizing a modern tech stack.
+      
+      next:
+        state_id: finalizer
+
+    - id: finalizer
+      assistant_id: dev
+      task: |
+        1. Checkout the {{branch_name}} branch
+        2. Open a PR to the main branch with proper comments and the title: 
+        {{branch_name}}
+      next:
+        state_id: end

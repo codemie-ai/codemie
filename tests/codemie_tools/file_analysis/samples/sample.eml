@@ -1,0 +1,448 @@
+Received: from VI0PR03MB10476.eurprd03.prod.outlook.com
+ (2603:10a6:800:204::14) by AM6PR03MB3989.eurprd03.prod.outlook.com with
+ HTTPS; Fri, 15 Aug 2025 15:56:33 +0000
+Received: from AS4P192CA0026.EURP192.PROD.OUTLOOK.COM (2603:10a6:20b:5e1::10)
+ by VI0PR03MB10476.eurprd03.prod.outlook.com (2603:10a6:800:204::14) with
+ Microsoft SMTP Server (version=TLS1_2,
+ cipher=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) id 15.20.9031.16; Fri, 15 Aug
+ 2025 15:56:28 +0000
+Received: from AM3PEPF0000A799.eurprd04.prod.outlook.com
+ (2603:10a6:20b:5e1:cafe::28) by AS4P192CA0026.outlook.office365.com
+ (2603:10a6:20b:5e1::10) with Microsoft SMTP Server (version=TLS1_3,
+ cipher=TLS_AES_256_GCM_SHA384) id 15.20.9031.18 via Frontend Transport; Fri,
+ 15 Aug 2025 15:56:28 +0000
+Authentication-Results: spf=pass (sender IP is 2a00:1450:4864:20::333)
+ smtp.mailfrom=gmail.com; dkim=pass (signature was verified)
+ header.d=gmail.com;dmarc=pass action=none header.from=gmail.com;compauth=pass
+ reason=100
+Received-SPF: Pass (protection.outlook.com: domain of gmail.com designates
+ 2a00:1450:4864:20::333 as permitted sender) receiver=protection.outlook.com;
+ client-ip=2a00:1450:4864:20::333; helo=mail-wm1-x333.google.com; pr=C
+Received: from mail-wm1-x333.google.com (2a00:1450:4864:20::333) by
+ AM3PEPF0000A799.mail.protection.outlook.com (2603:10a6:20f:fff4:0:6:0:8) with
+ Microsoft SMTP Server (version=TLS1_3, cipher=TLS_AES_256_GCM_SHA384) id
+ 15.20.9052.8 via Frontend Transport; Fri, 15 Aug 2025 15:56:27 +0000
+Received: by mail-wm1-x333.google.com with SMTP id 5b1f17b1804b1-45a1b0990b2so12298265e9.2
+        for <SpecialEPM-CDMEDevelopmentTeam@epam.com>; Fri, 15 Aug 2025 08:56:27 -0700 (PDT)
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed;
+        d=gmail.com; s=20230601; t=1755273387; x=1755878187; darn=epam.com;
+        h=mime-version:subject:message-id:to:from:date:from:to:cc:subject
+         :date:message-id:reply-to;
+        bh=vbGcOx5RNVdEFQuTZCqSWlz9aTRoIDrp5LkCAJJKQKk=;
+        b=JZbOPRLaDovZWsF0KKY4Gx4iSvZd41jGzA/9UT6dx/oZ1TtXh+LO0ogj6fnjRgW09H
+         0Bz26+9+4qDHUvyJ1TQIz885IEUJYgWjzOOLcbLVdkr+4JXv32L9a4/lmxZRaUIMKc47
+         StxT9y/+be/9J8Eb4m7fWEXKund+/yG3HJTshXDeKfgfv8HHL+k3lCaSpCTIYUwsR7va
+         h//DhFRH3jSMmZrDk4XIzEYnsoRgLnKfSxjjvbwHyizmeqgSnjLxZFO8vdkl8RndRwr/
+         CeXHN4nTUpgaWnuX+mYUtaiTtr+kviXc6vz4OMr99DecKrSQ9o3vnprUHTCFh0eQz5i7
+         DWxg==
+X-Google-DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed;
+        d=1e100.net; s=20230601; t=1755273387; x=1755878187;
+        h=mime-version:subject:message-id:to:from:date:x-gm-message-state
+         :from:to:cc:subject:date:message-id:reply-to;
+        bh=vbGcOx5RNVdEFQuTZCqSWlz9aTRoIDrp5LkCAJJKQKk=;
+        b=bd5Stn3E3xrmsupQr2wImgVCjjvsU4K1Xl+lXtkAhuOI7Bn+RIRmrxJC71L1rbuFoX
+         7HY+BaSEQtMyCD4jY+afFNxjpWbz0AK7aKq8mxLgPh9UNys0XbFIUZASrzwZy/W+z7aR
+         nwJKcsjmBnlykQiUT9vo/BYE7eMRauX2THmod7weNtQoQRicROeSQ1ZyumXlqzx6yd1x
+         JA1rMSDWHncuA3LOIatCDeHQw9XwvvqwFqcL7PyG+aiJtVcC2I53KcfnHmFMtJVHr7+C
+         dVNPs0mdMaNsx04uiiDuTfuuVjM2tPNkQNuRsJqkMRPZW74HWVGF7E9zVPh2DClaHVwv
+         VOXw==
+X-Gm-Message-State: AOJu0Yy83N1pfMmqpUu00JSjQJOc5HOC98sr0GFggqcLKwIZTKI+pjpd
+	0EY4U4oPdMIilrEQ0Cu0E9SaeE1+nJ499lcnZBCfG+y6ElNKeQm75dIeHi1cK3zm
+X-Gm-Gg: ASbGncuTc7IhQhdS3Xty9FzWM7tnkfSrKbKeva2vESf9EC3jD6djmkxGx4XXLd9waU4
+	W6Grpf+Gx55R2/OTX8ib37r4/uwROEztXTL6kkLXoQxYVAQrK4sYdIBqgezlXAFLDux4Ywgryy5
+	IYvqqCRI7MEVF68WsKmmc6X6oWyG3EWNDqVc50imRlLPW5oZnnfDQTs7laFKFVMeggfIYanTGM5
+	lTWPGLDeuSQzVlV1RpTDUj2uU2/Rsj9FAl76r0fWm1//WVOuPoIQ5ljpNc7WASkIrxhBVhSyRTV
+	SksThoQOmwtZlK/fU12GHV88hqLn0jt/SGmBqbQob66u/keGv83SOUvNCQ4OUwoYVzSwD7w5JgT
+	3vkBw9sA9c2f5UVbc6WpLTSAiqdoGWS0mIV99sq708JUwIC+C0tYF693IqiXnK9CJsHL+izmjM4
+	Uptb0iNGeBZCTfcuC+luYujKDOHpGZuq/JZ/JdpQhMz6L2vUPHPi87D/P8DPfKgvsJdGe9DSe4v
+	vo=
+X-Google-Smtp-Source: AGHT+IG2snIvoKSZzvppRfLxMZe6DR8HPzO0i3kKHRiPoikOQLuPuY15Icn2MVhOo8QPzrEM6niFoA==
+X-Received: by 2002:a05:600c:8518:b0:458:bf9c:274f with SMTP id 5b1f17b1804b1-45a2185e6e1mr23741995e9.29.1755273386740;
+        Fri, 15 Aug 2025 08:56:26 -0700 (PDT)
+Return-Path: codemieautomation@gmail.com
+Received: from report-portal-reportportal-api-5dccc47c88-pdmqt (ec2-18-158-218-232.eu-central-1.compute.amazonaws.com. [18.158.218.232])
+        by smtp.gmail.com with ESMTPSA id 5b1f17b1804b1-45a1c6be10esm66489995e9.3.2025.08.15.08.56.26
+        for <SpecialEPM-CDMEDevelopmentTeam@epam.com>
+        (version=TLS1_3 cipher=TLS_AES_256_GCM_SHA384 bits=256/256);
+        Fri, 15 Aug 2025 08:56:26 -0700 (PDT)
+Date: Fri, 15 Aug 2025 15:56:26 +0000 (UTC)
+From: reportportal <codemieautomation@gmail.com>
+To: SpecialEPM-CDMEDevelopmentTeam@epam.com
+Message-ID: <460573866.65.1755273386093@report-portal-reportportal-api-5dccc47c88-pdmqt>
+Subject: ReportPortal Notification: [EPM-CDME] launch 'Pytest Regression'
+ #104 finished
+Content-Type: multipart/mixed;
+	boundary="----=_Part_63_1523643796.1755273385715"
+X-MS-Exchange-Organization-ExpirationStartTime: 15 Aug 2025 15:56:28.0736
+ (UTC)
+X-MS-Exchange-Organization-ExpirationStartTimeReason: OriginalSubmit
+X-MS-Exchange-Organization-ExpirationInterval: 1:00:00:00.0000000
+X-MS-Exchange-Organization-ExpirationIntervalReason: OriginalSubmit
+X-MS-Exchange-Organization-Network-Message-Id: 36eaef56-e69e-4b43-dbc0-08dddc144b81
+X-EOPAttributedMessage: 0
+X-EOPTenantAttributedMessage: b41b72d0-4e9f-4c26-8a69-f949f367c91d:0
+X-MS-Exchange-Organization-MessageDirectionality: Incoming
+X-MS-PublicTrafficType: Email
+X-MS-TrafficTypeDiagnostic: AM3PEPF0000A799:EE_|VI0PR03MB10476:EE_|AM6PR03MB3989:EE_
+X-MS-Exchange-Organization-AuthSource: AM3PEPF0000A799.eurprd04.prod.outlook.com
+X-MS-Exchange-Organization-AuthAs: Anonymous
+X-MS-Office365-Filtering-Correlation-Id: 36eaef56-e69e-4b43-dbc0-08dddc144b81
+X-MS-Exchange-AtpMessageProperties: SA|SL
+X-MS-Exchange-Organization-SCL: 1
+X-Microsoft-Antispam: BCL:0;ARA:13230040|7093399015|8096899003|4053099003|43062017;
+X-Forefront-Antispam-Report: CIP:2a00:1450:4864:20::333;CTRY:;LANG:en;SCL:1;SRV:;IPV:NLI;SFV:NSPM;H:mail-wm1-x333.google.com;PTR:mail-wm1-x333.google.com;CAT:NONE;SFS:(13230040)(7093399015)(8096899003)(4053099003)(43062017);DIR:INB;
+X-Auto-Response-Suppress: DR, OOF, AutoReply
+X-MS-Exchange-CrossTenant-OriginalArrivalTime: 15 Aug 2025 15:56:27.7748
+ (UTC)
+X-MS-Exchange-CrossTenant-Network-Message-Id: 36eaef56-e69e-4b43-dbc0-08dddc144b81
+X-MS-Exchange-CrossTenant-Id: b41b72d0-4e9f-4c26-8a69-f949f367c91d
+X-MS-Exchange-CrossTenant-AuthSource: AM3PEPF0000A799.eurprd04.prod.outlook.com
+X-MS-Exchange-CrossTenant-AuthAs: Anonymous
+X-MS-Exchange-CrossTenant-FromEntityHeader: Internet
+X-MS-Exchange-Transport-CrossTenantHeadersStamped: VI0PR03MB10476
+X-MS-Exchange-Transport-EndToEndLatency: 00:00:05.2331545
+X-MS-Exchange-Processed-By-BccFoldering: 15.20.9009.009
+X-Microsoft-Antispam-Mailbox-Delivery:
+	ucf:0;jmr:0;auth:0;dest:I;ENG:(910005)(944506478)(944626604)(920097)(930097)(140003)(1420198);
+X-Microsoft-Antispam-Message-Info:
+	=?us-ascii?Q?PwwrXdjPv7ZwUNgmuavTrH1p8cnO1RsclykcuOe1FIw5fnIfu3+24vxaViWn?=
+ =?us-ascii?Q?QT7m8bauF8Qig96ne4xeI9gnWSqEjuo/QvLgysQZ7KKGrV4dGQQKAETWp9QY?=
+ =?us-ascii?Q?MDkbBZXk7iPjNtKR2WdaAbtHmGQq4God08/S6p62pqbT4CQs2VyQ+v/dtPia?=
+ =?us-ascii?Q?CUjFlNPffHCMA3UDxUbeiUZS+BVJGTjHISNrgNa2c85Q2HmOW6L+xEtzc3gu?=
+ =?us-ascii?Q?4YubQHklbmKgJbygL2aFK992gFn/W4XNMQzV8QasrmJPb/xIaoN/X9kjMWdI?=
+ =?us-ascii?Q?j9rN4RMSSLtbcMMFAMCdSPPvnoObXL6sV+6LFWqyRh3GMyXzL6dADRo5Q8KY?=
+ =?us-ascii?Q?Ar0cd3d+IueQp0nYvLUISWY5TKbPwYdbHfj5AnVSY2W2R2iofJhyblUzNsI8?=
+ =?us-ascii?Q?LIQFuzbdZkclYRw2tJ5n3KAQ+gjN7DWBxSRtYg7Ufrcwge8iIvmixq6pBZmQ?=
+ =?us-ascii?Q?nDyJxa0XwD9bLxBu1KHihnSkbVROJwpPXFYXw/yunuhhsE30AH19h/ueMka1?=
+ =?us-ascii?Q?Cztp0Xvrq5iYzfYLY8dI0FZmZo/BMaZYtOWb6vLw4iq0GtJMV4JL8mEddecb?=
+ =?us-ascii?Q?1YdSHhAzS+DfaJUiWzJuBCO6aXUWlSVp+hbyshsYzXrFoIWb97GDr+DZAIWz?=
+ =?us-ascii?Q?LPlXattAh0MVKRZ0cUCw2UcdJA2y053GvgMZnmIULL6Ofu12v8fCpc9umQg3?=
+ =?us-ascii?Q?E5aLZB/B7CiVJzJkMN0uij7T1crN2E3R1jfCGwc5Ae6QzvnjQEPWbZe3yLVw?=
+ =?us-ascii?Q?TxJNIoKmXXgytOYMz5t+rJCL0xvMiYmuw4V3DN8yYAGkhFdMgmUjBFKF6Wa1?=
+ =?us-ascii?Q?OK06TBrmL7gqoF+wMkS+Lcw3UGGI7tGq5FzWKSSsMZ/YKuuXDadC/pl1E83c?=
+ =?us-ascii?Q?TgyYz1N3TEijrVY2WQ6wQXW1jVIndtFBl/i8Roj+fpR2RMvEmoFRF/42rW9x?=
+ =?us-ascii?Q?sNpwqQAHfWcPov14ykzWxLF6LQI14FEgdCHgoJkKxcDxls6EwMKMOgiG79A2?=
+ =?us-ascii?Q?w4hVIGcGxlh3NESDenm3HFz+EJalfPktvPuiQZqrp4k7QXY7ec7d7YLRNb3x?=
+ =?us-ascii?Q?rRS5uqU6XUX8lGtVcoOvN03fYGzzJgYyYu7ltUiq5vwEVGbnJH9nahDOCGVH?=
+ =?us-ascii?Q?X8aYKoHfWw+R9dKpg9ccBD1I32KvAkHDDvegiTTZAaxS+K9ktQq9cqkYzlif?=
+ =?us-ascii?Q?LO185HwHmHdYmVWsBl6Nx4Tte7OrrRz4FNeo4K4nSWxjPUu7mv7bCabUQvbg?=
+ =?us-ascii?Q?0wRAjdtLEtXThovv8la4FPiKAECVjVI+NAyi5+QnEUJdk11ODg6tCabITa+e?=
+ =?us-ascii?Q?WcUR8/H96MLD+VUqUWlrvf3Gblw+sJSoPTG0KrFyZZSZkxtLxAl6lgNzicW8?=
+ =?us-ascii?Q?CeO/rXs8KQrbq4LibCIfQxd6sgUYmPuxnf2/wSjdX+rSlnsS14G73nOS0WYC?=
+ =?us-ascii?Q?xw5kE0ShGUDN1yYzk+7FJWlXXDJZNS2JOqQ8yy/Lcx65hWpTZofwmBpgLLdQ?=
+ =?us-ascii?Q?Ca9Kd7ZG+H4VCJgQkavlawJies/U+Ub61e9j3wX/LxLnekWXsztt7h83c4md?=
+ =?us-ascii?Q?0OO5SDrIubk1tQtMyZUdahTTC72p0HY/kBnqi6Q+weNUYRJ1yf3Sd8AOU3Pp?=
+ =?us-ascii?Q?CE0ylXFfAAZy4pH73GyycummLe8uGU0R2DJuvDTh38BV8tLrCcUKKfwHZMFu?=
+ =?us-ascii?Q?6MDC9+tSbFeffzOPl0PWpITQp+wp81pNvRjhNYtwxIhtBe+YohcJRgwH2Zbx?=
+ =?us-ascii?Q?8Neb+1t68l5gmpGt/cllzpo2ETc4nmsBDrhhGlYw85k65SCnQHEXwX3Dq3U6?=
+ =?us-ascii?Q?PpXWg9DXl8t+Dg6fa1huHgBWz+PD2jvLQVpU1Wn5TJ+olIBUx17osTapi7aW?=
+ =?us-ascii?Q?p3ifaiJ4d3lFmdj9jP+7owf8NktpHrk2CQMseyvIpT2wwPscFTkHAVb8bGFM?=
+ =?us-ascii?Q?zeuFsnR2of9BGSW9VmygslHPnFu1SNQSY5iuRnNqRlscRtxNgYvX8nl8gpWM?=
+ =?us-ascii?Q?R4ur3+1PnC04ZD2I11WXKBdxoFRu6mQqwZeq8qiqA+TFXzMDC/Y0Vmhl3KqZ?=
+ =?us-ascii?Q?fUQ58M96KVdJ9UJyCJnTvBf1vNd6fWop2VhOOdgubGnY9OvMotZDwu0G+nzO?=
+ =?us-ascii?Q?kzdmTJ/sSe7hxZejFCx4xJyPoN/3aj0n856Hwg2AAUFWnZJrQmvXY1zKF3mw?=
+ =?us-ascii?Q?7UVbvAj0seNxawxZYfICTo4W8jcaf4ER57pWucrKvncaJwvo6AWroMpLhvoi?=
+ =?us-ascii?Q?/1IhXHZH1hzLeU9XF5+l?=
+MIME-Version: 1.0
+
+------=_Part_63_1523643796.1755273385715
+Content-Type: multipart/related;
+	boundary="----=_Part_64_2054641114.1755273385715"
+
+------=_Part_64_2054641114.1755273385715
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"><html xmlns="http://www.w3.org/1999/xhtml"><head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8"><title>ReportPortal</title>
+    <link href="http://fonts.googleapis.com/css?family=Roboto" rel="stylesheet" type="text/css">
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: OpenSans, sans-serif;
+        }
+
+        a, a:active, a:visited {
+            color: #39c2d7;
+            text-decoration: underline;
+        }
+
+        a:hover {
+            text-decoration: none;
+        }
+
+        .rplogo, .rplogo:hover, .rplogo:active, .rplogo:visited {
+            display: inline-block;
+            text-decoration: none;
+        }
+
+        @media only screen and (max-width: 540px) {
+            body {
+                margin: 0;
+                padding: 0;
+            }
+
+            table[class="mainwrapper"] {
+                width: 100% !important;
+            }
+
+            .rplogo {
+                margin-left: 15px;
+            }
+        }
+    </style>
+</head>
+<body bgcolor="#f9f9f9" topmargin="0" bottommargin="0" leftmargin="0" rightmargin="0" link="#39c2d7" alink="#39c2d7" vlink="#39c2d7" style="font-family: OpenSans, sans-serif;">
+<table width="540" border="0" cellspacing="0" cellpadding="0" align="center" class="mainwrapper">
+    <tbody>
+    <tr>
+        <td>
+            <table width="100%" border="0" cellspacing="0" cellpadding="0" class="logowrapper">
+                <tbody>
+                <tr>
+                    <td height="48">
+                        <a class="rplogo" href="https://eur01.safelinks.protection.outlook.com/?url=http%3A%2F%2Freportportal.io%2F&amp;data=05%7C02%7CNikita_Levyankov%40epam.com%7C36eaef56e69e4b43dbc008dddc144b81%7Cb41b72d04e9f4c268a69f949f367c91d%7C1%7C0%7C638908701931815445%7CUnknown%7CTWFpbGZsb3d8eyJFbXB0eU1hcGkiOnRydWUsIlYiOiIwLjAuMDAwMCIsIlAiOiJXaW4zMiIsIkFOIjoiTWFpbCIsIldUIjoyfQ%3D%3D%7C0%7C%7C%7C&amp;sdata=%2FhSf31v7mQC29WQ%2BVvVYQU%2FuL3yUvo86EtIH%2BgXpneU%3D&amp;reserved=0" originalsrc="http://reportportal.io/" target="_blank" style="font-size: 15px; color: #595c5c; font-weight: bold; font-family: 'Roboto', sans-serif;">
+                            ReportPortal.io
+                        </a>
+                    </td>
+                </tr>
+                </tbody>
+            </table>
+            <table width="100%" border="0" cellspacing="0" cellpadding="30" class="contentwrapper" bgcolor="#ffffff">
+                <tbody>
+                <tr>
+                    <td align="left" height="170">
+                        <table class="content" width="100%" border="0" cellspacing="0" cellpadding="0" style="border-collapse:collapse;">
+                                                </table>
+                        <!-- Launch name and link to ReportPortal instance -->
+                        <h2 style="font-size: 20px; color: #777777;" align="center">Launch &quot;Pytest Regression&quot; #104 has been
+                            finished</h2>
+                        <p style="font-size: 14px; color: #777777;">To view it on ReportPortal just visit this <a href="https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Freport-portal.core.kuberocketci.io%2Fui%2F%23epm-cdme%2Flaunches%2Fall%2F10974&amp;data=05%7C02%7CNikita_Levyankov%40epam.com%7C36eaef56e69e4b43dbc008dddc144b81%7Cb41b72d04e9f4c268a69f949f367c91d%7C1%7C0%7C638908701931835576%7CUnknown%7CTWFpbGZsb3d8eyJFbXB0eU1hcGkiOnRydWUsIlYiOiIwLjAuMDAwMCIsIlAiOiJXaW4zMiIsIkFOIjoiTWFpbCIsIldUIjoyfQ%3D%3D%7C0%7C%7C%7C&amp;sdata=kS8z%2BTeGlT3Iriko%2BaeYpjcYBf2wOVhVGWeLkiy%2BtkY%3D&amp;reserved=0" originalsrc="https://report-portal.core.kuberocketci.io/ui/#epm-cdme/launches/all/10974" target="_blank">link</a>.</p>
+                            <p style="font-size: 14px; color: #777777;">Attributes to launch:
+                                <a href="https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Freport-portal.core.kuberocketci.io%2Fui%2F%23epm-cdme%2Flaunches%2Fall%3Ffilter.has.key%3Denv%26filter.has.value%3Dazure&amp;data=05%7C02%7CNikita_Levyankov%40epam.com%7C36eaef56e69e4b43dbc008dddc144b81%7Cb41b72d04e9f4c268a69f949f367c91d%7C1%7C0%7C638908701931851542%7CUnknown%7CTWFpbGZsb3d8eyJFbXB0eU1hcGkiOnRydWUsIlYiOiIwLjAuMDAwMCIsIlAiOiJXaW4zMiIsIkFOIjoiTWFpbCIsIldUIjoyfQ%3D%3D%7C0%7C%7C%7C&amp;sdata=LrJpM7P3g9KIzP3QV9Ay2GUYo2UR76X6BKdqk5s46sg%3D&amp;reserved=0" originalsrc="https://report-portal.core.kuberocketci.io/ui/#epm-cdme/launches/all?filter.has.key=env&amp;filter.has.value=azure" target="_blank" style="padding-left:5px;">env:azure</a>
+                        </p>
+                        <!-- Launch name, link and description (if exists) -->
+                        <table width="300" cellspacing="0" cellpadding="0" style="border: 1px solid #e9e9e9;">
+                            <tr>
+                                <td>
+                                    <table width="300" border="0" cellspacing="0" cellpadding="6" style="border: none; border-collapse: collapse;">
+                                        <tbody>
+                                        <tr bgcolor="#f5f5f5" style="background: #f5f5f5;">
+                                            <td height="40" style="font-size: 12px; color: #777777; border-bottom: 1px solid #e9e9e9; padding-left: 20px;">
+                                                <b>LAUNCH STATISTICS</b></td>
+                                            <td width="40" style="font-size: 12px; color: #777777; border-bottom: 1px solid #e9e9e9;"></td>
+                                        </tr>
+                                        <tr bgcolor="#ffffff" style="background: #ffffff;">
+                                            <td height="40" style="font-size: 14px; color: #464547; padding-left: 20px; border-width: 0px;">
+                                                <b>TOTAL</b>
+                                            </td>
+                                            <td width="40" style="font-size: 14px; color: #464547; border-width: 0px;"><b>598</b></td>
+                                        </tr>
+                                        <tr bgcolor="#f9f9f9" style="background: #f9f9f9;">
+                                            <td height="25" style="font-size: 14px; color: #464547; padding-left: 38px; border-width: 0px;">Passed
+                                            </td>
+                                            <td width="40" style="font-size: 14px; color: #464547; border-width: 0px;">548</td>
+                                        </tr>
+                                        <tr bgcolor="#ffffff" style="background: #ffffff;">
+                                            <td height="25" style="font-size: 14px; color: #464547; padding-left: 38px; border-width: 0px;">Failed
+                                            </td>
+                                            <td width="40" style="font-size: 14px; color: #464547; border-width: 0px;">1</td>
+                                        </tr>
+                                        <tr bgcolor="#f9f9f9" style="background: #f9f9f9;">
+                                            <td height="25" style="font-size: 14px; color: #464547; padding-left: 38px; border-width: 0px;">
+                                                Skipped
+                                            </td>
+                                            <td width="40" style="font-size: 14px; color: #464547; border-width: 0px;">49</td>
+                                        </tr>
+                                        </tbody>
+                                    </table>
+                                </td>
+                            </tr>
+                        </table>
+                        <br>
+                        <table width="100%" cellspacing="0" cellpadding="0" style="border: 1px solid #e9e9e9;">
+                            <tr>
+                                <td>
+                                    <table width="100%" border="0" cellspacing="0" cellpadding="6" style="border: none; border-collapse: collapse;">
+                                        <tbody>
+                                        <tr bgcolor="#f5f5f5" style="background: #f5f5f5;">
+                                            <td height="40" style="font-size: 12px; color: #777777; border-bottom: 1px solid #e9e9e9; padding-left: 20px;">
+                                                <b>LAUNCH DEFECTS</b></td>
+                                            <td width="40" style="font-size: 12px; color: #777777;  border-bottom: 1px solid #e9e9e9;"></td>
+                                        </tr>
+                                        <!-- PRODUCT BUG bugs section -->
+                            <tr bgcolor="#f9f9f9" style="background-color:#f9f9f9;">
+                            <td height="40" style="font-size: 14px; color: #464547; padding-left: 20px; border-width: 0px;"><b>Product Bugs</b>
+                            </td>
+                            <td style="font-size: 14px; color: #464547; border-width: 0px;"><b>0</b></td>
+                        </tr>
+
+
+                                        <!-- AUTOMATION BUG bugs section -->
+                            <tr bg="#ffffff" style="background-color:#ffffff;">
+                            <td height="40" style="font-size: 14px; color: #464547; padding-left: 20px; border-width: 0px;"><b>Automation Bugs</b>
+                            </td>
+                            <td style="font-size: 14px; color: #464547; border-width: 0px;"><b>0</b></td>
+                        </tr>
+
+
+                                        <!-- SYSTEM ISSUE bugs section -->
+                            <tr bgcolor="#f9f9f9" style="background-color:#f9f9f9;">
+                            <td height="40" style="font-size: 14px; color: #464547; padding-left: 20px; border-width: 0px;"><b>System Issues</b>
+                            </td>
+                            <td style="font-size: 14px; color: #464547; border-width: 0px;"><b>0</b></td>
+                        </tr>
+
+
+                                        <!-- NO DEFECT bugs section -->
+                            <tr bg="#ffffff" style="background-color:#ffffff;">
+                            <td height="40" style="font-size: 14px; color: #464547; padding-left: 20px; border-width: 0px;"><b>No Defects</b>
+                            </td>
+                            <td style="font-size: 14px; color: #464547; border-width: 0px;"><b>0</b></td>
+                        </tr>
+
+
+                                        <!-- TO INVESTIGATE bugs section -->
+                            <tr bgcolor="#f9f9f9" style="background-color:#f9f9f9;">
+                            <td height="40" style="font-size: 14px; color: #464547; padding-left: 20px; border-width: 0px;"><b>To Investigate</b>
+                            </td>
+                            <td style="font-size: 14px; color: #464547; border-width: 0px;"><b>50</b></td>
+                        </tr>
+
+                                <tr bgcolor="#ffffff" style="background-color:#ffffff;">
+                                <td height="25" style="font-size: 14px; color: #464547; padding-left: 38px; border-width: 0px;">To Investigate</td>
+                                <td width="40" style="font-size: 14px; color: #464547; border-width: 0px;">50</td>
+                            </tr>
+
+
+                                        </tbody>
+                                    </table>
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+                </tbody>
+            </table>
+            <table width="100%" height="82" border="0" cellspacing="0" cellpadding="0" class="linkswrapper">
+                <tbody>
+                <tr>
+                    <td height="82" align="center">
+                        <table border="0" cellspacing="0" cellpadding="12" class="linksline" align="center">
+                            <tbody>
+                            <tr>
+                                <td><p style="font-size: 13px; color: #464547;">Keep in touch with us:</p></td>
+                                <td><a href="https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fgithub.com%2Freportportal&amp;data=05%7C02%7CNikita_Levyankov%40epam.com%7C36eaef56e69e4b43dbc008dddc144b81%7Cb41b72d04e9f4c268a69f949f367c91d%7C1%7C0%7C638908701931867080%7CUnknown%7CTWFpbGZsb3d8eyJFbXB0eU1hcGkiOnRydWUsIlYiOiIwLjAuMDAwMCIsIlAiOiJXaW4zMiIsIkFOIjoiTWFpbCIsIldUIjoyfQ%3D%3D%7C0%7C%7C%7C&amp;sdata=TcRQGkBDDtIEnEpc8n39uMvEAK1Zv7NqG7%2BWll7%2F%2BIo%3D&amp;reserved=0" originalsrc="https://github.com/reportportal" target="_blank"><img src="cid:ic-github.png" border="0" width="20" height="21" alt="github"></a>
+                                </td>
+                                <td><a href="https://eur01.safelinks.protection.outlook.com/?url=http%3A%2F%2Ftwitter.com%2FReportPortal_io&amp;data=05%7C02%7CNikita_Levyankov%40epam.com%7C36eaef56e69e4b43dbc008dddc144b81%7Cb41b72d04e9f4c268a69f949f367c91d%7C1%7C0%7C638908701931883067%7CUnknown%7CTWFpbGZsb3d8eyJFbXB0eU1hcGkiOnRydWUsIlYiOiIwLjAuMDAwMCIsIlAiOiJXaW4zMiIsIkFOIjoiTWFpbCIsIldUIjoyfQ%3D%3D%7C0%7C%7C%7C&amp;sdata=7wcsLrcf8yjjXaaf%2B7LdVuVyh1HWBqc%2BaRO36VGkj24%3D&amp;reserved=0" originalsrc="http://twitter.com/ReportPortal_io" target="_blank"><img src="cid:ic-twitter.png" border="0" width="20" height="16" alt="twitter"></a></td>
+                                <td><a href="https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fwww.youtube.com%2Fc%2FReportPortal&amp;data=05%7C02%7CNikita_Levyankov%40epam.com%7C36eaef56e69e4b43dbc008dddc144b81%7Cb41b72d04e9f4c268a69f949f367c91d%7C1%7C0%7C638908701931899036%7CUnknown%7CTWFpbGZsb3d8eyJFbXB0eU1hcGkiOnRydWUsIlYiOiIwLjAuMDAwMCIsIlAiOiJXaW4zMiIsIkFOIjoiTWFpbCIsIldUIjoyfQ%3D%3D%7C0%7C%7C%7C&amp;sdata=akPFCdl3TlaHvYTyMxhK0s%2FkZdKUjZnmjOX4qKbg4YM%3D&amp;reserved=0" originalsrc="https://www.youtube.com/c/ReportPortal" target="_blank"><img src="cid:ic-youtube.png" border="0" width="20" height="15" alt="youtube"></a></td>
+                                <td><a href="https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fslack.epmrpp.reportportal.io%2F&amp;data=05%7C02%7CNikita_Levyankov%40epam.com%7C36eaef56e69e4b43dbc008dddc144b81%7Cb41b72d04e9f4c268a69f949f367c91d%7C1%7C0%7C638908701931915311%7CUnknown%7CTWFpbGZsb3d8eyJFbXB0eU1hcGkiOnRydWUsIlYiOiIwLjAuMDAwMCIsIlAiOiJXaW4zMiIsIkFOIjoiTWFpbCIsIldUIjoyfQ%3D%3D%7C0%7C%7C%7C&amp;sdata=xcZweUL2WQgLCPpUkIrMQIE9QuiEsn59bfRwdgRYkzw%3D&amp;reserved=0" originalsrc="https://slack.epmrpp.reportportal.io/" target="_blank"><img src="cid:ic-slack.png" border="0" width="18" height="18" alt="slack"></a>
+                                </td>
+                            </tr>
+                            </tbody>
+                        </table>
+                    </td>
+                </tr>
+                </tbody>
+            </table>
+            <table width="100%" border="0" cellspacing="0" cellpadding="0" bgcolor="#bdc7cc" class="footerline">
+                <tbody>
+                <tr>
+                    <td height="1"><!-- --></td>
+                </tr>
+                </tbody>
+            </table>
+            <table width="100%" border="0" cellspacing="0" cellpadding="0" class="footerwrapper">
+                <tbody>
+                <tr>
+                    <td align="center" height="52" class="footercontent">
+                        <p style="font-size: 11px; line-height: 1.5; color: #6d6d6d"><b>ReportPortal Notification
+                            Center</b><br>
+                            This notification was created automatically. Please don't reply to this e-mail.</p>
+                    </td>
+                </tr>
+                </tbody>
+            </table>
+        </td>
+    </tr>
+    </tbody>
+</table>
+</body>
+</html>
+------=_Part_64_2054641114.1755273385715
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Disposition: inline
+Content-ID: <ic-github.png>
+
+iVBORw0KGgoAAAANSUhEUgAAABQAAAAVCAYAAABG1c6oAAAAAXNSR0IArs4c6QAAAupJREFUOBGV
+VE1IVFEUPue+58DEQCFR0GQkJo2NRUGQ5TiMgVoLgxYuDIIIIlwGlkHRH26UCGpTSBFtWuimnUaR
+NtNoBEZomTYRgRi46ocRnZl37+ncN703b/yZ6sJ79zvfOed759177kVYZRARRhPTUYnYBAi7SanN
+OgyFmAeCSYPoWbwhFEdEWp6Oy4mGeGqXhVYXO8LLfcU2TiHKnmQk/MHLFwkeSqaaSeZu8JdNb9Ba
+mP/E4rqvjkVrnjoxrmAkkYopsG46jv+ZTYEX4vWhFzpH6FfTq+ktiqxrGiPgF67wLsNf2l5zEPbr
+WO23FFw5PDoT1NgWXCDoYKWAJoDwXTISerDO7zsOCoc44pHh97faD4lu9k8IhFuj0VAvf/itnQMU
+WJLUobEZG05tzZJsYUF7ECmfBs/3V/3k6bJNFl5PGOrHHqTA5+Tx7jfHXqfuiawhY4BkV2pHCeSF
+/rdBSNKNZI2slDHBrVTnkNxU1voy445j/20Olpff5picG6fgoOAe3uEQCCI9WFddejOcYJ4HwpvS
+vFJplyKoElz2BpcA5cEFthQiQDdHa/HaedcMqY3IKCXg9a2MRUtwG3wvBBHOjX7eXrBLo/k3M9t0
+n7lRrCUMpCmXYMDHvdVrl8K5JTjm9WstgYRjXpKUbNfH0MuthiOJjzFEOOH1aS1sm531z31dGOTK
+Uso0e1DKcwDqANc6ZJDxOBGtLvqDWHKqNkfYTgQtXjFu7HSwMnBUDFRULHKZfbxD+4SyLvos3yUW
+m+C1OSLB6i1KYiMjsXOFGPNCQJ+tpRPM+lA/U+N8He3NmJm6Wv/Os6ZpnAwYZae13ztQwEavncdi
+PK/x53IYQbS4si52phCoe3Lp033LgvOL0rq+IlmJQiPnnSmdqzW06Z7hkcbKH0FLnWFuBEnxbS33
+SKSFfE7hTaC+ORav+7DO0bkOV3QzDzSG9dc79Q5KglO8Llkn0Jn56soogvec+DARrXnp8M78G/VM
+HKSJ0s7SAAAAAElFTkSuQmCC
+
+------=_Part_64_2054641114.1755273385715
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Disposition: inline
+Content-ID: <ic-twitter.png>
+
+iVBORw0KGgoAAAANSUhEUgAAABQAAAAQCAYAAAAWGF8bAAAAAXNSR0IArs4c6QAAAgtJREFUOBGV
+U89LVFEUPue+1+hGCloJiSCMvqk2EYWOT3HnIhDKhv4BiRa5iDa1atVW3NR/EC0M3SmuyvlJbYpK
+GHFqZRZEQRQyjm/u6bt3vMP4dGTmwLvn3O/c85177juHqQtJFyqXqR49FZLrTCREXFSKF/1eKu9X
+9XwpTD3xM5uS+PZr69nZfu/+WjK5345/PL89qvXBBvwJcwZsZp2ta3x7MJmMj9TPi6SRce7P93rO
+3sCgJ4joaAEsluwENyCujOXKGfWGOQJ7DaTXUM6HdL78fPJdZSAeJMyX4ljrnkl2ShPBEp6CKJ0t
+vwLhbPMAs6log4mXmOkTCvmtdfS56Y8ZIImKk6kzBvbNkujrmav9rfaC5YbZk4hJNIUkU2IfS1u4
+3YLbm1e0Yglr/6pfAZ4DkcO71LLjApQ1hLOHt3J4Vxrl5F1Ag9DzHgL44cButSJecTGWsDie/KKU
+fxOZ3jtHx5r5Yy4cWXfn7RuaDf7iPagrztGpVsyPudEVNqRRMswL54O7aJGXnRI1zvFiIRxZbY0x
+7XFE0JO3ieURfvjVI474hmm5Jwzu2MFo8TVvmBHxxopbAXxDaMP2I4byUMnCdBhk4mSGl83Qi9Rf
+YE4H0cheS7JjJsopKfYe5CeG3x5zHgK2ZIyDf1DYnhGtb2GuR0Hcj+HTsHeFeFcJv/Z8vZJNpzCG
+p8t/e/O3+quQyJoAAAAASUVORK5CYII=
+
+------=_Part_64_2054641114.1755273385715
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Disposition: inline
+Content-ID: <ic-youtube.png>
+
+iVBORw0KGgoAAAANSUhEUgAAABQAAAAPCAYAAADkmO9VAAAAAXNSR0IArs4c6QAAAONJREFUOBFj
+tDp0I4aBkaH3////YgwUAEZGxleMjAxFjFaHb7yk1DCYO0CGMlHLMJChILOYYKZTiyZoIDBc0oFh
+/ItYCwkaeMxWcxYjE4sDIwPDc2IMJWggyJBj1qrHmbk4jYGGHidkKFEGggw5bKLwXFpYwwEYBLPw
+GUq0gSBDnr+7LQOkpPAZyIJPEibncP8+x68nv8r//f9X8Z+BgQMmjo1mtDx0HagGD2Bk9mVk+DcR
+mMaU8KiCSxF24f+/m/HbCDcLzCApDFG1YucxgfIfdinSRcF5meE/QzE1DAWZASptAOxlPIudNAoC
+AAAAAElFTkSuQmCC
+
+------=_Part_64_2054641114.1755273385715
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Disposition: inline
+Content-ID: <ic-slack.png>
+
+iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAAAAXNSR0IArs4c6QAAAmhJREFUOBF9
+VE9rU0EQn9kk9V8OfgexvtyECh6S1NgmsUjBU8WTX0A8VfFoBBFFPYnQgx9A9CRIKGmo9SURBL14
+8L0kJ8GjxyJU+3ac3yb7eCm1A29ndmb2t7Pz5zEdQSv9+Fxi6Zq6lIlpXkgsE8Vs+GWnHGxnj6p+
+lhphjENrJHJViM7OWqc7ZjFM9zqV4Km3p0ArvaiWED0ToQVvPJIrWJ5kabNa2oGfwdLsx3f3ibcP
+B+FfdHLuNLFpwTclEcbFfs/NQbxkLXX1KZPomP6qsKOgDe/UXSw5Wz2MhJk+EvEpEbkAOxNXthaD
+gRErt1IQGCTf2KqWmpqDBx7IcwCqrSYmEx3yqWQ0oYF3BGfevwzeqZZaOOijgQ7U7EUtSpL3k52u
+WhTIejG7PDkD80MAOHm6LH8eVuu90Ruv04trXgZHZdEmABmnhhOFNHnQLffiDd6zIUmyduXT8CZ0
+OaIWuCbnh+O6oNeMQva9gn7/+YmENsLxJeiOzRVe6VsFX5LwKnQoN55bLB4/j/2UyiZn6J3fKS9C
+1sK2wNsXz3xha16QTRa61fnr0Hna3d1b9zK6nrFphNEIb/UGVOxgrrwNHAm3QvdTHdP3SaKZ26ky
+l1s9CILn4nMVU0eR/IfUH4JwNI0oLutAulxpw71mNt+stY986QHiD6ptXcg+1twWnA5zZ6juIkJn
+KsBXBy50AyCQm2F02zmTjsmUROzzGRAMr/4JXETwwdBi3rJd7g8fxnGxtsIdP7QpEJwxvJrEJ/8D
+U+extkJbI3qLV2QvmAFyYDrEmD9NSuC6Xmik+gHaZLMSDLOHs/I/cZL1/2clPUUAAAAASUVORK5C
+YII=
+
+------=_Part_64_2054641114.1755273385715--
+
+------=_Part_63_1523643796.1755273385715--

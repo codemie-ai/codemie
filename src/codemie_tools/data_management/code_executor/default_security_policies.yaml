@@ -1,0 +1,155 @@
+---
+# CodeMie Security Policies Configuration
+# Version 1.0
+#
+# This file defines security policies for code execution in shared
+# sandbox environments.
+#
+# Security Severity Levels:
+#   SAFE (0):   Blocks nothing (most permissive)
+#   LOW (1):    Allows read operations like requests.get()
+#   MEDIUM (2): More restrictive
+#   HIGH (3):   Only blocks critical operations
+
+version: "1.0"
+
+# Restricted Python modules
+restricted_modules:
+  # System operations - HIGH severity
+  - name: os
+    description: >-
+      Operating system interface - LOW for file operations
+      (walk, path), HIGH for system commands
+    severity: LOW
+
+  - name: subprocess
+    description: >-
+      Process execution - LOW severity for git operations,
+      HIGH for others
+    severity: LOW
+
+  - name: sys
+    description: >-
+      System-specific parameters - restricted for isolation
+    severity: HIGH
+
+  # File system operations
+  - name: shutil
+    description: >-
+      High-level file operations - blocked in shared
+      environment
+    severity: HIGH
+
+  - name: pathlib
+    description: >-
+      Object-oriented filesystem paths - restricted
+    severity: MEDIUM
+
+  - name: glob
+    description: >-
+      Unix style pathname pattern expansion - restricted
+    severity: MEDIUM
+
+  - name: tempfile
+    description: "Temporary file creation - use with caution"
+    severity: MEDIUM
+
+  # Network operations
+  - name: socket
+    description: "Network socket operations - blocked"
+    severity: HIGH
+
+  - name: urllib
+    description: "URL handling - blocked for security"
+    severity: HIGH
+
+  - name: requests
+    description: >-
+      HTTP library - read operations (GET) allowed with
+      low severity
+    severity: LOW
+
+  - name: httpx
+    description: "HTTP client - blocked"
+    severity: HIGH
+
+  # Code execution - HIGH severity
+  - name: eval
+    description: "Dynamic code evaluation - extremely dangerous"
+    severity: HIGH
+
+  - name: exec
+    description: "Dynamic code execution - extremely dangerous"
+    severity: HIGH
+
+  - name: compile
+    description: "Code compilation - blocked"
+    severity: HIGH
+
+  # Process/Thread manipulation - HIGH severity
+  - name: threading
+    description: >-
+      Thread-based parallelism - restricted in shared
+      environment
+    severity: HIGH
+
+  - name: multiprocessing
+    description: "Process-based parallelism - blocked"
+    severity: HIGH
+
+  # Code inspection - MEDIUM severity
+  - name: inspect
+    description: "Code introspection - restricted"
+    severity: MEDIUM
+
+  - name: importlib
+    description: "Dynamic import system - restricted"
+    severity: MEDIUM
+
+# Security patterns - regex patterns to detect dangerous code
+# constructs
+patterns:
+  # System command execution
+  - pattern: 'os\.system\s*\('
+    description: >-
+      System command execution - blocked for security
+    severity: HIGH
+
+  - pattern: 'subprocess\.(run|call|Popen|check_output)'
+    description: >-
+      Process execution - LOW severity (allows git and
+      system tools)
+    severity: LOW
+
+  # File system manipulation
+  - pattern: 'os\.(remove|rmdir|unlink|mkdir|makedirs)'
+    description: "File system modification - restricted"
+    severity: HIGH
+
+  # Network access
+  - pattern: 'socket\.socket\s*\('
+    description: "Network socket creation - blocked"
+    severity: HIGH
+
+  - pattern: 'requests\.(get|post|put|delete)'
+    description: "HTTP request - blocked for security"
+    severity: LOW
+
+  # Code evaluation
+  - pattern: '\beval\s*\('
+    description: "Dynamic code evaluation - extremely dangerous"
+    severity: HIGH
+
+  - pattern: '\bexec\s*\('
+    description: "Dynamic code execution - extremely dangerous"
+    severity: HIGH
+
+  # Environment manipulation
+  - pattern: 'os\.environ\['
+    description: "Environment variable modification - restricted"
+    severity: HIGH
+
+  # Dangerous builtins
+  - pattern: '__builtins__'
+    description: "Access to builtins - potential security risk"
+    severity: HIGH

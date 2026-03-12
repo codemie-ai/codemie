@@ -1,0 +1,3 @@
+SOURCE_DOCUMENT_KEY = "###SOURCE DOCUMENT###"
+SOURCE_FIELD_KEY = "**Source:**"
+FILE_CONTENT_FIELD_KEY = "**File Content:**"

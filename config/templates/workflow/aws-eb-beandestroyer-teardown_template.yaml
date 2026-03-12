@@ -1,0 +1,89 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-aws-eb-beandestroyer-teardown
+name: "BeanDestroyer: AWS Elastic Beanstalk Teardown Automation"
+description: |
+  Automates the teardown and cleanup of AWS Elastic Beanstalk infrastructure,
+  managing the destruction process and monitoring its completion.
+  In order to use this workflow, the following prerequisites must be satisfied:
+  1. A beanstalker environment has been set up with files from: https://github
+  .com/epam/EPAM-AI-RUN-Marketplace/tree/main/guide/workflows/resources/beanstalk-workflow
+  2. Codemie-plugins has been configured to have access to the above folder and is 
+  running with mcp servers: filesystem and cli-mcp-server, both of which require 
+  access to the said folder.
+mode: Sequential
+icon_url: "https://upload.wikimedia.org/wikipedia/commons/9/9d/Green_rhombic_dodecahedron.gif"
+execution_config:
+    enable_summarization_node: false
+    tokens_limit_before_summarization: 300000
+    recursion_limit: 500
+    max_concurrency: 1
+    retry_policy:
+      initial_interval_seconds: 66.0
+      backoff_factor: 5.0
+      max_interval_seconds: 500.0
+      max_attempts: 9
+
+    assistants:
+      - id: bean
+        assistant_id: PRECONFIGURED:amna-aws-eb-bean
+
+    states:
+      - id: destroy
+        assistant_id: bean
+        task: |
+          1. Destroy the eb infrastructure via the command: "./run_bg ./cleanup.sh", this 
+          will run the cleanup script in the background and return a PID, remember this PID.
+          2. Output this {PID} as a valid JSON so it can be reused by the next state, as 
+          well as the boolean cleanup_started, which will be false if the cleanup 
+          failed. If the cleanup failed, try to assess why exactly it failed and include 
+          the report under the problem key in the JSON.
+        output_schema: |
+          {
+               "PID": "PID",
+               "cleanup_started": "True | False",
+               "problem": ""
+           }
+        next:
+          condition:
+            expression: "cleanup_started==True"
+            then: check
+            otherwise: end
+
+      - id: check
+        assistant_id: bean
+        task: |
+          1. Wait for 30 seconds
+          2. Check if the cleanup is finished or still running with the command: "
+          ./check_bg {PID}"
+          3. Output a valid JSON with a success set to True if the previously checked PID
+          has finished, False otherwise. Also include the same {PID} in the JSON.
+        output_schema: |
+          {
+              "success": "True | False",
+              "PID": "PID"
+          }
+        next:
+          condition:
+            expression: "success==True"
+            then: done
+            otherwise: check
+
+      - id: done
+        assistant_id: bean
+        task: |
+          1. Print a success message.
+        next:
+          state_id: end

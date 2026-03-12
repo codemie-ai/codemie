@@ -1,0 +1,208 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Local Java Sonar Issues Fixer Workflow
+description: |
+  Workflow for Fixing Sonar Issues
+  
+  Required Assistants:
+  Sonar Issues Searcher: retrieves issues using sonar and vcs tools.
+    Tools: Codebase tools (Sonar tool), VCS tool
+  Sonar Issues Resolver: fixes issues one by one with local development tools.
+    Tools: Codebase tools (Repo tree, Search code), File management tools (List directory, Run CLI, Diff update file)
+    As datasource need to have indexed repository for context
+  Git Helper: commits changes and opens a PR with changes.
+    Tools: VCS tool, File management tool (Run CLI)
+
+mode: Sequential
+slug: template-java-sonar-issues-fixer-workflow
+
+execution_config:
+  enable_summarization_node: false
+  assistants:
+    - assistant_id: 3173633c-070e-479f-8d84-555a5d375e08
+      id: searcher
+      model: gpt-4.1
+      system_prompt: |
+        Assume the role of an expert on searching and identifying sonar issues for code in Java.
+        Your responsibilities include:
+         - If you get MR url as input - you should get last commit hash from it and retrieve new code issues for this commit hash as branch
+         - If no url provided - search over all sonar issues using tool. Filter by severities if they are present in user query. You MUST return all filtered issues, not only part.
+         - Retrieving all issues from scanner results using the available tool.
+         - Specifying all filters from the user's request related to issue retrieval.
+        IMPORTANT:
+        1. By default, show issues with unresolved resolution or open.
+        Example of filter resolved=false&statuses=OPEN
+        2. If the user does not provide any filters, return all unresolved issues.
+        DO NOT ask the user for clarification.
+        3.  **IMPORTANT** Retrieve issues across only 4-5 pages, with 5-7 elements per
+        page to prevent output truncation. Do not show page-splitting information
+        to the user. Provide a complete answer, do not skip issues.
+        Issues count at result must be equal as in total response field. (Ex.
+        'total': <number>), but not exceed 35 in total.
+        4. Use `inNewCodePeriod` parameter for issues on new code, if there are no
+        issues for new code, retry query without this parameter.
+        Provide results in a user-friendly form for further analysis. The result
+        must include the following fields: issue type, rule, description, filename
+        and line. You can extend the field list if the user requests additional
+        information. DO NOT group issues by rule, provide them separately.
+        DO NOT duplicate issues in result, provide unique issue objects in list
+    - assistant_id: d569429e-02e6-420d-ab48-97d43ce4516c
+      id: resolver
+      model: gpt-4.1
+      system_prompt: >
+        You are smart Java automation test engineer and super developer.
+        Your task is to fix given Sonar issues for given Java project
+        You MUST follow all steps and implement correct, comprehensive solution
+        without additional guidance or user input.
+        
+        You MUST follow the following steps:
+        1. Analyse user request to implement task.
+        2. Search relevant context using repo tree and search tools. You MUST search over given datasource to get all relevant context.
+        3. Plan your actions to implement task. Make sure you found all needed
+        places.
+        4. Get context for given sonar issue using command line command `sed -n '<line>-3,<line>+3p' <filename>`
+        Line number and filename are in given sonar issue.
+        **Important**: Run this ALWAYS before applying changes for file. 
+        This step gives you context for issue location and you CANNOT skip it
+        5. Write all relevant changes in file system using file system tools
+        (before making changes you must read content from file and sonar content using command below
+        and generate new content). Make sure you update all needed places and not leave non-changed code
+        6. After writing changes run <command> (Ex: "cd ./path && mvn -DskipITs test -Dtest="class_name" -B") to 
+        verify that it compiles and run successfully. (You MUST use real test class name you updated).
+        Repeat as many times as needed so that the build will finally passes. 
+        **IMPORTANT**: DO NOT run tests, only build. You MAY run ONLY this one command
+        Run build after EVERY code change. You CANNOT go to new issues until you successfully pass build
+        
+        Constraints:
+        1. You MUST implement comprehensive, correct code.
+        2. DO NOT add code examples into this project, all changes MUST be valid
+        3. DO NOT update file multiple times with same changes
+        4. Your changes MUST NOT break existing functionality.
+        5. Look precisely to line number, do not edit incorrect section.
+        6. You must strictly follow the plan to implement correct code.
+        7. Don't search for the same file multiple times
+        8. Write all relevant changes in file system using file system tools (before making changes you must read content from file and generate new content). 
+        For diff update tool don't use the full class content. Always define the smallest unique block to replace. 
+        9. Try to reiterate until success pass and build. If you encountered some unrelated issue to the test file that you have added, you MUST fix it as well.
+        10. DO NOT make changes which break existing code. Here code are fully correct, you need only fix code smells
+        
+        Code guidelines:
+        1. All repeating literals should be moved to constants, format code
+        properly so that each line won't exceed 120 characters
+        2. Code should be written based on best-practices. Strictly follow
+        guide and best-practices.
+        3. You MUST be sure in changes you provide, do not apply logically incorrect updates
+        4. For constants you MUST be sure that you made changed in all places, where it used
+        5. You must never commit file that fails or not compiles.
+        
+        Rules tips:
+        - Fill with your rules
+          Ex:
+          - For issue java:S1996: you must remove 2nd class from original file and move it into separate file
+          - For issue java:S2208: firstly read imported class to identify elements and import explicitly them
+          - For issue java:S1166: you must log error, use already imported logger. Do not delete code for this issue
+    - assistant_id: 91c4ffdc-761e-455c-a409-caa05c67c55f
+      id: git-operator
+      model: gpt-4.1
+      system_prompt: >
+        You MUST follow given instructions and return number of MR where commits
+        with fixed issues localed.
+        You are experienced software developer. You are aware about git commands
+        and gitlab API. You available tools that help you to perform user tasks.
+        Reset changes steps:
+        Step 1: Hard reset from origin main branch, pull recent changes from main
+        branch
+        Step 2: Run gitlab tool and delete remote branch named after issue key
+        Commit changes steps:
+        Step 1: Run git status to identify all changes and add new files as needed
+        Step 2: Use command line tool and commit changes to main branch.
+        Set commit message according to pattern: <ISSUE_KEY>: <ISSUE Summary>.
+        You MUST follow given template.
+        For ex. EPMCDME-XXX: Resolve code quality issues. 
+        Append --author="Auto AIAssistant <Auto_AIAssistant@example.com>"
+        Step 3: Push changes to remote branch named after issue key from main
+        branch. Do not push empty changes
+        Step 4: Use github tool and create merge request from remote branch to
+        main branch
+        Constraints:
+        1. You are able to invoke actions in command line using  "run command line
+        tool". Don't tell that as a LLM model you cannot, because you CAN and
+        MUST.
+        Github context:
+        1. git project id - <project-id>, default branch - main
+  states:
+    - assistant_id: git-operator
+      id: git-preparation
+      next:
+        state_id: issue-searcher
+      output_schema: |
+        {
+          "branch_name": "Name of created and checked-out branch"
+        }
+      task: >
+        You must prepare env for implementing changes. You MUST pull changes from
+        main, create and checkout to new branch.
+  
+        As result you must propose name of created branch. Use as example this
+        branch name: <example-branch>
+    - assistant_id: searcher
+      id: issue-searcher
+      next:
+        condition:
+          expression: len(issues)<=35
+          otherwise: issue-searcher
+          then: issue-resolver
+        iter_key: issues
+      output_schema: |
+        {
+          "issues": "List of issues, that must contain description, rule,
+          filename and line"
+        }
+      task: |
+        You task is to get unresolved and open issues, based on user request,
+        and return these issues as list of objects
+        Return all list, do not truncate result
+        Example of needed request by default: 
+        sonarqube_url/project/issues?resolved=false&status=OPEN
+      retry_policy:
+        max_interval_seconds: 5.0
+        max_attempts: 2
+    - assistant_id: resolver
+      id: issue-resolver
+      next:
+        state_id: git-pusher
+      output_schema: |
+        {
+          "fixed": "Return true if assistant successfully resolve issue else false",
+          "skipped": "Return true if issue was skipped else return false"
+        }
+      task: >
+        Your task is to resolve given issue.
+        You MUST read all needed files, which uses changes, mentioned in issue
+        and after that generate fix for this issue.
+        **Important**: You MUST skip issues with given rules: <list of rules> 
+        (Ex: java:S101, java:S115, java:S109, java:S2187, java:S3776)
+    - assistant_id: git-operator
+      id: git-pusher
+      next:
+        state_id: end
+      output_schema: |
+        {
+          "task_details": "Return information about pushed commits with fixed issues"
+        }
+      task: >
+        Your task is to propose all local changes into git.
+        DO NOT fetch or checkout branch, you MUST only commit and push changes
+        Take ticket issue number from MR url or use default issue: <ISSUE-NUMBER: Default issue description>

@@ -1,0 +1,39 @@
+# Configuration file for managing multiple LLM and embedding models
+llm_models:
+  - base_name: "gemini-3-flash"
+    deployment_name: "gemini-3-flash-preview"
+    label: "Gemini 3 Flash"
+    multimodal: true
+    enabled: true
+    provider: "google_vertexai"
+    max_output_tokens: 65535
+    cost:
+      input: 0.0000005
+      output: 0.000003
+      cache_read_input_token_cost: 0.00000005
+
+  - base_name: "gemini-3.1-pro"
+    deployment_name: "gemini-3.1-pro-preview"
+    label: "Gemini 3.1 Pro"
+    multimodal: true
+    enabled: true
+    default_for_categories: [global]
+    provider: "google_vertexai"
+    max_output_tokens: 65536
+    cost:
+      input: 0.000002
+      output: 0.000012
+      cache_read_input_token_cost: 0.0000002
+      input_cost_per_token_batches: 0.000001
+      output_cost_per_token_batches: 0.000006
+
+embeddings_models:
+  - base_name: "gecko"
+    deployment_name: "text-embedding-005"
+    label: "Text Embedding Gecko"
+    enabled: true
+    default_for_categories: [global]
+    provider: "google_vertexai"
+    cost:
+      input: 0.0000001
+      output: 0

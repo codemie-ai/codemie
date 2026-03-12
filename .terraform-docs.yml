@@ -1,0 +1,59 @@
+# terraform-docs configuration file v0.15.0
+formatter: "markdown table"
+
+# version: ">= 0.13.0, < 1.0.0" # since 0.13.0
+
+header-from: "docs/header.md"
+footer-from: "docs/footer.md"
+
+sections:
+ show:
+   - all
+# hide:
+
+content: |-
+ {{ .Header }}
+
+ {{ .Footer }}
+
+ {{ .Providers }}
+
+ {{ .Modules }}
+
+ {{ .Requirements }}
+
+ {{ .Inputs }}
+
+ {{ .Outputs }}
+
+ {{ .Resources }}
+
+output:
+  file: "terraform/README.md"
+  mode: inject
+  template: |-
+    <!-- BEGIN_TF_DOCS -->
+    {{ .Content }}
+    <!-- END_TF_DOCS -->
+
+output-values:
+  enabled: false
+  from: ""
+
+sort:
+  enabled: true
+  by: name
+
+settings:
+  anchor: true
+  color: true
+  default: true
+  escape: true
+  indent: 2
+  required: true
+  sensitive: true
+  type: true
+  description: true
+  hide-empty: true
+  html: true
+  lockfile: true

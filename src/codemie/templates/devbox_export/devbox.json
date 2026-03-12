@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.10.5/.schema/devbox.schema.json",
+  "packages": [
+    "docker@24.0.9",
+    "colima@0.6.9",
+    "python@3.12.3",
+    "nginx@1.26.1",
+  ],
+  "env": {
+    "PYTHONPATH":           "$DEVBOX_PROJECT_ROOT/src",
+    "SUFFIX":               "$DEVBOX_PROJECT_ROOT",
+    "NGINX_WEB_ROOT":       "$DEVBOX_PROJECT_ROOT/codemie-ui",
+    "ELASTIC_URL":          "http://localhost:19200",
+    "STATE_IMPORT_ENABLED": "false",
+  },
+  "shell": {
+    "init_hook": [
+      ". $VENV_DIR/bin/activate",
+      "alias back='devbox run back'",
+    ],
+    "scripts": {
+      "colima": [
+        "colima start --memory 4",
+      ],
+      "elastic": [
+        "docker run --name exported_elastic -d -p 19200:9200 -e discovery.type=single-node -e xpack.security.enabled=false -e xpack.security.enrollment.enabled=false -e ES_JAVA_OPTS=\"-Xms1024m -Xmx1024m\" docker.elastic.co/elasticsearch/elasticsearch:8.9.2",
+      ],
+      "back": [
+        "poetry run uvicorn rest_api.main:app --host=0.0.0.0 --port=18080 --root-path $SUFFIX",
+      ],
+      "init": [
+        ". $VENV_DIR/bin/activate",
+        "pip install --no-cache-dir poetry==1.5.1",
+        "poetry config virtualenvs.create false",
+        "poetry install",
+      ],
+    },
+  },
+}

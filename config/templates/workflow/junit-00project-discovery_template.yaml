@@ -1,0 +1,85 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-junit00-project-discovery
+name: "JUNIT: project discovery"
+description: |
+  Automatically discovers current project structure and checks if it is suitable for automated unit-test creation. Requires airun/00bootstrap.json to be available!
+mode: Sequential
+execution_config:
+    enable_summarization_node: false
+    assistants:
+    - id: java_expert
+      system_prompt: |
+        You are a Java expert with access to local project and ability to run tools. Use _read_bootstrap_file tool to read 00bootstrap.json file and treat information from this file as part of your system prompt.
+        You should not produce any user-readable output as the user is unlikely to monitor your actions in real-time. Instead - if you find yourself unable to comply with the given task,
+        use _append_structured_file tool to add the description of the situation in structured format with necessary details to <project_base>/airun/99errors.json for later examination and finish the dialog.
+        If during your work you find something unusual, concerning or wrong in the project - don't concentrate on that, but use _append_structured_file tool and add your thoughts to <project_base>/airun/99sidetrack.json and continue your main task.
+      tools:
+          - name: _read_file
+            integration_alias: amna-demo-plugin-integration
+          - name: _read_multiple_files
+          - name: _write_tile
+          - name: _edit_file
+          - name: _create_directory
+          - name: _list_directory
+          - name: _directory_tree
+          - name: _move_file
+          - name: _search_files
+          - name: _get_file_info
+          - name: _list_allowed_directories
+          - name: _read_bootstrap_file
+          - name: _append_file
+          - name: _append_structured_file
+          - name: _run_command
+      exclude_extra_context_tools: true
+    states:
+    - id: project-discovery
+      assistant_id: java_expert
+      task: |
+        You must determine if the project is suitable for futher steps of automatic coverage analysis and unit-test generation.
+        
+        Key steps:
+        1. Check you have successfully read 00bootstrap.json and determined the <project_base> path.
+        2. Check there is a <project_base>/airun folder
+        3. Remove <project_base>/airun/00project-info.json and <project_base>/airun/00project-errors.json
+        4. Check the project is Java-based (or mostly Java-based)
+        5. Check the project uses a known build management system (ant, gradle, maven, etc)
+        6. Check the project is set up to use a known unit-test framework (e.g. junit)
+        7. Check if the build management system is set up properly to allow compiling the projects and running tests
+        8. Check if the project builds and tests could be run
+        9. Check if JaCoCo is set up and enabled in the project build configuration
+        
+        If all items were positively confirmed - create a file <project_base>/airun/00project-info.json with the format specified below.
+        Otherwise, remove file <project_base>/airun/00project-info.json and use _append_structured_file to add all detected problems
+        in structured format to <project_base>/airun/00project-problems.json
+        
+        Project info format:
+        {
+        project_base: "/full/path/to/project/base (as specified in 00bootstrap.json)",
+        source_base: "/full/path/to/project/java/sources",
+        tests_base: "/full/path/to/project/java/tests",
+        jacoco_available: true/false
+        jacoco_html_base: "/full/path/to/jacoco/html/report (optional, only if available)",
+        unit_test_framework: "framework name and version"
+        test_compile_command: "command to compile tests (e.g. mvn test-compile)",
+        test_run_command: "command to run tests (e.g. mvn verify)",
+        single_test_run_command: "command to run single test (if available)"
+        }
+        
+        IMPORTANT: 
+        1. Do not try fixing any issues or modify any existing project files! Changes require approval by developers in advance!
+      next:
+        include_in_llm_history: false
+        state_id: end

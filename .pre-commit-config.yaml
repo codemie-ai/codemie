@@ -1,0 +1,49 @@
+repos:
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.89.0
+    hooks:
+      - id: terraform_fmt
+      # runs too long, so disabled, but ensure you are running this locally
+      # - id: terraform_providers_lock
+      #   args:
+      #       - --args=-platform=windows_amd64
+      #       - --args=-platform=darwin_amd64
+      #       - --args=-platform=linux_amd64
+      #       - --args=-platform=darwin_arm64
+      - id: terraform_validate
+        args:
+          - --tf-init-args=-lockfile=readonly
+      - id: terraform_docs
+        args:
+          - '--args=--lockfile=false'
+      - id: terraform_tflint
+        args:
+          - '--args=--only=terraform_deprecated_interpolation'
+          - '--args=--only=terraform_deprecated_index'
+          - '--args=--only=terraform_unused_declarations'
+          - '--args=--only=terraform_comment_syntax'
+          - '--args=--only=terraform_documented_outputs'
+          - '--args=--only=terraform_documented_variables'
+          - '--args=--only=terraform_typed_variables'
+          - '--args=--only=terraform_module_pinned_source'
+          - '--args=--only=terraform_naming_convention'
+          - '--args=--only=terraform_required_version'
+          - '--args=--only=terraform_required_providers'
+          - '--args=--only=terraform_standard_module_structure'
+          - '--args=--only=terraform_workspace_remote'
+      # - id: tfupdate
+      #   name: Autoupdate Terraform versions
+      #     - --args=-v 1.5.4 ./terraform
+      #     - --args=--platform linux_amd64
+      #     - --args=--platform darwin_amd64
+      #     - --args=--platform darwin_arm64
+
+  - repo: local
+    hooks:
+      - id: codemie-pre-commit
+        name: Codemie pre-commit (ruff fast fix + verify)
+        entry: bash -lc 'set -o pipefail; bash scripts/git-hooks/pre_commit.sh 2>&1 | tee /dev/tty'
+        language: system
+        pass_filenames: false
+        stages: [commit]
+        always_run: true

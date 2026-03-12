@@ -1,0 +1,192 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-windup-rules-generation
+name: "Windup Rules Generation Workflow"
+description: |
+  Analyses the Java project and creates custom Windup rules for the user requested migration.
+  
+  Requires filesystem and filesystem-extra Plugins.
+    - Set environment variables pointing to root of your project: ALLOWED_DIR, FILE_PATHS
+    - Set environment variables pointing to project/airun folder: PROJECT_BOOTSTRAP
+    - Run plugin: codemie-plugins mcp run -s filesystem,filesystem-extra -e filesystem=FILE_PATHS -e filesystem-extra=ALLOWED_DIR,PROJECT_BOOTSTRAP
+mode: Sequential
+execution_config:
+    max_concurrency: 1
+    enable_summarization_node: false
+    tools:
+      - id: read_bootstrap_tool
+        tool: _read_bootstrap_file
+        trace: true
+        toolset: Plugin
+    assistants:
+    - id: java_windup_expert
+      system_prompt: |
+        You are a Java expert experienced using and configuring Windup migration tool
+        with access to local project and ability to run tools.
+        
+        IMPORTANT:
+        You are not allowed to modify any of the project files under any circumstances.
+        The only files you can edit are under airun directory.
+      tools:
+        - name: _read_file
+        - name: _read_multiple_files
+        - name: _write_file
+        - name: _edit_file
+        - name: _create_directory
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+    - id: migration_expert
+      system_prompt: |
+        You are a Java migration expert with access to local project and ability to run tools.
+      tools:
+        - name: _read_file
+        - name: _read_multiple_files
+        - name: _write_file
+        - name: _edit_file
+        - name: _create_directory
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _read_bootstrap_file
+        - name: _append_file
+        - name: _append_structured_file
+      exclude_extra_context_tools: true
+    states:
+      - id: project_discovery # ID of state inside this configuration
+        assistant_id: java_windup_expert
+        task: |
+          You must analyse the user request and determine core properties of a project and desired migration type,
+          such as application type, build management system, used dependencies or any other relevant information,
+          which should be known to migrate project by user's request.
+          
+          You must determine if the project is suitable for further steps of migration.
+        output_schema: |
+          {
+            "migration_details": {
+              "sourceTechnology": "Source of requested migration in kebab case (e.g. jdk-8)", 
+              "targetTechnology": "Target of requested migration in kebab case (e.g. openjdk-17)"
+            }
+            "project_details": {
+              "project_base": "/full/path/to/project/base",
+              "dependencies": ["list of dependencies/frameworks used in the project (e.g. Hibernate, JSF, JPA, Log4j)"],
+              "build_management_system": "Build management system used in the project ant, gradle, maven, etc.",
+              "application_type": "e.g. Java EE, Spring Boot, Microservices, etc.",
+              "additional_information": "Any other relevant information to help with project migration."
+            }
+          }
+        next:
+          state_id: rules_generator
+
+      - id: rules_generator
+        assistant_id: migration_expert
+        task: |
+          You are given the task to analyse differences between source and target of "{{migration_details}}" migration
+          and provide rules which will help user to migrate their project.
+          
+          Do not create any configuration files - this will be done by a specialized agent.
+          Your task is to identify and describe each migration rule strictly in the provided JSON format and append it to <basepath>/airun/missing-rules.json using _append_structured_file
+            
+          Your output format is:
+          {
+            sourceTechnology: "Source of requested migration (exactly inherited from the request)",
+            targetTechnology: "Target of requested migration (exactly inherited from the request)",
+            rulesetName: "Name of the ruleset",
+            ruleDescription: "Free text description of the rule in human-readable format, short and concise"
+            ruleWhen: "Conditions allowed in the when portion of a rule can include evaluation of Java classes, XML files, projects, and file content"
+            rulePerform: "Operations allowed in the perform section of the rule include the classification of application resources, in-line hints for migration steps, links to migration information, and project lineitem reporting."
+            ruleOtherwise: "(Optional) Perform this action when condition is not satisfied"
+            ruleImplementationSuggestions: "Extra data you see required for successfully implementing the rule besides when/perform/otherwise sections"
+          }
+        next:
+          state_id: read_missing_rules
+
+      - id: read_missing_rules
+        tool_id: read_bootstrap_tool
+        tool_args:
+          path: missing-rules.json
+        next:
+          state_id: windup_config_generator
+          iter_key: unused # unwraps to array, key is ignored
+
+      - id: windup_config_generator
+        assistant_id: java_windup_expert
+        task: |
+          Generate the Windup migration rule described in the request.
+          You are allowed to only interact with the files inside airun directory.
+          
+          Files should follow the structure below:
+          ```
+          custom-rules/
+          ├── rules/
+          │   ├── your-rule-set.windup.xml
+          │   └── other-rule-set.windup.xml
+          ├── addon/
+          │   └── pom.xml
+          └── pom.xml
+          ```
+          
+          Creating the Rule Files Steps:
+          1. Create a new XML file in the rules/ directory with a .windup.xml extension.
+          2. Use the following basic structure for your rule file:
+            ```xml
+            <?xml version="1.0"?>
+            <ruleset id="your-ruleset-id"
+                     xmlns="http://windup.jboss.org/schema/jboss-ruleset"
+                     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                     xsi:schemaLocation="http://windup.jboss.org/schema/jboss-ruleset http://windup.jboss.org/schema/jboss-ruleset/windup-jboss-ruleset.xsd">
+                <metadata>
+                    <description>Your ruleset description</description>
+                    <dependencies>
+                        <addon id="org.jboss.windup.rules,windup-rules-java,3.0.0.Final"/>
+                    </dependencies>
+                </metadata>
+                <rules>
+                    <!-- Your rules go here -->
+                </rules>
+            </ruleset>
+            ```
+          
+          # Rule Components
+          ## When Conditions
+          The *<when>* element specifies the conditions that must be met for the rule to be applied. Some common conditions include:
+            - *<javaclass>*: Matches Java classes ('''<javaclass references="com.example.OldClass"/>''')
+            - *<xmlfile>*: Matches XML file content ('''<xmlfile matches="/web-app/servlet[servlet-class='com.example.OldServlet']"/>''')
+            - *<filecontent>*: Matches content in any file ('''<filecontent filename="application.properties" pattern="old.property="/>''')
+            - *<project>*: Matches project characteristics
+
+          ## Perform Actions
+          The *<perform>* element specifies the actions to take when the conditions are met. Common actions include:
+            - *<hint>*: Provides a hint to the user
+            - *<classification>*: Classifies a file or set of files
+            - *<lineitem>*: Adds a line item to the report
+            - *<iteration>*: Performs actions on each matched item
+          
+          # Best Practices
+          1. Use meaningful IDs for your rules and rulesets.
+          2. Provide clear and concise descriptions for your rulesets and hints.
+          3. Use appropriate effort levels (1-13) to indicate the complexity of suggested changes.
+          4. Group related rules into separate rulesets for better organization.
+          
+          IMPORTANT:
+          1. Use sourceTechnology and targetTechnology fields as them are, without ANY modifications
+        next:
+          state_id: end

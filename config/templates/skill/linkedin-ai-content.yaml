@@ -1,0 +1,145 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: linkedin-ai-content
+description: >-
+  Generate professional LinkedIn posts about AI experience, CodeMie platform, AI-native workflows, and organizational transformation. 
+  Use when the user wants to create LinkedIn content about technical insights from AI tools, AI-native work practices and productivity, 
+  CodeMie platform features or updates, industry observations on AI in software development, or personal/team experiences with AI transformation. 
+  Posts maintain a professional, neutral tone with concrete examples, avoiding buzzwords like revolution, world-class, game-changer, or hype phrases.
+content: |-
+  # LinkedIn AI Content Creator
+
+  Generate professional LinkedIn posts about AI experiences, CodeMie platform work, and AI-native practices with a neutral, substantive tone.
+
+  ## Core Approach
+
+  ### Tone and Style
+  - **Professional neutrality**: No buzzwords (revolution, disruptive, game-changer, world-class, cutting-edge, transformative, unprecedented)
+  - **Substance over hype**: Concrete examples, specific metrics, real experiences
+  - **Direct communication**: Get to the point, acknowledge limitations
+  - **Practical focus**: What actually works, not what could work
+
+  ### Post Structure (Concise Format: 150-250 words)
+  1. **Opening hook** (1-2 sentences): Start with a specific observation, question, or moment
+  2. **Main content** (2-3 paragraphs): Share the experience, include concrete details
+  3. **Optional closing** (1-2 sentences): Key takeaway or reflection
+
+  ### Content Types Supported
+  - **Technical insights**: Tool experiences, integration lessons, performance impacts
+  - **CodeMie platform features**: Capabilities, use cases, implementation details
+  - **AI-native workflows**: Process changes, team adoption, productivity shifts
+  - **Industry observations**: Skill changes, measurement challenges, adoption patterns
+  - **Organizational transformation**: Team adoption, cultural shifts, measured outcomes
+
+  ## Workflow
+
+  ### Step 1: Understand the Topic
+  Ask the user:
+  - What experience or insight do you want to share?
+  - Do you have specific metrics or examples? (e.g., time saved, adoption rates, technical details)
+  - What's the main point or takeaway?
+
+  ### Step 2: Check Guidelines and Examples
+  - Review [references/writing-guidelines.md](references/writing-guidelines.md) for tone principles and patterns
+  - Check [references/example-posts.md](references/example-posts.md) for posts matching the content type
+  - Identify which writing patterns fit the user's topic
+
+  ### Step 3: Draft the Post
+  Create a post following this structure:
+
+  **Opening hook**: Start with one of these:
+  - Specific observation: "We've been using [tool] for [time]."
+  - Question: "How much time does [activity] actually take?"
+  - Specific moment: "Last week, I watched [specific event]."
+  - Simple statement: "[Technology] changes how we [activity]."
+
+  **Main content** (2-3 paragraphs):
+  - Include at least one concrete example or data point
+  - Share what worked and what didn't
+  - Focus on actual outcomes, not potential benefits
+  - Keep each paragraph focused on one point
+
+  **Optional closing**:
+  - Brief reflection or key lesson
+  - No call-to-action needed
+
+  ### Step 4: Validate Against Guidelines
+  Before presenting, verify:
+  - [ ] No buzzwords from the avoid list (see guidelines)
+  - [ ] Opening hook is specific, not generic
+  - [ ] Includes concrete examples or metrics
+  - [ ] Based on actual experience
+  - [ ] Length is 150-250 words
+  - [ ] Tone is neutral and professional
+  - [ ] Makes one clear point
+
+  ### Step 5: Present and Iterate
+  - Present the draft to the user
+  - Offer to adjust tone, add details, or refine structure
+  - Create variations if requested
+
+  ## Quick Reference: Word Choice
+
+  **Use**: practical, functional, useful, effective, working, testing, implementing, helps, improves, reduces, simplifies
+
+  **Avoid**: revolutionary, disruptive, transformative, unprecedented, groundbreaking, unlock, unleash, supercharge, massive, incredible, game-changing, world-class
+
+  ## Common Scenarios
+
+  ### Scenario 1: Sharing a Technical Win
+  Focus on: What changed, specific metrics, what it took to implement, honest limitations
+
+  ### Scenario 2: Explaining a Platform Feature
+  Focus on: What it does in plain terms, concrete use case, who benefits, tradeoffs
+
+  ### Scenario 3: Describing a Workflow Change
+  Focus on: Before/after state, transition process, team adoption, unexpected results
+
+  ### Scenario 4: Organizational Transformation
+  Focus on: Timeline, resistance and resolution, adoption metrics, cultural changes
+
+  ### Scenario 5: Industry Observation
+  Focus on: Direct experience or data, practical implications, balanced perspective
+
+  ## Resources
+
+  - **Writing Guidelines**: [references/writing-guidelines.md](references/writing-guidelines.md) - Complete style guide, validation checklist, topic-specific guidance
+  - **Example Posts**: [references/example-posts.md](references/example-posts.md) - Samples for each content type with proper structure and tone
+
+  ## Tips for Success
+
+  1. **Specificity wins**: "Reduced review time by 30%" beats "significantly faster"
+  2. **Show, don't tell**: Describe what happened rather than claiming success
+  3. **Acknowledge limitations**: "Still needs review" is more credible than "perfect solution"
+  4. **One topic per post**: Don't mix technical insights with organizational changes
+  5. **Lead with the hook**: The first sentence determines if people keep reading
+  6. **Data matters**: Include numbers when available (timeframes, percentages, counts)
+  7. **Keep it tight**: Every sentence should add value; remove filler
+
+  ## Example Flow
+
+  **User**: "I want to write about how our team adopted AI coding tools"
+
+  **Claude**:
+  1. Asks: "What was the timeline? What resistance did you face? Do you have adoption metrics?"
+  2. Reviews writing-guidelines.md and example-posts.md (Organizational Transformation section)
+  3. Drafts a post with opening hook, 2-3 paragraphs on adoption journey, closing reflection
+  4. Validates against checklist
+  5. Presents draft and offers refinements
+project: codemie
+visibility: public
+categories:
+  - interview
+  - presales

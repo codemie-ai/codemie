@@ -1,0 +1,262 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-dotnet99-all-in-one
+name: "DOTNET: fully automated test generation"
+description: |
+  Automatically analyzes current project and tries to enhance the test coverage.
+  Prerequisites: 
+   1. Create airun folder in your project and put there 00bootstrap.json with the following minimal structure (feel free to provide more details and make the flow more focused on something):
+    {
+    "project_base": "absolute_path_to_your_project",  
+    }
+   2. Run plugin and give it access to the project tree:
+    - Set environment variables pointing to root of your project: ALLOWED_DIR, FILE_PATHS, DEFAULT_DIR
+    - Set environment variables pointing to project/airun folder: PROJECT_BOOTSTRAP
+    - Run plugin: codemie-plugins mcp run -s filesystem_ext -e cli-mcp-server=ALLOWED_DIR -e filesystem_ext=ALLOWED_DIR,PROJECT_BOOTSTRAP
+mode: Sequential
+execution_config:
+    max_concurrency: 1
+    enable_summarization_node: false
+    tools:
+    - id: read_bootstrap_tool
+      tool: _read_bootstrap_file
+      trace: true
+      toolset: Plugin
+      integration_alias: amna-demo-plugin-integration
+    assistants:
+    - id: project_explorer
+      system_prompt: |
+        You are a C# and .NET expert with access to local project and ability to run tools. Use _read_bootstrap_file tool to read 00bootstrap.json file and treat information from this file as part of your system prompt.
+        You should not produce any user-readable output as the user is unlikely to monitor your actions in real-time. Instead - if you find yourself unable to comply with the given task,
+        use _append_structured_file tool to add the description of the situation in structured format with necessary details to <project_base>/airun/99errors.json for later examination and finish the dialog.
+        If during your work you find something unusual, concerning or wrong in the project - don't concentrate on that, but use _append_structured_file tool and add your thoughts to <project_base>/airun/99sidetrack.json and continue your main task.
+      tools:
+          - name: _read_file
+            integration_alias: amna-demo-plugin-integration
+          - name: _read_multiple_files
+          - name: _write_tile
+          - name: _edit_file
+          - name: _create_directory
+          - name: _list_directory
+          - name: _directory_tree
+          - name: _move_file
+          - name: _search_files
+          - name: _get_file_info
+          - name: _list_allowed_directories
+          - name: _read_bootstrap_file
+          - name: _append_file
+          - name: _append_structured_file
+          - name: _run_command
+      exclude_extra_context_tools: true
+    - id: lang_expert
+      system_prompt: |
+        You are a C# and .NET expert with access to local project and ability to run tools. Use _read_bootstrap_file tool to read 00project-info.json file and treat information from this file as part of your system prompt.
+        You should not produce any user-readable output as the user is unlikely to monitor your actions in real-time. Instead - if you find yourself unable to comply with the given task,
+        use _append_structured_file tool to add the description of the situation in structured format with necessary details to <project_base>/airun/99errors.json for later examination and finish the dialog.
+        If during your work you find something unusual, concerning or wrong in the project - don't concentrate on that, but use _append_structured_file tool and add your thoughts to <project_base>/airun/99sidetrack.json and continue your main task.
+      tools:
+          - name: _read_file
+            integration_alias: amna-demo-plugin-integration
+          - name: _read_multiple_files
+          - name: _write_tile
+          - name: _edit_file
+          - name: _create_directory
+          - name: _list_directory
+          - name: _directory_tree
+          - name: _move_file
+          - name: _search_files
+          - name: _get_file_info
+          - name: _list_allowed_directories
+          - name: _read_bootstrap_file
+          - name: _append_file
+          - name: _append_structured_file
+          - name: _run_command
+      exclude_extra_context_tools: true
+    states:
+    - id: project_discovery
+      assistant_id: lang_expert
+      task: |
+         You must find all the problems in the project that prevent further steps for automatic coverage analysis and unit-test generation.
+    
+         Key steps:
+         1. Check you have successfully read 00bootstrap.json and determined the <project_base> path.
+         2. Check there is a <project_base>/airun folder
+         3. Remove <project_base>/airun/00project-info.json and <project_base>/airun/00project-errors.json
+         4. Check the project is .NET-based and determine the target SDK version
+         5. Check the project uses a known build management system
+         6. Check the project is set up to use a known unit-test framework
+         7. Check if the build management system is set up properly to allow compiling the projects and running tests
+         8. Check if the project builds and tests could be run
+         9. Check if coverage reporting is set up in the project and is able to generate an HTML coverage reports
+        
+         If all items were positively confirmed - create a file <project_base>/airun/00project-info.json with the format specified below.
+         Otherwise, remove file <project_base>/airun/00project-info.json and use _append_structured_file to add all detected problems
+         in structured format to <project_base>/airun/00project-problems.json
+        
+         Project info format:
+         {
+         project_base: "/full/path/to/project/base (as specified in 00bootstrap.json)",
+         sources_base: [ "/full/path/to/project/sources/dir1", "/full/path/to/project/sources/dir1" ],
+         tests_base: "/full/path/to/project/tests",
+         coverage_html_base: "/full/path/to/coverage/html/report",
+         target_sdk_version: "sdk version for the project"
+         unit_test_framework: "framework name and version"
+         test_compile_command: "command to compile tests ",
+         test_run_command: "command to run tests",
+         single_test_run_command: "command to run a single test (class)"
+         }
+      
+          IMPORTANT!!!
+          1. Do not try fixing any issues or modify any existing project files! Changes require approval by developers in advance!
+          2. Describe problems and provide suggestions how to fix them and use _append_structured_file to add them to <project_base>/airun/99errors.json
+      next:
+        include_in_llm_history: false
+        state_id: project_info_sanity_check
+
+    - id: project_info_sanity_check
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: 00project-info.json
+      next:
+        state_id: airun_prepare
+
+    - id: airun_prepare
+      assistant_id: lang_expert
+      task: |
+        Your task is to clean-up <project_base>/airun folder by moving previous execution artifacts to the archive:
+        1. Use _create_directory tool to create a new folder named <project_base>/airun/archive<random_suffix>. Do not reuse existing archive folders!
+        2. Use command-line tools to move the following files from <project_base>/airun to the created archive folder:
+         - 02sources-for-tests.json
+         - 02sources-not-for-tests.json
+         - 03missing-test-cases.json
+        3. As the final step - use command-line tools to execute tests and generate JaCoCo coverage (if available in the project setup). Skip this step if JaCoCo test coverage is not available.
+      next:
+        include_in_llm_history: false
+        state_id: source-triage
+
+    - id: source-triage
+      assistant_id: lang_expert
+      task: |
+        You are given an access to the project and a single file withing this project. You must analyze the file and determine
+        if is is suitable for automatically covering it with unit-tests or not:
+        Important considerations for your analysis:
+    
+        1. Do not read other sources or dependencies, only analyze a single file given to you!
+        2. Determine if the file contains custom business logic that is suitable for unit testing.
+        3. Explicitly avoid suggesting tests for standard library functionalities or external resources (e.g., databases, file systems, network calls).
+        4. Be cautious of classes that primarily wrap or manage interactions with standard libraries or external systems. These are often not suitable for unit testing and are better tested through integration or component tests.
+        5. Consider if the code is better suited for integration or component testing rather than unit testing. This is often the case for:
+           - Database access layers
+           - File system operations
+           - Network communication
+           - Classes that primarily coordinate between other components
+        6. Assess if the current code structure allows for effective unit testing or if refactoring might be necessary.
+        7. Look for pure functions and methods that transform data without side effects, as these are ideal candidates for unit testing.
+        8. Never unit-test anything withing test projects (so no tests for other tests!)
+        9. If there is available HTML coverage report for this file from a previous test run
+        
+        If file is suitable/feasible for unit-testing - use _append_structured_file tool and write information about the file to <project_base>/airun/02sources-for-tests.json
+        If file is NOT suitable/feasible for unit-testing - use _append_structured_file tool and write information about the file to <project_base>/airun/02sources-not-for-tests.json
+        
+        The output format is:
+        {
+         source_file: "/full/path/to/source/file",
+         test_file: "/full/path/to/test/file (either existing one, or the location in the filesystem where it should be created)
+         html_coverage_report: "/full/path/to/html/report/with/coverage/for/this/file"
+         unit-testable: true/false
+         reasoning: "A few sentences why you believe this file is suitable or unsuitable for unit testing"
+        }
+      next:
+        include_in_llm_history: false
+        state_id: read_testable_files
+
+    - id: read_testable_files
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: 02sources-for-tests.json
+      next:
+        include_in_llm_history: false
+        state_id: analyze_coverage
+        iter_key: unused # unwraps to array, key is ignored
+
+    - id: analyze_coverage
+      assistant_id: lang_expert
+      task: |
+         You are given a task to analyze a single file for test coverage enhancements. Please check the source file, the test source, and the coverage report related to that file. Find and read those files and critically analyze
+          what testcases (if any) are missing in existing unit-test file for this class.
+    
+         Important considerations for your analysis:
+    
+         1. Explicitly avoid suggesting tests for standard library functionalities or external resources (e.g., databases, file systems, network calls).
+         2. Be cautious of classes that primarily wrap or manage interactions with standard libraries or external systems. These are often not suitable for unit testing and are better tested through integration or component tests.
+         3. Consider if the code is better suited for integration or component testing rather than unit testing. This is often the case for:
+         - Database access layers
+         - File system operations
+         - Network communication
+         - Classes that primarily coordinate between other components
+    
+         If unit testing is appropriate, generate a request for automatically adding missing test cases. Minimize the number of test cases required, but test all essential uncovered code paths. 
+         Do not write any tests - this would be done by a specialized agent. Your task is to identify and describe each test case strictly in the provided JSON format and append it to <basepath>/airun/03missing-test-cases.json
+    
+         Remember to always prioritize best practices in software testing and to critically evaluate the code before suggesting test cases.
+    
+         Important:
+          - If you decide the file is not suitable for writing unit tests (no meaningful tests could be written, or it is better suited for component/integration testing) do not generate any test cases, 
+            but remenber to append information to 99errors.json
+          - Do not generate more then 3 test-cases for a single file. If there are more then three - take only 3 top most important/business critical ones
+    
+         Your output format is:
+         {
+          sourceFile: "/full/path/to/source_file",
+          testFile: "/full/path/to/file_with_tests",
+          testCaseName: "testcase name in should<Pass or Fail>When<short case description>",
+          testCaseDescription: "Freetext description of the test case in human-readable format, short and concise"
+          testCaseGiven: "preconditions to implement: e.g. teacherDto with first name empty and other fields not set",
+          testCaseWhen: "main test action block: e.g. validate method called"
+          testCaseThen: "postconditons and asserts: e.g. assert that method return value equals to 'Firstname: Empty'"
+          testCaseImplementationSuggestions: "extra data you see required for successfully implementing the test besides given/when/then sections"
+          }
+      next:
+        include_in_llm_history: false
+        state_id: read_test_specs
+
+    - id: read_test_specs
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: 03missing-test-cases.json
+      next:
+        include_in_llm_history: false
+        state_id: write_test
+        iter_key: unused # unwraps to array, key is ignored
+
+    - id: write_test
+      assistant_id: lang_expert
+      task: |
+         You are given a task to implement a single test case. Please check the source file, and the test source to see if the test is already implemented by somebody. If so, do not change anything, but
+         note this to 99errors.json and finish the dialog. If the test is not yet implemented, consider your task and implement the test. Do not change any files except your test source. Do not delete or modify any
+         already existing tests except one you are tasked to implement.
+        
+         Important:
+          - Follow unit-test best practices when writing tests
+          - Respect given-when-then test structure
+          - Do not use any exotic or prone to error testing techniques like reflection or global overrides. Prefer straightforward junit practices.
+          - Compile tests after you made modification to your test to ensure the project compiles
+          - Execute tests (preferably only with a single test file you've modified) to ensure your test passes
+          - If there are errors or test doesn't pass - return back to the file and change your implementation
+          - If after a few tries you are not able to implement a test-case, note this to 99errors.json (with all the context and reasoning) and finish the dialog.
+
+      next:
+        include_in_llm_history: false
+        state_id: end

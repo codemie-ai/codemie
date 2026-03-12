@@ -1,0 +1,82 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-dotnet03-testwriter
+name: "DOTNET: test writer"
+description: |
+  Automatically generates unit-tests by specification
+mode: Sequential
+execution_config:
+    max_concurrency: 1
+    enable_summarization_node: false
+    tools:
+    - id: read_bootstrap_tool
+      tool: _read_bootstrap_file
+      trace: true
+      toolset: Plugin
+
+    assistants:
+    - id: lang_expert
+      system_prompt: |
+       You are a C# and .NET expert with access to local project and ability to run tools. Use _read_bootstrap_file tool to read 00project-info.json file and treat information from this file as part of your system prompt.
+       You should not produce any user-readable output as the user is unlikely to monitor your actions in real-time. Instead - if you find yourself unable to comply with the given task,
+       use _append_structured_file tool to add the description of the situation in structured format with necessary details to <project_base>/airun/99errors.json for later examination and finish the dialog.
+       If during your work you find something unusual, concerning or wrong in the project - don't concentrate on that, but use _append_structured_file tool and add your thoughts to <project_base>/airun/99sidetrack.json and continue your main task.
+      tools:
+          - name: _read_file
+            integration_alias: amna-demo-plugin-integration
+          - name: _read_multiple_files
+          - name: _write_file
+          - name: _edit_file
+          - name: _create_directory
+          - name: _list_directory
+          - name: _directory_tree
+          - name: _move_file
+          - name: _search_files
+          - name: _get_file_info
+          - name: _list_allowed_directories
+          - name: _read_bootstrap_file
+          - name: _append_file
+          - name: _append_structured_file
+          - name: _run_command
+      exclude_extra_context_tools: true
+    states:
+    - id: read_task
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: 03missing-test-cases.json
+      next:
+        include_in_llm_history: false
+        state_id: write_test
+        iter_key: unused # unwraps to array, key is ignored
+
+    - id: write_test
+      assistant_id: lang_expert
+      task: |
+         You are given a task to implement a single test case. Please check the source file, and the test source to see if the test is already implemented by somebody. If so, do not change anything, but
+         note this to 99errors.json and finish the dialog. If the test is not yet implemented, consider your task and implement the test. Do not change any files except your test source. Do not delete or modify any
+         already existing tests except one you are tasked to implement.
+        
+         Important:
+          - Follow unit-test best practices when writing tests
+          - Respect given-when-then test structure
+          - Do not use any exotic or prone to error testing techniques like reflection or global overrides. Prefer straightforward unit-test practices.
+          - Compile tests after you made modification to your test to ensure the project compiles
+          - Execute tests (preferably only with a single test file you've modified) to ensure your test passes
+          - If there are errors or test doesn't pass - return back to the file and change your implementation
+          - If after a few tries you are not able to implement a test-case, note this to 99errors.json (with all the context and reasoning) and finish the dialog.
+
+      next:
+        include_in_llm_history: false
+        state_id: end

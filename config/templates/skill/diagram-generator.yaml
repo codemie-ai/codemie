@@ -1,0 +1,199 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: diagram-generator
+description: >-
+  Generates technical diagrams including flowcharts, sequence diagrams, UML, architecture diagrams
+  (AWS/Azure), ERD, BPMN, mindmaps, and UI prototypes. Use when user requests visual representations
+  of systems, processes, workflows, or designs. Supports iterative refinement based on feedback.
+content: |-
+  # Diagram Generator
+
+  ## Overview
+
+  Generate high-quality technical diagrams tailored to user requirements. Supports multiple diagram types with clarity, precision, and fidelity to requested styles.
+
+  ## Supported Diagram Types
+
+  - **Flowchart**: Process flows and decision trees
+  - **Sequence Diagram**: Component interactions over time
+  - **UML Diagram**: Class diagrams, use cases, activity diagrams
+  - **Architecture Diagram**: AWS or Azure infrastructure layouts
+  - **High-Level Design (HLD)**: System architecture overview
+  - **Low-Level Design (LLD)**: Detailed component design
+  - **Process Flow Diagram**: Business process workflows
+  - **Entity Relationship Diagram (ERD)**: Database schemas
+  - **BPMN Diagram**: Business process modeling notation
+  - **Mindmap**: Hierarchical concept visualization
+  - **Mobile/Webpage Prototype**: UI screen layouts
+  - **Custom Diagram**: Request clarification for unique formats
+
+  ## Instructions
+
+  ### Step 1: Collect Requirements
+
+  Ask the user to specify:
+
+  **Diagram Type:**
+  - "What type of diagram do you need?" (flowchart, UML, sequence, architecture, etc.)
+
+  **Content Details:**
+  - For flowcharts: "What processes or steps should be included?"
+  - For UML: "What relationships need to be illustrated?"
+  - For architecture: "What level of detail should be captured?"
+  - For prototypes: "Is this for mobile or webpage? What UI components are needed?"
+
+  **Key Elements:**
+  - Components, processes, relationships, annotations
+  - Data entities, workflows, system boundaries
+  - Specific formatting or notation requirements
+
+  ### Step 2: Generate Diagram
+
+  **Create the diagram:**
+  - Use appropriate syntax or tool (Mermaid, PlantUML, etc.)
+  - Preserve fidelity to requested format and style
+  - Ensure visual clarity and structural accuracy
+
+  **Provide supporting documentation:**
+  - Brief summary describing diagram components
+  - Explanation of relationships and purpose
+  - Use structured formatting (bullet points, numbered lists)
+
+  **Present output:**
+
+  ```
+  Your [diagram type] has been created based on the provided specifications.
+  Please review and provide feedback.
+  ```
+
+  ### Step 3: Refine Based on Feedback
+
+  **Collect feedback:**
+  - "Does the diagram accurately reflect your requirements?"
+  - "Would you like to add any annotations or components?"
+  - "Are there any corrections needed?"
+
+  **Incorporate changes:**
+  - Update diagram and supporting text per user feedback
+  - Return revised version for confirmation
+  - Iterate until requirements are met
+
+  ## Examples
+
+  ### Example 1: Flowchart for User Authentication
+
+  **User says:** "Create a flowchart for user login process"
+
+  **Questions:**
+  - "What authentication methods should be included? (password, OAuth, MFA)"
+  - "Should it handle error cases like invalid credentials or account lockout?"
+  - "Do you need decision points for 'remember me' or password reset flows?"
+
+  **Output:**
+  - Mermaid flowchart with start/end nodes
+  - Decision diamonds for validation checks
+  - Process boxes for authentication steps
+  - Supporting text explaining each decision point
+
+  ### Example 2: AWS Architecture Diagram
+
+  **User says:** "I need an architecture diagram for a microservices application on AWS"
+
+  **Questions:**
+  - "What AWS services are used? (ECS, Lambda, RDS, etc.)"
+  - "Should it show networking components like VPC, subnets, load balancers?"
+  - "What level of detail: high-level overview or detailed with security groups?"
+
+  **Output:**
+  - Architecture diagram showing service relationships
+  - Clear boundaries for VPC and availability zones
+  - Arrows indicating data flow
+  - Documentation of each component's role
+
+  ### Example 3: ERD for E-commerce Database
+
+  **User says:** "Create an entity relationship diagram for online store database"
+
+  **Questions:**
+  - "What main entities should be included? (Users, Products, Orders, etc.)"
+  - "What relationships exist between entities?"
+  - "Should it show cardinality and foreign key constraints?"
+
+  **Output:**
+  - ERD with entities as boxes
+  - Relationship lines with cardinality notation
+  - Primary and foreign keys marked
+  - Text explaining relationship types
+
+  ## Troubleshooting
+
+  ### Issue: Unclear or incomplete requirements
+
+  **Solution:** Ask targeted questions about missing elements:
+  - "What components are involved in this process?"
+  - "How do these elements interact?"
+  - "What is the starting and ending point?"
+
+  ### Issue: Diagram too complex or cluttered
+
+  **Solution:** Suggest decomposition:
+  - "Would you like to break this into multiple diagrams?"
+  - "Should we create a high-level overview first?"
+  - "Which components are most critical to show?"
+
+  ### Issue: Format or notation unclear
+
+  **Solution:** Clarify standards:
+  - "Should this follow UML 2.0 notation?"
+  - "Do you prefer Mermaid syntax or another format?"
+  - "Are there specific styling requirements?"
+
+  ## Constraints
+
+  **Preserve original format:**
+  - Maintain requested diagram type and notation
+  - Do not apply unnecessary modifications
+  - Follow standard conventions for chosen format
+
+  **Clarity and precision:**
+  - Ensure diagrams are visually clear
+  - Maintain structural accuracy
+  - Use consistent styling and labeling
+
+  **User-centric approach:**
+  - Prioritize user requirements
+  - Address all feedback and requests
+  - Confirm understanding before generating
+
+  **Error handling:**
+  - Notify user of incomplete or unclear input
+  - Request clarification before proceeding
+  - Explain limitations if format is unsupported
+
+  ## Use Cases
+
+  - Design workflows and system processes
+  - Document software architectures
+  - Create database schemas
+  - Model business processes
+  - Generate UI/UX prototypes
+  - Visualize cloud infrastructure
+  - Produce technical documentation diagrams
+  - Support academic or professional presentations
+project: codemie
+visibility: public
+categories:
+  - architecture
+  - documentation

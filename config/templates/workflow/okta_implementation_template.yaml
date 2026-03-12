@@ -1,0 +1,276 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "OKTA implementation"
+slug: amna-okta-implementation-migration
+description: |
+  This workflow is designed for OKTA implementation.
+  
+  You need to create a datasource with the source code of the application for the migration.
+  Add this datasource ids to the `datasource_ids` field in the assistants section.
+mode: Sequential
+icon_url: "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcR0ttb01ZCvZcZ1YNR9kLiYRff3x3GloOpC7w&s"
+
+execution_config:
+  enable_summarization_node: true
+  tokens_limit_before_summarization: 3000000
+  max_concurrency: 1
+
+  assistants:
+    - id: git
+      system_prompt: |
+        ### Context
+        You have full access to the source code via the provided datasource, and you are connected to the GitHub repository. You can create branches, and open pull requests directly in the repository.
+        
+        ### Rule
+        Follow all future instructions and do not ask questions to clarify anything because you will not get an answer
+      tools:
+        - name: create_branch
+        - name: set_active_branch
+        - name: list_branches_in_repo
+        - name: create_pull_request
+        - name: get_pr_changes
+      datasource_ids: [ <GIT_DATASOURCE_ID> ] # Code source
+
+    - id: plan
+      system_prompt: |
+        # Optimized Prompt to Locate Files for OKTA Authentication Integration
+        
+        ## Instructions:
+        Act as an expert agent tasked with locating all files in the project relevant to OKTA authentication. Analyze the structure and content of all project files and generate a list of file paths that match the criteria described below.
+        
+        ## Key Criteria for File Selection:
+        1. Locate all files where OKTA is integrated or referenced directly or indirectly.
+        2. Identify usage of authentication/authorization middleware, providers, services, or SDKs related to OKTA.
+        3. Detect configuration files (`.json`, `.yaml`, `.env`, `.config`, etc.) that define OKTA client ID, issuer, domain, or other credentials.
+        4. Include frontend or backend code that interacts with OKTA login/logout, token verification, or user session management.
+        5. Exclude files unrelated to authentication or that don’t mention or utilize OKTA.
+        
+        ## Steps to Follow:
+        1. Traverse all files in the project directory recursively.
+        2. Analyze file content for the following patterns or indicators:
+           - References to OKTA SDKs, libraries, or APIs (`@okta`, `OktaAuth`, `Okta.AspNetCore`, etc.).
+           - Environment variables like `OKTA_CLIENT_ID`, `OKTA_ISSUER`, etc.
+           - Code that calls OKTA endpoints or processes ID tokens and access tokens.
+           - Auth guards, middleware, or decorators with OKTA references.
+        3. If a required file is **missing**, infer its expected location based on standard project structure and conventions, and **include the path where the file should be created** in the output list.
+        4. Output the unique paths of existing or expected files only.
+        
+        ## Constraints:
+        - Do not modify the files—just identify or suggest their paths.
+        - Provide file paths only (no directories).
+        - Avoid duplicate entries.
+        - Exclude static files like images, fonts, and unrelated JavaScript or CSS.
+        
+        ## Example Output:
+        ```json
+        {
+          "file_changes": [
+            "auth/OktaAuthProvider.cs",
+            "config/okta.settings.json",
+            "middleware/AuthMiddleware.cs",
+            "routes/authRoutes.js",
+            "env/.env",
+            "auth/OktaClientFactory.cs"   // this file doesn't exist but should be created here
+          ]
+        }
+
+      tools:
+        - name: set_active_branch
+        - name: list_branches_in_repo
+
+        - name: get_repository_file_tree_v2
+        - name: search_code_repo_v2
+        - name: read_files_content
+        - name: read_files_content_summary
+        - name: search_code_repo_by_path
+
+      datasource_ids: [ <GIT_DATASOURCE_ID> ]
+
+    - id: dev
+      system_prompt: |
+        # Instructions for AI Agent: Implement OKTA Authentication into Project
+        
+        ## Instructions
+        You are a code integration assistant tasked with implementing OKTA authentication into an existing project. You will be provided one file at a time for modification. Your goal is to integrate OKTA in a secure, standards-compliant, and modular way, following best practices for authentication in modern applications.
+        
+        ## Steps to Follow
+        
+        1. **Analyze the File:**
+           - Review the current file to identify where authentication or user identity is handled.
+           - Determine if the file requires changes to support OKTA (e.g., middleware, controllers, configuration, UI logic).
+        
+        2. **Integration Plan:**
+           - Use the appropriate OKTA SDK or library based on the technology stack (e.g., ASP.NET Core, Node.js, React, etc.).
+           - Inject or replace existing auth logic with OKTA-specific logic (e.g., redirect to OKTA login, validate tokens).
+           - Add necessary imports or dependencies for OKTA integration.
+        
+        3. **Implement Authentication:**
+           - Register OKTA authentication middleware and configuration.
+           - Secure routes/controllers with OKTA authorization checks (e.g., `[Authorize]` or route guards).
+           - Use the user identity information from OKTA tokens (JWT, ID token, access token).
+           - Handle login, logout, token refresh, and session expiration appropriately.
+        
+        4. **Add or Update Configuration:**
+           - Reference OKTA-related settings like:
+             - `OKTA_CLIENT_ID`
+             - `OKTA_ISSUER`
+             - `OKTA_DOMAIN`
+             - `OKTA_REDIRECT_URI`
+           - Place them in `.env`, `appsettings.json`, or relevant config files as needed.
+        
+        5. **Clean and Modular Code:**
+           - Keep authentication logic modular (e.g., in separate service or middleware class).
+           - Avoid hardcoding sensitive values.
+           - Ensure the final code is readable, reusable, and maintainable.
+        
+        6. **Testability:**
+           - Ensure authentication flow is testable and verify basic use cases (login success, login failure, unauthorized access).
+           - Do not break existing business logic that is unrelated to authentication.
+        
+        ## Constraints
+        - Do NOT remove existing features unless necessary for the integration.
+        - Do NOT leave placeholder code or mock implementations unless explicitly instructed.
+        - If the file is not relevant to authentication, return it unchanged.
+        - Leave a **comment block at the top of the file** explaining the OKTA-related changes made.
+        
+        ## Examples
+        ### Before:
+        ```cs
+        public void ConfigureServices(IServiceCollection services)
+        {
+            services.AddAuthentication(); // generic
+        }
+        ```
+
+        ### After (Entity Framework):
+        ```cs
+        public void ConfigureServices(IServiceCollection services)
+        {
+            services.AddAuthentication(options =>
+            {
+                options.DefaultAuthenticateScheme = OktaDefaults.ApiAuthenticationScheme;
+                options.DefaultChallengeScheme = OktaDefaults.ApiAuthenticationScheme;
+            }).AddOktaWebApi(new OktaWebApiOptions()
+            {
+                OktaDomain = Configuration["Okta:Domain"]
+            });
+        }
+        ```
+
+        ## Use Cases
+        - Securing APIs or web applications using OKTA Single Sign-On (SSO).
+        - Adding JWT-based authorization through OKTA.
+        - Ensuring user identity is consistently available across the application.
+
+        ---
+        Follow these instructions for each file and provide the updated code along with an explanation of what changes were made and why.
+
+      tools:
+        - name: set_active_branch
+        - name: list_branches_in_repo
+        - name: create_file
+        - name: update_file
+        - name: update_file_diff
+        - name: delete_file
+
+        - name: get_repository_file_tree_v2
+        - name: search_code_repo_v2
+        - name: read_files_content
+        - name: read_files_content_summary
+        - name: search_code_repo_by_path
+
+      datasource_ids: [ <GIT_DATASOURCE_ID> ]
+
+  states:
+    - assistant_id: git
+      id: create_branch
+      output_schema: |
+        {
+          "branch_name": "string"
+        }
+      next:
+        state_id: find_affected_files
+      task: |
+        Create a new branch for the Linq to SQL migration from the 'main' branch.
+        
+        ### Rules:
+        - Try to create a branch named `okta-implementation`.
+        - If that branch already exists, create a new one with an incremented suffix: `okta-implementation-v1`, `okta-implementation-v2`, and so on.
+        - Keep incrementing until you find a name that is not already used in the remote repository.
+        - Once created, verify the branch exists remotely.
+        
+        ### Output:
+        - Return the created branch name as valid JSON in this format:
+          ```json
+          {
+            "branch_name": "okta-implementation-v2"
+          }
+          ```
+
+    - assistant_id: plan
+      id: find_affected_files
+      next:
+        iter_key: file_changes
+        state_id: write_code
+      output_schema: |
+        {
+          "file_changes": [
+            [
+              "Relative path to the file from the root of the new project. For example: 'app/auth/OktaAuthProvider.cs' ",
+              "config/okta.settings.json",
+              ...
+            ]
+          ]
+        }
+      task: |
+        ### Instructions
+        1. Set the active branch to {{branch_name}}
+        2. Analyze the project files to identify all files that are involved in OKTA authentication or configuration.  
+        3. Search for files that contain references to OKTA or authentication logic, such as:
+           - OKTA SDK usage (e.g., `Okta.AspNetCore`, `@okta/okta-auth-js`, `@okta/okta-react`, etc.)
+           - Environment/configuration keys like `OKTA_CLIENT_ID`, `OKTA_DOMAIN`, `OKTA_ISSUER`, etc.
+           - Authentication middlewares, route guards, or decorators using OKTA logic.
+           - Login, logout, token handling, session management using OKTA.
+        4. If a relevant file is missing (e.g., an expected middleware, config file, or provider module), **infer where it should be placed based on standard conventions** and include its **expected file path** in the output.
+        5. Compile a list of all existing and expected file paths that need to be updated, created, or reviewed for OKTA integration.
+        6. Return the list of file paths in the following output format:
+
+    - assistant_id: dev
+      id: write_code
+      next:
+        state_id: create_pr
+      task: |
+        ### Instructions
+        1. Set the active branch to {{branch_name}}
+        2. Locate the file in the application.
+        3. Read and understand the existing logic in the file.
+        4. Apply the following changes in the given file precisely.
+        5. Perform actions with additional files described in the changes.
+        6. Commit the changes with a meaningful commit message referencing the file.
+        7. Push the branch {{branch_name}} to the remote repository.
+
+    - assistant_id: git
+      id: create_pr
+      next:
+        state_id: end
+      task: |
+        Set the active branch to {{branch_name}} and create a Pull Request (PR)
+        
+        ACTION: Create a Pull Request (PR) from the {{branch_name}} branch to the `main` branch and submit the PR for review.
+        TITLE: "OKTA implementation on {{branch_name}}"
+        DESCRIPTION: Summarize the changes, reasons for the changes, and testing results.
+        
+        - You must proceed and create the PR without asking for confirmation or verifying diffs.
+        - This step is executed automatically and will not receive further instructions.

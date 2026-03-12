@@ -1,0 +1,60 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+---
+name: Multi-Node Iteration Workflow
+description: |
+  Example of workflow. That with iteration across multiple nodes.
+  First step generates X colors in JSON format.
+  After for-loop is triggered for each color and two nodes are called for each color: gen and summary.
+  This is good example when you have multiple stages for processing of single entity and want to run processing in parallel
+mode: Sequential
+slug: template-multi-node-iteration-workflow
+
+execution_config:
+
+  assistants:
+    - id: asst # ID of assistant inside this configuration
+      name: Simple assistant
+      model: 'gpt-4.1-mini' # Ability to override model
+      system_prompt: |
+        You are simple chatbot. 
+        Analyze user input and generate focused answer 
+
+  states:
+    - id: list # ID of state inside this configuration
+      assistant_id: asst
+      task: |
+        Generate a list 5 colors
+      output_schema: |
+        {
+          "colors": ["orange", "blue", "red", ...]
+        }
+      next:
+        state_id: gen # ID of next state
+        iter_key: colors # Key for iteration, must be same as in schema
+    - id: gen # ID of state inside this configuration
+      assistant_id: asst
+      task: |
+        Generate a very long text about a color
+      next:
+        state_id: summary # ID of next state
+        iter_key: colors # Key for iteration, must be same as in schema
+    - id: summary # ID of state inside this configuration
+      assistant_id: asst
+      task: |
+        Assess how good color description was. Put a mark from 1 to 10. 1 - worst, 10 - the best. Judge if you are expert in colors.
+        Explain your choice and provide reasoning
+      next:
+        state_id: end # ID of next state

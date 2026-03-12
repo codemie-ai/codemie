@@ -1,0 +1,560 @@
+---
+name: Apache License Compliance Checker
+description: |
+  This automated workflow scans any Git repository to identify license compatibility issues with Apache License 2.0 
+  requirements. It analyzes all project dependencies (Python packages via pip/poetry or Node.js packages via npm/yarn) 
+  and generates a comprehensive compliance report with AI-powered recommendations for resolving any incompatible 
+  licenses found.
+  
+  Why use this workflow? 
+  Many open source licenses are incompatible with Apache 2.0, particularly GPL family licenses (GPL-2.0, GPL-3.0, AGPL)
+  and proprietary licenses. Using incompatible dependencies can create legal risks for Apache-licensed projects. 
+  This workflow automatically detects these issues and provides specific alternatives and migration strategies, 
+  saving hours of manual license review work.
+  
+  What customers need to do before using this workflow:
+  
+  1. Create an MCP Integration in CodeMie UI by adding an "Integrations" section with the following variables:
+     - GITLAB_PERSONAL_ACCESS_TOKEN: Your personal access token for the specific repository you want to scan (needs 
+  read access to clone and analyze the repository)
+     - EPAM_GITLAB_PERSONAL_ACCESS_TOKEN: Admin-provided token value (contact your administrators to obtain this value)
+  
+  2. Ensure your repository contains supported dependency files:
+     - For Python projects: requirements.txt, pyproject.toml, or poetry.lock
+     - For Node.js/Vue.js projects: package.json with package-lock.json or yarn.lock
+  
+  3. Make sure dependencies are properly declared in these files (the workflow scans declared dependencies, 
+  not installed packages)
+  
+  Input format for running the workflow:
+  
+  {
+    "REPOSITORY_URL": "https://gitbud.epam.com/your-username/your-project-name"
+  }
+  
+  Optional parameter:
+  {
+    "REPOSITORY_URL": "https://gitbud.epam.com/your-username/your-project-name",
+    "FEATURE_BRANCH": "custom-compliance-report-branch-name"
+  }
+  
+  If FEATURE_BRANCH is not provided, the workflow automatically generates a branch name like 
+  "apache-license-compliance-20241022-071404".
+  
+  The workflow will clone your repository, create a feature branch, scan all dependencies for license compatibility, 
+  generate a detailed Markdown report using AI analysis, commit the report to the feature branch, and push it back to 
+  your repository. You'll then receive a link to create a pull request for reviewing and merging the compliance report.
+  The entire process typically takes 30-60 seconds depending on repository size and number of dependencies.
+
+mode: Sequential
+slug: template-apache-license-compliance-check-workflow
+
+execution_config:
+  enable_summarization_node: false
+  recursion_limit: 1000
+  max_concurrency: 1
+  tools:
+    - id: run_command
+      tool: run_command
+      tool_args:
+        command: 'n/a'
+      mcp_server:
+        name: CLI MCP Server
+        description: This server provides access to GitHub repositories and analyzes project packages for Apache license compliance.
+        enabled: True
+        mcp_connect_url: http://codemie-mcp-connect-service-1.codemie-mcp-connect-service-headless.codemie:3000
+        integration_alias: apache-mpc-config-integration
+        config:
+          command: uvx
+          args:
+            - cli-mcp-server
+          env:
+            TIMEOUT: "3000"
+            ALLOWED_DIR: "/home/codemie"
+            ALLOWED_FLAGS: "all"
+            COMMAND_TIMEOUT: "3000"
+            ALLOWED_COMMANDS: "all"
+            MAX_COMMAND_LENGTH: "70000"
+            ALLOW_SHELL_OPERATORS: "true"
+          auth_token: SecretAccessToken
+
+    - id: write_file
+      tool: write_file
+      tool_args:
+        path: 'n/a'
+        content: 'n/a'
+      mcp_server:
+        name: mcp-server-filesystem
+        description: mcp-server-filesystem for file operations
+        enabled: True
+        mcp_connect_url: http://codemie-mcp-connect-service-1.codemie-mcp-connect-service-headless.codemie:3000
+        config:
+          command: mcp-server-filesystem
+          args:
+            - "/home/codemie"
+          auth_token: SecretAccessToken
+
+  assistants:
+    - id: report_finalizer
+      model: gpt-5-2025-08-07
+      temperature: 0.3
+      system_prompt: |
+        You are a compliance report specialist with deep knowledge of Python (PyPI) and Node.js/npm ecosystems.
+        Generate comprehensive, beautifully formatted Markdown reports for license compliance analysis based on Apache 2.0 compatibility standards.
+
+        Your reports must include:
+        1. Executive Summary with scan statistics
+        2. Compliance Status (✅ Compliant or ⚠️ Issues Found)
+        3. Detailed breakdown of incompatible packages (if any) with:
+           - Package name and version
+           - Current license
+           - Reason for incompatibility (explain the license category)
+           - Severity level (🔴 Critical for Category X licenses)
+           - Recommended alternatives with migration complexity (suggest 2-3 real alternatives from PyPI/npm)
+           - Step-by-step action plan
+        4. Recommendations and next steps
+        5. References to Apache Legal Policy
+
+        Format requirements:
+        - Use clear headings (##, ###)
+        - Use tables for package listings
+        - Use emojis for visual clarity (✅, ⚠️, 🔴, 🟠, 🟡)
+        - Use code blocks for package names
+        - Use bullet points and numbered lists appropriately
+        - Make it professional yet easy to read
+
+        For each incompatible package, research and suggest:
+        - 2-3 real alternative packages with proper licenses (Apache-2.0, MIT, BSD, ISC)
+        - Package names must be actual packages that exist
+        - Include migration complexity (Low/Medium/High)
+        - Indicate popularity
+        - Be honest if no good alternatives exist
+
+        IMPORTANT: Return ONLY raw markdown content. NO JSON wrapper. NO code blocks around the markdown.
+        The output should be directly saveable as a .md file.
+
+  states:
+    # Step 1: Initial Cleanup
+    - id: init_cleanup
+      tool_id: run_command
+      tool_args:
+        command: '( if [ -d "/home/codemie/apache-license-compliance-temp" ]; then chmod -R u+w /home/codemie/apache-license-compliance-temp; rm -rf /home/codemie/apache-license-compliance-temp; fi ) 2>/dev/null || true'
+      next:
+        state_id: setup_environment
+        keep_history: false
+
+    # Step 2: Setup Environment
+    - id: setup_environment
+      tool_id: run_command
+      tool_args:
+        command: 'mkdir -p /home/codemie/apache-license-compliance-temp && chmod 755 /home/codemie/apache-license-compliance-temp'
+      next:
+        state_id: clone_scripts_repository
+        keep_history: false
+
+    # Step 3: Clone Apache License workflow scripts from git repository
+    - id: clone_scripts_repository
+      tool_id: run_command
+      tool_args:
+        command: 'cd /home/codemie/apache-license-compliance-temp && git clone https://oauth2:$EPAM_GITLAB_PERSONAL_ACCESS_TOKEN@gitbud.epam.com/ainur_bektemirova/apache_license_project.git . && chmod +x /home/codemie/apache-license-compliance-temp/compliance-check/scripts/*.sh && echo "✅ Scripts cloned and shell scripts made executable"'
+      next:
+        state_id: extract_project_info
+        keep_history: false
+
+    # Step 4: Extract project information from repository URL
+    - id: extract_project_info
+      tool_id: run_command
+      tool_args:
+        command: 'echo "🔍 Extracting project info from: {{REPOSITORY_URL}}" && PROJECT_NAME=$(echo "{{REPOSITORY_URL}}" | sed "s/.*\///" | sed "s/\.git$//") && FEATURE_BRANCH_INPUT="{{FEATURE_BRANCH}}" && if [ "$FEATURE_BRANCH_INPUT" = "{{FEATURE_BRANCH}}" ]; then FEATURE_BRANCH_NAME="apache-license-compliance-$(date +%Y%m%d-%H%M%S)"; else FEATURE_BRANCH_NAME="$FEATURE_BRANCH_INPUT"; fi && echo "📁 Project name: $PROJECT_NAME" && echo "🌿 Feature branch: $FEATURE_BRANCH_NAME" && echo "🌿 Will use repository default branch as base" && echo "$PROJECT_NAME" > /home/codemie/apache-license-compliance-temp/project_name.txt && echo "{{REPOSITORY_URL}}" > /home/codemie/apache-license-compliance-temp/repo_url.txt && echo "$FEATURE_BRANCH_NAME" > /home/codemie/apache-license-compliance-temp/feature_branch.txt && echo "✅ Project info extracted successfully"'
+      next:
+        state_id: clone_target_repository
+        keep_history: true  # Need to extract project_name variable
+
+    # Step 5: Clone target repository for analysis
+    - id: clone_target_repository
+      tool_id: run_command
+      tool_args:
+        command: 'echo "📥 Cloning target repository..." && PROJECT_NAME=$(cat /home/codemie/apache-license-compliance-temp/project_name.txt) && REPO_URL=$(cat /home/codemie/apache-license-compliance-temp/repo_url.txt) && REPO_URL_WITHOUT_PROTOCOL=${REPO_URL#https://} && echo "🧹 Cleaning up existing directory: /home/codemie/$PROJECT_NAME" && rm -rf /home/codemie/$PROJECT_NAME 2>/dev/null || true && echo "Cloning to: /home/codemie/$PROJECT_NAME (using default branch)" && git clone --depth 1 https://oauth2:$GITLAB_PERSONAL_ACCESS_TOKEN@$REPO_URL_WITHOUT_PROTOCOL /home/codemie/$PROJECT_NAME && cd /home/codemie/$PROJECT_NAME && BASE_BRANCH=$(git branch --show-current 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main") && echo "📍 Base branch: $BASE_BRANCH" && echo "$BASE_BRANCH" > /home/codemie/apache-license-compliance-temp/base_branch.txt && echo "$BASE_BRANCH" > /home/codemie/apache-license-compliance-temp/branch.txt && echo "✅ Target repository cloned successfully with branch: $BASE_BRANCH"'
+      next:
+        state_id: create_feature_branch
+        keep_history: false
+
+    # Step 6: Create feature branch for compliance report
+    - id: create_feature_branch
+      tool_id: run_command
+      tool_args:
+        command: 'PROJECT_NAME=$(cat /home/codemie/apache-license-compliance-temp/project_name.txt) && FEATURE_BRANCH=$(cat /home/codemie/apache-license-compliance-temp/feature_branch.txt) && echo "🌿 Creating feature branch: $FEATURE_BRANCH" && cd /home/codemie/$PROJECT_NAME && git config user.email "apache-license-bot@codemie.com" && git config user.name "Apache License Bot" && git checkout -b $FEATURE_BRANCH && echo "✅ Feature branch created successfully: $FEATURE_BRANCH"'
+      next:
+        state_id: setup_target_workspace
+        keep_history: false
+
+    # Step 6: Setup target workspace permissions
+    - id: setup_target_workspace
+      tool_id: run_command
+      tool_args:
+        command: 'PROJECT_NAME=$(cat /home/codemie/apache-license-compliance-temp/project_name.txt) && echo "🔧 Setting up workspace for: $PROJECT_NAME" && chmod -R o+r /home/codemie/$PROJECT_NAME 2>/dev/null || true && echo "✅ Target workspace ready"'
+      next:
+        state_id: create_python_venv
+        keep_history: false
+
+    # Step 7: Create Python virtual environment
+    - id: create_python_venv
+      tool_id: run_command
+      tool_args:
+        command: 'bash /home/codemie/create_python_venv.sh /home/codemie/apache-license-compliance-temp /home/codemie/apache-license-compliance-temp/compliance-check/scripts/requirements.txt'
+      next:
+        state_id: detect_project_type
+        keep_history: false
+
+    # Step 8: Detect project type (NO AI - pure Python script)
+    - id: detect_project_type
+      tool_id: run_command
+      tool_args:
+        command: 'PROJECT_NAME=$(cat /home/codemie/apache-license-compliance-temp/project_name.txt) && echo "🔍 Detecting project type in: /home/codemie/$PROJECT_NAME" && bash /home/codemie/run_in_python_venv.sh /home/codemie/apache-license-compliance-temp /home/codemie/apache-license-compliance-temp/compliance-check/scripts/detect_project_type.py --project-dir /home/codemie/$PROJECT_NAME --json || echo "{\"language\":\"unknown\",\"error\":\"Failed to detect project type\"}"'
+      next:
+        switch:
+          cases:
+            - condition: "language == 'Python'"
+              state_id: scan_python
+            - condition: "language == 'Node.js' or language == 'Vue.js'"
+              state_id: scan_nodejs
+            - condition: "language == 'unknown'"
+              state_id: unsupported_language
+          default: unsupported_language
+        keep_history: false
+
+    # Step 9a: Scan Python dependencies and save results to file
+    - id: scan_python
+      tool_id: run_command
+      tool_args:
+        command: 'PROJECT_NAME=$(cat /home/codemie/apache-license-compliance-temp/project_name.txt) && echo "🐍 Scanning Python dependencies in: /home/codemie/$PROJECT_NAME" && bash /home/codemie/apache-license-compliance-temp/compliance-check/scripts/setup_and_scan_python.sh /home/codemie/$PROJECT_NAME /home/codemie/apache-license-compliance-temp/compliance-check/scripts/filter_python_licenses.py 2>/tmp/scan_python.log > /home/codemie/apache-license-compliance-temp/scan_result.json || echo "{\"incompatible_packages\":[],\"total_scanned\":0,\"incompatible_count\":0,\"error\":\"Python scan script failed unexpectedly\"}" > /home/codemie/apache-license-compliance-temp/scan_result.json'
+      next:
+        state_id: evaluate_python_scan
+        keep_history: false
+
+    # Step 6a-eval: Evaluate Python scan results
+    - id: evaluate_python_scan
+      tool_id: run_command
+      tool_args:
+        command: 'bash /home/codemie/run_in_python_venv.sh /home/codemie/apache-license-compliance-temp /home/codemie/apache-license-compliance-temp/compliance-check/scripts/evaluate_scan_from_file.py --input-file /home/codemie/apache-license-compliance-temp/scan_result.json'
+      next:
+        condition:
+          expression: "action == 'analyze'"
+          then: read_scan_results_for_analysis
+          otherwise: read_scan_results_for_clean_report
+        use_flyweight_history: false
+        keep_history: true
+
+    # Step 9b: Scan Node.js dependencies and save results to file
+    - id: scan_nodejs
+      tool_id: run_command
+      tool_args:
+        command: 'PROJECT_NAME=$(cat /home/codemie/apache-license-compliance-temp/project_name.txt) && echo "📦 Scanning Node.js dependencies in: /home/codemie/$PROJECT_NAME" && bash /home/codemie/apache-license-compliance-temp/compliance-check/scripts/setup_and_scan_nodejs.sh /home/codemie/$PROJECT_NAME /home/codemie/apache-license-compliance-temp/compliance-check/scripts/filter_nodejs_licenses.py 2>/tmp/scan_nodejs.log > /home/codemie/apache-license-compliance-temp/scan_result.json || echo "{\"incompatible_packages\":[],\"total_scanned\":0,\"incompatible_count\":0,\"error\":\"Node.js scan script failed unexpectedly\"}" > /home/codemie/apache-license-compliance-temp/scan_result.json'
+      next:
+        state_id: evaluate_nodejs_scan
+        keep_history: false
+
+    # Step 6b-eval: Evaluate Node.js scan results
+    - id: evaluate_nodejs_scan
+      tool_id: run_command
+      tool_args:
+        command: 'bash /home/codemie/run_in_python_venv.sh /home/codemie/apache-license-compliance-temp /home/codemie/apache-license-compliance-temp/compliance-check/scripts/evaluate_scan_from_file.py --input-file /home/codemie/apache-license-compliance-temp/scan_result.json'
+      next:
+        condition:
+          expression: "action == 'analyze'"
+          then: read_scan_results_for_analysis
+          otherwise: read_scan_results_for_clean_report
+        use_flyweight_history: false
+        keep_history: true
+
+    # Step 6c: Read scan results for analysis path (extracts all variables needed)
+    - id: read_scan_results_for_analysis
+      tool_id: run_command
+      tool_args:
+        command: 'cat /home/codemie/apache-license-compliance-temp/scan_result.json'
+      next:
+        state_id: generate_compliance_report
+        use_flyweight_history: false
+        keep_history: true  # Need history for variable extraction
+
+    # Step 6d: Read scan results for clean report path (extracts variables for report)
+    - id: read_scan_results_for_clean_report
+      tool_id: run_command
+      tool_args:
+        command: 'cat /home/codemie/apache-license-compliance-temp/scan_result.json'
+      next:
+        state_id: generate_clean_report
+        use_flyweight_history: false
+        keep_history: true  # Need history for variable extraction
+
+    # Step 8: Generate comprehensive compliance report with LLM (using proper output_schema)
+    - id: generate_compliance_report
+      assistant_id: report_finalizer
+      task: |
+        Generate a comprehensive Apache License Compliance Report.
+
+        **Project Details:**
+        - Language: {{language}}
+        - Repository: {{REPOSITORY_URL}}
+        - Branch: {{branch_name}}
+        - Project: {{project_name}}
+        - Total Packages Scanned: {{total_scanned}}
+        - Incompatible Packages Found: {{incompatible_count}}
+
+        **Incompatible Packages:**
+        {{incompatible_packages}}
+
+        Create a beautiful, professional Markdown report with:
+        1. Executive summary with scan statistics
+        2. Compliance status (⚠️ Issues Found)
+        3. Detailed analysis for each incompatible package:
+           - Why the license is incompatible with Apache 2.0
+           - Severity level (most Category X licenses are 🔴 Critical)
+           - 2-3 real, vetted alternatives from the {{language}} ecosystem
+           - Migration complexity for each alternative
+           - Step-by-step action plan
+        4. Overall recommendations and next steps
+        5. References to Apache Foundation legal policies
+
+        Make it actionable and professional.
+      output_schema: |
+        {
+          "report_content": "string"
+        }
+      next:
+        state_id: write_compliance_report_mcp
+        keep_history: true
+
+    # Step 8b: Use MCP write_file to write the compliance report
+    - id: write_compliance_report_mcp
+      tool_id: write_file
+      tool_args:
+        path: "/home/codemie/apache_license_compliance_report.md"
+        content: "{{report_content}}"
+      next:
+        state_id: save_and_commit_compliance_report
+        keep_history: false
+
+    # Step 8a: Save compliance report to MD file and commit to feature branch (combined approach)
+    - id: save_and_commit_compliance_report
+      tool_id: run_command
+      tool_args:
+        command: |
+          PROJECT_NAME=$(cat /home/codemie/apache-license-compliance-temp/project_name.txt)
+          FEATURE_BRANCH=$(cat /home/codemie/apache-license-compliance-temp/feature_branch.txt)
+          BASE_BRANCH=$(cat /home/codemie/apache-license-compliance-temp/base_branch.txt)
+
+          echo "📁 Copying compliance report to repository: /home/codemie/$PROJECT_NAME/"
+          cp /home/codemie/apache_license_compliance_report.md /home/codemie/$PROJECT_NAME/apache_license_compliance_report.md
+
+          cd /home/codemie/$PROJECT_NAME
+          echo "📝 Adding all changes to git..."
+          git add . && STAGED_COUNT=$(git diff --staged --name-only | wc -l) && if [ "$STAGED_COUNT" -gt 0 ]; then
+            FILE_WORD=$(if [ "$STAGED_COUNT" = "1" ]; then echo "file"; else echo "files"; fi)
+            git commit -m "Add Apache License compliance report ($STAGED_COUNT $FILE_WORD)"
+            echo "Pushing feature branch to origin..."
+            git push origin $FEATURE_BRANCH
+            echo "✅ Feature branch pushed successfully: $FEATURE_BRANCH"
+            echo "🔗 Create a pull request to merge $FEATURE_BRANCH into $BASE_BRANCH"
+          else
+            echo "ℹ️ No changes to commit - compliance report may already exist"
+          fi
+      next:
+        state_id: cleanup_environment
+        keep_history: false
+
+    # Step 9: Generate clean report with LLM (using proper output_schema)
+    - id: generate_clean_report
+      assistant_id: report_finalizer
+      task: |
+        Generate an Apache License Compliance Report for a COMPLIANT project.
+
+        **Project Details:**
+        - Language: {{language}}
+        - Repository: {{REPOSITORY_URL}}
+        - Branch: {{branch_name}}
+        - Project: {{project_name}}
+        - Total Packages Scanned: {{total_scanned}}
+        - Incompatible Packages Found: 0
+
+        ✅ **All packages are Apache 2.0 compatible!**
+
+        Create a beautiful, professional Markdown report with:
+        1. Executive summary highlighting the clean compliance status
+        2. Compliance status (✅ Fully Compliant)
+        3. Scan statistics
+        4. Congratulations message
+        5. Best practices for maintaining compliance
+        6. References to Apache Foundation legal policies
+
+        Keep it positive and professional.
+      output_schema: |
+        {
+          "clean_report_content": "string"
+        }
+      next:
+        state_id: write_clean_report_mcp
+        keep_history: true
+
+    # Step 9b: Use MCP write_file to write the clean compliance report
+    - id: write_clean_report_mcp
+      tool_id: write_file
+      tool_args:
+        path: "/home/codemie/apache_license_compliance_report.md"
+        content: "{{clean_report_content}}"
+      next:
+        state_id: save_and_commit_clean_report
+        keep_history: false
+
+
+    # Step 9a: Save clean compliance report to MD file and commit to feature branch
+    - id: save_and_commit_clean_report
+      tool_id: run_command
+      tool_args:
+        command: |
+          PROJECT_NAME=$(cat /home/codemie/apache-license-compliance-temp/project_name.txt)
+          FEATURE_BRANCH=$(cat /home/codemie/apache-license-compliance-temp/feature_branch.txt)
+          BASE_BRANCH=$(cat /home/codemie/apache-license-compliance-temp/base_branch.txt)
+
+          echo "📁 Copying clean compliance report to repository: /home/codemie/$PROJECT_NAME/"
+          cp /home/codemie/apache_license_compliance_report.md /home/codemie/$PROJECT_NAME/apache_license_compliance_report.md
+
+          cd /home/codemie/$PROJECT_NAME
+          echo "📝 Adding all changes to git..."
+          git add . && STAGED_COUNT=$(git diff --staged --name-only | wc -l) && if [ "$STAGED_COUNT" -gt 0 ]; then
+            FILE_WORD=$(if [ "$STAGED_COUNT" = "1" ]; then echo "file"; else echo "files"; fi)
+            git commit -m "Add Apache License compliance report - all packages compliant ($STAGED_COUNT $FILE_WORD)"
+            echo "Pushing feature branch to origin..."
+            git push origin $FEATURE_BRANCH
+            echo "✅ Feature branch pushed successfully: $FEATURE_BRANCH"
+            echo "🔗 Create a pull request to merge $FEATURE_BRANCH into $BASE_BRANCH"
+          else
+            echo "ℹ️ No changes to commit - clean compliance report may already exist"
+          fi
+      next:
+        state_id: cleanup_environment
+        keep_history: false
+
+    # Step 10: Generate error report when scan fails
+    - id: generate_error_report
+      tool_id: run_command
+      tool_args:
+        command: |
+          cat <<'REPORT'
+          # Apache License Compliance Scan - Error Report
+
+          ## ❌ Scan Status: Failed
+
+          **Project:** {{project_name}}
+          **Repository:** {{REPOSITORY_URL}}
+          **Branch:** {{branch_name}}
+          **Language:** {{language}}
+          **Total Scanned:** {{total_scanned}} packages
+
+          ### Error Details
+
+          ```
+          {{error}}
+          ```
+
+          ### Troubleshooting Steps
+
+          1. **For Python Projects:**
+             - Ensure project has `poetry.lock`, `requirements.txt`, or `pyproject.toml`
+             - Verify network connectivity to PyPI API (https://pypi.org)
+             - Check that dependency files are valid and parseable
+
+          2. **For Node.js Projects:**
+             - Ensure project has `package-lock.json`, `yarn.lock`, or `pnpm-lock.yaml`
+             - Verify `node_modules` directory exists
+             - Run `npm install`, `yarn install`, or `pnpm install` if needed
+
+          3. **General Checks:**
+             - Verify the repository path is correct
+             - Check file permissions (read access required)
+             - Ensure temporary directory is writable
+
+          ---
+
+          *Scan failed. Please resolve the issues above and try again.*
+          REPORT
+          echo "📝 Error report saved to apache_license_compliance_report.md"
+          git add apache_license_compliance_report.md
+          git commit -m "Add Apache License compliance error report"
+          echo "Pushing feature branch to origin..."
+          git push origin $FEATURE_BRANCH
+          echo "✅ Feature branch pushed successfully: $FEATURE_BRANCH"
+          echo "🔗 Create a pull request to merge $FEATURE_BRANCH into $BASE_BRANCH"
+      next:
+        state_id: cleanup_environment
+        keep_history: false
+
+    # Step 11: Cleanup temporary directory and /home/codemie files
+    - id: cleanup_environment
+      tool_id: run_command
+      tool_args:
+        command: |
+          echo "🧹 Cleaning up temporary directories and workspace files..."
+          cd /home/codemie
+
+          # Get project name for cleanup
+          PROJECT_NAME=$(cat /home/codemie/apache-license-compliance-temp/project_name.txt 2>/dev/null || echo "")
+
+          # Clean up workspace report file
+          echo "🗑️  Removing workspace report file..."
+          rm -f /home/codemie/apache_license_compliance_report.md 2>/dev/null || true
+
+          # Clean up temporary directories
+          echo "🗑️  Removing temporary directories..."
+          chmod -R u+w /home/codemie/apache-license-compliance-temp 2>/dev/null || true
+          rm -rf /home/codemie/apache-license-compliance-temp 2>/dev/null || true
+          rm -rf /home/codemie/apache_license_project 2>/dev/null || true
+
+          # Clean up target repository
+          if [ -n "$PROJECT_NAME" ]; then
+            echo "🗑️  Removing target repository: $PROJECT_NAME"
+            chmod -R u+w /home/codemie/$PROJECT_NAME 2>/dev/null || true
+            rm -rf /home/codemie/$PROJECT_NAME 2>/dev/null || true
+          fi
+
+          echo "✅ Cleanup complete!"
+      next:
+        state_id: end
+        keep_history: false
+
+    # Error: Unsupported language
+    - id: unsupported_language
+      tool_id: run_command
+      tool_args:
+        command: |
+          cat <<EOF
+          # ❌ Unsupported Project Type
+
+          **Detected Language:** {{language}}
+          **Repository:** {{REPOSITORY_URL}}
+          **Branch:** {{branch_name}}
+          **Project Path:** /home/codemie/{{project_name}}
+
+          ## Supported Project Types
+
+          This workflow currently supports:
+          - **Python** projects (requirements.txt, pyproject.toml, poetry.lock, setup.py)
+          - **Node.js** projects (package.json, package-lock.json)
+          - **Vue.js** projects (package.json with Vue dependencies)
+
+          ## Next Steps
+
+          1. Verify your project has one of the supported dependency files
+          2. Check that the files are in the root of the repository
+          3. If this is a multi-language project, ensure the primary dependency file exists
+
+          ## Manual Check
+
+          You can manually list files in your project root:
+          \`\`\`bash
+          ls -la /home/codemie/{{project_name}}
+          \`\`\`
+          EOF
+      next:
+        state_id: cleanup_environment
+        keep_history: false

@@ -1,0 +1,596 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "ISO: ISO to AMI Migration"
+slug: amna-iso-to-ami-migration
+description: |
+  This workflow is designed to migrate a ISO file to an Amazon Machine Image (AMI).
+  
+  You need to have integration with codemie-plugins in the CodeMie.
+  
+  Be aware that all scripts are provided for macOs system na user_data for ubuntu.
+  Before starting the workflow do the following:
+    - Download the ISO file of the Ubuntu 24.04.2 Desktop version. (/Users/ostap_semenchuk/Downloads/ubuntu-24.04.2-desktop-amd64.iso)
+  
+    - Ensure you have the AWS credentials configured in your environment as default in the `~/.aws/credentials` file.
+
+    - Install the following tools on your macOS:
+      1. brew install squashfs
+      2. brew install p7zip
+      3. brew install hashicorp/tap/packer
+  
+    - Create a directory to mount the ISO and extract its contents:
+      4. mkdir $HOME/iso_root
+      5. 7z x /Users/ostap_semenchuk/Downloads/ubuntu-24.04.2-desktop-amd64.iso -o"$HOME/iso_mount"
+      6. mkdir -p $HOME/iso_root
+      7. sudo unsquashfs -f -d "$HOME/iso_root" "$HOME/iso_mount/casper/minimal.standard.squashfs"
+      8. sudo chown -R $(whoami):staff "$HOME/iso_root"
+      9. sudo chmod -R 755 "$HOME/iso_root"
+  
+    My path "$HOME/iso_root" is /Users/ostap_semenchuk/iso_root
+    Check the your path and use it in the environment variables below.
+  
+    ENVIRONMENT VARIABLES:
+     - ALLOWED_DIR=/Users/ostap_semenchuk/iso_root;
+     - DEFAULT_DIR=/Users/ostap_semenchuk/iso_root;
+     - FILE_PATHS=/Users/ostap_semenchuk/iso_root;
+     - PLUGIN_ENGINE_URI=tls://codemie-nats.qa.ai-run-epam.click:30422 #Optional
+     - TOOL_EXECUTION_TIMEOUT=300
+  
+    Run mcp servers with plugin:
+    codemie-plugins mcp run -s filesystem,filesystem_ext,cli-mcp-server -e filesystem=FILE_PATHS -e cli-mcp-server=ALLOWED_DIR -e filesystem_ext=ALLOWED_DIR
+  
+  
+  How to add static private ip to iso config:
+    cd $HOME/iso_root
+    ostap_semenchuk@EPCZPRAW0145 iso_root % mkdir -p iso_root/etc/netplan     
+    ostap_semenchuk@EPCZPRAW0145 iso_root % nano etc/netplan/01-static-ip.yaml
+    ```yaml
+      network:
+        version: 2
+        renderer: networkd
+        ethernets:
+          eth0:
+            dhcp4: no
+            addresses:
+              - 192.168.1.123/24
+            gateway4: 192.168.1.1
+            nameservers:
+              addresses: [8.8.8.8,8.8.4.4]
+    ```
+
+
+mode: Sequential
+icon_url: "https://cdn-icons-png.flaticon.com/512/2305/2305882.png"
+
+execution_config:
+  enable_summarization_node: false
+  tokens_limit_before_summarization: 3000000
+  max_concurrency: 1
+
+  assistants:
+    - id: get_allowed_directory
+      system_prompt: |
+        Find the first allowed directory in the file system.
+        Use the `List Allowed Directories` function to discover permitted write paths and return the first one path.
+      tools:
+        - name: _list_allowed_directories
+
+    - id: iso_analyzer
+      system_prompt: |
+        ## Role
+        You are an ISO Analysis Agent with full access to a macOS terminal and file system.
+        
+        ## Objective
+        Your task is to perform a full audit of a mounted ISO image (mounted under `{{allowed_directory}}`) in preparation for creating an AWS EC2-compatible AMI.
+        
+        ## Analysis Instructions
+        Perform the following analysis:
+        1. Networking
+            - Check if network configurations use DHCP or static IPs.
+            - Look for hardcoded IP addresses such as those starting with `192.168.`, `10.`, or `172.`.
+            - Retrieve DNS settings (e.g., from `/etc/resolv.conf`).
+            - Identify any hardcoded default gateway.
+        2. Hostname & Hosts
+            - Determine if hostname is hardcoded by inspecting `/etc/hostname`.
+            - Check `/etc/hosts` for static host entries.
+            - Report the actual hostname value found (or `null` if none).
+        3. SSH Configuration
+            - Check if SSH daemon is enabled by inspecting `/etc/ssh/sshd_config`.
+            - Verify whether root login via SSH is permitted.
+            - Detect presence of authorized SSH keys in `/root/.ssh/authorized_keys` and in user directories `/home/*/.ssh/authorized_keys`.
+        4. cloud-init Support
+            - Determine if `cloud-init` is installed (e.g., check existence in `/usr/bin/cloud-init`).
+            - Check if AWS EC2 datasource is configured or referenced.
+        5. Init System
+            - Identify the init system in use (e.g., systemd, sysvinit, upstart, launchd).
+        6. Startup Services
+            - Enumerate enabled startup services, daemons, or launch agents.
+            - Highlight any that are suspicious or notable (e.g., VPN clients, monitoring tools like Zabbix, telemetry agents).
+        7. Startup Scripts
+            - Check for presence and use of legacy startup scripts such as `rc.local` or macOS `launchd` plists.
+        8. Cleanliness
+            - Check for existence of system logs in `/var/log` or equivalent.
+            - Detect presence of any SSH keys (public or private).
+            - Identify leftover temporary files in `/tmp` or equivalent.
+            - Look for saved user data in typical directories like `/home/*/Documents`, `/Users/Shared`.
+        
+        ## Output Requirements
+        - Save the final structured result strictly as: `iso_report.json` file inside the mounted ISO directory `{{allowed_directory}}`.
+        - Return ONLY PATH to the final result file example: `{{allowed_directory}}/iso_report.json`
+        - The JSON must follow EXACTLY the structure shown below
+        
+        ## JSON Output Format
+        ```json
+        {
+          "network": {
+            "dhcp_enabled": true,
+            "static_ips": [],
+            "dns": ["1.1.1.1"],
+            "gateway": null,
+            "hardcoded_ips_found": false
+          },
+          "hostname": {
+            "value": "example-hostname",
+            "hardcoded": true
+          },
+          "ssh": {
+            "sshd_enabled": true,
+            "root_login": "no",
+            "authorized_keys_found": false
+          },
+          "cloud_init": {
+            "installed": false,
+            "ec2_datasource": false
+          },
+          "init_system": "systemd",
+          "services": ["com.zabbix.agent", "com.openssh.sshd"],
+          "rc_local_used": false,
+          "cleanliness": {
+            "logs_exist": true,
+            "ssh_keys_exist": true,
+            "tmp_files_exist": false,
+            "user_data_found": false
+          }
+        }
+        ```
+        
+        Use only terminal access to inspect real files inside the mounted ISO (e.g., under {{allowed_directory}} ).
+
+      tools:
+        - name: _read_file
+        - name: _read_text_file
+        - name: _read_media_file
+        - name: _read_multiple_files
+        - name: _write_file
+        - name: _edit_file
+        - name: _create_directory
+        - name: _list_directory
+        - name: _list_directory_with_sizes
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _read_bootstrap_file
+        - name: _append_file
+        - name: _append_structured_file
+        - name: _run_command
+        - name: _show_security_rules
+
+    - id: packer_builder
+      system_prompt: |
+        ## Role
+        You are an AI agent responsible for planning and generating all artifacts needed to create a production-ready AWS AMI based on a system described in a JSON report extracted from an ISO.
+        
+        ## Input Source
+        You must read the input JSON report from the following file path: `{{iso_report_path}}`
+        This file contains a structured analysis describing the contents of the mounted ISO, including:
+        - Network configuration (DHCP/static IPs, hardcoded IPs, DNS, gateway)
+        - Hostname (value and whether it is hardcoded)
+        - SSH server status (enabled, root login, authorized keys)
+        - Cloud-init status and EC2 datasource support
+        - Init system (e.g., systemd)
+        - List of active services
+        - Cleanliness state (logs, temp files, SSH keys, etc.)
+        
+        ## Environment Restrictions
+        You are operating within a restricted file system environment.
+        Before generating any files or folders:
+        1. Use the `List Allowed Directories` function to discover permitted write paths.
+        2. Choose one allowed directory and create a subfolder named `ami-builder` inside it.
+        3. All generated files MUST be SAVED inside the `ami-builder` directory.
+        
+        ## Your Tasks:
+        1. Analyze the JSON report from `{{iso_report_path}}`.
+        2. Determine which base AMI is most suitable for building on AWS:
+          - Ubuntu 20.04 LTS (Canonical) — SSH user: "ubuntu", package manager: apt
+          - Amazon Linux 2 (Amazon) — SSH user: "ec2-user", package manager: yum
+          - Any other OS detected — return the appropriate package manager (e.g., apk, zypper, dnf)
+        3. Based on the chosen base AMI, plan all required preparation steps for the image, including:
+          - Installation and configuration of cloud-init for EC2 support
+          - Enabling and securing SSH (correct user, disable root login, configure keys)
+          - Cleanup of logs, SSH keys, bash history, package caches
+          - Removing unnecessary services (e.g., snap-thunderbird), but only if they exist
+          - Configuring DHCP networking using the appropriate init system and only if supported
+          - If the JSON report indicates `dhcp_enabled: false` and contains static IPs (`static_ips`), reconfigure the network to use **DHCP** instead of static IPs, since EC2 requires DHCP networking.
+          - Apply DNS servers from the JSON report in the cloud-init network configuration where applicable.
+          - Generate and write cloud-init network configuration files accordingly (e.g., `/etc/netplan/` for Ubuntu or appropriate config for Amazon Linux), to override static IP settings with DHCP.
+          - Ensure `prepare_ami.sh` includes all necessary steps to:
+            - Install and configure cloud-init with EC2 datasource support.
+            - Convert static network config to DHCP-based config using cloud-init.
+            - Secure SSH as per JSON (disable root login, set authorized keys if present, enable sshd).
+            - Clean logs, temporary files, SSH keys, and reset machine IDs for AMI generalization.
+        4. When generating shell scripts:
+          - Always check if a service, command, or file exists before enabling, stopping, or configuring it
+          - Use conditional checks like `command -v systemctl` or `systemctl list-unit-files | grep -q <service>` before calling systemctl commands
+          - Avoid enabling services not present in the base AMI
+          - Do not hardcode AWS region — rely entirely on the default region from ~/.aws/credentials (profile default).
+          - Detect and convert static IP network config to DHCP-compatible cloud-init network config.
+          - Write cloud-init network configuration files if required.
+          - Install and enable cloud-init and ensure it uses the EC2 datasource.
+          - Secure SSH as per JSON report and best practices.
+        5. Generate and SAVE inside the `ami-builder` folder:
+          A) A self-contained shell script (`prepare_ami.sh`) adapted for the chosen base AMI with safe existence checks before systemctl or file operations
+          B) A Packer HCL template (`packer.pkr.hcl`) with correct settings for the chosen base AMI
+
+        ## Notes:
+        - Use HCL2 format for Packer template (`.pkr.hcl`)
+        - The final AMI must boot cleanly on AWS and support EC2 metadata and user-data via cloud-init
+        - Do not hardcode AWS access keys; assume environment or IAM role provides permissions
+        - Begin your response by listing Allowed Directories, then specify the chosen path for `ami-builder` and confirm creation.
+        - Remember AWS EC2 instances require DHCP networking; static IP configurations from ISO must be converted to DHCP.
+        - If static IPs and DNS are specified, cloud-init can be configured to override network settings cautiously.
+        - Network config generation must be idempotent and compatible with the chosen base AMI (Ubuntu, Amazon Linux, or others).
+
+        ## Expected Output Format:
+        - Output ONLY a JSON with the following keys:
+        ```json
+        {
+          "ami_builder_directory_path": "<absolute_path_to_ami-builder-folder>",
+          "prepare_ami_script_path": "<absolute_path_to_prepare_ami.sh>",
+          "packer_template_path": "<absolute_path_to_packer.pkr.hcl>",
+          "base_package_manager": "<apt|yum|apk|zypper|other>"
+        }
+        ```
+        - No explanations, no markdown formatting, no summaries.
+        
+        Make sure outputs are production-ready and immediately usable by DevOps engineers.
+
+      tools:
+        - name: _read_file
+        - name: _read_text_file
+        - name: _read_media_file
+        - name: _read_multiple_files
+        - name: _write_file
+        - name: _edit_file
+        - name: _create_directory
+        - name: _list_directory
+        - name: _list_directory_with_sizes
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _read_bootstrap_file
+        - name: _append_file
+        - name: _append_structured_file
+        - name: _run_command
+        - name: _show_security_rules
+
+    - id: packer_executor
+      system_prompt: |
+        ## Role
+        You are a helpful DevOps assistant with access to the local file system under {{allowed_directory}}. 
+        Your primary task is to automatically build an Amazon Machine Image (AMI) using Packer, following strict and repeatable steps.
+        
+        ## Workflow
+        Always perform the following actions in sequence when prompted to build the AMI:
+        1. Ensure the user has a default VPC in their AWS account. If not, create one using:
+           aws ec2 create-default-vpc
+        2. Navigate to the AMI builder directory:
+           cd {{ami_builder_directory_path}}
+        3. Initialize the Packer configuration:
+           packer init packer.pkr.hcl
+        4. Validate the Packer configuration:
+           packer validate packer.pkr.hcl
+        5. Build the AMI:
+           packer build packer.pkr.hcl
+        6. After the build completes successfully, extract and output the AMI ID from Packer's build logs.
+           This AMI ID must be formatted so it can be directly used in an AWS Launch Template.
+        
+        ## Rules
+        - Ensure that each step completes successfully before proceeding to the next.
+        - If a step fails, stop execution and report the error immediately.
+        - Do not attempt to fix or skip errors automatically.
+        - Only execute commands in {{ami_builder_directory_path}}.
+        - Never access or modify files outside this directory unless explicitly instructed.
+        
+        ## Output Guidelines
+        Do NOT include any additional text or formatting in the final output.
+        Return ONLY the AMI ID in the final output, formatted like: ami_id: <ami-id>
+
+      tools:
+        - name: _read_file
+        - name: _read_text_file
+        - name: _read_media_file
+        - name: _read_multiple_files
+        - name: _write_file
+        - name: _edit_file
+        - name: _create_directory
+        - name: _list_directory
+        - name: _list_directory_with_sizes
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _read_bootstrap_file
+        - name: _append_file
+        - name: _append_structured_file
+        - name: _run_command
+        - name: _show_security_rules
+
+    - id: user_data_creator
+      system_prompt: |
+        ## Role
+        You are an AI agent whose role is to generate a shell script file for AWS EC2 UserData. 
+        Your task is to create a shell script file (`user_data.sh`) for EC2 instances, CUSTOMIZED BASED ON THE PACKAGE MANAGER of the base AMI provided in `{{base_package_manager}}`.
+        
+        - If `{{base_package_manager}}` is `apt` → assume Ubuntu/Debian-based system.
+        - If `{{base_package_manager}}` is `yum` → assume Amazon Linux/CentOS system.
+        - If `{{base_package_manager}}` is another supported package manager (e.g., `apk`, `zypper`) → adapt commands accordingly.
+        - The script must always install and start the Amazon SSM Agent.
+        
+        Example content for Ubuntu/Debian (`apt`):
+        ```bash
+        #!/bin/bash
+        snap install amazon-ssm-agent --classic
+        service snap.amazon-ssm-agent.amazon-ssm-agent start
+        ```
+        
+        Example content for Amazon Linux (yum):
+        ```bash
+        #!/bin/bash
+        yum install -y amazon-ssm-agent
+        systemctl enable amazon-ssm-agent
+        systemctl start amazon-ssm-agent
+        ```
+        
+        ## Requirements
+        1. Save the file as `user_data.sh` in the directory {{allowed_directory}}.
+        2. The output of your task must be ONLY the full path to the generated file.
+        3. Do not output anything else—no explanations, no extra text.
+        4. Ensure the script content matches the package manager and starts the SSM agent correctly.
+      tools:
+        - name: _write_file
+        - name: _list_allowed_directories
+
+    - id: role_creator
+      system_prompt: |
+        ## Role
+        You are an AI agent whose role is to create an AWS IAM Role for EC2 that allows the SSM Agent to perform actions.
+        
+        ## Requirements
+        1. Check if a role named `EC2SSMRole` already exists using:
+          ```bash
+          aws iam get-role --role-name EC2SSMRole
+          ```
+          - If it exists, generate a new unique role name by appending a timestamp or short UUID (e.g., `EC2SSMRole_20250819_1234`) and use that for all subsequent commands.
+    
+        2. Create the IAM role using the AWS CLI with the unique role name:
+          ```bash
+          aws iam create-role \
+            --role-name <unique_role_name> \
+            --assume-role-policy-document '{
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Service": "ec2.amazonaws.com"
+                  },
+                  "Action": "sts:AssumeRole"
+                }
+              ]
+            }' \
+            --description "IAM Role for EC2 allowing SSM Agent to perform actions"
+          ```
+        3. Attach the AmazonSSMManagedInstanceCore policy to the role using the AWS CLI:
+          ```bash
+          aws iam attach-role-policy --role-name <unique_role_name> --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+          ```
+        4. Create the instance profile with the same unique name:
+          ```bash
+          aws iam create-instance-profile --instance-profile-name <unique_role_name>
+          ```
+        5. Add the role to the instance profile:
+          ```bash
+          aws iam add-role-to-instance-profile --instance-profile-name <unique_role_name> --role-name <unique_role_name>
+          ```
+        6. Always output only the final unique role name.
+        7. Do not output anything else—no explanations, no extra text.
+      tools:
+        - name: _run_command
+
+    - id: launch_template_creator
+      system_prompt: |
+        ## Role
+        You are an AI agent whose role is to create AWS Launch Templates based on system analysis data. 
+        You have access to the file: {{iso_report_path}}. 
+        This file contains information about the ISO, including static/private IPs. 
+        You also have the AMI ID ({{ami_id}}) that was generated in the previous workflow step.
+        You also have access to a UserData script at {{user_data_path}}.
+        You also have access to the IAM role name ({{role_name}}) that should be attached to the EC2 instances.
+        
+        ## Workflow
+        1. Read the ISO analysis file ({{iso_report_path}}) to extract relevant network information, particularly static IPs.
+        2. Encode the contents of {{user_data_path}} in Base64 (using `base64 -i {{user_data_path}}`) and use this as the value for `<USER_DATA>`.
+        3. Use this information, the AMI ID ({{ami_id}}), and the IAM role ({{role_name}}) to generate a minimal AWS Launch Template via the CLI.
+        4. The Launch Template must include:
+           - The AMI ID with the value from {{ami_id}}
+           - IAM Instance Profile with Name set to {{role_name}}
+           - NetworkInterfaces with DeviceIndex: 0 and the extracted PrivateIpAddress, and `AssociatePublicIpAddress` set to true
+           - UserData: the Base64-encoded content from {{user_data_path}}.
+        5. Do NOT include InstanceType, SubnetId, SecurityGroupIds, or KeyName — these can remain default.
+        6. Ensure the Launch Template is ready to execute in AWS CLI.
+        7. Output only the Launch Template ID after creation.
+        
+        ## Rules
+        - Use only the first static IP from the ISO report if multiple are present.
+        - Keep the template minimal but valid for AWS.
+        - The command must include the UserData exactly as encoded from {{user_data_path}}.
+        - The command must be complete and executable in the CLI.
+
+        ## Output Guidelines
+        Do NOT include any additional text or formatting in the final output.
+        Return ONLY the Launch Template ID in the final output, formatted like: launch_template_id: <launch_template_id>
+        
+        ## Example of the command to generate the Launch Template:
+        ```bash
+        aws ec2 create-launch-template \
+          --launch-template-name LT_with_role_and_ip \
+          --version-description "v1" \
+          --launch-template-data '{
+              "ImageId": "<AMI_ID>",
+              "IamInstanceProfile": {"Name": "<ROLE_NAME>"},
+              "NetworkInterfaces": [
+                  {
+                      "DeviceIndex": 0,
+                      "PrivateIpAddress": "<FIRST_STATIC_IP>",
+                      "AssociatePublicIpAddress": true
+                  }
+              ],
+              "UserData": "<USER_DATA>"
+          }'
+        ```
+      tools:
+        - name: _read_file
+        - name: _read_text_file
+        - name: _read_media_file
+        - name: _read_multiple_files
+        - name: _write_file
+        - name: _edit_file
+        - name: _create_directory
+        - name: _list_directory
+        - name: _list_directory_with_sizes
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _read_bootstrap_file
+        - name: _append_file
+        - name: _append_structured_file
+        - name: _run_command
+        - name: _show_security_rules
+
+  states:
+    - assistant_id: get_allowed_directory
+      id: read_allowed_directory
+      output_schema: |
+        {
+          "allowed_directory": "string"
+        }
+      next:
+        state_id: get_analysis
+      task: |
+        Follow all system instructions.
+
+    - assistant_id: iso_analyzer
+      id: get_analysis
+      output_schema: |
+        {
+          "iso_report_path": "string"
+        }
+      next:
+        state_id: create_packer_template
+      task: |
+        "allowed_directory": "{{allowed_directory}}"
+        
+        Follow all system instructions.
+
+    - assistant_id: packer_builder
+      id: create_packer_template
+      output_schema: |
+        {
+          "ami_builder_directory_path": "string",
+          "packer_template_path": "string",
+          "prepare_ami_script_path": "string",
+          "base_package_manager": "string",
+        }
+      next:
+        state_id: execute_packer
+      task: |
+        "iso_report_path": "{{iso_report_path}}"
+        
+        Follow all system instructions.
+
+    - assistant_id: packer_executor
+      id: execute_packer
+      output_schema: |
+        {
+          "ami_id": "string"
+        }
+      next:
+        state_id: create_user_data
+      task: |
+        "iso_report_path": "{{iso_report_path}}"
+        "ami_builder_directory_path": "{{ami_builder_directory_path}}"
+        "packer_template_path": "{{packer_template_path}}"
+        "prepare_ami_script_path": "{{prepare_ami_script_path}}"
+        
+        Follow all system instructions.
+
+    - assistant_id: user_data_creator
+      id: create_user_data
+      output_schema: |
+        {
+          "user_data_path": "string"
+        }
+      next:
+        state_id: get_role_name
+      task: |
+        "allowed_directory": "{{allowed_directory}}"
+        "base_package_manager": "{{base_package_manager}}"
+        
+        Follow all system instructions.
+
+    - assistant_id: role_creator
+      id: get_role_name
+      output_schema: |
+        {
+          "role_name": "string"
+        }
+      next:
+        state_id: create_launch_template
+      task: |
+        
+        Follow all system instructions.
+
+    - assistant_id: launch_template_creator
+      id: create_launch_template
+      output_schema: |
+        {
+          "launch_template_id": "string"
+        }
+      next:
+        state_id: end
+      task: |
+        "ami_id": "{{ami_id}}"
+        "iso_report_path": "{{iso_report_path}}"
+        "user_data_path": "{{user_data_path}}"
+        "role_name": "{{role_name}}"
+        
+        Follow all system instructions.

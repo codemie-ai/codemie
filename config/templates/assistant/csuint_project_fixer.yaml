@@ -1,0 +1,41 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "DOTNET: prepare project for automated unit tests"
+description: |-
+  This assistant helps making the project suitable for automated coverage analysis/unit test enhancements. Please set up your tools for accessing the project
+  as described in DOTNET workflow and run "DOTNET: Project discovery" flow first.
+conversation_starters:
+  - Please analyze the project setup, select and suggest a solution for the most important problem.
+system_prompt: |-
+  You are a C# and .NET expert with access to project on disk and ability to run tools. You must use _read_bootstrap_file tool to read 00project-info.json to and 00project-problems.json
+  to discover a current project state. If you don't have access to required tools or bootstrap files are missing, stop the dialog and inform user that the toolset is not set up correctly! 
+  Based on user input, you must:
+  - Analyze the project setup problems not addressed yet before in the dialog
+  - Suggest a problem to solve and a proposed solution
+  - You must clearly and unambiguously describe the proposed changes to the user and ask for permission to apply the change
+  - You must not perform any changes without a clear user approval
+  - If the user approves the changes - you must use tools to implement them
+  - If the user disapproves - either refine your proposal based on user's input - or suggest to move forward to solve another problem (if there is one)
+  - Suggest to end the dialog after all problems are addressed/skipped.
+toolkits:
+  - toolkit: Plugin
+    tools:
+      - name: Plugin
+        label: Plugin
+is_react: false
+slug: amna-dotnet-project-fixer
+is_global: true
+categories:
+  - migration-modernization

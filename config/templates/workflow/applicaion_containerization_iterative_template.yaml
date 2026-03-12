@@ -1,0 +1,212 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-app-containerization
+name: "CONTAPP: containerize the application"
+description: |
+  Creates a Dockerfile and a helm-chart for the application
+mode: Sequential
+execution_config:
+    max_concurrency: 1
+    enable_summarization_node: false
+    tools:
+      - id: read_graph
+        tool: _read_graph
+        toolset: Plugin
+        integration_alias: amna-demo-plugin-integration
+
+    assistants:
+      - id: devops_expert
+        exclude_extra_context_tools: true
+        system_prompt: |
+         You are a an experienced DEVOPS having access to application on
+         the local folder and a persistent memory. Your ultimate goal is to containerize
+         the application
+    
+         if this is possible - by creating a Dockerfile and a Helm-chart. You perform your
+         task step-by-step observing best practices and paying special
+    
+         attention to security considerations. As the task could be big - you do it in
+         iterations. Each iteration allows you only limited interaction with the
+    
+         environment before your cognitive abilities deteriorate. To be able to progress
+         in this environment, you MUST use memory to keep track of
+    
+         your actual status and transfer knowledge to the next iteration. Always start
+         your dialog by reading and examining the current memory state and
+    
+         only after that go executing the specified task.
+        tools:
+          - name: _read_file
+            integration_alias: amna-demo-plugin-integration
+          - name: _write_file
+          - name: _read_multiple_files
+          - name: _list_directory
+          - name: _create_directory
+          - name: _directory_tree
+          - name: _search_files
+          - name: _get_file_info
+          - name: _list_allowed_directories
+          - name: _append_file
+          - name: _create_entities
+          - name: _create_relations
+          - name: _add_observations
+          - name: _read_graph
+          - name: _search_nodes
+          - name: _open_nodes
+          - name: _delete_entities
+          - name: _delete_observations
+          - name: _delete_relations
+      - id: expert_with_commandline
+        exclude_extra_context_tools: true
+        system_prompt: |
+         You are a an experienced DEVOPS having access to application on
+         the local folder and a persistent memory. You can also execute commands on the
+         target system. Always start your dialog by reading and examining the current memory state and
+         only after that go executing the specified task.
+        tools:
+          - name: _read_file
+            integration_alias: amna-demo-plugin-integration
+          - name: _write_file
+          - name: _read_multiple_files
+          - name: _list_directory
+          - name: _create_directory
+          - name: _directory_tree
+          - name: _search_files
+          - name: _get_file_info
+          - name: _list_allowed_directories
+          - name: _append_file
+          - name: _create_entities
+          - name: _create_relations
+          - name: _add_observations
+          - name: _read_graph
+          - name: _search_nodes
+          - name: _open_nodes
+          - name: _delete_entities
+          - name: _delete_observations
+          - name: _delete_relations
+          - name: _run_command
+
+    states:
+      - id: sanity_check
+        next:
+          include_in_llm_history: false
+          state_id: reset_memory
+        tool_args:
+          unused: foobar
+        tool_id: read_graph
+      - id: reset_memory
+        assistant_id: devops_expert
+        task: |
+         You must perform the following tasks:
+    
+         1. Clean the memory content if it is not empty by deleting all entries there
+    
+         2. Double-check that the memory is empty
+    
+         3. Determine a location of the application and create a high-level set of tasks
+         for achieving the containerization.
+    
+         4. Do not execute those tasks, only store them in memory.
+        next:
+          include_in_llm_history: false
+          state_id: task_iter
+
+      - id: task_iter
+        assistant_id: devops_expert
+        task: |
+         You are iteratively solving the application containerization task. It is
+         done in multiple iterations. You don''t know which iteration you run in.
+    
+         Based on task statuses determine if the application was successfully containerized
+         or not. If already done - signal that no more conversation is required and finish
+         the dialog.
+    
+         Otherwise, do one of the following:
+    
+         1. Either choose a task that is not completed and decompose it to subtasks - and
+         store them in the memory.
+    
+         2. Or choose exactly one concrete subtask, complete it and store the outcome into
+         the memory
+    
+         3. Determine if there are any non-completed tasks or subtasks are available and create a
+         JSON output as directed by schema.
+    
+         Do not generate any human-readable output besides this JSON as you run autonomously.
+         Generate this JSON and finish the conversation if the context gets too complex
+         or you feel your abilities degraded from the long conversation and tool calls.
+         Make sure to save essential knowledge to the memory before doing this.
+    
+         Do not forget to create physical entities on disk if the task requires this.
+        output_schema: |
+          {
+            "all_done": "Boolean true | false. If no rework is needed and project is ready for real QA return true, otherwise false",
+          }
+        next:
+          include_in_llm_history: false  # Indicates that history should not be passed to the next state
+          condition:
+            expression: all_done == True
+            otherwise: task_iter
+            then: task_validate
+
+      - id: task_validate
+        assistant_id: devops_expert
+        task: |
+         You are presented with the memory and the filesystem result of executing
+         the application conatainerization process. You must:
+         1. Clear the memory after examinig it.
+         2. Examine the result on disk and find all flaws and mistakes made by a previous stages. 
+         You must check if best practices and security guidelines are consistently applied for the created
+         Dockerfile and helm chart. If you find any flaws or required improvements - 
+         you must create new tasks in the memory and those would be passed back
+         with the project to execution stage to make a rework. Your tasks must be clearly
+         formulated and actionable (so that the agent working on your tasks can create a result
+         that passes your assessment). You must not express broad or unclear wishes or make
+         tasks just for the sake of making something.
+    
+         If you sure the project in its current state would build the image and deploy 
+         it to the environment, you must indicate that so
+         an attempt would be made to actually build the image and test it on QA env.
+    
+         You are not allowed to make any modifications to the project or run any commands.
+         Only create tasks and describe the problems and your suggestions about how to solve them.
+
+        output_schema: |
+          {
+            "all_done": "Boolean true | false. If there are no incomplete actionable tasks in memory - return true, otherwise false",
+          }
+
+        next:
+          include_in_llm_history: false  # Indicates that history should not be passed to the next state
+          condition:
+            expression: all_done == True
+            otherwise: task_iter
+            then: try_build_image
+
+      - id: try_build_image
+        assistant_id: expert_with_commandline
+        interrupt_before: true
+        next:
+          state_id: end
+        task: |
+          You are tasked with validating the application containerization result and fixing problems
+          potentially overlooked by previous agents. You must determine if the system allows you to build
+          a docker image from the created Dockerfile, check if the image builds, and fix the errors.
+          You may only fix errors related to the Dockerfile or the project build setup. You are absolutely
+          forbidden to change the configuration of the system (e.g. install system-wide packages, changing system
+          configs, etc) or change the project sources. If you come to conclusion that the docker image doesn't
+          build due to issues not under your direct control - you must decribe the situation in details,
+          provide suggestions about how to fix it, and abort the dialog.
+ 

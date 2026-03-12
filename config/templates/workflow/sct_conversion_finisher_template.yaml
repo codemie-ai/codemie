@@ -1,0 +1,81 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: AWS SCT Conversion finisher
+description: |
+  Workflow for finalizing the conversion of database objects using AWS SCT partially converted code.
+  It lists SQL files, processes them with a converter assistant, and prepares the output for further compilation.
+  
+  Prerequisites: 
+  1. Create airun folder in your project and put there following list of files:
+    Repository containing semi-converted SQL files exported from AWS SCT:
+      aws_sct_sql_files/
+        1. dbo.object_1.sql
+        2. dbo.object_2.sql
+        ...
+    Input preparation scripts:
+      filter_fully_converted.py
+      split_into_batches.py
+    Compilation and debugging scripts
+      compile_batches.py
+      get_compilation_errors_report.py
+      calculate_overall_compilation_statistics.py
+   2. Run plugin and give it access to the project tree by setting its path in the ALLOWED_DIR environment variable:
+    - Run plugin: codemie-plugins mcp run -s filesystem -e filesystem=ALLOWED_DIR
+
+  Required Assistants:
+    List files assistant: retrieves list of files using codemie-plugins tools.
+      Tools: Codemie Plugins
+    Conversion Assistant: Reads the SQL files and converts them to the desired format. Converted files are stored in a specified directory.
+      Tools: Codemie Plugins
+  
+  Example workflow user prompt for converting SQL files in batches:
+    Process SQL files in batches/batch_1 repository. Also, every migration task, prior to starting a migration must check if a sql file contains more than 
+    2048 lines of code or if file in converted_db_objects/batch_1 already exists. If yes, skip the migration, do not override the row_x_conversion.txt file, 
+    just continue with a next file.
+mode: Sequential
+slug: amna-sct-conversion-finisher
+
+execution_config:
+  enable_summarization_node: false
+  recursion_limit: 50
+  max_concurrency: 3
+
+  assistants:
+    - id: converter_assistant
+      assistant_id: PRECONFIGURED:amna-sct-tsql-to-pgsql-converter
+
+    - id: list_files_assistant
+      system_prompt: |
+        Use CodeMie Plugins to list all the files in the repository based on provided repository name e.g. for 'batch_x' list all files in batches/batch_x. Always return the list of files in JSON format with files as key!
+      tools:
+        - name: _list_directory
+
+  states:
+    - id: list_files
+      assistant_id: list_files_assistant
+      task: "List sql files in the provided repository e.g. batch_1, result in JSON!"
+      output_schema: |
+        {
+          "files": ["batches/batch_1/1. dbo.object_1.sql", "batches/batch_1/2. dbo.object_2.sql"]
+        }
+      next:
+        iter_key: files
+        state_id: process_files
+
+    - id: process_files
+      assistant_id: converter_assistant
+      task: "After conversion write the output files into a converted_db_objects/ repository"
+      next:
+        state_id: end

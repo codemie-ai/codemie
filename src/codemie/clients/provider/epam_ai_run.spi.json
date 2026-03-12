@@ -1,0 +1,291 @@
+{
+  "openapi": "3.0.4",
+  "info": {
+    "title": "Service Provider Interface (SPI) OpenAPI",
+    "version": "1.0.0",
+    "description": "OpenAPI 3.1 specification defining the endpoints and data models for any external service provider (e.g., AICE) integrating with the AI/Run Platform."
+  },
+  "servers": [ ],
+  "tags": [
+    {
+      "name": "Service Provider Health",
+      "description": "Endpoints for health checks and capability discovery."
+    },
+    {
+      "name": "Tool Invocation and Management",
+      "description": "Endpoints for listing, invoking, and managing external tool operations."
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": [ "Service Provider Metadata & Health" ],
+        "summary": "Health Check",
+        "description": "Verifies that the external service provider is running and ready to accept requests.",
+        "operationId": "healthCheck",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Service is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/tools/{toolkit_name}/{tool_name}/invoke": {
+      "post": {
+        "tags": [ "Tool Invocation & Management" ],
+        "summary": "Invoke Tool",
+        "description": "Executes a specific tool.",
+        "operationId": "invokeTool",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/ToolkitName"
+          },
+          {
+            "$ref": "#/components/parameters/ToolName"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToolInvocationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool invocation completed or started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolInvocationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    },
+    "/tools/{toolkit_name}/{tool_name}/invocations/{invocation_id}": {
+      "get": {
+        "tags": [ "Tool Invocation & Management" ],
+        "summary": "Get Tool Invocation Status",
+        "description": "Retrieves the status or result of a previously invoked tool operation.",
+        "operationId": "getToolInvocationStatus",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/ToolkitName"
+          },
+          {
+            "$ref": "#/components/parameters/ToolName"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Invocation status retrieved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolInvocationResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      },
+      "delete": {
+        "tags": [ "Tool Invocation & Management" ],
+        "summary": "Cancel Tool Invocation",
+        "description": "Attempts to stop a long-running or unwanted tool operation.",
+        "operationId": "cancelToolInvocation",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/CorrelationId"
+          },
+          {
+            "$ref": "#/components/parameters/ToolkitName"
+          },
+          {
+            "$ref": "#/components/parameters/ToolName"
+          },
+          {
+            "$ref": "#/components/parameters/InvocationId"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Tool invocation cancelled successfully."
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalServerError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "CorrelationId": {
+        "name": "X-Correlation-Id",
+        "in": "header",
+        "description": "Unique correlation ID for distributed tracing and audit logs",
+        "required": false,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "ToolName": {
+        "name": "tool_name",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Identifier of the tool."
+      },
+      "ToolkitName": {
+        "name": "toolkit_name",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        },
+        "description": "Identifier of the toolkit."
+      },
+      "InvocationId": {
+        "name": "invocation_id",
+        "in": "path",
+        "description": "Identifier of the tool invocation",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "ErrorResponse": {
+        "$ref": "epam_ai_run.spi.schema.json#/$defs/ErrorResponse"
+      },
+      "HealthResponse": {
+        "$ref": "epam_ai_run.spi.schema.json#/$defs/HealthResponse"
+      },
+      "ToolInvocationRequest": {
+        "$ref": "epam_ai_run.spi.schema.json#/$defs/ToolInvocationRequest"
+      },
+      "ToolInvocationResponse": {
+        "$ref": "epam_ai_run.spi.schema.json#/$defs/ToolInvocationResponse"
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Bad Request",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Unauthorized",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "Conflict": {
+        "description": "User request can't be processed due to a conflict. Tool invocation could not be cancelled.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Resource Not Found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "InternalServerError": {
+        "description": "Internal Server Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": [ ]
+    }
+  ]
+}

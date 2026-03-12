@@ -1,0 +1,245 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+---
+name: CodeMie Java API Tests Writer (PoC)
+description: >
+  Workflow for Java API tests generation for CodeMie backend using local developer's environment.
+  Also this workflow shows how the finish_iteration flag works. In the current workflow urls_analyser assistant
+  generate a list of endpoints that should be covered with autotests, and then tests_analyser assistants generates 
+  a list of test cases and workflow starts iterating buy the test cases instead of endpoints.
+  The workflow consists of four specialized AI assistants, each with specific responsibilities:
+
+    1. tests_analyser Assistant
+      - Analyzes the task requirements
+      - Prepares implementation plan
+      - Gathers all relevant dependencies and context
+      - To run the workflow on your side datasource id should be replaces with your datasource id for backend implementation
+    2. git_assistant Assistant
+      - Create branch for the tests implementation
+      - Push already implemented tests in remote
+    3. test_writer Assistant
+      - Implements required payloads
+      - Implements required response models
+      - Implements required steps
+      - Implements test case
+      - Compile the project and fix compilation issues
+    4. pr_creator Assistant
+      - Creates pull request in the 'main' branch
+      - To run the workflow on your side datasource id should be replaces with your datasource id for tests implementation
+
+  Prerequisites:
+    1. Integrations for Jira and Plugin toolkits exists
+    2. Relevant datasource exists
+    3. Default datasource IDs are replaced with that is relevant for you
+    4. Development plugin (https://gitbud.epam.com/epm-cdme/codemie-plugins) is running on your local environment
+
+  Prompt Examples:
+    1. Write tests for Conversations endpoints
+    2. Write tests for Feedback endpoints. Choose the most important 2 endpoints
+    3. Write tests for /v1/admin/applications endpoint
+mode: Sequential
+slug: template-codemie-java-local-api-tests-writer
+icon_url: "https://epam-gen-ai-run.github.io/ai-run-install/docs/assets/ai/UnitTestsGenerationWorkflow.png"
+execution_config:
+  max_concurrency: 1
+  assistants:
+    - id: git_assistant
+      model: claude-4-5-sonnet
+      system_prompt: "Act as experienced git user"
+      tools:
+        - name: _generic_git_tool
+    - id: pr_creator
+      model: claude-4-5-sonnet
+      system_prompt: >
+        Do the only following steps
+        1. Run set_active_branch tool to set the branch created by the `branch_creator` assistant as active
+        2. Run create_pull_request to create pull request to main branch
+        3. Finish task
+      tools:
+        - name: set_active_branch
+          integration_alias: gitbud
+        - name: create_pull_request
+          integration_alias: gitbud
+      datasource_ids:
+        - 1587deff-953f-4a47-a663-f0dbea44a012 #REQUIRED. REPLACE WITH YOUR OWN DATASOURCE. ID of datasource with the autotests
+    - id: test_writer
+      model: claude-4-5-sonnet
+      system_prompt: >
+        Act as Senior Test Automation Engineer.
+        Constraints:
+        1. You must strictly follow the plan to implement correct code.
+        3. You must always implement changes, but not propose implementation.
+        4. Do not edit already implemented tests.
+        5. Do not use OR in status code assertions. If you need to check different status codes pass them as method parameters.
+        6. For assertions use assertj library.
+        7. Do not use RestAssured library directly in tests but wrap it in steps.
+      tools:
+        - name: _generic_git_tool
+        - name: _run_command_line_tool
+        - name: _write_file_to_file_system
+        - name: _list_files_in_directory
+        - name: _read_file_from_file_system
+    - id: tests_analyser
+      model: claude-4-5-sonnet
+      system_prompt: "Act as Senior Test Automation Engineer."
+      datasource_ids:
+        - 72817832-970e-4dde-aad4-c81d73c82b54 #REQUIRED. REPLACE WITH YOUR OWN DATASOURCE. ID of datasource with the backend implementation
+  states:
+    - id: branch_creator
+      assistant_id: git_assistant
+      task: >
+        For all actions use _generic_git_tool only:
+        1. Run {'git_command': 'fetch origin'}
+        2. Run {'git_command': 'reset --hard origin/main'}
+        3. Run {'git_command': 'checkout main'}
+        4. If branch name is not provided in user message think about any applicable name but DO not checkout on it.
+        5. Delete branch from the previous step in remote.
+        6. Delete branch from the previous step on local environment.
+        7. Create a new branch. If branch name is not specified in user message use any applicable name.
+        8. Checkout on newly created branch.
+        9. Return created branch as json.
+        **Output Example**:
+                ```json
+                {
+                  "branch_name": "The name of created autotests branch"
+                }
+      output_schema: >
+        {
+          "branch_name": "The name of created autotests branch"
+        }
+      next:
+        state_id: urls_analyser
+    - id: urls_analyser
+      assistant_id: tests_analyser
+      task: >
+        Your goal is to analyse BACKEND-REPOSITORY and find all endpoints for provided controller.
+        
+        You MUST follow the following steps:
+        1. Get Repository File Tree for the BACKEND-REPOSITORY.
+        2. Carefully analyze the repository to check what endpoints provided controller has.
+        3. Return any 2 urls (JUST FOR DEMO PURPOSE)
+        
+        IMPORTANT: Output result should be in JSON format. Do not return anything else except json.
+        
+        **Output Example**:
+        ```json
+        {
+          "endpoints": [
+            "URL": "url there",
+            "METHOD": "method there",
+          ]
+        }
+      output_schema: >
+        {
+            "endpoints": [
+                "URL": "url there",
+                "METHOD": "method there",
+            ]
+        }
+      next:
+        iter_key: endpoints
+        state_id: tests_analyser
+    - id: tests_analyser
+      assistant_id: tests_analyser
+      finish_iteration: True
+      task: >
+        Act as Senior Test Automation Engineer. Your goal is to prepare the most important test cases to check endpoint functionality.
+        Return one positive and one negative test case.
+        
+        You MUST follow the following steps:
+        1. Think how this endpoint must be tested.
+        2. Do not hardcode any IDs that are required for the test, but think existing one can be retrieved or new one can be created.
+        3. Think if some additional endpoints must be used to automate this one.
+        4. Do not add any precondition sections
+        5. Add complete steps that contain all required information: endpoint, method, headers, payload and response models, expected status code
+      
+        IMPORTANT: This is API tests and all endpoints are available without mocking. So consider this during test generation.
+
+        IMPORTANT: Output result should be in JSON format. Do not return anything else except json.
+        
+        **Generated Tests Example**
+        1. Test case "Automate getCarById endpoint":
+           Steps:
+            - Get all cars/or create a new one (Step should contain endpoint, method, headers, payload and response models, expected status code)
+            - Extract car id from the previous request
+            - Send getCarById request with the extracted id (Step should contain endpoint, method, headers, payload and response models, expected status code)
+            - Assert response (All expectations should be specified there)
+        2. Test case "Automate getVehicles endpoint":
+           Steps:
+            - Send getVehicles request (Step should contain endpoint, method, headers, payload and response models, expected status code)
+            - Assert response (All expectations should be specified there)
+
+        **Output Example**:
+        ```json
+          {
+              "test_cases": [ ...the list of test cases there... ]
+          }
+      output_schema: >
+        {
+          "test_cases": [ ...the list of test cases there... ]
+        }
+      next:
+        iter_key: test_cases
+        state_id: test_writer
+    - id: test_writer
+      assistant_id: test_writer
+      task: >
+        You MUST follow the following steps. Do not write anything that is not described in the steps.
+        1. Run _generic_git_tool to checkout the branch created by the `branch_creator` assistant.
+        2. Run _list_files_in_directory to find UrlHolder.java file under src/main/java/com/epam/cdme/url package.
+        3. Run _read_file_from_file_system to check if in UrlHolder class the required URL is added.
+        4. If required URL is not added run _write_file_to_file_system to add it.
+        5. Run _list_files_in_directory to check if required payload is added under src/main/java/com/epam/cdme/payload package.
+        6. If payload is not added run _write_file_to_file_system to add it. assistant/CreateAssistantPayload.class as an example.
+        7. Run _list_files_in_directory to check if required response model is added under src/main/java/com/epam/cdme/response package.
+        8. If response is not added run _write_file_to_file_system to add it. Use assistant/AssistantObject.class as an example.
+        9. Run _list_files_in_directory to check if steps class for required controller is already implemented under src/main/java/com/epam/cdme/step package.
+        10. Run _read_file_from_file_system to analyze AssistantSteps.class and check it's structure and implementation. It should be used for implementing other steps.
+        11. If required steps are not implemented run _write_file_to_file_system to add it.
+        12. Run _read_file_from_file_system to analyze the AssistantsTests.java class under src/test/java/com/epam/cdme/api/smoke 
+            package to see correct test structure: required tags, imports, naming conventions etc. It should be used for 
+            future tests writing
+        13. Use List Files In Directory and check if provided test case is already implemented under src/test/java/com/epam/cdme/api/smoke package.
+        14. Run _read_file_from_file_system to get the already written tests for the provided controller.
+        15. If required test is not implemented add it using created url, response model, payload model and steps.
+            Check if there is a package created for specified controller. If it exists add tests under it.
+            Use other implemented tests as an example.
+            Add @APIRegression tag for the class.
+            Do not use Allure framework
+            Do not use spring framework in the tests.
+            Do not create new tags.
+            Do not extend test class from BaseTest class.
+            For names that are used in payloads add "Autotest_" prefix
+        16. Using _run_command_line_tool run the following command line: ./gradlew clean compileTestJava
+        17. If command result is not BUILD SUCCESSFUL fix compilation errors or fix test case implementation.
+        18. Repeat steps 14-15 until successful build result
+        19. Commit the changes but DO not push anything in remote repository
+        20. Finish task.
+      next:
+        state_id: commit_creator
+    - id: commit_creator
+      assistant_id: git_assistant
+      task: >
+        For all actions use _generic_git_tool only:        
+        1. Checkout the branch created by the `branch_creator` assistant
+        2. Push the changes
+        3. Finish task
+      next:
+        state_id: pr_creator
+    - id: pr_creator
+      assistant_id: pr_creator
+      task: Run
+      next:
+        state_id: end

@@ -1,0 +1,40 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from codemie_tools.base.models import ToolSet
+from codemie_tools.core.project_management.toolkit import ProjectManagementToolkit, ProjectManagementToolkitUI
+
+
+class TestProjectManagementToolkit:
+    def test_get_definition(self):
+        toolkit_ui = ProjectManagementToolkit.get_definition()
+        assert isinstance(toolkit_ui, ProjectManagementToolkitUI)
+        assert toolkit_ui.toolkit == ToolSet.PROJECT_MANAGEMENT
+        assert len(toolkit_ui.tools) == 2
+        assert toolkit_ui.label == ToolSet.PROJECT_MANAGEMENT.value
+
+
+class TestProjectManagementToolkitUI:
+    def test_toolkit_property(self):
+        toolkit_ui = ProjectManagementToolkitUI()
+        assert toolkit_ui.toolkit == ToolSet.PROJECT_MANAGEMENT
+
+    def test_tools_property(self):
+        toolkit_ui = ProjectManagementToolkitUI()
+        assert len(toolkit_ui.tools) == 2
+
+        # Check that the tools are correctly defined
+        tool_names = [tool.name for tool in toolkit_ui.tools]
+        assert "generic_jira_tool" in tool_names
+        assert "generic_confluence_tool" in tool_names

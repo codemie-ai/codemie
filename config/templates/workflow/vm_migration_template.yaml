@@ -1,0 +1,212 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "VM: Migration VMWare to AWS"
+slug: amna-vm-migration
+description: |
+  This workflow is designed for Migration VMWare to AWS.
+  
+  You need to start workflow by putting the VM data in the input field.(Just text, no JSON, YAML or CSV)
+mode: Sequential
+icon_url: "https://www.shutterstock.com/image-vector/virtual-machine-icon-trendy-flat-260nw-1210893442.jpg"
+
+execution_config:
+  enable_summarization_node: true
+  tokens_limit_before_summarization: 3000000
+  recursion_limit: 550
+  max_concurrency: 1
+
+  assistants:
+    - id: migration_analyzer
+      system_prompt: |
+        You are an AWS expert in infrastructure and cloud migrations.
+        
+        Your task is to analyze detailed input data about a virtual machine (VM), including:
+          - OS version
+          - Installed applications
+          - Mounted network drives (e.g. SMB/CIFS)
+          - Scheduled tasks
+          - SQL Server configuration
+          - IIS configuration
+          - .NET versions
+          - Other platform and service dependencies
+        
+        ### Migration Type Rules:
+        1. Lift and Shift — choose this if:
+          - OS is Windows Server 2016 or newer
+          - Two or more installed applications
+          - Multiple scheduled jobs
+          - Mounted network shares (e.g. SMB/CIFS) are used by applications
+          - Proprietary or legacy software may be present (e.g. IBM WebSphere)
+          - Local SQL Express databases or strong dependency on file shares
+        2. Lift and Shift Plus — choose this if:
+          - OS is Windows Server 2016 or newer
+          - Two or more installed applications
+          - Multiple scheduled jobs
+          - No dependency on SMB shares (i.e., no mounted network drives used)
+          - Dependencies are limited to HTTP services and databases (e.g. SQL)
+          - The system **requires** an update of Windows version or .NET version to 4.7.2+
+        3. Modernization — choose this if:
+          - Only one application or service is installed
+          - The code already runs on .NET 4.2 or newer
+          - No SMB or file share dependency
+          - Dependencies are only HTTP and database services
+        
+        Return:
+          - `migration_type`: one of ["Lift and Shift", "Lift and Shift Plus", "Modernization"]
+          - `justification`: clearly explain why this strategy was selected
+
+    - id: ls_planner
+      system_prompt: |
+        You are a migration planner for AWS Lift and Shift workloads.
+  
+        Based on the VM analysis, prepare a migration readiness plan for the Lift and Shift strategy.
+  
+        Include the following outputs:
+          - List of VMs to be migrated (usually from input)
+          - List of firewall requests (e.g., open ports for SQL, HTTP, etc.)
+          - List of network shares (e.g., SMB/CIFS) that need to be mounted on the target
+          - DNS host names used by applications or IIS sites
+          - List of network interfaces (e.g., eth0, subnet mappings)
+          - CPU, memory, and disk requirements based on performance metrics or existing allocation
+          - Recommended EC2 instance type(s) for target deployment
+
+    - id: ls_plus_planner
+      system_prompt: |
+        You are a migration planner for AWS Lift and Shift Plus workloads.
+  
+        Based on the VM analysis, prepare a migration readiness plan for the Lift and Shift Plus strategy.
+  
+        Include the following outputs:
+          - List of VMs to be migrated (usually from input)
+          - List of firewall requests (e.g., open ports for SQL, HTTP, etc.)
+          - List of network shares (should be empty or minimal)
+          - DNS host names used by applications or IIS sites
+          - List of network interfaces (e.g., eth0, subnet mappings)
+          - CPU, memory, and disk requirements based on performance metrics or existing allocation
+          - Recommended EC2 instance type(s) for target deployment
+          - Target Windows version and .NET version (e.g. upgrade to 2019 and 4.8)
+          - List of minimal required services to be installed (e.g. IIS, SQL Express)
+          - List of AD group memberships needed for services or apps
+
+    - id: modernization_planner
+      system_prompt: |
+        You are a modernization planner for cloud-native migrations to AWS.
+  
+        Based on the VM analysis, prepare a migration readiness plan for the Modernization strategy.
+  
+        Include the following outputs:
+          - Recommended deployment target (e.g., App Runner, App Service, ECS, etc.)
+          - List of web.config file paths used by the application
+          - List of required environment variables (either detected or inferred from config)
+
+  states:
+    - assistant_id: migration_analyzer
+      id: analyzer
+      output_schema: |
+        {
+          "migration_type": "one of `Lift and Shift` or `Lift and Shift Plus` or `Modernization`",
+          "justification": "clearly explain why this strategy was selected"
+        }
+      next:
+        switch:
+          cases:
+            - condition: "migration_type == 'Lift and Shift'"
+              state_id: ls_planner
+            - condition: "migration_type == 'Lift and Shift Plus'"
+              state_id: ls_plus_planner
+            - condition: "migration_type == 'Modernization'"
+              state_id: modernization_planner
+          default: end
+
+      task: |
+        Your task is to analyze structured VM input data and determine the appropriate migration strategy:
+          - Lift and Shift
+          - Lift and Shift Plus
+          - Modernization
+
+    - assistant_id: ls_planner
+      id: ls_planner
+      output_schema: |
+        {
+          "vm_list": ["vm_name"],
+          "firewall_requests": ["port 1433", "port 80"],
+          "network_shares": ["\\\\server\\share"],
+          "dns_host_names": ["example.internal"],
+          "network_interfaces": ["eth0", "eth1"],
+          "cpu": "4 vCPUs",
+          "memory": "16 GB",
+          "disk": "100 GB",
+          "ec2_type": "t3.xlarge"
+        }
+      next:
+        state_id: end
+      task: |
+        Prepare a full migration output for Lift and Shift:
+        - List of VMs
+        - Firewall requests
+        - SMB network shares
+        - DNS names
+        - Network interfaces
+        - CPU, Memory, Disk requirements
+        - Recommended EC2 instance types
+
+    - assistant_id: ls_plus_planner
+      id: ls_plus_planner
+      output_schema: |
+        {
+          "vm_list": ["vm_name"],
+          "firewall_requests": ["port 1433", "port 80"],
+          "network_shares": [],
+          "dns_host_names": ["app.local"],
+          "network_interfaces": ["eth0"],
+          "cpu": "2 vCPUs",
+          "memory": "8 GB",
+          "disk": "80 GB",
+          "ec2_type": "t3.large",
+          "windows_version": "Windows Server 2019",
+          "dotnet_version": "4.8",
+          "required_services": ["IIS", "SQL Server Express"],
+          "ad_group_memberships": ["AppAdmins"]
+        }
+      next:
+        state_id: end
+      task: |
+        Prepare a full migration output for Lift and Shift Plus:
+        - List of VMs
+        - Firewall requests
+        - SMB network shares
+        - DNS names
+        - Network interfaces
+        - CPU, Memory, Disk requirements
+        - Recommended EC2 instance types
+        - Target Windows version & .NET version
+        - List of required services
+        - AD group memberships
+
+    - assistant_id: modernization_planner
+      id: modernization_planner
+      output_schema: |
+        {
+          "deployment_target": "App Service",
+          "web_config_files": ["C:\\inetpub\\app\\web.config"],
+          "env_variables": ["DB_CONNECTION", "API_KEY"]
+        }
+      next:
+        state_id: end
+      task: |
+        Prepare a full migration output for Modernization:
+          - web.config file paths
+          - environment variables
+          - App/DB dependencies summary

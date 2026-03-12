@@ -1,0 +1,110 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-js01-triage
+name: "JS: sources triage"
+description: |
+  Automatically determines sources suitable for unit-testing
+mode: Sequential
+execution_config:
+    max_concurrency: 1
+    enable_summarization_node: false
+    tools:
+      - id: search_files
+        tool: _search_files_by_regex
+        trace: true
+        toolset: Plugin
+        integration_alias: amna-demo-plugin-integration
+
+      - id: read_bootstrap_tool
+        tool: _read_bootstrap_file
+        trace: true
+        toolset: Plugin
+        integration_alias: amna-demo-plugin-integration
+
+    assistants:
+    - id: js_expert
+      system_prompt: |
+        You are a JavaScript expert with access to local project and ability to run tools. Use _read_bootstrap_file tool to read 00project-info.json file and treat information from this file as part of your system prompt.
+        You should not produce any user-readable output as the user is unlikely to monitor your actions in real-time. Instead - if you find yourself unable to comply with the given task,
+        use _append_structured_file tool to add the description of the situation in structured format with necessary details to <project_base>/airun/99errors.json for later examination and finish the dialog.
+        If during your work you find something unusual, concerning or wrong in the project - don't concentrate on that, but use _append_structured_file tool and add your thoughts to <project_base>/airun/99sidetrack.json and continue your main task.
+        IMPORTANT: All commands MUST be run using following syntax: "cd . && <command_to_run>"
+      tools:
+          - name: _read_file
+            integration_alias: amna-demo-plugin-integration
+          - name: _read_multiple_files
+          - name: _list_directory
+          - name: _directory_tree
+          - name: _search_files
+          - name: _get_file_info
+          - name: _list_allowed_directories
+          - name: _read_bootstrap_file
+          - name: _append_file
+          - name: _append_structured_file
+      exclude_extra_context_tools: true
+    states:
+    - id: read_project_info
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: 00project-info.json
+      next:
+        state_id: list_files
+
+    - id: list_files
+      tool_id: search_files
+      tool_args:
+        path: '{{project_base}}'
+        regex: '[.]js$'
+        excludeRegexes: ['\Wtest\W', '\Wgenerated\W', '\Wnode_modules\W']
+      next:
+        include_in_llm_history: false
+        iter_key: unused
+        state_id: source-triage
+
+    - id: source-triage
+      assistant_id: js_expert
+      task: |
+        Examine project sources (only sources, not tests!) and determine their suitability for unit-testing.
+        Important considerations for your analysis:
+    
+        1. Do not read other sources or dependencies, only analyze a single file given to you!
+        2. Determine if the file contains custom business logic that is suitable for unit testing.
+        3. Explicitly avoid suggesting tests for standard library functionalities or external resources (e.g., databases, file systems, network calls).
+        4. Be cautious of classes that primarily wrap or manage interactions with standard libraries or external systems. These are often not suitable for unit testing and are better tested through integration or component tests.
+        5. Consider if the code is better suited for integration or component testing rather than unit testing. This is often the case for:
+           - Database access layers
+           - File system operations
+           - Network communication
+           - Classes that primarily coordinate between other components
+        6. Assess if the current code structure allows for effective unit testing or if refactoring might be necessary.
+        7. Look for pure functions and methods that transform data without side effects, as these are ideal candidates for unit testing.
+        8. Never unit-test anything withing test projects (so no tests for other tests!)
+        9. If there is available HTML coverage report for this file from a previous test run
+
+        If file is suitable/feasible for unit-testing - use _append_structured_file tool and write information about the file to <project_base>/airun/02sources-for-tests.json
+        If file is NOT suitable/feasible for unit-testing - use _append_structured_file tool and write information about the file to <project_base>/airun/02sources-not-for-tests.json
+        
+        The output format is:
+        {
+         source_file: "/full/path/to/source/file",
+         test_file: "/full/path/to/test/file (either existing one, or the location in the filesystem where it should be created)
+         html_coverage_report: "/full/path/to/html/report/with/coverage/for/this/file"
+         unit-testable: true/false
+         reasoning: "A few sentences why you believe this file is suitable or unsuitable for unit testing"
+        }
+
+      next:
+        include_in_llm_history: false
+        state_id: end

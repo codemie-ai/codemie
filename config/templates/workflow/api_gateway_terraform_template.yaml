@@ -1,0 +1,217 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-api-gateway-terraform
+name: "API Gateway Terraform Generator"
+description: |
+  Analyzes current project, generates Terraform API Gateway configuration and deploys it on AWS.
+  
+  IMPORTANT: terraform_apply step requires manual confirmation, please, carefully review the suggested deployment plan before accepting it.
+  This stage will execute "terraform apply" command using provided AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY credentials.
+  Terraform configuration to be applied is stored under <project_root>/airun/terraform directory.
+  
+  Workflow requires filesystem, filesystem_ext and cli-mcp-server Plugin integrations, AWS integration (it is recommended to use read-only credentials),
+    nhrun and nhcheck scripts to be available in PATH
+    and terraform to be available on your machine.
+  
+  Workflow requires manual approval after "terraform_plan" state in order to verify configuration to be applied on AWS account. 
+  
+  Prerequisites:
+   1. terraform should be installed on local machine (https://developer.hashicorp.com/terraform/install)
+   2. Add nhrun and nhcheck scripts (Requires bash to run) in /usr/local/bin or similar directory from $PATH environment variable.
+   3. Set Plugin and AWS integrations.
+   4. Run plugins and give it access to the project tree:
+    - Set environment variables pointing to root of your project: ALLOWED_DIR, FILE_PATHS, DEFAULT_DIR
+    - Set environment variables pointing to project_root/airun directory: PROJECT_BOOTSTRAP
+    - Set environment variables with AWS account credentials (for Terraform deployment) AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+    - Run plugin: codemie-plugins mcp run -s filesystem -e filesystem=FILE_PATHS
+    - Run plugin: codemie-plugins mcp run -s filesystem_ext -e filesystem_ext=ALLOWED_DIR,PROJECT_BOOTSTRAP
+    - Run plugin: codemie-plugins mcp run -s cli-mcp-server -e cli-mcp-server=ALLOWED_DIR,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY
+
+mode: Sequential
+execution_config:
+  enable_summarization_node: false
+  max_concurrency: 1
+
+  assistants:
+    - id: aws_terraform_expert
+      exclude_extra_context_tools: true
+      system_prompt: |
+        You are an expert DevOps engineer experienced in configuring AWS resources, with the strong knowledge of Terraform.
+        You have an access to local project and ability to run tools.
+        You are also allowed to use AWS tool to view aws resources. Avoid using example resources or names, use actual resources instead.
+        
+        IMPORTANT:
+        You are not allowed to modify any of the project files under any circumstances.
+        The only files you can edit are under airun directory.
+        If there is no airun directory, create one under the root of a project.
+        *You ARE NOT allowed to modify or create any of AWS resources, the only thing you can do is observe.*
+      tools:
+        - name: _read_file
+        - name: _read_multiple_files
+        - name: _write_file
+        - name: _edit_file
+        - name: _create_directory
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _append_structured_file
+        - name: _search_files_by_regex
+        - name: _read_file_lines
+        - name: AWS
+
+    - id: command_runner
+      exclude_extra_context_tools: true
+      system_prompt: |
+        You are an assistant designed to execute command line tools.
+      tools:
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _list_allowed_directories
+        - name: _run_command
+        - name: _show_security_rules
+
+  tools:
+    - id: read_bootstrap_tool
+      tool: _read_bootstrap_file
+      toolset: Plugin
+      trace: true
+
+  states:
+    - id: project_discovery
+      assistant_id: aws_terraform_expert
+      task: |
+        You must scan through the given project and identify all api entrypoints present.
+        Provide a JSON list containing all of with all the relevant information.
+      output_schema: |
+        [
+          {
+            "uri": "URI of the endpoint (e.g. /login)",
+            "httpMethod": ["List of methods used to access the endpoint (e.g. GET), can be empty if http/https is not used"]
+            "type": "Protocol being used to access the endpoint (e.g. HTTPS)",
+            "authorizer": "NONE (fixed value)",
+            "additionalInformation": "Any relevant information about the endpoint, that can help to write Terraform configuration"
+          }
+        ]
+      next:
+        state_id: api_gateway_config_generator
+
+    - id: api_gateway_config_generator
+      assistant_id: aws_terraform_expert
+      task: |
+        You are given the task to update Terraform configuration files using tools with an api-gateway configuration for the described endpoints. 
+        You are also allowed to use AWS tool to view aws resources. Avoid using example resources or names, use actual resources instead.
+        
+        Follow these steps to accomplish the task:
+        1. Identify available aws regions and availability zones, use only one of each.
+        2. Create <project_base>/airun/terraform directory and use it as a working directory
+        3. Create Terraform configuration for api-gateway, ensuring all endpoints are added. Use mock integrations to avoid using actual service.
+        4. Read all of the newly created files and verify your solution:
+          - Ensure all resources used in api-gateway are present in Terraform configuration. There should be no mocked resources in the result.
+          - Check there are no resource duplicates.
+          - Ensure no deprecated arguments used.
+        
+        IMPORTANT:
+        Keep file structure clean. Use one file for one resource type.
+        *You ARE NOT allowed to modify or create any of AWS resources, the only thing you can do is to observe.*
+        You are not allowed to create / modify / delete any file outside of the <project_base>/airun/terraform directory.
+      next:
+        state_id: terraform_plan
+
+    - id: terraform_plan
+      assistant_id: command_runner
+      task: |
+        You are given the task to run and observe terraform plan output.
+
+        Steps to follow:
+        1. Change working directory to airun/terraform.
+        2. Execute "terraform init" command using tools within airun directory. 
+        3. Execute "terraform plan -no-color" command using tools within airun directory, skip this step if terraform init command failed.
+        4. Respond with a valid JSON.
+
+        Output schema:
+        {
+          "success": "Boolean true | false. If terraform plan command executed without errors or warnings return true, otherwise false",
+          "log": "Exactly the output of the command execution log without ANY modifications.",
+          "executedCommand": "Return the last executed command."
+        }
+
+        IMPORTANT:
+        Do not try to fix any issues appeared while running terraform commands.
+        *You MUST provide a valid JSON output only, without any decoration and thoughts.*
+      output_schema: |
+        {
+          "success": "Boolean true | false. If terraform plan command executed without errors or warnings return true, otherwise false",
+          "log": "Exactly the output of the command execution log without ANY modifications.",
+          "executedCommand": "Return the last executed command."
+        }
+      next:
+        condition:
+          expression: success == True
+          then: terraform_apply
+          otherwise: terraform_fixer
+
+    - id: terraform_apply
+      assistant_id: command_runner
+      wait_for_user_confirmation: true
+      task: |
+        You are given the task to run and observe terraform apply output.
+
+        Follow these steps to accomplish the task:
+        1. Change working directory to airun/terraform.
+        2. Execute ```nhrun terraform apply -no-color -auto-approve``` command using _run_command tool.
+        3. Using output of the previous command identify PID_FILENAME and LOG_FILENAME from it's output.
+        4. Execute ```nhcheck <PID_FILENAME>``` to identify if the process is already finished. Retry this step if not. Do not try using other commands when timed out it is expected to happen.
+        5. Read LOG_FILENAME when process finishes.
+        6. Analyse log file and identify if there were any errors.
+        7. Respond with a valid JSON.
+
+        Output format:
+        {
+          "success": "Boolean true | false. If process finished without any errors return true, otherwise false",
+          "log": "Exactly the output of the command execution log without ANY modifications."
+        }
+
+        IMPORTANT:
+        Do not try to fix any issues appeared in log file.
+        You should not produce any user-readable output as the user is unlikely to monitor your actions in real-time.
+        *You MUST provide a valid JSON output only, without any decoration and thoughts.*
+      output_schema: |
+        {
+          "success": "Boolean true | false. If process finished without any errors return true, otherwise false",
+          "log": "Exactly the output of the command execution log without ANY modifications."
+        }
+      next:
+        condition:
+          expression: success == True
+          then: end
+          otherwise: terraform_fixer
+
+    - id: terraform_fixer
+      assistant_id: aws_terraform_expert
+      task: |
+        You are given the task to fix issues appeared while running the Terraform.
+        Terraform configuration is stored under the <project_base>/airun/terraform directory.
+        Analyse provided log and implement changes to address found errors.
+
+        IMPORTANT:
+        You are not allowed to create new directories or any non terraform files.
+        Implement changes without new files creation if possible.
+        Do not create temporary files, modify existing terraform configuration instead.
+      next:
+        include_in_llm_history: false
+        state_id: terraform_plan

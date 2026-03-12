@@ -1,0 +1,132 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-windup-jira-resolver
+name: "WindupJiraResolver: Resolves Jira Tasks made from Windup's Report"
+description: |
+  This workflow takes Jira Tasks that were created from Windup and resolves them, 
+  creating a Git Merge Request in the end.
+  !!!Don't forget to change the branch name in the first state's task and output_schema 
+  before re-running for a second time, otherwise branching chaos will ensue.!!!
+mode: Sequential
+icon_url: "https://upload.wikimedia.org/wikipedia/commons/4/41/Breitenlee-VESTAS-V-52_wind_turbine_looped.gif"
+execution_config:
+    enable_summarization_node: true
+    tokens_limit_before_summarization: 3000000
+    recursion_limit: 550
+    max_concurrency: 1
+
+    assistants:
+      - id: brancher
+        system_prompt: |
+          Your sole purpose is to make new git repo branches.
+        tools:
+          - name: create_branch
+          - name: set_active_branch
+          - name: list_branches_in_repo
+        datasource_ids: [ <GIT_DATASOURCE_ID> ] # Source code/target repo
+
+      - id: jira_resolver
+        system_prompt: |
+          Once you have received your task. You MUST work to complete it completely on your own.
+          You have the absolute permission to proceed with your tasks and at no point should 
+            you ever ask for permission.
+        tools:
+          - name: set_active_branch
+          - name: list_branches_in_repo
+          - name: create_file
+          - name: update_file
+          - name: update_file_diff
+          - name: delete_file
+          - name: create_pull_request
+          - name: get_pr_changes
+          - name: create_pr_change_comment
+          - name: github
+          - name: gitlab
+          - name: get_repository_file_tree_v2
+          - name: search_code_repo_v2
+          - name: read_files_content
+          - name: read_files_content_summary
+          - name: generic_jira_tool
+        datasource_ids: [ <GIT_DATASOURCE_ID> ] # Source code/target repo
+
+    retry_policy:
+      initial_interval_seconds: 5.0 # Amount of time that must elapse before the first retry occurs. In seconds
+      backoff_factor: 5.0 # Multiplier by which the interval increases after each retry
+      max_interval_seconds: 50.0 # Maximum amount of time that may elapse between retries. In seconds.
+      max_attempts: 9 # Maximum number of attempts to make before giving up, including the first
+
+    states:
+      - id: branching
+        assistant_id: brancher
+        task: |
+          1. Create a new branch named 'windup-01' from the main branch of the repo in 
+          your datasource.
+          2. Confirm the branch was created successfully.
+          3. Now generate a simple JSON and add the name of this new branch so 
+          that it can be available for future states.
+        output_schema: |
+          {
+          "branch_name": "windup-01"
+          }
+        next:
+          state_id: generator
+
+      - id: generator
+        assistant_id: jira_resolver
+        task: |
+          1. Read the initial prompt to get the target Jira Task(s)
+          2. Create a JSON, and then read each target Jira Task and for each add all of 
+          its contents into this final JSON. So this should be an array of strings under 
+          the "tickets" key.
+        output_schema: |
+          {
+          "tickets": [
+            "full contents and details of the first jira ticket",
+            "full contents and details of the second jira ticket",
+            "full contents and details of the third jira ticket",
+            ...
+            ]
+          }
+        next:
+          state_id: jira_resolution
+          iter_key: tickets
+
+      - id: jira_resolution
+        assistant_id: jira_resolver
+        task: |
+          1. Checkout the {{branch_name}} branch of the repo in 
+          your datasource.
+          2. You have as input a Jira item that needs to be resolved. 
+          3. First read the related Jira ticket to make sure you have all the necessary 
+          context.
+          4. Then make all the necessary code changes, or whatever the task is asking 
+          for, make sure you completely resolve the Jira item you received as input.
+          Do this completely alone, without recourse to confirmations from the user.
+          5. Commit your changes with an appropriate commit message, that is short, 
+          lowercase alphabet letters with hyphens and underscores. Example: 
+          pom_xml--added-module-dependencies
+        next:
+          state_id: finalizer
+
+      - id: finalizer
+        assistant_id: jira_resolver
+        task: |
+          1. Checkout the {{branch_name}} branch
+          2. Open a PR to the main branch with proper comments and the title: 
+          {{branch_name}}
+        next:
+          state_id: end
+
+

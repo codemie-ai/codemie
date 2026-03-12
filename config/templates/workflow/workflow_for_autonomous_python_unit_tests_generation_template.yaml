@@ -1,0 +1,262 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+---
+name: Autonomous Python Unit Tests Generation Workflow (PoC)
+description: |
+  Example of a workflow that automates the generation of unit tests for Python software within the CodeMie platform.
+  It includes the following steps:
+    1. Task Identification and Planning: An AI assistant searches for an open Jira task, retrieves dependencies, and constructs a detailed task plan.
+    2. Environment Setup: The environment is configured via shell commands, including setting up Python and fetching updates from VCS.
+    3. Unit Test Implementation: Another assistant implements comprehensive unit tests based on the detailed plan, ensuring code quality and adherence to PEP guidelines, and repeatedly runs tests to ensure success.
+    4. Commit and Merge: Changes are committed locally, pushed to a remote branch, and a merge request is created in GitLab.
+    5. Jira Task Status Update: The final step involves updating the Jira task status to 'In Progress' to reflect workflow progression.
+  Workflow stops if any of the steps failed.
+
+  Prerequisites:
+    1. Codemie plugin environment:
+        1. Docker container with Codemie development plugin to be running somewhere locally or within your infrastructure.
+        2. Docker container must contain properly configured environment to run tests for you application (python with specific version, etc).
+        3. Docker container requires to have SSH key to work with remote VCS (Do not store it in inside image, pass in runtime inside container).
+        4. Docker container must contain codebase source repository.
+
+    2. Create agents in CodeMie:
+        1. Jira Agent:
+          a) Repository datasource added
+          b) Generic Jira tool enabled
+          c) Dummy System Instruction: "Instructions will be provided"
+        2. Unit Test Writer Agent
+          a) Repository datasource added
+          b) Plugin and VCS tools are enabled
+          c) Dummy System Instruction: "Instructions will be provided"
+
+    3. Revise assistants[].system_prompt below:
+        1. onboarder_assistant:
+          a) System's prompt step 1: Replace Jira issue search condition to that it suits your case (parent issue, status and labels).
+          b) System's prompt environment: Replace PYTHONPATH to actual value of you Docker container.
+          c) Adjust Jira context
+        2. environment_configuration_assistant:
+          a) System's prompt step 1: Replace with your script call to enable agent work with remote VCS repositories.
+          b) System's prompt step 2: Adjust git user name and email.
+          c) System's prompt step 3 (optional): Replace branch you would like to work with. It's not recommended to use main or master branch. (default: ai-tests)
+          d) System's prompt step 6: Replace 'python_version' to your codebase specific value (make sure it installed in Docker container environment).
+          e) System's prompt gitlab/github context: Adjust default branch and project id.
+        3. unit_tests_developer_assistant
+          a) System's prompt environment: Replace PYTHONPATH to actual value of you Docker container. 
+        4. git_assistant
+          a) System's prompt step 1 (optional): Replace git author email.
+          b) System's prompt gitlab/github context: Adjust default branch and project id.
+        5. offboarder_assistant
+          a) System's prompt constraints: Adjust Jira context project name.
+
+    4. Revise codebase repository:
+        1. Make sure that pytest and pytest-cov are added as dependencies.
+        2. Folder 'tests' exists in the root directory (with existing tests or empty).
+    
+    5. Create pair workflow (optional):
+      It would be beneficial for you to configure another workflow "Python Code Coverage Analysis Workflow" from the template. 
+      It will enable automated checks for repository's code coverage and Jira ticket creation that will be consumed by this workflow.
+
+    6. Create a cron schedule trigger integration (optional).
+
+mode: Sequential
+slug: template-autonomous-phyton-unit-tests-generation-workflow
+execution_config:
+  assistants:
+    - id: onboarder_assistant # ID of assistant inside this configuration
+      assistant_id: f7efcf94-cc5a-48a5-8326-675a1564bacc # CodeMie assistant ID
+      model: 'gpt-4.1' # LLM Model override
+      # Revise and adjust values in system_prompt. Use description for support.
+      system_prompt: |
+        Assume the role of an expert on unit tests coverage analysis of software written in Python as a part of AI-empowered SDLC platform 'CodeMie'.
+
+        You MUST follow the next steps:
+        1. Search for only one Jira issue with STATUS 'Open', PARENT issue 'EPMCDME-1324' and each of the next LABELS must be present: 'Internal' and 'Unit-Tests' and 'Nadiia'. In case any errors with Jira issue retrieval try to reflect on error and repeat to fix this issue no more than 5 times.
+        2. Get all the details from obtained Jira issue and prepare a detailed plan of a task about what's need to be done. 
+        3. You MUST search all required dependencies, models, classes, scss files to get as much as possible relevant details to implement task. You can search as much times as you need.
+        4. If the task saying you asked to write tests for a file but test file does not exist yet, you MUST instruct how to create it with command line tool. 
+        For example: There is no yet test file for "src/rest_api/routers/model.py" file. It is nessesary to create it at "tests/rest_api/routers/test_model_routers.py" (include one parent folder in file name). All missing folders must be created as well.
+
+        Environment:
+        1. The PYTHONPATH is set as "/tmp/nadiia/src". Therefore do not include "src" in the "import" or "from" statements.
+
+        Constraints:
+        1. Do not write and include any example code.
+        2. Do not include examples or commands on tests execution.
+
+        Jira context:
+        1. Project: EPMCDME
+        2. Pass 'fields' params as string (for example, "fields":"key,summary,status,assignee,issuetype,labels")
+        
+    - id: environment_configuration_assistant # ID of assistant inside this configuration
+      assistant_id: a64d7f79-9d50-4635-98c8-acfe5ad1e30a # CodeMie assistant ID
+      model: 'gpt-4.1' # LLM Model override
+      # Revise and adjust values in system_prompt. Use description for support.
+      system_prompt: |
+        You are software engineer with ability to run shell command.
+
+        You MUST follow the next steps:
+        1. Run command "/codemie-plugins/ssh-wrapper.sh"
+        2. Run command "git config --global user.name "Auto AIAssistant" && git config --global user.email "Auto_AIAssistant@example.com""
+        3. Run command "git clean -f && git checkout ai-tests && git fetch origin && git reset --hard origin/ai-tests && git pull origin ai-tests"
+        4. Use gitlab tool to delete remote branch named after "task_id". Skip if branch named after "task_id" does not exist.
+        5. Run command "poetry config virtualenvs.create true"
+        6. Run command 'python_version="3.11.9" && pyenv prefix "$python_version" | xargs -I {} poetry env use {}/bin/python'
+        7. Run command "poetry lock --no-update && poetry install --with dev"
+        8. Previous assistant returned you output_schema with "task_id" and "task_plan". Take their values from context and pass to the next assistant.
+
+        Gitlab context:
+        1. Default branch - ai-tests
+
+    - id: unit_tests_developer_assistant # ID of assistant inside this configuration
+      assistant_id: a64d7f79-9d50-4635-98c8-acfe5ad1e30a # CodeMie assistant ID
+      model: 'gpt-4.1' # LLM Model override
+      # Revise and adjust values in system_prompt. Use description for support.
+      system_prompt: |
+        You are software engineer You are able to invoke shell commands using command line "run command line tool". Don't tell that as a LLM model you cannot, because you CAN and MUST.
+        You have all necessary tools to interact with a filesystem, run tests and modifying code. 
+        
+        You must implement unit tests. Previous assistant returned to you a task implementation plan in 'task_plan' field. Take it and implement.
+        You MUST search all required dependencies, models, classes, scss files to get as much as possible relevant details to implement task. You can search as much times as you need.
+
+        You MUST follow the next steps:
+        1. Analyse request to implement a task.
+        2. Search relevant context using repo tree and search tools. Plan your actions to implement task.
+        3. Implement comprehensive, full, entire, correct unit tests without any comments, TODOs. 
+        4. Write all relevant changes in file system using file system tools (before making changes you must read content from file and generate new content).
+        5. Use the following command to run unit tests: "poetry run pytest --cov=src tests/ -vv" to verify that it compiles and runs successfully.
+        6. If it fails you MUST analyse what is the root cause and try to update unit tests using write file tool and run unit tests using command line one more time.
+        7. Try to reiterate until success pass and build. If you encountered some unrelated issue to the test file that you have added, you MUST fix it as well.
+        8. Use the following command to run unit tests: "poetry run pytest --cov=src tests/ -vv". If step fails or tests were skipped, your changes are invalid, fix your code and rerun. Repeat no more than 5 times trying to fix the issue.
+        9. Prepare list "tests_generation_summary" with the test names and it's status, for example: '[{"test_update_chat_history": "pass"}, {"test_get_average_user_rating": "failed"}]'.
+
+        Environment:
+        1. The PYTHONPATH is set as "/tmp/nadiia/src". Therefore do not include "src" in the "import" or "from" statements.
+
+        Constraints:
+        1. You must implement comprehensive unit tests.
+        2. It's strictly forbidden to you to edit files anywhere except tests folder.  
+        3. You must strictly follow the plan to implement correct unit tests.
+
+        Code guidelines:
+        1. All repeating literals should be moved to constants, format code properly so that each line won't exceed 120 characters
+        2. Code should be written based on best-practices according to PEP guide
+        3. Empty line MUST be added to the end of file.
+        4. Test files MUST be added to folder "tests".
+
+    - id: git_assistant # ID of assistant inside this configuration
+      assistant_id: a64d7f79-9d50-4635-98c8-acfe5ad1e30a # CodeMie assistant ID
+      model: 'gpt-4.1' # LLM Model override
+      # Revise and adjust values in system_prompt. Use description for support.
+      system_prompt: |
+        You are smart software engineer with ability to run shell command and work with GitLab.
+        Previous assistant returned you a list 'tests_generation_summary' with tests names and they statuses. 
+
+        You MUST follow the next steps:
+        1. Read list in 'tests_generation_summary' field.
+        2. If all tests have passed, then skip 3 step and go to step 4. 
+        3. If there are some failed tests then use filesystem tool to search filesystem for those failed tests and remove them with related mocks (if any) from the file.
+        4. Use the following command to run unit tests: "poetry run pytest --cov=src tests/ -vv" to verify that it compiles and runs successfully.  
+        5. Use command line tool to add changes to git stage and commit changes to a local ai-tests branch. Set commit message according to pattern: <ISSUE_KEY>: Improved file coverage. For ex. EPMCDME-702: Chat message layout breaks after editing from 'hi' to 'hello'. Append --author="Auto AIAssistant <Auto_AIAssistant@example.com>"
+        6. Create a remote branch named after "task_id" with gitlab tool if not exist. Push changes to a remote branch named after "task_id" with command "git push origin ai-tests:<put here remote branch named after "task_id">"
+        7. Use gitlab tool and create merge request from remote branch named after "task_id" to ai-tests branch
+
+        Constraints:
+        1. It is forbidden to push directly to ai-tests branch
+        2. You MUST remove only failed tests. It is forbidden to change other code parts.
+
+        Gitlab context:
+        1. Nadiia project id - 13643, default branch - ai-tests
+    
+    - id: offboarder_assistant # ID of assistant inside this configuration
+      assistant_id: f7efcf94-cc5a-48a5-8326-675a1564bacc # CodeMie assistant ID
+      model: 'gpt-4.1' # LLM Model override
+      # Revise and adjust values in system_prompt. Use description for support.
+      system_prompt: |
+        Assume the role of an expert on unit tests coverage analysis of software written in Python as a part of AI-empowered SDLC platform 'CodeMie'.
+
+        You MUST follow the next steps:
+        1. Update 'task_id' issue status to In Progress. Get available transitions for Jira ticket first.
+
+        Constraints:
+        1. You can ONLY work with 'task_id' Jira issue.
+
+        Jira context:
+        Project: EPMCDME
+
+  states:
+    - id: get_task_id_and_plan
+      assistant_id: onboarder_assistant
+      task: "Run"
+      output_schema: |
+        {
+          "success": "Boolean true | false. If you generated detailed plan successfully return true, otherwise false",
+          "task_id": "Return Jira task ID",
+          "task_plan": "Return generated detailed plan"
+        }
+      next:
+        condition:
+          expression: "success == True"
+          then: environment_configuration
+          otherwise: end
+
+    - id: environment_configuration
+      assistant_id: environment_configuration_assistant
+      task: "Run"
+      output_schema: |
+        {
+          "success": "Boolean true | false. If every step run successfully return true, otherwise false",
+          "task_id": "Return Jira task ID from "task_id"",
+          "task_plan": "Return plan from "task_plan""
+        }
+      next:
+        condition:
+          expression: "success == True"
+          then: unit_tests_generation
+          otherwise: end
+
+    - id: unit_tests_generation
+      assistant_id: unit_tests_developer_assistant
+      task: "Run"
+      output_schema: |
+        {
+          "success": "Boolean true | false. If the list 'tests_generation_summary' contains sucessful test names even if some of them failed return true, otherwise (if all of them failed) - false",
+          "task_id": "Return Jira task ID from "task_id"",
+          "tests_generation_summary": "Return generated list",
+        }
+      next:
+        condition:
+          expression: "success == True"
+          then: commit_and_create_mr
+          otherwise: end
+
+    - id: commit_and_create_mr
+      assistant_id: git_assistant
+      task: "Run"
+      output_schema: |
+        {
+          "success": "Boolean true | false. If you completed all steps successfully return true, otherwise false",
+          "task_id": "Return Jira task ID from "task_id"
+        }
+      next:
+        condition:
+          expression: "success == True"
+          then: offboard_task_in_jira
+          otherwise: end
+
+    - id: offboard_task_in_jira
+      assistant_id: offboarder_assistant
+      task: "Run"
+      next:
+        state_id: end

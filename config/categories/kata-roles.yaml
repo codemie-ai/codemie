@@ -1,0 +1,52 @@
+roles:
+  - id: "developer"
+    name: "Developer"
+    description: "Software developers and engineers building AI applications"
+
+  - id: "ai-engineer"
+    name: "AI Engineer"
+    description: "AI/ML engineers specializing in LLM and agent development"
+
+  - id: "data-scientist"
+    name: "Data Scientist"
+    description: "Data scientists working with AI models and analytics"
+
+  - id: "product-manager"
+    name: "Product Manager"
+    description: "Product managers designing AI-powered features and products"
+
+  - id: "project-manager"
+    name: "Project Manager"
+    description: "Project managers working with teams and project stuff"
+
+  - id: "business-analyst"
+    name: "Business Analyst"
+    description: "Business analysts exploring AI use cases and requirements"
+
+  - id: "devops"
+    name: "DevOps Engineer"
+    description: "DevOps engineers deploying and managing AI infrastructure"
+
+  - id: "architect"
+    name: "Solution Architect"
+    description: "Architects designing AI system architecture and integrations"
+
+  - id: "qa-engineer"
+    name: "QA Engineer"
+    description: "Quality assurance engineers testing AI systems"
+
+  - id: "team-lead"
+    name: "Team Lead"
+    description: "Technical leads and engineering managers overseeing AI projects"
+
+  - id: "researcher"
+    name: "Researcher"
+    description: "Researchers exploring AI capabilities and experimentation"
+
+  - id: "content-creator"
+    name: "Content Creator"
+    description: "Technical writers and content creators using AI tools"
+
+  - id: "executive"
+    name: "Executive"
+    description: "Executives and decision-makers evaluating AI solutions"

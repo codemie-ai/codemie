@@ -1,0 +1,18 @@
+# The nginx.conf in this folder is automatically generated from nginx.template
+# To modify your NGINX config, edit the nginx.template file
+
+events {}
+http{
+server {
+         listen       $NGINX_WEB_PORT;
+         listen       [::]:$NGINX_WEB_PORT;
+         server_name  $NGINX_WEB_SERVER_NAME;
+         root         $NGINX_WEB_ROOT;
+         large_client_header_buffers 4 100k;
+
+         error_log error.log error;
+         access_log access.log;
+         index index.html;
+         include       $NGINX_CONFDIR/mime.types;
+    }
+}

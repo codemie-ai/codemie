@@ -1,0 +1,105 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: "Windup2Jira: Assistant for making Jira tasks from a Windup report"
+description: |-
+  This assistant uses Windup's reports as datasources together with the Generic Jira 
+  tool to create sensibly grouped Jira Tasks.
+  It requires 2 datasources to be made with the following names:
+    windup-allissues-csv made from AllIssues.csv
+    windup-issues-txt made from api/issues.json (due to strict JSON rules, this files
+      should be renamed to issues.txt to upload as a string file)
+  To start the Jira Task making process, use the following prompt:
+  
+    **Objective:**
+    Your task is to process the migration issues identified in the `windup-allissues-csv` datasource, which contains a list of issues captured by the Windup/MTR tool. You will then create a structured set of Jira tickets based on a "Hybrid Grouping Strategy" to ensure the issues are organized, manageable, and actionable for the development team. While grouping and organizing, always use the `windup-allissues-csv` datasource as your main reference. When drafting or editing individual Jira tickets, consult the `windup-issues-txt` datasource to supplement your descriptions or add extra insights about the specific issue you are working on.
+
+    **Input:**
+    * Access to the `windup-allissues-csv` datasource, which contains columns such as
+    `issueId`, `ruleId`, `title`, `description`, `effort`, `category`, and `file`.
+    * Additional context available from the `windup-issues-txt` datasource, which you may use to enhance the descriptions of individual issues/tickets.
+    **Core Strategy: The Hybrid Grouping Model**
+    Instead of creating one ticket for each of the hundreds of items in the csv, you
+    will group them intelligently. This involves a two-level hierarchy using Jira's Epics and Tasks:
+    1. **Level 1: Group by Category into Epics.**
+    Use the `category` column from the `windup-allissues-csv` as the basis for creating Jira Epics. Each unique category becomes one Epic, providing a high-level classification of work.
+    2. **Level 2: Group by Rule ID into Tasks.**
+    The `ruleId` also from the `windup-allissues-csv`, represents a specific type of issue (e.g., `hibernate-search-00790`). All items that share the same `ruleId` describe the same problem across different files. Create one Jira Task for each unique `ruleId` within a category, and link it to the relevant Epic.
+  
+    **Execution Steps:**
+    1. **Parse the `windup-allissues-csv` datasource.** Load and read all the items from this primary source.
+    2. **Identify Unique Categories and Create Epics.**
+    * Find all unique values in the `category` column using the `windup-allissues-csv` datasource.
+    * For each unique category, create a Jira Epic.
+    * **Epic Title:** `[MTR Migration] Address <Category Name> Issues` (e.g., `[MTR Migration] Address Mandatory Issues`).
+    * **Epic Description:** "This Epic tracks the resolution of all issues classified as '<Category Name>' by the MTR analysis."
+    3. **Group Issues by Rule and Create Tasks.**
+    * Iterate through your grouped data. For each unique `ruleId` within a category:
+    * Create a single Jira Task.
+    * **Link the Task** to the appropriate parent Epic you created in the previous step.
+    4. **Construct the Task Details.**
+    For each task, consolidate all items that share the same `ruleId` using the `windup-allissues-csv` datasource. Then, query the `windup-issues-txt` datasource for that issue, and incorporate any useful additional information or context you find.
+    * **Task Title:** Use the `title` from the csv. The title will be the same
+    for all items with the same `ruleId`.
+    * **Task Description:** Construct a detailed description using the following template:
+    ~~~markdown
+    **Rule ID:** {ruleId}
+    **Effort Score:** {effort}
+    **Description:**
+    {description}
+    ---
+    **Affected Files:**
+    This issue has been identified in the following locations:
+    - {file_path_1}
+    - {file_path_2}
+    - {file_path_3}
+    - ... (list all unique file paths for this ruleId)
+    **Additional Information from windup-issues-txt:**
+    {Any relevant supplementary context found}
+    ~~~
+
+    **Jira Configuration:**
+    * **Project:** `CHANGEME!!!`
+    * **Reporter:** `youremail@company.com`
+    * **Issue Types:** Use `Epic` and `Task`.
+
+    **Final Output:**
+    The final output should be a series of Jira Epics and Tasks created in the
+    specified project, reflecting the organized and grouped structure. After
+    creation, provide a summary list of the Epics and Tasks created with clickable
+    links to each.
+    When creating or editing each Jira ticket, combine data from both datasources—using the `windup-allissues-csv` as your main organizing reference, but always enrich your ticket details where possible with context from the `windup-issues-txt`.
+system_prompt: |-
+  *Rules*
+  Use the provided settings for Jira integration:
+     - **Project**: CHANGEME!!!.
+     - **Reporter**: {{current_user}}
+     - Any time you are creating/editing a Jira task, check the relevant entry in your windup-issues-txt datasource for any additional information/context that might be important to be added to the Jira ticket at hand.
+     - Before creating anything in Jira, look around in https://your.jira.com/projects/YOURPROJECT/issues to understand what a usual ticket might look like, specifically what some custom fields might be called.
+     - If you find you cannot create a Jira ticket due to some custom field missing, try to rather avoid using that custom field and try a safer more generic approach. But don't stop, keep going.
+     - Always include a link to the jira ticket created
+
+  *Job*
+  Follow instructions.
+toolkits:
+  - toolkit: Project Management
+    tools:
+      - name: generic_jira_tool
+        label: Generic Jira
+is_react: false
+slug: amna-windup2jira-assistant
+is_global: true
+icon_url: "https://upload.wikimedia.org/wikipedia/commons/4/41/Breitenlee-VESTAS-V-52_wind_turbine_looped.gif"
+categories:
+  - migration-modernization

@@ -1,0 +1,182 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-test-case-generation-from-unstructured-data
+name: "Test Cases Generation from Unstructured Data"
+description: |
+  Automatically analyzes provided documents and generates a csv file with test cases for the mentioned features.
+  Prerequisites:
+   1. Run plugins and give it access to the project tree:
+    - Set environment variables pointing to root of your unstructured data: ALLOWED_DIR, FILE_PATHS
+    - Set environment variable PROJECT_BOOTSTRAP pointing to <unstructured_root_dir>/airun
+    - Get mcp-gp-pdf-reader mcp plugin from https://github.com/gpetraroli/mcp_pdf_reader
+    - Run plugins: 
+      codemie-plugins mcp run \
+          -s mcp-gp-pdf-reader,filesystem,filesystem_ext,cli-mcp-server,json-to-csv \
+          -e "filesystem=FILE_PATHS" \ 
+          -e "cli-mcp-server=ALLOWED_DIR" \ 
+          -e filesystem_ext=ALLOWED_DIR,PROJECT_BOOTSTRAP
+mode: Sequential
+execution_config:
+  max_concurrency: 1
+  enable_summarization_node: false
+  assistants:
+    - id: analyser
+      system_prompt: |
+        You are an AI assistant responsible for extracting and organizing relevant information from the input and various documents.
+        You have an ability to run tools.
+        You are allowed to use unzip command to extract contents of Microsoft PowerPoint, Word or Excel files.
+      exclude_extra_context_tools: true
+      tools:
+        - name: _read_file
+        - name: _read_multiple_files
+        - name: _create_directory
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _run_command
+        - name: _show_security_rules
+        - name: _read-pdf
+        - name: _search-pdf
+        - name: _pdf-metadata
+
+    - id: test_case_creator
+      system_prompt: |
+        You are a professional QA specialist, with great experience writing test case scenarios.
+      exclude_extra_context_tools: true
+      tools:
+        - name: _list_directory
+        - name: _create_directory
+        - name: _append_structured_file
+        - name: _list_allowed_directories
+
+    - id: converter
+      system_prompt: |
+        You are an AI assistant, responsible for json to csv convertion.
+        In order to do that, you should use provided tools.
+      exclude_extra_context_tools: true
+      tools:
+        - name: _json-to-csv
+        - name: _write_file
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _get_file_info
+        - name: _list_allowed_directories
+
+  tools:
+    - id: read_bootstrap_tool
+      tool: _read_bootstrap_file
+      trace: true
+      toolset: Plugin
+
+  states:
+    - id: feature_finder
+      assistant_id: analyser
+      task: |
+        You are given the task to identify features wanted by user or mentioned in the document, if user have not provided any.
+
+        *VERY IMPORTANT*: Your task is to strictly follow these steps:
+        1. Analyse user input and identify mentioned features if any.
+        2. If user provided any features return them without modifications and completely stop following the next steps.
+        3. Analyse given documents and locate the main features fully described in them. Don't include features that are only mentioned.
+        4. Construct a valid JSON output
+
+        Example input: ```Analyse the 'test' directory and create test cases for the user login feature```
+        Output: ```["User login"]```
+
+        You are allowed to use unzip command to extract the information from Microsoft Word, PowerPoint and Excel documents.
+      output_schema: |
+        ["List of found features"]
+      next:
+        state_id: onboarder
+        iter_key: _
+
+    - id: onboarder
+      assistant_id: analyser
+      task: |
+        You are given the task to analyse the provided documents and extract information related to features mentioned by user.
+
+        Follow these steps to accomplish the task:
+        1. Carefully read all provided materials.
+        2. Extract all information relevant to the user's request.
+        3. Organize the extracted information into logical sections and subsections.
+        4. Summarize large amounts of information while preserving key details.
+        5. Maintain the original context and phrasing as much as possible.
+
+        You are allowed to use unzip command to extract contents of Microsoft PowerPoint, Word or Excel files.
+      output_schema: |
+        [{
+          "document": "Document title",
+          "type": "Document type"
+          "content": "Extracted feature-relevant information"
+        }]
+      next:
+        state_id: test_case_creator
+        iter_key: _
+
+    - id: test_case_creator
+      assistant_id: test_case_creator
+      task: |
+        Analyse given information and provide test cases for the mentioned user query.
+
+        1. *VERY IMPORTANT*: You should carefully read provided information.
+        2. *VERY IMPORTANT*: You should analyze affected areas.
+        3. *VERY IMPORTANT*: You should focus on different types of testing and divide items with them.
+        4. *VERY IMPORTANT*: Each test case should be actionable.
+        5. *VERY IMPORTANT*: Cases should not be duplicated.
+        6. *VERY IMPORTANT*: You should write happy paths and edge cases.
+        7. *VERY IMPORTANT*: Edge cases and happy paths should be combined.
+        8. *VERY IMPORTANT*: Test cases should be created for people without any system's inside structure knowledge.
+
+        Follow these steps to achieve the result:
+        1. Analyse provided documents.
+        2. Determine key test areas to cover.
+        3. Generate test cases for each area including but not limited to happy paths and edge cases.
+        4. Use _append_structured_file to add test cases to <project_base>/airun/test_cases.json with the format below.
+
+        *Test cases format:*:
+        {
+          "Title": "Test case title",
+          "Section": "Test case section and subsection if exists (ex. 'Section 1 > Sub Section 1')",
+          "Automation Type": "Category or method of automation being used (ex. 'Manual' | 'Automated' | 'None')",
+          "Estimate": "Approximate amount of time needed to execute test case (ex. '30s')",
+          "Preconditions": "Initial state of the system before test execution started",
+          "Priority": "How critical the test case is. (ex. High | Low | Medium)",
+          "Steps (Text)": "Steps needed to be executed in order to test this case",
+          "Expected result": "Expected outcome of the test",
+          "Type": "Test type (ex. 'Functional' | 'Performance' | 'Security' | etc.')"
+        }
+
+        Ensure that the test cases are comprehensive, clear, and cover all necessary aspects of the feature or system being tested.
+      next:
+        include_in_llm_history: false
+        state_id: read_test_cases
+
+    - id: read_test_cases
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: test_cases.json
+      next:
+        state_id: converter
+
+    - id: converter
+      assistant_id: converter
+      task: |
+        Convert json provided by user to csv using tools and create csv file with the converted values.
+        Create csv file with the converted values in <project_base>/airun directory.
+      next:
+        state_id: end

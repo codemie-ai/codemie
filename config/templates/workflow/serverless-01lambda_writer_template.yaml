@@ -1,0 +1,135 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+slug: amna-serverless-01-lambda-writer
+name: "[SERVERLESS][1] Lambda Writer"
+description: |
+  Automatically generates AWS Lambdas for discovered migratable components.
+  Requires data from "[SERVERLESS][0] Project Discovery" workflow execution.
+
+  This workflow is a part of the split "[SERVERLESS] Automated Monolith to Serverless Migration" workflow.
+mode: Sequential
+execution_config:
+  enable_summarization_node: false
+  max_concurrency: 1
+
+  assistants:
+    - id: aws_lambda_expert
+      exclude_extra_context_tools: true
+      system_prompt: |
+        You are an expert Software Developer, experienced in monolith to serverless migrations 
+        with strong knowledge of AWS Lambdas, DynamoDB, API gateways and other AWS services.
+        
+        You have an access to local project and ability to run tools.
+        
+        IMPORTANT:
+        You are not allowed to modify any of the project files under any circumstances.
+        The only files you can edit are under airun directory.
+        If there is no airun directory, create one under the root of a project.
+      tools:
+        - name: _read_file
+        - name: _read_multiple_files
+        - name: _write_file
+        - name: _edit_file
+        - name: _create_directory
+        - name: _list_directory
+        - name: _directory_tree
+        - name: _move_file
+        - name: _search_files
+        - name: _get_file_info
+        - name: _list_allowed_directories
+        - name: _append_structured_file
+        - name: _search_files_by_regex
+        - name: _read_file_lines
+
+  tools:
+    - id: read_bootstrap_tool
+      tool: _read_bootstrap_file
+      toolset: Plugin
+      trace: true
+
+  states:
+    - id: migratable
+      tool_id: read_bootstrap_tool
+      tool_args:
+        path: migratable.json
+      next:
+        state_id: lambda_writer
+        iter_key: _
+
+    - id: lambda_writer
+      assistant_id: aws_lambda_expert
+      task: |
+        You are given a component and where it is stored. You must convert it to AWS Lambda written in {{language}}.
+        Read the file, do the conversion and output the resulting {{language}} text.
+
+        Input parameters and output must be valid JSONs.
+
+        Create the only file with {{language}} AWS lambda code.
+        Your output will be passed to specialized assistant that will use AWS API to create Lambda from the code
+        fragment you provided.
+
+        If you successfully created lambda - use _append_structured_file tool and write information about the lambda to <project_base>/airun/lambdas/lambda_info.json
+        Using the following output format:
+        {
+          "lambda_name": "{{component_name}}",
+          "component_root_dir": "Generated lambda root directory (e.g. <project_base>/airun/lambdas/{{component_name}})",
+          "language": "{{language}}",
+          "description": "Short description of it's functionality",
+          "endpoint_uri": "{{endpoint_uri}}",
+        }
+
+        IMPORTANT:
+        You are allowed to create lambda files under the <project_base>/airun/lambdas/{{component_name}},
+        and you are not allowed to modify or create any files outside of the directory.
+        Do not create build script files, readme files or any other non-required files.
+      output_schema: |
+        {
+          "lambda_name": "{{component_name}}",
+          "component_root_dir": "Generated lambda root directory (e.g. <project_base>/airun/lambdas/{{component_name}})",
+          "language": "{{language}}",
+          "description": "Short description of it's functionality",
+          "endpoint_uri": "{{endpoint_uri}}",
+        }
+      next:
+        include_in_llm_history: false
+        state_id: build_sequence_enricher
+
+    - id: build_sequence_enricher
+      assistant_id: aws_lambda_expert
+      task: |
+        You are given the task to enrich each element of json array with the field "build_sequence".
+        Substitute $variable with actual values taken from the enriching element.
+    
+        Your steps must be the following:
+        1. Read <project_path>/airun/lambdas/lambda_info.json file.
+        2. Do for each element:
+          - Identify the language field.
+          - Enrich the element with the "build_sequence" field according to the language value.
+    
+        Python build sequence must be exactly the following (with substituted variables):
+        "build_sequence": [
+          "mkdir package",
+          "pip install -r requirements.txt -t package",
+          "cd package && zip -r $component_root_dir/$lambda_name.zip .",
+          "zip $lambda_name.zip lambda_function.py"
+        ]
+    
+        Java build sequence must be exactly the following:
+        "build_sequence": ["mvn package"]
+    
+        You should observe / modify only the <project_path>/airun/lambdas/lambda_info.json file.
+        You cannot read / modify / create / delete any other file or directory.
+      next:
+        state_id: end

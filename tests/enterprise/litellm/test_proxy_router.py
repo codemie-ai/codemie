@@ -1,0 +1,861 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for proxy_router.py integration layer."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+from fastapi import HTTPException
+from starlette.datastructures import Headers
+
+from codemie.core.constants import (
+    CODEMIE_CLI,
+    HEADER_CODEMIE_CLI,
+    HEADER_CODEMIE_CLI_MODEL,
+    HEADER_CODEMIE_CLIENT,
+    HEADER_CODEMIE_INTEGRATION,
+    HEADER_CODEMIE_REQUEST_ID,
+    HEADER_CODEMIE_SESSION_ID,
+)
+from codemie.enterprise.litellm.proxy_router import (
+    _emit_proxy_llm_error_log,
+    _extract_request_info,
+    _get_integration_api_key,
+    _prepare_proxy_headers,
+    register_proxy_endpoints,
+)
+
+
+class TestExtractRequestInfo:
+    """Test _extract_request_info function."""
+
+    def test_extract_all_headers(self):
+        """Test extracting all request info when headers present."""
+        headers = Headers(
+            {
+                HEADER_CODEMIE_CLIENT: "cli",
+                HEADER_CODEMIE_SESSION_ID: "session-123",
+                HEADER_CODEMIE_REQUEST_ID: "request-456",
+                HEADER_CODEMIE_CLI_MODEL: "gpt-4",
+                "User-Agent": "CodeMie CLI/1.0",
+            }
+        )
+
+        result = _extract_request_info(headers)
+
+        assert result["client_type"] == "cli"
+        assert result["session_id"] == "session-123"
+        assert result["request_id"] == "request-456"
+        assert result["llm_model"] == "gpt-4"
+        assert result["user_agent"] == "CodeMie CLI/1.0"
+
+    def test_extract_with_missing_headers(self):
+        """Test extracting request info with missing headers (defaults)."""
+        headers = Headers({})
+
+        result = _extract_request_info(headers)
+
+        assert result["client_type"] == "unknown"
+        # session_id and request_id should be UUIDs (not empty)
+        assert len(result["session_id"]) > 0
+        assert len(result["request_id"]) > 0
+        assert result["llm_model"] == "unknown"
+        assert result["user_agent"] == "unknown"
+
+    def test_extract_with_httpx_headers(self):
+        """Test extracting from httpx.Headers."""
+        headers = httpx.Headers(
+            {
+                HEADER_CODEMIE_CLIENT: "web",
+                HEADER_CODEMIE_CLI_MODEL: "claude-3",
+            }
+        )
+
+        result = _extract_request_info(headers)
+
+        assert result["client_type"] == "web"
+        assert result["llm_model"] == "claude-3"
+
+    def test_extract_with_dict(self):
+        """Test extracting from plain dict."""
+        headers = {
+            HEADER_CODEMIE_CLIENT: "api",
+        }
+
+        result = _extract_request_info(headers)
+
+        assert result["client_type"] == "api"
+
+    def test_extract_cli_header_present(self):
+        """Test that X-CodeMie-CLI header is extracted into CODEMIE_CLI key."""
+        headers = Headers(
+            {
+                HEADER_CODEMIE_CLI: "codemie-claude/1.2.0",
+            }
+        )
+
+        result = _extract_request_info(headers)
+
+        assert result[CODEMIE_CLI] == "codemie-claude/1.2.0"
+
+    def test_extract_cli_header_absent(self):
+        """Test that missing X-CodeMie-CLI header produces empty string (non-CLI)."""
+        headers = Headers({})
+
+        result = _extract_request_info(headers)
+
+        assert result[CODEMIE_CLI] == ""
+
+
+class TestPrepareProxyHeaders:
+    """Test _prepare_proxy_headers function."""
+
+    def test_prepare_headers_filters_hop_by_hop(self):
+        """Test that hop-by-hop headers are filtered out."""
+        mock_request = MagicMock()
+        mock_request.headers = Headers(
+            {
+                "content-type": "application/json",
+                "connection": "keep-alive",
+                "host": "example.com",
+                "transfer-encoding": "chunked",
+                HEADER_CODEMIE_CLIENT: "cli",
+                "authorization": "Bearer old-token",
+            }
+        )
+
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.LITE_LLM_APP_KEY = "test-app-key"
+            with patch("codemie.enterprise.litellm.proxy_router.litellm_context") as mock_context:
+                mock_context.get.side_effect = LookupError()
+
+                result = _prepare_proxy_headers(mock_request)
+
+        # Should keep content-type
+        assert "content-type" in result
+        assert result["content-type"] == "application/json"
+
+        # Should filter out hop-by-hop headers
+        assert "connection" not in result
+        assert "host" not in result
+        assert "transfer-encoding" not in result
+        assert HEADER_CODEMIE_CLIENT not in result
+
+        # Should set authorization to app key
+        assert result["Authorization"] == "Bearer test-app-key"
+
+    def test_prepare_headers_with_integration(self):
+        """Test preparing headers with integration ID."""
+        mock_request = MagicMock()
+        mock_request.headers = Headers(
+            {
+                "content-type": "application/json",
+                HEADER_CODEMIE_INTEGRATION: "integration-123",
+            }
+        )
+
+        with patch("codemie.enterprise.litellm.proxy_router._get_integration_api_key") as mock_get_key:
+            mock_get_key.return_value = "integration-api-key"
+            with patch("codemie.enterprise.litellm.proxy_router.litellm_context") as mock_context:
+                mock_context.get.side_effect = LookupError()
+
+                result = _prepare_proxy_headers(mock_request)
+
+        assert result["Authorization"] == "Bearer integration-api-key"
+        mock_get_key.assert_called_once_with("integration-123")
+
+    def test_prepare_headers_with_integration_error(self):
+        """Test preparing headers when integration lookup fails."""
+        mock_request = MagicMock()
+        mock_request.headers = Headers(
+            {
+                "content-type": "application/json",
+                HEADER_CODEMIE_INTEGRATION: "invalid-integration",
+            }
+        )
+
+        with patch("codemie.enterprise.litellm.proxy_router._get_integration_api_key") as mock_get_key:
+            mock_get_key.side_effect = HTTPException(status_code=404, detail="Not found")
+            with patch("codemie.enterprise.litellm.proxy_router.litellm_context") as mock_context:
+                mock_context.get.side_effect = LookupError()
+
+                result = _prepare_proxy_headers(mock_request)
+
+        # Should return error response
+        assert hasattr(result, 'status_code')
+        assert result.status_code == 404
+
+    def test_prepare_headers_with_context(self):
+        """Test preparing headers with litellm context."""
+        mock_request = MagicMock()
+        mock_request.headers = Headers(
+            {
+                "content-type": "application/json",
+            }
+        )
+
+        mock_context_obj = MagicMock()
+
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.LITE_LLM_APP_KEY = "test-app-key"
+            with patch("codemie.enterprise.litellm.proxy_router.litellm_context") as mock_context:
+                mock_context.get.return_value = mock_context_obj
+                with patch("codemie.enterprise.litellm.proxy_router.generate_litellm_headers_from_context") as mock_gen:
+                    mock_gen.return_value = {"x-custom-header": "custom-value"}
+
+                    result = _prepare_proxy_headers(mock_request)
+
+        assert result["Authorization"] == "Bearer test-app-key"
+        assert result["x-custom-header"] == "custom-value"
+
+
+class TestGetIntegrationApiKey:
+    """Test _get_integration_api_key function."""
+
+    def test_get_api_key_success(self):
+        """Test successfully retrieving API key."""
+        mock_credentials = MagicMock()
+        mock_credentials.api_key = "decrypted-api-key"
+
+        # Clear cache first
+        _get_integration_api_key.cache_clear()
+
+        # Patch where SettingsService is used (inside the function)
+        with patch("codemie.service.settings.settings.SettingsService") as mock_service:
+            mock_service.get_credentials.return_value = mock_credentials
+            mock_service.LITELLM_FIELDS = ["api_key"]
+
+            result = _get_integration_api_key("integration-123")
+
+        assert result == "decrypted-api-key"
+        mock_service.get_credentials.assert_called_once()
+
+    def test_get_api_key_not_found(self):
+        """Test when integration not found."""
+        # Clear cache first
+        _get_integration_api_key.cache_clear()
+
+        with patch("codemie.service.settings.settings.SettingsService") as mock_service:
+            mock_service.get_credentials.return_value = None
+            mock_service.LITELLM_FIELDS = ["api_key"]
+
+            with pytest.raises(HTTPException) as exc_info:
+                _get_integration_api_key("nonexistent")
+
+        assert exc_info.value.status_code == 404
+        assert "not found" in exc_info.value.detail
+
+    def test_get_api_key_error(self):
+        """Test when error occurs during retrieval."""
+        # Clear cache first
+        _get_integration_api_key.cache_clear()
+
+        with patch("codemie.service.settings.settings.SettingsService") as mock_service:
+            mock_service.get_credentials.side_effect = Exception("Database error")
+            mock_service.LITELLM_FIELDS = ["api_key"]
+
+            with pytest.raises(HTTPException) as exc_info:
+                _get_integration_api_key("integration-123")
+
+        assert exc_info.value.status_code == 500
+        assert "Failed to retrieve API key" in exc_info.value.detail
+
+    def test_get_api_key_cached(self):
+        """Test that API key is cached."""
+        mock_credentials = MagicMock()
+        mock_credentials.api_key = "cached-api-key"
+
+        # Clear cache first
+        _get_integration_api_key.cache_clear()
+
+        with patch("codemie.service.settings.settings.SettingsService") as mock_service:
+            mock_service.get_credentials.return_value = mock_credentials
+            mock_service.LITELLM_FIELDS = ["api_key"]
+
+            # First call
+            result1 = _get_integration_api_key("integration-123")
+            # Second call (should use cache)
+            result2 = _get_integration_api_key("integration-123")
+
+        assert result1 == "cached-api-key"
+        assert result2 == "cached-api-key"
+        # Should only call get_credentials once (second call uses cache)
+        assert mock_service.get_credentials.call_count == 1
+
+
+class TestInjectUserIntoRequestBody:
+    """Test _inject_user_into_request_body_from_bytes function."""
+
+    @pytest.mark.asyncio
+    async def test_inject_user_into_body(self):
+        """Test injecting user into request body."""
+        from codemie.enterprise.litellm.proxy_router import _inject_user_into_request_body_from_bytes
+
+        body_bytes = b'{"messages": [{"role": "user", "content": "Hello"}]}'
+
+        async def mock_stream():
+            yield b'{"messages": [{"role": "user", "content": "Hello"}]}'
+
+        request_info = {
+            "session_id": "session-123",
+            "request_id": "request-456",
+        }
+
+        with patch("codemie.enterprise.litellm.proxy_router.inject_user_into_body") as mock_inject:
+            # Mock the enterprise function to return the same stream
+            mock_inject.return_value = mock_stream()
+
+            _inject_user_into_request_body_from_bytes(body_bytes, "test-user", request_info)
+
+            # Verify enterprise function was called with correct args
+            mock_inject.assert_called_once()
+            call_args = mock_inject.call_args
+            assert call_args.kwargs["username"] == "test-user"
+            assert call_args.kwargs["session_id"] == "session-123"
+            assert call_args.kwargs["request_id"] == "request-456"
+            assert call_args.kwargs["content_type"] == "application/json"
+
+
+class TestParseUsageWithCost:
+    """Test _parse_usage_with_cost function."""
+
+    @pytest.mark.asyncio
+    async def test_parse_usage_with_cost_success(self):
+        """Test parsing usage with cost calculation."""
+        from codemie.enterprise.litellm.proxy_router import _parse_usage_with_cost
+
+        response_content = b'{"usage": {"prompt_tokens": 100, "completion_tokens": 50}}'
+
+        mock_cost_config = {
+            "input": 0.01,
+            "output": 0.02,
+        }
+
+        with patch("codemie.enterprise.litellm.proxy_router.llm_service") as mock_llm_service:
+            mock_llm_service.get_model_cost.return_value = mock_cost_config
+            with patch("codemie.enterprise.litellm.proxy_router.parse_usage_from_response") as mock_parse:
+                mock_parse.return_value = {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cached_tokens": 0,
+                    "money_spent": 2.0,
+                    "cached_tokens_money_spent": 0.0,
+                }
+
+                result = await _parse_usage_with_cost(
+                    response_content=response_content,
+                    llm_model="gpt-4",
+                    is_streaming=False,
+                )
+
+        assert result["input_tokens"] == 100
+        assert result["output_tokens"] == 50
+        assert result["money_spent"] == 2.0
+        mock_llm_service.get_model_cost.assert_called_once_with("gpt-4")
+
+    @pytest.mark.asyncio
+    async def test_parse_usage_with_cost_error(self):
+        """Test parsing usage when cost config fails."""
+        from codemie.enterprise.litellm.proxy_router import _parse_usage_with_cost
+
+        response_content = b'{"usage": {"prompt_tokens": 100}}'
+
+        with patch("codemie.enterprise.litellm.proxy_router.llm_service") as mock_llm_service:
+            mock_llm_service.get_model_cost.side_effect = Exception("Model not found")
+            with patch("codemie.enterprise.litellm.proxy_router.parse_usage_from_response") as mock_parse:
+                mock_parse.return_value = {
+                    "input_tokens": 100,
+                    "output_tokens": 0,
+                    "cached_tokens": 0,
+                    "money_spent": 0.0,
+                    "cached_tokens_money_spent": 0.0,
+                }
+
+                result = await _parse_usage_with_cost(
+                    response_content=response_content,
+                    llm_model="unknown-model",
+                    is_streaming=False,
+                )
+
+        # Should still return usage data even if cost config fails
+        assert result["input_tokens"] == 100
+
+
+class TestStreamingResponseWithUsageTracking:
+    """Test _streaming_response_with_usage_tracking function."""
+
+    @pytest.mark.asyncio
+    async def test_streaming_with_usage_tracking(self):
+        """Test streaming response with usage tracking."""
+        from codemie.enterprise.litellm.proxy_router import _streaming_response_with_usage_tracking
+
+        # Create mock response
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = httpx.Headers({"content-type": "text/event-stream"})
+
+        # Mock streaming chunks
+        async def mock_iter():
+            yield b'data: {"choices": [{"delta": {"content": "Hello"}}]}\n\n'
+            yield b'data: {"choices": [{"delta": {"content": " World"}}]}\n\n'
+            yield b'data: [DONE]\n\n'
+
+        mock_response.aiter_raw = mock_iter
+        mock_response.aclose = AsyncMock()
+
+        mock_user = MagicMock()
+        mock_user.id = "user-123"
+
+        request_info = {
+            "session_id": "session-123",
+            "request_id": "request-456",
+        }
+
+        mock_background_tasks = MagicMock()
+
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.LLM_PROXY_TRACK_USAGE = True
+            with patch("codemie.enterprise.litellm.proxy_router._parse_usage_with_cost") as mock_parse:
+                mock_parse.return_value = {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cached_tokens": 0,
+                    "money_spent": 0.5,
+                    "cached_tokens_money_spent": 0.0,
+                }
+
+                chunks = []
+                async for chunk in _streaming_response_with_usage_tracking(
+                    downstream_response=mock_response,
+                    user=mock_user,
+                    endpoint="/v1/chat/completions",
+                    request_info=request_info,
+                    llm_model="gpt-4",
+                    background_tasks=mock_background_tasks,
+                ):
+                    chunks.append(chunk)
+
+        # Verify all chunks were yielded
+        assert len(chunks) == 3
+        # Verify usage tracking was added as background task
+        mock_background_tasks.add_task.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_streaming_no_usage_when_zero_tokens(self):
+        """Test streaming doesn't track usage when no tokens used."""
+        from codemie.enterprise.litellm.proxy_router import _streaming_response_with_usage_tracking
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = httpx.Headers({"content-type": "text/event-stream"})
+
+        async def mock_iter():
+            yield b'data: [DONE]\n\n'
+
+        mock_response.aiter_raw = mock_iter
+        mock_response.aclose = AsyncMock()
+
+        mock_user = MagicMock()
+        request_info = {}
+        mock_background_tasks = MagicMock()
+
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.LLM_PROXY_TRACK_USAGE = True
+            with patch("codemie.enterprise.litellm.proxy_router._parse_usage_with_cost") as mock_parse:
+                mock_parse.return_value = {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cached_tokens": 0,
+                    "money_spent": 0.0,
+                    "cached_tokens_money_spent": 0.0,
+                }
+
+                chunks = []
+                async for chunk in _streaming_response_with_usage_tracking(
+                    downstream_response=mock_response,
+                    user=mock_user,
+                    endpoint="/v1/chat/completions",
+                    request_info=request_info,
+                    llm_model="gpt-4",
+                    background_tasks=mock_background_tasks,
+                ):
+                    chunks.append(chunk)
+
+        # Should not track usage when no tokens
+        mock_background_tasks.add_task.assert_not_called()
+
+
+class TestProxyToLLMProxy:
+    """Test _proxy_to_llm_proxy main orchestrator."""
+
+    @pytest.mark.asyncio
+    async def test_proxy_success_streaming(self):
+        """Test successful proxy with streaming response."""
+        from codemie.enterprise.litellm.proxy_router import _proxy_to_llm_proxy
+
+        # Create mock request
+        mock_request = MagicMock()
+        mock_request.method = "POST"
+        mock_request.headers = Headers(
+            {
+                HEADER_CODEMIE_CLIENT: "cli",
+                HEADER_CODEMIE_CLI_MODEL: "gpt-4",
+            }
+        )
+        mock_request.body = AsyncMock(return_value=b'{"messages": [], "model": "gpt-4"}')
+
+        async def mock_stream():
+            yield b'{"messages": []}'
+
+        # Create mock user
+        mock_user = MagicMock()
+        mock_user.id = "user-123"
+        mock_user.username = "testuser"
+
+        # Create mock background tasks
+        mock_background_tasks = MagicMock()
+
+        # Create mock downstream response
+        mock_downstream_response = MagicMock()
+        mock_downstream_response.status_code = 200
+        mock_downstream_response.headers = httpx.Headers({"content-type": "application/json"})
+
+        async def mock_iter():
+            yield b'{"choices": []}'
+
+        mock_downstream_response.aiter_raw = mock_iter
+
+        # Mock dependencies
+        with patch("codemie.enterprise.litellm.proxy_router.is_litellm_enabled", return_value=True):
+            with patch(
+                "codemie.enterprise.litellm.proxy_router._create_body_stream_with_optional_injection",
+                new_callable=AsyncMock,
+            ) as mock_inject:
+                mock_inject.return_value = mock_stream()
+                with patch("codemie.enterprise.litellm.proxy_router._prepare_proxy_headers") as mock_prepare:
+                    mock_prepare.return_value = {"Authorization": "Bearer test"}
+                    with patch("codemie.enterprise.litellm.proxy_router.get_llm_proxy_client") as mock_get_client:
+                        mock_client = MagicMock()
+                        mock_client.build_request.return_value = MagicMock()
+                        mock_client.send = AsyncMock(return_value=mock_downstream_response)
+                        mock_get_client.return_value = mock_client
+                        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+                            mock_config.LLM_PROXY_TIMEOUT = 300
+                            mock_config.LLM_PROXY_TRACK_USAGE = False
+
+                            result = await _proxy_to_llm_proxy(
+                                request=mock_request,
+                                user=mock_user,
+                                endpoint="/v1/chat/completions",
+                                background_tasks=mock_background_tasks,
+                            )
+
+        # Verify response
+        assert result is not None
+        # Verify metrics were tracked
+        assert mock_background_tasks.add_task.called
+
+    @pytest.mark.asyncio
+    async def test_proxy_disabled(self):
+        """Test proxy when LiteLLM is disabled."""
+        from codemie.enterprise.litellm.proxy_router import _proxy_to_llm_proxy
+
+        mock_request = MagicMock()
+        mock_request.headers = Headers({})
+        mock_request.body = AsyncMock(return_value=b"{}")
+        mock_user = MagicMock()
+        mock_background_tasks = MagicMock()
+
+        with patch("codemie.enterprise.litellm.proxy_router.is_litellm_enabled", return_value=False):
+            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+                mock_config.LLM_PROXY_ENABLED = False
+
+                with pytest.raises(HTTPException) as exc_info:
+                    await _proxy_to_llm_proxy(
+                        request=mock_request,
+                        user=mock_user,
+                        endpoint="/v1/chat/completions",
+                        background_tasks=mock_background_tasks,
+                    )
+
+        assert exc_info.value.status_code == 400
+        assert "not available" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_proxy_connection_error(self):
+        """Test proxy when connection to LiteLLM fails."""
+        from codemie.enterprise.litellm.proxy_router import _proxy_to_llm_proxy
+
+        mock_request = MagicMock()
+        mock_request.method = "POST"
+        mock_request.headers = Headers(
+            {
+                HEADER_CODEMIE_CLI_MODEL: "gpt-4",
+            }
+        )
+        mock_request.body = AsyncMock(return_value=b'{"messages": [], "model": "gpt-4"}')
+
+        async def mock_stream():
+            yield b'{"messages": []}'
+
+        mock_user = MagicMock()
+        mock_user.id = "user-123"
+        mock_user.username = "testuser"
+
+        mock_background_tasks = MagicMock()
+
+        with patch("codemie.enterprise.litellm.proxy_router.is_litellm_enabled", return_value=True):
+            with patch(
+                "codemie.enterprise.litellm.proxy_router._create_body_stream_with_optional_injection",
+                new_callable=AsyncMock,
+            ) as mock_inject:
+                mock_inject.return_value = mock_stream()
+                with patch("codemie.enterprise.litellm.proxy_router._prepare_proxy_headers") as mock_prepare:
+                    mock_prepare.return_value = {"Authorization": "Bearer test"}
+                    with patch("codemie.enterprise.litellm.proxy_router.get_llm_proxy_client") as mock_get_client:
+                        mock_client = MagicMock()
+                        mock_client.build_request.return_value = MagicMock()
+                        mock_client.send = AsyncMock(side_effect=httpx.RequestError("Connection failed"))
+                        mock_get_client.return_value = mock_client
+                        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+                            mock_config.LLM_PROXY_TIMEOUT = 300
+
+                            result = await _proxy_to_llm_proxy(
+                                request=mock_request,
+                                user=mock_user,
+                                endpoint="/v1/chat/completions",
+                                background_tasks=mock_background_tasks,
+                            )
+
+        # Should return error response
+        assert result.status_code == 503
+        # Should still track error metrics
+        assert mock_background_tasks.add_task.called
+
+
+class TestCreateProxyEndpoint:
+    """Test _create_proxy_endpoint factory function."""
+
+    @pytest.mark.asyncio
+    async def test_create_simple_endpoint(self):
+        """Test creating endpoint without path parameters."""
+        from codemie.enterprise.litellm.proxy_router import _create_proxy_endpoint
+
+        endpoint = "/v1/chat/completions"
+        handler = _create_proxy_endpoint(endpoint)
+
+        # Verify handler is a function
+        assert callable(handler)
+
+        # Mock dependencies
+        mock_request = MagicMock()
+        mock_background_tasks = MagicMock()
+        mock_user = MagicMock()
+
+        with patch("codemie.enterprise.litellm.proxy_router._proxy_to_llm_proxy") as mock_proxy:
+            mock_proxy.return_value = MagicMock()
+
+            await handler(
+                request=mock_request,
+                background_tasks=mock_background_tasks,
+                user=mock_user,
+            )
+
+        # Verify proxy was called with correct endpoint
+        mock_proxy.assert_called_once()
+        assert mock_proxy.call_args.kwargs["endpoint"] == endpoint
+
+    def test_create_endpoint_with_path_params(self):
+        """Test creating endpoint with path parameters extracts params correctly."""
+        from codemie.enterprise.litellm.proxy_router import _create_proxy_endpoint
+        import inspect
+
+        # Test with single path parameter
+        endpoint = "/v1/models/{model_name}:generateContent"
+        handler = _create_proxy_endpoint(endpoint)
+
+        # Verify handler is a function
+        assert callable(handler)
+
+        # Verify function signature includes the path parameter
+        sig = inspect.signature(handler)
+        params = list(sig.parameters.keys())
+        assert "request" in params
+        assert "background_tasks" in params
+        assert "model_name" in params  # Path parameter should be in signature
+        assert "user" in params
+
+    def test_create_endpoint_with_multiple_path_params(self):
+        """Test creating endpoint with multiple path parameters."""
+        from codemie.enterprise.litellm.proxy_router import _create_proxy_endpoint
+        import inspect
+
+        # Test with multiple path parameters
+        endpoint = "/v1beta/models/{model_name}:streamGenerateContent"
+        handler = _create_proxy_endpoint(endpoint)
+
+        # Verify handler is a function
+        assert callable(handler)
+
+        # Verify function signature
+        sig = inspect.signature(handler)
+        params = list(sig.parameters.keys())
+        assert "model_name" in params
+
+
+class TestRegisterProxyEndpoints:
+    """Test register_proxy_endpoints function."""
+
+    def test_register_when_disabled(self):
+        """Test registration skipped when LiteLLM disabled."""
+        with patch("codemie.enterprise.litellm.proxy_router.is_litellm_enabled", return_value=False):
+            with patch("codemie.enterprise.litellm.proxy_router.proxy_router") as mock_router:
+                register_proxy_endpoints()
+
+                # Should not register any endpoints
+                mock_router.add_api_route.assert_not_called()
+
+    def test_register_when_enabled(self):
+        """Test registration when LiteLLM enabled."""
+        mock_endpoints = [
+            {"path": "/v1/chat/completions", "methods": ["POST"]},
+            {"path": "/v1/embeddings", "methods": ["POST"]},
+            {"path": "/v1/models", "methods": ["GET"]},
+        ]
+
+        with patch("codemie.enterprise.litellm.proxy_router.is_litellm_enabled", return_value=True):
+            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+                mock_config.LITE_LLM_PROXY_ENDPOINTS = mock_endpoints
+                with patch("codemie.enterprise.litellm.proxy_router.proxy_router") as mock_router:
+                    register_proxy_endpoints()
+
+                    # Should register all endpoints
+                    assert mock_router.add_api_route.call_count == 3
+
+    def test_register_with_invalid_config(self):
+        """Test registration with invalid endpoint config."""
+        mock_endpoints = [
+            {"path": "/v1/chat/completions", "methods": ["POST"]},
+            {"methods": ["POST"]},  # Missing path
+            "invalid",  # Not a dict
+        ]
+
+        with patch("codemie.enterprise.litellm.proxy_router.is_litellm_enabled", return_value=True):
+            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+                mock_config.LITE_LLM_PROXY_ENDPOINTS = mock_endpoints
+                with patch("codemie.enterprise.litellm.proxy_router.proxy_router") as mock_router:
+                    register_proxy_endpoints()
+
+                    # Should only register valid endpoint
+                    assert mock_router.add_api_route.call_count == 1
+
+    def test_register_with_error(self):
+        """Test registration handles errors gracefully."""
+        mock_endpoints = [
+            {"path": "/v1/chat/completions", "methods": ["POST"]},
+        ]
+
+        with patch("codemie.enterprise.litellm.proxy_router.is_litellm_enabled", return_value=True):
+            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+                mock_config.LITE_LLM_PROXY_ENDPOINTS = mock_endpoints
+                with patch("codemie.enterprise.litellm.proxy_router.proxy_router") as mock_router:
+                    mock_router.add_api_route.side_effect = Exception("Registration failed")
+
+                    # Should not raise exception
+                    register_proxy_endpoints()
+
+                    # Should have attempted registration
+                    mock_router.add_api_route.assert_called_once()
+
+
+class TestEmitProxyLlmErrorLog:
+    """Tests for _emit_proxy_llm_error_log."""
+
+    @pytest.fixture
+    def mock_user(self):
+        user = MagicMock()
+        user.id = "user-42"
+        user.username = "test_user"
+        return user
+
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    def test_429_maps_to_rate_limit_with_full_context(self, mock_send, mock_user):
+        _emit_proxy_llm_error_log(
+            response_status=429,
+            user=mock_user,
+            endpoint="/v1/chat",
+            llm_model="gpt-4",
+            session_id="sess-1",
+            request_id="req-1",
+        )
+
+        mock_send.assert_called_once()
+        attrs = mock_send.call_args[0][1]
+        assert attrs["llm_error_code"] == "llm_rate_limited"
+        assert attrs["llm_model"] == "gpt-4"
+        assert attrs["user_email"] == "test_user"
+        assert attrs["status_code"] == 429
+        assert attrs["endpoint"] == "/v1/chat"
+        assert attrs["session_id"] == "sess-1"
+        assert attrs["request_id"] == "req-1"
+
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    def test_500_maps_to_internal_error(self, mock_send, mock_user):
+        _emit_proxy_llm_error_log(response_status=500, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
+
+        attrs = mock_send.call_args[0][1]
+        assert attrs["llm_error_code"] == "llm_internal_error"
+
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    def test_502_maps_to_transitive_error(self, mock_send, mock_user):
+        _emit_proxy_llm_error_log(response_status=502, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
+
+        attrs = mock_send.call_args[0][1]
+        assert attrs["llm_error_code"] == "llm_transitive_error"
+
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    def test_503_maps_to_unavailable(self, mock_send, mock_user):
+        _emit_proxy_llm_error_log(response_status=503, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
+
+        attrs = mock_send.call_args[0][1]
+        assert attrs["llm_error_code"] == "llm_unavailable"
+
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    def test_unknown_status_maps_to_unknown(self, mock_send, mock_user):
+        _emit_proxy_llm_error_log(response_status=418, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
+
+        attrs = mock_send.call_args[0][1]
+        assert attrs["llm_error_code"] == "llm_unknown_error"
+
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    def test_metric_name_is_correct(self, mock_send, mock_user):
+        _emit_proxy_llm_error_log(response_status=500, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
+
+        assert mock_send.call_args[0][0] == "codemie_llm_error_total"
+
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    def test_includes_user_id(self, mock_send, mock_user):
+        _emit_proxy_llm_error_log(response_status=500, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
+
+        attrs = mock_send.call_args[0][1]
+        assert attrs["user_id"] == "user-42"
+
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric", side_effect=RuntimeError("fail"))
+    def test_swallows_send_exceptions(self, mock_send, mock_user):
+        # Should not raise
+        _emit_proxy_llm_error_log(response_status=500, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")

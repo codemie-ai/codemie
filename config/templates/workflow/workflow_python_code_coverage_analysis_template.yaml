@@ -1,0 +1,113 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+---
+name: Python Code Coverage Analysis Workflow
+description: |
+  Example of a workflow that automates the checks for repository's code coverage and Jira ticket creation.
+  It includes the following steps:
+  
+  Prerequisites:
+    Environment:
+      1. Docker container with Codemie development plugin to be running somewhere locally or within your infrastructure.
+      2. Docker container must contain properly configured environment to run tests for you application (python with specific version, etc).
+      3. Docker container requires to have SSH key to work with remote VCS (Do not store it in inside image, pass in runtime inside container).
+      4. Docker container must contain codebase source repository.
+
+    Create agents in CodeMie:
+      1. Coverage Agent:
+        a) Plugin tool enabled
+        b) Dummy System Instruction: "Instructions will be provided"
+      2. Jira Agent:
+        a) Generic Jira tool enabled
+        b) Dummy System Instruction: "Instructions will be provided"
+
+    Revise assistants[].system_prompt below:
+      1. System's prompt step 1: Replace only codebase path concatenation to PYTHONPATH with actual codebase path in your Docker container with Codemie development plugin.
+      2. System's prompt step 2: Replace 'python_version' to your codebase specific value (make sure it installed in Docker container environment).
+      3. System's prompt step 5: Adjust the file coverage percentage threshold to trigger Jira ticket creation (default: 70%).
+      4. System's prompt step 5: Replace parent Jira ID with yours where subtasks need to be created (default: EPMCDME-1324).
+      5. System's prompt step 5: Adjust the labels by which Agent will identify Jira tickets to process. They must uniquely filter unit tests Jira tickets (default: 'Internal', 'Unit-Tests', 'Nadiia').
+
+    Revise codebase repository:
+      1. Make sure that pytest and pytest-cov are added as dependencies.
+      2. Folder 'tests' exists in the root directory (with existing tests or empty).
+        
+    Create pair workflow (optional):
+    It would be beneficial for you to configure another workflow "Python Unit Tests Generation Workflow" from the template. 
+    It will enable automated implementation of Jira tickets by generating Unit Tests.
+mode: Sequential
+slug: template-phyton-code-coverage-analysis-workflow
+execution_config:
+  assistants:
+    - id: coverage_assistant  # ID of assistant inside this configuration
+      assistant_id: e3bb4613-d3ed-4391-8350-8702175b0e2e # CodeMie assistant ID
+      model: 'gpt-4.1' # LLM Model override
+      # Revise and adjust values specific for you project and environment. Use workflow description for help.
+      system_prompt: |
+        Assume the role of an expert on unit tests coverage analysis of software written in Python as a part of AI-empowered SDLC platform 'CodeMie'.
+
+        You MUST follow the next steps:
+        1. Run command "/codemie-plugins/ssh-wrapper.sh"
+        2. Run command "git config --global user.name "Auto AIAssistant" && git config --global user.email "Auto_AIAssistant@example.com""
+        3. Run command "git clean -f && git checkout ai-tests && git fetch origin && git reset --hard origin/ai-tests && git pull origin ai-tests"
+        4. Run command 'poetry config virtualenvs.create true'
+        5. Run command 'python_version="3.11.9" && pyenv prefix "$python_version" | xargs -I {} poetry env use {}/bin/python'
+        6. Run command 'poetry lock --no-update && poetry install --with dev'
+        7. Run tests suite with the command: 'poetry run pytest --cov=src tests'
+        8. Analyse command output and for each file check its coverage. For each file which coverage is less than 70% and file name not equal ('__init__.py') 
+        add to the json list 'files_to_cover'.
+        9. If no tests were run at all then add each file to the json list 'files_to_cover' with 0% coverage.
+
+        Constraints: 
+        1. Do not try to fix any issue you may face. Just leave it and stop execution.
+    - id: jira_assistant  # ID of assistant inside this configuration
+      assistant_id: f7efcf94-cc5a-48a5-8326-675a1564bacc # CodeMie assistant ID
+      model: 'gpt-4.1' # LLM Model override
+      # Revise and adjust values specific for you project and environment. Use workflow description for help.
+      system_prompt: |
+        Assume the role of a Jira expert as a part of AI-empowered SDLC platform 'CodeMie'.
+        Previous assistant returned to you a list in 'files_to_cover' field.
+
+        You MUST follow the next steps:
+        1. Read list in 'files_to_cover' field with files pathes and it's coverage percentage. 
+        2. For each file in 'files_to_cover' field create issue in Jira with the next attributes:
+        Parent issue of the created sub-tasks must be EPMCDME-1324. 
+          Jira Project - EPMCDME
+          Labels: 'Internal', 'Unit-Tests', 'Nadiia'
+          Issue type: Sub-task
+          Your Jira ticket should follow this format:
+            *Acceptance criteria:*
+            File {file_relative_path} has {file_coverage_percentage}. Improve coverage of file {file_relative_path}
+        3. You MUST insert instead of placeholder '{file_relative_path}' and '{file_coverage_percentage}' actual values.
+
+  states:
+    - id: coverage_assistant
+      assistant_id: coverage_assistant
+      task: "Run"
+      output_schema: |
+        {
+          "success": "Boolean true | false. If you generated detailed plan successfully return true, otherwise false",
+          "files_to_cover": [{"file_relative_path": Return file relative path, "file_coverage_percentage": Return file current coverage percentage}],
+        }
+      next:
+        condition:
+          expression: "success == True"
+          then: jira_assistant
+          otherwise: end
+    - id: jira_assistant
+      assistant_id: jira_assistant
+      task: "Run"
+      next:
+        state_id: end

@@ -1,0 +1,2293 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Analytics API router for dashboard metrics and reporting.
+
+This module provides REST API endpoints for querying analytics data with
+role-based access control and flexible filtering options.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+from collections.abc import Awaitable, Callable
+from datetime import datetime
+from functools import wraps
+from typing import Any, Literal
+
+from fastapi import APIRouter, Body, Depends, Query, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, field_validator
+
+from codemie.configs.config import config
+from codemie.core.exceptions import ExtendedHTTPException
+from codemie.rest_api.models.analytics import (
+    KeySpendingData,
+    KeySpendingItem,
+    KeySpendingResponse,
+    Metric,
+    ResponseMetadata,
+    SummariesResponse,
+    TabularResponse,
+    UsersListResponse,
+)
+from codemie.rest_api.security.authentication import authenticate
+from codemie.rest_api.security.user import User
+from codemie.service.analytics.analytics_service import AnalyticsService
+from codemie.service.analytics.queries.ai_adoption_framework.config import AIAdoptionConfig
+
+logger = logging.getLogger(__name__)
+
+# Query parameter descriptions
+PROJECTS_FILTER_ADMIN_DESC = "Filter by projects (comma-separated, admin only)"
+
+ERROR_MSG_PROJECT_EMPTY = "project field cannot be empty or whitespace-only"
+ERROR_MSG_ACCESS_DENIED = "Access denied"
+ERROR_MSG_ADMIN_HELP = "Contact your administrator to request access to this project."
+
+
+# Request models for AI Adoption Framework queries
+class AiAdoptionQueryRequest(BaseModel):
+    """Request model for AI adoption queries with optional custom configuration."""
+
+    projects: list[str] | None = None
+    config: dict | None = None  # Accept nested dict from frontend, convert to AIAdoptionConfig later
+
+
+class AiAdoptionTabularQueryRequest(BaseModel):
+    """Request model for AI adoption tabular queries with pagination and custom configuration."""
+
+    projects: list[str] | None = None
+    page: int = 0
+    per_page: int = 20
+    config: dict | None = None  # Accept nested dict from frontend, convert to AIAdoptionConfig later
+
+
+class UserEngagementUsersQueryRequest(BaseModel):
+    """Request model for user-level drill-down of User Engagement dimension.
+
+    Returns individual user details for a single project.
+    """
+
+    project: str  # Single project (required)
+    page: int = 0
+    per_page: int = 20
+
+    # Optional filters
+    user_type: Literal['power_user', 'engaged', 'occasional', 'new', 'inactive'] | None = None
+    activity_level: Literal['daily', 'weekly', 'monthly', 'inactive'] | None = None
+    multi_assistant_only: bool | None = None
+
+    # Sorting
+    sort_by: Literal['engagement_score', 'total_interactions', 'last_used', 'user_name'] = 'engagement_score'
+    sort_order: Literal['asc', 'desc'] = 'desc'
+
+    # Config override (reuse existing pattern)
+    config: dict | None = None
+
+    @field_validator('project')
+    @classmethod
+    def validate_project_not_empty(cls, v: str) -> str:
+        """Ensure project is not empty or whitespace-only."""
+        if not v or not v.strip():
+            raise RequestValidationError(
+                [
+                    {
+                        "loc": ["body", "project"],
+                        "msg": ERROR_MSG_PROJECT_EMPTY,
+                        "type": "value_error",
+                    }
+                ]
+            )
+        return v.strip()
+
+
+class AssistantReusabilityDetailRequest(BaseModel):
+    """Request model for assistant-level drill-down of Asset Reusability dimension.
+
+    Returns individual assistant details for a single project.
+    """
+
+    project: str  # Single project (required)
+    page: int = 0
+    per_page: int = 20
+
+    # Optional filters
+    status: Literal['active', 'inactive'] | None = None
+    adoption: Literal['team_adopted', 'single_user'] | None = None
+
+    # Sorting
+    sort_by: Literal['total_usage', 'unique_users', 'last_used', 'assistant_name', 'created_date'] = 'total_usage'
+    sort_order: Literal['asc', 'desc'] = 'desc'
+
+    # Config override (reuse existing pattern)
+    config: dict | None = None
+
+    @field_validator('project')
+    @classmethod
+    def validate_project_not_empty(cls, v: str) -> str:
+        """Ensure project is not empty or whitespace-only."""
+        if not v or not v.strip():
+            raise RequestValidationError(
+                [
+                    {
+                        "loc": ["body", "project"],
+                        "msg": ERROR_MSG_PROJECT_EMPTY,
+                        "type": "value_error",
+                    }
+                ]
+            )
+        return v.strip()
+
+
+class WorkflowReusabilityDetailRequest(BaseModel):
+    """Request model for workflow-level drill-down of Asset Reusability dimension.
+
+    Returns individual workflow details for a single project.
+    """
+
+    project: str  # Single project (required)
+    page: int = 0
+    per_page: int = 20
+
+    # Optional filters
+    status: Literal['active', 'inactive'] | None = None
+    reuse: Literal['multi_user', 'single_user'] | None = None
+
+    # Sorting
+    sort_by: Literal['execution_count', 'unique_users', 'last_executed', 'workflow_name', 'created_date'] = (
+        'execution_count'
+    )
+    sort_order: Literal['asc', 'desc'] = 'desc'
+
+    # Config override (reuse existing pattern)
+    config: dict | None = None
+
+    @field_validator('project')
+    @classmethod
+    def validate_project_not_empty(cls, v: str) -> str:
+        """Ensure project is not empty or whitespace-only."""
+        if not v or not v.strip():
+            raise RequestValidationError(
+                [
+                    {
+                        "loc": ["body", "project"],
+                        "msg": ERROR_MSG_PROJECT_EMPTY,
+                        "type": "value_error",
+                    }
+                ]
+            )
+        return v.strip()
+
+
+class DatasourceReusabilityDetailRequest(BaseModel):
+    """Request model for datasource-level drill-down of Asset Reusability dimension.
+
+    Returns individual datasource details for a single project.
+    """
+
+    project: str  # Single project (required)
+    page: int = 0
+    per_page: int = 20
+
+    # Optional filters
+    status: Literal['active', 'inactive'] | None = None
+    shared: Literal['shared', 'single'] | None = None
+    type: str | None = None  # datasource type (git, confluence, jira, etc)
+
+    # Sorting
+    sort_by: Literal['assistant_count', 'max_usage', 'last_indexed', 'datasource_name', 'created_date'] = (
+        'assistant_count'
+    )
+    sort_order: Literal['asc', 'desc'] = 'desc'
+
+    # Config override (reuse existing pattern)
+    config: dict | None = None
+
+    @field_validator('project')
+    @classmethod
+    def validate_project_not_empty(cls, v: str) -> str:
+        """Ensure project is not empty or whitespace-only."""
+        if not v or not v.strip():
+            raise RequestValidationError(
+                [
+                    {
+                        "loc": ["body", "project"],
+                        "msg": ERROR_MSG_PROJECT_EMPTY,
+                        "type": "value_error",
+                    }
+                ]
+            )
+        return v.strip()
+
+
+def _parse_config_from_request(config_dict: dict | None) -> AIAdoptionConfig | None:
+    """Parse config dict from request body into AIAdoptionConfig instance.
+
+    Frontend sends nested structure with value/description objects.
+    Backend needs flat Pydantic model.
+
+    Args:
+        config_dict: Nested dict from frontend or None
+
+    Returns:
+        AIAdoptionConfig instance or None
+    """
+    if config_dict is None:
+        return None
+
+    try:
+        return AIAdoptionConfig.from_dict(config_dict)
+    except Exception as e:
+        logger.warning(f"Could not parse config from request: {e}")
+        return None
+
+
+def _format_config_for_log(config: AIAdoptionConfig | None) -> str:
+    """Format config for logging (dump entire config as JSON).
+
+    Args:
+        config: Configuration object or None
+
+    Returns:
+        String representation of config for logging
+    """
+    if config is None:
+        return "None"
+
+    try:
+        # Convert Pydantic model to dict and then to JSON string (single line)
+        config_dict = config.model_dump() if hasattr(config, "model_dump") else config.dict()
+        return json.dumps(config_dict)
+    except Exception as e:
+        logger.warning(f"Could not serialize config for logging: {e}")
+        return f"<unparseable: {type(config).__name__}>"
+
+
+def handle_analytics_errors(endpoint_name: str) -> Callable:
+    """Decorator to handle common analytics endpoint errors.
+
+    Eliminates duplicate exception handling across all analytics endpoints.
+
+    Args:
+        endpoint_name: Human-readable name of the endpoint for error messages
+
+    Returns:
+        Decorator function that wraps the endpoint handler
+    """
+
+    def decorator(func: Callable[..., Awaitable[JSONResponse]]) -> Callable[..., Awaitable[JSONResponse]]:
+        @wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> JSONResponse:
+            # Extract user from kwargs for logging (injected by Depends(authenticate))
+            user = kwargs.get("user")
+            user_id = user.id if user else "unknown"
+
+            try:
+                return await func(*args, **kwargs)
+
+            except ExtendedHTTPException:
+                # Re-raise ExtendedHTTPException as-is (already has proper code, message, details)
+                # This allows repository and service layers to set specific error codes
+                raise
+
+            except ValueError as e:
+                logger.warning(f"Invalid parameters for {endpoint_name}: {str(e)}")
+                raise ExtendedHTTPException(
+                    code=status.HTTP_400_BAD_REQUEST,
+                    message="Invalid request parameters",
+                    details=str(e),
+                    help="Please check your time_period, start_date, end_date, or date range values.",
+                ) from e
+
+            except Exception as e:
+                logger.exception(f"Failed to get {endpoint_name} for user {user_id}: {str(e)}")
+                raise ExtendedHTTPException(
+                    code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    message=f"Failed to retrieve {endpoint_name}",
+                    details=f"An error occurred: {str(e)}",
+                    help="Please try again or contact support if the issue persists.",
+                ) from e
+
+        return wrapper
+
+    return decorator
+
+
+router = APIRouter(tags=["Dashboard Analytics"], prefix="/v1/analytics", dependencies=[Depends(authenticate)])
+
+
+# Constants for spending analytics
+_SPENDING_METRIC_DEFINITIONS = {
+    "current_spending": {
+        "label": "Current Spending ($)",
+        "description": "Total amount spent in current budget period",
+    },
+    "budget_limit": {
+        "label": "Budget Limit ($)",
+        "description": "Soft budget limit (warning threshold)",
+    },
+    "budget_reset_at": {
+        "label": "Budget Reset Date",
+        "description": "Timestamp when budget will reset",
+    },
+    "time_until_reset": {
+        "label": "Time Until Reset",
+        "description": "Time remaining until budget resets",
+    },
+}
+
+
+def _get_user_all_projects(user: User) -> list[str]:
+    """Get all projects user has access to (regular + admin).
+
+    Args:
+        user: Authenticated user object
+
+    Returns:
+        List of all project names user can access
+    """
+    return list(set(user.project_names) | set(user.admin_project_names))
+
+
+def _build_key_spending_metrics(keys_spending: list[dict]) -> list[KeySpendingItem]:
+    """Build spending metrics for virtual keys in same format as budget spending.
+
+    Args:
+        keys_spending: List of key spending data dictionaries
+
+    Returns:
+        List of KeySpendingItem one per key
+    """
+    result = []
+
+    for key_data in keys_spending:
+        budget_reset_at_raw = key_data.get("budget_reset_at")
+
+        key_metrics = [
+            _build_spending_metric(
+                "current_spending",
+                key_data.get("total_spend", 0.0),
+                "number",
+                "currency",
+            ),
+            _build_spending_metric(
+                "budget_limit",
+                key_data.get("max_budget"),
+                "number",
+                "currency",
+            ),
+            _build_spending_metric(
+                "budget_reset_at",
+                budget_reset_at_raw if budget_reset_at_raw else "N/A",
+                "date" if budget_reset_at_raw else "string",
+                "timestamp" if budget_reset_at_raw else None,
+            ),
+            _build_spending_metric(
+                "time_until_reset",
+                _calculate_time_until_reset(budget_reset_at_raw) if budget_reset_at_raw else "N/A",
+                "string",
+            ),
+        ]
+
+        metric_models = [Metric(**metric) for metric in key_metrics]
+
+        result.append(
+            KeySpendingItem(
+                key_identifier=key_data.get("key_alias", "Unknown Key"),
+                metrics=metric_models,
+            )
+        )
+
+    return result
+
+
+def _build_spending_metric(
+    metric_id: str, value: Any, value_type: str = "string", format_type: str | None = None
+) -> dict:
+    """Build a spending metric dictionary with consistent structure.
+
+    Args:
+        metric_id: Unique identifier for the metric
+        value: The metric value (can be number, string, date, or N/A)
+        value_type: Type of value (number, string, date)
+        format_type: Optional format hint (currency, timestamp)
+
+    Returns:
+        Metric dictionary with id, label, type, value, format, and description
+    """
+    definition = _SPENDING_METRIC_DEFINITIONS.get(metric_id, {})
+    metric = {
+        "id": metric_id,
+        "label": definition.get("label", metric_id),
+        "type": value_type,
+        "value": value,
+        "description": definition.get("description", ""),
+    }
+
+    if format_type:
+        metric["format"] = format_type
+
+    return metric
+
+
+def _build_spending_metrics(spending_data: dict | None, user_id: str) -> list[dict]:
+    """Build spending metrics list based on available data.
+
+    Args:
+        spending_data: Dictionary with spending information or None if service unavailable
+
+    Returns:
+        List of metric dictionaries
+    """
+    if not spending_data:
+        logger.info(f"Budget tracking not available for user {user_id}")
+        return [
+            _build_spending_metric("current_spending", 0.0, "number", "currency"),
+            _build_spending_metric("budget_limit", "N/A", "string"),
+            _build_spending_metric("budget_reset_at", "N/A", "string"),
+            _build_spending_metric("time_until_reset", "N/A", "string"),
+        ]
+
+    current_spending = spending_data.get("total_spend", 0.0)
+    budget_limit = spending_data.get("max_budget")
+
+    # Handle empty/None fields - show "N/A" instead
+    budget_reset_at_raw = spending_data.get("budget_reset_at")
+    budget_reset_at = budget_reset_at_raw if budget_reset_at_raw else "N/A"
+
+    time_until_reset = _calculate_time_until_reset(budget_reset_at_raw) if budget_reset_at_raw else "N/A"
+
+    logger.info(
+        f"Spending analytics retrieved for user {user_id}: "
+        f"spend=${current_spending:.2f}, budget={budget_limit}, time_until_reset={time_until_reset}"
+    )
+
+    # Adjust metric type/format based on whether value is N/A
+    return [
+        _build_spending_metric("current_spending", current_spending, "number", "currency"),
+        _build_spending_metric("budget_limit", budget_limit, "number", "currency"),
+        _build_spending_metric(
+            "budget_reset_at",
+            budget_reset_at,
+            "date" if budget_reset_at_raw else "string",
+            "timestamp" if budget_reset_at_raw else None,
+        ),
+        _build_spending_metric("time_until_reset", time_until_reset, "string"),
+    ]
+
+
+def _calculate_time_until_reset(budget_reset_at: str | None) -> str | None:
+    """Calculate time until budget reset.
+
+    Args:
+        budget_reset_at: ISO 8601 timestamp of budget reset
+
+    Returns:
+        Time until reset formatted as "X days Y hours Zmins", or None if timestamp is invalid
+    """
+    if not budget_reset_at:
+        return None
+
+    try:
+        from datetime import timezone
+
+        reset_date = datetime.fromisoformat(budget_reset_at.replace('Z', '+00:00'))
+        now = datetime.now(timezone.utc)
+        delta = reset_date - now
+
+        # Don't return negative time
+        if delta.total_seconds() < 0:
+            return "0 days 0 hours 0 mins"
+
+        # Calculate days, hours, and minutes
+        total_seconds = int(delta.total_seconds())
+        days = total_seconds // 86400  # 86400 seconds in a day
+        remaining_seconds = total_seconds % 86400
+        hours = remaining_seconds // 3600  # 3600 seconds in an hour
+        minutes = (remaining_seconds % 3600) // 60
+
+        return f"{days} days {hours} hours {minutes} mins"
+    except (ValueError, AttributeError) as e:
+        logger.warning(f"Failed to parse budget_reset_at: {budget_reset_at}, error: {e}")
+        return None
+
+
+def _create_response(data: dict, model_class) -> JSONResponse:
+    """Helper to create JSON response with cache headers."""
+    validated = model_class(**data)
+    response_dict = validated.model_dump(by_alias=True)
+    response = JSONResponse(content=response_dict, status_code=status.HTTP_200_OK)
+    response.headers["Cache-Control"] = "public, max-age=300"
+    response.headers["ETag"] = hashlib.md5(json.dumps(response_dict, sort_keys=True).encode()).hexdigest()
+    return response
+
+
+@router.get(
+    "/summaries",
+    status_code=status.HTTP_200_OK,
+    response_model=SummariesResponse,
+    response_model_by_alias=True,
+    summary="Get summary metrics",
+    description="Retrieve total input/output tokens, cached tokens, and money spent across all usage types",
+)
+@handle_analytics_errors("analytics summaries")
+async def get_summaries(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(
+        None,
+        description=(
+            "Predefined time range (last_hour, last_6_hours, last_24_hours, "
+            "last_7_days, last_30_days, last_60_days, last_year)"
+        ),
+        examples=["last_30_days"],
+    ),
+    start_date: datetime | None = Query(
+        None,
+        description="Custom range start (ISO 8601 format). Use with end_date instead of time_period.",
+        examples=["2025-11-01T00:00:00Z"],
+    ),
+    end_date: datetime | None = Query(
+        None,
+        description="Custom range end (ISO 8601 format). Use with start_date instead of time_period.",
+        examples=["2025-12-01T00:00:00Z"],
+    ),
+    users: str | None = Query(
+        None, description="Filter by users (comma-separated user IDs)", examples=["user1@example.com,user2@example.com"]
+    ),
+    projects: str | None = Query(
+        None, description="Filter by projects (comma-separated project names)", examples=["codemie,project-alpha"]
+    ),
+) -> JSONResponse:
+    """Get summary metrics: total input/output tokens, cached tokens, money spent.
+
+    This endpoint provides aggregated metrics across all usage types (conversations, datasources, workflows).
+    Users can only see data for projects they have access to.
+
+    **Access Control:**
+    - Plain users: See data for projects in their `applications` list
+    - Project admins: See data for projects in `applications` + `applications_admin` lists
+
+    **Time Filtering:**
+    - Use `time_period` for predefined ranges (e.g., "last_30_days")
+    - OR use `start_date` + `end_date` for custom ranges
+    - If neither provided, defaults to last 30 days
+
+    **Additional Filters:**
+    - `users`: Filter by specific user IDs (must be within accessible projects)
+    - `projects`: Filter by specific projects (must be within user's accessible projects)
+
+    **Response:**
+    - Returns 11 metrics including 4 spending metrics:
+      - platform_cost: LLM costs from web platform (conversations + workflows, excluding CLI)
+      - cli_cost: CLI-specific spending
+      - embedding_cost: Embedding model usage costs
+      - total_money_spent: Total spending across all categories
+    - Also includes token counts and usage statistics
+    - Includes metadata: timestamp, data_as_of, filters_applied, execution_time_ms
+
+    **Caching:**
+    - Response includes Cache-Control and ETag headers (5-minute TTL)
+    """
+    logger.info(
+        f"User {user.id} requesting summaries. "
+        f"Period={time_period}, StartDate={start_date}, EndDate={end_date}, "
+        f"Users={users}, Projects={projects}"
+    )
+
+    service = AnalyticsService(user)
+    response_data = await service.get_summaries(
+        time_period=time_period,
+        start_date=start_date,
+        end_date=end_date,
+        users=[u.strip() for u in users.split(",")] if users else None,
+        projects=[p.strip() for p in projects.split(",")] if projects else None,
+    )
+
+    return _create_response(response_data, SummariesResponse)
+
+
+# Additional endpoints for comprehensive analytics
+
+
+@router.get(
+    "/assistants-chats", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("assistants chats analytics")
+async def get_assistants_chats(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get assistants chats analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_assistants_chats(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get("/workflows", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True)
+@handle_analytics_errors("workflows analytics")
+async def get_workflows(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get workflows analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_workflows(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/tools-usage", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("tools usage analytics")
+async def get_tools_usage(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get tools usage analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_tools_usage(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/agents-usage", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("agents usage analytics")
+async def get_agents_usage(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get agents usage analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_agents_usage(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/webhooks-invocation", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("webhooks invocation analytics")
+async def get_webhooks_invocation(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get webhooks invocation analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_webhooks_invocation(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/mcp-servers", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("MCP servers analytics")
+async def get_mcp_servers(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get MCP servers analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_mcp_servers(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/mcp-servers-by-users",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+)
+@handle_analytics_errors("MCP servers by users analytics")
+async def get_mcp_servers_by_users(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get MCP servers by users analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_mcp_servers_by_users(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/projects-spending", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("projects spending analytics")
+async def get_projects_spending(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get projects spending analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_projects_spending(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get("/llms-usage", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True)
+@handle_analytics_errors("LLMs usage analytics")
+async def get_llms_usage(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get LLMs usage analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_llms_usage(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/embeddings-usage", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("embeddings usage analytics")
+async def get_embeddings_usage(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get embedding model usage analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_embeddings_usage(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/users-spending", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("users spending analytics")
+async def get_users_spending(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get users spending analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_users_spending(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/budget-soft-limit", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("budget soft limit analytics")
+async def get_budget_soft_limit(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get budget soft limit analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_budget_soft_limit(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/budget-hard-limit", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("budget hard limit analytics")
+async def get_budget_hard_limit(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get budget hard limit analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_budget_hard_limit(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/users-activity", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("users activity analytics")
+async def get_users_activity(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get users activity analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_users_activity(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/users-unique-daily", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("unique daily users analytics")
+async def get_users_unique_daily(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None, description="Predefined time range (e.g., 'last_30_days')"),
+    start_date: datetime | None = Query(None, description="Custom range start date"),
+    end_date: datetime | None = Query(None, description="Custom range end date"),
+    users: str | None = Query(None, description="Comma-separated user IDs to filter by"),
+    projects: str | None = Query(None, description="Comma-separated project names to filter by"),
+) -> JSONResponse:
+    """Get unique users per day analytics.
+
+    Returns time-series data showing the number of unique active users for each day,
+    based on conversation_assistant_usage metric. The endpoint aggregates user activity
+    by calendar day (UTC timezone) and counts distinct users for each day.
+
+    **IMPORTANT: All timestamps are in UTC timezone.** Input dates (start_date/end_date) must be
+    UTC-aware or will be treated as UTC. Output dates are formatted in UTC timezone (YYYY-MM-DD).
+
+    **Note:** This endpoint returns all date records without pagination (up to 10,000 days).
+
+    Access Control:
+    - Admin users can see data for all projects in their applications and applications_admin lists
+    - Non-admin users can only see data for projects in their applications list
+
+    Query Parameters:
+    - time_period: Use predefined ranges like 'last_7_days', 'last_30_days', or 'last_90_days'
+    - start_date/end_date: Specify custom date range in UTC (overrides time_period if provided)
+    - users: Filter results to specific users (comma-separated user IDs)
+    - projects: Filter results to specific projects (comma-separated project names)
+
+    Response Format:
+    - Returns TabularResponse with columns: date (YYYY-MM-DD in UTC), unique_users (count)
+    - Includes metadata: timestamp, data_as_of, filters_applied, execution_time_ms
+    - All date records are returned in a single response
+    """
+    service = AnalyticsService(user)
+    data = await service.get_users_unique_daily(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/users",
+    status_code=status.HTTP_200_OK,
+    response_model=UsersListResponse,
+    response_model_by_alias=True,
+    summary="Get unique users list",
+    description="Retrieve list of unique users with activity in the specified time range",
+)
+@handle_analytics_errors("users list")
+async def get_users_list(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(
+        None,
+        description=(
+            "Predefined time range (last_hour, last_6_hours, last_24_hours, "
+            "last_7_days, last_30_days, last_60_days, last_year)"
+        ),
+        examples=["last_30_days"],
+    ),
+    start_date: datetime | None = Query(
+        None,
+        description="Custom range start (ISO 8601 format). Use with end_date instead of time_period.",
+        examples=["2025-11-01T00:00:00Z"],
+    ),
+    end_date: datetime | None = Query(
+        None,
+        description="Custom range end (ISO 8601 format). Use with start_date instead of time_period.",
+        examples=["2025-12-01T00:00:00Z"],
+    ),
+    users: str | None = Query(
+        None, description="Filter by users (comma-separated user IDs)", examples=["user1@example.com,user2@example.com"]
+    ),
+    projects: str | None = Query(
+        None, description="Filter by projects (comma-separated project names)", examples=["codemie,project-alpha"]
+    ),
+) -> JSONResponse:
+    """Get list of unique users from metrics logs.
+
+    Returns unique users with activity in the specified time range,
+    respecting access control (admin sees all users from admin projects,
+    plain user sees only themselves).
+
+    **Access Control:**
+    - Plain users: See only themselves
+    - Project admins: See all users from projects they administer
+
+    **Time Filtering:**
+    - Use `time_period` for predefined ranges (e.g., "last_30_days")
+    - OR use `start_date` + `end_date` for custom ranges
+    - If neither provided, defaults to last 30 days
+
+    **Additional Filters:**
+    - `users`: Filter by specific user IDs (within access control)
+    - `projects`: Filter by specific projects (within access control)
+
+    **Response:**
+    - Returns list of users with id and name
+    - Includes total_count
+    - Includes metadata: timestamp, data_as_of, filters_applied, execution_time_ms
+
+    **Caching:**
+    - Response includes Cache-Control and ETag headers (5-minute TTL)
+    """
+    logger.info(
+        f"User {user.id} requesting users list. "
+        f"Period={time_period}, StartDate={start_date}, EndDate={end_date}, "
+        f"Users={users}, Projects={projects}"
+    )
+
+    service = AnalyticsService(user)
+    response_data = await service.get_users_list(
+        time_period=time_period,
+        start_date=start_date,
+        end_date=end_date,
+        users=[u.strip() for u in users.split(",")] if users else None,
+        projects=[p.strip() for p in projects.split(",")] if projects else None,
+    )
+
+    return _create_response(response_data, UsersListResponse)
+
+
+@router.get(
+    "/projects-activity", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("projects activity analytics")
+async def get_projects_activity(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get projects activity analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_projects_activity(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/projects-unique-daily",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+)
+@handle_analytics_errors("unique daily projects analytics")
+async def get_projects_unique_daily(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None, description="Predefined time range (e.g., 'last_30_days')"),
+    start_date: datetime | None = Query(None, description="Custom range start date"),
+    end_date: datetime | None = Query(None, description="Custom range end date"),
+    users: str | None = Query(None, description="Comma-separated user IDs to filter by"),
+    projects: str | None = Query(None, description="Comma-separated project names to filter by"),
+) -> JSONResponse:
+    """Get unique projects per day analytics.
+
+    Returns time-series data showing the number of unique active projects for each day,
+    based on conversation_assistant_usage metric. The endpoint aggregates project activity
+    by calendar day (UTC timezone) and counts distinct projects for each day.
+
+    **IMPORTANT: All timestamps are in UTC timezone.** Input dates (start_date/end_date) must be
+    UTC-aware or will be treated as UTC. Output dates are formatted in UTC timezone (YYYY-MM-DD).
+
+    **Note:** This endpoint returns all date records without pagination (up to 10,000 days).
+
+    Access Control:
+    - Admin users can see data for all projects in their applications and applications_admin lists
+    - Non-admin users can only see data for projects in their applications list
+
+    Query Parameters:
+    - time_period: Use predefined ranges like 'last_7_days', 'last_30_days', or 'last_90_days'
+    - start_date/end_date: Specify custom date range in UTC (overrides time_period if provided)
+    - users: Filter results to specific users (comma-separated user IDs)
+    - projects: Filter results to specific projects (comma-separated project names)
+
+    Response Format:
+    - Returns TabularResponse with columns: date (YYYY-MM-DD in UTC), unique_projects (count)
+    - Includes metadata: timestamp, data_as_of, filters_applied, execution_time_ms
+    - All date records are returned in a single response
+    """
+    # Validate time parameters
+    if start_date and end_date and start_date > end_date:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="start_date must be before or equal to end_date"
+        )
+
+    service = AnalyticsService(user)
+    data = await service.get_projects_unique_daily(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/cli-summary", status_code=status.HTTP_200_OK, response_model=SummariesResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("CLI summary analytics")
+async def get_cli_summary(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+) -> JSONResponse:
+    """Get CLI summary analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_cli_summary(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+    )
+    return _create_response(data, SummariesResponse)
+
+
+@router.get("/cli-agents", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True)
+@handle_analytics_errors("CLI agents analytics")
+async def get_cli_agents(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get CLI agents analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_cli_agents(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get("/cli-llms", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True)
+@handle_analytics_errors("CLI LLMs analytics")
+async def get_cli_llms(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get CLI LLMs analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_cli_llms(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get("/cli-users", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True)
+@handle_analytics_errors("CLI users analytics")
+async def get_cli_users(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get CLI users analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_cli_users(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get("/cli-errors", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True)
+@handle_analytics_errors("CLI errors analytics")
+async def get_cli_errors(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get CLI errors analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_cli_errors(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/cli-repositories", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("CLI repositories analytics")
+async def get_cli_repositories(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get CLI repositories analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_cli_repositories(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/cli-top-performers", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("CLI top performers analytics")
+async def get_cli_top_performers(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get CLI top performers ranked by total lines added."""
+    service = AnalyticsService(user)
+    data = await service.get_cli_top_performers(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/cli-top-versions", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("CLI top versions analytics")
+async def get_cli_top_versions(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get CLI top versions ranked by usage count."""
+    service = AnalyticsService(user)
+    data = await service.get_cli_top_versions(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/cli-top-proxy-endpoints",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+)
+@handle_analytics_errors("CLI top proxy endpoints analytics")
+async def get_cli_top_proxy_endpoints(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get CLI top proxy endpoints ranked by request count."""
+    service = AnalyticsService(user)
+    data = await service.get_cli_top_proxy_endpoints(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/cli-tools",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+)
+@handle_analytics_errors("CLI tools usage analytics")
+async def get_cli_tools_usage(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get CLI tool usage analytics showing which tools are used most frequently."""
+    service = AnalyticsService(user)
+    data = await service.get_cli_tools_usage(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.post(
+    "/ai-adoption-overview",
+    status_code=status.HTTP_200_OK,
+    response_model=SummariesResponse,
+    response_model_by_alias=True,
+    summary="Get AI adoption overview metrics for dashboard (with custom config)",
+    description=(
+        "Get aggregate counts: Projects, Users, Assistants, Workflows, Datasources "
+        "with optional custom configuration"
+    ),
+)
+@handle_analytics_errors("AI adoption overview metrics")
+async def post_ai_adoption_overview(
+    request: AiAdoptionQueryRequest = Body(...),
+    user: User = Depends(authenticate),
+) -> JSONResponse:
+    """Get overview metrics for dashboard widgets with custom configuration.
+
+    Returns aggregate counts across all accessible projects for the 5 main dashboard widgets.
+
+    **Metrics:**
+    - Total Projects: Number of projects being tracked (respects minimum_users_threshold from config)
+    - Total Users: Total unique users across all filtered projects
+    - Total Assistants: Total assistants created in filtered projects
+    - Total Workflows: Total workflows created in filtered projects
+    - Total Datasources: Total datasources configured in filtered projects
+
+    **Access Control:**
+    - Admin: See data for all projects or filtered projects
+    - Non-Admin: See data for projects in their applications list
+
+    **Request Body:**
+    - projects: Optional list of project names to filter
+    - config: Optional custom AIAdoptionConfig (weights, thresholds, scoring rules)
+
+    **Response:**
+    - Returns SummariesResponse with 5 metrics
+    - Includes metadata: timestamp, data_as_of, filters_applied, execution_time_ms
+    - If config is provided, calculations use custom parameters (especially minimum_users_threshold)
+    - If config is null/omitted, uses default configuration
+
+    **Caching:**
+    - Response includes Cache-Control and ETag headers (5-minute TTL)
+    """
+    # Parse config from nested dict structure to AIAdoptionConfig
+    parsed_config = _parse_config_from_request(request.config)
+    config_summary = _format_config_for_log(parsed_config)
+    logger.info(f"User {user.id} requesting overview metrics. Projects={request.projects}, Config={config_summary}")
+
+    service = AnalyticsService(user)
+    response_data = await service.get_ai_adoption_overview(
+        projects=request.projects,
+        config=parsed_config,
+    )
+
+    return _create_response(response_data, SummariesResponse)
+
+
+@router.post(
+    "/ai-adoption-maturity",
+    status_code=status.HTTP_200_OK,
+    response_model=SummariesResponse,
+    response_model_by_alias=True,
+    summary="Get AI Adoption Maturity (with custom config)",
+    description="Aggregated composite scores with optional custom configuration",
+)
+@handle_analytics_errors("AI adoption maturity")
+async def post_ai_adoption_maturity(
+    request: AiAdoptionQueryRequest = Body(...),
+    user: User = Depends(authenticate),
+) -> JSONResponse:
+    """Get AI Maturity Overview with custom configuration.
+
+    Same as GET /ai-adoption-maturity but accepts custom configuration in request body.
+    This allows real-time calculations with user-defined weights and thresholds.
+
+    **Request Body:**
+    - projects: Optional list of project names to filter
+    - config: Optional custom AIAdoptionConfig (weights, thresholds, scoring rules)
+
+    **Returns:**
+    - Same response as GET endpoint: SummariesResponse with 6 metrics
+    - If config is provided, calculations use custom parameters
+    - If config is null/omitted, uses default configuration
+    """
+    # Parse config from nested dict structure to AIAdoptionConfig
+    parsed_config = _parse_config_from_request(request.config)
+    config_summary = _format_config_for_log(parsed_config)
+    logger.info(f"User {user.id} requesting AI maturity. Projects={request.projects}, Config={config_summary}")
+
+    service = AnalyticsService(user)
+    response_data = await service.get_ai_adoption_maturity(
+        projects=request.projects,
+        config=parsed_config,
+    )
+
+    return _create_response(response_data, SummariesResponse)
+
+
+@router.get(
+    "/ai-adoption-config",
+    status_code=status.HTTP_200_OK,
+    summary="Get AI Adoption Framework Configuration",
+    description="Framework weights, thresholds, and scoring parameters",
+)
+@handle_analytics_errors("AI adoption config")
+async def get_ai_adoption_config(
+    user: User = Depends(authenticate),
+) -> JSONResponse:
+    """Get AI Adoption Framework configuration parameters.
+
+    Returns all weights, thresholds, and scoring rules used in the adoption framework.
+    No access control - configuration is public information.
+
+    **Returns:**
+    - data: Nested configuration organized by dimension (D1-D4)
+    - metadata: Timestamp and version information
+
+    **Configuration includes:**
+
+    **AI Maturity:**
+    - Activation threshold
+    - Maturity level thresholds (L2, L3)
+    - Dimension weights (D1: 30%, D2: 30%, D3: 20%, D4: 20%)
+
+    **D1: Daily Active Users:**
+    - Component weights (activation, MAU, multi-assistant)
+    - Activity window parameters
+
+    **D2: Reusability:**
+    - Component weights (team adoption, workflow reuse, datasource reuse)
+    - Activation thresholds
+
+    **D3: AI Champions:**
+    - Component weights (concentration, non-champion activity, creator diversity)
+    - Concentration thresholds and scores
+    - Non-champion activity multipliers
+
+    **D4: AI Capabilities:**
+    - Component weights (workflow count, complexity, conversation depth)
+    - Complexity levels (simple, basic, advanced, complex)
+    - Workflow count thresholds
+
+    **Use Cases:**
+    - Understanding score calculations
+    - Validating scoring logic
+    - Building UI explanations
+    - Debugging score discrepancies
+    """
+    logger.info(f"User {user.id} requesting AI adoption framework configuration")
+
+    service = AnalyticsService(user)
+    response_data = await service.get_ai_adoption_config()
+
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content=response_data,
+    )
+
+
+@router.post(
+    "/ai-adoption-user-engagement",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get AI Adoption User Engagement Metrics (with custom config)",
+    description="Project-level User Engagement metrics with optional custom configuration",
+)
+@handle_analytics_errors("AI adoption user engagement metrics")
+async def post_ai_adoption_user_engagement(
+    request: AiAdoptionTabularQueryRequest = Body(...),
+    user: User = Depends(authenticate),
+) -> JSONResponse:
+    """Get User Engagement metrics with custom configuration.
+
+    Same as GET endpoint but accepts custom configuration in request body.
+    """
+    # Parse config from nested dict structure to AIAdoptionConfig
+    parsed_config = _parse_config_from_request(request.config)
+    config_summary = _format_config_for_log(parsed_config)
+    logger.info(
+        f"User {user.id} requesting User Engagement. "
+        f"Projects={request.projects}, Page={request.page}, Config={config_summary}"
+    )
+
+    service = AnalyticsService(user)
+    response_data = await service.get_ai_adoption_user_engagement(
+        projects=request.projects,
+        page=request.page,
+        per_page=request.per_page,
+        config=parsed_config,
+    )
+
+    return _create_response(response_data, TabularResponse)
+
+
+@router.post(
+    "/ai-adoption-user-engagement/users",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,  # Reuse existing response model
+    response_model_by_alias=True,
+    summary="Get User Engagement User-Level Drill-Down",
+    description="Individual user statistics for a single project in the User Engagement dimension",
+)
+@handle_analytics_errors("AI adoption user engagement drill-down")
+async def post_ai_adoption_user_engagement_users(
+    request: UserEngagementUsersQueryRequest = Body(...),
+    user: User = Depends(authenticate),
+) -> JSONResponse:
+    """Get user-level drill-down for User Engagement dimension.
+
+    Returns detailed statistics for individual users within a specific project:
+    - User activity classifications (power user, engaged, occasional, etc.)
+    - Engagement scores and interaction counts
+    - Multi-assistant usage patterns
+    - Recency metrics (daily/weekly/monthly active status)
+
+    **Required:**
+    - `project`: Single project identifier (user must have access)
+
+    **Optional Filters:**
+    - `user_type`: Filter by user classification
+    - `activity_level`: Filter by activity recency
+    - `multi_assistant_only`: Filter for multi-assistant users
+
+    **Sorting:**
+    - `sort_by`: Column to sort by (default: engagement_score)
+    - `sort_order`: Sort direction (default: desc)
+
+    **Access Control:**
+    - Users can only drill down into projects they have access to
+    - Admins can access all projects
+
+    **Example Request:**
+    ```json
+    {
+      "project": "demo",
+      "page": 0,
+      "per_page": 20,
+      "user_type": "power_user",
+      "sort_by": "engagement_score"
+    }
+    ```
+    """
+    # Validate user has access to project
+    if not user.is_admin:
+        # Get user's accessible projects
+        accessible_projects = set(user.project_names or []) | set(user.admin_project_names or [])
+        if request.project not in accessible_projects:
+            raise ExtendedHTTPException(
+                code=status.HTTP_403_FORBIDDEN,
+                message=ERROR_MSG_ACCESS_DENIED,
+                details=f"You do not have access to project '{request.project}'",
+                help=ERROR_MSG_ADMIN_HELP,
+            )
+
+    # Parse optional config (reuse existing pattern)
+    parsed_config = _parse_config_from_request(request.config)
+    config_summary = _format_config_for_log(parsed_config)
+
+    logger.info(
+        f"User {user.id} requesting User Engagement drill-down. "
+        f"Project={request.project}, Page={request.page}, "
+        f"Filters=(type={request.user_type}, activity={request.activity_level}, "
+        f"multi_assistant={request.multi_assistant_only}), "
+        f"Sort={request.sort_by}:{request.sort_order}, Config={config_summary}"
+    )
+
+    # Call service layer
+    service = AnalyticsService(user)
+    response_data = await service.get_user_engagement_users(
+        project=request.project,
+        page=request.page,
+        per_page=request.per_page,
+        user_type=request.user_type,
+        activity_level=request.activity_level,
+        multi_assistant_only=request.multi_assistant_only,
+        sort_by=request.sort_by,
+        sort_order=request.sort_order,
+        config=parsed_config,
+    )
+
+    return _create_response(response_data, TabularResponse)
+
+
+@router.post(
+    "/ai-adoption-asset-reusability/assistants",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get Asset Reusability Assistant-Level Drill-Down",
+    description="Individual assistant statistics for a single project in the Asset Reusability dimension",
+)
+@handle_analytics_errors("AI adoption assistant reusability drill-down")
+async def post_ai_adoption_assistant_reusability_detail(
+    request: AssistantReusabilityDetailRequest = Body(...),
+    user: User = Depends(authenticate),
+) -> JSONResponse:
+    """Get assistant-level drill-down for Asset Reusability dimension.
+
+    Returns detailed statistics for individual assistants within a specific project:
+    - Usage metrics (total usage, unique users)
+    - Status (active/inactive based on activation threshold)
+    - Adoption (team-adopted/single-user based on team threshold)
+    - Feature configuration (datasources, toolkits, MCP servers)
+    - Complexity classification (simple/basic/advanced/complex)
+    - Creator information
+
+    **Required:**
+    - `project`: Single project identifier (user must have access)
+
+    **Optional Filters:**
+    - `status`: Filter by active/inactive status
+    - `adoption`: Filter by team-adopted/single-user
+
+    **Sorting:**
+    - `sort_by`: Column to sort by (default: total_usage)
+    - `sort_order`: Sort direction (default: desc)
+
+    **Access Control:**
+    - Users can only drill down into projects they have access to
+    - Admins can access all projects
+
+    **Example Request:**
+    ```json
+    {
+      "project": "demo",
+      "page": 0,
+      "per_page": 20,
+      "status": "inactive",
+      "sort_by": "last_used"
+    }
+    ```
+    """
+    # Validate user has access to project
+    if not user.is_admin:
+        accessible_projects = set(user.project_names or []) | set(user.admin_project_names or [])
+        if request.project not in accessible_projects:
+            raise ExtendedHTTPException(
+                code=status.HTTP_403_FORBIDDEN,
+                message=ERROR_MSG_ACCESS_DENIED,
+                details=f"You do not have access to project '{request.project}'",
+                help=ERROR_MSG_ADMIN_HELP,
+            )
+
+    # Parse optional config
+    parsed_config = _parse_config_from_request(request.config)
+    config_summary = _format_config_for_log(parsed_config)
+
+    logger.info(
+        f"User {user.id} requesting Assistant Reusability drill-down. "
+        f"Project={request.project}, Page={request.page}, "
+        f"Filters=(status={request.status}, adoption={request.adoption}), "
+        f"Sort={request.sort_by}:{request.sort_order}, Config={config_summary}"
+    )
+
+    # Call service layer
+    service = AnalyticsService(user)
+    response_data = await service.get_assistant_reusability_detail(
+        project=request.project,
+        page=request.page,
+        per_page=request.per_page,
+        status=request.status,
+        adoption=request.adoption,
+        sort_by=request.sort_by,
+        sort_order=request.sort_order,
+        config=parsed_config,
+    )
+
+    return _create_response(response_data, TabularResponse)
+
+
+@router.post(
+    "/ai-adoption-asset-reusability/workflows",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get Asset Reusability Workflow-Level Drill-Down",
+    description="Individual workflow statistics for a single project in the Asset Reusability dimension",
+)
+@handle_analytics_errors("AI adoption workflow reusability drill-down")
+async def post_ai_adoption_workflow_reusability_detail(
+    request: WorkflowReusabilityDetailRequest = Body(...),
+    user: User = Depends(authenticate),
+) -> JSONResponse:
+    """Get workflow-level drill-down for Asset Reusability dimension.
+
+    Returns detailed statistics for individual workflows within a specific project:
+    - Execution metrics (execution count, unique users)
+    - Status (active/inactive based on execution threshold)
+    - Reuse (multi-user/single-user based on user threshold)
+    - Component counts (states, tools, custom nodes)
+    - Creator information
+
+    **Required:**
+    - `project`: Single project identifier (user must have access)
+
+    **Optional Filters:**
+    - `status`: Filter by active/inactive status
+    - `reuse`: Filter by multi-user/single-user
+
+    **Sorting:**
+    - `sort_by`: Column to sort by (default: execution_count)
+    - `sort_order`: Sort direction (default: desc)
+
+    **Access Control:**
+    - Users can only drill down into projects they have access to
+    - Admins can access all projects
+
+    **Example Request:**
+    ```json
+    {
+      "project": "demo",
+      "page": 0,
+      "per_page": 20,
+      "status": "inactive",
+      "sort_by": "last_executed"
+    }
+    ```
+    """
+    # Validate user has access to project
+    if not user.is_admin:
+        accessible_projects = set(user.project_names or []) | set(user.admin_project_names or [])
+        if request.project not in accessible_projects:
+            raise ExtendedHTTPException(
+                code=status.HTTP_403_FORBIDDEN,
+                message=ERROR_MSG_ACCESS_DENIED,
+                details=f"You do not have access to project '{request.project}'",
+                help=ERROR_MSG_ADMIN_HELP,
+            )
+
+    # Parse optional config
+    parsed_config = _parse_config_from_request(request.config)
+    config_summary = _format_config_for_log(parsed_config)
+
+    logger.info(
+        f"User {user.id} requesting Workflow Reusability drill-down. "
+        f"Project={request.project}, Page={request.page}, "
+        f"Filters=(status={request.status}, reuse={request.reuse}), "
+        f"Sort={request.sort_by}:{request.sort_order}, Config={config_summary}"
+    )
+
+    # Call service layer
+    service = AnalyticsService(user)
+    response_data = await service.get_workflow_reusability_detail(
+        project=request.project,
+        page=request.page,
+        per_page=request.per_page,
+        status=request.status,
+        reuse=request.reuse,
+        sort_by=request.sort_by,
+        sort_order=request.sort_order,
+        config=parsed_config,
+    )
+
+    return _create_response(response_data, TabularResponse)
+
+
+@router.post(
+    "/ai-adoption-asset-reusability/datasources",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get Asset Reusability Datasource-Level Drill-Down",
+    description="Individual datasource statistics for a single project in the Asset Reusability dimension",
+)
+@handle_analytics_errors("AI adoption datasource reusability drill-down")
+async def post_ai_adoption_datasource_reusability_detail(
+    request: DatasourceReusabilityDetailRequest = Body(...),
+    user: User = Depends(authenticate),
+) -> JSONResponse:
+    """Get datasource-level drill-down for Asset Reusability dimension.
+
+    Returns detailed statistics for individual datasources within a specific project:
+    - Usage metrics (assistant count, max usage)
+    - Status (active/inactive based on usage threshold)
+    - Sharing (shared/single based on assistant count)
+    - Type classification (git, confluence, jira, etc)
+    - Last indexed date
+    - Creator information
+
+    **Required:**
+    - `project`: Single project identifier (user must have access)
+
+    **Optional Filters:**
+    - `status`: Filter by active/inactive status
+    - `shared`: Filter by shared/single
+    - `type`: Filter by datasource type
+
+    **Sorting:**
+    - `sort_by`: Column to sort by (default: assistant_count)
+    - `sort_order`: Sort direction (default: desc)
+
+    **Access Control:**
+    - Users can only drill down into projects they have access to
+    - Admins can access all projects
+
+    **Example Request:**
+    ```json
+    {
+      "project": "demo",
+      "page": 0,
+      "per_page": 20,
+      "status": "inactive",
+      "sort_by": "last_indexed"
+    }
+    ```
+    """
+    # Validate user has access to project
+    if not user.is_admin:
+        accessible_projects = set(user.project_names or []) | set(user.admin_project_names or [])
+        if request.project not in accessible_projects:
+            raise ExtendedHTTPException(
+                code=status.HTTP_403_FORBIDDEN,
+                message=ERROR_MSG_ACCESS_DENIED,
+                details=f"You do not have access to project '{request.project}'",
+                help=ERROR_MSG_ADMIN_HELP,
+            )
+
+    # Parse optional config
+    parsed_config = _parse_config_from_request(request.config)
+    config_summary = _format_config_for_log(parsed_config)
+
+    logger.info(
+        f"User {user.id} requesting Datasource Reusability drill-down. "
+        f"Project={request.project}, Page={request.page}, "
+        f"Filters=(status={request.status}, shared={request.shared}, "
+        f"type={request.type}), "
+        f"Sort={request.sort_by}:{request.sort_order}, Config={config_summary}"
+    )
+
+    # Call service layer
+    service = AnalyticsService(user)
+    response_data = await service.get_datasource_reusability_detail(
+        project=request.project,
+        page=request.page,
+        per_page=request.per_page,
+        status=request.status,
+        shared=request.shared,
+        type=request.type,
+        sort_by=request.sort_by,
+        sort_order=request.sort_order,
+        config=parsed_config,
+    )
+
+    return _create_response(response_data, TabularResponse)
+
+
+@router.post(
+    "/ai-adoption-asset-reusability",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get AI Adoption Asset Reusability Metrics (with custom config)",
+    description="Project-level Asset Reusability metrics with optional custom configuration",
+)
+@handle_analytics_errors("AI adoption asset reusability metrics")
+async def post_ai_adoption_asset_reusability(
+    request: AiAdoptionTabularQueryRequest = Body(...),
+    user: User = Depends(authenticate),
+) -> JSONResponse:
+    """Get Asset Reusability metrics with custom configuration.
+
+    Same as GET endpoint but accepts custom configuration in request body.
+    """
+    # Parse config from nested dict structure to AIAdoptionConfig
+    parsed_config = _parse_config_from_request(request.config)
+    config_summary = _format_config_for_log(parsed_config)
+    logger.info(
+        f"User {user.id} requesting Asset Reusability. "
+        f"Projects={request.projects}, Page={request.page}, Config={config_summary}"
+    )
+
+    service = AnalyticsService(user)
+    response_data = await service.get_ai_adoption_asset_reusability(
+        projects=request.projects,
+        page=request.page,
+        per_page=request.per_page,
+        config=parsed_config,
+    )
+
+    return _create_response(response_data, TabularResponse)
+
+
+@router.post(
+    "/ai-adoption-expertise-distribution",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get AI Adoption Expertise Distribution Metrics (with custom config)",
+    description="Project-level Expertise Distribution metrics with optional custom configuration",
+)
+@handle_analytics_errors("AI adoption expertise distribution metrics")
+async def post_ai_adoption_expertise_distribution(
+    request: AiAdoptionTabularQueryRequest = Body(...),
+    user: User = Depends(authenticate),
+) -> JSONResponse:
+    """Get Expertise Distribution metrics with custom configuration.
+
+    Same as GET endpoint but accepts custom configuration in request body.
+    """
+    # Parse config from nested dict structure to AIAdoptionConfig
+    parsed_config = _parse_config_from_request(request.config)
+    config_summary = _format_config_for_log(parsed_config)
+    logger.info(
+        f"User {user.id} requesting Expertise Distribution. "
+        f"Projects={request.projects}, Page={request.page}, Config={config_summary}"
+    )
+
+    service = AnalyticsService(user)
+    response_data = await service.get_ai_adoption_expertise_distribution(
+        projects=request.projects,
+        page=request.page,
+        per_page=request.per_page,
+        config=parsed_config,
+    )
+
+    return _create_response(response_data, TabularResponse)
+
+
+@router.post(
+    "/ai-adoption-feature-adoption",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get AI Adoption Feature Adoption Metrics (with custom config)",
+    description="Project-level Feature Adoption metrics with optional custom configuration",
+)
+@handle_analytics_errors("AI adoption feature adoption metrics")
+async def post_ai_adoption_feature_adoption(
+    request: AiAdoptionTabularQueryRequest = Body(...),
+    user: User = Depends(authenticate),
+) -> JSONResponse:
+    """Get Feature Adoption metrics with custom configuration.
+
+    Same as GET endpoint but accepts custom configuration in request body.
+    """
+    # Parse config from nested dict structure to AIAdoptionConfig
+    parsed_config = _parse_config_from_request(request.config)
+    config_summary = _format_config_for_log(parsed_config)
+    logger.info(
+        f"User {user.id} requesting Feature Adoption. "
+        f"Projects={request.projects}, Page={request.page}, Config={config_summary}"
+    )
+
+    service = AnalyticsService(user)
+    response_data = await service.get_ai_adoption_feature_adoption(
+        projects=request.projects,
+        page=request.page,
+        per_page=request.per_page,
+        config=parsed_config,
+    )
+
+    return _create_response(response_data, TabularResponse)
+
+
+@router.get(
+    "/spending",
+    status_code=status.HTTP_200_OK,
+    response_model=SummariesResponse,
+    response_model_by_alias=True,
+    summary="Get user spending and budget information",
+    description="Retrieve current spending, budget limits, and reset period for the authenticated user",
+)
+@handle_analytics_errors("user spending analytics")
+async def get_user_spending(
+    user: User = Depends(authenticate),
+) -> JSONResponse:
+    """Get spending analytics for the authenticated user.
+
+    This endpoint retrieves spending information from LiteLLM for budget tracking.
+    Returns current spending, budget limits, and time until reset.
+
+    **Access Control:**
+    - Users can only see their own spending data
+
+    **Response:**
+    - current_spending: Current amount spent in USD
+    - budget_limit: Soft budget limit (warning threshold)
+    - hard_budget_limit: Hard budget limit (blocking threshold)
+    - budget_reset_at: ISO 8601 timestamp of next reset
+    - time_until_reset: Formatted time until budget resets (e.g., "5 days 4 hours 31mins")
+
+    **Error Handling:**
+    - Gracefully handles API failures with clear messages
+    """
+    from datetime import timezone
+    from codemie.enterprise.litellm.dependencies import get_customer_spending
+
+    start_time = datetime.now(timezone.utc)
+    logger.info(f"User {user.id} requesting spending analytics")
+
+    # Get spending data from LiteLLM
+    try:
+        spending_data = await asyncio.to_thread(get_customer_spending, user.username, True)
+    except Exception as e:
+        logger.error(f"Backend error fetching spending for user {user.id}: {e}")
+        raise ExtendedHTTPException(
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            message="Unable to retrieve spending information at this time.",
+            help="A temporary issue occurred. Please try again later",
+        ) from e
+
+    metrics = _build_spending_metrics(spending_data, user.username)
+
+    response_data = {
+        "data": {"metrics": metrics},
+        "metadata": {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data_as_of": datetime.now(timezone.utc).isoformat(),
+            "filters_applied": {},
+            "execution_time_ms": (datetime.now(timezone.utc) - start_time).total_seconds() * 1000,
+        },
+    }
+
+    return _create_response(response_data, SummariesResponse)
+
+
+@router.get(
+    "/key_spending",
+    status_code=status.HTTP_200_OK,
+    response_model=KeySpendingResponse,
+    response_model_by_alias=True,
+    summary="Get user virtual key spending information",
+    description="Retrieve current spending for virtual keys for the authenticated user",
+)
+@handle_analytics_errors("user spending analytics")
+async def get_user_key_spending(
+    user: User = Depends(authenticate),
+) -> KeySpendingResponse:
+    """Get spending analytics for the authenticated user.
+
+    This endpoint retrieves virtual key spending information from LiteLLM for budget tracking.
+    Returns current virtual key spending, budget limits, and time until reset.
+
+    **Access Control:**
+    - Users can only see their own spending data
+
+    **Response:**
+    - current_spending: Current amount spent in USD
+    - budget_limit: Soft budget limit (warning threshold)
+    - hard_budget_limit: Hard budget limit (blocking threshold)
+    - budget_reset_at: ISO 8601 timestamp of next reset
+    - time_until_reset: Formatted time until budget resets (e.g., "5 days 4 hours 31mins")
+
+    **Error Handling:**
+    - Gracefully handles API failures with clear messages
+    """
+    from datetime import timezone
+    from codemie.enterprise.litellm.dependencies import get_user_keys_spending
+
+    start_time = datetime.now(timezone.utc)
+    logger.info(f"User {user.id} requesting key spending analytics")
+
+    # Get all projects for virtual keys query
+    all_projects = _get_user_all_projects(user)
+
+    # Execute both API calls in parallel for optimal performance
+    try:
+        keys_spending_data = await asyncio.to_thread(get_user_keys_spending, user.id, all_projects, True)
+    except Exception as e:
+        logger.error(f"Backend error fetching spending data for user {user.id}: {e}")
+        raise ExtendedHTTPException(
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            message="Unable to retrieve spending information at this time.",
+            help="A temporary issue occurred. Please try again later",
+        ) from e
+
+    user_keys_items = _build_key_spending_metrics(keys_spending_data.user_keys)
+    project_keys_items = _build_key_spending_metrics(keys_spending_data.project_keys)
+
+    return KeySpendingResponse(
+        data=KeySpendingData(
+            user_keys=user_keys_items,
+            project_keys=project_keys_items,
+        ),
+        metadata=ResponseMetadata(
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            data_as_of=datetime.now(timezone.utc).isoformat(),
+            filters_applied={},
+            execution_time_ms=(datetime.now(timezone.utc) - start_time).total_seconds() * 1000,
+        ),
+    )

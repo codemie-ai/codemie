@@ -1,0 +1,116 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from pydantic import BaseModel, Field, computed_field
+
+from codemie.core.constants import Environment, DEMO_PROJECT
+from codemie.core.models import UserEntity
+from codemie.configs import config
+
+DEMO_USER_ROLE = "demo_user"
+
+USER_ID_HEADER = "user-id"
+AUTHORIZATION_HEADER = "Authorization"
+
+
+class User(BaseModel):
+    """User model for authentication context
+
+    This model is populated from:
+    - IDP JWT claims when ENABLE_USER_MANAGEMENT=False
+    - Database tables when ENABLE_USER_MANAGEMENT=True
+    """
+
+    id: str
+    username: str = ""
+    name: str = ""
+    email: str = ""  # Added for local auth and profile management (EPMCDME-10160)
+    roles: list = Field(default_factory=list)
+    project_names: list[str] = Field(default_factory=lambda: ['demo'])
+    admin_project_names: list[str] = Field(default_factory=list)
+    picture: str = ""
+    knowledge_bases: list = Field(default_factory=list)
+    user_type: str | None = 'regular'
+    is_super_admin: bool = Field(default=False, exclude=True)  # Used when flag ON (EPMCDME-10160)
+    project_limit: int | None = Field(default=None)  # NULL = unlimited (super admins); set from DB when flag ON
+    auth_token: str | None = Field(None, exclude=True)
+
+    @computed_field
+    @property
+    def applications(self) -> list[str]:
+        return self.project_names
+
+    @computed_field
+    @property
+    def applications_admin(self) -> list[str]:
+        return self.admin_project_names
+
+    @property
+    def full_name(self):
+        return self.username or self.name or self.id
+
+    @property
+    def is_admin(self) -> bool:
+        """Check if user has admin privileges
+
+        Behavior depends on feature flag and environment (EPMCDME-10160):
+        - ENV=local: Always True (dev override)
+        - ENABLE_USER_MANAGEMENT=False: Legacy IDP role-based
+        - ENABLE_USER_MANAGEMENT=True: Database is_super_admin
+
+        Returns:
+            bool: True if user is admin
+        """
+        # Local dev environment override (always admin)
+        if Environment.LOCAL.value == config.ENV:
+            return True
+
+        # Flag OFF: use legacy behavior (IDP roles)
+        if not config.ENABLE_USER_MANAGEMENT:
+            if config.ADMIN_USER_ID and self.id == config.ADMIN_USER_ID:
+                return True
+            return config.ADMIN_ROLE_NAME in self.roles
+
+        # Flag ON: use database is_super_admin
+        return self.is_super_admin
+
+    @property
+    def is_applications_admin(self) -> bool:
+        return len(self.admin_project_names) > 0 or self.is_admin
+
+    def is_application_admin(self, app_name: str) -> bool:
+        return app_name in self.admin_project_names
+
+    @property
+    def is_demo_user(self) -> bool:
+        return DEMO_USER_ROLE in self.roles
+
+    @property
+    def is_external_user(self) -> bool:
+        """Check if user is external (temporary marketplace user)"""
+        return self.user_type == config.EXTERNAL_USER_TYPE
+
+    @property
+    def current_project(self) -> str:
+        apps = self.project_names if self.project_names else [DEMO_PROJECT]
+        return apps[0]
+
+    def has_access_to_application(self, app_name: str) -> bool:
+        return self.is_admin or (app_name in self.project_names) or self.is_application_admin(app_name)
+
+    def has_access_to_kb(self, name: str) -> bool:
+        return self.is_admin or (name in self.knowledge_bases)
+
+    def as_user_model(self) -> UserEntity:
+        return UserEntity(user_id=self.id, name=self.name, username=self.username)

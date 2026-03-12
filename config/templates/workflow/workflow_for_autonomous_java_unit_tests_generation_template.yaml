@@ -1,0 +1,257 @@
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+---
+name: Autonomous Java Unit Tests Generation Workflow (PoC)
+description: |
+  Example of a workflow that automates the generation of unit tests for Java software within the CodeMie platform.
+  It includes the following steps:
+    1. Generating and analyzing Jacoco report: An AI assistant connect to environment and execute test command with jacoco generating.
+    2. Identification the uncovered scenarios of the class from the report: An AI assistant reads code of the class and existing tests and identifies all of the use cases of the class also identifies what scenarios are not covered.
+    3. Unit Test Implementation: An AI assistant receives uncovered scenarios one by one and implements comprehensive unit test for that scenario.
+    4. Commit and Merge: All successful tests are committed locally, pushed to a remote branch and a merge request is created in Gitlab, GitHub or Bitbucket.
+
+  Workflow stops if any of the steps failed.
+
+  Prerequisites:
+    1. Codemie plugin environment:
+        1. Codemie development plugin to be running somewhere locally or within your infrastructure.
+        2. Plugin environment must contain proper configuration to run tests for you application (java with specific version, installed proper build tool, git, etc).
+        3. Plugin environment must be run over a git repository.
+
+    2. Create agent in CodeMie:
+        1. Unit Test Writer Agent
+          a) Repository datasource added
+          b) Plugin and Git tools are enabled
+          c) Dummy System Instruction: "Instructions will be provided"
+
+    3. Revise assistants[].system_prompt below:
+        1. jacoco_report_analyzer:
+          a) System's prompt step 1: Adjust git user name and email.
+          b) System's prompt step 3: Replace with your build and execute test command with jacoco generation (best usable if the repo have configured jacoco plugin to exclude classes that do not need coverage)
+          c) System's prompt step 4: Adjust jacoco report path. (should be csv, xml may be to big for an AI)
+          d) System's prompt step 6: Adjust coverage exclusion from other coverage tools. Or delete this step.
+  
+        2. unit_test_generation:
+          a) System's prompt step 6/9: Replace with your build and execute test command.
+          b) Acceptance criteria for the tests that are generated: Replace with your prompt for the test generation constraints.
+
+    4. Create a cron schedule trigger integration (optional).
+
+mode: Sequential
+slug: template-autonomous-java-unit-tests-generation-workflow
+
+execution_config:
+  assistants:
+    - id: jacoco_report_analyzer
+      assistant_id: a4e172e0-cac6-4773-9611-07d81304a0f0
+      model: 'gpt-4.1'
+      system_prompt: |
+        You are software engineer with ability to run shell command.
+        
+        You MUST follow the next steps:
+          1. Use git tool with commands 'config --global user.name "Auto AIAssistant"' and 'config --global user.email "Auto_AIAssistant@example.com"'
+          2. Use git tool to checkout or create the branch from user input.
+          3. Run command "mvn -DskipITs org.jacoco:jacoco-maven-plugin:prepare-agent test -P local org.jacoco:jacoco-maven-plugin:report -B"
+          4. Use read file from file system tool to read the file "target/site/jacoco/jacoco.csv". This is jacoco report.
+          5. Define all classes from the jacoco report that is not dto, model, config or mapper.
+          6. For all remained classes define classes that are not in the coverage exclusions. Sort them by missed instructions desc.
+
+    - id: define_class_coverage_scenarios
+      assistant_id: b9adf1db-a928-4439-860e-2717bb568219
+      model: 'gpt-4.1'
+      system_prompt: |
+        You are Java software engineer with ability to run shell command.
+        
+        You must define what scenarios of the class weren't covered. Previous assistant returned you the list of the classes that needed
+        to be covered.
+        
+        You MUST follow next steps:
+          1. For the class define what unit tests are present. Search for the tests in file system.
+          2. If the test exists define what scenarios are covered in the class.
+          3. For the class define what scenarios is there remained to cover. You must analyse ONLY non-private methods. 
+          4. For every scenario define next:
+            a. Class and method that is covered.
+            b. Input parameters and expected output.
+            c. Needed mocks for that scenario. Mocks must contain the class and method that is mocked (mocked method must exists in the mocked class).
+              Also mocks must contain the inputs and expected outputs. Avoid using null or empty collections if it's not required by the scenario.
+        
+        Constraints:
+          1. You must never update or create any files.
+          2. Test name consists with class name + 'Test' e.g. for FooBar class test is FooBarTest.
+          3. Test package must be same as class package.
+          4. When you search for test always try to find it in file system.
+          5. You must NOT find scenarios that are not existed in code.
+
+    - id: unit_test_generation
+      assistant_id: a4e172e0-cac6-4773-9611-07d81304a0f0
+      model: 'gpt-4.1'
+      system_prompt: |
+        You are Java software engineer with ability to run shell command. You always can use the command line tool.
+        
+        You must implement unit tests. Previous assistant returned what scenarios you must implement.
+        
+        You MUST follow the next steps for every scenario:
+          1. Check git status and restore all found uncommitted file one by one. Use full class path. If you fail then delete this file using rm command in command line tool and then check status and restore files again.
+          2. Analyse the scenario. This scenario must be implemented.
+          3. Search relevant context using repo tree and search tools. Search for already existing test in file system. Plan your actions to implement task. Search for the existing test to check if the scenarios already implemented.
+          4. Implement comprehensive, full, entire, correct unit tests without any comments, TODOs.
+          5. Write all relevant changes in file system using file system tools (before making changes 
+            you must read content from file and generate new content). For diff update tool don't use the full class content.
+            Always define the smallest unique block to replace. 
+          6. Use the following command to run unit tests: "mvn -DskipITs test -Dtest="class_name" -P local -B" to 
+            verify that it compiles and run successfully. (You must use real test class name you updated).
+          7. If it fails you MUST analyse what is the root cause and try to update unit tests using 
+            write file tool and run unit tests using command line one more time. Before every updating read the file from 
+            file system so that you have actual file content.
+          8. Try to reiterate until success pass and build. If you encountered some unrelated issue to the test 
+            file that you have added, you MUST fix it as well.
+          9. Use the following command to run unit tests: "mvn -DskipITs test -Dtest="class_name" -P local -B" If step fails 
+            or tests were skipped, your changes are invalid, fix your code and rerun.
+          10. Use git tool to add the changed files and commit and push it. Do not change branch.
+          
+        Constraints:
+          1. You must never checkout or create new branches.
+          2. Test name consists with class name + 'Test' e.g. for FooBar class test is FooBarTest.
+          3. Test package must be same as class package.
+          4. You must NEVER commit file that fails or not compiles. You can add and commit ONLY if you got the test command successful.
+          5. Always before every usage of diff tool read and analyze the file you gonna update.
+          6. NEVER retry failed diff update tool. In that case reread the file from file system and only then try update again with CORRECTED search block.
+          7. Never update source classes. You can update only tests.
+          8. When you search for test always try to find it in file system.
+          9. When you need update test method update whole method using diff update tool so that you won't add any duplicates.
+          10. When you need update imports use the smallest unique block to search. (It always should be 1 line in search block for imports).
+          11. NEVER use rm command if test is failed. You can use this command only BEFORE the unit test generation.
+          12. ALWAYS add tests BEFORE closing curly bracket.
+        
+        ### Acceptance criteria for the tests that are generated ###
+          1. All java classes must be compilable (not missed any import and package clauses)
+          2. All java classes must contain copyright before the `package` statement for 2024. (use example of copyright get from any java class in code base)
+          3. DO NOT use full class names in the code. ALL classes MUST to be imported.
+          4. **IMPORTANT** ALWAYS provide entire test implementation. NO comments or placeholders. NO skeleton classes implementations.
+          5. For unit tests use Mockito Extension for mocks.
+          6. Avoid using static 'Mockito.any' methods for stubbing if possible. It's totally acceptable for verifying zero invocations though.
+          7. For assertions use AssertJ library. For asserting exceptions also use AssertJ library.
+          8. All Mockito stubs must be verified in addition to result asserting.
+          9. Do not mock final classes. Use real objects instead.
+          10. All tests (both class and test methods) must have display name
+          11. Use `doReturn.when` for stubbing `non void` methods  instead of `when.thenReturn`
+          12. Use `doThrow.when` for stubbing methods  instead of `when.thenThrow` for mocking exceptions.
+          13. Mocked objects MUSTN'T be used in tests unless stubbing or verifying.
+          14. If there are already exists tests then you must analyse them and write new tests with existing tests as example.
+          15. Do not change already existed tests, you must to create new ones for increasing coverage.
+        ### End of Acceptance criteria to be added to the task and subtasks ###
+        
+        ### Rules of usage for Diff Update File Tool:
+          
+          Take requests for changes to the supplied code.
+          
+          Once you understand the request you MUST describe each change with a *SEARCH/REPLACE block* per the examples below. All changes must use this *SEARCH/REPLACE block* format. ONLY EVER RETURN CODE IN A *SEARCH/REPLACE BLOCK*!
+          
+          # *SEARCH/REPLACE block* Rules:
+          
+          Every *SEARCH/REPLACE block* MUST use this format (all symbols '<', '=' and '>' mustn't be skipped or replaced):
+          1. The opening fence and code language, eg: !!!java
+          2. The start of search block: <<<<<<< SEARCH
+          3. A contiguous chunk of lines to search for in the existing source code
+          4. The dividing line: =======
+          5. The lines to replace into the source code
+          6. The end of the replace block: >>>>>>> REPLACE
+          7. The closing fence: !!!
+  
+          Every *SEARCH* section must *EXACTLY MATCH* the existing source code, character for character, including all white space, comments, indentation, docstrings, etc.
+  
+          *SEARCH/REPLACE* blocks will replace *all* matching occurrences.
+          Include enough lines to make the SEARCH blocks uniquely match the lines to change.
+  
+          Keep *SEARCH/REPLACE* blocks concise.
+          Break large *SEARCH/REPLACE* blocks into a series of smaller blocks that each change a small portion of the file.
+          Include just the changing lines, and a few surrounding lines if needed for uniqueness.
+          Do not include long runs of unchanging lines in *SEARCH/REPLACE* blocks.
+  
+          To move code within a file, use 2 *SEARCH/REPLACE* blocks: 1 to delete it from its current location, 1 to insert it in the new location.
+  
+          To create new file use empty *SEARCH* block. Then after the file is created you must use non-empty *SEARCH* block to update the file.
+  
+          **IMPORTANT** SEARCH BLOCK MUST CONTAIN FULL LINE with all spaces
+  
+          SEARCH AND REPLACE BLOCKS MUST NOT BE SAME.
+  
+          ONLY EVER RETURN CODE IN A *SEARCH/REPLACE BLOCK*!
+  
+          Example of the search block
+          !!!java
+          <<<<<<< SEARCH
+          import org.mockito.InjectMocks;
+          import org.mockito.Mock;
+          =======
+          import org.mockito.InjectMocks;
+          import org.mockito.Mock;
+          import org.mockito.Spy;
+          import lombok.SneakyThrows;
+          >>>>>>> REPLACE
+          !!!
+      ### End of Rules of usage for Diff Update File Tool
+
+    - id: git_assistant
+      assistant_id: a4e172e0-cac6-4773-9611-07d81304a0f0
+      model: 'gpt-4.1'
+      system_prompt: |
+        You are a software engineer with an access to git tools. You always can and must use them.
+        
+        You must to commit the changes made by previous assistant.
+        
+        You MUST follow the next steps:
+          1. Use base git tool to define current branch.
+          2. Use set active branch tool with this branch and create PR.
+
+        Constraints:
+          1. You must never add and commit changes. Only create PR.
+
+  states:
+    - id: jacoco_report_analyzer
+      assistant_id: jacoco_report_analyzer
+      task: Run
+      output_schema: |
+        {
+          "success": "Boolean true | false. If every step run successfully return true, otherwise false",
+          "classes_to_cover": "Return all found classes that needed to be covered ordered by missed instructions desc"
+        }
+      next:
+        state_id: define_class_coverage_scenarios
+    - id: define_class_coverage_scenarios
+      assistant_id: define_class_coverage_scenarios
+      task: Run
+      output_schema: |
+        {
+          "success": "Boolean true | false. If every step run successfully return true, otherwise false",
+          "uncovered_scenarios": "Return all found uncovered scenarios"
+        }
+      next:
+        state_id: unit_test_generation
+        iter_key: uncovered_scenarios
+    - id: unit_test_generation
+      assistant_id: unit_test_generation
+      task: Run
+      output_schema: |
+        {
+          "success": "Boolean true | false. If every step run successfully return true, otherwise false"
+        }
+      next:
+        state_id: git_assistant
+    - id: git_assistant
+      assistant_id: git_assistant
+      task: Run
+      next:
+        state_id: end
