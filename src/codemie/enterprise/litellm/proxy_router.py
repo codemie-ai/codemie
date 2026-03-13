@@ -414,24 +414,61 @@ async def _streaming_response_with_usage_tracking(
     """
     buffer = bytearray()
     stream_completed = False
+    chunks_received = 0
+    total_bytes = 0
+
+    session_id = request_info.get(SESSION_ID)
+    request_id = request_info.get(REQUEST_ID)
+
+    logger.debug(
+        f"[STREAM-START] Usage tracking: session={session_id}, request={request_id}, "
+        f"endpoint={endpoint}, model={llm_model}, status={downstream_response.status_code}"
+    )
 
     try:
         async for chunk in downstream_response.aiter_raw():
+            chunks_received += 1
+            total_bytes += len(chunk)
             buffer.extend(chunk)
+            logger.debug(
+                f"[STREAM-CHUNK] session={session_id}, request={request_id}, chunk_size={len(chunk)}, "
+                f"total_bytes={total_bytes}, chunk_num={chunks_received}"
+            )
             yield chunk
         stream_completed = True
+        logger.debug(
+            f"[STREAM-COMPLETED] session={session_id}, request={request_id}, "
+            f"total_chunks={chunks_received}, total_bytes={total_bytes}"
+        )
     except Exception as e:
-        logger.warning(f"LLM proxy stream interrupted: {e}, endpoint={endpoint}, model={llm_model}")
+        logger.error(
+            f"[STREAM-ERROR] Usage tracking interrupted: session={session_id}, request={request_id}, "
+            f"endpoint={endpoint}, model={llm_model}, chunks={chunks_received}, bytes={total_bytes}, "
+            f"exception={type(e).__name__}, error={str(e)}",
+            exc_info=True,
+        )
         # Return without re-raising so the generator closes cleanly.
         # The partial buffer is discarded; usage is not tracked for incomplete streams.
         return
     finally:
-        await downstream_response.aclose()
+        try:
+            await downstream_response.aclose()
+            logger.debug(f"[STREAM-CLOSED] session={session_id}, request={request_id}, completed={stream_completed}")
+        except Exception as close_err:
+            logger.warning(
+                f"[STREAM-CLOSE-ERROR] Failed to close downstream: session={session_id}, "
+                f"request={request_id}, error={str(close_err)}"
+            )
 
     # Track usage only when the full stream was received without errors
     if stream_completed and config.LLM_PROXY_TRACK_USAGE:
         content_type = downstream_response.headers.get("content-type", "")
         is_streaming = "text/event-stream" in content_type or "stream" in content_type
+
+        logger.debug(
+            f"[USAGE-PARSE-START] session={session_id}, request={request_id}, "
+            f"content_type={content_type}, is_streaming={is_streaming}, buffer_size={len(buffer)}"
+        )
 
         # Parse usage (calls pure enterprise logic via thin wrapper)
         usage_data = await _parse_usage_with_cost(
@@ -440,8 +477,15 @@ async def _streaming_response_with_usage_tracking(
             is_streaming=is_streaming,
         )
 
+        logger.debug(
+            f"[USAGE-PARSE-RESULT] session={session_id}, request={request_id}, "
+            f"input={usage_data['input_tokens']}, output={usage_data['output_tokens']}, "
+            f"cached={usage_data['cached_tokens']}, cost=${usage_data['money_spent']:.6f}"
+        )
+
         # Track usage if valid
         if usage_data["input_tokens"] > 0 or usage_data["output_tokens"] > 0:
+            logger.debug(f"[USAGE-TRACK] session={session_id}, request={request_id}, queuing task")
             background_tasks.add_task(
                 LLMProxyMonitoringService.track_usage,
                 user=user,
@@ -456,9 +500,11 @@ async def _streaming_response_with_usage_tracking(
                 cached_tokens_money_spent=usage_data["cached_tokens_money_spent"],
                 status_code=downstream_response.status_code,
             )
+        else:
+            logger.debug(f"[USAGE-SKIP] session={session_id}, request={request_id}, no tokens")
 
 
-async def _passthrough_stream(downstream_response: httpx.Response):
+async def _passthrough_stream(downstream_response: httpx.Response, request_info: dict | None = None):
     """
     Forward raw downstream bytes to the client with safe error handling.
 
@@ -469,17 +515,53 @@ async def _passthrough_stream(downstream_response: httpx.Response):
 
     Args:
         downstream_response: Open httpx streaming response
+        request_info: Optional request metadata for logging
 
     Yields:
         bytes: Raw response chunks
     """
+    if request_info is None:
+        request_info = {}
+
+    session_id = request_info.get(SESSION_ID, "unknown")
+    request_id = request_info.get(REQUEST_ID, "unknown")
+    chunks_received = 0
+    total_bytes = 0
+
+    logger.debug(
+        f"[STREAM-START] Passthrough: session={session_id}, request={request_id}, "
+        f"status={downstream_response.status_code}"
+    )
+
     try:
         async for chunk in downstream_response.aiter_raw():
+            chunks_received += 1
+            total_bytes += len(chunk)
+            logger.debug(
+                f"[STREAM-CHUNK] Passthrough: session={session_id}, request={request_id}, "
+                f"chunk_size={len(chunk)}, total_bytes={total_bytes}, chunk_num={chunks_received}"
+            )
             yield chunk
+        logger.debug(
+            f"[STREAM-COMPLETED] Passthrough: session={session_id}, request={request_id}, "
+            f"total_chunks={chunks_received}, total_bytes={total_bytes}"
+        )
     except Exception as e:
-        logger.warning(f"LLM proxy passthrough stream interrupted: {e}")
+        logger.error(
+            f"[STREAM-ERROR] Passthrough interrupted: session={session_id}, request={request_id}, "
+            f"chunks={chunks_received}, bytes={total_bytes}, "
+            f"exception={type(e).__name__}, error={str(e)}",
+            exc_info=True,
+        )
     finally:
-        await downstream_response.aclose()
+        try:
+            await downstream_response.aclose()
+            logger.debug(f"[STREAM-CLOSED] Passthrough: session={session_id}, request={request_id}")
+        except Exception as close_err:
+            logger.warning(
+                f"[STREAM-CLOSE-ERROR] Passthrough close failed: session={session_id}, "
+                f"request={request_id}, error={str(close_err)}"
+            )
 
 
 async def _proxy_to_llm_proxy(
@@ -555,12 +637,22 @@ async def _proxy_to_llm_proxy(
             content=body_stream,
             timeout=config.LLM_PROXY_TIMEOUT,
         )
+
+        logger.debug(
+            f"[REQUEST-SENT] session={session_id}, request={request_id}, method={request.method}, "
+            f"endpoint={endpoint}, timeout={config.LLM_PROXY_TIMEOUT}"
+        )
+
         downstream_response = await llm_proxy_client.send(downstream_request, stream=True)
 
         end_time = datetime.now()
         response_status = downstream_response.status_code
+        duration_ms = (end_time - start_time).total_seconds() * 1000
 
-        logger.debug(f"LLM proxy response: session={session_id}, request={request_id}, status={response_status}")
+        logger.debug(
+            f"[RESPONSE-RECEIVED] session={session_id}, request={request_id}, status={response_status}, "
+            f"duration_ms={duration_ms:.1f}, content_type={downstream_response.headers.get('content-type', 'unknown')}"
+        )
 
         # Track metrics
         background_tasks.add_task(
@@ -588,7 +680,11 @@ async def _proxy_to_llm_proxy(
     except httpx.RequestError as e:
         end_time = datetime.now()
 
-        logger.error(f"Proxy error: {e}, session={session_id}, request={request_id}", exc_info=True)
+        logger.error(
+            f"[PROXY-ERROR] Request error: session={session_id}, request={request_id}, "
+            f"endpoint={endpoint}, exception={type(e).__name__}, error={str(e)}",
+            exc_info=True,
+        )
 
         # Track error metrics
         background_tasks.add_task(
@@ -615,6 +711,7 @@ async def _proxy_to_llm_proxy(
 
     # Return streaming response with optional usage tracking
     if config.LLM_PROXY_TRACK_USAGE and response_status == 200:
+        logger.debug(f"[STREAMING-PATH] session={session_id}, request={request_id}, using usage_tracking path")
         return StreamingResponse(
             _streaming_response_with_usage_tracking(
                 downstream_response=downstream_response,
@@ -629,8 +726,12 @@ async def _proxy_to_llm_proxy(
             media_type=downstream_response.headers.get("content-type"),
         )
     else:
+        logger.debug(
+            f"[STREAMING-PATH] session={session_id}, request={request_id}, using passthrough "
+            f"(track_usage={config.LLM_PROXY_TRACK_USAGE}, status={response_status})"
+        )
         return StreamingResponse(
-            _passthrough_stream(downstream_response),
+            _passthrough_stream(downstream_response, request_info),
             status_code=downstream_response.status_code,
             headers=response_headers,
             media_type=downstream_response.headers.get("content-type"),
