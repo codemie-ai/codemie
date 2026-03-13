@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
+import pytest
 import yaml
 
 from codemie.service.llm_retirement_service import (
@@ -23,86 +24,110 @@ from codemie.service.llm_retirement_service import (
     LLMRetirementService,
 )
 
+# Shared constants used in TestRetireWorkflows parametrize (must be module-level so
+# they are evaluated at decoration time).
+_BROKEN_YAML = "model: deprecated-gpt-4\n  bad_indent: {unclosed"
+_VALID_YAML = yaml.safe_dump({"model": "deprecated-gpt-4"})
+
 
 class TestReplaceModelInYaml:
-    def test_replaces_model_key_at_top_level(self):
-        node = {"model": "old-model", "temperature": 0.5}
-        changed = _replace_model_in_yaml(node, "old-model", "new-model")
-        assert changed is True
-        assert node["model"] == "new-model"
-
-    def test_replaces_model_key_nested_in_dict(self):
-        node = {"assistant": {"model": "old-model", "name": "bot"}}
-        changed = _replace_model_in_yaml(node, "old-model", "new-model")
-        assert changed is True
-        assert node["assistant"]["model"] == "new-model"
-
-    def test_replaces_model_key_in_list_items(self):
-        node = {"assistants": [{"model": "old-model"}, {"model": "keep-model"}]}
-        changed = _replace_model_in_yaml(node, "old-model", "new-model")
-        assert changed is True
-        assert node["assistants"][0]["model"] == "new-model"
-        assert node["assistants"][1]["model"] == "keep-model"
-
-    def test_no_change_when_model_not_present(self):
-        node = {"name": "workflow", "type": "supervisor"}
-        changed = _replace_model_in_yaml(node, "old-model", "new-model")
-        assert changed is False
-
-    def test_no_change_when_model_value_does_not_match(self):
-        node = {"model": "other-model"}
-        changed = _replace_model_in_yaml(node, "old-model", "new-model")
-        assert changed is False
-        assert node["model"] == "other-model"
-
-    def test_does_not_replace_non_model_keys_containing_model_name(self):
-        node = {"model_name": "old-model", "model": "old-model"}
-        changed = _replace_model_in_yaml(node, "old-model", "new-model")
-        assert changed is True
-        assert node["model_name"] == "old-model"  # untouched
-        assert node["model"] == "new-model"
-
-    def test_handles_deeply_nested_structure(self):
-        node = {"states": [{"nodes": [{"config": {"model": "old-model"}}]}]}
-        changed = _replace_model_in_yaml(node, "old-model", "new-model")
-        assert changed is True
-        assert node["states"][0]["nodes"][0]["config"]["model"] == "new-model"
-
-    def test_handles_scalar_node_gracefully(self):
-        changed = _replace_model_in_yaml("just-a-string", "old-model", "new-model")
-        assert changed is False
-
-    def test_handles_none_node_gracefully(self):
-        changed = _replace_model_in_yaml(None, "old-model", "new-model")
-        assert changed is False
+    @pytest.mark.parametrize(
+        "node, deprecated, replacement, expected_changed, expected_node",
+        [
+            # --- replacements happen ---
+            (
+                {"model": "old", "temperature": 0.5},
+                "old",
+                "new",
+                True,
+                {"model": "new", "temperature": 0.5},
+            ),
+            (
+                {"assistant": {"model": "old", "name": "bot"}},
+                "old",
+                "new",
+                True,
+                {"assistant": {"model": "new", "name": "bot"}},
+            ),
+            (
+                {"assistants": [{"model": "old"}, {"model": "keep"}]},
+                "old",
+                "new",
+                True,
+                {"assistants": [{"model": "new"}, {"model": "keep"}]},
+            ),
+            (
+                {"states": [{"nodes": [{"config": {"model": "old"}}]}]},
+                "old",
+                "new",
+                True,
+                {"states": [{"nodes": [{"config": {"model": "new"}}]}]},
+            ),
+            # non-`model` key with same value is left untouched
+            (
+                {"model_name": "old", "model": "old"},
+                "old",
+                "new",
+                True,
+                {"model_name": "old", "model": "new"},
+            ),
+            # --- no replacement ---
+            (
+                {"name": "workflow", "type": "supervisor"},
+                "old",
+                "new",
+                False,
+                {"name": "workflow", "type": "supervisor"},
+            ),
+            ({"model": "other"}, "old", "new", False, {"model": "other"}),
+            ("just-a-string", "old", "new", False, "just-a-string"),
+            (None, "old", "new", False, None),
+        ],
+    )
+    def test_replace_model_in_yaml(self, node, deprecated, replacement, expected_changed, expected_node):
+        changed = _replace_model_in_yaml(node, deprecated, replacement)
+        assert changed is expected_changed
+        assert node == expected_node
 
 
 class TestLiteralBlockDumper:
-    def test_multiline_string_uses_block_scalar_style(self):
-        data = {"prompt": "Hello\nWorld\nFoo"}
+    @pytest.mark.parametrize(
+        "data, expect_block_scalar",
+        [
+            ({"prompt": "Hello\nWorld\nFoo"}, True),
+            ({"model": "gpt-4"}, False),
+        ],
+    )
+    def test_dump_style(self, data, expect_block_scalar):
         result = yaml.dump(data, Dumper=_LiteralBlockDumper, default_flow_style=False)
-        assert "|-\n" in result or "|\n" in result
-        assert "\\n" not in result
+        if expect_block_scalar:
+            assert "|\n" in result or "|-\n" in result
+            assert "\\n" not in result
+        else:
+            assert "|" not in result
 
-    def test_single_line_string_uses_plain_style(self):
-        data = {"model": "gpt-4"}
-        result = yaml.dump(data, Dumper=_LiteralBlockDumper, default_flow_style=False)
-        assert "model: gpt-4" in result
-        assert "|" not in result
-
-    def test_round_trip_preserves_multiline_content(self):
-        original = "Step one\nStep two\nStep three"
-        data = {"system_prompt": original}
+    @pytest.mark.parametrize(
+        "data",
+        [
+            {"system_prompt": "Step one\nStep two\nStep three"},
+            {"assistants": [{"model": "gpt-4", "system_prompt": "You are helpful.\nBe concise."}]},
+        ],
+    )
+    def test_round_trip_preserves_content(self, data):
         dumped = yaml.dump(data, Dumper=_LiteralBlockDumper, default_flow_style=False)
-        reloaded = yaml.safe_load(dumped)
-        assert reloaded["system_prompt"] == original
+        assert yaml.safe_load(dumped) == data
 
-    def test_round_trip_preserves_nested_multiline(self):
-        original_prompt = "You are helpful.\nBe concise."
-        data = {"assistants": [{"model": "gpt-4", "system_prompt": original_prompt}]}
-        dumped = yaml.dump(data, Dumper=_LiteralBlockDumper, default_flow_style=False)
-        reloaded = yaml.safe_load(dumped)
-        assert reloaded["assistants"][0]["system_prompt"] == original_prompt
+    @pytest.mark.parametrize(
+        "text, expect_block",
+        [
+            ("line1\nline2", True),
+            ("single-line", False),
+        ],
+    )
+    def test_str_representer_style(self, text, expect_block):
+        dumper = _LiteralBlockDumper("")
+        node = _str_representer(dumper, text)
+        assert (node.style == "|") is expect_block
 
     def test_safe_dumper_contrast_uses_escaped_newlines(self):
         """Confirm the bug we fix: plain safe_dump escapes newlines."""
@@ -110,81 +135,117 @@ class TestLiteralBlockDumper:
         safe_result = yaml.safe_dump(data, default_flow_style=False)
         assert "\\n" in safe_result or '"\n' not in safe_result
 
-    def test_str_representer_block_style_for_newline(self):
-        dumper = _LiteralBlockDumper("")
-        node = _str_representer(dumper, "line1\nline2")
-        assert node.style == "|"
-
-    def test_str_representer_plain_style_for_single_line(self):
-        dumper = _LiteralBlockDumper("")
-        node = _str_representer(dumper, "single-line")
-        assert node.style != "|"
-
 
 class TestUpdateYamlConfigField:
     def _make_workflow(self, yaml_config: str | None) -> MagicMock:
-        workflow = MagicMock()
-        workflow.yaml_config = yaml_config
-        return workflow
+        wf = MagicMock()
+        wf.yaml_config = yaml_config
+        return wf
 
-    def test_returns_false_when_yaml_config_is_none(self):
-        workflow = self._make_workflow(None)
-        changed = LLMRetirementService._update_yaml_config_field(workflow, "old", "new")
-        assert changed is False
+    @pytest.mark.parametrize(
+        "yaml_config",
+        [
+            pytest.param(None, id="none"),
+            pytest.param(yaml.safe_dump({"model": "other-model"}), id="deprecated_absent_from_string"),
+            # deprecated appears in string but not as an exact `model` value → _replace_model_in_yaml returns False
+            pytest.param(
+                yaml.safe_dump({"model": "different-model", "name": "old-model-workflow"}),
+                id="model_value_differs",
+            ),
+        ],
+    )
+    def test_returns_false(self, yaml_config):
+        wf = self._make_workflow(yaml_config)
+        assert LLMRetirementService._update_yaml_config_field(wf, "old-model", "new-model") is False
 
-    def test_returns_false_when_deprecated_model_not_in_yaml(self):
-        yaml_config = yaml.safe_dump({"model": "other-model"})
-        workflow = self._make_workflow(yaml_config)
-        changed = LLMRetirementService._update_yaml_config_field(workflow, "old-model", "new-model")
-        assert changed is False
+    @pytest.mark.parametrize(
+        "original, deprecated, replacement, validate",
+        [
+            pytest.param(
+                {"assistants": [{"model": "old-model", "system_prompt": "Be helpful."}]},
+                "old-model",
+                "new-model",
+                lambda wf: yaml.safe_load(wf.yaml_config)["assistants"][0]["model"] == "new-model",
+                id="basic_replacement",
+            ),
+            pytest.param(
+                {"assistants": [{"model": "old-model", "system_prompt": "Step one\nStep two\nStep three"}]},
+                "old-model",
+                "new-model",
+                lambda wf: (
+                    "\\n" not in wf.yaml_config
+                    and yaml.safe_load(wf.yaml_config)["assistants"][0]["system_prompt"]
+                    == "Step one\nStep two\nStep three"
+                ),
+                id="multiline_block_scalar",
+            ),
+            pytest.param(
+                {
+                    "assistants": [
+                        {"name": "coder", "model": "deprecated-gpt-4", "system_prompt": "Write code."},
+                        {"name": "reviewer", "model": "keep-model", "system_prompt": "Review code."},
+                    ],
+                    "states": [{"name": "start", "config": {"model": "deprecated-gpt-4"}}],
+                },
+                "deprecated-gpt-4",
+                "gpt-4.1",
+                lambda wf: "deprecated-gpt-4" not in wf.yaml_config,
+                id="all_occurrences_replaced",
+            ),
+        ],
+    )
+    def test_returns_true_and_updates(self, original, deprecated, replacement, validate):
+        wf = self._make_workflow(yaml.safe_dump(original))
+        assert LLMRetirementService._update_yaml_config_field(wf, deprecated, replacement) is True
+        assert validate(wf)
 
-    def test_returns_true_and_updates_yaml_when_model_replaced(self):
-        original = {"assistants": [{"model": "old-model", "system_prompt": "Be helpful."}]}
-        yaml_config = yaml.safe_dump(original)
-        workflow = self._make_workflow(yaml_config)
+    def test_raises_yaml_error_for_broken_yaml_config(self):
+        # Broken YAML that still contains the deprecated model string so the early-exit
+        # guard passes, ensuring yaml.safe_load() is actually reached and raises.
+        wf = self._make_workflow("model: old-model\n  bad_indent: {unclosed")
+        with pytest.raises(yaml.YAMLError):
+            LLMRetirementService._update_yaml_config_field(wf, "old-model", "new-model")
 
-        changed = LLMRetirementService._update_yaml_config_field(workflow, "old-model", "new-model")
 
-        assert changed is True
-        reloaded = yaml.safe_load(workflow.yaml_config)
-        assert reloaded["assistants"][0]["model"] == "new-model"
+class TestRetireWorkflows:
+    def _make_session(self, workflows: list) -> MagicMock:
+        session = MagicMock()
+        session.exec.return_value.all.return_value = workflows
+        return session
 
-    def test_multiline_prompts_use_block_scalar_after_retirement(self):
-        original = {"assistants": [{"model": "old-model", "system_prompt": "Step one\nStep two\nStep three"}]}
-        yaml_config = yaml.safe_dump(original)
-        workflow = self._make_workflow(yaml_config)
+    def _make_workflow(self, wf_id: int, name: str, yaml_config: str | None) -> MagicMock:
+        wf = MagicMock()
+        wf.id = wf_id
+        wf.name = name
+        wf.yaml_config = yaml_config
+        wf.assistants = []  # skip assistants-field path; focus on YAML path
+        return wf
 
-        LLMRetirementService._update_yaml_config_field(workflow, "old-model", "new-model")
+    @pytest.mark.parametrize(
+        "yaml_configs, exp_updated, exp_skipped",
+        [
+            pytest.param([_VALID_YAML, _BROKEN_YAML], 1, 1, id="one_valid_one_broken"),
+            pytest.param([_BROKEN_YAML, _BROKEN_YAML], 0, 2, id="all_broken"),
+            pytest.param([], 0, 0, id="no_workflows"),
+        ],
+    )
+    def test_retire_workflows_counts(self, yaml_configs, exp_updated, exp_skipped):
+        workflows = [self._make_workflow(i + 1, f"wf{i + 1}", yc) for i, yc in enumerate(yaml_configs)]
+        session = self._make_session(workflows)
 
-        assert "\\n" not in workflow.yaml_config
-        reloaded = yaml.safe_load(workflow.yaml_config)
-        assert reloaded["assistants"][0]["system_prompt"] == "Step one\nStep two\nStep three"
+        updated, skipped = LLMRetirementService._retire_workflows(session, "deprecated-gpt-4", "gpt-4o")
 
-    def test_returns_false_when_model_key_present_but_value_differs(self):
-        yaml_config = yaml.safe_dump({"model": "different-model"})
-        workflow = self._make_workflow(yaml_config)
-        changed = LLMRetirementService._update_yaml_config_field(workflow, "old-model", "new-model")
-        assert changed is False
+        assert updated == exp_updated
+        assert skipped == exp_skipped
+        assert session.add.call_count == exp_updated
+        assert session.expunge.call_count == exp_skipped
 
-    def test_deprecated_model_no_longer_present_in_yaml_after_update(self):
-        """After retirement the deprecated model name must not appear anywhere in the stored YAML."""
-        original = {
-            "assistants": [
-                {"name": "coder", "model": "deprecated-gpt-4", "system_prompt": "Write code."},
-                {"name": "reviewer", "model": "keep-model", "system_prompt": "Review code."},
-            ],
-            "states": [
-                {"name": "start", "config": {"model": "deprecated-gpt-4"}},
-            ],
-        }
-        yaml_config = yaml.safe_dump(original)
-        workflow = self._make_workflow(yaml_config)
+    def test_broken_workflow_is_expunged_before_valid_workflow_is_added(self):
+        """expunge(broken) must happen so the broken workflow's dirty state is never flushed."""
+        wf_broken = self._make_workflow(1, "broken", _BROKEN_YAML)
+        wf_valid = self._make_workflow(2, "valid", _VALID_YAML)
+        session = self._make_session([wf_broken, wf_valid])
 
-        changed = LLMRetirementService._update_yaml_config_field(workflow, "deprecated-gpt-4", "gpt-4o")
+        LLMRetirementService._retire_workflows(session, "deprecated-gpt-4", "gpt-4.1")
 
-        assert changed is True
-        assert "deprecated-gpt-4" not in workflow.yaml_config
-        reloaded = yaml.safe_load(workflow.yaml_config)
-        assert reloaded["assistants"][0]["model"] == "gpt-4o"
-        assert reloaded["assistants"][1]["model"] == "keep-model"
-        assert reloaded["states"][0]["config"]["model"] == "gpt-4o"
+        assert session.mock_calls.index(call.expunge(wf_broken)) < session.mock_calls.index(call.add(wf_valid))

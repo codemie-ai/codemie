@@ -49,6 +49,7 @@ class LLMRetirementResult:
     assistants_updated: int
     assistant_configurations_updated: int
     workflows_updated: int
+    workflows_skipped: int = 0
 
 
 @dataclass
@@ -59,6 +60,7 @@ class LLMBulkRetirementItemResult:
     assistants_updated: int = 0
     assistant_configurations_updated: int = 0
     workflows_updated: int = 0
+    workflows_skipped: int = 0
     error: str | None = None
 
 
@@ -95,20 +97,22 @@ class LLMRetirementService:
             assistants_updated, configurations_updated = self._retire_assistants(
                 session, deprecated_model, replacement_model
             )
-            workflows_updated = self._retire_workflows(session, deprecated_model, replacement_model)
+            workflows_updated, workflows_skipped = self._retire_workflows(session, deprecated_model, replacement_model)
             session.commit()
 
         result = LLMRetirementResult(
             assistants_updated=assistants_updated,
             assistant_configurations_updated=configurations_updated,
             workflows_updated=workflows_updated,
+            workflows_skipped=workflows_skipped,
         )
 
         logger.info(
             f"LLM model retirement complete: deprecated='{deprecated_model}', replacement='{replacement_model}', "
             f"assistants={result.assistants_updated}, "
             f"configurations={result.assistant_configurations_updated}, "
-            f"workflows={result.workflows_updated}"
+            f"workflows={result.workflows_updated}, "
+            f"workflows_skipped={result.workflows_skipped}"
         )
         return result
 
@@ -168,7 +172,7 @@ class LLMRetirementService:
             )
 
     @staticmethod
-    def _retire_workflows(session: Session, deprecated_model: str, replacement_model: str) -> int:
+    def _retire_workflows(session: Session, deprecated_model: str, replacement_model: str) -> tuple[int, int]:
         # Pre-filter: load only workflows that mention the deprecated model name anywhere.
         # This is a substring pre-filter (LIKE), so it may load false-positive rows.
         # The Python-side helpers below are authoritative for whether a real change occurred.
@@ -181,16 +185,22 @@ class LLMRetirementService:
         workflows = session.exec(query).all()
 
         updated_count = 0
+        skipped_count = 0
         for workflow in workflows:
-            changed = LLMRetirementService._update_assistants_field(workflow, deprecated_model, replacement_model)
-            changed |= LLMRetirementService._update_yaml_config_field(workflow, deprecated_model, replacement_model)
-            if changed:
-                # session.add() (not .update()) so SQLAlchemy only flushes actually-changed attributes,
-                # excluding update_date which we never assign.
-                session.add(workflow)
-                updated_count += 1
+            try:
+                changed = LLMRetirementService._update_assistants_field(workflow, deprecated_model, replacement_model)
+                changed |= LLMRetirementService._update_yaml_config_field(workflow, deprecated_model, replacement_model)
+                if changed:
+                    # session.add() (not .update()) so SQLAlchemy only flushes actually-changed attributes,
+                    # excluding update_date which we never assign.
+                    session.add(workflow)
+                    updated_count += 1
+            except yaml.YAMLError as e:
+                logger.warning(f"Skipping workflow id={workflow.id} name='{workflow.name}': YAML parse error: {e}")
+                session.expunge(workflow)
+                skipped_count += 1
 
-        return updated_count
+        return updated_count, skipped_count
 
     @staticmethod
     def _update_assistants_field(workflow: WorkflowConfig, deprecated_model: str, replacement_model: str) -> bool:
@@ -245,6 +255,7 @@ class LLMRetirementService:
                         assistants_updated=result.assistants_updated,
                         assistant_configurations_updated=result.assistant_configurations_updated,
                         workflows_updated=result.workflows_updated,
+                        workflows_skipped=result.workflows_skipped,
                     )
                 )
             except Exception as e:
