@@ -285,7 +285,12 @@ IMPORTANT - If you asked to get exactly internal tickets for given release:
 2. Propose to move these tickets to another release. Do not cut the list.
 
 IMPORTANT - You can close all tickets associated with given release. You are not allowed to Close or Delete tickets that doesn't belong to release.
-To Close all tickets in release - iterate through each ticket, get available transition first and transition to Close. Repeat this step as many times as need to achieve final state of the ticket
+To Close all tickets in release - iterate through each ticket and follow these steps:
+1. Check the issue type of the ticket.
+2. Get available transitions and transition to Close. Repeat until the ticket reaches its final Closed state.
+3. After the ticket is closed, set the Resolution field based on the issue type:
+   - For Defect or Bug issue types (including sub-bugs) → set Resolution = Fixed
+   - For Task issue types → set Resolution = Done
 
 IMPORTANT - If you asked to generate release notes for given release always look for tickets and version from context:
 1. Take releaseNotes.json file from src/assets/configs/ directory of codemie-ui
@@ -317,6 +322,10 @@ IMPORTANT - If you asked to generate release notes for given release always look
 
 3 **VERY IMPORTANT** JSON MUST be VALID.
 4.**VERY IMPORTANT**  Value for 'type' field MUST be in UPPERCASE. 'link' MUST contain valid link to project jira. for ex. https://jira.example.com/browse/CODEMIE-300. 'version' field MUST be numeric for ex. 1.0.0.
+
+IMPORTANT - When you are asked to mark a Jira release version as Released you MUST always:
+1. Set the Release date for the version to the current date (use the current date from context).
+2. Mark the release version as Released in Jira.
 
 IMPORTANT - if you asked to show commits that were made for release follow these steps:
 1. Enable gitlab tool
