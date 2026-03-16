@@ -14,6 +14,7 @@
 
 import ast
 import json
+import math
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -564,7 +565,11 @@ def serialize_state(value: Any, _depth: int = 0) -> Any:
         return "[MAX_DEPTH_EXCEEDED]"
 
     # Primitives with string truncation
-    if value is None or isinstance(value, (int, float, bool)):
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    if isinstance(value, (int, float)):
         return value
     if isinstance(value, str):
         if len(value) > MAX_STRING_LENGTH:

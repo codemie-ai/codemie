@@ -91,14 +91,14 @@ class TaskResult(BaseModel):
 
     @classmethod
     def from_agent_response(cls, response):
-        if isinstance(response, GenerationResult) and response.generated:
+        if isinstance(response, GenerationResult):
             result = response.generated
             # Serialize objects from structured outputs as strings to pass to the next step.
             if isinstance(response.generated, dict):
                 result = json.dumps(response.generated)
             elif isinstance(response.generated, BaseModel):
                 result = response.generated.model_dump_json()
-            return cls(result=result, success=True)
+            return cls(result=result or '', success=response.success)
 
         # Determine the result and success
         if 'output' in response:

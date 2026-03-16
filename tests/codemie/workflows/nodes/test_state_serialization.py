@@ -415,3 +415,37 @@ def test_serialize_mixed_truncation():
     assert result["nested"]["also_long"].endswith("...[TRUNCATED]")
     assert len(result["long"]) == MAX_STRING_LENGTH + len("...[TRUNCATED]")
     assert len(result["nested"]["also_long"]) == MAX_STRING_LENGTH + len("...[TRUNCATED]")
+
+
+def test_serialize_nan_returns_none():
+    assert serialize_state(float('nan')) is None
+
+
+def test_serialize_positive_infinity_returns_none():
+    assert serialize_state(float('inf')) is None
+
+
+def test_serialize_negative_infinity_returns_none():
+    assert serialize_state(float('-inf')) is None
+
+
+def test_serialize_regular_float_unchanged():
+    assert serialize_state(3.14) == 3.14
+
+
+def test_serialize_bool_true_unchanged():
+    result = serialize_state(True)
+    assert result is True
+    assert type(result) is bool
+
+
+def test_serialize_bool_false_unchanged():
+    result = serialize_state(False)
+    assert result is False
+    assert type(result) is bool
+
+
+def test_serialize_nan_in_dict_returns_none():
+    result = serialize_state({"value": float('nan'), "other": 1})
+    assert result["value"] is None
+    assert result["other"] == 1
