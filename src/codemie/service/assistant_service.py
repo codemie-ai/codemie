@@ -171,8 +171,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
                     f"Failed to fetch user-specific variables for assistant_id={assistant_id}, user_id={user_id}: {e}"
                 )
 
-        # Log the final variable values that will be used in rendering
-        logger.debug(f"Final template variables for rendering: {all_variables}")
+        logger.debug(f"Final template variables for rendering: keys={list(all_variables.keys())}")
 
         # Use secure template rendering with sandboxing and validation
         try:
@@ -181,7 +180,6 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
                 context=all_variables,
                 allow_custom_variables=True,  # Allow custom prompt variables defined by users
             )
-            logger.debug(f"Rendered system prompt (first 100 chars): {rendered_prompt[:100]}...")
             return rendered_prompt
 
         except TemplateSecurityError as e:
@@ -226,7 +224,14 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
 
         # Add custom variables from the assistant model
         if assistant.prompt_variables:
-            logger.debug(f"Assistant prompt variables: {[var.model_dump() for var in assistant.prompt_variables]}")
+            sanitized = [
+                {
+                    **{k: v for k, v in var.model_dump().items() if k != "default_value"},
+                    "has_value": bool(var.default_value),
+                }
+                for var in assistant.prompt_variables
+            ]
+            logger.debug(f"Assistant prompt variables: {sanitized}")
             for var in assistant.prompt_variables:
                 all_variables[var.key] = var.default_value
 

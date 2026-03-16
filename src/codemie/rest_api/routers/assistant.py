@@ -716,6 +716,10 @@ def update_assistant(
 
     repository = AssistantRepository()
 
+    # Preserve existing encrypted values for sensitive variables sent back as masked
+    if request.prompt_variables:
+        _restore_existing_encrypted_values(request, assistant)
+
     # Encrypt sensitive prompt variable default values in the request before updating
     if request.prompt_variables:
         _encrypt_prompt_variables_in_request(request)
@@ -2370,6 +2374,7 @@ def _encrypt_sensitive_prompt_variables(assistant: Assistant):
     Args:
         assistant: The assistant object to encrypt
     """
+    from codemie.core.constants import SENSITIVE_VALUE_MASK
     from codemie.service.encryption.encryption_factory import EncryptionFactory
 
     if not assistant.prompt_variables:
@@ -2378,7 +2383,7 @@ def _encrypt_sensitive_prompt_variables(assistant: Assistant):
     encryption_service = EncryptionFactory().get_current_encryption_service()
 
     for var in assistant.prompt_variables:
-        if getattr(var, 'is_sensitive', False) and var.default_value:
+        if getattr(var, 'is_sensitive', False) and var.default_value and var.default_value != SENSITIVE_VALUE_MASK:
             var.default_value = encryption_service.encrypt(var.default_value)
 
 
@@ -2390,6 +2395,7 @@ def _encrypt_prompt_variables_in_request(request: AssistantRequest):
     Args:
         request: The assistant request to encrypt
     """
+    from codemie.core.constants import SENSITIVE_VALUE_MASK
     from codemie.service.encryption.encryption_factory import EncryptionFactory
 
     if not request.prompt_variables:
@@ -2398,8 +2404,32 @@ def _encrypt_prompt_variables_in_request(request: AssistantRequest):
     encryption_service = EncryptionFactory().get_current_encryption_service()
 
     for var in request.prompt_variables:
-        if getattr(var, 'is_sensitive', False) and var.default_value:
+        if getattr(var, 'is_sensitive', False) and var.default_value and var.default_value != SENSITIVE_VALUE_MASK:
             var.default_value = encryption_service.encrypt(var.default_value)
+
+
+def _restore_existing_encrypted_values(request: AssistantRequest, existing_assistant: Assistant):
+    """
+    For sensitive variables whose value in the request equals the masked sentinel,
+    restore the already-encrypted value from the existing assistant so it is not overwritten.
+    Modifies the request object in place.
+
+    Args:
+        request: The incoming update request
+        existing_assistant: The current assistant loaded from the database
+    """
+    from codemie.core.constants import SENSITIVE_VALUE_MASK
+
+    if not request.prompt_variables or not existing_assistant.prompt_variables:
+        return
+
+    existing_by_key = {var.key: var for var in existing_assistant.prompt_variables}
+
+    for var in request.prompt_variables:
+        if getattr(var, 'is_sensitive', False) and var.default_value == SENSITIVE_VALUE_MASK:
+            existing_var = existing_by_key.get(var.key)
+            if existing_var and existing_var.default_value:
+                var.default_value = existing_var.default_value
 
 
 # ============================================================================
