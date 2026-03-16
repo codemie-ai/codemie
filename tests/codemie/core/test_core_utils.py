@@ -29,6 +29,7 @@ from codemie.core.utils import (
     extract_text_from_llm_output,
     format_json_content,
     format_markdown_content,
+    append_random_suffix,
     generate_zip,
     sanitize_string,
     unpack_json_strings,
@@ -447,3 +448,24 @@ def test_calculate_token_cost_returns_tuple():
     assert isinstance(result[0], float)  # total_cost
     assert isinstance(result[1], float)  # cached_tokens_cost
     assert isinstance(result[2], float)  # cache_creation_tokens_cost
+
+
+def test_append_random_suffix_appends_suffix():
+    result = append_random_suffix("my-slug")
+    assert result.startswith("my-slug_")
+    suffix = result[len("my-slug_") :]
+    assert len(suffix) == 15
+    assert suffix.islower()
+    assert suffix.isalpha()
+
+
+def test_append_random_suffix_suffix_is_random():
+    result1 = append_random_suffix("my-slug")
+    result2 = append_random_suffix("my-slug")
+    assert result1 != result2
+
+
+def test_append_random_suffix_empty_base():
+    result = append_random_suffix("")
+    assert result.startswith("_")
+    assert len(result) == 16

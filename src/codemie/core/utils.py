@@ -15,6 +15,8 @@
 import io
 import os
 import re
+import secrets
+import string
 import zipfile
 from functools import lru_cache
 from typing import Any, Generator, List
@@ -649,3 +651,17 @@ def safe_divide(numerator: float, denominator: float, default: float = 0.0) -> f
         20.2
     """
     return numerator / denominator if denominator > 0 else default
+
+
+def append_random_suffix(value: str) -> str:
+    """
+    Return a new string with a random 15-character lowercase suffix appended.
+
+    Args:
+        value: The base string value.
+
+    Returns:
+        A new string in the format value_{15 random lowercase letters}.
+    """
+    suffix = "".join(secrets.choice(string.ascii_lowercase) for _ in range(15))
+    return f"{value}_{suffix}"

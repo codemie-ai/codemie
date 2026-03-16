@@ -645,6 +645,10 @@ def create_assistant(request: AssistantRequest, user: User = Depends(authenticat
     # Encrypt sensitive prompt variable default values before saving
     _encrypt_sensitive_prompt_variables(assistant)
 
+    # Ensure slug is unique before saving
+    if assistant.slug:
+        assistant.slug = AssistantService.ensure_unique_slug(assistant.slug)
+
     if request.agent_card and request.agent_card.bedrock_agentcore:
         assistant.origin = AssistantOrigin.BEDROCK_AGENT_CORE
 

@@ -30,7 +30,7 @@ from codemie.core.dependecies import get_disable_prompt_cache, set_disable_promp
 from codemie.core.models import AssistantChatRequest, IdeChatRequest, ToolConfig
 from codemie.core.template_security import render_system_prompt_template, TemplateSecurityError
 from codemie.core.thread import MessageQueue
-from codemie.core.utils import build_unique_file_objects, build_unique_file_objects_list
+from codemie.core.utils import build_unique_file_objects, build_unique_file_objects_list, append_random_suffix
 from codemie.core.workflow_models import WorkflowAssistant, WorkflowState
 from codemie.rest_api.models.assistant import (
     Assistant,
@@ -79,6 +79,14 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
     @classmethod
     def get_tools_info(cls, user: User, show_for_ui: bool = False):
         return ToolsInfoService.get_tools_info(show_for_ui=show_for_ui, user=user)
+
+    @staticmethod
+    def ensure_unique_slug(slug: str) -> str:
+        """Return a unique slug for an assistant, generating a suffixed variant if the slug is already taken."""
+        if Assistant.get_by_fields({"slug.keyword": slug}):
+            unique_slug = append_random_suffix(slug)
+            return unique_slug
+        return slug
 
     @staticmethod
     # System defined built-in variables
