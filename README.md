@@ -1,6 +1,26 @@
 # Codemie 🤖
 
-CodeMie is an AI-powered platform designed to optimize and streamline the Software Development Life Cycle (SDLC). It provides businesses and development teams with AI-driven assistance for a variety of tasks and roles, enabling increased efficiency and reduced time-to-market.
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Website](https://img.shields.io/badge/website-codemie.ai-informational)](https://codemie.ai)
+[![Docs](https://img.shields.io/badge/docs-docs.codemie.ai-informational)](https://docs.codemie.ai)
+
+**Platform for AI-Native Delivery, Modernization, and Business.**
+
+CodeMie is an open platform that lets teams build, orchestrate, and scale AI agents across the entire software lifecycle — from planning and coding to testing, deployment, and operations. It unites intelligent assistants, multi-agent workflows, deep integrations, and project knowledge in one system.
+
+**What you can do with CodeMie:**
+
+- 🚀 **AI-Native SDLC & Delivery** — Automate every phase of the software lifecycle: discovery, architecture, development, testing, and deployment with purpose-built AI agents.
+- 🔄 **AI Migration & Modernization** — Migrate and modernize legacy systems and mainframes using AI-powered analysis, code exploration (AICE), and automated transformation workflows.
+- 💼 **AI for Business & Operations** — Deploy AI agents across non-engineering functions such as finance, HR, sales, and support.
+
+Key capabilities: multi-agent orchestration, rich data indexing (Git, Jira, Confluence, docs), deep integrations (MCP, AWS, Azure, GCP, Kubernetes), and a no-code Assistants Constructor.
+
+**This repository — `codemie` — is the core backend component of the CodeMie platform.** It contains the FastAPI application, LangChain/LangGraph-based AI agents and orchestration, REST API, tool integrations, knowledge-base indexing (Git, Jira, Confluence), and all service-layer logic that powers the platform.
+
+🌐 **Website:** [codemie.ai](https://codemie.ai)
+📖 **Documentation:** [docs.codemie.ai](https://docs.codemie.ai)
+🖥️ **CLI tool:** [codemie-code](https://github.com/codemie-ai/codemie-code)
 
 ## Quick Start
 
@@ -325,3 +345,11 @@ CodeMie provides the following metrics:
 poetry run pip-licenses --packages $(poetry show --only main | awk '{print $1}' | tr '\n' ' ')
 ```
 This checks licenses only for production packages (excludes dev dependencies like `pytest`, etc.).
+
+## Contributing
+
+We welcome contributions! Please read our [Contributing Guide](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md) before submitting a pull request.
+
+## License
+
+CodeMie is licensed under the [Apache License 2.0](LICENSE).
