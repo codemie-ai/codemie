@@ -35,6 +35,8 @@ from codemie_tools.azure_devops.wiki.tools import (
     AddWikiAttachmentTool,
     GetPageStatsByIdTool,
     GetPageStatsByPathTool,
+    AddWikiCommentByIdTool,
+    AddWikiCommentByPathTool,
 )
 
 
@@ -1800,3 +1802,340 @@ class TestGetPageStatsByPathTool:
         call_args = mock_http_client.get.call_args
         assert call_args[1]["params"]["pageViewsForDays"] == 14
         assert result["page_views_for_days"] == 14
+
+
+class TestAddWikiCommentByIdTool:
+    """Tests for adding comments to wiki pages by ID."""
+
+    @staticmethod
+    def _make_tool(**config_overrides):
+        base_config = {
+            "organization_url": "https://dev.azure.com/test-org",
+            "project": "test-project",
+            "token": "fake-token",
+        }
+        base_config.update(config_overrides)
+        config = AzureDevOpsWikiConfig(**base_config)
+        return AddWikiCommentByIdTool(config=config)
+
+    def test_add_comment_success(self):
+        """Scenario 1: Successfully add a text comment to a Wiki page."""
+        tool = self._make_tool()
+
+        with patch("httpx.Client") as mock_client_class:
+            mock_http_client = Mock()
+            mock_response = Mock()
+            mock_response.json.return_value = {
+                "id": 123,
+                "text": "This is a test comment",
+                "author": {"displayName": "Test User"},
+                "createdDate": "2024-01-15T10:30:00Z",
+                "modifiedDate": "2024-01-15T10:30:00Z",
+                "parentId": None,
+            }
+            mock_http_client.post.return_value = mock_response
+            mock_client_class.return_value.__enter__.return_value = mock_http_client
+
+            result = tool.execute(wiki_identified="TestWiki.wiki", page_id=42, comment_text="This is a test comment")
+
+            # Verify API call
+            assert mock_http_client.post.called
+            call_args = mock_http_client.post.call_args
+            assert "/pages/42/comments" in call_args[0][0]
+            assert call_args[1]["json"]["text"] == "This is a test comment"
+            assert "parentId" not in call_args[1]["json"]
+
+            # Verify response
+            assert result["comment_id"] == 123
+            assert result["comment_text"] == "This is a test comment"
+            assert result["page_id"] == 42
+            assert result["parent_comment_id"] is None
+            assert result["attachment_count"] == 0
+
+    def test_add_comment_as_reply(self):
+        """Scenario 2: Add a comment as a reply to an existing comment thread."""
+        tool = self._make_tool()
+
+        with patch("httpx.Client") as mock_client_class:
+            mock_http_client = Mock()
+            mock_response = Mock()
+            mock_response.json.return_value = {
+                "id": 456,
+                "text": "This is a reply",
+                "author": {"displayName": "Test User"},
+                "createdDate": "2024-01-15T11:00:00Z",
+                "modifiedDate": "2024-01-15T11:00:00Z",
+                "parentId": 123,
+            }
+            mock_http_client.post.return_value = mock_response
+            mock_client_class.return_value.__enter__.return_value = mock_http_client
+
+            result = tool.execute(
+                wiki_identified="TestWiki.wiki",
+                page_id=42,
+                comment_text="This is a reply",
+                parent_comment_id=123,
+            )
+
+            # Verify parentId is included in request
+            call_args = mock_http_client.post.call_args
+            assert call_args[1]["json"]["text"] == "This is a reply"
+            assert call_args[1]["json"]["parentId"] == 123
+
+            # Verify response
+            assert result["comment_id"] == 456
+            assert result["parent_comment_id"] == 123
+
+    def test_add_comment_with_attachment(self):
+        """Scenario 3: Add a comment with a file attachment."""
+        config_with_files = {"input_files": [{"filename": "test-diagram.png", "content": b"fake-image-content"}]}
+        tool = self._make_tool(**config_with_files)
+
+        with patch("httpx.Client") as mock_client_class:
+            mock_http_client = Mock()
+
+            # Mock attachment upload response
+            upload_response = Mock()
+            upload_response.json.return_value = {"url": "https://dev.azure.com/attachments/abc123"}
+            upload_response.raise_for_status = Mock()
+
+            # Mock comment creation response
+            comment_response = Mock()
+            comment_response.json.return_value = {
+                "id": 789,
+                "text": "See attached diagram\n\n**Attachments:**\n- [test-diagram.png](https://dev.azure.com/attachments/abc123)\n",
+                "author": {"displayName": "Test User"},
+                "createdDate": "2024-01-15T12:00:00Z",
+                "modifiedDate": "2024-01-15T12:00:00Z",
+                "parentId": None,
+            }
+            comment_response.raise_for_status = Mock()
+
+            # Configure mock to return different responses for POST calls
+            mock_http_client.post.side_effect = [upload_response, comment_response]
+            mock_client_class.return_value.__enter__.return_value = mock_http_client
+
+            result = tool.execute(wiki_identified="TestWiki.wiki", page_id=42, comment_text="See attached diagram")
+
+            # Verify attachment upload was called
+            assert mock_http_client.post.call_count == 2
+            first_call = mock_http_client.post.call_args_list[0]
+            assert "_apis/wit/attachments" in first_call[0][0]
+
+            # Verify comment includes attachment link
+            second_call = mock_http_client.post.call_args_list[1]
+            assert "test-diagram.png" in second_call[1]["json"]["text"]
+            assert "https://dev.azure.com/attachments/abc123" in second_call[1]["json"]["text"]
+
+            # Verify response includes attachment metadata
+            assert result["attachment_count"] == 1
+            assert len(result["attachments"]) == 1
+            assert result["attachments"][0]["filename"] == "test-diagram.png"
+            assert result["attachments"][0]["url"] == "https://dev.azure.com/attachments/abc123"
+
+    def test_add_standalone_attachment(self):
+        """Scenario 4: Add an attachment as a standalone comment (no text body)."""
+        config_with_files = {"input_files": [{"filename": "error.log", "content": b"error log content"}]}
+        tool = self._make_tool(**config_with_files)
+
+        with patch("httpx.Client") as mock_client_class:
+            mock_http_client = Mock()
+
+            # Mock responses
+            upload_response = Mock()
+            upload_response.json.return_value = {"url": "https://dev.azure.com/attachments/log123"}
+            upload_response.raise_for_status = Mock()
+
+            comment_response = Mock()
+            comment_response.json.return_value = {
+                "id": 999,
+                "text": "**Attachments:**\n- [error.log](https://dev.azure.com/attachments/log123)\n",
+                "author": {"displayName": "Test User"},
+                "createdDate": "2024-01-15T13:00:00Z",
+                "modifiedDate": "2024-01-15T13:00:00Z",
+                "parentId": None,
+            }
+            comment_response.raise_for_status = Mock()
+
+            mock_http_client.post.side_effect = [upload_response, comment_response]
+            mock_client_class.return_value.__enter__.return_value = mock_http_client
+
+            # Empty comment text with attachment
+            result = tool.execute(wiki_identified="TestWiki.wiki", page_id=42, comment_text="")
+
+            # Verify comment was created with only attachment link
+            second_call = mock_http_client.post.call_args_list[1]
+            comment_text = second_call[1]["json"]["text"]
+            assert comment_text.startswith("**Attachments:**")
+            assert "error.log" in comment_text
+
+            assert result["attachment_count"] == 1
+
+    def test_invalid_attachment_size(self):
+        """Scenario 5: Handle error when attachment exceeds maximum size limit."""
+        # Create file larger than 19MB
+        large_content = b"x" * (20 * 1024 * 1024)  # 20MB
+        config_with_large_file = {"input_files": [{"filename": "large-file.bin", "content": large_content}]}
+        tool = self._make_tool(**config_with_large_file)
+
+        with pytest.raises(ToolException) as exc_info:
+            tool.execute(wiki_identified="TestWiki.wiki", page_id=42, comment_text="Too large")
+
+        assert "exceeds maximum size limit" in str(exc_info.value)
+        assert "large-file.bin" in str(exc_info.value)
+
+    def test_empty_comment_no_attachment(self):
+        """Validate that empty comment without attachment raises error."""
+        tool = self._make_tool()
+
+        with pytest.raises(ToolException) as exc_info:
+            tool.execute(wiki_identified="TestWiki.wiki", page_id=42, comment_text="")
+
+        assert "Either comment_text or at least one attachment file must be provided" in str(exc_info.value)
+
+    def test_page_not_found(self):
+        """Scenario 6: Handle error when Wiki page does not exist."""
+        tool = self._make_tool()
+
+        with patch("httpx.Client") as mock_client_class:
+            mock_http_client = Mock()
+            mock_response = Mock()
+            mock_response.status_code = 404
+            mock_response.text = "Page not found"
+            mock_http_client.post.side_effect = httpx.HTTPStatusError(
+                "404 error", request=Mock(), response=mock_response
+            )
+            mock_client_class.return_value.__enter__.return_value = mock_http_client
+
+            with pytest.raises(ToolException) as exc_info:
+                tool.execute(wiki_identified="TestWiki.wiki", page_id=99999, comment_text="Test")
+
+            assert "Wiki page not found (404)" in str(exc_info.value)
+
+    def test_insufficient_permissions(self):
+        """Scenario 7: Handle error when insufficient permissions."""
+        tool = self._make_tool()
+
+        with patch("httpx.Client") as mock_client_class:
+            mock_http_client = Mock()
+            mock_response = Mock()
+            mock_response.status_code = 403
+            mock_response.text = "Forbidden"
+            mock_http_client.post.side_effect = httpx.HTTPStatusError(
+                "403 error", request=Mock(), response=mock_response
+            )
+            mock_client_class.return_value.__enter__.return_value = mock_http_client
+
+            with pytest.raises(ToolException) as exc_info:
+                tool.execute(wiki_identified="TestWiki.wiki", page_id=42, comment_text="Test")
+
+            assert "Insufficient permissions (403)" in str(exc_info.value)
+            assert "add comments and upload attachments" in str(exc_info.value)
+
+
+class TestAddWikiCommentByPathTool:
+    """Tests for adding comments to wiki pages by path."""
+
+    @staticmethod
+    def _make_tool(**config_overrides):
+        base_config = {
+            "organization_url": "https://dev.azure.com/test-org",
+            "project": "test-project",
+            "token": "fake-token",
+        }
+        base_config.update(config_overrides)
+        config = AzureDevOpsWikiConfig(**base_config)
+        return AddWikiCommentByPathTool(config=config)
+
+    def test_add_comment_by_path_with_id_extraction(self):
+        """Successfully add comment using path with ID format like '/10330/Page-Name'."""
+        tool = self._make_tool()
+
+        # Mock _get_full_path_from_id
+        mock_client = Mock()
+        mock_page = WikiPageResponse(page=WikiPage(id=10330, path="/Parent/Child/Page"))
+        mock_client.get_page_by_id.return_value = mock_page
+        tool._client = mock_client
+
+        with patch("httpx.Client") as mock_client_class:
+            mock_http_client = Mock()
+            mock_response = Mock()
+            mock_response.json.return_value = {
+                "id": 555,
+                "text": "Comment via path",
+                "author": {"displayName": "Test User"},
+                "createdDate": "2024-01-15T14:00:00Z",
+                "modifiedDate": "2024-01-15T14:00:00Z",
+                "parentId": None,
+            }
+            mock_http_client.post.return_value = mock_response
+            mock_client_class.return_value.__enter__.return_value = mock_http_client
+
+            result = tool.execute(
+                wiki_identified="TestWiki.wiki", page_name="/10330/Page-Name", comment_text="Comment via path"
+            )
+
+            # Verify page ID was extracted from path
+            call_args = mock_http_client.post.call_args
+            assert "/pages/10330/comments" in call_args[0][0]
+
+            # Verify response includes page path
+            assert result["comment_id"] == 555
+            assert result["page_id"] == 10330
+            assert result["page_path"] == "/Parent/Child/Page"
+
+    def test_add_comment_by_full_path(self):
+        """Successfully add comment using full path like '/Documentation/Guide'."""
+        tool = self._make_tool()
+
+        # Mock page lookup by full path
+        mock_client = Mock()
+        mock_page = WikiPageResponse(page=WikiPage(id=77, path="/Documentation/Guide"))
+        mock_client.get_page.return_value = mock_page
+        tool._client = mock_client
+
+        with patch("httpx.Client") as mock_client_class:
+            mock_http_client = Mock()
+            mock_response = Mock()
+            mock_response.json.return_value = {
+                "id": 666,
+                "text": "Comment via full path",
+                "author": {"displayName": "Test User"},
+                "createdDate": "2024-01-15T15:00:00Z",
+                "modifiedDate": "2024-01-15T15:00:00Z",
+                "parentId": None,
+            }
+            mock_http_client.post.return_value = mock_response
+            mock_client_class.return_value.__enter__.return_value = mock_http_client
+
+            result = tool.execute(
+                wiki_identified="TestWiki.wiki",
+                page_name="/Documentation/Guide",
+                comment_text="Comment via full path",
+            )
+
+            # Verify page lookup was called
+            mock_client.get_page.assert_called_once()
+
+            # Verify comment was added
+            assert result["comment_id"] == 666
+            assert result["page_id"] == 77
+            assert result["page_path"] == "/Documentation/Guide"
+
+    def test_add_comment_by_path_not_found(self):
+        """Handle error when page path cannot be resolved."""
+        tool = self._make_tool()
+
+        # Mock page lookup failure
+        mock_client = Mock()
+        mock_client.get_page.side_effect = Exception("Page not found")
+        tool._client = mock_client
+
+        with pytest.raises(ToolException) as exc_info:
+            tool.execute(
+                wiki_identified="TestWiki.wiki",
+                page_name="/Nonexistent/Page",
+                comment_text="This should fail",
+            )
+
+        assert "Could not find page with path" in str(exc_info.value) or "Failed to add comment" in str(exc_info.value)

@@ -55,6 +55,8 @@ from codemie_tools.azure_devops.wiki.models import (
     GetPageStatsByPathInput,
     ListWikisInput,
     ListPagesInput,
+    AddWikiCommentByIdInput,
+    AddWikiCommentByPathInput,
 )
 from codemie_tools.azure_devops.wiki.tools_vars import (
     GET_WIKI_TOOL,
@@ -74,6 +76,8 @@ from codemie_tools.azure_devops.wiki.tools_vars import (
     GET_PAGE_STATS_BY_PATH_TOOL,
     LIST_WIKIS_TOOL,
     LIST_PAGES_TOOL,
+    ADD_WIKI_COMMENT_BY_ID_TOOL,
+    ADD_WIKI_COMMENT_BY_PATH_TOOL,
 )
 from codemie_tools.base.codemie_tool import CodeMieTool, logger
 from codemie_tools.base.file_tool_mixin import FileToolMixin
@@ -2038,3 +2042,268 @@ class GetPageStatsByPathTool(BaseAzureDevOpsWikiTool):
             page_id=page_id,
             page_views_for_days=page_views_for_days,
         )
+
+
+class AddWikiCommentByIdTool(BaseAzureDevOpsWikiTool, FileToolMixin):
+    """Tool to add a comment to a wiki page by ID in Azure DevOps.
+
+    Supports:
+    - Top-level comments on a page
+    - Replies to existing comment threads (via parent_comment_id)
+    - Comments with file attachments
+    - Standalone file attachments (empty comment text)
+    """
+
+    name: str = ADD_WIKI_COMMENT_BY_ID_TOOL.name
+    description: str = ADD_WIKI_COMMENT_BY_ID_TOOL.description
+    args_schema: Type[BaseModel] = AddWikiCommentByIdInput
+
+    def execute(
+        self,
+        wiki_identified: str,
+        page_id: int,
+        comment_text: str = "",
+        parent_comment_id: Optional[int] = None,
+    ):
+        """
+        Add a comment to a wiki page by page ID.
+
+        Args:
+            wiki_identified: Wiki ID or name
+            page_id: Page ID where the comment will be added
+            comment_text: Text content of the comment (can be empty if attachment provided)
+            parent_comment_id: Optional parent comment ID for threading
+
+        Returns:
+            Dict with comment details including ID, text, author, timestamps, and attachment metadata
+        """
+        try:
+            # Process attachments if provided via input_files
+            attachment_urls = []
+            attachment_metadata = []
+
+            if hasattr(self.config, "input_files") and self.config.input_files:
+                logger.info(f"Processing {len(self.config.input_files)} attachment(s) for comment...")
+
+                for file_obj in self.config.input_files:
+                    # Extract filename and content from FileObject (dict or object)
+                    if isinstance(file_obj, dict):
+                        filename = file_obj.get("filename", "attachment")
+                        content = file_obj.get("content")
+                    else:
+                        filename = file_obj.name if hasattr(file_obj, "name") else "attachment"
+                        content = file_obj.content if hasattr(file_obj, "content") else None
+
+                    if not content:
+                        logger.warning(f"Skipping file '{filename}' - no content provided")
+                        continue
+
+                    # Convert content to bytes if needed
+                    if isinstance(content, str):
+                        content = content.encode("utf-8")
+
+                    # Validate file size (19MB default limit)
+                    if len(content) > MAX_ATTACHMENT_SIZE:
+                        size_mb = len(content) / (1024 * 1024)
+                        raise ToolException(
+                            f"Attachment '{filename}' exceeds maximum size limit "
+                            f"({size_mb:.2f}MB > {MAX_ATTACHMENT_SIZE / (1024 * 1024)}MB)"
+                        )
+
+                    # Upload attachment using mixin
+                    attachment_url = self._upload_attachment(filename, content)
+                    attachment_urls.append(attachment_url)
+                    attachment_metadata.append({"filename": filename, "size": len(content), "url": attachment_url})
+
+                logger.info(f"Successfully uploaded {len(attachment_urls)} attachment(s)")
+
+            # Validate: must have either comment text or attachments
+            if not comment_text and not attachment_urls:
+                raise ToolException("Either comment_text or at least one attachment file must be provided")
+
+            # Build comment content with attachment links
+            final_comment_text = comment_text
+            if attachment_urls:
+                # Append attachment links to comment text
+                if final_comment_text and not final_comment_text.endswith("\n"):
+                    final_comment_text += "\n\n"
+                elif not final_comment_text:
+                    final_comment_text = ""
+
+                final_comment_text += "**Attachments:**\n"
+                for metadata in attachment_metadata:
+                    final_comment_text += f"- [{metadata['filename']}]({metadata['url']})\n"
+
+            # Construct the API URL
+            api_url = (
+                f"{self.config.organization_url}/{self.config.project}"
+                f"/_apis/wiki/wikis/{wiki_identified}/pages/{page_id}/comments"
+            )
+
+            # Build request body
+            request_body = {"text": final_comment_text}
+            if parent_comment_id is not None:
+                request_body["parentId"] = parent_comment_id
+
+            # Make the HTTP POST request
+            logger.info(
+                f"Adding comment to page {page_id} in wiki '{wiki_identified}' "
+                f"(parent: {parent_comment_id}, attachments: {len(attachment_urls)})"
+            )
+
+            with httpx.Client(timeout=120.0) as client:
+                response = client.post(
+                    api_url,
+                    params={"api-version": "7.1"},
+                    json=request_body,
+                    auth=("", self.config.token),  # Basic auth with empty username
+                )
+                response.raise_for_status()
+                result = response.json()
+
+            logger.info(f"Successfully added comment {result.get('id')} to page {page_id}")
+
+            # Build response with attachment metadata
+            response_data = {
+                "comment_id": result.get("id"),
+                "comment_text": result.get("text"),
+                "author": result.get("author"),
+                "created_date": result.get("createdDate"),
+                "modified_date": result.get("modifiedDate"),
+                "parent_comment_id": result.get("parentId"),
+                "page_id": page_id,
+                "attachments": attachment_metadata,
+                "attachment_count": len(attachment_metadata),
+            }
+
+            return response_data
+
+        except httpx.HTTPStatusError as e:
+            error_msg = self._format_http_error(e, "add comment to wiki page")
+            logger.error(error_msg)
+            raise ToolException(error_msg)
+        except Exception as e:
+            error_msg = f"Failed to add comment to wiki page: {str(e)}"
+            logger.error(f"{error_msg}\n{traceback.format_exc()}")
+            raise ToolException(error_msg)
+
+    def _format_http_error(self, e: httpx.HTTPStatusError, operation: str) -> str:
+        """Format HTTP error with appropriate user-friendly message."""
+        status_code = e.response.status_code
+        response_text = e.response.text
+
+        # Handle 400 errors with Azure DevOps specific messages
+        if status_code == 400:
+            # Try to parse Azure DevOps error message
+            if "Invalid parent comment" in response_text or "VS403690" in response_text:
+                return (
+                    f"Failed to {operation}: Invalid parent comment (400). "
+                    "The parent comment ID you specified is either a reply to another comment (not a top-level comment) "
+                    "or has been deleted. Please use a top-level comment ID as the parent, or omit parent_comment_id "
+                    "to create a new top-level comment."
+                )
+            return f"Failed to {operation}: Bad request (400). {response_text}"
+
+        error_messages = {
+            404: f"Failed to {operation}: Wiki page not found (404). Please verify the page exists.",
+            401: f"Failed to {operation}: Authentication failed (401). Please verify your Personal Access Token.",
+            403: (
+                f"Failed to {operation}: Insufficient permissions (403). "
+                "Please ensure your token has permissions to add comments and upload attachments."
+            ),
+            413: f"Failed to {operation}: Attachment too large (413). Maximum file size is 19MB.",
+        }
+
+        return error_messages.get(status_code, f"Failed to {operation}: HTTP {status_code} - {response_text}")
+
+
+class AddWikiCommentByPathTool(BaseAzureDevOpsWikiTool, FileToolMixin):
+    """Tool to add a comment to a wiki page by path in Azure DevOps.
+
+    Automatically resolves page ID from path, then adds the comment.
+
+    Supports:
+    - Top-level comments on a page
+    - Replies to existing comment threads (via parent_comment_id)
+    - Comments with file attachments
+    - Standalone file attachments (empty comment text)
+
+    Supports both ID-prefixed paths ('/10330/Page-Name') and full paths ('/Parent/Child/Page').
+    """
+
+    name: str = ADD_WIKI_COMMENT_BY_PATH_TOOL.name
+    description: str = ADD_WIKI_COMMENT_BY_PATH_TOOL.description
+    args_schema: Type[BaseModel] = AddWikiCommentByPathInput
+
+    def execute(
+        self,
+        wiki_identified: str,
+        page_name: str,
+        comment_text: str = "",
+        parent_comment_id: Optional[int] = None,
+    ):
+        """
+        Add a comment to a wiki page by page path.
+
+        Automatically resolves page ID from path. Supports both:
+        1. Path with ID format: '/10330/Page-Name' (extracts ID)
+        2. Full path format: '/Parent/Child/Page' (looks up ID)
+
+        Args:
+            wiki_identified: Wiki ID or name
+            page_name: Wiki page path
+            comment_text: Text content of the comment (can be empty if attachment provided)
+            parent_comment_id: Optional parent comment ID for threading
+
+        Returns:
+            Dict with comment details including ID, text, author, timestamps, page info, and attachment metadata
+        """
+        try:
+            # Try to extract page ID from path format like '/10330/This-is-sub-page'
+            page_id = self._extract_page_id_from_path(page_name)
+
+            if page_id is not None:
+                # Successfully extracted page ID from path
+                logger.info(f"Extracted page ID {page_id} from path '{page_name}'")
+                # Get full path for response metadata
+                full_path = self._get_full_path_from_id(wiki_identified, page_id)
+            else:
+                # Need to look up page ID from full path
+                logger.info(f"Looking up page ID for path '{page_name}'")
+                page_id, _, _ = self._get_page_info(
+                    wiki_identified=wiki_identified,
+                    page_path=page_name,
+                    include_content=False,
+                )
+
+                if page_id is None:
+                    raise ToolException(f"Could not find page with path '{page_name}' in wiki '{wiki_identified}'")
+
+                logger.info(f"Resolved page ID {page_id} for path '{page_name}'")
+                # Use the input path as the full path
+                full_path = page_name
+
+            # Use AddWikiCommentByIdTool to add the comment
+            # Create an instance with the same config
+            comment_by_id_tool = AddWikiCommentByIdTool(config=self.config)
+
+            # Execute the comment addition
+            result = comment_by_id_tool.execute(
+                wiki_identified=wiki_identified,
+                page_id=page_id,
+                comment_text=comment_text,
+                parent_comment_id=parent_comment_id,
+            )
+
+            # Add page path information to response
+            result["page_path"] = full_path
+
+            return result
+
+        except ToolException:
+            # Re-raise ToolException as-is (already formatted)
+            raise
+        except Exception as e:
+            error_msg = f"Failed to add comment to wiki page by path: {str(e)}"
+            logger.error(f"{error_msg}\n{traceback.format_exc()}")
+            raise ToolException(error_msg)

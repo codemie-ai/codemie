@@ -21,7 +21,7 @@ class TestAzureDevOpsWikiToolkit:
         toolkit_ui = AzureDevOpsWikiToolkit.get_definition()
         assert isinstance(toolkit_ui, AzureDevOpsWikiToolkitUI)
         assert toolkit_ui.toolkit == ToolSet.AZURE_DEVOPS_WIKI
-        assert len(toolkit_ui.tools) == 17
+        assert len(toolkit_ui.tools) == 19
         assert toolkit_ui.label == ToolSet.AZURE_DEVOPS_WIKI.value
 
 
@@ -32,7 +32,7 @@ class TestAzureDevOpsWikiToolkitUI:
 
     def test_tools_property(self):
         toolkit_ui = AzureDevOpsWikiToolkitUI()
-        assert len(toolkit_ui.tools) == 17
+        assert len(toolkit_ui.tools) == 19
 
         # Check that the tools are correctly defined
         tool_names = [tool.name for tool in toolkit_ui.tools]
@@ -53,3 +53,5 @@ class TestAzureDevOpsWikiToolkitUI:
         assert "add_attachment_to_wiki_page" in tool_names
         assert "get_wiki_page_stats_by_id" in tool_names
         assert "get_wiki_page_stats_by_path" in tool_names
+        assert "add_wiki_comment_by_id" in tool_names
+        assert "add_wiki_comment_by_path" in tool_names

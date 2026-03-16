@@ -34,6 +34,8 @@ from codemie_tools.azure_devops.wiki.tools import (
     AddWikiAttachmentTool,
     GetPageStatsByIdTool,
     GetPageStatsByPathTool,
+    AddWikiCommentByIdTool,
+    AddWikiCommentByPathTool,
 )
 from codemie_tools.azure_devops.wiki.tools_vars import (
     GET_WIKI_TOOL,
@@ -53,6 +55,8 @@ from codemie_tools.azure_devops.wiki.tools_vars import (
     ADD_ATTACHMENT_TOOL,
     GET_PAGE_STATS_BY_ID_TOOL,
     GET_PAGE_STATS_BY_PATH_TOOL,
+    ADD_WIKI_COMMENT_BY_ID_TOOL,
+    ADD_WIKI_COMMENT_BY_PATH_TOOL,
 )
 
 
@@ -76,6 +80,8 @@ class AzureDevOpsWikiToolkitUI(ToolKit):
         Tool.from_metadata(ADD_ATTACHMENT_TOOL, tool_class=AddWikiAttachmentTool),
         Tool.from_metadata(GET_PAGE_STATS_BY_ID_TOOL, tool_class=GetPageStatsByIdTool),
         Tool.from_metadata(GET_PAGE_STATS_BY_PATH_TOOL, tool_class=GetPageStatsByPathTool),
+        Tool.from_metadata(ADD_WIKI_COMMENT_BY_ID_TOOL, tool_class=AddWikiCommentByIdTool),
+        Tool.from_metadata(ADD_WIKI_COMMENT_BY_PATH_TOOL, tool_class=AddWikiCommentByPathTool),
     ]
     label: str = ToolSet.AZURE_DEVOPS_WIKI.value
     settings_config: bool = True

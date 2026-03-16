@@ -884,3 +884,188 @@ LIST_PAGES_TOOL = ToolMetadata(
         """.strip(),
     config_class=AzureDevOpsWikiConfig,
 )
+
+ADD_WIKI_COMMENT_BY_ID_TOOL = ToolMetadata(
+    name="add_wiki_comment_by_id",
+    description="""
+        Add a comment to an Azure DevOps wiki page by page ID. Supports top-level comments, threaded replies,
+        comments with file attachments, and standalone file attachments.
+
+        This tool enables AI agents to provide collaborative feedback, automated status updates, review notes,
+        and other comment-based interactions directly within Azure DevOps Wiki pages.
+
+        Arguments:
+        - wiki_identified (str): Wiki ID or wiki name. Example: "MyWiki.wiki". Regularly, ".wiki" is essential.
+        - page_id (int): Wiki page ID (numeric identifier) where the comment will be added
+        - comment_text (str, optional): Text content of the comment in Markdown format. Default: empty string.
+          Can be empty if an attachment is provided (standalone attachment comment).
+        - parent_comment_id (int, optional): Parent comment ID for threading. When provided, the new comment
+          will be added as a reply to the specified parent comment. Leave empty for top-level comments.
+
+        FILE ATTACHMENTS: If files are provided via input_files, they will be uploaded and attached to the comment.
+        Maximum file size: 19MB per file (default limit). Supports all file types.
+
+        Return Format:
+        Returns dict with:
+        - 'comment_id': ID of the created comment
+        - 'comment_text': The posted comment text
+        - 'author': Comment author information
+        - 'created_date': Comment creation timestamp
+        - 'parent_comment_id': Parent comment ID if this is a reply, otherwise null
+        - 'attachments': List of attachment metadata (filename, size, url) if files were attached
+        - 'attachment_count': Number of files attached
+
+        Usage Scenarios:
+        - Automated feedback: Post review comments, suggestions, or status updates on wiki pages
+        - Documentation notes: Add clarifications, corrections, or additional context to documentation
+        - Threaded discussions: Reply to existing comments to create organized discussion threads
+        - File sharing: Attach logs, screenshots, diagrams, or documents to wiki page comments
+        - Standalone attachments: Upload files as comments without text (for quick file sharing)
+
+        Examples:
+        - Add top-level comment:
+          wiki_identified: "CodeMie.wiki"
+          page_id: 10
+          comment_text: "This documentation needs to be updated with the latest API changes."
+          Result: Top-level comment created with ID, timestamp, and author info
+
+        - Reply to existing comment:
+          wiki_identified: "ProjectWiki.wiki"
+          page_id: 42
+          comment_text: "I agree, I've updated the section with the new examples."
+          parent_comment_id: 123
+          Result: Reply comment created under parent comment thread
+
+        - Comment with attachment:
+          wiki_identified: "Docs.wiki"
+          page_id: 15
+          comment_text: "Attaching the updated architecture diagram."
+          [Provide diagram file via input_files]
+          Result: Comment created with attached file (filename, size, download URL returned)
+
+        - Standalone attachment (no text):
+          wiki_identified: "TechDocs.wiki"
+          page_id: 99
+          comment_text: ""
+          [Provide log file via input_files]
+          Result: Comment created with only the attachment
+        """,
+    label="Add Wiki Comment By ID",
+    user_description="""
+        Adds a comment to an Azure DevOps wiki page using the page ID. Supports top-level comments,
+        threaded replies (via parent_comment_id), and file attachments.
+
+        Use this tool to:
+        - Post feedback, notes, or status updates on wiki pages
+        - Reply to existing comment threads
+        - Attach files (logs, diagrams, documents) to comments
+        - Share files quickly via standalone attachment comments
+
+        Before using it, you need to provide:
+        1. Azure DevOps organization URL
+        2. Project name
+        3. Personal Access Token with Wiki comment/attachment permissions
+        4. Optional: Files to attach via input_files field
+        """.strip(),
+    config_class=AzureDevOpsWikiConfig,
+)
+
+ADD_WIKI_COMMENT_BY_PATH_TOOL = ToolMetadata(
+    name="add_wiki_comment_by_path",
+    description="""
+        Add a comment to an Azure DevOps wiki page by page path. Automatically resolves the page ID from the path,
+        then posts the comment. Supports top-level comments, threaded replies, comments with file attachments,
+        and standalone file attachments.
+
+        This tool enables AI agents to provide collaborative feedback, automated status updates, review notes,
+        and other comment-based interactions directly within Azure DevOps Wiki pages.
+
+        IMPORTANT: When extracting from Azure DevOps wiki URLs, ALWAYS use the '/{page_id}/{page-slug}' format.
+        The tool will automatically resolve nested pages by discovering the full hierarchical path using the page ID.
+
+        Arguments:
+        - wiki_identified (str): Wiki ID or wiki name. Example: "MyWiki.wiki". Regularly, ".wiki" is essential.
+        - page_name (str): Wiki page path in one of these formats:
+          1. FROM URL (RECOMMENDED): Extract the '/{page_id}/{page-slug}' portion from the URL
+             Example URL: https://dev.azure.com/Org/Proj/_wiki/wikis/MyWiki.wiki/10/How-to-Create-App
+             Use page_name: "/10/How-to-Create-App" (the tool will resolve full nested path automatically)
+          2. FULL PATH: For direct path like "/Home" or "/Parent/Child/Page"
+        - comment_text (str, optional): Text content of the comment in Markdown format. Default: empty string.
+          Can be empty if an attachment is provided (standalone attachment comment).
+        - parent_comment_id (int, optional): Parent comment ID for threading. When provided, the new comment
+          will be added as a reply to the specified parent comment. Leave empty for top-level comments.
+
+        FILE ATTACHMENTS: If files are provided via input_files, they will be uploaded and attached to the comment.
+        Maximum file size: 19MB per file (default limit). Supports all file types.
+
+        Return Format:
+        Returns dict with:
+        - 'comment_id': ID of the created comment
+        - 'comment_text': The posted comment text
+        - 'author': Comment author information
+        - 'created_date': Comment creation timestamp
+        - 'parent_comment_id': Parent comment ID if this is a reply, otherwise null
+        - 'page_id': Resolved page ID
+        - 'page_path': Full page path
+        - 'attachments': List of attachment metadata (filename, size, url) if files were attached
+        - 'attachment_count': Number of files attached
+
+        Usage Scenarios:
+        - Automated feedback: Post review comments, suggestions, or status updates on wiki pages
+        - Documentation notes: Add clarifications, corrections, or additional context to documentation
+        - Threaded discussions: Reply to existing comments to create organized discussion threads
+        - File sharing: Attach logs, screenshots, diagrams, or documents to wiki page comments
+        - Standalone attachments: Upload files as comments without text (for quick file sharing)
+
+        Examples:
+        - Add comment from URL:
+          URL: https://dev.azure.com/Organization/Project/_wiki/wikis/CodeMie.wiki/10330/This-is-sub-page
+          wiki_identified: "CodeMie.wiki"
+          page_name: "/10330/This-is-sub-page" (ALWAYS use this format from URLs)
+          comment_text: "This page needs more examples."
+          Result: Top-level comment created with resolved page ID
+
+        - Reply to existing comment thread:
+          wiki_identified: "ProjectWiki.wiki"
+          page_name: "/Documentation/API-Reference"
+          comment_text: "Updated the examples section."
+          parent_comment_id: 456
+          Result: Reply comment added to thread
+
+        - Comment with attachment from URL:
+          URL: https://dev.azure.com/Org/Proj/_wiki/wikis/Docs.wiki/25/Architecture
+          wiki_identified: "Docs.wiki"
+          page_name: "/25/Architecture"
+          comment_text: "Attaching updated system diagram."
+          [Provide diagram file via input_files]
+          Result: Comment with attached file created
+
+        - Standalone attachment (no text):
+          wiki_identified: "TechDocs.wiki"
+          page_name: "/Troubleshooting/Common-Issues"
+          comment_text: ""
+          [Provide log file via input_files]
+          Result: Attachment-only comment created
+        """,
+    label="Add Wiki Comment By Path",
+    user_description="""
+        Adds a comment to an Azure DevOps wiki page using the page path. Automatically resolves the page ID
+        from the path. Supports top-level comments, threaded replies (via parent_comment_id), and file attachments.
+
+        For wiki URLs, extract the page ID and slug portion (e.g., '/123/Page-Name') and the tool will
+        automatically resolve nested page paths.
+
+        Use this tool to:
+        - Post feedback, notes, or status updates on wiki pages
+        - Reply to existing comment threads
+        - Attach files (logs, diagrams, documents) to comments
+        - Share files quickly via standalone attachment comments
+
+        Before using it, you need to provide:
+        1. Azure DevOps organization URL
+        2. Project name
+        3. Personal Access Token with Wiki comment/attachment permissions
+        4. Optional: Files to attach via input_files field
+        """.strip(),
+    config_class=AzureDevOpsWikiConfig,
+)

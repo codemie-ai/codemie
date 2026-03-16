@@ -299,3 +299,58 @@ class ListPagesInput(BaseModel):
         "For example: page_size=20, skip=0 (first page), skip=20 (second page), skip=40 (third page).",
         ge=0,
     )
+
+
+class AddWikiCommentByIdInput(BaseModel):
+    """Input model for adding a comment to a wiki page by page ID.
+
+    Supports:
+    - Top-level comments on a page
+    - Replies to existing comment threads (via parent_comment_id)
+    - Comments with file attachments
+    - Standalone file attachments (empty comment text)
+    """
+
+    wiki_identified: str = Field(description=WIKI_IDENTIFIER_DESCRIPTION)
+    page_id: int = Field(description="Wiki page ID (numeric identifier) where the comment will be added")
+    comment_text: str = Field(
+        default="",
+        description="Text content of the comment in Markdown format. "
+        "Can be empty if an attachment is provided (standalone attachment comment).",
+    )
+    parent_comment_id: Optional[int] = Field(
+        default=None,
+        description="Optional parent comment ID for threading. "
+        "When provided, the new comment will be added as a reply to the specified parent comment. "
+        "Leave empty for top-level comments.",
+    )
+
+
+class AddWikiCommentByPathInput(BaseModel):
+    """Input model for adding a comment to a wiki page by page path.
+
+    Supports:
+    - Top-level comments on a page
+    - Replies to existing comment threads (via parent_comment_id)
+    - Comments with file attachments
+    - Standalone file attachments (empty comment text)
+
+    Automatically resolves page ID from path (supports both ID-prefixed paths and full paths).
+    """
+
+    wiki_identified: str = Field(description=WIKI_IDENTIFIER_DESCRIPTION)
+    page_name: str = Field(
+        description="Wiki page path. For URLs, extract the '/{page_id}/{page-slug}' portion. "
+        "Example: from URL '...wikis/MyWiki.wiki/123/My-Page', use '/123/My-Page'"
+    )
+    comment_text: str = Field(
+        default="",
+        description="Text content of the comment in Markdown format. "
+        "Can be empty if an attachment is provided (standalone attachment comment).",
+    )
+    parent_comment_id: Optional[int] = Field(
+        default=None,
+        description="Optional parent comment ID for threading. "
+        "When provided, the new comment will be added as a reply to the specified parent comment. "
+        "Leave empty for top-level comments.",
+    )
