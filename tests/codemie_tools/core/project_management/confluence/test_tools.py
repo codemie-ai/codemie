@@ -154,8 +154,7 @@ class TestGenericConfluenceTool:
         mock_confluence_instance = MagicMock()
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.reason = "OK"
-        mock_response.text = '{"username": "testuser"}'
+        mock_response.text = '{"type": "known", "username": "testuser"}'
         mock_confluence_instance.request.return_value = mock_response
         mock_confluence_class.return_value = mock_confluence_instance
 
@@ -171,13 +170,46 @@ class TestGenericConfluenceTool:
 
     @patch('codemie_tools.core.project_management.confluence.tools.Confluence')
     @patch('codemie_tools.core.project_management.confluence.tools.validate_creds')
-    def test_healthcheck_failure(self, mock_validate_creds, mock_confluence_class, confluence_config):
+    def test_healthcheck_failure_unauthorized(self, mock_validate_creds, mock_confluence_class, confluence_config):
         # Setup
         mock_confluence_instance = MagicMock()
         mock_response = MagicMock()
         mock_response.status_code = 401
-        mock_response.reason = "Unauthorized"
         mock_response.text = '{"error": "Unauthorized"}'
+        mock_confluence_instance.request.return_value = mock_response
+        mock_confluence_class.return_value = mock_confluence_instance
+
+        tool = GenericConfluenceTool(config=confluence_config)
+
+        # Execute and Assert
+        with pytest.raises(AssertionError, match="Access denied"):
+            tool._healthcheck()
+
+    @patch('codemie_tools.core.project_management.confluence.tools.Confluence')
+    @patch('codemie_tools.core.project_management.confluence.tools.validate_creds')
+    def test_healthcheck_failure_html_response(self, mock_validate_creds, mock_confluence_class, confluence_config):
+        # Setup
+        mock_confluence_instance = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = '<html><body>Login required</body></html>'
+        mock_confluence_instance.request.return_value = mock_response
+        mock_confluence_class.return_value = mock_confluence_instance
+
+        tool = GenericConfluenceTool(config=confluence_config)
+
+        # Execute and Assert
+        with pytest.raises(AssertionError, match="Access denied"):
+            tool._healthcheck()
+
+    @patch('codemie_tools.core.project_management.confluence.tools.Confluence')
+    @patch('codemie_tools.core.project_management.confluence.tools.validate_creds')
+    def test_healthcheck_failure_error_json(self, mock_validate_creds, mock_confluence_class, confluence_config):
+        # Setup
+        mock_confluence_instance = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = '{"message": "Authentication failed"}'
         mock_confluence_instance.request.return_value = mock_response
         mock_confluence_class.return_value = mock_confluence_instance
 

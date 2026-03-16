@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import json
 import logging
 import re
 from typing import Optional, Type, Any, Dict, Union
@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 # Url that is used for testing confluence integration
 CONFLUENCE_TEST_URL: str = "/rest/api/user/current"
-CONFLUENCE_TEST_RESPONSE: str = "HTTP: GET/rest/api/user/current -> 200"
 CONFLUENCE_ERROR_MSG: str = "Access denied"
 
 
@@ -91,14 +90,7 @@ class GenericConfluenceTool(CodeMieTool, FileToolMixin):
     throw_truncated_error: bool = False
     page_action_prefix: str = "/rest/api/content"
 
-    def execute(
-        self,
-        method: str,
-        relative_url: str,
-        params: Optional[str] = "",
-        is_markdown: bool = False,
-        *args,
-    ):
+    def _create_client(self) -> Confluence:
         confluence = Confluence(
             url=self.config.url,
             username=self.config.username if self.config.username else None,
@@ -107,6 +99,17 @@ class GenericConfluenceTool(CodeMieTool, FileToolMixin):
             cloud=self.config.cloud,
         )
         validate_creds(confluence)
+        return confluence
+
+    def execute(
+        self,
+        method: str,
+        relative_url: str,
+        params: Optional[str] = "",
+        is_markdown: bool = False,
+        *args,
+    ):
+        confluence = self._create_client()
 
         if self._is_attachment_operation(relative_url):
             all_files = self._resolve_files()
@@ -142,8 +145,16 @@ class GenericConfluenceTool(CodeMieTool, FileToolMixin):
         return response.text
 
     def _healthcheck(self):
-        response = self.execute("GET", CONFLUENCE_TEST_URL)
-        assert response.startswith(CONFLUENCE_TEST_RESPONSE), CONFLUENCE_ERROR_MSG
+        confluence = self._create_client()
+        response = confluence.request(method="GET", path=CONFLUENCE_TEST_URL, params={}, advanced_mode=True)
+        if response.status_code != 200:
+            raise AssertionError(CONFLUENCE_ERROR_MSG)
+        try:
+            data = json.loads(response.text)
+        except (json.JSONDecodeError, TypeError):
+            raise AssertionError(CONFLUENCE_ERROR_MSG)
+        if "type" not in data:
+            raise AssertionError(CONFLUENCE_ERROR_MSG)
 
     def _is_attachment_operation(self, relative_url: str) -> bool:
         """Check if the operation is for file attachments."""
