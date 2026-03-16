@@ -257,7 +257,8 @@ def _prepare_proxy_headers(request: Request) -> dict | Response:
         except HTTPException as e:
             return Response(content=e.detail, status_code=e.status_code)
     else:
-        headers["Authorization"] = f"Bearer {config.LITE_LLM_APP_KEY}"
+        proxy_key = config.LITE_LLM_PROXY_APP_KEY or config.LITE_LLM_APP_KEY
+        headers["Authorization"] = f"Bearer {proxy_key}"
 
     # Add project tags from context
     try:

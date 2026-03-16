@@ -384,6 +384,8 @@ class Config(BaseSettings):
     LLM_PROXY_EMBEDDINGS_DISABLED: bool = False  # Bypass LiteLLM for embeddings, use native providers
     LITE_LLM_URL: str = ""
     LITE_LLM_APP_KEY: str = ""
+    # Optional key for proxy endpoints used by coding agents; falls back to LITE_LLM_APP_KEY
+    LITE_LLM_PROXY_APP_KEY: str = ""
     LITE_LLM_MASTER_KEY: str = ""
     LLM_PROXY_TIMEOUT: int = 300
     LLM_PROXY_LANGFUSE_TRACES: bool = False

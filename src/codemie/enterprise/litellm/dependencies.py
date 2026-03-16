@@ -91,7 +91,7 @@ def initialize_litellm_from_config() -> Optional["LiteLLMService"]:
         litellm_config = LiteLLMConfig(
             url=config.LITE_LLM_URL,
             master_key=config.LITE_LLM_MASTER_KEY,
-            app_key=config.LITE_LLM_APP_KEY if hasattr(config, "LITE_LLM_APP_KEY") else None,
+            app_key=config.LITE_LLM_APP_KEY or None,
             enabled=config.LLM_PROXY_ENABLED,
             budget_check_enabled=config.LLM_PROXY_BUDGET_CHECK_ENABLED,
             fail_open_on_503=config.LITELLM_FAIL_OPEN_ON_503,

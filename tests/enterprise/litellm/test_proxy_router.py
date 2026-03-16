@@ -141,6 +141,7 @@ class TestPrepareProxyHeaders:
 
         with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
             mock_config.LITE_LLM_APP_KEY = "test-app-key"
+            mock_config.LITE_LLM_PROXY_APP_KEY = ""
             with patch("codemie.enterprise.litellm.proxy_router.litellm_context") as mock_context:
                 mock_context.get.side_effect = LookupError()
 
@@ -156,8 +157,23 @@ class TestPrepareProxyHeaders:
         assert "transfer-encoding" not in result
         assert HEADER_CODEMIE_CLIENT not in result
 
-        # Should set authorization to app key
+        # Should fall back to app key when proxy key is not set
         assert result["Authorization"] == "Bearer test-app-key"
+
+    def test_prepare_headers_uses_proxy_key_when_set(self):
+        """Test that proxy key takes precedence over app key when configured."""
+        mock_request = MagicMock()
+        mock_request.headers = Headers({"content-type": "application/json"})
+
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.LITE_LLM_APP_KEY = "platform-key"
+            mock_config.LITE_LLM_PROXY_APP_KEY = "proxy-key"
+            with patch("codemie.enterprise.litellm.proxy_router.litellm_context") as mock_context:
+                mock_context.get.side_effect = LookupError()
+
+                result = _prepare_proxy_headers(mock_request)
+
+        assert result["Authorization"] == "Bearer proxy-key"
 
     def test_prepare_headers_with_integration(self):
         """Test preparing headers with integration ID."""
@@ -213,6 +229,7 @@ class TestPrepareProxyHeaders:
 
         with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
             mock_config.LITE_LLM_APP_KEY = "test-app-key"
+            mock_config.LITE_LLM_PROXY_APP_KEY = ""
             with patch("codemie.enterprise.litellm.proxy_router.litellm_context") as mock_context:
                 mock_context.get.return_value = mock_context_obj
                 with patch("codemie.enterprise.litellm.proxy_router.generate_litellm_headers_from_context") as mock_gen:
