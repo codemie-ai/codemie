@@ -61,7 +61,7 @@ class TestProjectCreationEndpoint:
     ):
         mock_config.ENABLE_USER_MANAGEMENT = True
         project = SimpleNamespace(
-            name="DataPipeline",
+            name="data-pipeline",
             description="Analytics pipeline",
             project_type="shared",
             created_by="user-1",
@@ -70,14 +70,14 @@ class TestProjectCreationEndpoint:
         mock_project_service.create_shared_project.return_value = project
 
         response = create_project(
-            payload=ProjectCreateRequest(name="DataPipeline", description="Analytics pipeline"),
+            payload=ProjectCreateRequest(name="data-pipeline", description="Analytics pipeline"),
             user=regular_user,
         )
 
-        assert response.name == "DataPipeline"
+        assert response.name == "data-pipeline"
         mock_project_service.create_shared_project.assert_called_once_with(
             user=regular_user,
-            project_name="DataPipeline",
+            project_name="data-pipeline",
             description="Analytics pipeline",
         )
 
@@ -91,7 +91,7 @@ class TestProjectCreationEndpoint:
     ):
         mock_config.ENABLE_USER_MANAGEMENT = True
         mock_project_service.create_shared_project.return_value = SimpleNamespace(
-            name="DataPipeline",
+            name="data-pipeline",
             description="Analytics pipeline",
             project_type="shared",
             created_by="user-1",
@@ -99,11 +99,11 @@ class TestProjectCreationEndpoint:
         )
 
         response = create_project(
-            payload=ProjectCreateRequest(name="DataPipeline", description="Analytics pipeline"),
+            payload=ProjectCreateRequest(name="data-pipeline", description="Analytics pipeline"),
             user=regular_user,
         )
 
-        assert response.name == "DataPipeline"
+        assert response.name == "data-pipeline"
         assert response.description == "Analytics pipeline"
         assert response.project_type == "shared"
         assert response.created_by == "user-1"
@@ -120,17 +120,17 @@ class TestProjectCreationEndpoint:
         mock_config.ENABLE_USER_MANAGEMENT = True
         mock_project_service.create_shared_project.side_effect = ExtendedHTTPException(
             code=409,
-            message="Project 'MyProject' already exists. Please choose a different name.",
+            message="Project 'my-project' already exists. Please choose a different name.",
         )
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
             create_project(
-                payload=ProjectCreateRequest(name="myproject", description="desc"),
+                payload=ProjectCreateRequest(name="my-project", description="desc"),
                 user=regular_user,
             )
 
         assert exc_info.value.code == 409
-        assert exc_info.value.message == "Project 'MyProject' already exists. Please choose a different name."
+        assert exc_info.value.message == "Project 'my-project' already exists. Please choose a different name."
 
 
 class TestProjectsVisibilityEndpoints:

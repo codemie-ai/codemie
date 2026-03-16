@@ -35,7 +35,7 @@ class ProjectService:
     MIN_PROJECT_NAME_LENGTH: Final[int] = 3
     MAX_PROJECT_NAME_LENGTH: Final[int] = 100
     MAX_PROJECT_DESCRIPTION_LENGTH: Final[int] = 500
-    PROJECT_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+    PROJECT_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
     RESERVED_PROJECT_NAMES: Final[set[str]] = {
         "admin",
         "system",
@@ -48,9 +48,9 @@ class ProjectService:
         "demo",
     }
     INVALID_PROJECT_NAME_MESSAGE: Final[str] = (
-        "Invalid project name. Must be 3-100 alphanumeric characters (underscore/hyphen allowed), "
-        "cannot start with special character, and cannot use reserved names "
-        "(admin, system, root, api, null, undefined, default, test, demo)"
+        "Invalid project name. Must be 3-100 lowercase alphanumeric characters (underscore/hyphen allowed), "
+        "cannot contain uppercase letters, cannot start with special character, "
+        "and cannot use reserved names (admin, system, root, api, null, undefined, default, test, demo)"
     )
     LIMIT_REACHED_MESSAGE_TEMPLATE: Final[str] = (
         "Project creation limit reached ({count}/{limit}). Contact administrator to increase your limit."

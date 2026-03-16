@@ -55,7 +55,7 @@ class TestProjectServiceCreateSharedProject:
         mock_application_repository.count_shared_projects_created_by_user.return_value = 1
         mock_application_repository.get_by_name_case_insensitive.return_value = None
         project = SimpleNamespace(
-            name="DataPipeline",
+            name="data-pipeline",
             description="Analytics pipeline",
             project_type="shared",
             created_by="user-1",
@@ -65,14 +65,14 @@ class TestProjectServiceCreateSharedProject:
 
         result = ProjectService.create_shared_project(
             user=regular_user,
-            project_name="DataPipeline",
+            project_name="data-pipeline",
             description="Analytics pipeline",
         )
 
         assert result is project
         mock_application_repository.create.assert_called_once_with(
             session=mock_session,
-            name="DataPipeline",
+            name="data-pipeline",
             description="Analytics pipeline",
             project_type="shared",
             created_by="user-1",
@@ -80,7 +80,7 @@ class TestProjectServiceCreateSharedProject:
         mock_user_project_repository.add_project.assert_called_once_with(
             session=mock_session,
             user_id="user-1",
-            project_name="DataPipeline",
+            project_name="data-pipeline",
             is_project_admin=True,
         )
         mock_session.commit.assert_called_once()
@@ -99,17 +99,17 @@ class TestProjectServiceCreateSharedProject:
         mock_get_session.return_value.__enter__.return_value = mock_session
         mock_user_repository.get_active_by_id.return_value = MagicMock(project_limit=3)
         mock_application_repository.count_shared_projects_created_by_user.return_value = 0
-        mock_application_repository.get_by_name_case_insensitive.return_value = SimpleNamespace(name="MyProject")
+        mock_application_repository.get_by_name_case_insensitive.return_value = SimpleNamespace(name="my-project")
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
             ProjectService.create_shared_project(
                 user=regular_user,
-                project_name="myproject",
+                project_name="my-project",
                 description="desc",
             )
 
         assert exc_info.value.code == 409
-        assert exc_info.value.message == "Project 'MyProject' already exists. Please choose a different name."
+        assert exc_info.value.message == "Project 'my-project' already exists. Please choose a different name."
 
     @patch("codemie.service.user.project_service.application_repository")
     @patch("codemie.service.user.project_service.user_repository")
@@ -127,7 +127,7 @@ class TestProjectServiceCreateSharedProject:
         mock_application_repository.count_shared_projects_created_by_user.return_value = 0
         mock_application_repository.get_by_name_case_insensitive.side_effect = [
             None,
-            SimpleNamespace(name="MyProject"),
+            SimpleNamespace(name="my-project"),
         ]
         integrity_error = IntegrityError("stmt", "params", Exception("duplicate"))
         mock_application_repository.create.side_effect = integrity_error
@@ -135,12 +135,12 @@ class TestProjectServiceCreateSharedProject:
         with pytest.raises(ExtendedHTTPException) as exc_info:
             ProjectService.create_shared_project(
                 user=regular_user,
-                project_name="myproject",
+                project_name="my-project",
                 description="desc",
             )
 
         assert exc_info.value.code == 409
-        assert exc_info.value.message == "Project 'MyProject' already exists. Please choose a different name."
+        assert exc_info.value.message == "Project 'my-project' already exists. Please choose a different name."
         assert exc_info.value.__cause__ is integrity_error
         mock_session.rollback.assert_called_once()
 
@@ -162,7 +162,7 @@ class TestProjectServiceCreateSharedProject:
         with pytest.raises(ExtendedHTTPException) as exc_info:
             ProjectService.create_shared_project(
                 user=regular_user,
-                project_name="NewProject",
+                project_name="new-project",
                 description="desc",
             )
 
@@ -191,7 +191,7 @@ class TestProjectServiceCreateSharedProject:
         with pytest.raises(ExtendedHTTPException) as exc_info:
             ProjectService.create_shared_project(
                 user=regular_user,
-                project_name="LegacyHeavyUserProject",
+                project_name="legacy-heavy-user-project",
                 description="desc",
             )
 
@@ -220,7 +220,7 @@ class TestProjectServiceCreateSharedProject:
         with pytest.raises(ExtendedHTTPException) as exc_info:
             ProjectService.create_shared_project(
                 user=regular_user,
-                project_name="BlockedProject",
+                project_name="blocked-project",
                 description="desc",
             )
 
@@ -248,7 +248,7 @@ class TestProjectServiceCreateSharedProject:
         with pytest.raises(ExtendedHTTPException) as exc_info:
             ProjectService.create_shared_project(
                 user=regular_user,
-                project_name="CorruptedLimitProject",
+                project_name="corrupted-limit-project",
                 description="desc",
             )
 
@@ -272,7 +272,7 @@ class TestProjectServiceCreateSharedProject:
         with pytest.raises(ExtendedHTTPException) as exc_info:
             ProjectService.create_shared_project(
                 user=regular_user,
-                project_name="MyProject",
+                project_name="my-project",
                 description="desc",
             )
 
@@ -295,7 +295,7 @@ class TestProjectServiceCreateSharedProject:
         mock_get_session.return_value.__enter__.return_value = mock_session
         mock_application_repository.get_by_name_case_insensitive.return_value = None
         project = SimpleNamespace(
-            name="AdminProject",
+            name="admin-project",
             description="desc",
             project_type="shared",
             created_by="admin-1",
@@ -305,7 +305,7 @@ class TestProjectServiceCreateSharedProject:
 
         result = ProjectService.create_shared_project(
             user=super_admin_user,
-            project_name="AdminProject",
+            project_name="admin-project",
             description="desc",
         )
 
@@ -316,7 +316,9 @@ class TestProjectServiceCreateSharedProject:
 
 
 class TestProjectServiceValidation:
-    @pytest.mark.parametrize("name", ["my project", "test.env", "project@work", "hello/world", "_private", "-draft"])
+    @pytest.mark.parametrize(
+        "name", ["my project", "test.env", "project@work", "hello/world", "_private", "-draft", "MyProject"]
+    )
     def test_invalid_name_pattern_returns_400(self, name):
         with pytest.raises(ExtendedHTTPException) as exc_info:
             ProjectService.create_shared_project(
@@ -352,7 +354,7 @@ class TestProjectServiceValidation:
 
     @pytest.mark.parametrize(
         "reserved_name",
-        ["Admin", "system", "Root", "API", "null", "Undefined", "DEFAULT", "test", "Demo"],
+        ["admin", "system", "root", "api", "null", "undefined", "default", "test", "demo"],
     )
     def test_reserved_name_returns_400(self, reserved_name):
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -370,7 +372,7 @@ class TestProjectServiceValidation:
         with pytest.raises(ExtendedHTTPException) as exc_info:
             ProjectService.create_shared_project(
                 user=User(id="u1", username="u1", email="u1@example.com"),
-                project_name="ValidName",
+                project_name="valid-name",
                 description=description,
             )
 
@@ -381,7 +383,7 @@ class TestProjectServiceValidation:
         with pytest.raises(ExtendedHTTPException) as exc_info:
             ProjectService.create_shared_project(
                 user=User(id="u1", username="u1", email="u1@example.com"),
-                project_name="ValidName",
+                project_name="valid-name",
                 description="a" * 501,
             )
 
