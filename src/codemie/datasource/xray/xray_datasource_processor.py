@@ -190,6 +190,7 @@ class XrayDatasourceProcessor(BaseDatasourceProcessor):
             "client_secret": credentials.client_secret,
             "limit": credentials.limit or 100,
             "verify_ssl": credentials.verify_ssl,
+            "timeout": credentials.timeout or 300,
         }
 
         if incremental_reindex:

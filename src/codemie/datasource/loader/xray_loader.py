@@ -64,6 +64,7 @@ class XrayLoader(BaseLoader, BaseDatasourceLoader):
         limit: int = 100,
         verify_ssl: bool = True,
         updated_gte: Optional[datetime] = None,
+        timeout: int = 300,
     ):
         self.jql = jql
         self.url = url
@@ -72,6 +73,7 @@ class XrayLoader(BaseLoader, BaseDatasourceLoader):
         self.limit = limit
         self.verify_ssl = verify_ssl
         self.updated_gte = updated_gte
+        self.timeout = timeout
 
     def lazy_load(self) -> Iterator[Document]:
         """Loads the tests by JQL and returns Langchain Docs"""
@@ -151,6 +153,7 @@ class XrayLoader(BaseLoader, BaseDatasourceLoader):
             client_secret=self.client_secret,
             limit=self.limit,
             verify_ssl=self.verify_ssl,
+            timeout=self.timeout,
         )
 
     def _transform_to_doc(self, test: dict) -> Document:

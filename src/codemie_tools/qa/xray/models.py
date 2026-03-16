@@ -51,6 +51,8 @@ class XrayConfig(CodeMieToolConfig):
 
     verify_ssl: Optional[bool] = Field(default=True, description="Verify SSL certificates for API requests")
 
+    timeout: Optional[int] = Field(default=300, description="Read timeout in seconds for Xray API requests")
+
     @field_validator("limit", mode="before")
     @classmethod
     def empty_string_to_default(cls, v):
