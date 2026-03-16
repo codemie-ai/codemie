@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 import re
 from time import time
 from typing import List, Optional, TypedDict
@@ -73,15 +73,14 @@ class BedrockAgentService(BaseBedrockService):
 
         # Parallelize the AWS API calls
         with ThreadPoolExecutor(max_workers=min(len(paged_settings), 10)) as executor:
-            # Submit all tasks
-            future_to_setting = {
-                executor.submit(BedrockAgentService._fetch_main_entity_names_for_setting, setting): setting
+            # Submit all tasks, preserving submission order
+            futures = [
+                executor.submit(BedrockAgentService._fetch_main_entity_names_for_setting, setting)
                 for setting in paged_settings
-            }
+            ]
 
-            # Collect results as they complete
-            for future in as_completed(future_to_setting):
-                setting = future_to_setting[future]
+            # Collect results in submission order to keep stable pagination order
+            for setting, future in zip(paged_settings, futures, strict=False):
                 try:
                     agent_names = future.result()
 

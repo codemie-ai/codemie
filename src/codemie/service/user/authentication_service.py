@@ -61,6 +61,19 @@ def clear_auth_token_cache() -> None:
     _auth_token_cache.clear()
 
 
+def invalidate_user_from_cache(user_id: str) -> None:
+    """Invalidate all auth token cache entries for a specific user.
+
+    Called after admin user-profile updates to ensure subsequent
+    requests reflect updated data instead of stale cached values.
+    """
+    tokens_to_remove = [token for token, user in list(_auth_token_cache.items()) if user.id == user_id]
+    for token in tokens_to_remove:
+        _auth_token_cache.pop(token, None)
+    if tokens_to_remove:
+        logger.debug(f"auth_cache_invalidated: user_id={user_id}, tokens_removed={len(tokens_to_remove)}")
+
+
 class AuthenticationService:
     """Service for user authentication business logic."""
 

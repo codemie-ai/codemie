@@ -33,6 +33,7 @@ from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.user_repository import user_repository
+from codemie.service.user.authentication_service import invalidate_user_from_cache
 from codemie.rest_api.models.user_management import (
     UserDB,
     CodeMieUserDetail,
@@ -969,6 +970,8 @@ class UserManagementService:
                 raise ExtendedHTTPException(code=404, message=_USER_NOT_FOUND)
 
             session.commit()
+
+            invalidate_user_from_cache(user_id)
 
             # Story 10: Get actor's super admin status for visibility filtering
             actor = user_repository.get_by_id(session, actor_user_id)
