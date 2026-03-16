@@ -505,6 +505,20 @@ class UserManagementService:
 
             session.commit()
 
+            # Assign default LiteLLM budget immediately upon user creation
+            from codemie.enterprise.litellm.dependencies import get_litellm_service_or_none
+
+            litellm_svc = get_litellm_service_or_none()
+            if litellm_svc:
+                try:
+                    _ = litellm_svc.get_or_create_customer_with_budget(new_user_id)
+                    logger.debug(f"LiteLLM default budget assigned for new user: {new_user_id}")
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to assign LiteLLM budget for new user {new_user_id}, "
+                        f"will retry on first LLM request: {e}"
+                    )
+
             logger.info(f"user_created: actor_user_id={actor_user_id}, target_user_id={new_user_id}")
 
             # Story 10: Get actor's super admin status for visibility filtering

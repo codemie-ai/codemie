@@ -488,6 +488,7 @@ class AuthenticationService:
         AuthenticationService._validate_user_id_uuid(user_id)
 
         pre_sync_email = None
+        is_new_user = False
         async with get_async_session() as session:
             db_user = await user_repository.aget_by_id(session, user_id)
 
@@ -497,12 +498,31 @@ class AuthenticationService:
                 db_user, pre_sync_email = await AuthenticationService._create_or_recover_user(
                     session, user_id, idp_user
                 )
+                is_new_user = True
 
             if not db_user.is_active or db_user.deleted_at is not None:
                 raise ExtendedHTTPException(code=401, message=_ACCOUNT_DEACTIVATED)
 
             security_user_ins = AuthenticationService._build_security_user(db_user, auth_token)
             await session.commit()
+
+        if is_new_user:
+            import asyncio
+
+            from codemie.enterprise.litellm.dependencies import get_litellm_service_or_none
+
+            litellm_svc = get_litellm_service_or_none()
+            if litellm_svc:
+                try:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, litellm_svc.get_or_create_customer_with_budget, security_user_ins.id
+                    )
+                    logger.debug(f"LiteLLM default budget assigned for new user: {security_user_ins.id}")
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to assign LiteLLM budget for new user {security_user_ins.id}, "
+                        f"will retry on first LLM request: {e}"
+                    )
 
         if pre_sync_email and security_user_ins.email != pre_sync_email:
             await personal_project_service.reconcile_personal_project_on_email_change(
