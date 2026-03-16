@@ -499,6 +499,9 @@ class Config(BaseSettings):
     CUSTOM_GUARDRAILS_MESSAGE: str = "Content Blocked Exception"
     HIDE_AGENT_STREAMING_EXCEPTIONS: bool = False
 
+    # HHTP requests configuration
+    HTTPS_VERIFY_SSL: bool = True  # verify SSL context of request, for development and testing configure to `False`
+
     @property
     def verbose(self) -> bool:
         """Verbose setting used for LLM logging"""

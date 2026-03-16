@@ -154,7 +154,7 @@ class TestOpenApiTools:
             data=body if body else None,
             timeout=config.timeout,
             # it must be false for internal tools and usage
-            verify=False,
+            verify=True,
         )
         assert result == expected_result
 
@@ -179,7 +179,7 @@ class TestOpenApiTools:
             headers={},
             data=None,
             timeout=60,
-            verify=False,
+            verify=True,
         )
         assert result == '{"result": "success"}'
 
@@ -312,7 +312,7 @@ class TestOpenApiTools:
             headers={},
             data=None,
             timeout=custom_timeout,
-            verify=False,
+            verify=True,
         )
         assert result == '{"result": "success"}'
 
@@ -338,7 +338,7 @@ class TestOpenApiTools:
             headers={},  # No auth headers since api_key is empty
             data=None,
             timeout=120,  # Default timeout
-            verify=False,
+            verify=True,
         )
         assert result == '{"result": "success"}'
 

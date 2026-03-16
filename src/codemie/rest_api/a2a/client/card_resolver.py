@@ -93,7 +93,10 @@ class A2ACardResolver:
                 except Exception as e:
                     logger.warning(f"Failed to get A2A credentials: {e}")
 
-            async with httpx.AsyncClient(verify=False, follow_redirects=True) as client:
+            async with httpx.AsyncClient(
+                verify=config.HTTPS_VERIFY_SSL,
+                follow_redirects=True,
+            ) as client:
                 response = await client.get(agent_url, headers=headers, timeout=config.A2A_AGENT_CARD_FETCH_TIMEOUT)
 
                 if response.status_code != 200:
