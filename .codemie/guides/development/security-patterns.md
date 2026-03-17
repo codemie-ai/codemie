@@ -392,25 +392,106 @@ def decrypt(self, data: str):
         return response['Plaintext'].decode()
     except Exception as e:
         logger.error(f"Failed to decrypt data: {e}")
-        return data  # Fail gracefully, return original
+        raise e  # ⚠️ SECURITY FIX: Raise exception instead of returning plaintext
+                 # Returning original data masks corruption/tampering
 ```
+
+### Envelope Encryption for Large Data
+
+**Use Case**: Encrypting data exceeding cloud KMS size limits (Azure Key Vault RSA-OAEP: ~190 bytes)
+
+**Pattern**: Industry-standard envelope encryption (AWS KMS, GCP Cloud KMS, Azure Key Vault)
+
+```python
+from codemie.service.encryption.azure_encryption_service import AzureKMSEncryptionService
+
+service = AzureKMSEncryptionService()
+
+# ✅ Encrypts large credentials using envelope encryption (no size limit)
+large_token = "Bearer " + "x" * 500  # 507 bytes (exceeds RSA-OAEP limit)
+encrypted = service.encrypt(large_token)
+# Format: v1.wrapped_key.encrypted_data
+# - Ephemeral AES-256 key encrypts data locally
+# - Azure Key Vault wraps only the 32-byte AES key
+# - Stored as: v1.<base64(wrapped_key)>.<base64(nonce+ciphertext+tag)>
+
+decrypted = service.decrypt(encrypted)
+# Automatic format detection (envelope vs. legacy RSA-OAEP)
+
+# ✅ Backward compatible with legacy RSA-OAEP encrypted data
+legacy_encrypted = "aBc123...xyz"  # No dots = legacy format
+decrypted_legacy = service.decrypt(legacy_encrypted)  # Automatic fallback
+```
+
+**Security Properties**:
+
+| Requirement              | Implementation                             | Standard                                       |
+| ------------------------ | ------------------------------------------ | ---------------------------------------------- |
+| **Key Generation**       | `os.urandom(32)` for DEK                   | NIST SP 800-90A (cryptographically secure)     |
+| **Nonce Generation**     | `os.urandom(12)` per operation             | NIST SP 800-38D (96-bit GCM nonce)             |
+| **Encryption Algorithm** | AES-256-GCM                                | FIPS 140-2 certified, authenticated encryption |
+| **Key Wrapping**         | Azure Key Vault RSA-OAEP                   | Cloud HSM-backed, audit logged                 |
+| **Authentication**       | GCM auth tag (16 bytes)                    | Validates integrity + authenticity             |
+| **Key Lifecycle**        | Ephemeral DEK (discarded after encryption) | Zero key reuse, unique per operation           |
+| **Format Versioning**    | `v1.` prefix                               | Enables future algorithm upgrades              |
+
+**Security Requirements Checklist**:
+- ✅ Nonces generated with `os.urandom(12)` (cryptographically secure, not counters)
+- ✅ Unique DEK per encryption (ephemeral keys, never stored)
+- ✅ GCM authentication tag validates integrity before returning plaintext
+- ✅ Backward compatible with legacy RSA-OAEP format (automatic detection)
+- ✅ Exception raised on decryption failure (doesn't return plaintext on error)
+- ✅ No hardcoded keys or secrets (DEKs are runtime-generated, wrapped by KMS)
+
+**Anti-Patterns to Avoid**:
+
+```python
+# ❌ DON'T return plaintext on decryption failure
+def decrypt(self, data: str):
+    try:
+        return actual_decrypt(data)
+    except Exception:
+        return data  # ❌ Masks tampering, corruption, or attacks
+
+# ✅ DO raise exception on failure
+def decrypt(self, data: str):
+    try:
+        return actual_decrypt(data)
+    except Exception as e:
+        logger.error(f"Decryption failed: {type(e).__name__}")
+        raise e  # ✅ Fail-secure, alerts to issues
+
+# ❌ DON'T reuse nonces or keys
+nonce = b'\x00' * 12  # ❌ Fixed nonce breaks GCM security
+dek = hashlib.sha256(user_id).digest()  # ❌ Predictable key
+
+# ✅ DO use cryptographic randomness
+nonce = os.urandom(12)  # ✅ Unique, unpredictable
+dek = os.urandom(32)    # ✅ Ephemeral, discarded after use
+```
+
+**When to Use Envelope Encryption**:
+- ✅ Data size exceeds cloud KMS limits (AWS: 4KB, Azure RSA-OAEP: 190 bytes, GCP: 64KB)
+- ✅ High-volume encryption (KMS limits: AWS 1000/s, Azure 500/s)
+- ✅ Need for consistent encryption pattern across all data sizes
+- ✅ Compliance requirements (NIST, FIPS, PCI-DSS) favor envelope pattern
 
 ---
 
 ## OWASP Top 10 Coverage
 
-| Vulnerability | CodeMie Prevention Pattern | Implementation |
-|--------------|---------------------------|----------------|
-| **A01 Broken Access Control** | RBAC with FastAPI dependencies | `admin_access_only`, `application_access_check` |
-| **A02 Cryptographic Failures** | KMS integration (AWS/Azure/GCP) | BaseEncryptionService, multi-cloud KMS |
-| **A03 Injection** | SQLModel parameterized queries | `.where()`, `.in_()` methods |
-| **A04 Insecure Design** | Pydantic validation at API boundary | BaseModel with Field constraints |
-| **A05 Security Misconfiguration** | Environment-based config | Config class with `.env` loading |
-| **A06 Vulnerable Components** | Dependency pinning | pyproject.toml with version constraints |
-| **A07 Auth Failures** | Multi-provider IDP support | Keycloak, OIDC, Local auth |
-| **A08 Integrity Failures** | JWT signature validation | python-jose token verification |
-| **A09 Logging Failures** | Credential redaction | `to_safe_dict()` before logging |
-| **A10 SSRF** | Input validation | Pydantic URL types, sanitization |
+| Vulnerability                     | CodeMie Prevention Pattern          | Implementation                                  |
+| --------------------------------- | ----------------------------------- | ----------------------------------------------- |
+| **A01 Broken Access Control**     | RBAC with FastAPI dependencies      | `admin_access_only`, `application_access_check` |
+| **A02 Cryptographic Failures**    | KMS integration (AWS/Azure/GCP)     | BaseEncryptionService, multi-cloud KMS          |
+| **A03 Injection**                 | SQLModel parameterized queries      | `.where()`, `.in_()` methods                    |
+| **A04 Insecure Design**           | Pydantic validation at API boundary | BaseModel with Field constraints                |
+| **A05 Security Misconfiguration** | Environment-based config            | Config class with `.env` loading                |
+| **A06 Vulnerable Components**     | Dependency pinning                  | pyproject.toml with version constraints         |
+| **A07 Auth Failures**             | Multi-provider IDP support          | Keycloak, OIDC, Local auth                      |
+| **A08 Integrity Failures**        | JWT signature validation            | python-jose token verification                  |
+| **A09 Logging Failures**          | Credential redaction                | `to_safe_dict()` before logging                 |
+| **A10 SSRF**                      | Input validation                    | Pydantic URL types, sanitization                |
 
 ---
 

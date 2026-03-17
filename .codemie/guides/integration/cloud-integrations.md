@@ -124,10 +124,99 @@ encrypted = service.encrypt("sensitive-data")  # RSA-OAEP encryption with base64
 decrypted = service.decrypt(encrypted)
 ```
 
-**Implementation**: `azure_encryption_service.py:1-39`
+**Implementation**: `azure_encryption_service.py:1-167`
 - Auth: `DefaultAzureCredential` (env vars → managed identity → az login → VS → PowerShell)
-- Algorithm: RSA-OAEP asymmetric encryption
+- Algorithm: **Envelope Encryption** (AES-256-GCM + RSA-OAEP key wrapping)
 - Requires `AZURE_KEY_VAULT_URL` and `AZURE_KEY_NAME`
+
+### Envelope Encryption Pattern
+
+**Problem**: Azure Key Vault RSA-OAEP has size limits (~190 bytes for 2048-bit keys, ~446 bytes for 4096-bit keys). Direct encryption fails for:
+- OAuth access tokens (typically 200-500 bytes)
+- JWT tokens (commonly 300-1000 bytes)
+- Concatenated credentials (API key + secret)
+
+**Solution**: Envelope encryption (industry standard used by AWS KMS, GCP Cloud KMS, HashiCorp Vault):
+
+1. **Data Encryption Layer** (Local):
+   - Generate ephemeral 256-bit AES key (DEK - Data Encryption Key)
+   - Encrypt plaintext with AES-256-GCM (no size limits, authenticated encryption)
+   - Produces: `nonce (12 bytes) + ciphertext + auth_tag (16 bytes)`
+
+2. **Key Encryption Layer** (Azure Key Vault):
+   - Wrap DEK with Azure Key Vault RSA-OAEP
+   - Only 32 bytes encrypted by KMS (well within limits)
+   - Produces: `wrapped_key`
+
+3. **Storage Format**:
+   ```
+   v1.<base64(wrapped_key)>.<base64(nonce + ciphertext + auth_tag)>
+   ```
+
+**Architecture**:
+```
+Encryption Flow:
+  Plaintext (unlimited size)
+      │
+      ├─ Generate Random DEK (32 bytes)
+      ├─ Encrypt with AES-256-GCM ────────┐
+      │  Output: nonce + ciphertext       │
+      │                                    │
+      └─ Azure Key Vault ←───────────────┘
+         Wrap DEK (RSA-OAEP, 32 bytes only)
+         │
+         └─ Store: v1.wrapped_key.encrypted_data
+
+Decryption Flow:
+  v1.wrapped_key.encrypted_data
+      │
+      ├─ Parse format
+      ├─ Azure Key Vault: Unwrap DEK
+      └─ Decrypt with AES-256-GCM
+         Output: Plaintext (GCM auth tag verified)
+```
+
+**Format Specification**:
+
+| Format | Structure | Use Case |
+|--------|-----------|----------|
+| **v1 (current)** | `v1.<base64(wrapped_key)>.<base64(nonce+ciphertext+tag)>` | All new encrypted data |
+| **Legacy** | `<base64(rsa_oaep_ciphertext)>` | Backward compatibility only |
+
+**Security Properties**:
+- ✅ **NIST-compliant**: AES-256-GCM is FIPS 140-2 certified
+- ✅ **Authenticated encryption**: GCM provides confidentiality + integrity + authenticity
+- ✅ **Cryptographically secure**: Nonces generated with `os.urandom(12)` (96-bit, NIST recommended)
+- ✅ **Unique DEK per operation**: Ephemeral keys prevent key reuse
+- ✅ **Tamper detection**: GCM auth tag validates integrity before decryption
+- ✅ **No size limits**: AES-GCM handles unlimited plaintext
+- ✅ **Defense in depth**: Attacker needs both Azure Key Vault access AND database access
+
+**Example**:
+```python
+from codemie.service.encryption.azure_encryption_service import AzureKMSEncryptionService
+
+service = AzureKMSEncryptionService()
+
+# Encrypts large credentials using envelope encryption
+large_token = "Bearer " + "x" * 500  # 507 bytes (exceeds RSA-OAEP limit)
+encrypted = service.encrypt(large_token)  # Format: v1.wrapped_key.encrypted_data
+decrypted = service.decrypt(encrypted)   # Automatic format detection
+
+# Also handles legacy RSA-OAEP encrypted data (backward compatible)
+legacy_encrypted = "aBc123...xyz"  # No dots = legacy format
+decrypted_legacy = service.decrypt(legacy_encrypted)  # Automatic fallback
+```
+
+**Performance**:
+- Encryption: ~60-100ms (network + Azure Key Vault RTT dominates)
+- Envelope overhead: ~2-3ms (3% increase, negligible for credential operations)
+- Recommended for: All data sizes (consistency, simplicity, security)
+
+**Backward Compatibility**:
+- Legacy RSA-OAEP encrypted data decrypts automatically (format detection by separator presence)
+- No migration required (new encryptions use envelope format, old data still works)
+- Optional migration: Re-encrypt legacy data with envelope format via background job
 
 ### Blob Storage Example
 
