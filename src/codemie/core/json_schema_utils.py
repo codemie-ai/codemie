@@ -16,7 +16,7 @@ import inspect
 import textwrap
 from collections.abc import Mapping
 from types import UnionType
-from typing import Annotated, Any, Literal, TypeAlias, Union, cast, get_args, get_origin
+from typing import Annotated, Any, Literal, TypeAlias, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, create_model
 from pydantic.fields import FieldInfo
@@ -103,7 +103,7 @@ def json_schema_to_model(schema: JsonSchema) -> type[ModelT]:
     cache: ModelCache = Cache()
     model_name = _normalise_name(schema.get("title", "GeneratedModel"))
 
-    return cast(type[ModelT], _create_model_from_schema(model_name, schema, cache))
+    return _create_model_from_schema(model_name, schema, cache)
 
 
 class SkipPropertyException(Exception): ...
@@ -135,14 +135,11 @@ def _create_model_from_schema(model_name: TypeName, schema: JsonSchema, cache: M
 
     # 4. Create the Pydantic Model using create_model
     #    Fields from 'properties' override any identically named fields from 'allOf' base.
-    model = cast(
-        type[BaseModel],
-        create_model(
-            model_name,
-            __base__=base_model,
-            __config__=model_config,
-            **field_definitions,
-        ),
+    model = create_model(
+        model_name,
+        __base__=base_model,
+        __config__=model_config,
+        **field_definitions,
     )
 
     return model
@@ -174,14 +171,11 @@ def _handle_object(model_name: TypeName, schema: JsonSchema, cache: ModelCache) 
 
     # 4. Create the Pydantic Model using create_model
     #    Fields from 'properties' override any identically named fields from 'allOf' base.
-    model = cast(
-        type[BaseModel],
-        create_model(
-            model_name.capitalize(),
-            __base__=base_model,
-            __config__=model_config,
-            **field_definitions,
-        ),
+    model = create_model(
+        model_name.capitalize(),
+        __base__=base_model,
+        __config__=model_config,
+        **field_definitions,
     )
     cache.set_path(model_name)
     cache.save_model(model)
@@ -334,14 +328,17 @@ def _create_field_definition(
 def _configure_model_extras(schema: JsonSchema) -> ConfigDict | None:
     """
     Creates a Pydantic ConfigDict based on schema keywords like 'additionalProperties'.
+
+    - additionalProperties: false  → extra='forbid'
+    - additionalProperties: <dict> → extra='allow'  (free-form / typed map)
+    - otherwise                    → no config (Pydantic default)
     """
-    config: ConfigDict = {}
-    if schema.get("additionalProperties") is False:
-        config["extra"] = "forbid"
-
-    # Can add other config settings here if needed (e.g., from schema extensions)
-
-    return config if config else None
+    additional_props = schema.get("additionalProperties")
+    if additional_props is False:
+        return ConfigDict(extra="forbid")
+    if isinstance(additional_props, dict):
+        return ConfigDict(extra="allow")
+    return None
 
 
 # ===========================================================================
@@ -400,7 +397,7 @@ def _handle_allof_inheritance(name: TypeName, sub_schemas: list[JsonSchema], cac
 def _generate_allof_primitive_field(
     part_type: TypeAnnotation,
     subschema: JsonSchema,
-    part_name: TypeName,
+    _part_name: TypeName,
     existing_field_names: set[FieldName],
 ) -> tuple[FieldName, FieldDefinition]:
     """Generates a field name and definition for a non-model branch within 'allOf'."""
@@ -464,7 +461,7 @@ def _create_allof_composed_model(
     # Create the final model, inheriting from the combined base and adding primitive fields.
     # `create_model` handles merging fields correctly.
     composed_model = create_model(name, __base__=mi_base, **primitive_fields)
-    return cast(type[BaseModel], composed_model)
+    return composed_model
 
 
 # ===========================================================================
@@ -673,7 +670,7 @@ def _check_for_unsupported_keywords(name: TypeName, schema: JsonSchema) -> None:
 
 
 def _check_for_non_spec_keywords(name: TypeName):
-    "Some MCPs do not follow the JSON Draft 07 specification."
+    """Some MCPs do not follow the JSON Draft 07 specification."""
     non_spec_properties = {"defaultValue"}
     if name in non_spec_properties:
         raise SkipPropertyException(f"got unsupported {name}")
@@ -805,6 +802,48 @@ def model_to_string(
     return "\n".join(lines)
 
 
+def _collect_nested_models(
+    hint: Any,
+    seen: set[int],
+    result: dict[int, tuple[type[BaseModel], Any]] | None = None,
+) -> dict[int, tuple[type[BaseModel], Any]]:
+    """Recursively collect BaseModel subclasses within a type hint.
+
+    Skips models already in *seen* (rendered by a caller) and deduplicates
+    within the current field via *result*.
+    """
+    if result is None:
+        result = {}
+    origin = get_origin(hint)
+    args = get_args(hint)
+    type_to_check = args[0] if origin is Annotated else hint
+    if inspect.isclass(type_to_check) and issubclass(type_to_check, BaseModel):
+        model_id = id(type_to_check)
+        if model_id not in seen and model_id not in result:
+            result[model_id] = (type_to_check, hint)
+    if origin is not None and args:
+        for arg in args:
+            _collect_nested_models(arg, seen, result)
+    return result
+
+
+def _extract_nested_lines(nested_model_str: str, model_name: str) -> list[str]:
+    """Return the body lines from a nested model's rendered string.
+
+    Suppresses output when the only line is a recursive-reference marker, and
+    strips the model-name header line so the caller can indent it differently.
+    """
+    nested_lines = nested_model_str.split("\n")
+    if not nested_lines:
+        return []
+    # Single line containing a recursive ref — nothing useful to show.
+    if len(nested_lines) == 1 and "<recursive ref>" in nested_lines[0]:
+        return []
+    # Skip the model-name header line when present.
+    start = 1 if nested_lines[0].strip().startswith(f"{model_name}:") else 0
+    return nested_lines[start:]
+
+
 def _render_type_line(
     name: str,
     typ: TypeAnnotation,  # Annotation of the field
@@ -819,102 +858,62 @@ def _render_type_line(
     """
     pad = " " * indent
     desc_pad = " " * (indent + 2)
-    type_repr = _render_type_name(typ)  # Get the string representation first
-    base_line = f"{pad}{name}: {type_repr}{default_repr}"
-    lines = [base_line]
+    lines = [f"{pad}{name}: {_render_type_name(typ)}{default_repr}"]
 
-    # Add description if present
     if field_info.description:
-        wrapped_desc = textwrap.wrap(
-            field_info.description,
-            width=80 - len(desc_pad),
-            initial_indent=f"{desc_pad}# ",
-            subsequent_indent=f"{desc_pad}# ",
+        lines.extend(
+            textwrap.wrap(
+                field_info.description,
+                width=80 - len(desc_pad),
+                initial_indent=f"{desc_pad}# ",
+                subsequent_indent=f"{desc_pad}# ",
+            )
         )
-        lines.extend(wrapped_desc)
 
-    # --- Find and Render Nested Model Definitions ---
-    # Store models found within this type hint to render each distinct one once.
-    # Key: model class id, Value: (model_class, specific_type_hint_part)
-    models_to_render_details: dict[int, tuple[type[BaseModel], Any]] = {}
-
-    def find_models_recursive(hint: Any):
-        """Helper to recursively find BaseModel subclasses within a type hint."""
-        nonlocal models_to_render_details
-        origin = get_origin(hint)
-        args = get_args(hint)
-
-        # Check direct type first (could be BaseModel or Annotated[BaseModel,...])
-        current_type_to_check = hint
-        if origin is Annotated:
-            current_type_to_check = args[0]  # Check the wrapped type in Annotated
-
-        if inspect.isclass(current_type_to_check) and issubclass(current_type_to_check, BaseModel):
-            model_class = current_type_to_check
-            # Store if not already seen in this rendering stack *and* not already queued
-            if id(model_class) not in seen and id(model_class) not in models_to_render_details:
-                # Store the actual model class and the specific hint part (hint) where it was found
-                models_to_render_details[id(model_class)] = (model_class, hint)
-            # Don't return here, need to check args too for complex types like Union[ModelA, ModelB]
-
-        # Recurse into arguments if it's a generic type
-        if origin is not None and args:
-            for arg in args:
-                find_models_recursive(arg)
-
-    find_models_recursive(typ)  # Start search from the field's main type hint
-
-    # Render details for each distinct model found *that hasn't been seen further up the stack*
-    for model_class, type_hint_part in models_to_render_details.values():
-        # Add header for clarity
+    for model_class, type_hint_part in _collect_nested_models(typ, seen).values():
         lines.append(f"{pad}  ({_render_type_name(type_hint_part)} details):")
-
-        # Call model_to_string recursively, passing the *current* seen set.
-        # model_to_string's own logic will handle adding model_class to seen
-        # and detecting cycles if model_class is already in seen.
-        nested_model_str = model_to_string(
-            model_class,
-            indent=indent + 4,
-            _seen=seen,  # Pass the CURRENT 'seen' set down
-        )
-        nested_lines = nested_model_str.split('\n')
-
-        # Add the rendered model definition (fields, etc.), skipping the header line
-        # if the recursive call didn't immediately hit a cycle.
-        if len(nested_lines) > 1 or (nested_lines and "<recursive ref>" not in nested_lines[0]):
-            # If the first line isn't the model name (e.g., it's '<recursive ref>'), don't skip it.
-            # Otherwise, skip the first line (model name header).
-            start_index = 0
-            if len(nested_lines) > 0 and nested_lines[0].strip().startswith(model_class.__name__ + ":"):
-                start_index = 1
-            lines.extend(nested_lines[start_index:])
+        nested_model_str = model_to_string(model_class, indent=indent + 4, _seen=seen)
+        lines.extend(_extract_nested_lines(nested_model_str, model_class.__name__))
 
     return lines
+
+
+def _render_union_type(args: tuple[Any, ...]) -> str:
+    """Render a Union/UnionType, appending '| None' when NoneType is present."""
+    non_none = [a for a in args if a is not type(None)]
+    rendered = " | ".join(_render_type_name(a) for a in non_none)
+    if type(None) not in args:
+        return rendered
+    return f"{rendered} | None" if rendered else "None"
+
+
+def _render_list_type(args: tuple[Any, ...]) -> str:
+    """Render a list type hint, e.g. list[str]."""
+    return f"list[{_render_type_name(args[0])}]" if args else "list"
+
+
+def _render_dict_type(args: tuple[Any, ...]) -> str:
+    """Render a dict type hint, e.g. dict[str, int]."""
+    if len(args) == 2:
+        return f"dict[{_render_type_name(args[0])}, {_render_type_name(args[1])}]"
+    return "dict"
 
 
 def _render_type_name(typ: Any) -> str:
     """Generate a string representation for a type hint."""
     origin = get_origin(typ)
     args = get_args(typ)
-    if origin is Union or origin is UnionType:
-        non_none_args = [a for a in args if a is not type(None)]
-        rendered = " | ".join(_render_type_name(a) for a in non_none_args)
-        has_none = type(None) in args
-        if has_none:
-            return f"{rendered} | None" if rendered else "None"
-        else:
-            return rendered if rendered else ""  # Handle empty Union?
-    elif origin is Literal:
+
+    if origin in (Union, UnionType):
+        return _render_union_type(args)
+    if origin is Literal:
         return f"Literal[{', '.join(repr(a) for a in args)}]"
-    elif origin is list:
-        return f"list[{_render_type_name(args[0])}]" if args else "list"
-    elif origin is dict:
-        return (
-            f"dict[{_render_type_name(args[0])}, {_render_type_name(args[1])}]" if args and len(args) == 2 else "dict"
-        )
-    elif origin is Annotated:
+    if origin is list:
+        return _render_list_type(args)
+    if origin is dict:
+        return _render_dict_type(args)
+    if origin is Annotated:
         return f"Annotated[{_render_type_name(args[0])}, ...]"
-    elif hasattr(typ, "__name__"):
+    if hasattr(typ, "__name__"):
         return typ.__name__
-    else:
-        return str(typ).replace("typing.", "")
+    return str(typ).replace("typing.", "")

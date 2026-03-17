@@ -168,22 +168,58 @@ def test_schema_with_object_additional_properties():
         },
     }
 
-    # Currently, the implementation doesn't handle schema objects in additionalProperties
-    # so it shouldn't set extra='forbid', allowing any additional properties
     additional_props_model = json_schema_to_model(schema_with_object_additional)
 
-    # We don't check model_config directly since implementation may vary
-
-    # Valid data should pass validation
+    # Valid data with extra fields.
+    # Note: extra="allow" does not enforce the additionalProperties value type,
+    # so extra2 (integer) is accepted even though the schema declares "type": "string".
     valid_data = {
         "name": "Bob",
         "age": 40,
-        "extra1": "string value",  # This is a string, but validation won't enforce it
-        "extra2": 123,  # This is not a string, but will be allowed
+        "extra1": "string value",
+        "extra2": 123,  # intentionally a non-string to verify no type error is raised
     }
 
-    # The model should accept any additional properties as the implementation
-    # doesn't enforce the additionalProperties schema
     instance = additional_props_model(**valid_data)
     assert instance.name == "Bob"
     assert instance.age == 40
+
+    # Extra properties must be preserved through model_dump()
+    dumped = instance.model_dump()
+    assert dumped.get("extra1") == "string value"
+    assert dumped.get("extra2") == 123
+
+
+def test_free_form_map_schema():
+    """Free-form map field (additionalProperties as schema dict) must preserve its values.
+
+    Reproduces the facetFilters bug: when the outer object schema has a field whose type is a
+    free-form map (type: object + additionalProperties: <schema>), the map's contents must not
+    be discarded after Pydantic validation and model_dump() serialisation.
+    """
+    outer_schema = {
+        "type": "object",
+        "properties": {
+            "facetFilters": {
+                "type": ["object", "null"],
+                "additionalProperties": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            }
+        },
+    }
+
+    outer_model = json_schema_to_model(outer_schema)
+
+    # Single entry — the exact bug case
+    instance = outer_model(facetFilters={"project.code": ["EPM-TIME"]})
+    assert instance.model_dump()["facetFilters"] == {"project.code": ["EPM-TIME"]}
+
+    # Multiple entries
+    instance2 = outer_model(facetFilters={"project.code": ["EPM-TIME"], "status": ["active"]})
+    assert instance2.model_dump()["facetFilters"] == {"project.code": ["EPM-TIME"], "status": ["active"]}
+
+    # None accepted (nullable field)
+    instance3 = outer_model(facetFilters=None)
+    assert instance3.facetFilters is None
