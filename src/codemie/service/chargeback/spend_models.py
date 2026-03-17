@@ -1,0 +1,64 @@
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Optional
+from uuid import UUID
+
+from sqlalchemy import Column, Date, Index, Numeric, UniqueConstraint
+from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID as PG_UUID
+from sqlalchemy.sql import func
+from sqlmodel import Field, SQLModel
+
+
+class ProjectCostTracking(SQLModel, table=True):
+    """Daily per-key cost tracking row for LiteLLM spend chargeback.
+
+    Stores one row per LiteLLM API key per day. Idempotency is enforced via
+    UNIQUE (key_hash, spend_date) with INSERT ON CONFLICT DO NOTHING.
+    """
+
+    __tablename__ = "project_cost_tracking"
+
+    id: UUID = Field(sa_column=Column(PG_UUID(as_uuid=True), primary_key=True))
+    project_name: str = Field(nullable=False)
+    key_hash: str = Field(nullable=False)
+    spend_date: date = Field(sa_column=Column(Date, nullable=False))
+    daily_spend: Decimal = Field(
+        sa_column=Column(Numeric(18, 9), nullable=False),
+        default=Decimal("0"),
+    )
+    cumulative_spend: Decimal = Field(
+        sa_column=Column(Numeric(18, 9), nullable=False),
+        default=Decimal("0"),
+    )
+    # Server default NOW(); nullable in Python so insert dict can omit it and let DB fill it
+    created_at: Optional[datetime] = Field(
+        sa_column=Column(
+            TIMESTAMP(timezone=True),
+            nullable=False,
+            server_default=func.now(),
+        ),
+        default=None,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("key_hash", "spend_date", name="uix_project_cost_tracking_key_hash_spend_date"),
+        Index("ix_project_cost_tracking_project_name", "project_name"),
+        Index("ix_project_cost_tracking_key_hash", "key_hash"),
+        Index("ix_project_cost_tracking_spend_date", "spend_date"),
+    )

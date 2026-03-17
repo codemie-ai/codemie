@@ -541,6 +541,21 @@ class ApplicationRepository:
         logger.debug("Created application: " f"name={name}, project_type={project_type}, created_by={created_by}")
         return application
 
+    async def aget_all_non_deleted(self, session: AsyncSession) -> list[Application]:
+        """Return all applications where deleted_at IS NULL.
+
+        Used by background jobs that have no user context.
+
+        Args:
+            session: Async database session
+
+        Returns:
+            List of all non-deleted Application records
+        """
+        statement = select(Application).where(Application.deleted_at.is_(None))
+        result = await session.execute(statement)
+        return list(result.scalars().all())
+
     async def aget_or_create(self, session: AsyncSession, name: str) -> Application:
         """Get existing application or create if doesn't exist (async)
 

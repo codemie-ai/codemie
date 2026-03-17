@@ -326,6 +326,28 @@ def _setup_conversation_analysis_scheduler(app: FastAPI):
     logger.info("Conversation analysis scheduler started successfully")
 
 
+def _setup_chargeback_scheduler(app: FastAPI):
+    """Setup chargeback spend collector scheduler if enabled."""
+    if not config.LITELLM_SPEND_COLLECTOR_ENABLED:
+        return
+
+    if not config.LLM_PROXY_ENABLED:
+        logger.warning(
+            "LITELLM_SPEND_COLLECTOR_ENABLED=True but LLM_PROXY_ENABLED=False; "
+            "spend collector requires the LiteLLM proxy — skipping scheduler setup"
+        )
+        return
+
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from codemie.service.chargeback.scheduler import ChargebackScheduler
+
+    chargeback_scheduler_instance = AsyncIOScheduler()
+    chargeback_scheduler = ChargebackScheduler(scheduler=chargeback_scheduler_instance)
+    chargeback_scheduler.start()
+    app.state.chargeback_scheduler = chargeback_scheduler
+    logger.info("Chargeback scheduler started successfully")
+
+
 def _initialize_jwt_keys():
     """Auto-generate RSA keys for local auth if not present (EPMCDME-10160)"""
     if config.IDP_PROVIDER == "local" and config.ENABLE_USER_MANAGEMENT:
@@ -400,6 +422,11 @@ async def _shutdown_services(app: FastAPI, langfuse_service, litellm_service, ta
         conversation_analysis_scheduler.stop()
         logger.info("Conversation analysis scheduler shutdown complete")
 
+    chargeback_scheduler = getattr(app.state, 'chargeback_scheduler', None)
+    if chargeback_scheduler is not None:
+        chargeback_scheduler.stop()
+        logger.info("Chargeback scheduler shutdown complete")
+
     await close_llm_proxy_client()
     logger.info("LLM Proxy HTTP client closed")
 
@@ -452,6 +479,7 @@ async def lifespan(app: FastAPI):
         _setup_memory_profiling_scheduler()
 
     _setup_conversation_analysis_scheduler(app)
+    _setup_chargeback_scheduler(app)
 
     yield
 
