@@ -16,7 +16,7 @@
 Tests for conversation pagination endpoints.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -24,7 +24,13 @@ from fastapi.testclient import TestClient
 
 import codemie.rest_api.routers.conversation as conversation_router
 from codemie.rest_api.main import app
-from codemie.rest_api.models.conversation import Conversation, ConversationListItem, GeneratedMessage
+from codemie.rest_api.models.conversation import (
+    Conversation,
+    ConversationHistoryPaginationData,
+    ConversationListItem,
+    GeneratedMessage,
+)
+from codemie.rest_api.models.index import SortOrder
 from codemie.rest_api.security.user import User
 
 
@@ -116,12 +122,13 @@ def test_export_json_with_pagination(mock_slice, _mock_can, _mock_assistants, cl
     Test GET /v1/conversations/{id}/export with pagination (JSON).
     Should call ConversationService.get_conversation_history_slice.
     """
-    mock_slice.return_value = Conversation(
+    conv = Conversation(
         id="conv-123",
         conversation_id="conv-123",
         user_id="user-123",
         history=[GeneratedMessage(role="User", message="Hello")],
     )
+    mock_slice.return_value = (conv, 1)
 
     response = client.get("/v1/conversations/conv-123/export?export_format=json&page=0&per_page=50")
 
@@ -132,7 +139,7 @@ def test_export_json_with_pagination(mock_slice, _mock_can, _mock_assistants, cl
 @patch(
     "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice",
     new_callable=MagicMock,
-    return_value=None,
+    return_value=(None, 0),
 )
 def test_export_json_not_found(mock_slice, client):
     """
@@ -142,3 +149,195 @@ def test_export_json_not_found(mock_slice, client):
     response = client.get("/v1/conversations/non-existent/export?export_format=json&page=0&per_page=10")
 
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Helpers for GET /v1/conversations/{conversation_id} tests
+# ---------------------------------------------------------------------------
+
+
+def _make_test_conversation(n_messages: int = 3) -> Conversation:
+    """Build a test Conversation with n_messages history items."""
+    t_base = datetime(2025, 6, 1, tzinfo=timezone.utc)
+    history = [
+        GeneratedMessage(
+            role="User" if i % 2 == 0 else "Assistant",
+            message=f"msg-{i}",
+            date=t_base.replace(hour=i),
+        )
+        for i in range(n_messages)
+    ]
+    return Conversation(
+        id="conv-abc",
+        conversation_id="conv-abc",
+        conversation_name="Test Conversation",
+        user_id="user-123",
+        history=history,
+        is_workflow_conversation=False,
+        assistant_ids=["asst-1"],
+    )
+
+
+def _make_pagination(page=0, per_page=2, total=5, pages=3, has_next=True, has_previous=False):
+    return ConversationHistoryPaginationData(
+        page=page,
+        per_page=per_page,
+        total=total,
+        pages=pages,
+        has_next=has_next,
+        has_previous=has_previous,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility
+# ---------------------------------------------------------------------------
+
+
+@patch(
+    "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice", new_callable=MagicMock
+)
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+def test_get_conversation_no_params_pagination_absent(mock_find, _mock_can, _mock_assistants, mock_slice, client):
+    """
+    When no pagination/sort params are provided, the response must not include
+    a 'pagination' key and must return the full history unchanged.
+    """
+    mock_find.return_value = _make_test_conversation(n_messages=3)
+
+    response = client.get("/v1/conversations/conv-abc")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "pagination" not in data
+    assert len(data["history"]) == 3
+    mock_slice.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Pagination params present
+# ---------------------------------------------------------------------------
+
+
+@patch(
+    "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice", new_callable=MagicMock
+)
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+def test_get_conversation_with_page_and_per_page(_mock_can, _mock_assistants, mock_slice, client):
+    """
+    When page and per_page are provided, get_conversation_history_slice is called and
+    the response includes a correct pagination block.
+    """
+    conv = _make_test_conversation(n_messages=5)
+    sliced_conv = _make_test_conversation(n_messages=2)
+    sliced_conv.history = conv.history[:2]
+    sliced_conv.id = conv.id
+    sliced_conv.conversation_id = conv.conversation_id
+    mock_slice.return_value = (sliced_conv, 5)
+
+    response = client.get("/v1/conversations/conv-abc?page=0&per_page=2")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "pagination" in data
+    assert data["pagination"]["page"] == 0
+    assert data["pagination"]["per_page"] == 2
+    assert data["pagination"]["total"] == 5
+    assert data["pagination"]["pages"] == 3
+    assert data["pagination"]["has_next"] is True
+    assert data["pagination"]["has_previous"] is False
+    assert len(data["history"]) == 2
+    mock_slice.assert_called_once_with(
+        conversation_id="conv-abc",
+        page=0,
+        per_page=2,
+        sort_order=None,
+    )
+
+
+@patch(
+    "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice", new_callable=MagicMock
+)
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+def test_get_conversation_with_only_sort_order(_mock_can, _mock_assistants, mock_slice, client):
+    """
+    When only sort_order is provided (no page/per_page), it still triggers pagination
+    using default page/per_page values, and the response includes a pagination block.
+    """
+    conv = _make_test_conversation(n_messages=3)
+    mock_slice.return_value = (conv, 3)
+
+    response = client.get("/v1/conversations/conv-abc?sort_order=asc")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "pagination" in data
+    mock_slice.assert_called_once()
+    _, call_kwargs = mock_slice.call_args
+    assert call_kwargs["sort_order"] == SortOrder.ASC
+
+
+@patch(
+    "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice", new_callable=MagicMock
+)
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+def test_get_conversation_sort_order_desc(_mock_can, _mock_assistants, mock_slice, client):
+    """
+    DESC sort_order is forwarded to get_conversation_history_slice correctly.
+    """
+    conv = _make_test_conversation(n_messages=3)
+    sliced_conv = _make_test_conversation(n_messages=2)
+    sliced_conv.history = conv.history[:2]
+    sliced_conv.id = conv.id
+    sliced_conv.conversation_id = conv.conversation_id
+    mock_slice.return_value = (sliced_conv, 3)
+
+    response = client.get("/v1/conversations/conv-abc?sort_order=desc&page=0&per_page=2")
+
+    assert response.status_code == 200
+    mock_slice.assert_called_once()
+    _, call_kwargs = mock_slice.call_args
+    assert call_kwargs["sort_order"] == SortOrder.DESC
+
+
+# ---------------------------------------------------------------------------
+# Error cases
+# ---------------------------------------------------------------------------
+
+
+@patch(
+    "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice", new_callable=MagicMock
+)
+def test_get_conversation_not_found(mock_slice, client):
+    """404 is returned when conversation does not exist, even with pagination params."""
+    mock_slice.return_value = (None, 0)
+
+    response = client.get("/v1/conversations/no-such-id?page=0&per_page=10")
+
+    assert response.status_code == 404
+
+
+def test_get_conversation_invalid_sort_order(client):
+    """422 is returned when sort_order has an invalid value."""
+    response = client.get("/v1/conversations/conv-abc?sort_order=invalid_value")
+
+    assert response.status_code == 422
+
+
+def test_get_conversation_negative_page(client):
+    """422 is returned when page is negative (ge=0 constraint)."""
+    response = client.get("/v1/conversations/conv-abc?page=-1")
+
+    assert response.status_code == 422
+
+
+def test_get_conversation_zero_per_page(client):
+    """422 is returned when per_page is 0 (ge=1 constraint)."""
+    response = client.get("/v1/conversations/conv-abc?per_page=0")
+
+    assert response.status_code == 422

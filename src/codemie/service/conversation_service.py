@@ -39,6 +39,7 @@ from codemie.rest_api.models.conversation import (
     UpsertHistoryRequest,
     ConversationListItem,
 )
+from codemie.rest_api.models.index import SortOrder
 from codemie.service.conversation.history_materializer import materialize_history
 from codemie.rest_api.models.conversation_folder import ConversationFolder
 from codemie.rest_api.models.feedback import FeedbackRequest, FeedbackDeleteRequest
@@ -1170,8 +1171,13 @@ class ConversationService:
         conversation_id: str,
         page: int,
         per_page: int,
-    ) -> Optional[Conversation]:
-        """DB-level paginated slice of conversation history. Returns None if not found."""
+        sort_order: Optional[SortOrder] = None,
+    ) -> tuple[Optional[Conversation], int]:
+        """DB-level paginated (and optionally sorted) slice of conversation history.
+
+        Returns (None, 0) if not found, or (conversation_with_sliced_history, total_count).
+        total_count is the total number of history items (unsliced), for pagination metadata.
+        """
         offset = page * per_page
 
         with get_session() as session:
@@ -1204,14 +1210,30 @@ class ConversationService:
             """).bindparams(cid=conversation_id)
             meta_row = session.exec(meta_stmt).first()
             if not meta_row:
-                return None
+                return None, 0
 
-            # Slice history
-            slice_stmt = text("""
-                    SELECT elem FROM conversations c
-                    CROSS JOIN LATERAL jsonb_array_elements(c.history) WITH ORDINALITY AS t(elem, ord)
-                    WHERE c.conversation_id = :cid ORDER BY ord OFFSET :off LIMIT :lim
-                """).bindparams(cid=conversation_id, off=offset, lim=per_page)
+            # Total count of history items
+            count_stmt = text("""
+                SELECT jsonb_array_length(COALESCE(history, '[]'::jsonb))
+                FROM conversations
+                WHERE conversation_id = :cid
+            """).bindparams(cid=conversation_id)
+            total: int = session.exec(count_stmt).scalar() or 0
+
+            # Slice history at DB level — ORDER BY varies by sort_order
+            order_clauses = {
+                SortOrder.DESC: "ORDER BY (elem->>'date')::timestamptz DESC NULLS LAST, ord ASC",
+                SortOrder.ASC: "ORDER BY (elem->>'date')::timestamptz ASC NULLS LAST, ord ASC",
+            }
+            order_clause: str = order_clauses.get(sort_order, "ORDER BY ord")
+
+            slice_stmt = text(f"""
+                SELECT elem FROM conversations c
+                CROSS JOIN LATERAL jsonb_array_elements(c.history) WITH ORDINALITY AS t(elem, ord)
+                WHERE c.conversation_id = :cid
+                {order_clause}
+                OFFSET :off LIMIT :lim
+            """).bindparams(cid=conversation_id, off=offset, lim=per_page)
             rows = session.exec(slice_stmt).all()
 
         raw_messages = [row[0] if hasattr(row, "__getitem__") else row for row in rows]
@@ -1220,7 +1242,4 @@ class ConversationService:
         initial_assistant_id = meta_row.initial_assistant_id
         messages = materialize_history(messages, initial_assistant_id)
 
-        return Conversation(
-            **meta_row._mapping,
-            history=messages,
-        )
+        return Conversation(**meta_row._mapping, history=messages), total

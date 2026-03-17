@@ -33,14 +33,18 @@ from codemie.core.models import (
 )
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.base import BaseModelWithSQLSupport
+from codemie.core.workflow_models import WorkflowConfig
 from codemie.rest_api.models.conversation import (
     Conversation,
     AssistantDetails,
+    ConversationHistoryPaginationData,
     ConversationListItem,
     ConversationExportFormat,
+    ConversationResponse,
     UpsertHistoryRequest,
     UpsertHistoryResponse,
 )
+from codemie.rest_api.models.index import SortOrder
 from codemie.rest_api.models.conversation_folder import ConversationFolder
 from codemie.rest_api.models.share.shared_conversation import SharedConversation
 from codemie.rest_api.routers.feedback import CONVERSATION_NOT_FOUND_MESSAGE, CONVERSATION_NOT_FOUND_HELP
@@ -75,17 +79,49 @@ EXPORT_FORMAT_NOT_SUPPORTED_HELP = (
 
 @router.get(
     "/conversations/{conversation_id}",
-    response_model=Conversation,
+    response_model=ConversationResponse,
 )
-def get_conversation_by_id(conversation_id: str, user: User = Depends(authenticate)) -> Conversation:
+def get_conversation_by_id(
+    conversation_id: str,
+    user: User = Depends(authenticate),
+    page: Optional[int] = Query(None, ge=0),
+    per_page: Optional[int] = Query(None, ge=1, le=MAX_HISTORY_ITEMS_PER_PAGE),
+    sort_order: Optional[SortOrder] = Query(None),
+) -> ConversationResponse:
     """
     Get a conversation document by provided conversation id.
     Handles both assistant conversations and workflow conversations.
-    Note: History is automatically materialized by Conversation.find_by_id().
-    """
-    from codemie.core.workflow_models import WorkflowConfig
 
-    conversation = Conversation.find_by_id(conversation_id)
+    Optional pagination/sorting parameters:
+    - page: 0-based page index. Default 0 when per_page is provided.
+    - per_page: Items per history page. Default 20 when page is provided.
+    - sort_order: 'asc' or 'desc' by message date. Omit to keep insertion order.
+
+    When no new params are provided, response is identical to before (backward compatible).
+    """
+    if page is not None or per_page is not None or sort_order is not None:
+        page_val = DEFAULT_PAGE if page is None else page
+        per_page_val = DEFAULT_HISTORY_ITEMS_PER_PAGE if per_page is None else per_page
+        conversation, total = ConversationService.get_conversation_history_slice(
+            conversation_id=conversation_id,
+            page=page_val,
+            per_page=per_page_val,
+            sort_order=sort_order,
+        )
+        offset = page_val * per_page_val
+        pages = (total + per_page_val - 1) // per_page_val if per_page_val > 0 else 0
+        pagination_data: ConversationHistoryPaginationData | None = ConversationHistoryPaginationData(
+            page=page_val,
+            per_page=per_page_val,
+            total=total,
+            pages=pages,
+            has_next=offset + per_page_val < total,
+            has_previous=page_val > 0,
+        )
+    else:
+        conversation = Conversation.find_by_id(conversation_id)
+        pagination_data = None
+
     if not conversation:
         raise ExtendedHTTPException(
             code=status.HTTP_404_NOT_FOUND,
@@ -97,13 +133,10 @@ def get_conversation_by_id(conversation_id: str, user: User = Depends(authentica
     if not Ability(user).can(Action.READ, conversation):
         raise_access_denied("view")
 
-    # Determine if this is a workflow conversation or assistant conversation
-
     if conversation.is_workflow_conversation:
-        # Build assistant_data for workflow
         try:
             workflow = WorkflowConfig.get_by_id(conversation.initial_assistant_id)
-            workflow_assistant_data = [
+            conversation.assistant_data = [
                 AssistantDetails(
                     assistant_id=workflow.id,
                     assistant_name=workflow.name,
@@ -114,7 +147,6 @@ def get_conversation_by_id(conversation_id: str, user: User = Depends(authentica
                     conversation_starters=[],
                 )
             ]
-            conversation.assistant_data = workflow_assistant_data
         except KeyError:
             logger.warning(
                 f"Workflow {conversation.initial_assistant_id} not found for conversation {conversation_id}. "
@@ -127,7 +159,6 @@ def get_conversation_by_id(conversation_id: str, user: User = Depends(authentica
                 )
             ]
     else:
-        # Build assistant_data for regular assistants
         assistants = Assistant.get_by_ids(ids=conversation.assistant_ids, user=user)
         conversation.assistant_data = [
             AssistantDetails(
@@ -144,7 +175,9 @@ def get_conversation_by_id(conversation_id: str, user: User = Depends(authentica
 
     conversation.conversation_name = conversation.get_conversation_name()
 
-    return conversation
+    response = ConversationResponse.model_validate(conversation)
+    response.pagination = pagination_data
+    return response
 
 
 @router.get(
@@ -635,7 +668,7 @@ def export_conversation(
         page_val: int = DEFAULT_PAGE if page is None else page
         per_page_val: int = DEFAULT_HISTORY_ITEMS_PER_PAGE if per_page is None else per_page
 
-        conversation = ConversationService.get_conversation_history_slice(
+        conversation, _ = ConversationService.get_conversation_history_slice(
             conversation_id=conversation_id,
             page=page_val,
             per_page=per_page_val,

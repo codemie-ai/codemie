@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from codemie_tools.base.models import Tool
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from codemie.chains.base import Thought
 from codemie.configs import logger
@@ -27,6 +27,7 @@ from codemie.core.models import CodeIndexType, ChatMessage, ChatRole
 from codemie.rest_api.models.assistant import Context, AssistantType
 from codemie.rest_api.models.base import (
     BaseModelWithSQLSupport,
+    PaginationData,
     PydanticListType,
     PydanticType,
 )
@@ -522,7 +523,62 @@ class ConversationListItem(BaseModel):
     conversation_id: Optional[str] = None
 
 
+class ConversationResponse(BaseModel):
+    """
+    Response DTO for GET /v1/conversations/{conversation_id}.
+
+    Standalone Pydantic model for API responses. Does not inherit from ORM.
+    Used to serialize Conversation (ORM) into a validated response payload.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: Optional[str] = None
+    conversation_id: str
+    conversation_name: Optional[str] = None
+    llm_model: Optional[str] = None
+    folder: Optional[str] = None
+    pinned: Optional[bool] = False
+    history: Optional[List[GeneratedMessage]] = Field(default_factory=list)
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+    assistant_ids: Optional[List[str]] = Field(default_factory=list)
+    assistant_data: Optional[List[AssistantDetails]] = Field(default_factory=list)
+    initial_assistant_id: Optional[str] = None
+    final_user_mark: Optional[UserMark] = None
+    final_operator_mark: Optional[FinalOperatorFeedback] = None
+    project: Optional[str] = None
+    mcp_server_single_usage: Optional[bool] = False
+    is_workflow_conversation: Optional[bool] = False
+    conversation_details: Optional[LegacyChatDetails] = None
+    assistant_details: Optional[AssistantDetails] = None
+    user_abilities: Optional[List[Action]] = None
+    is_folder_migrated: Optional[bool] = False
+    category: Optional[str] = None
+    date: Optional[datetime] = None
+    update_date: Optional[datetime] = None
+
+    pagination: Optional[ConversationHistoryPaginationData] = None
+
+    @model_serializer(mode="wrap")
+    def _exclude_null_pagination(self, handler):
+        """Supports backward compatibility with request
+        without pagination
+        """
+        data = handler(self)
+        if data.get("pagination") is None:
+            data.pop("pagination", None)
+        return data
+
+
 class ConversationExportFormat(StrEnum):
     PDF = "pdf"
     DOCX = "docx"
     JSON = "json"
+
+
+class ConversationHistoryPaginationData(PaginationData):
+    """History pagination metadata with navigation helpers."""
+
+    has_next: bool
+    has_previous: bool
