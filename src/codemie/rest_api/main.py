@@ -102,7 +102,6 @@ from alembic.config import Config
 from alembic import command
 
 # Rate limiting imports (EPMCDME-10160)
-from slowapi import _rate_limit_exceeded_handler
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.errors import RateLimitExceeded
 from codemie.rest_api.rate_limit import limiter
@@ -490,7 +489,26 @@ app.openapi = custom_openapi
 
 # Setup rate limiting for user management endpoints (EPMCDME-10160)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+async def _friendly_rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    client_ip = request.client.host if request.client else "unknown"
+    logger.warning(f"Rate limit exceeded for {request.method} {request.url.path} from {client_ip}")
+    response = JSONResponse(
+        status_code=429,
+        content={
+            "error": {
+                "message": "Too many attempts. Please wait and try again later.",
+                "details": None,
+                "help": None,
+            }
+        },
+    )
+    response = request.app.state.limiter._inject_headers(response, request.state.view_rate_limit)
+    return response
+
+
+app.add_exception_handler(RateLimitExceeded, _friendly_rate_limit_handler)
 app.add_middleware(SlowAPIMiddleware)
 
 StateImportService().import_indexes()
