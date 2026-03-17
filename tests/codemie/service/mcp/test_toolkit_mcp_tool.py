@@ -97,9 +97,22 @@ class TestMCPTool(unittest.TestCase):
         with patch("codemie.service.mcp.toolkit.asyncio.get_running_loop", side_effect=RuntimeError):
             self.tool.execute(test_param="value")
             mock_asyncio_run.assert_called_once()
-            # Check that _aexecute_with_context was called with the correct arguments
+            # Path B wraps with asyncio.wait_for(...) for timeout enforcement,
+            # so asyncio.run receives the wait_for coroutine, not _aexecute_with_context directly.
             call_args = mock_asyncio_run.call_args[0][0]
-            self.assertEqual(call_args.__name__, "_aexecute_with_context")
+            self.assertEqual(call_args.__name__, "wait_for")
+
+    @patch("codemie.service.mcp.toolkit.asyncio.run")
+    def test_execute_without_running_loop_raises_mcp_error_on_timeout(self, mock_asyncio_run):
+        """asyncio.TimeoutError from wait_for must be converted to MCPToolExecutionError."""
+        mock_asyncio_run.side_effect = asyncio.TimeoutError()
+        with patch("codemie.service.mcp.toolkit.asyncio.get_running_loop", side_effect=RuntimeError):
+            with self.assertRaises(MCPToolExecutionError) as ctx:
+                self.tool.execute(test_param="value")
+
+        self.assertIn("timed out", str(ctx.exception))
+        self.assertIn("test_tool", str(ctx.exception))
+        self.assertIn("MCP_CLIENT_TIMEOUT", str(ctx.exception))
 
     @patch("codemie.service.mcp.toolkit.ThreadPoolExecutor")
     def test_execute_with_running_loop(self, mock_executor_class):
@@ -119,7 +132,7 @@ class TestMCPTool(unittest.TestCase):
             # Check that ThreadPoolExecutor was used
             mock_executor_class.assert_called_with(max_workers=1)
             mock_executor.submit.assert_called_once()
-            mock_future.result.assert_called_once()
+            mock_future.result.assert_called_once_with(timeout=config.MCP_CLIENT_TIMEOUT)
 
     @patch("codemie.service.mcp.toolkit.asyncio.run")
     def test_successful_execution(self, mock_asyncio_run):
@@ -478,8 +491,43 @@ class TestMCPTool(unittest.TestCase):
             # Check that ThreadPoolExecutor was used
             mock_executor_class.assert_called_with(max_workers=1)
             mock_executor.submit.assert_called_once()
-            mock_future.result.assert_called_once()
+            mock_future.result.assert_called_once_with(timeout=config.MCP_CLIENT_TIMEOUT)
             self.assertEqual(result, "Success")
+
+    @patch("codemie.service.mcp.toolkit.ThreadPoolExecutor")
+    def test_execute_with_running_loop_passes_timeout_to_future(self, mock_executor_class):
+        """future.result() must be called with timeout=config.MCP_CLIENT_TIMEOUT."""
+        mock_loop = MagicMock()
+        with patch("codemie.service.mcp.toolkit.asyncio.get_running_loop", return_value=mock_loop):
+            mock_executor = MagicMock()
+            mock_executor_class.return_value.__enter__.return_value = mock_executor
+            mock_future = MagicMock()
+            mock_executor.submit.return_value = mock_future
+            mock_future.result.return_value = "Success"
+
+            self.tool.execute(test_param="value")
+
+            mock_future.result.assert_called_once_with(timeout=config.MCP_CLIENT_TIMEOUT)
+
+    @patch("codemie.service.mcp.toolkit.ThreadPoolExecutor")
+    def test_execute_with_running_loop_raises_mcp_error_on_timeout(self, mock_executor_class):
+        """TimeoutError from future.result() must be converted to MCPToolExecutionError."""
+        import concurrent.futures
+
+        mock_loop = MagicMock()
+        with patch("codemie.service.mcp.toolkit.asyncio.get_running_loop", return_value=mock_loop):
+            mock_executor = MagicMock()
+            mock_executor_class.return_value.__enter__.return_value = mock_executor
+            mock_future = MagicMock()
+            mock_executor.submit.return_value = mock_future
+            mock_future.result.side_effect = concurrent.futures.TimeoutError()
+
+            with self.assertRaises(MCPToolExecutionError) as ctx:
+                self.tool.execute(test_param="value")
+
+            self.assertIn("timed out", str(ctx.exception))
+            self.assertIn("test_tool", str(ctx.exception))
+            self.assertIn("MCP_CLIENT_TIMEOUT", str(ctx.exception))
 
 
 class TestContextAwareMCPTool(unittest.TestCase):

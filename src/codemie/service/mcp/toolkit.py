@@ -24,7 +24,7 @@ import base64
 import hashlib
 import json
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import suppress
 from typing import Any, Type, override
 
@@ -205,10 +205,37 @@ class MCPTool(CodeMieTool):
                 future = executor.submit(
                     lambda: asyncio.run(self._aexecute_with_context(execution_context=execution_context, **kwargs))
                 )
-                return future.result()
+                try:
+                    return future.result(timeout=config.MCP_CLIENT_TIMEOUT)
+                except FutureTimeoutError as e:
+                    timeout_msg = (
+                        f"MCP tool '{self.name}' execution timed out after {config.MCP_CLIENT_TIMEOUT} seconds "
+                        f"(MCP_CLIENT_TIMEOUT). The MCP server did not respond in time.\n"
+                    )
+                    logger.error(timeout_msg)
+                    raise MCPToolExecutionError(timeout_msg) from e
         else:
-            # No loop is running, so run the coroutine directly.
-            return asyncio.run(self._aexecute_with_context(execution_context=execution_context, **kwargs))
+            # No loop is running — run the coroutine directly.
+            # asyncio.run() has no timeout parameter, so we wrap with asyncio.wait_for()
+            # as a defense-in-depth outer boundary. The primary timeout is already
+            # enforced by httpx.Timeout(config.MCP_CLIENT_TIMEOUT) inside MCPConnectClient,
+            # but anything outside the httpx call (e.g. post-response processing) would
+            # otherwise block indefinitely. This makes Case B consistent with Case A,
+            # which enforces the same timeout via future.result(timeout=config.MCP_CLIENT_TIMEOUT).
+            try:
+                return asyncio.run(
+                    asyncio.wait_for(
+                        self._aexecute_with_context(execution_context=execution_context, **kwargs),
+                        timeout=config.MCP_CLIENT_TIMEOUT,
+                    )
+                )
+            except asyncio.TimeoutError as e:
+                timeout_msg = (
+                    f"MCP tool '{self.name}' execution timed out after {config.MCP_CLIENT_TIMEOUT} seconds "
+                    f"(MCP_CLIENT_TIMEOUT). The MCP server did not respond in time.\n"
+                )
+                logger.error(timeout_msg)
+                raise MCPToolExecutionError(timeout_msg) from e
 
     def execute(self, *args, **kwargs) -> MCPToolInvocationResponse:
         return self.execute_with_context(execution_context=None, **kwargs)
