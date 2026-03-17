@@ -50,4 +50,4 @@ class TestSupervisorWorkflowExecutor(unittest.TestCase):
     def test_build_workflow(self, _mock_refresh):
         state_graph = self.executor.init_state_graph()
         self.executor.build_workflow(state_graph)
-        self.assertTrue(SUPERVISOR_NODE in state_graph.nodes)
+        self.assertIn(SUPERVISOR_NODE, state_graph.nodes)

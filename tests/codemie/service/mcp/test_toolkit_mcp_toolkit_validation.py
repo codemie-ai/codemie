@@ -311,9 +311,9 @@ class TestMCPToolkitValidation(unittest.TestCase):
         self.assertTrue(issubclass(tool.args_schema, BaseModel))
 
         # Verify that Python keywords are properly handled
-        self.assertTrue("class" in tool.args_schema.__annotations__)
-        self.assertTrue("from" in tool.args_schema.__annotations__)
-        self.assertTrue("def" in tool.args_schema.__annotations__)
+        self.assertIn("class", tool.args_schema.__annotations__)
+        self.assertIn("from", tool.args_schema.__annotations__)
+        self.assertIn("def", tool.args_schema.__annotations__)
 
         # Try to create an instance of the schema to verify it works
         schema_instance = tool.args_schema(**{"class": "test_class", "from": "test_from", "def": "test_def"})

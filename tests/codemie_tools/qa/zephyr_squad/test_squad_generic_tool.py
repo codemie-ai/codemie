@@ -15,7 +15,10 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from codemie_tools.qa.zephyr_squad.tools import ZephyrSquadGenericTool
+from codemie_tools.qa.zephyr_squad.tools import (
+    ZephyrSquadGenericTool,
+    ZEPHYR_SQUAD_HEALTHCHECK_URL,
+)
 from codemie_tools.qa.zephyr_squad.models import ZephyrSquadConfig
 
 
@@ -36,3 +39,41 @@ def test_execute_valid_config(mock_make_request):
     result = tool.execute(method="GET", relative_path="path")
 
     assert result == "test_content"
+
+
+@patch("codemie_tools.qa.zephyr_squad.api_wrapper.ZephyrRestAPI.request")
+def test_healthcheck_success(mock_make_request):
+    mock_make_request.return_value = MagicMock(
+        content=b'{"baseUrl": "https://jira.example.com", "version": "8.20.0", "buildNumber": 820000}'
+    )
+
+    config = ZephyrSquadConfig(account_id="test_account_id", access_key="test_access_key", secret_key="test_secret_key")
+    tool = ZephyrSquadGenericTool(config=config)
+
+    tool._healthcheck()
+
+    mock_make_request.assert_called_once_with(
+        path=ZEPHYR_SQUAD_HEALTHCHECK_URL, method="GET", json={}, headers={"Content-Type": "application/json"}
+    )
+
+
+@patch("codemie_tools.qa.zephyr_squad.api_wrapper.ZephyrRestAPI.request")
+def test_healthcheck_failure_html_response(mock_make_request):
+    mock_make_request.return_value = MagicMock(content=b"<html><body>Login required</body></html>")
+
+    config = ZephyrSquadConfig(account_id="test_account_id", access_key="test_access_key", secret_key="test_secret_key")
+    tool = ZephyrSquadGenericTool(config=config)
+
+    with pytest.raises(AssertionError, match="Access denied"):
+        tool._healthcheck()
+
+
+@patch("codemie_tools.qa.zephyr_squad.api_wrapper.ZephyrRestAPI.request")
+def test_healthcheck_failure_missing_expected_fields(mock_make_request):
+    mock_make_request.return_value = MagicMock(content=b'{"message": "Authentication failed"}')
+
+    config = ZephyrSquadConfig(account_id="test_account_id", access_key="test_access_key", secret_key="test_secret_key")
+    tool = ZephyrSquadGenericTool(config=config)
+
+    with pytest.raises(AssertionError, match="Access denied"):
+        tool._healthcheck()

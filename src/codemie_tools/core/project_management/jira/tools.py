@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import logging
 import re
 from typing import Type, Optional, Any, Dict, Union
@@ -35,6 +36,7 @@ from codemie_tools.core.project_management.jira.utils import (
 logger = logging.getLogger(__name__)
 
 JIRA_TEST_URL: str = "/rest/api/2/myself"
+JIRA_ERROR_MSG: str = "Access denied"
 
 
 class JiraInput(BaseModel):
@@ -148,7 +150,21 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin):
         return response.text, response
 
     def _healthcheck(self):
-        self.execute("GET", JIRA_TEST_URL)
+        response = self.jira.request(
+            method="GET",
+            path=JIRA_TEST_URL,
+            params={},
+            advanced_mode=True,
+            headers={"content-type": "application/json"},
+        )
+        if response.status_code != 200:
+            raise AssertionError(JIRA_ERROR_MSG)
+        try:
+            data = json.loads(response.text)
+        except (json.JSONDecodeError, TypeError):
+            raise AssertionError(JIRA_ERROR_MSG)
+        if "displayName" not in data:
+            raise AssertionError(JIRA_ERROR_MSG)
 
     def _normalize_fields_param(self, payload_params: Dict[str, Any]) -> Dict[str, Any]:
         """

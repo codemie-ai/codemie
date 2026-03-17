@@ -239,15 +239,15 @@ class TestA2AUtils(unittest.TestCase):
 
         self.assertEqual(result[0].id, "tool1")
         self.assertEqual(result[0].name, "Tool One")
-        self.assertTrue("toolkit-one" in result[0].tags)
+        self.assertIn("toolkit-one", result[0].tags)
 
         self.assertEqual(result[1].id, "tool2")
         self.assertEqual(result[1].name, "Tool Two")
-        self.assertTrue("toolkit-one" in result[1].tags)
+        self.assertIn("toolkit-one", result[1].tags)
 
         self.assertEqual(result[2].id, "tool3")
         self.assertEqual(result[2].name, "Tool Three")
-        self.assertTrue("toolkit-two" in result[2].tags)
+        self.assertIn("toolkit-two", result[2].tags)
 
     @patch('codemie.configs.config')
     def test_assistant_to_agent_card(self, mock_config):

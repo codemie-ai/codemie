@@ -24,6 +24,7 @@ from codemie_tools.qa.zephyr_squad.api_wrapper import ZephyrRestAPI
 
 # URL that is used for integration healthcheck
 ZEPHYR_SQUAD_HEALTHCHECK_URL = "/serverinfo"
+ZEPHYR_SQUAD_ERROR_MSG: str = "Access denied"
 
 
 class ZephyrSquadGenericTool(CodeMieTool):
@@ -34,7 +35,13 @@ class ZephyrSquadGenericTool(CodeMieTool):
 
     def _healthcheck(self):
         """Performs a healthcheck by querying the serverinfo endpoint"""
-        self.execute(relative_path=ZEPHYR_SQUAD_HEALTHCHECK_URL, method="GET")
+        content = self.execute(relative_path=ZEPHYR_SQUAD_HEALTHCHECK_URL, method="GET")
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            raise AssertionError(ZEPHYR_SQUAD_ERROR_MSG)
+        if "baseUrl" not in data and "version" not in data:
+            raise AssertionError(ZEPHYR_SQUAD_ERROR_MSG)
 
     def execute(
         self, method: str, relative_path: str, body: Optional[str] = None, content_type: str = 'application/json'

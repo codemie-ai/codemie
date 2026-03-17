@@ -19,7 +19,12 @@ import pytest
 from atlassian import Jira
 
 from codemie_tools.core.project_management.jira.models import JiraConfig
-from codemie_tools.core.project_management.jira.tools import JIRA_TEST_URL, JiraInput
+from codemie_tools.core.project_management.jira.tools import (
+    JIRA_TEST_URL,
+    JIRA_ERROR_MSG,
+    JiraInput,
+    GenericJiraIssueTool,
+)
 from codemie_tools.core.project_management.jira.tools_vars import GENERIC_JIRA_TOOL, get_jira_tool_description
 
 
@@ -88,7 +93,23 @@ class MockGenericJiraIssueTool:
 
     def _healthcheck(self):
         """Mock _healthcheck method."""
-        self.execute("GET", JIRA_TEST_URL)
+        import json
+
+        response = self.jira.request(
+            method="GET",
+            path=JIRA_TEST_URL,
+            params={},
+            advanced_mode=True,
+            headers={"content-type": "application/json"},
+        )
+        if response.status_code != 200:
+            raise AssertionError(JIRA_ERROR_MSG)
+        try:
+            data = json.loads(response.text)
+        except (json.JSONDecodeError, TypeError):
+            raise AssertionError(JIRA_ERROR_MSG)
+        if "displayName" not in data:
+            raise AssertionError(JIRA_ERROR_MSG)
 
 
 class TestGenericJiraIssueTool:
@@ -261,13 +282,72 @@ class TestGenericJiraIssueTool:
         assert response_text == '{"id": "TEST-123"}'
         assert response == mock_response
 
-    def test_healthcheck(self, jira_config):
-        """Test _healthcheck method."""
-        # Create tool and execute
-        tool = MockGenericJiraIssueTool(jira_config)
+    @patch('codemie_tools.core.project_management.jira.tools.Jira')
+    @patch('codemie_tools.core.project_management.jira.tools.validate_jira_creds')
+    def test_healthcheck_success(self, mock_validate_creds, mock_jira_class, jira_config):
+        """Test _healthcheck passes with valid JSON response containing displayName."""
+        mock_jira_instance = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = '{"accountId": "test123", "displayName": "Test User", "active": true}'
+        mock_jira_instance.request.return_value = mock_response
+        mock_jira_class.return_value = mock_jira_instance
 
-        with patch.object(tool, 'execute') as mock_execute:
+        tool = GenericJiraIssueTool(config=jira_config)
+        tool._healthcheck()
+
+        mock_jira_instance.request.assert_called_once_with(
+            method="GET",
+            path=JIRA_TEST_URL,
+            params={},
+            advanced_mode=True,
+            headers={"content-type": "application/json"},
+        )
+
+    @patch('codemie_tools.core.project_management.jira.tools.Jira')
+    @patch('codemie_tools.core.project_management.jira.tools.validate_jira_creds')
+    def test_healthcheck_failure_unauthorized(self, mock_validate_creds, mock_jira_class, jira_config):
+        """Test _healthcheck raises on 401 response."""
+        mock_jira_instance = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.text = '{"error": "Unauthorized"}'
+        mock_jira_instance.request.return_value = mock_response
+        mock_jira_class.return_value = mock_jira_instance
+
+        tool = GenericJiraIssueTool(config=jira_config)
+
+        with pytest.raises(AssertionError, match="Access denied"):
             tool._healthcheck()
 
-            # Verify
-            mock_execute.assert_called_once_with("GET", JIRA_TEST_URL)
+    @patch('codemie_tools.core.project_management.jira.tools.Jira')
+    @patch('codemie_tools.core.project_management.jira.tools.validate_jira_creds')
+    def test_healthcheck_failure_html_response(self, mock_validate_creds, mock_jira_class, jira_config):
+        """Test _healthcheck raises when 200 returns HTML (false positive case)."""
+        mock_jira_instance = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = '<html><body>Login required</body></html>'
+        mock_jira_instance.request.return_value = mock_response
+        mock_jira_class.return_value = mock_jira_instance
+
+        tool = GenericJiraIssueTool(config=jira_config)
+
+        with pytest.raises(AssertionError, match="Access denied"):
+            tool._healthcheck()
+
+    @patch('codemie_tools.core.project_management.jira.tools.Jira')
+    @patch('codemie_tools.core.project_management.jira.tools.validate_jira_creds')
+    def test_healthcheck_failure_missing_display_name(self, mock_validate_creds, mock_jira_class, jira_config):
+        """Test _healthcheck raises when JSON response lacks expected displayName field."""
+        mock_jira_instance = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = '{"message": "Authentication failed"}'
+        mock_jira_instance.request.return_value = mock_response
+        mock_jira_class.return_value = mock_jira_instance
+
+        tool = GenericJiraIssueTool(config=jira_config)
+
+        with pytest.raises(AssertionError, match="Access denied"):
+            tool._healthcheck()

@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from codemie_tools.core.project_management.jira.models import JiraConfig
-from codemie_tools.core.project_management.jira.tools import GenericJiraIssueTool, JIRA_TEST_URL
+from codemie_tools.core.project_management.jira.tools import GenericJiraIssueTool, JIRA_TEST_URL, JIRA_ERROR_MSG
 
 
 class TestGenericJiraIssueToolAdditional:
@@ -84,12 +84,17 @@ class TestGenericJiraIssueToolAdditional:
         with pytest.raises(Exception, match="API Error"):
             tool.execute(method="GET", relative_url="/rest/api/2/issue/TEST-1", params="{}")
 
-    @patch('codemie_tools.core.project_management.jira.tools.GenericJiraIssueTool.execute')
-    def test_healthcheck_success(self, mock_execute):
+    @patch('codemie_tools.core.project_management.jira.tools.validate_jira_creds')
+    @patch('codemie_tools.core.project_management.jira.tools.Jira')
+    def test_healthcheck_success(self, mock_jira_class, mock_validate_creds):
         # Setup
         config = JiraConfig(url="https://jira.example.com", token="abc123", username="testuser", cloud=False)
-
-        mock_execute.return_value = "HTTP: GET /rest/api/2/myself -> 200 OK {}"
+        mock_jira_instance = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = '{"accountId": "user1", "displayName": "Test User"}'
+        mock_jira_instance.request.return_value = mock_response
+        mock_jira_class.return_value = mock_jira_instance
 
         tool = GenericJiraIssueTool(config=config)
 
@@ -97,20 +102,30 @@ class TestGenericJiraIssueToolAdditional:
         tool._healthcheck()
 
         # Assert
-        mock_execute.assert_called_once_with("GET", JIRA_TEST_URL)
+        mock_jira_instance.request.assert_called_once_with(
+            method="GET",
+            path=JIRA_TEST_URL,
+            params={},
+            advanced_mode=True,
+            headers={"content-type": "application/json"},
+        )
 
-    @patch('codemie_tools.core.project_management.jira.tools.GenericJiraIssueTool.execute')
-    def test_healthcheck_failure(self, mock_execute):
+    @patch('codemie_tools.core.project_management.jira.tools.validate_jira_creds')
+    @patch('codemie_tools.core.project_management.jira.tools.Jira')
+    def test_healthcheck_failure(self, mock_jira_class, mock_validate_creds):
         # Setup
         config = JiraConfig(url="https://jira.example.com", token="abc123", username="testuser", cloud=False)
-
-        # Mock the execute method to raise an exception
-        mock_execute.side_effect = Exception("API Error")
+        mock_jira_instance = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.text = '{"error": "Unauthorized"}'
+        mock_jira_instance.request.return_value = mock_response
+        mock_jira_class.return_value = mock_jira_instance
 
         tool = GenericJiraIssueTool(config=config)
 
         # Execute and Assert
-        with pytest.raises(Exception, match="API Error"):
+        with pytest.raises(AssertionError, match=JIRA_ERROR_MSG):
             tool._healthcheck()
 
     @patch('codemie_tools.core.project_management.jira.tools.validate_jira_creds')
