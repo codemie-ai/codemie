@@ -270,7 +270,7 @@ def github_app_credentials():
         url="https://github.com/org/repo",
         auth_type=GitAuthType.GITHUB_APP,
         app_id=123456,
-        private_key="-----BEGIN RSA PRIVATE KEY-----\ntest_key\n-----END RSA PRIVATE KEY-----",
+        private_key="-----BEGIN KEY-----\ntest_key\n-----END KEY-----",
         installation_id=789012,
     )
 

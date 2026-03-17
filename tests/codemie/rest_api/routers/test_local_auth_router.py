@@ -537,7 +537,7 @@ class TestChangePasswordEndpoint:
         mock_config.ENABLE_USER_MANAGEMENT = True
         mock_config.IDP_PROVIDER = "local"
         mock_service.change_password_authenticated.return_value = {"message": "Password changed successfully"}
-        data = PasswordChangeRequest(current_password="oldpass123456", new_password="newpass456789012")
+        data = PasswordChangeRequest(current_password="OldTestPass123", new_password="NewTestPass123")
 
         # Act
         result = await change_password(data, user=mock_user)
@@ -545,7 +545,7 @@ class TestChangePasswordEndpoint:
         # Assert
         assert result.message == "Password changed successfully"
         mock_service.change_password_authenticated.assert_called_once_with(
-            user_id="user-123", current_password="oldpass123456", new_password="newpass456789012"
+            user_id="user-123", current_password="OldTestPass123", new_password="NewTestPass123"
         )
 
     @pytest.mark.asyncio
@@ -554,7 +554,7 @@ class TestChangePasswordEndpoint:
         """Change password fails when ENABLE_USER_MANAGEMENT=False"""
         # Arrange
         mock_config.ENABLE_USER_MANAGEMENT = False
-        data = PasswordChangeRequest(current_password="oldpass123456", new_password="newpass456789012")
+        data = PasswordChangeRequest(current_password="OldTestPass123", new_password="NewTestPass123")
 
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -570,7 +570,7 @@ class TestChangePasswordEndpoint:
         # Arrange
         mock_config.ENABLE_USER_MANAGEMENT = True
         mock_config.IDP_PROVIDER = "oidc"
-        data = PasswordChangeRequest(current_password="oldpass123456", new_password="newpass456789012")
+        data = PasswordChangeRequest(current_password="OldTestPass123", new_password="NewTestPass123")
 
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:

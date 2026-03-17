@@ -25,22 +25,22 @@ from codemie.datasource.loader.git_auth_utils import get_github_app_token
     [
         (
             123456,
-            "-----BEGIN RSA PRIVATE KEY-----\ntest_key\n-----END RSA PRIVATE KEY-----",
+            "-----BEGIN KEY-----\ntest_key\n-----END KEY-----",
             789012,
             "ghs_test_token_12345",
         ),
         (
             654321,
-            "-----BEGIN RSA PRIVATE KEY-----\ntest_key_2\n-----END RSA PRIVATE KEY-----",
+            "-----BEGIN KEY-----\ntest_key_2\n-----END KEY-----",
             111222,
             "ghs_another_token",
         ),
         (
             999,
-            """-----BEGIN RSA PRIVATE KEY-----
-MIIEpAIBAAKCAQEA0Z3VS...
-MIIEpAIBAAKCAQEA0Z3VS...
------END RSA PRIVATE KEY-----""",
+            """-----BEGIN KEY-----
+BBBBBBBBBBBBBBBBBBBB
+BBBBBBBBBBBBBBBBBBBB
+-----END KEY-----""",
             456,
             "ghs_multiline_key_token",
         ),
@@ -85,7 +85,7 @@ def test_get_github_app_token_auto_detect_installation_id(mock_integration_class
     mock_integration.get_access_token.return_value = mock_access_token
 
     app_id = 654321
-    private_key = "-----BEGIN RSA PRIVATE KEY-----\ntest_key_2\n-----END RSA PRIVATE KEY-----"
+    private_key = "-----BEGIN KEY-----\ntest_key_2\n-----END KEY-----"
 
     # Act
     token = get_github_app_token(app_id, private_key, installation_id=None)
@@ -107,7 +107,7 @@ def test_get_github_app_token_no_installations_found(mock_integration_class):
     mock_integration.get_installations.return_value = iter([])
 
     app_id = 111222
-    private_key = "-----BEGIN RSA PRIVATE KEY-----\ntest_key_3\n-----END RSA PRIVATE KEY-----"
+    private_key = "-----BEGIN KEY-----\ntest_key_3\n-----END KEY-----"
 
     # Act & Assert
     with pytest.raises(ValueError, match="GitHub App authentication failed"):
@@ -124,7 +124,7 @@ def test_get_github_app_token_api_failure(mock_integration_class):
     mock_integration.get_access_token.side_effect = Exception("API rate limit exceeded")
 
     app_id = 333444
-    private_key = "-----BEGIN RSA PRIVATE KEY-----\ntest_key_4\n-----END RSA PRIVATE KEY-----"
+    private_key = "-----BEGIN KEY-----\ntest_key_4\n-----END KEY-----"
     installation_id = 555666
 
     # Act & Assert

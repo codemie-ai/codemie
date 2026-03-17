@@ -51,7 +51,7 @@ nats-py = "2.10.0"
 protobuf = ">=5.29.6,<6.0"
 pathspec = "^0.12.1"
 openhands_aci = "0.1.2"
-codemie-enterprise = {version = "2.3.0", source = "codemie-artifact-registry-gcp", optional = true}
+codemie-enterprise = {version = "2.3.2", source = "codemie-artifact-registry-gcp", optional = true}
 nltk = "^3.9.1"
 sqlmodel = "^0.0.24"
 psycopg2-binary = "^2.9.10"

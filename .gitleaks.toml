@@ -10,13 +10,5 @@ paths = [
 ]
 
 stopwords = [
-  "sk-proj-abc123",          # Example API key in documentation
-  "limit=self.MAX_RESULTS",  # False positive: function parameter
-  "test_key",                # Test private keys
-  "ghs_test_token_12345",    # Test GitHub tokens
-  "mock_private",            # Mock private keys in tests
-  "MIIEpAIBAAKCAQEA0Z3VS",   # Test RSA key
-  "abc123def456",            # Test token hash
-  "oldpass123456",           # Test old password
-  "newpass456789012",        # Test new password
+  "limit=self.MAX_RESULTS",  # False positive: parameter assignment, not a secret
 ]

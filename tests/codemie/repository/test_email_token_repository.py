@@ -259,7 +259,7 @@ class TestGetByHash:
     def test_get_by_hash_found(self, repository, mock_session, sample_user_id, sample_email):
         """Test that get_by_hash returns token when hash matches."""
         # Arrange
-        token_hash = "abc123def456"
+        token_hash = "test_token_hash"
         expected_token = EmailVerificationToken(
             id=str(uuid4()),
             user_id=sample_user_id,

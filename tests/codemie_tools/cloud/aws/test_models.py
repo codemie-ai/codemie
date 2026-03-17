@@ -33,15 +33,12 @@ class TestAWSConfig:
             aws_region="eu-west-1",
             aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
             aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-            aws_session_token="AQoDYXdzEJr//////////wEaCXVzLWVhc3QtMSJGMEQCEH1kT8N6uC1b82j3g2bPsF1RvbA9Jp4x2dN1YlGJ7wK3oFQGd8jJtQ6r9O7P2Qk5L7aG4H3cS2qR1DpMZkQaL4sPZklmQW5hR29mSWxCcnZKTlNjUkZDa1RaeFVpT1ZCSW5oN2t4U3U5MEt2YXhXRXhhbXBsZVNlc3Npb25Ub2tlbkV4YW1wbGUxMjM0NTY3ODkw",
+            aws_session_token="FakeSessionTokenForTestingPurposes123",
         )
         assert config.region == "eu-west-1"
         assert config.access_key_id == "AKIAIOSFODNN7EXAMPLE"
         assert config.secret_access_key == "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-        assert (
-            config.session_token
-            == "AQoDYXdzEJr//////////wEaCXVzLWVhc3QtMSJGMEQCEH1kT8N6uC1b82j3g2bPsF1RvbA9Jp4x2dN1YlGJ7wK3oFQGd8jJtQ6r9O7P2Qk5L7aG4H3cS2qR1DpMZkQaL4sPZklmQW5hR29mSWxCcnZKTlNjUkZDa1RaeFVpT1ZCSW5oN2t4U3U5MEt2YXhXRXhhbXBsZVNlc3Npb25Ub2tlbkV4YW1wbGUxMjM0NTY3ODkw"
-        )
+        assert config.session_token == "FakeSessionTokenForTestingPurposes123"
 
     def test_config_field_metadata(self):
         """Test that config fields have correct metadata."""

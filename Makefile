@@ -48,7 +48,10 @@ license-check:
 license-fix:
 	poetry run python scripts/license_headers/check_license_headers.py --fix $(FILE)
 
-verify: ruff license test
+gitleaks:
+	docker run --rm -v $$(pwd):/path zricethezav/gitleaks:v8.30.0 dir --no-banner --verbose /path
+
+verify: ruff license gitleaks test
 
 coverage:
 	poetry run coverage run -m pytest tests/ -W ignore::DeprecationWarning --cov --cov-report=html

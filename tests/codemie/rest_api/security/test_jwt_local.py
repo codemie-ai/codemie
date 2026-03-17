@@ -98,7 +98,7 @@ class TestJwtLocalDelegation:
     def test_load_or_create_keys_delegates(self, mock_jwt_service):
         """Test that load_or_create_keys delegates to jwt_service"""
         # Arrange
-        expected_private = "-----BEGIN PRIVATE KEY-----\nmock_private\n-----END PRIVATE KEY-----"
+        expected_private = "-----BEGIN KEY-----\nmock_private\n-----END KEY-----"
         expected_public = "-----BEGIN PUBLIC KEY-----\nmock_public\n-----END PUBLIC KEY-----"
         mock_jwt_service.load_or_create_keys.return_value = (expected_private, expected_public)
 

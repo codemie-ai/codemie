@@ -37,7 +37,7 @@ def aws_client_with_session():
         region="us-east-1",
         access_key_id="AKIAIOSFODNN7EXAMPLE",
         secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-        session_token="AQoDYXdzEJr//////////wEaCXVzLWVhc3QtMSJGMEQCEH1kT8N6uC1b82j3g2bPsF1RvbA9Jp4x2dN1YlGJ7wK3oFQGd8jJtQ6r9O7P2Qk5L7aG4H3cS2qR1DpMZkQaL4sPZklmQW5hR29mSWxCcnZKTlNjUkZDa1RaeFVpT1ZCSW5oN2t4U3U5MEt2YXhXRXhhbXBsZVNlc3Npb25Ub2tlbkV4YW1wbGUxMjM0NTY3ODkw",
+        session_token="FakeSessionTokenForTestingPurposes123",
     )
 
 
@@ -53,10 +53,7 @@ class TestAWSClient:
         assert aws_client_with_session.region == "us-east-1"
         assert aws_client_with_session.access_key_id == "AKIAIOSFODNN7EXAMPLE"
         assert aws_client_with_session.secret_access_key == "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-        assert (
-            aws_client_with_session.session_token
-            == "AQoDYXdzEJr//////////wEaCXVzLWVhc3QtMSJGMEQCEH1kT8N6uC1b82j3g2bPsF1RvbA9Jp4x2dN1YlGJ7wK3oFQGd8jJtQ6r9O7P2Qk5L7aG4H3cS2qR1DpMZkQaL4sPZklmQW5hR29mSWxCcnZKTlNjUkZDa1RaeFVpT1ZCSW5oN2t4U3U5MEt2YXhXRXhhbXBsZVNlc3Npb25Ub2tlbkV4YW1wbGUxMjM0NTY3ODkw"
-        )
+        assert aws_client_with_session.session_token == "FakeSessionTokenForTestingPurposes123"
 
     @patch('codemie_tools.cloud.aws.aws_client.boto3.client')
     def test_get_client_success(self, mock_boto_client, aws_client):
@@ -83,10 +80,7 @@ class TestAWSClient:
         mock_boto_client.assert_called_once()
         call_args = mock_boto_client.call_args
         assert call_args[0][0] == "iam"
-        assert (
-            call_args[1]["aws_session_token"]
-            == "AQoDYXdzEJr//////////wEaCXVzLWVhc3QtMSJGMEQCEH1kT8N6uC1b82j3g2bPsF1RvbA9Jp4x2dN1YlGJ7wK3oFQGd8jJtQ6r9O7P2Qk5L7aG4H3cS2qR1DpMZkQaL4sPZklmQW5hR29mSWxCcnZKTlNjUkZDa1RaeFVpT1ZCSW5oN2t4U3U5MEt2YXhXRXhhbXBsZVNlc3Npb25Ub2tlbkV4YW1wbGUxMjM0NTY3ODkw"
-        )
+        assert call_args[1]["aws_session_token"] == "FakeSessionTokenForTestingPurposes123"
 
     @patch('codemie_tools.cloud.aws.aws_client.boto3.client')
     def test_get_client_failure(self, mock_boto_client, aws_client):

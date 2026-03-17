@@ -107,7 +107,8 @@ docker build -t codemie:latest .
 - **License headers**: `make license` - Fix and verify Apache 2.0 license headers
 - **Check license headers**: `make license-check` - Check for missing headers (CI mode)
 - **Fix license headers**: `make license-fix` - Add missing license headers
-- **Run ALL checks + tests** (strictly needed before commit): `make verify` - Runs ruff, license-check, and tests
+- **Scan for secrets**: `make gitleaks` - Run gitleaks in Docker to scan for hardcoded secrets
+- **Run ALL checks + tests** (strictly needed before commit): `make verify` - Runs ruff, license-check, gitleaks, and tests
 - **Import AI Katas**: `make import-katas` - Clone and import AI katas from GitHub repository
 
 ### Git Hooks (pre-commit)
