@@ -89,6 +89,13 @@ def create_project_setting(request: SettingRequest, user: User = Depends(authent
     if request.credential_type == CredentialTypes.SCHEDULER:
         validate_scheduler_request(request)
     elif request.credential_type == CredentialTypes.LITE_LLM:
+        if not user.is_admin:
+            raise ExtendedHTTPException(
+                code=status.HTTP_403_FORBIDDEN,
+                message="Access denied",
+                details="LiteLLM integrations can only be created by admin users.",
+                help="Please contact your system administrator to configure LiteLLM integrations.",
+            )
         # Check if LiteLLM enterprise is available before allowing credential creation
         from codemie.enterprise.litellm import require_litellm_enabled
 
@@ -125,6 +132,13 @@ def update_project_setting(request: SettingRequest, setting_id: str, user: User 
     if request.credential_type == CredentialTypes.SCHEDULER:
         validate_scheduler_request(request)
     elif request.credential_type == CredentialTypes.LITE_LLM:
+        if not user.is_admin:
+            raise ExtendedHTTPException(
+                code=status.HTTP_403_FORBIDDEN,
+                message="Access denied",
+                details="LiteLLM integrations can only be updated by admin users.",
+                help="Please contact your system administrator to configure LiteLLM integrations.",
+            )
         # Check if LiteLLM enterprise is available before allowing credential update
         from codemie.enterprise.litellm import require_litellm_enabled
 
