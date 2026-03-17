@@ -165,7 +165,11 @@ class CodeExecutorTool(CodeMieTool):
 
     name: str = CODE_EXECUTOR_TOOL.name
     description: str = CODE_EXECUTOR_TOOL.description
-    args_schema: Optional[Type[BaseModel]] = None  # Will be set dynamically in __init__
+    args_schema: Type[BaseModel] = get_code_executor_input_schema(
+        execution_mode=ExecutionMode.LOCAL,
+        blocked_modules=None,
+        file_names=None,
+    )
     config: Optional[CodeExecutorConfig] = None
     file_repository: Optional[Any] = None
     user_id: Optional[str] = ""
