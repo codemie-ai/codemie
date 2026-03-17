@@ -250,7 +250,8 @@ def create_workflow_execution(
         )
 
     _validate_remote_entities_and_raise(workflow_config)
-    _validate_workflow_supports_files_and_raise(workflow_config, request.file_name)
+    file_names = request.file_names or ([request.file_name] if request.file_name else [])
+    _validate_workflow_supports_files_and_raise(workflow_config, file_names)
 
     user_model = user.as_user_model()
 
@@ -258,7 +259,7 @@ def create_workflow_execution(
         workflow_config,
         user=user_model,
         user_input=request.user_input,
-        file_name=request.file_name,
+        file_names=file_names,
         conversation_id=request.conversation_id,
     )
     request_summary_manager_module.create_request_summary(
@@ -298,7 +299,7 @@ def create_workflow_execution(
             workflow = WorkflowExecutor.create_executor(
                 workflow_config=workflow_config,
                 user_input=execution.prompt,  # Use augmented prompt from execution (includes history)
-                file_name=request.file_name,
+                file_names=file_names,
                 user=user,
                 resume_execution=False,
                 execution_id=execution.execution_id,
@@ -316,7 +317,7 @@ def create_workflow_execution(
         workflow = WorkflowExecutor.create_executor(
             workflow_config=workflow_config,
             user_input=request.user_input,
-            file_name=request.file_name,
+            file_names=file_names,
             user=user,
             resume_execution=False,
             execution_id=execution.execution_id,
@@ -943,11 +944,11 @@ def _validate_remote_entities_and_raise(entity: WorkflowConfigBase):
         )
 
 
-def _validate_workflow_supports_files_and_raise(workflow: WorkflowConfigBase, file_name: Optional[str]):
+def _validate_workflow_supports_files_and_raise(workflow: WorkflowConfigBase, file_names: list[str]):
     """
-    Validates whether a file has been passed and if a workflow supports file uploads.
+    Validates whether files have been passed and if a workflow supports file uploads.
     """
-    if not file_name or not workflow.bedrock:
+    if not file_names or not workflow.bedrock:
         return
 
     raise ExtendedHTTPException(

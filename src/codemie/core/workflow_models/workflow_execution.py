@@ -16,7 +16,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Session, select
 
@@ -151,7 +151,9 @@ class WorkflowExecution(BaseModelWithSQLSupport, Owned, table=True):
     output: Optional[str] = None
     name: Optional[str] = None
     prompt: Optional[str] = None
-    file_name: Optional[str] = None
+    file_names: list[str] = SQLField(
+        default_factory=list, sa_column=Column(JSONB, nullable=True, server_default=text("'[]'::jsonb"))
+    )
     created_by: Optional[UserEntity] = SQLField(default=None, sa_column=Column(PydanticType(UserEntity)))
     updated_by: Optional[UserEntity] = SQLField(default=None, sa_column=Column(PydanticType(UserEntity)))
     checkpoints: Optional[List[WorkflowExecutionCheckpoint]] = SQLField(
@@ -249,6 +251,7 @@ class WorkflowExecutionResponse(BaseModel):
     id: Optional[str] = None
     prompt: Optional[str] = None
     file_name: Optional[str] = None
+    file_names: list[str] = []
     workflow_id: str
     execution_id: str
     conversation_id: Optional[str] = None
@@ -259,10 +262,16 @@ class WorkflowExecutionResponse(BaseModel):
     date: Optional[datetime] = None
     update_date: Optional[datetime] = None
 
+    @field_validator('file_names', mode='before')
+    @classmethod
+    def coerce_file_names(cls, v: Any) -> list[str]:
+        return v or []
+
 
 class CreateWorkflowExecutionRequest(BaseModel):
     user_input: Optional[str] = ""
     file_name: Optional[str] = None
+    file_names: Optional[list[str]] = None
     propagate_headers: bool = False
     stream: bool = False
     conversation_id: Optional[str] = None  # Continue existing conversation or create new one

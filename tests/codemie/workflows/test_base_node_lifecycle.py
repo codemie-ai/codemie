@@ -496,7 +496,7 @@ def test_execution_context_generation_for_agent_node(
         workflow_state=workflow_state,
         user="test_user",
         execution_id="exec123",
-        file_name="doc.pdf",
+        file_names=["doc.pdf"],
     )
 
     node.mock_execute_result = "Result"
@@ -510,8 +510,8 @@ def test_execution_context_generation_for_agent_node(
     # Only **kwargs parameters are included in the context
     assert "user" in context
     assert context["user"] == "test_user"
-    assert "file_name" in context
-    assert context["file_name"] == "doc.pdf"
+    assert "file_names" in context
+    assert context["file_names"] == ["doc.pdf"]
 
     # execution_id is a named parameter, so it's in self.execution_id, not in kwargs/context
     assert node.execution_id == "exec123"

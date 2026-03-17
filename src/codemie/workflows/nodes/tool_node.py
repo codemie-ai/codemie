@@ -75,7 +75,7 @@ class ToolNode(BaseNode[AgentMessages]):
         self.user = user
         self.execution_id: str = kwargs.get("execution_id")
         self.request_headers: dict[str, str] | None = kwargs.get("request_headers")
-        self.file_name: str | None = kwargs.get("file_name")
+        self.file_names: list[str] = kwargs.get("file_names", [])
 
     def execute(self, state_schema: Type[StateSchemaType], execution_context: dict) -> Any:
         """Execute the configured tool based on its type (MCP or regular).
@@ -196,10 +196,10 @@ class ToolNode(BaseNode[AgentMessages]):
 
         file_objects = (
             build_unique_file_objects_list(
-                file_names=[self.file_name],
+                file_names=self.file_names,
                 conversation_id=self.execution_id,
             )
-            if self.file_name
+            if self.file_names
             else None
         )
 

@@ -500,7 +500,7 @@ def initialize_assistant(
     workflow_assistant: WorkflowAssistant,
     workflow_state: WorkflowState = None,
     thought_queue: ThoughtQueue = None,
-    file_name: Optional[str] = None,
+    file_names: Optional[list[str]] = None,
     resume_execution: bool = False,
     execution_id: str = None,
     project_name: str = None,
@@ -520,7 +520,7 @@ def initialize_assistant(
         execution_id=execution_id,
         tool_callbacks=[AgentStreamingCallback(thought_queue)],
         project_name=project_name,
-        file_names=[file_name] if file_name else None,
+        file_names=file_names,
         mcp_server_args_preprocessor=mcp_server_args_preprocessor,
         request_headers=request_headers,
         trace_context=trace_context,  # Pass through to service

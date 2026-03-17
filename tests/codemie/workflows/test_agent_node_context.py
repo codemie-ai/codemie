@@ -237,7 +237,7 @@ def test_tc_anc_003_agent_task_with_file_attachment(
         assistant=mock_assistant,
         user=mock_user,
         execution_id="exec_123",
-        file_name="encoded_file_url_123",
+        file_names=["encoded_file_url_123"],
     )
 
     # Act
@@ -623,7 +623,7 @@ def test_tc_anc_010_agent_context_generation(
         assistant=mock_assistant,
         user=mock_user,
         execution_id="exec_123",
-        file_name="doc.pdf",
+        file_names=["doc.pdf"],
         extra_param="extra_value",
     )
 

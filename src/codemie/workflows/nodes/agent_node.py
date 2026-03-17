@@ -70,7 +70,7 @@ class AgentNode(BaseNode[AgentMessages]):
                 - user (User): User object for authentication and context
                 - resume_execution (bool): Whether this is a resumed execution
                 - execution_id (str): Unique execution identifier
-                - file_name (str): Name of attached file if any
+                - file_names (list[str]): Names of attached files if any
         """
         super().__init__(callbacks, workflow_execution_service, thought_queue, node_name, *args, **kwargs)
         self.summarize_history: bool = kwargs.get("summarize_history")
@@ -80,7 +80,7 @@ class AgentNode(BaseNode[AgentMessages]):
         self.user: User = kwargs.get("user")
         self.resume_execution: bool = kwargs.get("resume_execution")
         self.execution_id: str = kwargs.get("execution_id")
-        self.file_name: str = kwargs.get("file_name")
+        self.file_names: list[str] = kwargs.get("file_names", [])
         self.request_headers: dict[str, str] | None = kwargs.get("request_headers")
         self.disable_cache: Optional[bool] = kwargs.get("disable_cache")
 
@@ -130,9 +130,10 @@ class AgentNode(BaseNode[AgentMessages]):
         if self.current_task_key:
             current_task = state_schema.get(self.current_task_key, "")
             task += f"\nCurrent task: {current_task}"
-        elif self.file_name:
-            decoded_file = FileObject.from_encoded_url(self.file_name)
-            task += f"\nFile attached: {decoded_file.name}"
+        elif self.file_names:
+            for fn in self.file_names:
+                decoded_file = FileObject.from_encoded_url(fn)
+                task += f"\nFile attached: {decoded_file.name}"
 
         if self.workflow_state.resolve_dynamic_values_in_prompt and task != "-":
             dynamic_vals_context = get_context_store_from_state_schema(state_schema)
@@ -245,7 +246,7 @@ class AgentNode(BaseNode[AgentMessages]):
             resume_execution=self.resume_execution,
             execution_id=self.execution_id,
             project_name=self.workflow_config.project,
-            file_name=self.file_name,
+            file_names=self.file_names,
             mcp_server_args_preprocessor=mcp_server_args_preprocessor,
             request_headers=self.request_headers,
             trace_context=trace_context,  # Pass trace context for nested traces

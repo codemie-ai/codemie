@@ -666,7 +666,7 @@ def test_tc_tnc_011_file_name_builds_file_objects_and_passes_to_find_tool(
         workflow_config=mock_workflow_config,
         user=mock_user,
         execution_id="exec_123",
-        file_name="report.xlsx",
+        file_names=["report.xlsx"],
     )
 
     with patch("codemie.workflows.nodes.tool_node.process_values", return_value={}):

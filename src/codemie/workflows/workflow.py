@@ -109,7 +109,7 @@ class WorkflowExecutor:
         user: User,
         resume_execution: bool = False,
         execution_id: str = None,
-        file_name: Optional[str] = None,
+        file_names: Optional[list[str]] = None,
         request_headers: dict[str, str] | None = None,
         thought_queue: Optional[MessageQueue] = None,
         session_id: Optional[str] = None,
@@ -126,7 +126,7 @@ class WorkflowExecutor:
             user: User executing the workflow
             resume_execution: Whether to resume from checkpoint
             execution_id: Execution ID for tracking
-            file_name: Optional file name for file-based workflows
+            file_names: Optional list of file names for file-based workflows
             request_headers: HTTP headers to propagate
             thought_queue: Optional pre-created queue (MessageQueue protocol, e.g., ThreadedGenerator
                           for streaming mode or ThoughtQueue for custom cases). If not provided,
@@ -135,6 +135,7 @@ class WorkflowExecutor:
             disable_cache: Disable Prompt Caching
         """
         workflow_config.parse_execution_config()
+        file_names = file_names or []
 
         # Use provided queue or create new one for background execution
         if thought_queue is None:
@@ -151,7 +152,7 @@ class WorkflowExecutor:
                 thought_queue=thought_queue,
                 resume_execution=resume_execution,
                 execution_id=execution_id,
-                file_name=file_name,
+                file_names=file_names,
                 request_headers=request_headers,
                 session_id=session_id,
                 disable_cache=disable_cache,
@@ -166,7 +167,7 @@ class WorkflowExecutor:
                 thought_queue=thought_queue,
                 resume_execution=resume_execution,
                 execution_id=execution_id,
-                file_name=file_name,
+                file_names=file_names,
                 request_headers=request_headers,
                 session_id=session_id,
                 disable_cache=disable_cache,
@@ -294,7 +295,7 @@ class WorkflowExecutor:
         user_input: str,
         user: User,
         thought_queue: MessageQueue = None,
-        file_name: Optional[str] = None,
+        file_names: Optional[list[str]] = None,
         resume_execution: bool = False,
         execution_id: str = None,
         request_headers: dict[str, str] | None = None,
@@ -305,7 +306,7 @@ class WorkflowExecutor:
     ):
         self.workflow_config = workflow_config
         self.user_input = user_input
-        self.file_name = file_name
+        self.file_names = file_names or []
         self.user = user
         self.resume_execution = resume_execution
         self.execution_id = execution_id
@@ -544,7 +545,7 @@ class WorkflowExecutor:
             workflow_assistant=assistant,
             workflow_state=workflow_state,
             user_input=self.user_input,
-            file_name=self.file_name,
+            file_names=self.file_names,
             user=self.user,
             thought_queue=self.thought_queue,
             resume_execution=self.resume_execution,
@@ -721,7 +722,7 @@ class WorkflowExecutor:
             user=self.user,
             resume_execution=self.resume_execution,
             execution_id=self.execution_id,
-            file_name=self.file_name,
+            file_names=self.file_names,
             request_headers=self.request_headers,
             disable_cache=self.disable_cache,
         )
@@ -743,7 +744,7 @@ class WorkflowExecutor:
             resume_execution=self.resume_execution,
             execution_id=self.execution_id,
             request_headers=self.request_headers,
-            file_name=self.file_name,
+            file_names=self.file_names,
         )
 
     def find_map_nodes(self) -> list[str]:
@@ -897,6 +898,10 @@ class WorkflowExecutor:
         initial_context = parse_from_string_representation(self.user_input)
         if not isinstance(initial_context, dict):
             initial_context = {}
+        if self.file_names:
+            from codemie_tools.base.file_object import FileObject
+
+            initial_context["file_names"] = [FileObject.from_encoded_url(fn).name for fn in self.file_names]
         if self.resume_execution and self.execution_id:
             inputs = None  # None means langchain will use the last checkpoint
             self.workflow_execution_config = WorkflowService.find_workflow_execution_by_id(self.execution_id)

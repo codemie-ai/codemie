@@ -236,12 +236,13 @@ class WorkflowService:
         workflow_config: WorkflowConfig,
         user: UserEntity,
         user_input: Optional[str] = '',
-        file_name: Optional[str] = None,
+        file_names: Optional[list[str]] = None,
         conversation_id: Optional[str] = None,
     ) -> WorkflowExecution:
         try:
             from codemie.rest_api.models.conversation import Conversation
 
+            file_names = file_names or []
             # Only create conversation history for streamable executions (when conversation_id is provided)
             is_chat_execution = conversation_id is not None
 
@@ -295,7 +296,7 @@ class WorkflowService:
                     message=user_input,
                     message_raw=user_input,
                     history_index=0,
-                    file_names=[file_name] if file_name else [],
+                    file_names=file_names,
                 ),
                 GeneratedMessage(
                     date=datetime.now(),
@@ -315,7 +316,7 @@ class WorkflowService:
                 history=execution_history,  # Store history for standalone executions
                 project=workflow_config.project,
                 prompt=augmented_input,  # Use augmented input with history for workflow execution
-                file_name=file_name,
+                file_names=file_names,
                 conversation_id=conversation_id if is_chat_execution else None,
             )
             execution_config.save(refresh=True)
@@ -329,7 +330,7 @@ class WorkflowService:
                     message=user_input,
                     message_raw=user_input,
                     history_index=history_index,
-                    file_names=[file_name] if file_name else [],
+                    file_names=file_names,
                 )
 
                 # Add assistant message as a reference to the workflow execution
