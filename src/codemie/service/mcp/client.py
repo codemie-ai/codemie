@@ -219,6 +219,10 @@ class MCPConnectClient:
 
         logger.info(f"Invoking MCP tool: {tool_name} on server: {server_config.command} {' '.join(server_config.args)}")
 
+        # Debug: log tool_args value types to detect if Pydantic model instances sneak in
+        for _k, _v in tool_args.items():
+            logger.debug(f"[invoke_tool] '{tool_name}' arg '{_k}': type={type(_v).__name__}, value={_v!r}")
+
         bucket_no = _get_bucket_no(server_config)
         headers = _get_headers(bucket_no, server_config)
 
@@ -226,6 +230,9 @@ class MCPConnectClient:
             mcp_url = self._get_actual_bridge_endpoint_url(bucket_no)
             logger.info(f"tools/call: Using MCP-Connect URL: {mcp_url}")
             post_body = request.model_dump(exclude_none=True)
+            # Debug: log the serialised arguments that will be sent over the wire
+            _serialised_args = (post_body.get("params") or {}).get("arguments")
+            logger.debug(f"[invoke_tool] '{tool_name}' post_body arguments after model_dump: {_serialised_args!r}")
             response = await client.post(mcp_url, json=post_body, headers=headers)
             response.raise_for_status()
 

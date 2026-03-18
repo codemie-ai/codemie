@@ -144,6 +144,9 @@ class MCPTool(CodeMieTool):
             Exception: If the tool invocation fails or returns an error
         """
         try:
+            # Debug: trace kwarg types to detect Pydantic model instances vs plain dicts
+            for _k, _v in kwargs.items():
+                logger.debug(f"[MCP args] {self.name} kwarg '{_k}': type={type(_v).__name__}, value={_v!r}")
             response = await self.mcp_client.invoke_tool(
                 server_config=self.mcp_server_config,
                 tool_name=self.name,

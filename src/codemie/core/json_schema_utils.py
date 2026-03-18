@@ -337,6 +337,7 @@ def _configure_model_extras(schema: JsonSchema) -> ConfigDict | None:
     if additional_props is False:
         return ConfigDict(extra="forbid")
     if isinstance(additional_props, dict):
+        logger.debug(f"[json_schema] additionalProperties is schema dict → setting extra='allow' (schema={schema})")
         return ConfigDict(extra="allow")
     return None
 
