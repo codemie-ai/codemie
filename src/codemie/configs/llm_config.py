@@ -98,6 +98,7 @@ class LLMModel(BaseModel):
     forbidden_for_web: Optional[bool] = (
         False  # Controls whether model should be hidden from web/UI (defaults to False - visible)
     )
+    api_version: Optional[str] = None  # Azure OpenAI specific: overrides global OPENAI_API_VERSION when set
 
     @model_validator(mode='after')
     def populate_default_field(self):

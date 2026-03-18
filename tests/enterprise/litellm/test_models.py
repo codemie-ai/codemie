@@ -42,6 +42,43 @@ class TestMapLiteLLMToLLMModel:
         assert result.label == "GPT-4"
         assert result.enabled is True
 
+    def test_maps_api_version(self):
+        litellm_model = {
+            "model_name": "azure/gpt-4",
+            "litellm_params": {
+                "api_version": "2025-04-01-preview",
+            },
+            "model_info": {
+                "litellm_provider": "azure",
+                "id": "gpt-4",
+                "label": "GPT-4",
+                "enabled": True,
+            },
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.api_version == "2025-04-01-preview"
+
+    def test_handles_empty_api_version_correctly(self):
+        litellm_model = {
+            "model_name": "azure/gpt-4",
+            "model_info": {
+                "litellm_provider": "azure",
+                "id": "gpt-4",
+                "label": "GPT-4",
+                "enabled": True,
+            },
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.api_version is None
+
     def test_maps_provider_strings_correctly(self):
         """Test maps various provider strings to LLMProvider enum."""
         from codemie.configs.llm_config import LLMProvider

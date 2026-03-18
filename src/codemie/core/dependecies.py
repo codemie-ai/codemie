@@ -87,7 +87,7 @@ def get_embeddings_model(embedding_model: str = llm_service.default_embedding_mo
             model=embedding_model,
             tiktoken_model_name=LLMService.BASE_NAME_GPT_41_MINI,
             openai_api_type=config.OPENAI_API_TYPE,
-            api_version=config.OPENAI_API_VERSION,
+            openai_api_version=llm_model_details.api_version or config.OPENAI_API_VERSION,
             max_retries=10,
             show_progress_bar=True,
             check_embedding_ctx_length=False,
@@ -330,10 +330,13 @@ def get_llm_by_credentials_raw(
     if llm_model_details.configuration and llm_model_details.configuration.client_headers:
         merged_headers.update(llm_model_details.configuration.client_headers)
 
+    # Resolve api_version: per-request creds > model-level config > global config
+    resolved_api_version = creds.api_version if creds else (llm_model_details.api_version or config.OPENAI_API_VERSION)
+
     optional_args = {k: v for k, v in {}.items() if v is not None}
     base_args = {
         'azure_endpoint': creds.url if creds else config.AZURE_OPENAI_URL,
-        'openai_api_version': creds.api_version if creds else config.OPENAI_API_VERSION,
+        'openai_api_version': resolved_api_version,
         'openai_api_key': creds.api_key if creds else config.AZURE_OPENAI_API_KEY,
         'openai_api_type': config.OPENAI_API_TYPE,
         'deployment_name': llm_model_details.deployment_name,

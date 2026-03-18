@@ -162,7 +162,7 @@ def create_litellm_chat_model(
     # Build base arguments for model
     base_args = {
         'azure_endpoint': config.LITE_LLM_URL,
-        'openai_api_version': config.OPENAI_API_VERSION,
+        'openai_api_version': llm_model_details.api_version or config.OPENAI_API_VERSION,
         'openai_api_key': creds.api_key if creds else config.LITE_LLM_APP_KEY,
         'openai_api_type': config.OPENAI_API_TYPE,
         'deployment_name': llm_model_details.base_name,

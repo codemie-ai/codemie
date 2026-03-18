@@ -67,6 +67,7 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
 
     model_name = litellm_model.get("model_name", "")
     model_info = litellm_model.get("model_info", {})
+    litellm_params = litellm_model.get("litellm_params", {})
 
     # Map provider string to LLMProvider enum (core type)
     provider_str = model_info.get("litellm_provider", "")
@@ -130,6 +131,7 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
     react_agent = not model_info.get("supports_function_calling", False)
     label = model_info.get("label", model_info.get("id", model_name))
     forbidden_for_web = model_info.get("forbidden_for_web", False)
+    api_version = litellm_params.get("api_version", None)
 
     # Return core LLMModel instance
     return LLMModel(
@@ -145,6 +147,7 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
         cost=cost,
         default=ModelCategory.GLOBAL in default_for_categories if default_for_categories else False,
         forbidden_for_web=forbidden_for_web,
+        api_version=api_version,
     )
 
 

@@ -83,6 +83,7 @@ class TestCreateLiteLLMChatModel:
         mock_model_details.features.parallel_tool_calls = True
         mock_model_details.features.max_tokens = True
         mock_model_details.features.top_p = True
+        mock_model_details.api_version = None
 
         with patch.object(config, "LITE_LLM_URL", "http://test:4000"):
             with patch.object(config, "LITE_LLM_APP_KEY", "test-key"):
@@ -120,6 +121,7 @@ class TestCreateLiteLLMChatModel:
         mock_model_details.features.parallel_tool_calls = True
         mock_model_details.features.max_tokens = True
         mock_model_details.features.top_p = True
+        mock_model_details.api_version = None
 
         with patch.object(config, "LITE_LLM_URL", "http://test:4000"):
             with patch.object(config, "OPENAI_API_VERSION", "2024-12-01-preview"):
