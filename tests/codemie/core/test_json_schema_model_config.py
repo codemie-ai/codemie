@@ -223,3 +223,12 @@ def test_free_form_map_schema():
     # None accepted (nullable field)
     instance3 = outer_model(facetFilters=None)
     assert instance3.facetFilters is None
+
+    # facetFilters must be a plain dict, NOT a Pydantic model instance.
+    # LangChain's _parse_input returns getattr(result, field) which, for a plain dict field,
+    # gives a dict directly.  A Pydantic sub-model instance inside dict[str, Any] loses its
+    # extra fields when serialised via MCPToolInvocationRequest.model_dump().
+    instance4 = outer_model(facetFilters={"project.code": ["EPM-TIME"]})
+    assert isinstance(
+        instance4.facetFilters, dict
+    ), "facetFilters must be stored as a plain dict, not a Pydantic model instance"

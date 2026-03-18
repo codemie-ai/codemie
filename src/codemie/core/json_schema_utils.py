@@ -234,6 +234,34 @@ def _is_object_schema(schema: JsonSchema) -> bool:
     return schema.get("type") == "object" or "properties" in schema or "allOf" in schema
 
 
+def _is_pure_map_schema(schema: JsonSchema) -> bool:
+    """True when the schema is a free-form map (additionalProperties: <schema>, no declared properties).
+
+    Such schemas map naturally to dict[str, T] rather than a Pydantic model.  Using a plain
+    dict avoids the need for extra='allow' and ensures dynamic keys are preserved through
+    all serialisation layers (including dict[str, Any] fields in outer models).
+    """
+    return (
+        isinstance(schema.get("additionalProperties"), dict)
+        and "properties" not in schema
+        and "allOf" not in schema
+        and "oneOf" not in schema
+        and "anyOf" not in schema
+    )
+
+
+def _handle_pure_map_schema(name: TypeName, schema: JsonSchema, cache: ModelCache) -> TypeAnnotation:
+    """Return dict[str, T] for a free-form map schema."""
+    value_schema: JsonSchema = schema["additionalProperties"]
+    if not value_schema:
+        return dict[str, Any]
+    try:
+        value_type = _schema_to_type_annotation(f"{name}Value", name, value_schema, cache)
+    except (TypeError, NotImplementedError, SkipPropertyException):
+        value_type = Any
+    return dict[str, value_type]
+
+
 def _determine_base_model(
     model_name: TypeName, allof_schemas: list[JsonSchema] | None, cache: ModelCache
 ) -> type[BaseModel] | tuple[type[BaseModel], ...] | None:
@@ -543,7 +571,10 @@ def _schema_to_type_annotation(
     elif core_schema.get("type") == "array":
         core_annotation = _handle_array_schema(name, core_schema, cache)
     elif _is_object_schema(core_schema):  # Object type or 'properties' present
-        core_annotation = _handle_object(base_prop_name, core_schema, cache)
+        if _is_pure_map_schema(core_schema):
+            core_annotation = _handle_pure_map_schema(name, core_schema, cache)
+        else:
+            core_annotation = _handle_object(base_prop_name, core_schema, cache)
     elif not core_schema or core_schema.get("type") == "any":  # Empty or explicit 'any'
         core_annotation = Any
     elif annotation := _handlers_after_primitive_types(name, core_schema, cache):
