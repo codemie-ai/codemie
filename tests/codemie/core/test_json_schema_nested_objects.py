@@ -351,13 +351,20 @@ def test_edge_cases_for_nested_schemas():
     metadata_field = empty_nested_model.model_fields["metadata"]
     metadata_type = metadata_field.annotation
 
-    # Handle optional model type (Union[Model, None])
+    # Handle optional type (Union[T, None])
     non_none_types = [arg for arg in get_args(metadata_type) if arg is not type(None)]
     assert len(non_none_types) == 1
-    metadata_model = non_none_types[0]
+    metadata_inner = non_none_types[0]
 
-    assert issubclass(metadata_model, BaseModel)
-    assert len(metadata_model.model_fields) == 0  # No fields in nested model
+    # An object with empty properties and no additionalProperties is a free-form map.
+    # JSON Schema spec: absent additionalProperties means any extra props are allowed.
+    assert (
+        get_origin(metadata_inner) is dict
+    ), f"Expected dict for bare object schema with empty properties, got {metadata_inner}"
+
+    # Arbitrary keys must round-trip through model_dump()
+    instance = empty_nested_model(name="Test", metadata={"foo": 1, "bar": "baz"})
+    assert instance.model_dump()["metadata"] == {"foo": 1, "bar": "baz"}
 
     # Edge case 2: Null values for optional nested objects
     nullable_nested_schema = {

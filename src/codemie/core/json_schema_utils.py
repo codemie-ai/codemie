@@ -235,14 +235,22 @@ def _is_object_schema(schema: JsonSchema) -> bool:
 
 
 def _is_pure_map_schema(schema: JsonSchema) -> bool:
-    """True when the schema is a free-form map (additionalProperties: <schema>, no declared properties).
+    """True when the schema is a free-form map (no declared properties, additionalProperties not false).
+
+    Covers three cases:
+      - additionalProperties: <schema dict>  → typed map, e.g. dict[str, list[str]]
+      - additionalProperties: true           → untyped map, dict[str, Any]
+      - additionalProperties absent          → JSON Schema default (any extra props allowed), dict[str, Any]
+
+    additionalProperties: false is the only case that is NOT a free-form map — that schema
+    has a finite, declared set of properties and must remain a Pydantic model.
 
     Such schemas map naturally to dict[str, T] rather than a Pydantic model.  Using a plain
     dict avoids the need for extra='allow' and ensures dynamic keys are preserved through
     all serialisation layers (including dict[str, Any] fields in outer models).
     """
     return (
-        isinstance(schema.get("additionalProperties"), dict)
+        schema.get("additionalProperties") is not False  # absent/True/<schema> → free-form
         and not schema.get("properties")  # absent or empty {}
         and "allOf" not in schema
         and "oneOf" not in schema
@@ -252,8 +260,8 @@ def _is_pure_map_schema(schema: JsonSchema) -> bool:
 
 def _handle_pure_map_schema(name: TypeName, schema: JsonSchema, cache: ModelCache) -> TypeAnnotation:
     """Return dict[str, T] for a free-form map schema."""
-    value_schema: JsonSchema = schema["additionalProperties"]
-    if not value_schema:
+    value_schema = schema.get("additionalProperties")
+    if not value_schema or not isinstance(value_schema, dict):
         return dict[str, Any]
     try:
         value_type = _schema_to_type_annotation(f"{name}Value", name, value_schema, cache)

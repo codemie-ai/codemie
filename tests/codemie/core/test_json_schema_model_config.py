@@ -298,6 +298,38 @@ def test_production_search_datacatalog_ids_schema():
     }, "facetFilters lost through dict[str, Any] serialisation (MCPToolInvocationRequest path)"
 
 
+def test_object_field_without_additional_properties_is_dict():
+    """Object field with no properties and no additionalProperties key must be dict[str, Any].
+
+    This is the exact production failure: the MCP tool returns
+      "facetFilters": {"type": ["object", "null"], "description": "..."}
+    with no additionalProperties at all.  JSON Schema spec says absent additionalProperties
+    means any additional properties are allowed, so the field must be a plain dict.
+    """
+    schema = {
+        "type": "object",
+        "properties": {
+            "facetFilters": {
+                "type": ["object", "null"],
+                "description": "Extra facet filters as returned by grep_facets",
+            }
+        },
+    }
+    model = json_schema_to_model(schema)
+
+    instance = model(facetFilters={"project.code": ["EPM-TIME"]})
+    assert isinstance(instance.facetFilters, dict), "facetFilters must be a plain dict"
+    assert instance.model_dump()["facetFilters"] == {"project.code": ["EPM-TIME"]}
+
+    # None accepted (nullable)
+    instance2 = model(facetFilters=None)
+    assert instance2.facetFilters is None
+
+    # Multiple arbitrary keys
+    instance3 = model(facetFilters={"a": 1, "b.c": [2, 3]})
+    assert instance3.model_dump()["facetFilters"] == {"a": 1, "b.c": [2, 3]}
+
+
 def test_pure_map_with_empty_properties():
     """Schema with 'properties: {}' (empty but present) should be treated as a pure map."""
     schema = {
