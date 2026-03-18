@@ -542,6 +542,12 @@ class MCPToolkit(BaseToolkit):
             # Create the model dynamically
             args_schema = create_model(f"{tool_def.name.capitalize()}ArgsSchema")
 
+        # Log generated field types so the deployed version can be verified in logs.
+        # With the EPMCDME-11033 fix, map-typed fields (e.g. facetFilters) show as
+        # dict[str, T] rather than a Pydantic sub-model class.
+        field_types = {k: str(fi.annotation) for k, fi in args_schema.model_fields.items()}
+        logger.debug(f"[schema:{tool_def.name}] generated field types: {field_types}")
+
         return args_schema
 
     def _create_tools(self) -> list[MCPTool]:
