@@ -27,6 +27,10 @@ from .dependencies import (
     get_customer_spending,
     get_key_spending_info,
     get_available_models,
+    is_premium_models_enabled,
+    is_premium_model,
+    get_premium_username,
+    get_premium_customer_spending,
 )
 
 # HTTP client (from client.py)
@@ -72,6 +76,11 @@ __all__ = [
     "get_customer_spending",
     "get_key_spending_info",
     "get_available_models",
+    # Premium models budget
+    "is_premium_models_enabled",
+    "is_premium_model",
+    "get_premium_username",
+    "get_premium_customer_spending",
     # HTTP client
     "get_llm_proxy_client",
     "close_llm_proxy_client",

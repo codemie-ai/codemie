@@ -2250,12 +2250,16 @@ async def get_user_spending(
     - Gracefully handles API failures with clear messages
     """
     from datetime import timezone
-    from codemie.enterprise.litellm.dependencies import get_customer_spending
+    from codemie.enterprise.litellm.dependencies import (
+        get_customer_spending,
+        get_premium_customer_spending,
+        is_premium_models_enabled,
+    )
 
     start_time = datetime.now(timezone.utc)
     logger.info(f"User {user.id} requesting spending analytics")
 
-    # Get spending data from LiteLLM
+    # Get standard spending data from LiteLLM
     try:
         spending_data = await asyncio.to_thread(get_customer_spending, user.username, True)
     except Exception as e:
@@ -2267,6 +2271,24 @@ async def get_user_spending(
         ) from e
 
     metrics = _build_spending_metrics(spending_data, user.username)
+
+    # Include premium budget spending when feature is enabled
+    if is_premium_models_enabled():
+        try:
+            premium_spending_data = await asyncio.to_thread(get_premium_customer_spending, user.username)
+            if premium_spending_data is not None:
+                premium_current_spending = premium_spending_data.get("total_spend", 0.0)
+                logger.info(f"Premium spending retrieved for user {user.id}: " f"spend=${premium_current_spending:.2f}")
+                metrics.append(
+                    _build_spending_metric(
+                        "premium_current_spending",
+                        premium_current_spending,
+                        "number",
+                        "currency",
+                    )
+                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch premium spending for user {user.id}: {e}")
 
     response_data = {
         "data": {"metrics": metrics},

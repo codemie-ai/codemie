@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import TYPE_CHECKING, Optional
 
 from codemie.configs import logger
@@ -366,6 +367,82 @@ def check_user_budget(user_id: str):
     except Exception as e:
         logger.error(f"Error during budget check for {user_id}: {e}")
         return None
+
+
+@lru_cache(maxsize=1)
+def is_premium_models_enabled() -> bool:
+    """Return True when the premium models budget feature is active (budget name configured).
+
+    Result is cached for the process lifetime — the config value is set at startup and
+    does not change while the application is running.  Call
+    ``is_premium_models_enabled.cache_clear()`` in tests that patch the config value.
+    """
+    from codemie.configs import config
+
+    return bool(config.LITELLM_PREMIUM_MODELS_BUDGET_NAME)
+
+
+@lru_cache(maxsize=256)
+def is_premium_model(model: str) -> bool:
+    """Return True when *model* matches any alias in LITELLM_PREMIUM_MODELS_ALIASES (case-insensitive partial match).
+
+    Always returns False when the premium models feature is disabled.
+
+    Result is cached per model name for the process lifetime — the alias list is set at
+    startup and does not change while the application is running.  Call
+    ``is_premium_model.cache_clear()`` in tests that patch the config value.
+    """
+    from codemie.configs import config
+
+    if not is_premium_models_enabled():
+        return False
+
+    aliases: list[str] = config.LITELLM_PREMIUM_MODELS_ALIASES
+    if not aliases:
+        return False
+
+    model_lower = model.lower()
+    return any(alias.lower() in model_lower for alias in aliases)
+
+
+def get_premium_username(user_email: str, model: str) -> str | None:
+    """Derive the LiteLLM username for premium budget attribution.
+
+    Returns ``{user_email}_{budget_name}`` when the feature is enabled and *model*
+    is a premium model; otherwise returns ``None`` (caller keeps the standard username).
+    """
+    from codemie.configs import config
+
+    if not is_premium_models_enabled():
+        return None
+
+    if not is_premium_model(model):
+        return None
+
+    return f"{user_email}_{config.LITELLM_PREMIUM_MODELS_BUDGET_NAME}"
+
+
+def get_premium_customer_spending(user_email: str, on_raise: bool = False) -> dict | None:
+    """Get spending for the derived premium budget identity ``{user_email}_{budget_name}``.
+
+    Returns ``None`` when the premium models budget feature is disabled (budget name not
+    configured) or when the underlying LiteLLM service is unavailable.
+
+    Args:
+        user_email: The authenticated user's email / LiteLLM username.
+        on_raise: When True, re-raises backend errors instead of returning None.
+    """
+    from codemie.configs import logger
+
+    if not is_premium_models_enabled():
+        logger.debug("Premium models budget name not configured, skipping premium spending lookup")
+        return None
+
+    from codemie.configs import config
+
+    derived_id = f"{user_email}_{config.LITELLM_PREMIUM_MODELS_BUDGET_NAME}"
+    logger.debug(f"Fetching premium customer spending for derived id: {derived_id}")
+    return get_customer_spending(derived_id, on_raise=on_raise)
 
 
 def get_customer_spending(user_id: str, on_raise: bool = False):

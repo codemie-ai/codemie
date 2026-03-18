@@ -441,6 +441,14 @@ class Config(BaseSettings):
     DEFAULT_BUDGET_DURATION: str = "30d"
     DEFAULT_BUDGET_ID: str = "default"
 
+    # LiteLLM Premium Models Budget Tracking
+    # When LITELLM_PREMIUM_MODELS_BUDGET_NAME is empty, the entire premium-budget logic is skipped.
+    # Budget name for costly/premium model spend attribution (e.g. "premium_models").
+    LITELLM_PREMIUM_MODELS_BUDGET_NAME: str = ""
+    # List of model name aliases for premium/costly model detection (partial match, case-insensitive).
+    # A model is considered premium if its name contains any alias (e.g. ["opus", "claude-4"]).
+    LITELLM_PREMIUM_MODELS_ALIASES: List[str] = []
+
     # LiteLLM Cache and Optimization Configuration
     LITELLM_CUSTOMER_CACHE_TTL: int = 300  # 5 minutes - cache customer info TTL
     LITELLM_MODELS_CACHE_TTL: int = 1800  # 30 minutes - cache available models TTL

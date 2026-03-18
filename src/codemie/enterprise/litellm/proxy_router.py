@@ -65,7 +65,7 @@ from codemie.service.monitoring.base_monitoring_service import send_log_metric
 from codemie.service.monitoring.metrics_constants import LLM_ERROR_TOTAL_METRIC, MetricsAttributes
 
 from .client import get_llm_proxy_client
-from .dependencies import is_litellm_enabled
+from .dependencies import is_litellm_enabled, get_premium_username, is_premium_models_enabled
 from .llm_factory import generate_litellm_headers_from_context
 
 # Import proxy utils from loader (with enterprise package availability check)
@@ -207,6 +207,11 @@ async def _create_body_stream_with_optional_injection(
     """
     Create body stream with or without user injection.
 
+    When the premium models budget feature is enabled and the requested model matches a
+    premium alias, the injected LiteLLM username is derived as
+    ``{user.username}_{budget_name}`` so that spend is attributed to the separate premium
+    budget identity.  Otherwise the standard ``user.username`` is used.
+
     Args:
         body_bytes: Buffered request body
         has_own_credentials: Whether user has their own integration credentials
@@ -226,12 +231,15 @@ async def _create_body_stream_with_optional_injection(
         return passthrough()
 
     else:
-        logger.debug(f"Injecting user for budget tracking: {user.username}")
+        llm_model = request_info.get(LLM_MODEL, "unknown")
+        username = get_premium_username(user.username, llm_model) or user.username
+
+        logger.debug(f"Injecting user for budget tracking: {username} (model={llm_model})")
 
         check_user_budget(user_id=user.username)
 
         return _inject_user_into_request_body_from_bytes(
-            body_bytes=body_bytes, user_id=user.username, request_info=request_info
+            body_bytes=body_bytes, user_id=username, request_info=request_info
         )
 
 
@@ -565,6 +573,104 @@ async def _passthrough_stream(downstream_response: httpx.Response, request_info:
             )
 
 
+def _build_premium_budget_error_body(body_bytes: bytes) -> bytes | None:
+    """Check whether *body_bytes* is a LiteLLM budget-exceeded error for a premium user.
+
+    Returns replacement JSON bytes with a user-friendly message when all conditions hold:
+      1. The response body is valid JSON with ``error.type == "budget_exceeded"``.
+      2. The error message contains ``_{budget_name} over budget`` — i.e. the LiteLLM
+         ``end_user`` was the derived premium identity ``{email}_{budget_name}``.
+      3. The premium models budget feature is enabled (``LITELLM_PREMIUM_MODELS_BUDGET_NAME``
+         is non-empty).
+
+    Returns ``None`` when any condition is not met (caller should pass the original bytes
+    through unchanged).
+    """
+    budget_name = config.LITELLM_PREMIUM_MODELS_BUDGET_NAME
+    if not budget_name:
+        return None
+
+    try:
+        error_data = json.loads(body_bytes)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    error = error_data.get("error", {})
+    if not isinstance(error, dict):
+        return None
+
+    if error.get("type") != "budget_exceeded":
+        return None
+
+    # The end_user injected into LiteLLM for premium models is "{email}_{budget_name}".
+    # LiteLLM surfaces it in the message as: "End User=<identity> over budget."
+    error_message = error.get("message", "")
+    if f"_{budget_name} over budget" not in error_message:
+        return None
+
+    premium_models = config.LITELLM_PREMIUM_MODELS_ALIASES
+    models_list = ", ".join(premium_models) if premium_models else "premium models"
+    friendly_message = (
+        f"Your budget for premium models ({models_list}) has been exceeded. "
+        f"To continue, please switch to regular models. "
+        f"If you are using codemie-cli, run 'codemie setup' and select a different model, "
+        f"or pass the --model flag (e.g. codemie --model <regular-model>). "
+        f"For more information refer to https://docs.codemie.ai/user-guide/codemie-cli/"
+    )
+
+    replacement = {
+        "error": {
+            "message": friendly_message,
+            "type": "budget_exceeded",
+            "param": None,
+            "code": "400",
+        }
+    }
+    return json.dumps(replacement).encode()
+
+
+async def _handle_error_response(
+    downstream_response: httpx.Response,
+    response_headers: dict,
+) -> Response:
+    """Read an error response body and return an appropriate ``Response``.
+
+    For premium-budget-exceeded errors the body is replaced with a user-friendly
+    message (see ``_build_premium_budget_error_body``).  All other error bodies are
+    forwarded unchanged.
+
+    The downstream connection is always closed before returning.
+    """
+    try:
+        body_bytes = await downstream_response.aread()
+    except Exception as exc:
+        logger.warning(f"[ERROR-BODY-READ] Failed to read error response body: {exc}")
+        body_bytes = b""
+    finally:
+        try:
+            await downstream_response.aclose()
+        except Exception as close_err:
+            logger.warning(f"[ERROR-BODY-CLOSE] Failed to close error response: {close_err}")
+
+    if is_premium_models_enabled():
+        replacement = _build_premium_budget_error_body(body_bytes)
+        if replacement is not None:
+            logger.debug("[PREMIUM-BUDGET-ERROR] Replacing raw budget error with user-friendly message")
+            return Response(
+                content=replacement,
+                status_code=400,
+                headers=response_headers,
+                media_type="application/json",
+            )
+
+    return Response(
+        content=body_bytes,
+        status_code=downstream_response.status_code,
+        headers=response_headers,
+        media_type=downstream_response.headers.get("content-type"),
+    )
+
+
 async def _proxy_to_llm_proxy(
     request: Request,
     user: User,
@@ -731,6 +837,9 @@ async def _proxy_to_llm_proxy(
             f"[STREAMING-PATH] session={session_id}, request={request_id}, using passthrough "
             f"(track_usage={config.LLM_PROXY_TRACK_USAGE}, status={response_status})"
         )
+        # Error responses are small — read them fully so we can inspect / replace the body.
+        if response_status >= 400:
+            return await _handle_error_response(downstream_response, response_headers)
         return StreamingResponse(
             _passthrough_stream(downstream_response, request_info),
             status_code=downstream_response.status_code,

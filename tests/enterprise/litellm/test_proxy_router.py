@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -33,9 +34,11 @@ from codemie.core.constants import (
     HEADER_CODEMIE_SESSION_ID,
 )
 from codemie.enterprise.litellm.proxy_router import (
+    _build_premium_budget_error_body,
     _emit_proxy_llm_error_log,
     _extract_request_info,
     _get_integration_api_key,
+    _handle_error_response,
     _prepare_proxy_headers,
     register_proxy_endpoints,
 )
@@ -876,3 +879,204 @@ class TestEmitProxyLlmErrorLog:
     def test_swallows_send_exceptions(self, mock_send, mock_user):
         # Should not raise
         _emit_proxy_llm_error_log(response_status=500, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
+
+
+class TestBuildPremiumBudgetErrorBody:
+    """Tests for _build_premium_budget_error_body."""
+
+    _BUDGET_EXCEEDED_BODY = (
+        b'{"error":{"message":"ExceededBudget: End User=user@example.com_premium_models over budget.'
+        b' Spend=300.16, Budget=300.0","type":"budget_exceeded","param":null,"code":"400"}}'
+    )
+
+    def _patch_config(self, budget_name: str = "premium_models", aliases: list | None = None):
+        """Patch config for premium budget tests."""
+        from codemie.enterprise.litellm import proxy_router
+
+        return patch.object(
+            proxy_router.config,
+            "__class__",
+            proxy_router.config.__class__,
+        )
+
+    def test_returns_none_when_budget_name_empty(self):
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+            mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = ""
+            mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["opus"]
+
+            result = _build_premium_budget_error_body(self._BUDGET_EXCEEDED_BODY)
+
+        assert result is None
+
+    def test_returns_none_for_non_json_body(self):
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+            mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
+            mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["opus"]
+
+            result = _build_premium_budget_error_body(b"not json at all")
+
+        assert result is None
+
+    def test_returns_none_when_error_type_not_budget_exceeded(self):
+        body = b'{"error":{"message":"rate limit hit","type":"rate_limit_error","code":"429"}}'
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+            mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
+            mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["opus"]
+
+            result = _build_premium_budget_error_body(body)
+
+        assert result is None
+
+    def test_returns_none_when_end_user_is_regular_not_premium(self):
+        # end_user is plain email, not the premium "{email}_{budget_name}" identity
+        body = (
+            b'{"error":{"message":"ExceededBudget: End User=user@example.com over budget.'
+            b' Spend=10.0, Budget=5.0","type":"budget_exceeded","code":"400"}}'
+        )
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+            mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
+            mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["opus"]
+
+            result = _build_premium_budget_error_body(body)
+
+        assert result is None
+
+    def test_returns_friendly_message_for_premium_budget_exceeded(self):
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+            mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
+            mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["opus", "claude-opus-4"]
+
+            result = _build_premium_budget_error_body(self._BUDGET_EXCEEDED_BODY)
+
+        assert result is not None
+        data = json.loads(result)
+        assert data["error"]["type"] == "budget_exceeded"
+        assert data["error"]["code"] == "400"
+        msg = data["error"]["message"]
+        assert "opus" in msg
+        assert "claude-opus-4" in msg
+        assert "regular models" in msg
+        assert "codemie setup" in msg
+        assert "--model" in msg
+        assert "https://docs.codemie.ai/user-guide/codemie-cli/" in msg
+
+    def test_friendly_message_lists_all_premium_aliases(self):
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+            mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
+            mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["model-a", "model-b", "model-c"]
+
+            result = _build_premium_budget_error_body(self._BUDGET_EXCEEDED_BODY)
+
+        data = json.loads(result)
+        msg = data["error"]["message"]
+        assert "model-a" in msg
+        assert "model-b" in msg
+        assert "model-c" in msg
+
+    def test_friendly_message_when_aliases_empty(self):
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+            mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
+            mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = []
+
+            result = _build_premium_budget_error_body(self._BUDGET_EXCEEDED_BODY)
+
+        data = json.loads(result)
+        assert "premium models" in data["error"]["message"]
+
+    def test_returns_none_when_error_field_is_not_dict(self):
+        body = b'{"error":"something went wrong"}'
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+            mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
+            mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["opus"]
+
+            result = _build_premium_budget_error_body(body)
+
+        assert result is None
+
+
+class TestHandleErrorResponse:
+    """Tests for _handle_error_response."""
+
+    @pytest.mark.asyncio
+    async def test_passthrough_non_budget_error(self):
+        """Non-budget error bodies are forwarded unchanged."""
+        original_body = b'{"error":{"message":"rate limit","type":"rate_limit_error","code":"429"}}'
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = httpx.Headers({"content-type": "application/json"})
+        mock_response.aread = AsyncMock(return_value=original_body)
+        mock_response.aclose = AsyncMock()
+
+        with patch("codemie.enterprise.litellm.proxy_router.is_premium_models_enabled", return_value=True):
+            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+                mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
+                mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["opus"]
+
+                result = await _handle_error_response(mock_response, {})
+
+        assert result.status_code == 429
+        assert result.body == original_body
+
+    @pytest.mark.asyncio
+    async def test_replaces_premium_budget_exceeded_error(self):
+        """Premium budget exceeded error body is replaced with a friendly message."""
+        original_body = (
+            b'{"error":{"message":"ExceededBudget: End User=user@example.com_premium_models over budget.'
+            b' Spend=300.16, Budget=300.0","type":"budget_exceeded","param":null,"code":"400"}}'
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.headers = httpx.Headers({"content-type": "application/json"})
+        mock_response.aread = AsyncMock(return_value=original_body)
+        mock_response.aclose = AsyncMock()
+
+        with patch("codemie.enterprise.litellm.proxy_router.is_premium_models_enabled", return_value=True):
+            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+                mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
+                mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["claude-opus-4", "opus"]
+
+                result = await _handle_error_response(mock_response, {})
+
+        assert result.status_code == 400
+        data = json.loads(result.body)
+        msg = data["error"]["message"]
+        assert "claude-opus-4" in msg
+        assert "regular models" in msg
+        assert "codemie setup" in msg
+        assert "--model" in msg
+        assert "https://docs.codemie.ai/user-guide/codemie-cli/" in msg
+        # Must not expose the raw LiteLLM internal message
+        assert "ExceededBudget" not in msg
+
+    @pytest.mark.asyncio
+    async def test_passthrough_when_premium_disabled(self):
+        """When premium feature is disabled, error body is never replaced."""
+        original_body = (
+            b'{"error":{"message":"ExceededBudget: End User=user@example.com_premium_models over budget.'
+            b' Spend=300.16, Budget=300.0","type":"budget_exceeded","param":null,"code":"400"}}'
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.headers = httpx.Headers({"content-type": "application/json"})
+        mock_response.aread = AsyncMock(return_value=original_body)
+        mock_response.aclose = AsyncMock()
+
+        with patch("codemie.enterprise.litellm.proxy_router.is_premium_models_enabled", return_value=False):
+            result = await _handle_error_response(mock_response, {})
+
+        assert result.body == original_body
+
+    @pytest.mark.asyncio
+    async def test_closes_downstream_on_read_error(self):
+        """Downstream response is closed even when body read fails."""
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.headers = httpx.Headers({"content-type": "application/json"})
+        mock_response.aread = AsyncMock(side_effect=Exception("read error"))
+        mock_response.aclose = AsyncMock()
+
+        with patch("codemie.enterprise.litellm.proxy_router.is_premium_models_enabled", return_value=False):
+            result = await _handle_error_response(mock_response, {})
+
+        mock_response.aclose.assert_called_once()
+        assert result.status_code == 500
