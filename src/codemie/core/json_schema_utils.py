@@ -243,7 +243,7 @@ def _is_pure_map_schema(schema: JsonSchema) -> bool:
     """
     return (
         isinstance(schema.get("additionalProperties"), dict)
-        and "properties" not in schema
+        and not schema.get("properties")  # absent or empty {}
         and "allOf" not in schema
         and "oneOf" not in schema
         and "anyOf" not in schema
@@ -574,6 +574,17 @@ def _schema_to_type_annotation(
         if _is_pure_map_schema(core_schema):
             core_annotation = _handle_pure_map_schema(name, core_schema, cache)
         else:
+            logger.debug(
+                f"[json_schema] object schema for '{name}' routed to _handle_object"
+                f" | has_properties={'properties' in core_schema}"
+                f" | properties_value={core_schema.get('properties')!r}"
+                f" | additionalProperties={core_schema.get('additionalProperties')!r}"
+                f" | additionalProperties_type={type(core_schema.get('additionalProperties')).__name__}"
+                f" | has_allOf={'allOf' in core_schema}"
+                f" | has_oneOf={'oneOf' in core_schema}"
+                f" | has_anyOf={'anyOf' in core_schema}"
+                f" | full_schema={core_schema}"
+            )
             core_annotation = _handle_object(base_prop_name, core_schema, cache)
     elif not core_schema or core_schema.get("type") == "any":  # Empty or explicit 'any'
         core_annotation = Any

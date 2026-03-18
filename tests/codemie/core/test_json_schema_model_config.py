@@ -232,3 +232,85 @@ def test_free_form_map_schema():
     assert isinstance(
         instance4.facetFilters, dict
     ), "facetFilters must be stored as a plain dict, not a Pydantic model instance"
+
+
+def test_production_search_datacatalog_ids_schema():
+    """Reproduce the exact production failure path for search_datacatalog_ids.
+
+    Two serialisation paths must both preserve facetFilters:
+    1. outer_model.model_dump() — type-aware serialiser (was always OK)
+    2. through dict[str, Any] — 'any' serialiser used by MCPToolInvocationRequest.params
+       (was losing the data when facetFilters was a Pydantic sub-model)
+    """
+    from typing import Any
+    from pydantic import BaseModel, Field
+
+    # Exact schema from the real MCP tool
+    schema = {
+        "type": "object",
+        "title": "search_datacatalog_ids Input",
+        "additionalProperties": False,
+        "properties": {
+            "query": {"type": ["string", "null"]},
+            "limit": {"type": ["integer", "null"], "minimum": 1, "default": 50},
+            "facetFilters": {
+                "type": ["object", "null"],
+                "description": "Extra facet filters. Keys are facet names; values are arrays of filter values.",
+                "additionalProperties": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+        },
+    }
+
+    input_model = json_schema_to_model(schema)
+
+    # --- path 1: direct model_dump (type-aware) ---
+    instance = input_model(facetFilters={"project.code": ["EPM-TIME"]}, limit=7)
+    dumped = instance.model_dump()
+    assert dumped["facetFilters"] == {"project.code": ["EPM-TIME"]}, "type-aware path lost facetFilters"
+
+    # --- path 2: through dict[str, Any] (the 'any' serialiser — the real production path) ---
+    # Simulate what MCPToolInvocationRequest does:
+    #   params: dict[str, Any] = {"name": tool_name, "arguments": tool_args}
+    # where tool_args comes from LangChain's _parse_input which returns
+    #   {k: getattr(result, k) for k in result_dict if k in tool_input}
+    # i.e. raw attribute values, NOT model_dump() output.
+
+    class Envelope(BaseModel):
+        params: dict[str, Any] = Field(default_factory=dict)
+
+    # Simulate LangChain: validate input, then grab raw attributes
+    result = input_model.model_validate({"facetFilters": {"project.code": ["EPM-TIME"]}, "limit": 7})
+    raw_args = {k: getattr(result, k) for k in result.model_dump() if k in {"facetFilters", "limit"}}
+
+    # facetFilters attribute must be a plain dict at this point
+    assert isinstance(raw_args["facetFilters"], dict), (
+        "facetFilters must be a plain dict after LangChain _parse_input; "
+        "a Pydantic sub-model here will lose its extra fields in path-2 serialisation"
+    )
+
+    envelope = Envelope(params={"name": "search_datacatalog_ids", "arguments": raw_args})
+    serialised = envelope.model_dump()
+    assert serialised["params"]["arguments"]["facetFilters"] == {
+        "project.code": ["EPM-TIME"]
+    }, "facetFilters lost through dict[str, Any] serialisation (MCPToolInvocationRequest path)"
+
+
+def test_pure_map_with_empty_properties():
+    """Schema with 'properties: {}' (empty but present) should be treated as a pure map."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "filters": {
+                "type": ["object", "null"],
+                "properties": {},  # explicitly empty — some MCP servers emit this
+                "additionalProperties": {"type": "string"},
+            }
+        },
+    }
+    model = json_schema_to_model(schema)
+    instance = model(filters={"key1": "val1", "key2": "val2"})
+    assert isinstance(instance.filters, dict), "filters must be a plain dict when properties is empty"
+    assert instance.model_dump()["filters"] == {"key1": "val1", "key2": "val2"}
