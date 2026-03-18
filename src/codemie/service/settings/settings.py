@@ -737,6 +737,70 @@ class SettingsService(BaseSettingsService):
         return api_keys
 
     @classmethod
+    def get_user_litellm_settings_with_metadata(cls, user_id: str, project_names: list[str]) -> dict[str, list[dict]]:
+        """
+        Get all LiteLLM settings with metadata for a user, grouped by type.
+
+        Retrieves LiteLLM credentials from both USER and PROJECT settings
+        and returns metadata including api_key, alias, and project_name.
+
+        Args:
+            user_id: User ID
+            project_names: List of all projects user has access to
+
+        Returns:
+            Dictionary with settings metadata grouped by type:
+            {
+                "user_keys": [
+                    {"api_key": "sk-...", "alias": "my-key", "project_name": "ProjectA"},
+                    ...
+                ],
+                "project_keys": [...]
+            }
+        """
+        logger.debug(f"User {user_id} requesting litellm settings with metadata from Settings")
+
+        seen_ids = set()
+
+        def extract_settings_metadata(settings: list[Settings], seen: set[str]) -> list[dict]:
+            """Extract api_key, alias, and project_name from settings."""
+            result = []
+            for setting in settings:
+                if setting.id in seen:
+                    continue
+                seen.add(setting.id)
+
+                # Decrypt and extract credentials
+                cls._decrypt_credentials(setting)
+                cred = cls._build_credential_result(setting, cls.LITELLM_FIELDS, LiteLLMCredentials)
+
+                if cred and cred.api_key:
+                    result.append(
+                        {
+                            "api_key": cred.api_key,
+                            "alias": setting.alias,
+                            "project_name": setting.project_name,
+                        }
+                    )
+                else:
+                    logger.warning(f"No API key found in setting {setting.id}")
+
+            return result
+
+        # 1. Get USER-scoped settings
+        user_settings = Settings.get_by_user_id(user_id, CredentialTypes.LITE_LLM)
+        user_keys_metadata = extract_settings_metadata(user_settings, seen_ids)
+
+        # 2. Get PROJECT-scoped settings
+        project_settings = Settings.get_by_project_names(project_names, CredentialTypes.LITE_LLM)
+        project_keys_metadata = extract_settings_metadata(project_settings, seen_ids)
+
+        return {
+            "user_keys": user_keys_metadata,
+            "project_keys": project_keys_metadata,
+        }
+
+    @classmethod
     def get_user_litellm_api_keys(cls, user_id: str, project_names: list[str]) -> dict[str, list[str]]:
         """
         Get all LiteLLM API keys for a user, grouped by type.
@@ -756,21 +820,10 @@ class SettingsService(BaseSettingsService):
                 "project_keys": ["key3", "key4", ...]
             }
         """
-        logger.info(f"User {user_id} requesting user and project api keys from Settings")
-
-        seen_ids = set()
-
-        # 1. Get USER-scoped settings
-        user_settings = Settings.get_by_user_id(user_id, CredentialTypes.LITE_LLM)
-        user_keys = cls._extract_api_keys_from_settings(user_settings, seen_ids)
-
-        # 2. Get PROJECT-scoped settings
-        project_settings = Settings.get_by_project_names(project_names, CredentialTypes.LITE_LLM)
-        project_keys = cls._extract_api_keys_from_settings(project_settings, seen_ids)
-
+        metadata = cls.get_user_litellm_settings_with_metadata(user_id, project_names)
         return {
-            "user_keys": user_keys,
-            "project_keys": project_keys,
+            "user_keys": [s["api_key"] for s in metadata["user_keys"]],
+            "project_keys": [s["api_key"] for s in metadata["project_keys"]],
         }
 
     @classmethod

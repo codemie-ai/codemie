@@ -478,7 +478,8 @@ def get_user_keys_spending(
     This function:
     1. Retrieves all LiteLLM API keys from user's settings (USER + PROJECT scoped)
     2. Queries LiteLLM /key/info endpoint for each key
-    3. Returns spending data grouped by key type (USER vs PROJECT)
+    3. Enriches spending data with project names from Settings
+    4. Returns spending data grouped by key type (USER vs PROJECT)
 
     Args:
         user_id: User ID
@@ -487,8 +488,8 @@ def get_user_keys_spending(
 
     Returns:
         UserKeysSpending model with spending data grouped by type:
-        - user_keys: [spending_dict, ...]
-        - project_keys: [spending_dict, ...]
+        - user_keys: [spending_dict with project_name, ...]
+        - project_keys: [spending_dict with project_name, ...]
         or None if service not enabled or error occurred (when on_raise=False)
 
     Raises:
@@ -501,20 +502,39 @@ def get_user_keys_spending(
         logger.debug(_LITELLM_NOT_AVAILABLE_MSG)
         return None
 
-    # Get all user's LiteLLM API keys grouped by type
+    # Get all user's LiteLLM settings with metadata (api_key, alias, project_name)
     try:
         from codemie.service.settings.settings import SettingsService
 
-        grouped_api_keys = SettingsService.get_user_litellm_api_keys(user_id, project_names)
+        grouped_settings = SettingsService.get_user_litellm_settings_with_metadata(user_id, project_names)
     except Exception as e:
-        logger.error(f"Error retrieving LiteLLM API keys for user {user_id}: {e}")
+        logger.error(f"Error retrieving LiteLLM settings for user {user_id}: {e}")
         if on_raise:
             raise
         return None
 
-    # Get spending for each group of keys
-    user_keys_spending = get_all_keys_spending(grouped_api_keys["user_keys"], on_raise=on_raise) or []
-    project_keys_spending = get_all_keys_spending(grouped_api_keys["project_keys"], on_raise=on_raise) or []
+    user_keys_meta = grouped_settings["user_keys"]
+    project_keys_meta = grouped_settings["project_keys"]
+
+    user_keys_spending = get_all_keys_spending([s["api_key"] for s in user_keys_meta], on_raise=on_raise) or []
+    project_keys_spending = get_all_keys_spending([s["api_key"] for s in project_keys_meta], on_raise=on_raise) or []
+
+    # Assign project_name from our database by position — same order as the keys we submitted
+    if len(user_keys_spending) != len(user_keys_meta):
+        logger.warning(
+            f"LiteLLM returned {len(user_keys_spending)} results for "
+            f"{len(user_keys_meta)} submitted user keys — project_name may be missing on some rows"
+        )
+    for spending, meta in zip(user_keys_spending, user_keys_meta, strict=False):
+        spending["project_name"] = meta["project_name"]
+
+    if len(project_keys_spending) != len(project_keys_meta):
+        logger.warning(
+            f"LiteLLM returned {len(project_keys_spending)} results for "
+            f"{len(project_keys_meta)} submitted project keys — project_name may be missing on some rows"
+        )
+    for spending, meta in zip(project_keys_spending, project_keys_meta, strict=False):
+        spending["project_name"] = meta["project_name"]
 
     return UserKeysSpending(
         user_keys=user_keys_spending,

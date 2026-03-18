@@ -46,6 +46,7 @@ def mock_user():
     user = MagicMock(spec=User)
     user.id = "user123@example.com"
     user.username = "testuser"
+    user.email = "testuser@example.com"
     user.name = "Test User"
     user.is_admin = False
     user.project_names = ["project1", "project2"]
@@ -1775,27 +1776,23 @@ class TestGetUserKeySpending:
 
     @pytest.mark.asyncio
     async def test_returns_grouped_key_spending_success(self, mock_user):
-        """Test endpoint returns spending data grouped by USER and PROJECT keys."""
-        from codemie.rest_api.routers.analytics import get_user_key_spending
-
-        # Mock spending data - import the model
+        """Test endpoint returns tabular spending with personal budget row and user key rows."""
+        from codemie.rest_api.routers.analytics import get_user_budget_usage
         from codemie.enterprise.litellm.models import UserKeysSpending
 
-        mock_spending_data = UserKeysSpending(
+        mock_personal_spending = {
+            "total_spend": 15.5,
+            "max_budget": 100.0,
+            "budget_reset_at": "2026-04-01T00:00:00Z",
+        }
+        mock_keys_spending = UserKeysSpending(
             user_keys=[
                 {
                     "key_alias": "user-key-1",
-                    "total_spend": 15.5,
-                    "max_budget": 100.0,
-                    "budget_duration": "30d",
-                    "budget_reset_at": "2026-04-01T00:00:00Z",
-                },
-                {
-                    "key_alias": "user-key-2",
                     "total_spend": 25.0,
                     "max_budget": 50.0,
-                    "budget_duration": "7d",
-                    "budget_reset_at": None,
+                    "budget_reset_at": "2026-04-01T00:00:00Z",
+                    "project_name": "demo",
                 },
             ],
             project_keys=[
@@ -1803,75 +1800,62 @@ class TestGetUserKeySpending:
                     "key_alias": "project-key-1",
                     "total_spend": 50.0,
                     "max_budget": 200.0,
-                    "budget_duration": "30d",
                     "budget_reset_at": "2026-04-15T00:00:00Z",
+                    "project_name": "demo-project",
                 }
             ],
         )
 
-        with patch("codemie.enterprise.litellm.dependencies.get_user_keys_spending") as mock_get_spending:
-            mock_get_spending.return_value = mock_spending_data
+        with patch(
+            "codemie.enterprise.litellm.dependencies.get_customer_spending", return_value=mock_personal_spending
+        ):
+            with patch(
+                "codemie.enterprise.litellm.dependencies.get_user_keys_spending", return_value=mock_keys_spending
+            ):
+                response = await get_user_budget_usage(user=mock_user)
 
-            response = await get_user_key_spending(user=mock_user)
+                assert "data" in response
+                assert "columns" in response["data"]
+                assert "rows" in response["data"]
+                assert "metadata" in response
 
-            # Response is now a Pydantic model, convert to dict for assertions
-            response_data = response.model_dump(by_alias=True)
-
-            # Verify structure
-            assert "data" in response_data
-            assert "user_keys" in response_data["data"]
-            assert "project_keys" in response_data["data"]
-            assert "metadata" in response_data
-
-            # Verify user keys
-            user_keys = response_data["data"]["user_keys"]
-            assert len(user_keys) == 2
-            assert user_keys[0]["key_identifier"] == "user-key-1"
-            assert len(user_keys[0]["metrics"]) > 0
-
-            # Verify project keys
-            project_keys = response_data["data"]["project_keys"]
-            assert len(project_keys) == 1
-            assert project_keys[0]["key_identifier"] == "project-key-1"
-
-            # Verify function was called once with correct user_id and on_raise=True
-            # Note: project list order may vary, so we check individual params
-            mock_get_spending.assert_called_once()
-            call_args = mock_get_spending.call_args
-            assert call_args[0][0] == mock_user.id
-            assert set(call_args[0][1]) == set(mock_user.project_names)
-            assert call_args[0][2] is True
+                rows = response["data"]["rows"]
+                # First row = personal budget (user.email as project_name)
+                assert rows[0]["project_name"] == mock_user.email
+                assert rows[0]["current_spending"] == 15.5
+                # Second row = user key (project keys are excluded)
+                assert rows[1]["project_name"] == "demo"
+                assert rows[1]["current_spending"] == 25.0
+                # Only 2 rows — project_keys are excluded from the response
+                assert len(rows) == 2
 
     @pytest.mark.asyncio
     async def test_handles_empty_keys_spending(self, mock_user):
-        """Test endpoint handles empty spending data gracefully."""
-        from codemie.rest_api.routers.analytics import get_user_key_spending
+        """Test endpoint returns empty rows when no personal budget and no user keys."""
+        from codemie.rest_api.routers.analytics import get_user_budget_usage
         from codemie.enterprise.litellm.models import UserKeysSpending
 
-        mock_spending_data = UserKeysSpending(user_keys=[], project_keys=[])
+        mock_keys_spending = UserKeysSpending(user_keys=[], project_keys=[])
 
-        with patch("codemie.enterprise.litellm.dependencies.get_user_keys_spending") as mock_get_spending:
-            mock_get_spending.return_value = mock_spending_data
+        with patch("codemie.enterprise.litellm.dependencies.get_customer_spending", return_value=None):
+            with patch(
+                "codemie.enterprise.litellm.dependencies.get_user_keys_spending", return_value=mock_keys_spending
+            ):
+                response = await get_user_budget_usage(user=mock_user)
 
-            response = await get_user_key_spending(user=mock_user)
-
-            # Response is now a Pydantic model, convert to dict for assertions
-            response_data = response.model_dump(by_alias=True)
-
-            # Verify empty arrays are returned
-            assert response_data["data"]["user_keys"] == []
-            assert response_data["data"]["project_keys"] == []
+                assert response["data"]["rows"] == []
+                assert "columns" in response["data"]
 
     @pytest.mark.asyncio
     async def test_raises_500_on_backend_error(self, mock_user):
         """Test endpoint returns 500 error when backend fails."""
-        from codemie.rest_api.routers.analytics import get_user_key_spending
+        from codemie.rest_api.routers.analytics import get_user_budget_usage
 
         with patch("codemie.enterprise.litellm.dependencies.get_user_keys_spending") as mock_get_spending:
             mock_get_spending.side_effect = Exception("Backend service unavailable")
 
             with pytest.raises(ExtendedHTTPException) as exc_info:
-                await get_user_key_spending(user=mock_user)
+                await get_user_budget_usage(user=mock_user)
 
             # Verify error details
             exception = exc_info.value
@@ -1880,62 +1864,52 @@ class TestGetUserKeySpending:
 
     @pytest.mark.asyncio
     async def test_handles_none_budget_reset_at(self, mock_user):
-        """Test endpoint handles None budget_reset_at values correctly."""
-        from codemie.rest_api.routers.analytics import get_user_key_spending
+        """Test endpoint handles None budget_reset_at as None in the row (not 'N/A')."""
+        from codemie.rest_api.routers.analytics import get_user_budget_usage
         from codemie.enterprise.litellm.models import UserKeysSpending
 
-        mock_spending_data = UserKeysSpending(
+        mock_keys_spending = UserKeysSpending(
             user_keys=[
                 {
                     "key_alias": "user-key-1",
                     "total_spend": 10.0,
                     "max_budget": 100.0,
-                    "budget_duration": "30d",
                     "budget_reset_at": None,
+                    "project_name": "demo",
                 }
             ],
             project_keys=[],
         )
 
-        with patch("codemie.enterprise.litellm.dependencies.get_user_keys_spending") as mock_get_spending:
-            mock_get_spending.return_value = mock_spending_data
+        with patch("codemie.enterprise.litellm.dependencies.get_customer_spending", return_value=None):
+            with patch(
+                "codemie.enterprise.litellm.dependencies.get_user_keys_spending", return_value=mock_keys_spending
+            ):
+                response = await get_user_budget_usage(user=mock_user)
 
-            response = await get_user_key_spending(user=mock_user)
-
-            # Response is now a Pydantic model, convert to dict for assertions
-            response_data = response.model_dump(by_alias=True)
-
-            # Find the metrics for the key
-            user_keys = response_data["data"]["user_keys"]
-            assert len(user_keys) == 1
-
-            metrics_dict = {m["id"]: m for m in user_keys[0]["metrics"]}
-
-            # budget_reset_at and time_until_reset should be "N/A" when None
-            assert metrics_dict["budget_reset_at"]["value"] == "N/A"
-            assert metrics_dict["time_until_reset"]["value"] == "N/A"
+                rows = response["data"]["rows"]
+                assert len(rows) == 1
+                assert rows[0]["budget_reset_at"] is None
+                assert rows[0]["time_until_reset"] is None
 
     @pytest.mark.asyncio
     async def test_response_metadata_contains_required_fields(self, mock_user):
         """Test that response metadata contains all required fields."""
-        from codemie.rest_api.routers.analytics import get_user_key_spending
+        from codemie.rest_api.routers.analytics import get_user_budget_usage
         from codemie.enterprise.litellm.models import UserKeysSpending
 
-        mock_spending_data = UserKeysSpending(user_keys=[], project_keys=[])
+        mock_keys_spending = UserKeysSpending(user_keys=[], project_keys=[])
 
-        with patch("codemie.enterprise.litellm.dependencies.get_user_keys_spending") as mock_get_spending:
-            mock_get_spending.return_value = mock_spending_data
+        with patch("codemie.enterprise.litellm.dependencies.get_customer_spending", return_value=None):
+            with patch(
+                "codemie.enterprise.litellm.dependencies.get_user_keys_spending", return_value=mock_keys_spending
+            ):
+                response = await get_user_budget_usage(user=mock_user)
 
-            response = await get_user_key_spending(user=mock_user)
-
-            # Response is now a Pydantic model, convert to dict for assertions
-            response_data = response.model_dump(by_alias=True)
-
-            # Verify metadata structure
-            metadata = response_data["metadata"]
-            assert "timestamp" in metadata
-            assert "data_as_of" in metadata
-            assert "filters_applied" in metadata
-            assert "execution_time_ms" in metadata
-            assert isinstance(metadata["execution_time_ms"], (int, float))
-            assert metadata["execution_time_ms"] >= 0
+                metadata = response["metadata"]
+                assert "timestamp" in metadata
+                assert "data_as_of" in metadata
+                assert "filters_applied" in metadata
+                assert "execution_time_ms" in metadata
+                assert isinstance(metadata["execution_time_ms"], (int, float))
+                assert metadata["execution_time_ms"] >= 0

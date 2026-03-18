@@ -310,19 +310,24 @@ class TestGetUserKeysSpending:
             assert result is None
 
     def test_returns_grouped_spending_data_success(self):
-        """Test returns spending data grouped by USER and PROJECT keys."""
-        mock_grouped_keys = {
-            "user_keys": ["user-key-1", "user-key-2"],
-            "project_keys": ["project-key-1"],
+        """Test returns spending data grouped by USER and PROJECT keys with project_name enriched."""
+        mock_grouped_settings = {
+            "user_keys": [
+                {"api_key": "user-key-1", "alias": "alias-1", "project_name": "project-user"},
+                {"api_key": "user-key-2", "alias": "alias-2", "project_name": "project-user"},
+            ],
+            "project_keys": [
+                {"api_key": "project-key-1", "alias": "alias-3", "project_name": "project-1"},
+            ],
         }
 
         user_spending = [
-            {"key_alias": "user-key-1", "total_spend": 15.0},
-            {"key_alias": "user-key-2", "total_spend": 25.0},
+            {"key_alias": "alias-1", "total_spend": 15.0},
+            {"key_alias": "alias-2", "total_spend": 25.0},
         ]
 
         project_spending = [
-            {"key_alias": "project-key-1", "total_spend": 50.0},
+            {"key_alias": "alias-3", "total_spend": 50.0},
         ]
 
         mock_service = MagicMock()
@@ -330,9 +335,7 @@ class TestGetUserKeysSpending:
         with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service):
             with patch("codemie.service.settings.settings.SettingsService") as mock_settings:
                 with patch("codemie.enterprise.litellm.dependencies.get_all_keys_spending") as mock_get_spending:
-                    mock_settings.get_user_litellm_api_keys.return_value = mock_grouped_keys
-
-                    # Mock get_all_keys_spending to return different data for each call
+                    mock_settings.get_user_litellm_settings_with_metadata.return_value = mock_grouped_settings
                     mock_get_spending.side_effect = [user_spending, project_spending]
 
                     from codemie.enterprise.litellm.dependencies import get_user_keys_spending
@@ -340,11 +343,14 @@ class TestGetUserKeysSpending:
                     result = get_user_keys_spending("user-123", ["project-1"], on_raise=False)
 
                     assert result is not None
-                    assert result.user_keys == user_spending
-                    assert result.project_keys == project_spending
+                    # project_name is enriched by positional zip
+                    assert result.user_keys[0]["project_name"] == "project-user"
+                    assert result.user_keys[1]["project_name"] == "project-user"
+                    assert result.project_keys[0]["project_name"] == "project-1"
 
-                    # Verify calls
-                    mock_settings.get_user_litellm_api_keys.assert_called_once_with("user-123", ["project-1"])
+                    mock_settings.get_user_litellm_settings_with_metadata.assert_called_once_with(
+                        "user-123", ["project-1"]
+                    )
 
     def test_returns_empty_lists_when_no_spending_data(self):
         """Test returns empty lists when get_all_keys_spending returns None."""
@@ -375,7 +381,7 @@ class TestGetUserKeysSpending:
 
         with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service):
             with patch("codemie.service.settings.settings.SettingsService") as mock_settings:
-                mock_settings.get_user_litellm_api_keys.side_effect = Exception("Settings error")
+                mock_settings.get_user_litellm_settings_with_metadata.side_effect = Exception("Settings error")
 
                 from codemie.enterprise.litellm.dependencies import get_user_keys_spending
 

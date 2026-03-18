@@ -37,11 +37,6 @@ from pydantic import BaseModel, field_validator
 from codemie.configs.config import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.analytics import (
-    KeySpendingData,
-    KeySpendingItem,
-    KeySpendingResponse,
-    Metric,
-    ResponseMetadata,
     SummariesResponse,
     TabularResponse,
     UsersListResponse,
@@ -365,58 +360,6 @@ def _get_user_all_projects(user: User) -> list[str]:
     return list(set(user.project_names) | set(user.admin_project_names))
 
 
-def _build_key_spending_metrics(keys_spending: list[dict]) -> list[KeySpendingItem]:
-    """Build spending metrics for virtual keys in same format as budget spending.
-
-    Args:
-        keys_spending: List of key spending data dictionaries
-
-    Returns:
-        List of KeySpendingItem one per key
-    """
-    result = []
-
-    for key_data in keys_spending:
-        budget_reset_at_raw = key_data.get("budget_reset_at")
-
-        key_metrics = [
-            _build_spending_metric(
-                "current_spending",
-                key_data.get("total_spend", 0.0),
-                "number",
-                "currency",
-            ),
-            _build_spending_metric(
-                "budget_limit",
-                key_data.get("max_budget"),
-                "number",
-                "currency",
-            ),
-            _build_spending_metric(
-                "budget_reset_at",
-                budget_reset_at_raw if budget_reset_at_raw else "N/A",
-                "date" if budget_reset_at_raw else "string",
-                "timestamp" if budget_reset_at_raw else None,
-            ),
-            _build_spending_metric(
-                "time_until_reset",
-                _calculate_time_until_reset(budget_reset_at_raw) if budget_reset_at_raw else "N/A",
-                "string",
-            ),
-        ]
-
-        metric_models = [Metric(**metric) for metric in key_metrics]
-
-        result.append(
-            KeySpendingItem(
-                key_identifier=key_data.get("key_alias", "Unknown Key"),
-                metrics=metric_models,
-            )
-        )
-
-    return result
-
-
 def _build_spending_metric(
     metric_id: str, value: Any, value_type: str = "string", format_type: str | None = None
 ) -> dict:
@@ -526,6 +469,118 @@ def _calculate_time_until_reset(budget_reset_at: str | None) -> str | None:
     except (ValueError, AttributeError) as e:
         logger.warning(f"Failed to parse budget_reset_at: {budget_reset_at}, error: {e}")
         return None
+
+
+def _get_key_spending_columns() -> list[dict]:
+    """Get column definitions for key spending tabular response."""
+    return [
+        {
+            "id": "project_name",
+            "label": "Project",
+            "type": "string",
+            "format": None,
+            "description": "",
+        },
+        {
+            "id": "current_spending",
+            "label": "Current Spending ($)",
+            "type": "number",
+            "format": "currency",
+            "description": "Total amount spent in current budget period",
+        },
+        {
+            "id": "budget_reset_at",
+            "label": "Budget Reset Date",
+            "type": "string",
+            "format": "timestamp",
+            "description": "Timestamp when budget will reset",
+        },
+        {
+            "id": "time_until_reset",
+            "label": "Time Until Reset",
+            "type": "string",
+            "format": None,
+            "description": "Time remaining until budget resets",
+        },
+        {
+            "id": "budget_limit",
+            "label": "Budget Limit ($)",
+            "type": "number",
+            "format": "currency",
+            "description": "Soft budget limit (warning threshold)",
+        },
+        {
+            "id": "total",
+            "label": "Total",
+            "type": "number",
+            "format": "percentage",
+            "description": "",
+        },
+    ]
+
+
+def _build_key_spending_tabular_data(
+    user_email: str,
+    user_personal_spending: dict | None,
+    user_keys_spending: list[dict],
+) -> tuple[list[dict], list[dict[str, Any]]]:
+    """Build tabular data structure for key spending.
+
+    Creates:
+    - First row: User's personal budget spending (overall spending, not key-specific)
+    - Subsequent rows: Individual LiteLLM key details (if any)
+
+    Args:
+        user_email: User's email to display as project name for personal budget
+        user_personal_spending: Dict with user's personal budget data from get_customer_spending()
+                                Fields: total_spend, max_budget, budget_reset_at
+        user_keys_spending: List of spending dicts for USER-scoped keys only
+                            Each dict already has project_name enriched by get_user_keys_spending()
+
+    Returns:
+        Tuple of (columns, rows)
+    """
+    columns = _get_key_spending_columns()
+    all_rows = []
+
+    # Add user personal spending as first row (if available)
+    if user_personal_spending:
+        current_spend = user_personal_spending.get("total_spend", 0.0)
+        budget_limit = user_personal_spending.get("max_budget")
+        reset_at = user_personal_spending.get("budget_reset_at")
+
+        all_rows.append(
+            {
+                "project_name": user_email,
+                "current_spending": round(current_spend, 2),
+                "budget_reset_at": reset_at if reset_at else None,
+                "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
+                "budget_limit": round(budget_limit, 2) if budget_limit is not None else None,
+                "total": (round((current_spend / budget_limit * 100), 2) if budget_limit and budget_limit > 0 else 0.0),
+            }
+        )
+
+    # Add individual key rows
+    for key_data in user_keys_spending:
+        current = key_data.get("total_spend", 0.0)
+        limit = key_data.get("max_budget")
+        reset_at = key_data.get("budget_reset_at")
+
+        # Get project name from enriched data, fallback to key_alias if not found
+        project_name = key_data.get("project_name") or key_data.get("key_alias", "Unknown Key")
+
+        all_rows.append(
+            {
+                "project_name": project_name,
+                "current_spending": round(current, 2),
+                "budget_reset_at": reset_at if reset_at else None,
+                "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
+                "budget_limit": round(limit, 2) if limit is not None else None,
+                "total": round((current / limit * 100), 2) if limit and limit > 0 else 0.0,
+            }
+        )
+
+    return columns, all_rows
 
 
 def _create_response(data: dict, model_class) -> JSONResponse:
@@ -2227,47 +2282,41 @@ async def get_user_spending(
 
 
 @router.get(
-    "/key_spending",
+    "/budget_usage",
     status_code=status.HTTP_200_OK,
-    response_model=KeySpendingResponse,
+    response_model=TabularResponse,
     response_model_by_alias=True,
-    summary="Get user virtual key spending information",
-    description="Retrieve current spending for virtual keys for the authenticated user",
+    summary="Get user budget usage",
+    description="Retrieve budget usage for the authenticated user: personal budget and individual LiteLLM keys",
 )
-@handle_analytics_errors("user spending analytics")
-async def get_user_key_spending(
+@handle_analytics_errors("budget usage analytics")
+async def get_user_budget_usage(
     user: User = Depends(authenticate),
-) -> KeySpendingResponse:
-    """Get spending analytics for the authenticated user.
+) -> TabularResponse:
+    """Get budget usage for the authenticated user.
 
-    This endpoint retrieves virtual key spending information from LiteLLM for budget tracking.
-    Returns current virtual key spending, budget limits, and time until reset.
+    Returns tabular data with:
+    - First row: User's overall personal budget (identified by email)
+    - Subsequent rows: Individual LiteLLM keys with their own budget limits (if any configured)
 
-    **Access Control:**
-    - Users can only see their own spending data
-
-    **Response:**
-    - current_spending: Current amount spent in USD
-    - budget_limit: Soft budget limit (warning threshold)
-    - hard_budget_limit: Hard budget limit (blocking threshold)
-    - budget_reset_at: ISO 8601 timestamp of next reset
-    - time_until_reset: Formatted time until budget resets (e.g., "5 days 4 hours 31mins")
-
-    **Error Handling:**
-    - Gracefully handles API failures with clear messages
+    Only USER-scoped keys are included; PROJECT-scoped keys are excluded.
     """
     from datetime import timezone
-    from codemie.enterprise.litellm.dependencies import get_user_keys_spending
+    from codemie.enterprise.litellm.dependencies import get_customer_spending, get_user_keys_spending
+    from codemie.service.analytics.response_formatter import ResponseFormatter
 
     start_time = datetime.now(timezone.utc)
-    logger.info(f"User {user.id} requesting key spending analytics")
+    logger.info(f"User {user.id} requesting budget usage analytics")
 
     # Get all projects for virtual keys query
     all_projects = _get_user_all_projects(user)
 
-    # Execute both API calls in parallel for optimal performance
+    # Get user's personal budget spending and keys spending in parallel
     try:
-        keys_spending_data = await asyncio.to_thread(get_user_keys_spending, user.id, all_projects, True)
+        user_spending_data, keys_spending_data = await asyncio.gather(
+            asyncio.to_thread(get_customer_spending, user.username, True),
+            asyncio.to_thread(get_user_keys_spending, user.id, all_projects, True),
+        )
     except Exception as e:
         logger.error(f"Backend error fetching spending data for user {user.id}: {e}")
         raise ExtendedHTTPException(
@@ -2276,18 +2325,23 @@ async def get_user_key_spending(
             help="A temporary issue occurred. Please try again later",
         ) from e
 
-    user_keys_items = _build_key_spending_metrics(keys_spending_data.user_keys)
-    project_keys_items = _build_key_spending_metrics(keys_spending_data.project_keys)
+    # user_spending_data is a dict with: total_spend, max_budget, budget_reset_at
+    user_personal_spending = user_spending_data
 
-    return KeySpendingResponse(
-        data=KeySpendingData(
-            user_keys=user_keys_items,
-            project_keys=project_keys_items,
-        ),
-        metadata=ResponseMetadata(
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            data_as_of=datetime.now(timezone.utc).isoformat(),
-            filters_applied={},
-            execution_time_ms=(datetime.now(timezone.utc) - start_time).total_seconds() * 1000,
-        ),
+    # Extract only USER-scoped keys (filter out project keys)
+    # Each key now has project_name already enriched by get_user_keys_spending()
+    user_keys_spending = keys_spending_data.user_keys if keys_spending_data else []
+
+    # Build tabular response structure
+    columns, rows = _build_key_spending_tabular_data(user.email, user_personal_spending, user_keys_spending)
+
+    # Format using ResponseFormatter for consistency
+    execution_time_ms = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
+
+    return ResponseFormatter.format_tabular_response(
+        columns=columns,
+        rows=rows,
+        filters_applied={},
+        execution_time_ms=execution_time_ms,
+        totals=None,
     )
