@@ -134,6 +134,72 @@ class TestCheckUserBudget:
             mock_service.get_or_create_customer_with_budget.assert_called_once_with("test-user")
             mock_service._cache_customer.assert_called_once_with("test-user", mock_customer)
 
+    @pytest.mark.skipif(not HAS_LITELLM, reason="Enterprise package not installed - LiteLLM not available")
+    def test_no_type_error_when_soft_budget_is_none(self):
+        """Regression: budget check must not raise TypeError when soft_budget is None."""
+        mock_customer = CustomerInfo(
+            user_id="test-user",
+            spend=50.0,
+            litellm_budget_table=BudgetTable(
+                budget_id="budget-1", soft_budget=None, max_budget=200.0, budget_duration="30d"
+            ),
+        )
+
+        mock_service = MagicMock()
+        mock_service._get_cached_customer.return_value = mock_customer
+
+        with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service):
+            with patch("codemie.service.monitoring.base_monitoring_service.send_log_metric"):
+                from codemie.enterprise.litellm.dependencies import check_user_budget
+
+                result = check_user_budget("test-user")
+
+                assert result is mock_customer
+
+    @pytest.mark.skipif(not HAS_LITELLM, reason="Enterprise package not installed - LiteLLM not available")
+    def test_no_type_error_when_hard_budget_is_none(self):
+        """Regression: budget check must not raise TypeError when max_budget is None."""
+        mock_customer = CustomerInfo(
+            user_id="test-user",
+            spend=50.0,
+            litellm_budget_table=BudgetTable(
+                budget_id="budget-1", soft_budget=100.0, max_budget=None, budget_duration="30d"
+            ),
+        )
+
+        mock_service = MagicMock()
+        mock_service._get_cached_customer.return_value = mock_customer
+
+        with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service):
+            with patch("codemie.service.monitoring.base_monitoring_service.send_log_metric"):
+                from codemie.enterprise.litellm.dependencies import check_user_budget
+
+                result = check_user_budget("test-user")
+
+                assert result is mock_customer
+
+    @pytest.mark.skipif(not HAS_LITELLM, reason="Enterprise package not installed - LiteLLM not available")
+    def test_no_type_error_when_both_budget_limits_are_none(self):
+        """Regression: budget check must not raise TypeError when both soft_budget and max_budget are None."""
+        mock_customer = CustomerInfo(
+            user_id="test-user",
+            spend=50.0,
+            litellm_budget_table=BudgetTable(
+                budget_id="budget-1", soft_budget=None, max_budget=None, budget_duration="30d"
+            ),
+        )
+
+        mock_service = MagicMock()
+        mock_service._get_cached_customer.return_value = mock_customer
+
+        with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service):
+            with patch("codemie.service.monitoring.base_monitoring_service.send_log_metric"):
+                from codemie.enterprise.litellm.dependencies import check_user_budget
+
+                result = check_user_budget("test-user")
+
+                assert result is mock_customer
+
 
 class TestGetAvailableModels:
     """Test get_available_models() function."""

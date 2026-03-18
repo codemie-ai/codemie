@@ -334,7 +334,7 @@ def check_user_budget(user_id: str):
         logger.debug(f"User {user_id} spend: {current_spend}, soft: {soft_limit}, hard: {hard_limit}")
 
         # Check hard budget limit
-        if current_spend >= hard_limit:
+        if hard_limit is not None and current_spend >= hard_limit:
             message = f"User {user_id} exceeded hard budget: {current_spend} >= {hard_limit}"
             logger.warning(message)
             send_log_metric(
@@ -349,7 +349,7 @@ def check_user_budget(user_id: str):
             )
 
         # Check soft budget limit
-        if current_spend >= soft_limit:
+        if soft_limit is not None and current_spend >= soft_limit:
             logger.warning(f"User {user_id} exceeded soft budget: {current_spend} >= {soft_limit}")
             send_log_metric(
                 LLM_SOFT_BUDGET_LIMIT,
