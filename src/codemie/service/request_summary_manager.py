@@ -30,6 +30,7 @@ class LLMRun(BaseModel):
     cached_tokens: int = 0
     money_spent: float
     cached_tokens_money_spent: float = 0.0
+    cached_tokens_creation_cost: float = 0.0
     llm_model: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -47,6 +48,7 @@ class RequestSummary(BaseModel):
         total_cached_tokens = sum(run.cached_tokens for run in self.llm_runs)
         total_money_spent = sum(run.money_spent for run in self.llm_runs)
         total_cached_tokens_money_spent = sum(run.cached_tokens_money_spent for run in self.llm_runs)
+        total_cached_tokens_creation_money_spent = sum(run.cached_tokens_creation_cost for run in self.llm_runs)
 
         self.tokens_usage = TokensUsage(
             input_tokens=total_input_tokens,
@@ -54,6 +56,7 @@ class RequestSummary(BaseModel):
             cached_tokens=total_cached_tokens,
             money_spent=total_money_spent,
             cached_tokens_money_spent=total_cached_tokens_money_spent,
+            cached_tokens_creation_money_spent=total_cached_tokens_creation_money_spent,
         )
 
         logger.debug(
@@ -61,6 +64,7 @@ class RequestSummary(BaseModel):
             f"Input tokens: {total_input_tokens}, Output tokens: {total_output_tokens}, "
             f"Cached tokens: {total_cached_tokens}, Total cost: ${total_money_spent:.6f}, "
             f"Cached cost: ${total_cached_tokens_money_spent:.6f}"
+            f"Cache creation cost: ${total_cached_tokens_creation_money_spent:.6f}",
         )
 
 

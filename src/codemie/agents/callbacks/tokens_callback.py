@@ -49,6 +49,7 @@ class TokensCalculationCallback(AsyncCallbackHandler):
             input_tokens = 0
             output_tokens = 0
             cached_tokens = 0
+            cache_creation_tokens = 0
             for gen in response.generations:
                 for gen_result in gen:
                     if gen_result.message and gen_result.message.usage_metadata:
@@ -56,18 +57,19 @@ class TokensCalculationCallback(AsyncCallbackHandler):
                         input_tokens += usage_metadata.get("input_tokens", 0)
                         output_tokens += usage_metadata.get("output_tokens", 0)
                         cached_tokens += usage_metadata.get("input_token_details", {}).get("cache_read", 0)
+                        cache_creation_tokens += usage_metadata.get("input_token_details", {}).get("cache_creation", 0)
                         logger.debug(f"On LLM End. Usage metadata: {usage_metadata}")
             model_costs = llm_service.get_model_cost(self.llm_model)
 
             # Use the utility function to calculate cost
             # Returns: (total_cost, cached_cost, cache_creation_cost)
-            money_spent, cached_tokens_money_spent, _ = calculate_token_cost(
+            money_spent, cached_tokens_money_spent, cached_tokens_creation_cost = calculate_token_cost(
                 llm_model=self.llm_model,
                 cost_config=model_costs,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cached_tokens=cached_tokens,
-                cache_creation_tokens=0,  # Not exposed by LangChain yet
+                cache_creation_tokens=cache_creation_tokens,
             )
 
             llm_run = LLMRun(
@@ -77,6 +79,7 @@ class TokensCalculationCallback(AsyncCallbackHandler):
                 cached_tokens=cached_tokens,
                 money_spent=money_spent,
                 cached_tokens_money_spent=cached_tokens_money_spent,
+                cached_tokens_creation_cost=cached_tokens_creation_cost,
                 llm_model=self.llm_model,
             )
 

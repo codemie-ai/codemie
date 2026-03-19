@@ -42,6 +42,7 @@ def sample_llm_runs():
             cached_tokens=800,
             money_spent=0.012,
             cached_tokens_money_spent=0.00024,
+            cached_tokens_creation_cost=0.0001,
             llm_model="claude-3-7",
         ),
         LLMRun(
@@ -51,6 +52,7 @@ def sample_llm_runs():
             cached_tokens=1500,
             money_spent=0.025,
             cached_tokens_money_spent=0.00045,
+            cached_tokens_creation_cost=0.00015,
             llm_model="claude-3-7",
         ),
         LLMRun(
@@ -60,13 +62,14 @@ def sample_llm_runs():
             cached_tokens=0,
             money_spent=0.006,
             cached_tokens_money_spent=0.0,
+            cached_tokens_creation_cost=0.0,
             llm_model="gpt-4.1",
         ),
     ]
 
 
 def test_llm_run_includes_cached_tokens_money_spent():
-    """Test that LLMRun model includes cached_tokens_money_spent field."""
+    """Test that LLMRun model includes cached_tokens_money_spent and cached_tokens_creation_cost fields."""
     llm_run = LLMRun(
         run_id="test-run",
         input_tokens=1000,
@@ -74,15 +77,18 @@ def test_llm_run_includes_cached_tokens_money_spent():
         cached_tokens=800,
         money_spent=0.012,
         cached_tokens_money_spent=0.00024,
+        cached_tokens_creation_cost=0.0001,
         llm_model="claude-3-7",
     )
 
     assert llm_run.cached_tokens_money_spent == 0.00024
     assert isinstance(llm_run.cached_tokens_money_spent, float)
+    assert llm_run.cached_tokens_creation_cost == 0.0001
+    assert isinstance(llm_run.cached_tokens_creation_cost, float)
 
 
 def test_llm_run_default_cached_tokens_money_spent():
-    """Test that LLMRun has default value for cached_tokens_money_spent."""
+    """Test that LLMRun has default values for cached_tokens_money_spent and cached_tokens_creation_cost."""
     llm_run = LLMRun(
         run_id="test-run",
         input_tokens=1000,
@@ -90,14 +96,15 @@ def test_llm_run_default_cached_tokens_money_spent():
         cached_tokens=0,
         money_spent=0.012,
         llm_model="gpt-4o",
-        # cached_tokens_money_spent not provided
+        # cached_tokens_money_spent and cached_tokens_creation_cost not provided
     )
 
     assert llm_run.cached_tokens_money_spent == 0.0
+    assert llm_run.cached_tokens_creation_cost == 0.0
 
 
 def test_request_summary_calculate_aggregates_cached_tokens_money_spent(sample_request_id, sample_llm_runs):
-    """Test that RequestSummary.calculate() aggregates cached_tokens_money_spent from all runs."""
+    """Test that RequestSummary.calculate() aggregates cached_tokens_money_spent and cache creation costs from all runs."""
     request_summary = RequestSummary(request_id=sample_request_id, llm_runs=sample_llm_runs)
 
     request_summary.calculate()
@@ -108,6 +115,9 @@ def test_request_summary_calculate_aggregates_cached_tokens_money_spent(sample_r
     assert request_summary.tokens_usage.cached_tokens == 2300  # 800 + 1500 + 0
     assert abs(request_summary.tokens_usage.money_spent - 0.043) < 0.001  # 0.012 + 0.025 + 0.006
     assert abs(request_summary.tokens_usage.cached_tokens_money_spent - 0.00069) < 0.00001  # 0.00024 + 0.00045 + 0.0
+    assert (
+        abs(request_summary.tokens_usage.cached_tokens_creation_money_spent - 0.00025) < 0.00001
+    )  # 0.0001 + 0.00015 + 0.0
 
 
 def test_request_summary_calculate_with_no_cached_tokens(sample_request_id):
@@ -120,6 +130,7 @@ def test_request_summary_calculate_with_no_cached_tokens(sample_request_id):
             cached_tokens=0,
             money_spent=0.015,
             cached_tokens_money_spent=0.0,
+            cached_tokens_creation_cost=0.0,
             llm_model="gpt-4o",
         ),
     ]
@@ -129,6 +140,7 @@ def test_request_summary_calculate_with_no_cached_tokens(sample_request_id):
 
     assert request_summary.tokens_usage.cached_tokens == 0
     assert request_summary.tokens_usage.cached_tokens_money_spent == 0.0
+    assert request_summary.tokens_usage.cached_tokens_creation_money_spent == 0.0
 
 
 def test_request_summary_calculate_with_empty_runs(sample_request_id):
@@ -143,10 +155,11 @@ def test_request_summary_calculate_with_empty_runs(sample_request_id):
     assert request_summary.tokens_usage.cached_tokens == 0
     assert request_summary.tokens_usage.money_spent == 0.0
     assert request_summary.tokens_usage.cached_tokens_money_spent == 0.0
+    assert request_summary.tokens_usage.cached_tokens_creation_money_spent == 0.0
 
 
 def test_request_summary_manager_update_llm_run():
-    """Test RequestSummaryManager.update_llm_run() with cached_tokens_money_spent."""
+    """Test RequestSummaryManager.update_llm_run() with cached_tokens_money_spent and cache creation cost."""
     request_id = "test-request-456"
     llm_run = LLMRun(
         run_id="run-1",
@@ -155,6 +168,7 @@ def test_request_summary_manager_update_llm_run():
         cached_tokens=4800,
         money_spent=0.00504,
         cached_tokens_money_spent=0.00144,
+        cached_tokens_creation_cost=0.0002,
         llm_model="claude-3-7",
     )
 
@@ -164,12 +178,13 @@ def test_request_summary_manager_update_llm_run():
     assert summary is not None
     assert len(summary.llm_runs) == 1
     assert summary.llm_runs[0].cached_tokens_money_spent == 0.00144
+    assert summary.llm_runs[0].cached_tokens_creation_cost == 0.0002
 
     request_summary_manager.clear_summary(request_id=request_id)
 
 
 def test_request_summary_manager_multiple_runs_aggregation():
-    """Test RequestSummaryManager aggregates cached_tokens_money_spent across multiple runs."""
+    """Test RequestSummaryManager aggregates cached_tokens_money_spent and cache creation costs across multiple runs."""
     request_id = "test-request-789"
 
     run1 = LLMRun(
@@ -179,6 +194,7 @@ def test_request_summary_manager_multiple_runs_aggregation():
         cached_tokens=800,
         money_spent=0.012,
         cached_tokens_money_spent=0.00024,
+        cached_tokens_creation_cost=0.0001,
         llm_model="claude-3-7",
     )
     request_summary_manager.update_llm_run(request_id=request_id, llm_run=run1)
@@ -190,6 +206,7 @@ def test_request_summary_manager_multiple_runs_aggregation():
         cached_tokens=1500,
         money_spent=0.025,
         cached_tokens_money_spent=0.00045,
+        cached_tokens_creation_cost=0.00015,
         llm_model="claude-3-7",
     )
     request_summary_manager.update_llm_run(request_id=request_id, llm_run=run2)
@@ -199,6 +216,7 @@ def test_request_summary_manager_multiple_runs_aggregation():
 
     assert summary.tokens_usage.cached_tokens == 2300  # 800 + 1500
     assert abs(summary.tokens_usage.cached_tokens_money_spent - 0.00069) < 0.00001  # 0.00024 + 0.00045
+    assert abs(summary.tokens_usage.cached_tokens_creation_money_spent - 0.00025) < 0.00001  # 0.0001 + 0.00015
 
     request_summary_manager.clear_summary(request_id=request_id)
 
@@ -215,6 +233,7 @@ def test_request_summary_manager_mixed_models():
             cached_tokens=4800,
             money_spent=0.00504,
             cached_tokens_money_spent=0.00144,
+            cached_tokens_creation_cost=0.0003,
             llm_model="claude-3-7",
         ),
         LLMRun(
@@ -224,6 +243,7 @@ def test_request_summary_manager_mixed_models():
             cached_tokens=0,
             money_spent=0.015,
             cached_tokens_money_spent=0.0,
+            cached_tokens_creation_cost=0.0,
             llm_model="gpt-4o",
         ),
     ]
@@ -238,5 +258,6 @@ def test_request_summary_manager_mixed_models():
     assert summary.tokens_usage.cached_tokens == 4800
     assert abs(summary.tokens_usage.money_spent - 0.02004) < 0.00001
     assert abs(summary.tokens_usage.cached_tokens_money_spent - 0.00144) < 0.00001
+    assert abs(summary.tokens_usage.cached_tokens_creation_money_spent - 0.0003) < 0.00001
 
     request_summary_manager.clear_summary(request_id=request_id)

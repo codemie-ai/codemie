@@ -689,6 +689,7 @@ class TokensUsage(BaseModel):
     cached_tokens: int = 0
     money_spent: float
     cached_tokens_money_spent: float = 0.0
+    cached_tokens_creation_money_spent: float = 0.0
 
 
 class IdeToolArgument(ConfiguredModel):
