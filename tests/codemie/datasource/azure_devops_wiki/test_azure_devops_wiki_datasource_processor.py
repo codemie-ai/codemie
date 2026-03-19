@@ -334,12 +334,8 @@ def test_cleanup_data(azure_devops_wiki_processor_fixture):
 
     processor._cleanup_data()
 
-    processor.client.delete_by_query.assert_called_once()
-    call_args = processor.client.delete_by_query.call_args
-    assert call_args[1]["index"] == processor._index_name
-    assert call_args[1]["body"]["query"] == {"match_all": {}}
-    assert call_args[1]["wait_for_completion"] is True
-    assert call_args[1]["refresh"] is True
+    # Azure DevOps Wiki uses base implementation which deletes entire index
+    processor.client.indices.delete.assert_called_once_with(index=processor._index_name)
 
 
 def test_check_docs_health(azure_devops_wiki_processor_fixture):

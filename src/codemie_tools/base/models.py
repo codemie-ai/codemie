@@ -96,6 +96,7 @@ class CredentialTypes(str, Enum):
     AUTH_TOKEN = "AuthToken"
     A2A = "A2A"  # Assistant-to-Assistant integration
     LITE_LLM = "LiteLLM"
+    SHAREPOINT = "SharePoint"
 
     # Project settings
     DIAL = "DIAL"

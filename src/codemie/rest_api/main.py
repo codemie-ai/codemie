@@ -86,6 +86,7 @@ from codemie.rest_api.routers import (
     skill,
     dynamic_config,
 )
+from codemie.rest_api.routers import sharepoint_oauth
 
 # User management routers (EPMCDME-10160)
 from codemie.rest_api.routers import local_auth_router
@@ -581,6 +582,7 @@ app.include_router(user_kata_progress.router)
 app.include_router(ai_kata.router)
 app.include_router(skill.router)
 app.include_router(dynamic_config.router)
+app.include_router(sharepoint_oauth.router)
 
 # User management routers (EPMCDME-10160)
 if config.ENABLE_USER_MANAGEMENT:

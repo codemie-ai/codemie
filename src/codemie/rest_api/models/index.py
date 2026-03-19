@@ -15,7 +15,7 @@
 import secrets
 from datetime import datetime
 from enum import Enum
-from typing import Optional, List, ClassVar, Dict, Sequence
+from typing import Literal, Optional, List, ClassVar, Dict, Sequence
 from typing_extensions import Annotated
 from uuid import uuid4
 
@@ -83,6 +83,7 @@ class IndexTypeByContextTypeMapping(Enum):
         "knowledge_base_xray",
         "knowledge_base_azure_devops_wiki",
         "knowledge_base_azure_devops_work_item",
+        "knowledge_base_sharepoint",
         "knowledge_base_file",
         "llm_routing_google",
         "platform_marketplace_assistant",
@@ -147,6 +148,30 @@ class AzureDevOpsWorkItemIndexInfo(BaseModel):
     wiql_query: str = ""
 
 
+_HTTPS_SCHEME = "https://"
+_SITE_URL_SCHEME_ERROR = "site_url must start with https://"
+
+
+class SharePointIndexInfo(BaseModel):
+    site_url: str  # e.g., https://tenant.sharepoint.com/sites/sitename
+    path_filter: Optional[str] = "*"  # e.g., /Shared Documents/*
+    include_pages: Optional[bool] = True
+    include_documents: Optional[bool] = True
+    include_lists: Optional[bool] = True
+    max_file_size_mb: Optional[int] = Field(default=50, gt=0, le=500)
+    files_filter: Optional[str] = ""  # Gitignore-style extension/name filter for documents
+    auth_type: Literal["integration", "oauth_codemie", "oauth_custom"] = "integration"
+    oauth_client_id: Optional[str] = None  # Azure app client ID for oauth_custom
+    oauth_tenant_id: Optional[str] = None  # Azure AD tenant ID for single-tenant custom apps
+
+    @field_validator("site_url")
+    @classmethod
+    def validate_site_url(cls, v: str) -> str:
+        if not v.startswith(_HTTPS_SCHEME):
+            raise ValueError(_SITE_URL_SCHEME_ERROR)
+        return v
+
+
 class IndexListItem(BaseModel):
     id: str
     project_name: str
@@ -173,6 +198,7 @@ class IndexListItem(BaseModel):
 
     jira: Optional[JiraIndexInfo] = None
     xray: Optional[XrayIndexInfo] = None
+    sharepoint: Optional[SharePointIndexInfo] = None
     aice_datasource_id: Optional[str] = None
     cron_expression: Optional[str] = None
 
@@ -242,6 +268,9 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
     )
     azure_devops_work_item: Optional[AzureDevOpsWorkItemIndexInfo] = SQLField(
         default=None, sa_column=Column(PydanticType(AzureDevOpsWorkItemIndexInfo))
+    )
+    sharepoint: Optional[SharePointIndexInfo] = SQLField(
+        default=None, sa_column=Column(PydanticType(SharePointIndexInfo))
     )
     is_fetching: Optional[bool] = False
     setting_id: Optional[str] = None
@@ -548,6 +577,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         xray = kwargs.get("xray")
         azure_devops_wiki = kwargs.get("azure_devops_wiki")
         azure_devops_work_item = kwargs.get("azure_devops_work_item")
+        sharepoint = kwargs.get("sharepoint")
         google_doc_link = kwargs.get("google_doc_link", "")
         obj = cls(
             project_name=project_name,
@@ -570,6 +600,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
             xray=xray,
             azure_devops_wiki=azure_devops_wiki,
             azure_devops_work_item=azure_devops_work_item,
+            sharepoint=sharepoint,
             google_doc_link=google_doc_link,
         )
         obj.save(refresh=True)
@@ -601,6 +632,68 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
                 logger.info(f"Migrated KB {self.repo_name} from legacy to new ES naming convention")
         except Exception as e:
             logger.error(f"Failed to reindex KB from {old_index} to {new_index} on project move: {e}")
+
+    def _update_query_fields(
+        self,
+        cql: Optional[str] = None,
+        jql: Optional[str] = None,
+        wiki_query: Optional[str] = None,
+    ) -> None:
+        """Update query fields for different datasource types."""
+        if cql:
+            self.confluence.cql = cql
+            flag_modified(self, 'confluence')
+
+        if jql:
+            if self.index_type == "knowledge_base_xray":
+                self.xray.jql = jql
+                flag_modified(self, 'xray')
+            else:
+                self.jira.jql = jql
+                flag_modified(self, 'jira')
+
+        if wiki_query:
+            self.azure_devops_wiki.wiki_query = wiki_query
+            flag_modified(self, 'azure_devops_wiki')
+
+    def _update_sharepoint_fields(self, **kwargs) -> None:
+        """Update SharePoint-specific fields."""
+        if not self.sharepoint:
+            return
+
+        site_url = kwargs.get("site_url")
+        path_filter = kwargs.get("path_filter")
+        include_pages = kwargs.get("include_pages")
+        include_documents = kwargs.get("include_documents")
+        include_lists = kwargs.get("include_lists")
+        max_file_size_mb = kwargs.get("max_file_size_mb")
+        files_filter = kwargs.get("files_filter")
+        auth_type = kwargs.get("auth_type")
+        oauth_client_id = kwargs.get("oauth_client_id")
+        oauth_tenant_id = kwargs.get("oauth_tenant_id")
+
+        if site_url is not None:
+            self.sharepoint.site_url = site_url
+        if path_filter is not None:
+            self.sharepoint.path_filter = path_filter
+        if include_pages is not None:
+            self.sharepoint.include_pages = include_pages
+        if include_documents is not None:
+            self.sharepoint.include_documents = include_documents
+        if include_lists is not None:
+            self.sharepoint.include_lists = include_lists
+        if max_file_size_mb is not None:
+            self.sharepoint.max_file_size_mb = max_file_size_mb
+        if files_filter is not None:
+            self.sharepoint.files_filter = files_filter
+        if auth_type is not None:
+            self.sharepoint.auth_type = auth_type
+        if oauth_client_id is not None:
+            self.sharepoint.oauth_client_id = oauth_client_id
+        if oauth_tenant_id is not None:
+            self.sharepoint.oauth_tenant_id = oauth_tenant_id
+
+        flag_modified(self, 'sharepoint')
 
     def update_index(
         self,
@@ -645,25 +738,13 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         if reset_error:
             self.error = False
 
-        if cql:
-            self.confluence.cql = cql
-            flag_modified(self, 'confluence')
-
-        if jql:
-            if self.index_type == "knowledge_base_xray":
-                self.xray.jql = jql
-                flag_modified(self, 'xray')
-            else:
-                self.jira.jql = jql
-                flag_modified(self, 'jira')
-
-        if wiki_query:
-            self.azure_devops_wiki.wiki_query = wiki_query
-            flag_modified(self, 'azure_devops_wiki')
+        self._update_query_fields(cql=cql, jql=jql, wiki_query=wiki_query)
 
         if wiql_query and self.azure_devops_work_item:
             self.azure_devops_work_item.wiql_query = wiql_query
             flag_modified(self, 'azure_devops_work_item')
+
+        self._update_sharepoint_fields(**kwargs)
 
         if setting_id:
             self.setting_id = setting_id
@@ -1078,6 +1159,30 @@ class IndexKnowledgeBaseAzureDevOpsWorkItemRequest(CronExpressionValidatorMixin,
     cron_expression: Optional[str] = None
 
 
+class IndexKnowledgeBaseSharePointRequest(CronExpressionValidatorMixin, IndexKnowledgeBaseRequest):
+    site_url: str
+    path_filter: Optional[str] = "*"
+    include_pages: Optional[bool] = True
+    include_documents: Optional[bool] = True
+    include_lists: Optional[bool] = True
+    max_file_size_mb: Optional[int] = Field(default=50, gt=0, le=500)
+    setting_id: Optional[str] = None
+    embedding_model: Optional[str] = None
+    cron_expression: Optional[str] = None
+    files_filter: Optional[str] = ""  # Gitignore-style extension/name filter for documents
+    auth_type: Literal["integration", "oauth_codemie", "oauth_custom"] = "integration"
+    access_token: Optional[str] = None  # OAuth delegated token (not stored)
+    oauth_client_id: Optional[str] = None  # Custom Azure app client ID (oauth_custom only)
+    oauth_tenant_id: Optional[str] = None  # Azure AD tenant ID for single-tenant custom apps
+
+    @field_validator("site_url")
+    @classmethod
+    def validate_site_url(cls, v: str) -> str:
+        if not v.startswith(_HTTPS_SCHEME):
+            raise ValueError(_SITE_URL_SCHEME_ERROR)
+        return v
+
+
 class IndexKnowledgeBaseGoogleRequest(CronExpressionValidatorMixin, IndexKnowledgeBaseRequest):
     googleDoc: str
     embedding_model: Optional[str] = None
@@ -1190,6 +1295,42 @@ class UpdateKnowledgeBaseAzureDevOpsWorkItemRequest(CronExpressionValidatorMixin
     project_space_visible: Optional[bool] = None
     guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None
     cron_expression: Optional[str] = None
+
+
+class UpdateKnowledgeBaseSharePointRequest(CronExpressionValidatorMixin, BaseModel):
+    name: str = Field(min_length=1, max_length=500)
+    project_name: str
+    site_url: Optional[str] = None
+    path_filter: Optional[str] = None
+    include_pages: Optional[bool] = None
+    include_documents: Optional[bool] = None
+    include_lists: Optional[bool] = None
+    max_file_size_mb: Optional[int] = Field(default=None, gt=0, le=500)
+    setting_id: Optional[str] = None
+    new_project_name: Optional[str] = None  # Field to support project change
+    description: Optional[str] = None
+    project_space_visible: Optional[bool] = None
+    embedding_model: Optional[str] = None
+    guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None
+    cron_expression: Optional[str] = None
+    files_filter: Optional[str] = Field(
+        default=None,
+        description=(
+            "Gitignore-style filter for documents. "
+            "Omit or set to null to keep the stored value; set to empty string to clear the filter."
+        ),
+    )
+    auth_type: Optional[Literal["integration", "oauth_codemie", "oauth_custom"]] = None
+    access_token: Optional[str] = None  # OAuth delegated token for this reindex run
+    oauth_client_id: Optional[str] = None  # Custom Azure app client ID (oauth_custom only)
+    oauth_tenant_id: Optional[str] = None  # Azure AD tenant ID for single-tenant custom apps
+
+    @field_validator("site_url")
+    @classmethod
+    def validate_site_url(cls, v: str | None) -> str | None:
+        if v is not None and not v.startswith(_HTTPS_SCHEME):
+            raise ValueError(_SITE_URL_SCHEME_ERROR)
+        return v
 
 
 class IndexKnowledgeBaseFileTypes(Enum):

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from enum import Enum
-from typing import Any, List, Optional, Dict
+from typing import Any, List, Literal, Optional, Dict
 
 from pydantic import BaseModel, Field, model_validator
 from sqlmodel import Column, Index, Session, select
@@ -181,6 +181,19 @@ class AzureDevOpsCredentials(BaseModel):
     project: str
     organization: str
     access_token: str
+
+
+class SharePointCredentials(BaseModel):
+    auth_type: Literal["app", "oauth"] = "app"
+    # App credentials
+    tenant_id: str = ""
+    client_id: str = ""
+    client_secret: str = ""
+    # OAuth delegated credentials
+    access_token: str = ""
+    refresh_token: str = ""
+    expires_at: int = 0  # Unix timestamp
+    username: str = ""
 
 
 class Scheduler(BaseModel):

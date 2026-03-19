@@ -81,19 +81,6 @@ class AzureDevOpsWikiDatasourceProcessor(BaseDatasourceProcessor):
     def _processing_batch_size(self) -> int:
         return AZURE_DEVOPS_WIKI_CONFIG.loader_batch_size
 
-    def _cleanup_data(self):
-        """Remove all data in the index. Used for full reindexing"""
-        try:
-            self.client.delete_by_query(
-                index=self._index_name,
-                body={"query": {"match_all": {}}},
-                wait_for_completion=True,
-                refresh=True,
-            )
-            logger.info(f"Successfully deleted index with data: {self._index_name}")
-        except Exception as e:
-            logger.error(f"Failed deleting index with data: {e}")
-
     def _init_index(self):
         """Initialize or retrieve the index"""
         if not self.index:

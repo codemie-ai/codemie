@@ -318,6 +318,10 @@ class Config(BaseSettings):
     A2A_PROVIDER_ORGANIZATION: str = ""
     A2A_PROVIDER_URL: str = ""
 
+    # SharePoint OAuth (delegated auth via Device Code Flow)
+    SHAREPOINT_OAUTH_CLIENT_ID: str = ""
+    SHAREPOINT_OAUTH_SCOPES: str = "Sites.Read.All Files.Read.All offline_access User.Read"
+
     MCP_CONNECT_ENABLED: bool = True
     MCP_CONNECT_URL: str = "http://localhost:3000"
     MCP_CONNECT_BUCKETS_COUNT: int = 10

@@ -60,6 +60,7 @@ from codemie.rest_api.models.settings import (
     DialCredentials,
     FileSystemConfig,
     AzureDevOpsCredentials,
+    SharePointCredentials,
     SonarCredentials,
     AbilitySetting,
     LiteLLMCredentials,
@@ -79,6 +80,8 @@ class SettingsService(BaseSettingsService):
     PROJECT: str = "project"
     REALM: str = "realm"
     CLIENT_ID: str = "client_id"
+    CLIENT_SECRET: str = "client_secret"
+    TENANT_ID: str = "tenant_id"
     ACTIVATE_COMMAND: str = "activate_command"
     ELASTIC_API_KEY_ID: str = "elastic_api_key_id"
     ELASTIC_API_KEY: str = "elastic_api_key"
@@ -137,6 +140,8 @@ class SettingsService(BaseSettingsService):
         ENV_VARS,
         AUTH_VALUE,
         "private_key",  # GitHub App private key
+        "access_token",  # SharePoint OAuth delegated token
+        "refresh_token",  # SharePoint OAuth refresh token
     ]
 
     # Define field mappings for each credential type
@@ -169,6 +174,17 @@ class SettingsService(BaseSettingsService):
         XRAY_LIMIT: "limit",
     }
     AZURE_DEVOPS_FIELDS = {URL: "base_url", PROJECT: "project", ORGANIZATION: "organization", TOKEN: "access_token"}
+    SHAREPOINT_FIELDS = {
+        URL: "url",
+        TENANT_ID: "tenant_id",
+        CLIENT_ID: "client_id",
+        CLIENT_SECRET: "client_secret",
+        "auth_type": "auth_type",
+        "access_token": "access_token",
+        "refresh_token": "refresh_token",
+        "expires_at": "expires_at",
+        USERNAME: "username",
+    }
     DIAL_FIELDS = {"api_version": "api_version", "api_key": "api_key", "url": "url"}
     LITELLM_FIELDS = {"api_key": "api_key", "url": "url"}
     JIRA_FIELDS = {URL: "url", TOKEN: "token", USERNAME: "username", IS_CLOUD: "cloud"}
@@ -1183,6 +1199,77 @@ class SettingsService(BaseSettingsService):
             integration_id=setting_id,
             tool_config=tool_config,
         )
+
+    @classmethod
+    def get_sharepoint_creds(
+        cls,
+        user_id: str,
+        project_name: str = None,
+        assistant_id: Optional[str] = None,
+        setting_id: Optional[str] = None,
+    ) -> SharePointCredentials:
+        search_fields = {
+            SearchFields.USER_ID: user_id,
+            SearchFields.CREDENTIAL_TYPE: CredentialTypes.SHAREPOINT,
+            SearchFields.PROJECT_NAME: project_name,
+        }
+
+        setting = cls.retrieve_setting(search_fields, assistant_id, setting_id)
+
+        if not setting:
+            raise ValueError(f"SharePoint credentials not found for user {user_id}")
+
+        def _get(key: str) -> str:
+            val = setting.credential(key) if setting else None
+            return val if val else ""
+
+        auth_type = _get("auth_type") or "app"
+        expires_at_raw = _get("expires_at")
+        try:
+            expires_at = int(expires_at_raw) if expires_at_raw else 0
+        except (ValueError, TypeError):
+            expires_at = 0
+
+        return SharePointCredentials(
+            auth_type=auth_type,
+            tenant_id=_get(cls.TENANT_ID),
+            client_id=_get(cls.CLIENT_ID),
+            client_secret=_get(cls.CLIENT_SECRET),
+            access_token=_get("access_token"),
+            refresh_token=_get("refresh_token"),
+            expires_at=expires_at,
+            username=_get(cls.USERNAME),
+        )
+
+    @classmethod
+    def update_sharepoint_oauth_tokens(
+        cls,
+        setting_id: str,
+        access_token: str,
+        refresh_token: str,
+        expires_at: int,
+    ) -> None:
+        """Persist refreshed OAuth tokens back to the stored SharePoint setting."""
+        setting = Settings.get_by_id(id_=setting_id)
+        if not setting:
+            logger.error(f"Cannot update SharePoint OAuth tokens: setting {setting_id} not found")
+            return
+
+        updates = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": str(expires_at),
+        }
+        existing_dict = {cred.key: cred for cred in setting.credential_values}
+        for key, value in updates.items():
+            if key in existing_dict:
+                existing_dict[key].value = cls._encrypt_fields([CredentialValues(key=key, value=value)])[0].value
+                attributes.flag_modified(setting, "credential_values")
+            else:
+                encrypted = cls._encrypt_fields([CredentialValues(key=key, value=value)])[0]
+                setting.credential_values.append(encrypted)
+
+        setting.update()
 
     @classmethod
     def get_a2a_creds(cls, user_id: str, project_name: str = None, integration_id: str = None) -> Dict[str, str]:

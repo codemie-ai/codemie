@@ -132,6 +132,16 @@ loaders:
     chunk_overlap: 50
     loader_batch_size: 50
 
+  sharepoint_loader:
+    loader_batch_size: 20
+    loader_timeout: 300
+    chunk_size: 2000
+    chunk_overlap: 200
+    max_file_size_mb: 50
+    max_retries: 3
+    graph_api_version: "v1.0"
+    graph_base_url: "https://graph.microsoft.com"
+
 storage:
   embeddings_max_docs_count: 20
   indexing_bulk_max_chunk_bytes: 104857600  # 100 MB
