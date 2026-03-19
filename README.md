@@ -1,4 +1,4 @@
-# Codemie 🤖
+# CodeMie 🤖
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Website](https://img.shields.io/badge/website-codemie.ai-informational)](https://codemie.ai)
@@ -25,7 +25,7 @@ Key capabilities: multi-agent orchestration, rich data indexing (Git, Jira, Conf
 ## Quick Start
 
 1. **Setup credentials** (see [Prerequisites & Setup](#prerequisites--setup))
-2. **Configure .env** with your keys
+2. **Configure `.env`** with local database, search, and model provider settings
 3. **Run with Docker**:
    ```bash
    docker compose up --build codemie postgres elasticsearch
@@ -44,20 +44,30 @@ Key capabilities: multi-agent orchestration, rich data indexing (Git, Jira, Conf
 - [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) (gcloud CLI) - for authentication with GCP Artifact Registry
 - [make](https://www.gnu.org/software/make/) (install via brew/choco if missing)
 
-### .env Configuration
+### Local Environment Variables
 
 ```env
+# App mode
+ENV=local
+MODELS_ENV=azure
+
+# Azure OpenAI (required unless you switch to AWS or GCP model config)
 AZURE_OPENAI_API_KEY="<your_api_key>"
 AZURE_OPENAI_URL="https://your-azure-openai-endpoint.example.com"
-
-AWS_ACCESS_KEY_ID="..."
-AWS_SECRET_ACCESS_KEY="..."
-AWS_DEFAULT_REGION="us-west-2"
-
-GOOGLE_APPLICATION_CREDENTIALS="key.json"
 ```
 
-**Add/adjust these in your .env as needed for selected features and stack!**
+For local startup, CodeMie needs:
+
+- One configured model provider. For open source local setup, Azure is the simplest example:
+  - `MODELS_ENV=azure`
+  - `OPENAI_API_TYPE=azure`
+  - `AZURE_OPENAI_API_KEY`
+  - `AZURE_OPENAI_URL`
+
+If you prefer another provider, use the matching model config under `config/llms/` such as `llm-aws-config.yaml` or `llm-gcp-config.yaml` and set `MODELS_ENV` accordingly.
+
+For the full environment variable reference and descriptions, see the public docs:
+https://docs.codemie.ai/admin/configuration/codemie/api-configuration
 
 ## Running the Application
 
@@ -76,11 +86,19 @@ docker compose up --build codemie postgres elasticsearch
 1. Install poetry according to the [official guide](https://python-poetry.org/)
 2. Install dependencies: `poetry install`
 3. Download NLTK packages: `poetry run download_nltk_packages`
+4. Start required services locally, for example: `docker compose up postgres elasticsearch`
+5. Apply database migrations from `src/external/alembic`:
+   ```bash
+   cd src/external/alembic
+   poetry run alembic upgrade head
+   ```
 
 #### Starting up
 1. Navigate to src directory: `cd src/`
 2. Run server: `poetry run uvicorn codemie.rest_api.main:app --host=0.0.0.0 --port=8080 --reload`
 3. Up and running! 🔥 Check out `http://localhost:8080/docs`
+
+Database migrations are managed with Alembic. For migration workflows, autogeneration, and conflict handling, see the [Alembic README](src/external/alembic/README.MD).
 
 ## Installation 🏢
 
@@ -244,100 +262,6 @@ To add or modify a tool, work directly in `src/codemie_tools/`. For architecture
 - `.codemie/guides/agents/agent-tools.md` — base classes, execution flow, metadata
 - `.codemie/guides/agents/custom-tool-creation.md` — creating new tools
 - `.codemie/guides/agents/tool-overview.md` — SmartToolSelector and `DiscoverableToolkit`
-
-## Advanced Configuration
-
-### Custom LLM and Embedding Models
-
-By default, AI/Run provides predefined LLM and embedding models for AWS, Azure, GCP. They can be found here: `config/llms`.
-
-The `MODELS_ENV` is used to specify the environment for the models. For example, `MODELS_ENV=azure` will use the models from the `config/llms/llm-azure-config.yaml` file (Pattern: `llm-<MODELS_ENV>-config.yaml`).
-
-Example configuration in `deploy-templates/values.yaml`:
-
-```yaml
-extraEnv:
-  - name: MODELS_ENV
-    value: "your-org"
-
-extraVolumeMounts: |
-  - name: codemie-llm-customer-config
-    mountPath: /app/config/llms/llm-your-org-config.yaml
-    subPath: llm-your-org-config.yaml
-
-extraVolumes: |
-  - name: codemie-llm-customer-config
-    configMap:
-      name: codemie-llm-customer-config
-
-extraObjects:
-  - apiVersion: v1
-    kind: ConfigMap
-    metadata:
-      name: codemie-llm-customer-config
-    data:
-      llm-your-org-config.yaml: |
-        llm_models:
-          - base_name: "gpt-4o-2024-08-06"
-            deployment_name: "gpt-4o-2024-08-06"
-            label: "GPT-4o 2024-08-06"
-            multimodal: true
-            enabled: true
-            default: true
-            provider: "azure_openai"
-            cost:
-              input: 0.0000025
-              output: 0.000011
-
-        embeddings_models:
-          - base_name: "ada-002"
-            deployment_name: "text-embedding-ada-002"
-            label: "Text Embedding Ada"
-            enabled: true
-            default: true
-            provider: "azure_openai"
-            cost:
-              input: 0.0000001
-              output: 0
-```
-
-## Monitoring & Operations
-
-### Database Migrations
-For information about working with database migrations, see the [Alembic README](src/external/alembic/README.MD).
-
-### Metrics 📊
-
-CodeMie provides the following metrics:
-
-| Metric name                                | Description                                  |
-|--------------------------------------------|----------------------------------------------|
-| `create_assistant`                         | Number of created assistants                 |
-| `create_assistant_error`                   | Number of created assistants with errors     |
-| `update_assistant`                         | Number of updated assistants                 |
-| `update_assistant_error`                   | Number of updated assistants with errors     |
-| `delete_assistant`                         | Number of deleted assistants                 |
-| `codemie_tools_usage_total`                | Number of tools usage                        |
-| `codemie_tools_usage_tokens`               | Number of tokens used with tools             |
-| `codemie_tools_usage_errors_total`         | Number of tools usage with errors            |
-| `workflow_execution_total`                 | Number of workflow executions                |
-| `workflow_execution_state_total`           | Number of workflow executions by state       |
-| `workflow_created_total`                   | Number of created workflows                  |
-| `workflow_updated_total`                   | Number of updated workflows                  |
-| `workflow_deleted_total`                   | Number of deleted workflows                  |
-| `datasource_index_total`                   | Number of indexed datasources                |
-| `datasource_index_documents`               | Number of indexed documents in datasources   |
-| `datasource_index_errors_total`            | Number of indexed datasources with errors    |
-| `datasource_reindex_total`                 | Number of reindexed datasources              |
-| `datasource_reindex_documents`             | Number of reindexed documents in datasources |
-| `datasource_reindex_errors_total`          | Number of reindexed datasources with errors  |
-| `delete_datasource`                        | Total number of deleted datasources          |
-| `update_datasource`                        | Total number of updated datasources          |
-| `codemie_mcp_servers`                      | MCP server status and configuration          |
-| `codemie_assistant_generator_total`        | Assistant generation requests                |
-| `codemie_assistant_generator_errors_total` | Assistant generation errors                  |
-| `codemie_prompt_generator_total`           | Prompt generation requests                   |
-| `codemie_prompt_generator_errors_total`    | Prompt generation errors                     |
 
 ## License Compliance
 
