@@ -303,6 +303,8 @@ def check_user_budget(user_id: str):
         logger.debug(f"{_LITELLM_NOT_AVAILABLE_MSG}, skipping budget check")
         return None
 
+    logger.debug(f"Budget check for {user_id}")
+
     try:
         # Try cache first
         customer = litellm._get_cached_customer(user_id)
@@ -331,7 +333,7 @@ def check_user_budget(user_id: str):
         soft_limit = budget_table.soft_budget
         hard_limit = budget_table.max_budget
 
-        logger.debug(f"User {user_id} spend: {current_spend}, soft: {soft_limit}, hard: {hard_limit}")
+        logger.debug(f"Budget check for {user_id}: spend={current_spend}, soft={soft_limit}, hard={hard_limit}")
 
         # Check hard budget limit
         if hard_limit is not None and current_spend >= hard_limit:

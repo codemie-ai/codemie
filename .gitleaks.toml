@@ -7,6 +7,10 @@ useDefault = true
 description = "Allowlisted files"
 paths = [
   '''config/index-dumps/.*\.json$''',  # Index dumps contain sample data
+  '''.*/__pycache__/.*''',             # Compiled Python bytecode (gitignored, contains test mock keys)
+  '''.pytest_cache/.*''',              # pytest cache (gitignored, mirrors test param strings)
+  '''.idea/.*''',                      # IDE workspace files (gitignored, UUIDs trigger generic-api-key)
+  '''.keys/.*''',                      # Local dev keys (gitignored, never committed)
 ]
 
 stopwords = [
