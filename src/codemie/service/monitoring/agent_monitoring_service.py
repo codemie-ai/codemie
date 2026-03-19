@@ -46,7 +46,7 @@ class AgentMonitoringService(BaseMonitoringService):
             MetricsAttributes.LLM_MODEL: metadata.get(LLM_MODEL, ""),
             MetricsAttributes.USER_NAME: metadata.get(USER_NAME, ""),
             MetricsAttributes.TOOL_TYPE: metadata.get(TOOL_TYPE, ToolType.INTERNAL),
-            MetricsAttributes.PROJECT: metadata.get(PROJECT, ""),
+            MetricsAttributes.PROJECT: metadata.get(PROJECT) or "",
         }
         if additional_attributes:
             attributes.update(additional_attributes)

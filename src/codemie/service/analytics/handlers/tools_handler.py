@@ -145,7 +145,7 @@ class ToolsHandler:
                 ),
                 "aggs": {
                     "3-metric": {
-                        "cardinality": {"field": "user_id.keyword"},
+                        "cardinality": {"field": "attributes.user_id.keyword"},
                     },
                 },
             },

@@ -115,6 +115,25 @@ def test_send_tool_metrics_no_metadata(mock_send_count_metric):
 
 
 @patch.object(AgentMonitoringService, "send_count_metric")
+def test_send_tool_metrics_none_project(mock_send_count_metric):
+    """Project attribute must be empty string when metadata contains project=None.
+
+    When assistant.project is None (no project assigned), the tool metadata dict
+    contains {"project": None}. metadata.get("project", "") returns None because
+    the key exists; using `or ""` ensures an empty string is stored instead so
+    Elasticsearch keyword filters still work correctly.
+    """
+    tool_name = "test_tool"
+    tool_metadata = {"agent_name": "test", "llm_model": "test", "user_name": "test", "project": None}
+
+    AgentMonitoringService.send_tool_metrics(tool_name, success=True, tool_metadata=tool_metadata)
+
+    assert all(
+        call.kwargs["attributes"]["project"] == "" for call in mock_send_count_metric.call_args_list
+    ), "Project attribute must be '' when metadata project is None"
+
+
+@patch.object(AgentMonitoringService, "send_count_metric")
 @pytest.mark.parametrize(
     "slug, expected_slug",
     [(None, "mock_id"), ("", ""), ("existing_slug", "existing_slug")],

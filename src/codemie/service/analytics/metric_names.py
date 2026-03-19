@@ -38,7 +38,7 @@ class MetricName(str, Enum):
     # Tools and integrations
     CODEMIE_TOOLS_USAGE_TOTAL = "codemie_tools_usage_total"
     CODEMIE_TOOLS_USAGE_TOKENS = "codemie_tools_usage_tokens"
-    CODEMIE_TOOLS_USAGE_ERRORS = "codemie_tools_usage_errors"
+    CODEMIE_TOOLS_USAGE_ERRORS = "codemie_tools_usage_errors_total"
     AGENT_EXECUTION_TOTAL = "agent_execution_total"
     WEBHOOK_INVOCATION_TOTAL = "webhook_invocation_total"
 

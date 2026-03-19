@@ -207,7 +207,7 @@ class TestMetricNameToListFromGroup:
         assert len(result) == 3
         assert "codemie_tools_usage_total" in result
         assert "codemie_tools_usage_tokens" in result
-        assert "codemie_tools_usage_errors" in result
+        assert "codemie_tools_usage_errors_total" in result
 
     def test_to_list_from_group_mcp_metrics(self):
         """Verify MCP_METRICS group conversion.
