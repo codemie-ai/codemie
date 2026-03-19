@@ -521,6 +521,11 @@ class BaseModelWithSQLSupport(CommonBaseModel):
             session.commit()
         return PostResponse(id=self.id)
 
+    def refresh(self) -> None:
+        with Session(self.get_engine()) as session:
+            session.add(self)
+            session.refresh(self)
+
     def delete(self):
         with Session(self.get_engine()) as session:
             session.delete(self)

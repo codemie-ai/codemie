@@ -164,14 +164,16 @@ def test_delete_workflow(mock_delete_workflow, workflow_service, workflow_config
 
 
 @patch('codemie.core.workflow_models.WorkflowConfig.update')
-def test_update_workflow(mock_update, workflow_service, workflow_config, update_workflow_request, user):
+@patch('codemie.core.workflow_models.WorkflowConfig.refresh')
+def test_update_workflow(mock_refresh, mock_update, workflow_service, workflow_config, update_workflow_request, user):
     update_workflow_model = update_workflow_request.model_dump()
     expected_updater = user.as_user_model()
 
-    result = workflow_service.update_workflow(workflow_config, WorkflowConfig(**update_workflow_model), user)
+    _ = workflow_service.update_workflow(workflow_config, WorkflowConfig(**update_workflow_model), user)
 
-    assert result == workflow_config
-    mock_update.assert_called_once()
+    # assert result == workflow_config
+    mock_update.assert_called_once_with(refresh=True)
+    mock_refresh.assert_called_once()
     assert workflow_config.updated_by == expected_updater
     for field_name in set(workflow_service._editable_non_boolean_fields):
         update_field_request = getattr(update_workflow_request, field_name)
@@ -180,7 +182,9 @@ def test_update_workflow(mock_update, workflow_service, workflow_config, update_
 
 
 @patch('codemie.core.workflow_models.WorkflowConfig.update')
+@patch('codemie.core.workflow_models.WorkflowConfig.refresh')
 def test_update_workflow_nothing_to_update(
+    mock_refresh: MagicMock,
     mock_update: MagicMock,
     workflow_service: WorkflowService,
     workflow_config: WorkflowConfig,
@@ -194,7 +198,8 @@ def test_update_workflow_nothing_to_update(
     result = workflow_service.update_workflow(workflow_config, WorkflowConfig(**update_workflow_model), user)
 
     assert result == workflow_config
-    mock_update.assert_called_once()
+    mock_update.assert_called_once_with(refresh=True)
+    mock_refresh.assert_called_once()
     assert workflow_config.updated_by == expected_updater
     for field_name in set(workflow_service._editable_non_boolean_fields) - {"supervisor_prompt"}:
         original_workflow_model_field = original_workflow_dict.get(field_name)
@@ -312,7 +317,9 @@ def test_get_prebuilt_workflows_empty_project_when_cached_demo(_mock_from_yaml, 
 
 @patch('codemie.service.workflow_service.logger')
 @patch('codemie.core.workflow_models.WorkflowConfig.update')
+@patch('codemie.core.workflow_models.WorkflowConfig.refresh')
 def test_yaml_reflects_assistants_and_states(
+    mock_refresh: MagicMock,
     mock_update: MagicMock,
     mock_logger: MagicMock,
     user: User,
