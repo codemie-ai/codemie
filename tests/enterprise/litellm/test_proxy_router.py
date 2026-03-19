@@ -351,6 +351,71 @@ class TestInjectUserIntoRequestBody:
             assert call_args.kwargs["content_type"] == "application/json"
 
 
+class TestCreateBodyStreamWithOptionalInjection:
+    """Test _create_body_stream_with_optional_injection function."""
+
+    @pytest.mark.asyncio
+    async def test_premium_model_uses_premium_budget_id(self):
+        """Premium model requests must pass the premium budget id to budget checks."""
+        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+
+        user = MagicMock()
+        user.username = "user@example.com"
+        request_info = {"llm_model": "claude-opus-4", "session_id": "session-123", "request_id": "request-456"}
+
+        with patch("codemie.enterprise.litellm.proxy_router.get_premium_username") as mock_get_premium_username:
+            mock_get_premium_username.return_value = "user@example.com_premium_models"
+            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+                mock_config.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
+                with patch("codemie.enterprise.litellm.proxy_router.check_user_budget") as mock_check_user_budget:
+                    with patch(
+                        "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes"
+                    ) as mock_inject:
+                        mock_inject.return_value = "stream"
+
+                        result = await _create_body_stream_with_optional_injection(
+                            body_bytes=b"{}",
+                            has_own_credentials=False,
+                            user=user,
+                            request_info=request_info,
+                        )
+
+        assert result == "stream"
+        mock_check_user_budget.assert_called_once_with(
+            user_id="user@example.com_premium_models",
+            budget_id="premium_models",
+        )
+        mock_inject.assert_called_once_with(
+            body_bytes=b"{}", user_id="user@example.com_premium_models", request_info=request_info
+        )
+
+    @pytest.mark.asyncio
+    async def test_regular_model_keeps_default_budget_flow(self):
+        """Non-premium requests should not pass an explicit premium budget id."""
+        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+
+        user = MagicMock()
+        user.username = "user@example.com"
+        request_info = {"llm_model": "gpt-4.1-mini", "session_id": "session-123", "request_id": "request-456"}
+
+        with patch("codemie.enterprise.litellm.proxy_router.get_premium_username", return_value=None):
+            with patch("codemie.enterprise.litellm.proxy_router.check_user_budget") as mock_check_user_budget:
+                with patch(
+                    "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes"
+                ) as mock_inject:
+                    mock_inject.return_value = "stream"
+
+                    result = await _create_body_stream_with_optional_injection(
+                        body_bytes=b"{}",
+                        has_own_credentials=False,
+                        user=user,
+                        request_info=request_info,
+                    )
+
+        assert result == "stream"
+        mock_check_user_budget.assert_called_once_with(user_id="user@example.com", budget_id=None)
+
+
 class TestParseUsageWithCost:
     """Test _parse_usage_with_cost function."""
 

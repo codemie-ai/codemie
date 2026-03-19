@@ -135,6 +135,69 @@ class TestCheckUserBudget:
             mock_service._cache_customer.assert_called_once_with("test-user", mock_customer)
 
     @pytest.mark.skipif(not HAS_LITELLM, reason="Enterprise package not installed - LiteLLM not available")
+    def test_fetches_premium_budget_on_cache_miss_when_budget_id_provided(self):
+        """Premium identities must be created against the premium budget id, not the default one."""
+        premium_budget = "premium_models"
+        mock_customer = CustomerInfo(
+            user_id="test-user_premium_models",
+            spend=50.0,
+            budget_id=premium_budget,
+            litellm_budget_table=BudgetTable(
+                budget_id=premium_budget,
+                soft_budget=100.0,
+                max_budget=200.0,
+                budget_duration="30d",
+            ),
+        )
+
+        mock_service = MagicMock()
+        mock_service._get_cached_customer.return_value = None
+        mock_service.get_customer_info.return_value = None
+        mock_service.get_or_create_budget.return_value = mock_customer.litellm_budget_table
+        mock_service.create_customer.return_value = mock_customer
+
+        with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service):
+            from codemie.enterprise.litellm.dependencies import check_user_budget
+
+            result = check_user_budget("test-user_premium_models", budget_id=premium_budget)
+
+            assert result is mock_customer
+            mock_service.get_or_create_customer_with_budget.assert_not_called()
+            mock_service.get_customer_info.assert_called_once_with("test-user_premium_models")
+            mock_service.get_or_create_budget.assert_called_once_with(premium_budget)
+            mock_service.create_customer.assert_called_once_with("test-user_premium_models", budget_id=premium_budget)
+            mock_service._cache_customer.assert_called_once_with("test-user_premium_models", mock_customer)
+
+    @pytest.mark.skipif(not HAS_LITELLM, reason="Enterprise package not installed - LiteLLM not available")
+    def test_existing_premium_customer_is_reused_when_budget_id_provided(self):
+        """Fresh premium identities should be reused without any migration logic."""
+        existing_customer = CustomerInfo(
+            user_id="test-user_premium_models",
+            spend=10.0,
+            budget_id="premium_models",
+            litellm_budget_table=BudgetTable(
+                budget_id="premium_models",
+                soft_budget=100.0,
+                max_budget=200.0,
+                budget_duration="30d",
+            ),
+        )
+
+        mock_service = MagicMock()
+        mock_service._get_cached_customer.return_value = None
+        mock_service.get_customer_info.return_value = existing_customer
+
+        with patch("codemie.enterprise.litellm.dependencies.get_litellm_service_or_none", return_value=mock_service):
+            from codemie.enterprise.litellm.dependencies import check_user_budget
+
+            result = check_user_budget("test-user_premium_models", budget_id="premium_models")
+
+            assert result is existing_customer
+            mock_service.get_or_create_budget.assert_not_called()
+            mock_service.create_customer.assert_not_called()
+            mock_service._cache_customer.assert_called_once_with("test-user_premium_models", existing_customer)
+
+    @pytest.mark.skipif(not HAS_LITELLM, reason="Enterprise package not installed - LiteLLM not available")
     def test_no_type_error_when_soft_budget_is_none(self):
         """Regression: budget check must not raise TypeError when soft_budget is None."""
         mock_customer = CustomerInfo(

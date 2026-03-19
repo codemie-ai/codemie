@@ -233,10 +233,17 @@ async def _create_body_stream_with_optional_injection(
     else:
         llm_model = request_info.get(LLM_MODEL, "unknown")
         username = get_premium_username(user.username, llm_model) or user.username
+        budget_id = config.LITELLM_PREMIUM_MODELS_BUDGET_NAME if username != user.username else None
+
+        if budget_id:
+            logger.debug(
+                f"Premium model detected for {user.username}: "
+                f"using premium username {username} with budget_id={budget_id} (model={llm_model})"
+            )
 
         logger.debug(f"Injecting user for budget tracking: {username} (model={llm_model})")
 
-        check_user_budget(user_id=username)
+        check_user_budget(user_id=username, budget_id=budget_id)
 
         return _inject_user_into_request_body_from_bytes(
             body_bytes=body_bytes, user_id=username, request_info=request_info
