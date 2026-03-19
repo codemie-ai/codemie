@@ -214,6 +214,8 @@ class MCPToolkitService:
 
             return tools
 
+        except BrokerAuthRequiredException:
+            raise
         except Exception as e:
             err_msg = f"Failed to load MCP tools from {mcp_server.name}: {type(e).__name__}: {e}"
             logger.error(err_msg)
