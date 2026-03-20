@@ -522,6 +522,7 @@ def _get_key_spending_columns() -> list[dict]:
 def _build_key_spending_tabular_data(
     user_email: str,
     user_personal_spending: dict | None,
+    user_premium_spending: dict | None,
     user_keys_spending: list[dict],
 ) -> tuple[list[dict], list[dict[str, Any]]]:
     """Build tabular data structure for key spending.
@@ -534,6 +535,8 @@ def _build_key_spending_tabular_data(
         user_email: User's email to display as project name for personal budget
         user_personal_spending: Dict with user's personal budget data from get_customer_spending()
                                 Fields: total_spend, max_budget, budget_reset_at
+        user_premium_spending: Dict with user's premium budget data from
+                               get_premium_customer_spending(); same shape as personal spending
         user_keys_spending: List of spending dicts for USER-scoped keys only
                             Each dict already has project_name enriched by get_user_keys_spending()
 
@@ -552,6 +555,22 @@ def _build_key_spending_tabular_data(
         all_rows.append(
             {
                 "project_name": user_email,
+                "current_spending": round(current_spend, 2),
+                "budget_reset_at": reset_at if reset_at else None,
+                "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
+                "budget_limit": round(budget_limit, 2) if budget_limit is not None else None,
+                "total": (round((current_spend / budget_limit * 100), 2) if budget_limit and budget_limit > 0 else 0.0),
+            }
+        )
+
+    if user_premium_spending:
+        current_spend = user_premium_spending.get("total_spend", 0.0)
+        budget_limit = user_premium_spending.get("max_budget")
+        reset_at = user_premium_spending.get("budget_reset_at")
+
+        all_rows.append(
+            {
+                "project_name": f"{user_email} (premium)",
                 "current_spending": round(current_spend, 2),
                 "budget_reset_at": reset_at if reset_at else None,
                 "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
@@ -2324,7 +2343,12 @@ async def get_user_budget_usage(
     Only USER-scoped keys are included; PROJECT-scoped keys are excluded.
     """
     from datetime import timezone
-    from codemie.enterprise.litellm.dependencies import get_customer_spending, get_user_keys_spending
+    from codemie.enterprise.litellm.dependencies import (
+        get_customer_spending,
+        get_premium_customer_spending,
+        get_user_keys_spending,
+        is_premium_models_enabled,
+    )
     from codemie.service.analytics.response_formatter import ResponseFormatter
 
     start_time = datetime.now(timezone.utc)
@@ -2333,12 +2357,18 @@ async def get_user_budget_usage(
     # Get all projects for virtual keys query
     all_projects = _get_user_all_projects(user)
 
+    premium_enabled = is_premium_models_enabled()
+
     # Get user's personal budget spending and keys spending in parallel
     try:
-        user_spending_data, keys_spending_data = await asyncio.gather(
+        gathered_results = await asyncio.gather(
             asyncio.to_thread(get_customer_spending, user.username, True),
+            asyncio.to_thread(get_premium_customer_spending, user.username, True)
+            if premium_enabled
+            else asyncio.sleep(0, result=None),
             asyncio.to_thread(get_user_keys_spending, user.id, all_projects, True),
         )
+        user_spending_data, premium_spending_data, keys_spending_data = gathered_results
     except Exception as e:
         logger.error(f"Backend error fetching spending data for user {user.id}: {e}")
         raise ExtendedHTTPException(
@@ -2349,13 +2379,19 @@ async def get_user_budget_usage(
 
     # user_spending_data is a dict with: total_spend, max_budget, budget_reset_at
     user_personal_spending = user_spending_data
+    user_premium_spending = premium_spending_data
 
     # Extract only USER-scoped keys (filter out project keys)
     # Each key now has project_name already enriched by get_user_keys_spending()
     user_keys_spending = keys_spending_data.user_keys if keys_spending_data else []
 
     # Build tabular response structure
-    columns, rows = _build_key_spending_tabular_data(user.email, user_personal_spending, user_keys_spending)
+    columns, rows = _build_key_spending_tabular_data(
+        user.email,
+        user_personal_spending,
+        user_premium_spending,
+        user_keys_spending,
+    )
 
     # Format using ResponseFormatter for consistency
     execution_time_ms = (datetime.now(timezone.utc) - start_time).total_seconds() * 1000

@@ -1114,6 +1114,36 @@ class TestHandleErrorResponse:
         assert "ExceededBudget" not in msg
 
     @pytest.mark.asyncio
+    async def test_rewritten_error_drops_stale_content_headers(self):
+        """Locally rewritten bodies must not reuse upstream Content-Length/Encoding headers."""
+        original_body = (
+            b'{"error":{"message":"ExceededBudget: End User=user@example.com_premium_models over budget.'
+            b' Spend=300.16, Budget=300.0","type":"budget_exceeded","param":null,"code":"400"}}'
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.headers = httpx.Headers({"content-type": "application/json"})
+        mock_response.aread = AsyncMock(return_value=original_body)
+        mock_response.aclose = AsyncMock()
+        response_headers = {
+            "content-type": "application/json",
+            "content-length": "17",
+            "content-encoding": "gzip",
+            "x-test-header": "kept",
+        }
+
+        with patch("codemie.enterprise.litellm.proxy_router.is_premium_models_enabled", return_value=True):
+            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+                mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
+                mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["claude-opus-4", "opus"]
+
+                result = await _handle_error_response(mock_response, response_headers)
+
+        assert result.headers.get("content-length") != "17"
+        assert "content-encoding" not in result.headers
+        assert result.headers["x-test-header"] == "kept"
+
+    @pytest.mark.asyncio
     async def test_passthrough_when_premium_disabled(self):
         """When premium feature is disabled, error body is never replaced."""
         original_body = (
@@ -1130,6 +1160,30 @@ class TestHandleErrorResponse:
             result = await _handle_error_response(mock_response, {})
 
         assert result.body == original_body
+
+    @pytest.mark.asyncio
+    async def test_passthrough_error_drops_stale_content_headers(self):
+        """Even passthrough error bodies are rebuilt locally and need fresh framing headers."""
+        original_body = b'{"error":{"message":"rate limit","type":"rate_limit_error","code":"429"}}'
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.headers = httpx.Headers({"content-type": "application/json"})
+        mock_response.aread = AsyncMock(return_value=original_body)
+        mock_response.aclose = AsyncMock()
+        response_headers = {
+            "content-type": "application/json",
+            "content-length": "7",
+            "content-encoding": "gzip",
+            "x-test-header": "kept",
+        }
+
+        with patch("codemie.enterprise.litellm.proxy_router.is_premium_models_enabled", return_value=False):
+            result = await _handle_error_response(mock_response, response_headers)
+
+        assert result.body == original_body
+        assert result.headers.get("content-length") != "7"
+        assert "content-encoding" not in result.headers
+        assert result.headers["x-test-header"] == "kept"
 
     @pytest.mark.asyncio
     async def test_closes_downstream_on_read_error(self):

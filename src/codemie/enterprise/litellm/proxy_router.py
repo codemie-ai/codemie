@@ -107,6 +107,12 @@ PROXY_RESPONSE_HOP_BY_HOP_HEADERS = {
     "upgrade",
 }
 
+
+def _sanitize_local_response_headers(headers: dict) -> dict:
+    """Drop upstream body/framing headers when constructing a new local response."""
+    return {k: v for k, v in headers.items() if k.lower() not in {"content-length", "content-encoding"}}
+
+
 # Proxy router for LiteLLM endpoints
 # No prefix - endpoints will be registered with full paths (both /v1/* and /*)
 proxy_router = APIRouter(
@@ -666,14 +672,14 @@ async def _handle_error_response(
             return Response(
                 content=replacement,
                 status_code=400,
-                headers=response_headers,
+                headers=_sanitize_local_response_headers(response_headers),
                 media_type="application/json",
             )
 
     return Response(
         content=body_bytes,
         status_code=downstream_response.status_code,
-        headers=response_headers,
+        headers=_sanitize_local_response_headers(response_headers),
         media_type=downstream_response.headers.get("content-type"),
     )
 

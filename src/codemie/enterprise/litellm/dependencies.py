@@ -269,13 +269,20 @@ def ensure_litellm_default_budget():
 def _get_or_create_customer_for_budget(litellm: "LiteLLMService", user_id: str, budget_id: str):
     """Ensure *user_id* exists and is attached to the requested LiteLLM budget."""
     customer = litellm.get_customer_info(user_id)
-    if customer:
+    if customer and customer.litellm_budget_table and customer.budget_id == budget_id:
         return customer
 
     budget_table = litellm.get_or_create_budget(budget_id)
     if budget_table is None:
         logger.warning(f"Failed to get or create budget {budget_id} for {user_id}")
         return None
+
+    if customer:
+        logger.debug(
+            f"Customer {user_id} exists without requested budget binding "
+            f"(current_budget={customer.budget_id}, expected_budget={budget_id}); recreating"
+        )
+        litellm.delete_customers([user_id])
 
     return litellm.create_customer(user_id, budget_id=budget_table.budget_id)
 
