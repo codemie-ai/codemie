@@ -266,27 +266,6 @@ def ensure_litellm_default_budget():
         )
 
 
-def _get_or_create_customer_for_budget(litellm: "LiteLLMService", user_id: str, budget_id: str):
-    """Ensure *user_id* exists and is attached to the requested LiteLLM budget."""
-    customer = litellm.get_customer_info(user_id)
-    if customer and customer.litellm_budget_table and customer.budget_id == budget_id:
-        return customer
-
-    budget_table = litellm.get_or_create_budget(budget_id)
-    if budget_table is None:
-        logger.warning(f"Failed to get or create budget {budget_id} for {user_id}")
-        return None
-
-    if customer:
-        logger.debug(
-            f"Customer {user_id} exists without requested budget binding "
-            f"(current_budget={customer.budget_id}, expected_budget={budget_id}); recreating"
-        )
-        litellm.delete_customers([user_id])
-
-    return litellm.create_customer(user_id, budget_id=budget_table.budget_id)
-
-
 def check_user_budget(user_id: str, budget_id: str | None = None):
     """
     Check if user is within budget limits with caching and metrics.
@@ -337,10 +316,10 @@ def check_user_budget(user_id: str, budget_id: str | None = None):
         else:
             # Cache miss - fetch from LiteLLM
             logger.debug(f"Cache miss for {user_id}, performing full budget check")
-            if budget_id:
-                customer = _get_or_create_customer_for_budget(litellm, user_id, budget_id)
-            else:
+            if budget_id is None:
                 customer = litellm.get_or_create_customer_with_budget(user_id)
+            else:
+                customer = litellm.get_or_create_customer_with_budget(user_id, budget_id=budget_id)
 
             if customer:
                 # Cache the customer
