@@ -49,3 +49,4 @@ bmad/*
 /.opencode/
 /.hypothesis/
 /.github/agents/
+/.gitleaksignore

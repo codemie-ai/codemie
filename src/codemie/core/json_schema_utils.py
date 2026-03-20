@@ -396,6 +396,7 @@ def _handle_allof_inheritance(name: TypeName, sub_schemas: list[JsonSchema], cac
     model_bases: list[type[BaseModel]] = []
     primitive_fields: dict[FieldName, FieldDefinition] = {}
     generated_field_names: set[FieldName] = set()
+    allow_extra = False  # Track if any sub-schema is a free-form "allow extras" schema
 
     for idx, subschema in enumerate(sub_schemas):
         # Determine the type resulting from this sub-schema
@@ -409,6 +410,10 @@ def _handle_allof_inheritance(name: TypeName, sub_schemas: list[JsonSchema], cac
             model_bases.append(part_type)
             # Track field names from model bases to avoid clashes with generated primitive fields
             generated_field_names.update(part_type.model_fields.keys())
+        elif _is_free_form_type(part_type):
+            # A free-form or Any sub-schema in allOf means extra properties are allowed.
+            # Instead of adding a required field, mark the composed model with extra="allow".
+            allow_extra = True
         else:
             # It's a primitive or container - generate a required field for it
             field_name, field_def = _generate_allof_primitive_field(
@@ -417,17 +422,35 @@ def _handle_allof_inheritance(name: TypeName, sub_schemas: list[JsonSchema], cac
             primitive_fields[field_name] = field_def
             generated_field_names.add(field_name)
 
-    if not model_bases and not primitive_fields:
+    if not model_bases and not primitive_fields and not allow_extra:
         # This case should ideally be caught by the initial check, but defensive coding
         raise ValueError("Processed 'allOf' resulted in no bases or fields.")
 
     # Create the final model by combining bases and adding primitive fields
-    return _create_allof_composed_model(name, model_bases, primitive_fields)
+    return _create_allof_composed_model(name, model_bases, primitive_fields, allow_extra)
 
 
 # ---------------------------------------------------------------------------
 # Helper functions for _handle_allof_inheritance
 # ---------------------------------------------------------------------------
+
+
+def _is_free_form_type(part_type: TypeAnnotation) -> bool:
+    """Return True when a type annotation represents an unrestricted free-form value.
+
+    This covers three cases that all signal "allow any additional properties":
+    - ``Any`` directly
+    - ``dict[str, T]`` (a typed free-form map)
+    - ``Union[Any, ...]`` (a union that contains Any, meaning any value is valid)
+    """
+    if part_type is Any:
+        return True
+    origin = get_origin(part_type)
+    if origin is dict:
+        return True
+    if origin in (Union, UnionType):
+        return Any in get_args(part_type)
+    return False
 
 
 def _generate_allof_primitive_field(
@@ -480,7 +503,10 @@ def _make_unique_field_name(base_name: str, existing_names: set[FieldName]) -> F
 
 
 def _create_allof_composed_model(
-    name: TypeName, model_bases: list[type[BaseModel]], primitive_fields: dict[FieldName, FieldDefinition]
+    name: TypeName,
+    model_bases: list[type[BaseModel]],
+    primitive_fields: dict[FieldName, FieldDefinition],
+    allow_extra: bool = False,
 ) -> type[BaseModel]:
     """Creates the final model by combining bases and primitive fields from allOf."""
 
@@ -494,9 +520,13 @@ def _create_allof_composed_model(
     # This resolves MRO before adding primitive fields.
     mi_base = type(f"{name}MiBase", actual_bases, {})
 
+    # Apply extra="allow" when a free-form sub-schema was detected in the allOf,
+    # so additional properties beyond what's declared are preserved.
+    model_config = ConfigDict(extra="allow") if allow_extra else None
+
     # Create the final model, inheriting from the combined base and adding primitive fields.
     # `create_model` handles merging fields correctly.
-    composed_model = create_model(name, __base__=mi_base, **primitive_fields)
+    composed_model = create_model(name, __base__=mi_base, __config__=model_config, **primitive_fields)
     return composed_model
 
 
@@ -692,8 +722,7 @@ def _handle_array_schema(name: TypeName, schema: JsonSchema, cache: ModelCache) 
     if dispatch := _get_allof_oneof_anyof_dispatch(name, item_schema, cache):
         item_type = dispatch()
         cache.unset_path("items")  # Clean up path stack
-        # List items incorrectly handle union types, preventing composite items. See `test_any_of_array_schema`.
-        return list[Union[item_type, Any]]
+        return list[item_type]
 
     item_type = Any if not item_schema else _schema_to_type_annotation(f"{name}Item", name, item_schema, cache)
     cache.unset_path("items")  # Clean up path stack

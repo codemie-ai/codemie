@@ -379,7 +379,6 @@ def test_mixed_type_array_union_contains_model(mixed_type_array_model):
     assert "key" in get_type_hints(object_model)
 
 
-@pytest.mark.skip("PROJ-8132")
 @pytest.mark.parametrize(
     "test_values,should_pass,description",
     [
