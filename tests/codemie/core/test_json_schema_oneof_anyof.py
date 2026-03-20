@@ -312,3 +312,88 @@ def test_any_of_array_schema():
 
     result = model(**stub_input).model_dump()
     assert json.dumps(result) == json.dumps(stub_input)
+
+
+def test_recursive_anyof_defs_schema():
+    """Regression test for EPMCDME-11162: recursive $defs union (e.g. query_radar conditions).
+
+    A $defs entry that is a union (anyOf) where one variant contains a $ref back to
+    the same $defs entry must correctly accept both filter items and nested group items.
+    Previously the recursive $ref resolved to only the group-variant model, making
+    nested leaf-filter items fail validation with 24 errors.
+    """
+    schema = {
+        "type": "object",
+        "$defs": {
+            "Condition": {
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "facetId": {"type": "string"},
+                            "values": {"type": "array", "items": {}},
+                        },
+                        "required": ["facetId", "values"],
+                        "additionalProperties": False,
+                    },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "operator": {"type": "string", "enum": ["AND", "OR"]},
+                            "conditions": {
+                                "type": "array",
+                                "items": {"$ref": "#/$defs/Condition"},
+                            },
+                        },
+                        "required": ["operator", "conditions"],
+                        "additionalProperties": False,
+                    },
+                ]
+            }
+        },
+        "properties": {
+            "query": {
+                "type": "object",
+                "properties": {
+                    "operator": {"type": "string", "enum": ["AND", "OR"]},
+                    "conditions": {
+                        "type": "array",
+                        "items": {"$ref": "#/$defs/Condition"},
+                    },
+                },
+                "required": ["operator", "conditions"],
+            }
+        },
+        "required": ["query"],
+    }
+
+    model = json_schema_to_model(schema)
+
+    # Nested group conditions containing leaf filter items (the query_radar pattern)
+    instance = model(
+        query={
+            "operator": "AND",
+            "conditions": [
+                {"operator": "AND", "conditions": [{"facetId": "skillsTaxonomy", "values": ["4060741400040897013"]}]},
+                {"operator": "AND", "conditions": [{"facetId": "skillsTaxonomy", "values": ["v1", "v2"]}]},
+                {"operator": "AND", "conditions": [{"facetId": "skillsTaxonomy", "values": ["7770000000002754776"]}]},
+            ],
+        }
+    )
+    result = instance.model_dump()
+    assert result["query"]["operator"] == "AND"
+    assert len(result["query"]["conditions"]) == 3
+    # Leaf filter items inside nested groups must be preserved
+    assert result["query"]["conditions"][0]["conditions"][0]["facetId"] == "skillsTaxonomy"
+
+    # Flat leaf filter items at top level also still work
+    instance2 = model(
+        query={
+            "operator": "OR",
+            "conditions": [
+                {"facetId": "location", "values": ["NYC"]},
+                {"facetId": "location", "values": ["LA"]},
+            ],
+        }
+    )
+    assert instance2.query.conditions[0].facetId == "location"

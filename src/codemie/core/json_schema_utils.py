@@ -213,6 +213,16 @@ def _process_definitions(schema: JsonSchema, cache: ModelCache):
 
     for def_name, def_schema in definitions.items():
         cache.set_path(def_name)  # Include definition name in path
+
+        # Pre-register Any as a placeholder before processing this definition.
+        # If the definition is self-referential (e.g. Condition = anyOf[Filter, Group]
+        # where Group.conditions uses $ref back to Condition), the recursive $ref
+        # will find this placeholder in the cache and resolve to Any instead of
+        # triggering the processing_stack forward-ref path (which would create a
+        # string ForwardRef that resolves to the wrong single-variant type).
+        # The placeholder is replaced with the real type after processing completes.
+        cache.save_model(Any)
+
         definition = _create_field_definition(def_name, def_schema, is_required, cache)
         cache.save_model(definition[0])
         cache.unset_path(def_name)  # Remove definition name from path
@@ -689,7 +699,45 @@ def _handle_oneof_anyof_schema(name: TypeName, schema: JsonSchema, cache: ModelC
         return type(None)  # Only null variants found
     # Use | operator syntax for Union if possible (requires Python 3.10+)
     # return reduce(lambda x, y: x | y, variants) # Might be less readable than Union[...]
-    return Union[tuple(variants)]  # type: ignore[arg-type]
+    union_type = Union[tuple(variants)]  # type: ignore[arg-type]
+
+    # Post-rebuild: correct recursive forward references.
+    # When a variant's field uses $ref back to the same anyOf/oneOf definition, the ref
+    # hits `processing_stack` and is stored as a string ForwardRef (e.g. "Condition").
+    # `_handle_object`'s model_rebuild() then resolves it to the most recently created
+    # class with that name — typically just one variant, not the full union.
+    # Force a re-build here with the complete union in scope so all variants' recursive
+    # fields correctly point to Union[Filter, Group, ...] rather than a single variant.
+    _rebuild_union_variants(variants, union_type)
+
+    return union_type
+
+
+def _rebuild_union_variants(variants: list[TypeAnnotation], union_type: TypeAnnotation) -> None:
+    """Rebuild BaseModel variants so recursive forward refs resolve to the full union.
+
+    When a oneOf/anyOf contains a recursive back-reference (e.g. a Group variant whose
+    ``conditions`` field is ``$ref: "#/$defs/Condition"`` while Condition is still being
+    built), ``_handle_object`` resolves the ForwardRef to whichever model with that name
+    was created most recently — usually just the single variant, not the complete union.
+
+    After the full union is known, force a re-build for every BaseModel variant using
+    the correct types namespace so the forward ref resolves to ``Union[Filter, Group, …]``.
+    """
+    model_variants = [v for v in variants if isinstance(v, type) and issubclass(v, BaseModel)]
+    if len(model_variants) < 2:
+        # Single-model or primitive union — no cross-variant recursion possible.
+        return
+
+    # Map each variant's class name to the full union so any ForwardRef to that name
+    # (e.g. "Condition") resolves to the complete union rather than one variant.
+    types_namespace = {v.__name__: union_type for v in model_variants}
+
+    for variant_model in model_variants:
+        try:
+            variant_model.model_rebuild(_types_namespace=types_namespace, force=True, raise_errors=False)
+        except Exception as e:
+            logger.debug(f"Could not rebuild model '{variant_model.__name__}' with union namespace: {e}")
 
 
 def _handle_enum_schema(enum_values: list[Any]) -> TypeAnnotation:
