@@ -706,11 +706,13 @@ async def broker_auth_required_handler(request: Request, exc: BrokerAuthRequired
     """
     logger.warning(f"Broker authentication required: {exc.details}")
     headers = {}
+    error_body: dict = {"message": exc.message, "details": exc.details}
     if exc.auth_location:
         headers["x-user-mcp-auth-location"] = exc.auth_location
+        error_body["login_url"] = exc.auth_location
     return JSONResponse(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        content={"error": {"message": exc.message, "details": exc.details}},
+        content={"error": error_body},
         headers=headers,
     )
 

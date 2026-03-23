@@ -339,7 +339,7 @@ class Config(BaseSettings):
     MCP_TOOLKIT_FACTORY_CACHE_TTL: int = 600
 
     # Token Exchange Factory configuration
-    TOKEN_CACHE_TTL: int = 3600 * 4  # 4 hours for exchanged tokens, as token TTL is 6 hours
+    TOKEN_CACHE_TTL: int = 600  # 10 mins for exchanged tokens
     TOKEN_CACHE_MAX_SIZE: int = 1024  # max entries across all token caches (per-user + per-audience)
 
     # MCP Client configuration
