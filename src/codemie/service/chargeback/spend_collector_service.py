@@ -18,7 +18,7 @@ import asyncio
 import hashlib
 import re
 from datetime import date, datetime, time, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from uuid import uuid4
 
 from codemie.clients.postgres import get_async_session
@@ -29,6 +29,10 @@ from codemie.repository.project_cost_tracking_repository import ProjectCostTrack
 from codemie.rest_api.models.settings import CredentialTypes, LiteLLMCredentials, Settings
 from codemie.service.chargeback.spend_models import ProjectCostTracking
 from codemie.service.settings.settings import SettingsService
+
+
+class InvalidSpendSnapshotError(ValueError):
+    """Raised when a computed spend snapshot violates business invariants."""
 
 
 class LiteLLMSpendCollectorService:
@@ -46,6 +50,8 @@ class LiteLLMSpendCollectorService:
     ) -> None:
         self._app_repository = app_repository
         self._tracking_repository = tracking_repository
+
+    _SPEND_PRECISION = Decimal("0.000000001")
 
     async def collect(self, target_date: date | datetime | None = None) -> int:
         """Run one full spend collection cycle for the target snapshot timestamp.
@@ -137,12 +143,16 @@ class LiteLLMSpendCollectorService:
                 prev_row = prev_rows.get(key_hash)
 
                 # Compute budget-reset-aware delta and lifetime cumulative spend
-                daily_spend, cumulative_spend = self._compute_spend_snapshot(
-                    current_budget_period_spend=current_budget_period_spend,
-                    current_budget_reset_at=current_budget_reset_at,
-                    prev_row=prev_row,
-                    snapshot_at=target_snapshot_at,
-                )
+                try:
+                    daily_spend, cumulative_spend = self._compute_spend_snapshot(
+                        current_budget_period_spend=current_budget_period_spend,
+                        current_budget_reset_at=current_budget_reset_at,
+                        prev_row=prev_row,
+                        snapshot_at=target_snapshot_at,
+                    )
+                except InvalidSpendSnapshotError as exc:
+                    logger.warning(f"Skipping invalid spend snapshot for project {project_name!r}: {exc}")
+                    continue
 
                 logger.debug(
                     f"Project '{project_name}' (hash prefix: {key_hash[:8]}...): "
@@ -227,27 +237,38 @@ class LiteLLMSpendCollectorService:
         Returns:
             Tuple of ``(daily_spend, cumulative_spend)``.
         """
+        current_budget_period_spend = self._quantize_spend(current_budget_period_spend)
+
         if prev_row is None:
             logger.debug(
                 "Bootstrap run — no prior row; using current budget-period spend as initial daily/cumulative spend"
             )
             return current_budget_period_spend, current_budget_period_spend
 
+        prev_budget_period_spend = self._quantize_spend(prev_row.budget_period_spend)
+        prev_cumulative_spend = self._quantize_spend(prev_row.cumulative_spend)
         reset_happened = self._did_budget_reset(prev_row, current_budget_reset_at, snapshot_at)
 
         if reset_happened:
             daily_spend = current_budget_period_spend
-        elif current_budget_period_spend >= prev_row.budget_period_spend:
-            daily_spend = current_budget_period_spend - prev_row.budget_period_spend
+        elif current_budget_period_spend >= prev_budget_period_spend:
+            daily_spend = current_budget_period_spend - prev_budget_period_spend
         else:
             logger.warning(
-                f"Budget-period spend decreased without reset metadata change for key_hash prefix "
-                f"{prev_row.key_hash[:8]}...: current={current_budget_period_spend} "
-                f"< prev={prev_row.budget_period_spend}; treating as reset"
+                f"Budget-period spend decreased without reset metadata change for project "
+                f"{prev_row.project_name!r}: current={current_budget_period_spend} "
+                f"< prev={prev_budget_period_spend}; treating as reset"
             )
             daily_spend = current_budget_period_spend
 
-        return daily_spend, prev_row.cumulative_spend + daily_spend
+        daily_spend = self._quantize_spend(daily_spend)
+        cumulative_spend = self._quantize_spend(prev_cumulative_spend + daily_spend)
+        if cumulative_spend < prev_cumulative_spend:
+            raise InvalidSpendSnapshotError(
+                f"cumulative spend decreased: computed={cumulative_spend} < prev={prev_cumulative_spend}"
+            )
+
+        return daily_spend, cumulative_spend
 
     @staticmethod
     def _did_budget_reset(
@@ -293,6 +314,11 @@ class LiteLLMSpendCollectorService:
             return None
 
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+    @classmethod
+    def _quantize_spend(cls, value: Decimal) -> Decimal:
+        """Normalize spend values to the DB precision before comparisons and persistence."""
+        return value.quantize(cls._SPEND_PRECISION, rounding=ROUND_HALF_UP)
 
     @staticmethod
     def _hash_key(api_key: str) -> str:

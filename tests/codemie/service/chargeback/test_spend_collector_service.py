@@ -27,7 +27,7 @@ import pytest
 
 from codemie.repository.application_repository import ApplicationRepository
 from codemie.repository.project_cost_tracking_repository import ProjectCostTrackingRepository
-from codemie.service.chargeback.spend_collector_service import LiteLLMSpendCollectorService
+from codemie.service.chargeback.spend_collector_service import InvalidSpendSnapshotError, LiteLLMSpendCollectorService
 from codemie.service.chargeback.spend_models import ProjectCostTracking
 
 
@@ -300,6 +300,44 @@ class TestComputeDelta:
         warning_msg = mock_logger.warning.call_args[0][0]
         assert "reset" in warning_msg.lower() or "budget" in warning_msg.lower()
         assert result == (current, Decimal("10.75"))
+
+    def test_rounding_noise_does_not_trigger_false_reset(self):
+        """Float artifacts should be quantized before comparison so equal values produce zero delta."""
+        service = _make_service()
+        prev = _prev_row("abc123", cumulative=Decimal("0.052368750"), budget_period_spend=Decimal("0.052368750"))
+
+        result = service._compute_spend_snapshot(
+            current_budget_period_spend=Decimal("0.05236874999999999"),
+            current_budget_reset_at=None,
+            prev_row=prev,
+            snapshot_at=datetime(2026, 3, 23, 17, 30, tzinfo=timezone.utc),
+        )
+
+        assert result == (Decimal("0"), Decimal("0.052368750"))
+
+    def test_raises_when_cumulative_spend_would_decrease(self):
+        """Cumulative spend is a hard invariant and must never move backward."""
+        service = _make_service()
+        prev = _prev_row("epmedec", cumulative=Decimal("10.000000000"), budget_period_spend=Decimal("5.000000000"))
+
+        with patch.object(
+            service,
+            "_quantize_spend",
+            side_effect=[
+                Decimal("6.000000000"),
+                Decimal("5.000000000"),
+                Decimal("10.000000000"),
+                Decimal("1.000000000"),
+                Decimal("9.000000000"),
+            ],
+        ):
+            with pytest.raises(InvalidSpendSnapshotError, match="cumulative spend decreased"):
+                service._compute_spend_snapshot(
+                    current_budget_period_spend=Decimal("6.000000000"),
+                    current_budget_reset_at=None,
+                    prev_row=prev,
+                    snapshot_at=datetime(2026, 3, 23, 18, 0, tzinfo=timezone.utc),
+                )
 
     def test_extractors_support_raw_litellm_key_info_payload(self):
         """Raw /key/info responses with nested info fields should be parsed correctly."""
@@ -825,6 +863,65 @@ class TestCollect:
         assert rows[0].cumulative_spend == Decimal("0.0024948")
         assert rows[0].budget_period_spend == Decimal("0.0024948")
         assert rows[0].budget_reset_at == datetime(2026, 3, 24, 0, 0, tzinfo=timezone.utc)
+
+    @pytest.mark.asyncio
+    async def test_collect_skips_invalid_snapshot_when_cumulative_would_decrease(
+        self,
+        mock_session,
+        async_session_ctx,
+    ):
+        """Invalid snapshot calculations should be logged and skipped without breaking other processing."""
+        service = _make_service()
+        api_key = "sk-invalid-cumulative"
+        key_hash = _sha256(api_key)
+
+        setting = MagicMock()
+        setting.id = "s1"
+        setting.project_name = "epm-edec"
+
+        cred = MagicMock()
+        cred.api_key = api_key
+
+        prev_row = _prev_row(
+            key_hash,
+            cumulative=Decimal("10.000000000"),
+            budget_period_spend=Decimal("5.000000000"),
+        )
+
+        service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[_make_app("epm-edec")])
+        service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={key_hash: prev_row})
+        service._tracking_repository.insert_entries = AsyncMock()
+
+        with (
+            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                return_value=cred,
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
+                return_value=_spending_payload(5.0),
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                return_value=async_session_ctx(),
+            ),
+            patch.object(
+                service,
+                "_compute_spend_snapshot",
+                side_effect=InvalidSpendSnapshotError("cumulative spend decreased: computed=9 < prev=10"),
+            ),
+            patch("codemie.service.chargeback.spend_collector_service.logger") as mock_logger,
+        ):
+            mock_settings.get_by_project_names.return_value = [setting]
+            count = await service.collect(target_date=date(2026, 3, 23))
+
+        assert count == 0
+        service._tracking_repository.insert_entries.assert_called_once_with(mock_session, [])
+        mock_logger.warning.assert_any_call(
+            "Skipping invalid spend snapshot for project 'epm-edec': cumulative spend decreased: computed=9 < prev=10"
+        )
 
     @pytest.mark.asyncio
     async def test_collect_no_matching_projects(
