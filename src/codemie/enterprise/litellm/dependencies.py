@@ -389,6 +389,14 @@ def is_premium_models_enabled() -> bool:
     return bool(config.LITELLM_PREMIUM_MODELS_BUDGET_NAME)
 
 
+@lru_cache(maxsize=1)
+def is_proxy_budget_enabled() -> bool:
+    """Return True when the proxy budget feature is active (budget name configured)."""
+    from codemie.configs import config
+
+    return bool(config.LITELLM_CLI_BUDGET_NAME)
+
+
 @lru_cache(maxsize=256)
 def is_premium_model(model: str) -> bool:
     """Return True when *model* matches any alias in LITELLM_PREMIUM_MODELS_ALIASES (case-insensitive partial match).
@@ -429,6 +437,16 @@ def get_premium_username(user_email: str, model: str) -> str | None:
     return f"{user_email}_{config.LITELLM_PREMIUM_MODELS_BUDGET_NAME}"
 
 
+def get_proxy_username(user_email: str) -> str | None:
+    """Derive the LiteLLM username for proxy budget attribution."""
+    from codemie.configs import config
+
+    if not is_proxy_budget_enabled():
+        return None
+
+    return f"{user_email}_{config.LITELLM_CLI_BUDGET_NAME}"
+
+
 def get_premium_customer_spending(user_email: str, on_raise: bool = False) -> dict | None:
     """Get spending for the derived premium budget identity ``{user_email}_{budget_name}``.
 
@@ -449,6 +467,19 @@ def get_premium_customer_spending(user_email: str, on_raise: bool = False) -> di
 
     derived_id = f"{user_email}_{config.LITELLM_PREMIUM_MODELS_BUDGET_NAME}"
     logger.debug(f"Fetching premium customer spending for derived id: {derived_id}")
+    return get_customer_spending(derived_id, on_raise=on_raise)
+
+
+def get_proxy_customer_spending(user_email: str, on_raise: bool = False) -> dict | None:
+    """Get spending for the derived proxy budget identity ``{user_email}_{budget_name}``."""
+    from codemie.configs import logger
+
+    derived_id = get_proxy_username(user_email)
+    if not derived_id:
+        logger.debug("Proxy budget name not configured, skipping proxy spending lookup")
+        return None
+
+    logger.debug(f"Fetching proxy customer spending for derived id: {derived_id}")
     return get_customer_spending(derived_id, on_raise=on_raise)
 
 

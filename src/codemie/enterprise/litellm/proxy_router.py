@@ -65,7 +65,12 @@ from codemie.service.monitoring.base_monitoring_service import send_log_metric
 from codemie.service.monitoring.metrics_constants import LLM_ERROR_TOTAL_METRIC, MetricsAttributes
 
 from .client import get_llm_proxy_client
-from .dependencies import is_litellm_enabled, get_premium_username, is_premium_models_enabled
+from .dependencies import (
+    get_premium_username,
+    get_proxy_username,
+    is_litellm_enabled,
+    is_premium_models_enabled,
+)
 from .llm_factory import generate_litellm_headers_from_context
 
 # Import proxy utils from loader (with enterprise package availability check)
@@ -213,10 +218,11 @@ async def _create_body_stream_with_optional_injection(
     """
     Create body stream with or without user injection.
 
-    When the premium models budget feature is enabled and the requested model matches a
-    premium alias, the injected LiteLLM username is derived as
-    ``{user.username}_{budget_name}`` so that spend is attributed to the separate premium
-    budget identity.  Otherwise the standard ``user.username`` is used.
+    When a dedicated proxy budget applies, the injected LiteLLM username is derived as
+    ``{user.username}_{budget_name}`` so that spend is attributed to a separate budget
+    identity. Premium-model attribution takes precedence; otherwise proxy requests may
+    use the dedicated proxy budget. If neither feature applies, the standard
+    ``user.username`` is used.
 
     Args:
         body_bytes: Buffered request body
@@ -238,13 +244,19 @@ async def _create_body_stream_with_optional_injection(
 
     else:
         llm_model = request_info.get(LLM_MODEL, "unknown")
-        username = get_premium_username(user.username, llm_model) or user.username
-        budget_id = config.LITELLM_PREMIUM_MODELS_BUDGET_NAME if username != user.username else None
+        username = get_premium_username(user.username, llm_model)
+        budget_id = config.LITELLM_PREMIUM_MODELS_BUDGET_NAME if username else None
+
+        if username is None:
+            username = get_proxy_username(user.username)
+            budget_id = config.LITELLM_CLI_BUDGET_NAME if username else None
+
+        username = username or user.username
 
         if budget_id:
             logger.debug(
-                f"Premium model detected for {user.username}: "
-                f"using premium username {username} with budget_id={budget_id} (model={llm_model})"
+                f"Dedicated proxy budget selected for {user.username}: "
+                f"using username {username} with budget_id={budget_id} (model={llm_model})"
             )
 
         logger.debug(f"Injecting user for budget tracking: {username} (model={llm_model})")

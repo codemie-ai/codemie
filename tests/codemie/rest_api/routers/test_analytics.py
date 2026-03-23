@@ -1810,34 +1810,45 @@ class TestGetUserKeySpending:
             "max_budget": 5.0,
             "budget_reset_at": "2026-04-02T00:00:00Z",
         }
+        mock_cli_spending = {
+            "total_spend": 3.75,
+            "max_budget": 20.0,
+            "budget_reset_at": "2026-04-03T00:00:00Z",
+        }
 
         with patch(
             "codemie.enterprise.litellm.dependencies.get_customer_spending", return_value=mock_personal_spending
         ):
             with patch(
-                "codemie.enterprise.litellm.dependencies.get_premium_customer_spending",
-                return_value=mock_premium_spending,
+                "codemie.enterprise.litellm.dependencies.get_proxy_customer_spending",
+                return_value=mock_cli_spending,
             ):
-                with patch("codemie.enterprise.litellm.dependencies.is_premium_models_enabled", return_value=True):
-                    with patch(
-                        "codemie.enterprise.litellm.dependencies.get_user_keys_spending",
-                        return_value=mock_keys_spending,
-                    ):
-                        response = await get_user_budget_usage(user=mock_user)
+                with patch(
+                    "codemie.enterprise.litellm.dependencies.get_premium_customer_spending",
+                    return_value=mock_premium_spending,
+                ):
+                    with patch("codemie.enterprise.litellm.dependencies.is_premium_models_enabled", return_value=True):
+                        with patch(
+                            "codemie.enterprise.litellm.dependencies.get_user_keys_spending",
+                            return_value=mock_keys_spending,
+                        ):
+                            response = await get_user_budget_usage(user=mock_user)
 
-                        assert "data" in response
-                        assert "columns" in response["data"]
-                        assert "rows" in response["data"]
-                        assert "metadata" in response
+                            assert "data" in response
+                            assert "columns" in response["data"]
+                            assert "rows" in response["data"]
+                            assert "metadata" in response
 
-                        rows = response["data"]["rows"]
-                        assert rows[0]["project_name"] == mock_user.email
-                        assert rows[0]["current_spending"] == 15.5
-                        assert rows[1]["project_name"] == f"{mock_user.email} (premium)"
-                        assert rows[1]["current_spending"] == 1.25
-                        assert rows[2]["project_name"] == "demo"
-                        assert rows[2]["current_spending"] == 25.0
-                        assert len(rows) == 3
+                            rows = response["data"]["rows"]
+                            assert rows[0]["project_name"] == mock_user.email
+                            assert rows[0]["current_spending"] == 15.5
+                            assert rows[1]["project_name"] == f"{mock_user.email} (premium)"
+                            assert rows[1]["current_spending"] == 1.25
+                            assert rows[2]["project_name"] == f"{mock_user.email} (cli)"
+                            assert rows[2]["current_spending"] == 3.75
+                            assert rows[3]["project_name"] == "demo"
+                            assert rows[3]["current_spending"] == 25.0
+                            assert len(rows) == 4
 
     @pytest.mark.asyncio
     async def test_skips_premium_budget_when_feature_disabled(self, mock_user):
@@ -1855,19 +1866,24 @@ class TestGetUserKeySpending:
             "codemie.enterprise.litellm.dependencies.get_customer_spending", return_value=mock_personal_spending
         ):
             with patch(
-                "codemie.enterprise.litellm.dependencies.get_premium_customer_spending"
-            ) as mock_get_premium_spending:
-                with patch("codemie.enterprise.litellm.dependencies.is_premium_models_enabled", return_value=False):
-                    with patch(
-                        "codemie.enterprise.litellm.dependencies.get_user_keys_spending",
-                        return_value=mock_keys_spending,
-                    ):
-                        response = await get_user_budget_usage(user=mock_user)
+                "codemie.enterprise.litellm.dependencies.get_proxy_customer_spending",
+                return_value=None,
+            ) as mock_get_proxy_spending:
+                with patch(
+                    "codemie.enterprise.litellm.dependencies.get_premium_customer_spending"
+                ) as mock_get_premium_spending:
+                    with patch("codemie.enterprise.litellm.dependencies.is_premium_models_enabled", return_value=False):
+                        with patch(
+                            "codemie.enterprise.litellm.dependencies.get_user_keys_spending",
+                            return_value=mock_keys_spending,
+                        ):
+                            response = await get_user_budget_usage(user=mock_user)
 
-                        rows = response["data"]["rows"]
-                        assert len(rows) == 1
-                        assert rows[0]["project_name"] == mock_user.email
-                        mock_get_premium_spending.assert_not_called()
+                            rows = response["data"]["rows"]
+                            assert len(rows) == 1
+                            assert rows[0]["project_name"] == mock_user.email
+                            mock_get_proxy_spending.assert_called_once()
+                            mock_get_premium_spending.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handles_empty_keys_spending(self, mock_user):

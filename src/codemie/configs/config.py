@@ -452,6 +452,8 @@ class Config(BaseSettings):
     # List of model name aliases for premium/costly model detection (partial match, case-insensitive).
     # A model is considered premium if its name contains any alias (e.g. ["opus", "claude-4"]).
     LITELLM_PREMIUM_MODELS_ALIASES: List[str] = []
+    # Budget name for proxy spend attribution. When empty, proxy requests continue using the default budget.
+    LITELLM_CLI_BUDGET_NAME: str = ""
 
     # LiteLLM Cache and Optimization Configuration
     LITELLM_CUSTOMER_CACHE_TTL: int = 300  # 5 minutes - cache customer info TTL

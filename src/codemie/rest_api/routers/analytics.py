@@ -522,6 +522,7 @@ def _get_key_spending_columns() -> list[dict]:
 def _build_key_spending_tabular_data(
     user_email: str,
     user_personal_spending: dict | None,
+    user_proxy_spending: dict | None,
     user_premium_spending: dict | None,
     user_keys_spending: list[dict],
 ) -> tuple[list[dict], list[dict[str, Any]]]:
@@ -535,6 +536,8 @@ def _build_key_spending_tabular_data(
         user_email: User's email to display as project name for personal budget
         user_personal_spending: Dict with user's personal budget data from get_customer_spending()
                                 Fields: total_spend, max_budget, budget_reset_at
+        user_proxy_spending: Dict with user's proxy/CLI budget data from
+                             get_proxy_customer_spending(); same shape as personal spending
         user_premium_spending: Dict with user's premium budget data from
                                get_premium_customer_spending(); same shape as personal spending
         user_keys_spending: List of spending dicts for USER-scoped keys only
@@ -571,6 +574,22 @@ def _build_key_spending_tabular_data(
         all_rows.append(
             {
                 "project_name": f"{user_email} (premium)",
+                "current_spending": round(current_spend, 2),
+                "budget_reset_at": reset_at if reset_at else None,
+                "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
+                "budget_limit": round(budget_limit, 2) if budget_limit is not None else None,
+                "total": (round((current_spend / budget_limit * 100), 2) if budget_limit and budget_limit > 0 else 0.0),
+            }
+        )
+
+    if user_proxy_spending:
+        current_spend = user_proxy_spending.get("total_spend", 0.0)
+        budget_limit = user_proxy_spending.get("max_budget")
+        reset_at = user_proxy_spending.get("budget_reset_at")
+
+        all_rows.append(
+            {
+                "project_name": f"{user_email} (cli)",
                 "current_spending": round(current_spend, 2),
                 "budget_reset_at": reset_at if reset_at else None,
                 "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
@@ -2271,6 +2290,7 @@ async def get_user_spending(
     from datetime import timezone
     from codemie.enterprise.litellm.dependencies import (
         get_customer_spending,
+        get_proxy_customer_spending,
         get_premium_customer_spending,
         is_premium_models_enabled,
     )
@@ -2291,13 +2311,24 @@ async def get_user_spending(
 
     metrics = _build_spending_metrics(spending_data, user.username)
 
+    try:
+        proxy_spending_data = await asyncio.to_thread(get_proxy_customer_spending, user.username)
+        if proxy_spending_data is not None:
+            proxy_current_spending = proxy_spending_data.get("total_spend", 0.0)
+            logger.debug(f"Proxy spending retrieved for user {user.id}: spend=${proxy_current_spending:.2f}")
+            metrics.append(_build_spending_metric("cli_current_spending", proxy_current_spending, "number", "currency"))
+    except Exception as e:
+        logger.warning(f"Failed to fetch proxy spending for user {user.id}: {e}")
+
     # Include premium budget spending when feature is enabled
     if is_premium_models_enabled():
         try:
             premium_spending_data = await asyncio.to_thread(get_premium_customer_spending, user.username)
             if premium_spending_data is not None:
                 premium_current_spending = premium_spending_data.get("total_spend", 0.0)
-                logger.info(f"Premium spending retrieved for user {user.id}: " f"spend=${premium_current_spending:.2f}")
+                logger.debug(
+                    f"Premium spending retrieved for user {user.id}: " f"spend=${premium_current_spending:.2f}"
+                )
                 metrics.append(
                     _build_spending_metric(
                         "premium_current_spending",
@@ -2345,6 +2376,7 @@ async def get_user_budget_usage(
     from datetime import timezone
     from codemie.enterprise.litellm.dependencies import (
         get_customer_spending,
+        get_proxy_customer_spending,
         get_premium_customer_spending,
         get_user_keys_spending,
         is_premium_models_enabled,
@@ -2363,12 +2395,13 @@ async def get_user_budget_usage(
     try:
         gathered_results = await asyncio.gather(
             asyncio.to_thread(get_customer_spending, user.username, True),
+            asyncio.to_thread(get_proxy_customer_spending, user.username, True),
             asyncio.to_thread(get_premium_customer_spending, user.username, True)
             if premium_enabled
             else asyncio.sleep(0, result=None),
             asyncio.to_thread(get_user_keys_spending, user.id, all_projects, True),
         )
-        user_spending_data, premium_spending_data, keys_spending_data = gathered_results
+        user_spending_data, proxy_spending_data, premium_spending_data, keys_spending_data = gathered_results
     except Exception as e:
         logger.error(f"Backend error fetching spending data for user {user.id}: {e}")
         raise ExtendedHTTPException(
@@ -2379,6 +2412,7 @@ async def get_user_budget_usage(
 
     # user_spending_data is a dict with: total_spend, max_budget, budget_reset_at
     user_personal_spending = user_spending_data
+    user_proxy_spending = proxy_spending_data
     user_premium_spending = premium_spending_data
 
     # Extract only USER-scoped keys (filter out project keys)
@@ -2389,6 +2423,7 @@ async def get_user_budget_usage(
     columns, rows = _build_key_spending_tabular_data(
         user.email,
         user_personal_spending,
+        user_proxy_spending,
         user_premium_spending,
         user_keys_spending,
     )

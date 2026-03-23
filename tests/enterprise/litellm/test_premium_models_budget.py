@@ -43,11 +43,17 @@ def clear_premium_caches():
     @lru_cache, so patching config values would have no effect on already-cached results
     without an explicit cache_clear() call.
     """
-    from codemie.enterprise.litellm.dependencies import is_premium_models_enabled, is_premium_model
+    from codemie.enterprise.litellm.dependencies import (
+        is_premium_model,
+        is_premium_models_enabled,
+        is_proxy_budget_enabled,
+    )
 
+    is_proxy_budget_enabled.cache_clear()
     is_premium_models_enabled.cache_clear()
     is_premium_model.cache_clear()
     yield
+    is_proxy_budget_enabled.cache_clear()
     is_premium_models_enabled.cache_clear()
     is_premium_model.cache_clear()
 
@@ -63,6 +69,10 @@ def _patch_budget_name(value: str):
 
 def _patch_aliases(value: list[str]):
     return patch.object(config, "LITELLM_PREMIUM_MODELS_ALIASES", value)
+
+
+def _patch_cli_budget_name(value: str):
+    return patch.object(config, "LITELLM_CLI_BUDGET_NAME", value)
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +221,32 @@ class TestGetPremiumCustomerSpending:
                     get_premium_customer_spending("user@example.com", on_raise=True)
 
 
+class TestProxyBudgetHelpers:
+    def test_proxy_budget_disabled_when_budget_name_empty(self):
+        with _patch_cli_budget_name(""):
+            from codemie.enterprise.litellm.dependencies import is_proxy_budget_enabled
+
+            assert is_proxy_budget_enabled() is False
+
+    def test_proxy_budget_enabled_when_budget_name_set(self):
+        with _patch_cli_budget_name("cli_budget"):
+            from codemie.enterprise.litellm.dependencies import is_proxy_budget_enabled
+
+            assert is_proxy_budget_enabled() is True
+
+    def test_get_proxy_username_returns_none_when_feature_disabled(self):
+        with _patch_cli_budget_name(""):
+            from codemie.enterprise.litellm.dependencies import get_proxy_username
+
+            assert get_proxy_username("user@example.com") is None
+
+    def test_get_proxy_username_returns_derived_username_when_enabled(self):
+        with _patch_cli_budget_name("cli_budget"):
+            from codemie.enterprise.litellm.dependencies import get_proxy_username
+
+            assert get_proxy_username("user@example.com") == "user@example.com_cli_budget"
+
+
 # ---------------------------------------------------------------------------
 # Proxy router: username injection
 # ---------------------------------------------------------------------------
@@ -294,6 +330,74 @@ class TestProxyPremiumUsernameInjection:
         assert captured_usernames == ["alice@example.com"]
 
     @pytest.mark.asyncio
+    async def test_injects_proxy_username_for_non_premium_request(self):
+        captured_usernames: list[str] = []
+
+        def fake_inject(body_bytes, user_id, request_info):
+            captured_usernames.append(user_id)
+
+            async def gen():
+                yield body_bytes
+
+            return gen()
+
+        with _patch_budget_name(""), _patch_cli_budget_name("cli_budget"):
+            with patch(
+                "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes",
+                side_effect=fake_inject,
+            ):
+                with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
+                    from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+
+                    mock_user = MagicMock()
+                    mock_user.username = "alice@example.com"
+
+                    request_info = {"llm_model": "gpt-4.1-mini", "client_type": "web"}
+
+                    await _create_body_stream_with_optional_injection(
+                        body_bytes=b'{"model":"gpt-4.1-mini"}',
+                        has_own_credentials=False,
+                        user=mock_user,
+                        request_info=request_info,
+                    )
+
+        assert captured_usernames == ["alice@example.com_cli_budget"]
+
+    @pytest.mark.asyncio
+    async def test_premium_budget_takes_precedence_over_proxy_budget(self):
+        captured_usernames: list[str] = []
+
+        def fake_inject(body_bytes, user_id, request_info):
+            captured_usernames.append(user_id)
+
+            async def gen():
+                yield body_bytes
+
+            return gen()
+
+        with _patch_budget_name("premium_models"), _patch_aliases(["opus"]), _patch_cli_budget_name("cli_budget"):
+            with patch(
+                "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes",
+                side_effect=fake_inject,
+            ):
+                with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
+                    from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+
+                    mock_user = MagicMock()
+                    mock_user.username = "alice@example.com"
+
+                    request_info = {"llm_model": "claude-opus-4", "client_type": "web"}
+
+                    await _create_body_stream_with_optional_injection(
+                        body_bytes=b'{"model":"claude-opus-4"}',
+                        has_own_credentials=False,
+                        user=mock_user,
+                        request_info=request_info,
+                    )
+
+        assert captured_usernames == ["alice@example.com_premium_models"]
+
+    @pytest.mark.asyncio
     async def test_injects_base_username_when_config_disabled(self):
         """Config disabled → standard username used regardless of model name."""
         captured_usernames: list[str] = []
@@ -337,7 +441,7 @@ class TestProxyPremiumUsernameInjection:
 
 
 class TestSpendingEndpointPremiumMetric:
-    """Verify /spending returns premium_current_spending only when feature is enabled."""
+    """Verify /spending returns premium/cli spending metrics when available."""
 
     @pytest.mark.asyncio
     async def test_includes_premium_metric_when_configured(self):
@@ -361,7 +465,7 @@ class TestSpendingEndpointPremiumMetric:
         with _patch_budget_name("premium_models"):
             with patch(
                 "codemie.rest_api.routers.analytics.asyncio.to_thread",
-                new=AsyncMock(side_effect=[standard_spending, premium_spending]),
+                new=AsyncMock(side_effect=[standard_spending, None, premium_spending]),
             ):
                 from codemie.rest_api.routers.analytics import get_user_spending
 
@@ -372,6 +476,39 @@ class TestSpendingEndpointPremiumMetric:
                 data = json.loads(body)
                 metric_ids = [m["id"] for m in data["data"]["metrics"]]
                 assert "premium_current_spending" in metric_ids
+
+    @pytest.mark.asyncio
+    async def test_includes_cli_metric_when_proxy_budget_configured(self):
+        standard_spending = {
+            "customer_id": "alice@example.com",
+            "total_spend": 50.0,
+            "max_budget": 300.0,
+            "budget_reset_at": None,
+        }
+        cli_spending = {
+            "customer_id": "alice@example.com_cli_budget",
+            "total_spend": 7.5,
+            "max_budget": None,
+            "budget_reset_at": None,
+        }
+
+        mock_user = MagicMock()
+        mock_user.id = "user-1"
+        mock_user.username = "alice@example.com"
+
+        with _patch_cli_budget_name("cli_budget"):
+            with patch(
+                "codemie.rest_api.routers.analytics.asyncio.to_thread",
+                new=AsyncMock(side_effect=[standard_spending, cli_spending]),
+            ):
+                from codemie.rest_api.routers.analytics import get_user_spending
+
+                response = await get_user_spending(user=mock_user)
+                import json
+
+                data = json.loads(response.body)
+                metric_ids = [m["id"] for m in data["data"]["metrics"]]
+                assert "cli_current_spending" in metric_ids
 
     @pytest.mark.asyncio
     async def test_omits_premium_metric_when_config_disabled(self):

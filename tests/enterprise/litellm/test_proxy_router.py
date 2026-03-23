@@ -415,6 +415,47 @@ class TestCreateBodyStreamWithOptionalInjection:
         assert result == "stream"
         mock_check_user_budget.assert_called_once_with(user_id="user@example.com", budget_id=None)
 
+    @pytest.mark.asyncio
+    async def test_non_premium_request_uses_proxy_budget_id(self):
+        """Non-premium proxy requests should use the dedicated proxy budget instead of the default one."""
+        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+
+        user = MagicMock()
+        user.username = "user@example.com"
+        request_info = {
+            "llm_model": "gpt-4.1-mini",
+            "session_id": "session-123",
+            "request_id": "request-456",
+            "client_type": "web",
+        }
+
+        with patch("codemie.enterprise.litellm.proxy_router.get_premium_username", return_value=None):
+            with patch("codemie.enterprise.litellm.proxy_router.get_proxy_username") as mock_get_proxy_username:
+                mock_get_proxy_username.return_value = "user@example.com_cli_budget"
+                with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+                    mock_config.LITELLM_CLI_BUDGET_NAME = "cli_budget"
+                    with patch("codemie.enterprise.litellm.proxy_router.check_user_budget") as mock_check_user_budget:
+                        with patch(
+                            "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes"
+                        ) as mock_inject:
+                            mock_inject.return_value = "stream"
+
+                            result = await _create_body_stream_with_optional_injection(
+                                body_bytes=b"{}",
+                                has_own_credentials=False,
+                                user=user,
+                                request_info=request_info,
+                            )
+
+        assert result == "stream"
+        mock_check_user_budget.assert_called_once_with(
+            user_id="user@example.com_cli_budget",
+            budget_id="cli_budget",
+        )
+        mock_inject.assert_called_once_with(
+            body_bytes=b"{}", user_id="user@example.com_cli_budget", request_info=request_info
+        )
+
 
 class TestParseUsageWithCost:
     """Test _parse_usage_with_cost function."""
