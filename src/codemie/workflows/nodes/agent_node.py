@@ -33,11 +33,11 @@ from codemie.workflows.constants import (
 from codemie.workflows.models import AgentMessages
 from codemie.workflows.nodes.base_node import BaseNode, StateSchemaType
 from codemie.workflows.utils import (
+    get_context_store_from_state_schema,
     get_messages_from_state_schema,
     find_assistant_by_id,
-    should_summarize_memory,
     initialize_assistant,
-    get_context_store_from_state_schema,
+    should_summarize_memory,
 )
 from codemie_tools.base.file_object import FileObject
 from langgraph.types import Command
@@ -168,7 +168,8 @@ class AgentNode(BaseNode[AgentMessages]):
         if parent_result:
             return parent_result
 
-        _, should_summarize = should_summarize_memory(self.workflow_config, state_schema)
+        messages = get_messages_from_state_schema(state_schema)
+        _, should_summarize = should_summarize_memory(self.workflow_config, messages)
         if self.summarize_history and should_summarize:
             logger.info(f"Memory too large, should summarize: {self.workflow_state.id}")
             return Command(goto=SUMMARIZE_MEMORY_NODE)

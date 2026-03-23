@@ -230,7 +230,12 @@ class BaseNode(ABC, Generic[StateSchemaType]):
             )
 
             # Store current execution state ID for next node in this track
-            final_state[PREVIOUS_EXECUTION_STATE_ID] = execution_state_id
+            if isinstance(final_state, Command):
+                update = dict(final_state.update) if final_state.update else {}
+                update[PREVIOUS_EXECUTION_STATE_ID] = execution_state_id
+                final_state = Command(goto=final_state.goto, update=update)
+            else:
+                final_state[PREVIOUS_EXECUTION_STATE_ID] = execution_state_id
 
             return final_state
         except ExecutionAbortedException:

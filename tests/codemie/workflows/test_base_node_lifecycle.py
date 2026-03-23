@@ -42,6 +42,7 @@ from codemie.workflows.constants import (
     ITERATION_NODE_NUMBER_KEY,
     TOTAL_ITERATIONS_KEY,
     GUARDRAIL_CHECKED_FLAG,
+    PREVIOUS_EXECUTION_STATE_ID,
 )
 from codemie.workflows.models import CONTEXT_STORE_APPEND_MARKER, CONTEXT_STORE_DELETE_MARKER
 from codemie.core.workflow_models import WorkflowNextState, WorkflowState, WorkflowExecutionStatusEnum, WorkflowConfig
@@ -1359,3 +1360,124 @@ def test_reset_keys_takes_precedence_over_append_to_context(
     context = result[CONTEXT_STORE_VARIABLE]
     assert context.get("output") == CONTEXT_STORE_DELETE_MARKER
     assert not isinstance(context.get("output"), dict)
+
+
+def test_previous_execution_state_id_set_when_final_state_is_dict(
+    mock_workflow_execution_service, mock_thought_queue, mock_callbacks
+):
+    """
+    PREVIOUS_EXECUTION_STATE_ID Written into Dict Final State
+
+    When finalize_and_update_state returns a plain dict, base_node.__call__
+    must set PREVIOUS_EXECUTION_STATE_ID directly on that dict using item
+    assignment, so the next node in the workflow can track its predecessor.
+    """
+    # Arrange
+    workflow_state = WorkflowState(
+        id="test_node",
+        task="Test",
+        assistant_id="assistant_1",
+        next=WorkflowNextState(state_id="next"),
+    )
+    state_schema = {MESSAGES_VARIABLE: [], CONTEXT_STORE_VARIABLE: {}}
+    node = MockNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+    )
+    node.mock_execute_result = "output"
+    dict_final_state = {MESSAGES_VARIABLE: [], CONTEXT_STORE_VARIABLE: {}, NEXT_KEY: ["next"]}
+    node.finalize_and_update_state = Mock(return_value=dict_final_state)
+
+    # Act
+    result = node(state_schema)
+
+    # Assert
+    assert isinstance(result, dict)
+    assert PREVIOUS_EXECUTION_STATE_ID in result
+    assert result[PREVIOUS_EXECUTION_STATE_ID] == "state_123"
+
+
+def test_previous_execution_state_id_merged_into_command_update(
+    mock_workflow_execution_service, mock_thought_queue, mock_callbacks
+):
+    """
+    PREVIOUS_EXECUTION_STATE_ID Merged into Command.update
+
+    When finalize_and_update_state returns a Command (e.g. from
+    SummarizeConversationCommandNode), base_node.__call__ must NOT perform
+    item assignment on the Command object (which raises TypeError), but
+    instead add PREVIOUS_EXECUTION_STATE_ID into Command.update so LangGraph
+    merges it into state when routing.  Existing update keys must be preserved.
+    """
+    # Arrange
+    workflow_state = WorkflowState(
+        id="test_node",
+        task="Test",
+        assistant_id="assistant_1",
+        next=WorkflowNextState(state_id="next"),
+    )
+    state_schema = {MESSAGES_VARIABLE: [], CONTEXT_STORE_VARIABLE: {}}
+    node = MockNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+    )
+    node.mock_execute_result = "summary"
+    command_final_state = Command(goto="agent_1", update={MESSAGES_VARIABLE: []})
+    node.finalize_and_update_state = Mock(return_value=command_final_state)
+
+    # Act
+    result = node(state_schema)
+
+    # Assert
+    assert isinstance(result, Command)
+    assert result.goto == "agent_1"
+    assert result.update is not None
+    assert PREVIOUS_EXECUTION_STATE_ID in result.update
+    assert result.update[PREVIOUS_EXECUTION_STATE_ID] == "state_123"
+    assert MESSAGES_VARIABLE in result.update
+
+
+def test_previous_execution_state_id_added_to_command_with_no_update(
+    mock_workflow_execution_service, mock_thought_queue, mock_callbacks
+):
+    """
+    PREVIOUS_EXECUTION_STATE_ID Added When Command Has No Update Dict
+
+    When finalize_and_update_state returns Command(goto=END) with update=None
+    (e.g. when summarization is skipped on empty message history), base_node
+    must reconstruct the Command with a new update dict containing
+    PREVIOUS_EXECUTION_STATE_ID rather than crashing on a None dict access.
+    """
+    from langgraph.constants import END
+
+    # Arrange
+    workflow_state = WorkflowState(
+        id="test_node",
+        task="Test",
+        assistant_id="assistant_1",
+        next=WorkflowNextState(state_id="next"),
+    )
+    state_schema = {MESSAGES_VARIABLE: [], CONTEXT_STORE_VARIABLE: {}}
+    node = MockNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+    )
+    node.mock_execute_result = "output"
+    command_no_update = Command(goto=END)
+    node.finalize_and_update_state = Mock(return_value=command_no_update)
+
+    # Act
+    result = node(state_schema)
+
+    # Assert
+    assert isinstance(result, Command)
+    assert result.goto == END
+    assert result.update is not None
+    assert PREVIOUS_EXECUTION_STATE_ID in result.update
+    assert result.update[PREVIOUS_EXECUTION_STATE_ID] == "state_123"
