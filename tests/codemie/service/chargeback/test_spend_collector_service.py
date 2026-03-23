@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -47,14 +47,22 @@ def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def _prev_row(key_hash: str, cumulative: Decimal) -> ProjectCostTracking:
+def _prev_row(
+    key_hash: str,
+    cumulative: Decimal,
+    budget_period_spend: Decimal | None = None,
+    budget_reset_at: datetime | None = None,
+    spend_date: datetime | None = None,
+) -> ProjectCostTracking:
     return ProjectCostTracking(
         id=uuid4(),
         project_name="foo-bar",
         key_hash=key_hash,
-        spend_date=date(2026, 3, 16),
-        daily_spend=cumulative,
+        spend_date=spend_date or datetime(2026, 3, 16, 0, 0, tzinfo=timezone.utc),
+        daily_spend=budget_period_spend if budget_period_spend is not None else cumulative,
         cumulative_spend=cumulative,
+        budget_period_spend=budget_period_spend if budget_period_spend is not None else cumulative,
+        budget_reset_at=budget_reset_at,
     )
 
 
@@ -152,59 +160,165 @@ class TestFilterProjectNames:
 
 
 class TestComputeDelta:
-    """Tests for _compute_delta: budget-reset-aware daily spend calculation."""
+    """Tests for _compute_spend_snapshot: reset-aware delta and cumulative logic."""
 
     def test_no_prior_row_returns_current_spend(self):
-        """First-run bootstrap: when there is no prior row, delta equals current spend."""
+        """First-run bootstrap: budget-period spend seeds both delta and lifetime cumulative."""
         service = _make_service()
         current = Decimal("5.25")
 
-        result = service._compute_delta(current, prev_row=None)
+        result = service._compute_spend_snapshot(
+            current_budget_period_spend=current,
+            current_budget_reset_at=datetime(2026, 3, 17, 0, 0, tzinfo=timezone.utc),
+            prev_row=None,
+            snapshot_at=datetime(2026, 3, 16, 12, 0, tzinfo=timezone.utc),
+        )
 
-        assert result == current
+        assert result == (current, current)
+
+    def test_no_prior_row_with_zero_spend_returns_zeroes(self):
+        """Bootstrap with zero spend should keep both daily and cumulative values at zero."""
+        service = _make_service()
+
+        result = service._compute_spend_snapshot(
+            current_budget_period_spend=Decimal("0"),
+            current_budget_reset_at=datetime(2026, 3, 17, 0, 0, tzinfo=timezone.utc),
+            prev_row=None,
+            snapshot_at=datetime(2026, 3, 16, 12, 0, tzinfo=timezone.utc),
+        )
+
+        assert result == (Decimal("0"), Decimal("0"))
 
     def test_normal_delta_current_greater_than_prev(self):
-        """Normal case: current >= prev → delta = current - prev."""
+        """Before the reset moment, delta is derived from budget-period spend difference."""
         service = _make_service()
-        prev = _prev_row("abc123", Decimal("3.00"))
+        prev = _prev_row(
+            "abc123",
+            cumulative=Decimal("10.00"),
+            budget_period_spend=Decimal("3.00"),
+            budget_reset_at=datetime(2026, 3, 18, 0, 0, tzinfo=timezone.utc),
+        )
         current = Decimal("5.50")
 
-        result = service._compute_delta(current, prev_row=prev)
+        result = service._compute_spend_snapshot(
+            current_budget_period_spend=current,
+            current_budget_reset_at=datetime(2026, 3, 18, 0, 0, tzinfo=timezone.utc),
+            prev_row=prev,
+            snapshot_at=datetime(2026, 3, 17, 12, 0, tzinfo=timezone.utc),
+        )
 
-        assert result == Decimal("2.50")
+        assert result == (Decimal("2.50"), Decimal("12.50"))
 
     def test_normal_delta_current_equals_prev(self):
-        """Edge case: current == prev → delta = 0 (no new spend today)."""
+        """Unchanged budget-period spend produces zero delta."""
         service = _make_service()
-        prev = _prev_row("abc123", Decimal("3.00"))
+        prev = _prev_row(
+            "abc123",
+            cumulative=Decimal("10.00"),
+            budget_period_spend=Decimal("3.00"),
+            budget_reset_at=datetime(2026, 3, 18, 0, 0, tzinfo=timezone.utc),
+        )
         current = Decimal("3.00")
 
-        result = service._compute_delta(current, prev_row=prev)
+        result = service._compute_spend_snapshot(
+            current_budget_period_spend=current,
+            current_budget_reset_at=datetime(2026, 3, 18, 0, 0, tzinfo=timezone.utc),
+            prev_row=prev,
+            snapshot_at=datetime(2026, 3, 17, 12, 0, tzinfo=timezone.utc),
+        )
 
-        assert result == Decimal("0")
+        assert result == (Decimal("0"), Decimal("10.00"))
 
-    def test_budget_reset_current_less_than_prev(self):
-        """Budget reset: current < prev → daily_spend = current (not zero, not negative)."""
+    def test_budget_reset_detected_by_reset_timestamp(self):
+        """Crossing the previous reset boundary seeds delta from current budget-period spend."""
         service = _make_service()
-        prev = _prev_row("abc123", Decimal("10.00"))
+        prev = _prev_row(
+            "abc123",
+            cumulative=Decimal("10.00"),
+            budget_period_spend=Decimal("9.00"),
+            budget_reset_at=datetime(2026, 3, 17, 0, 0, tzinfo=timezone.utc),
+        )
         current = Decimal("0.75")
 
-        result = service._compute_delta(current, prev_row=prev)
+        result = service._compute_spend_snapshot(
+            current_budget_period_spend=current,
+            current_budget_reset_at=datetime(2026, 3, 18, 0, 0, tzinfo=timezone.utc),
+            prev_row=prev,
+            snapshot_at=datetime(2026, 3, 17, 0, 5, tzinfo=timezone.utc),
+        )
 
-        assert result == current
+        assert result == (current, Decimal("10.75"))
 
-    def test_budget_reset_logs_warning(self):
-        """Budget reset should emit a WARNING log."""
+    def test_same_reset_timestamp_after_boundary_is_treated_as_reset(self):
+        """Passing the previous reset time should start a new period even if the API repeats the same timestamp."""
         service = _make_service()
-        prev = _prev_row("abc123", Decimal("10.00"))
+        prev = _prev_row(
+            "abc123",
+            cumulative=Decimal("10.00"),
+            budget_period_spend=Decimal("9.00"),
+            budget_reset_at=datetime(2026, 3, 17, 0, 0, tzinfo=timezone.utc),
+        )
+
+        result = service._compute_spend_snapshot(
+            current_budget_period_spend=Decimal("0.50"),
+            current_budget_reset_at=datetime(2026, 3, 17, 0, 0, tzinfo=timezone.utc),
+            prev_row=prev,
+            snapshot_at=datetime(2026, 3, 17, 0, 1, tzinfo=timezone.utc),
+        )
+
+        assert result == (Decimal("0.50"), Decimal("10.50"))
+
+    def test_missing_reset_metadata_with_increasing_spend_uses_difference(self):
+        """Without reset metadata, increasing budget-period spend should still use the normal delta path."""
+        service = _make_service()
+        prev = _prev_row("abc123", cumulative=Decimal("8.00"), budget_period_spend=Decimal("2.00"))
+
+        result = service._compute_spend_snapshot(
+            current_budget_period_spend=Decimal("3.25"),
+            current_budget_reset_at=None,
+            prev_row=prev,
+            snapshot_at=datetime(2026, 3, 17, 12, 0, tzinfo=timezone.utc),
+        )
+
+        assert result == (Decimal("1.25"), Decimal("9.25"))
+
+    def test_budget_reset_fallback_logs_warning_when_metadata_missing(self):
+        """Decreasing budget-period spend without reset metadata falls back to reset semantics."""
+        service = _make_service()
+        prev = _prev_row("abc123", cumulative=Decimal("10.00"), budget_period_spend=Decimal("9.00"))
         current = Decimal("0.75")
 
         with patch("codemie.service.chargeback.spend_collector_service.logger") as mock_logger:
-            service._compute_delta(current, prev_row=prev)
+            result = service._compute_spend_snapshot(
+                current_budget_period_spend=current,
+                current_budget_reset_at=None,
+                prev_row=prev,
+                snapshot_at=datetime(2026, 3, 17, 12, 0, tzinfo=timezone.utc),
+            )
 
         mock_logger.warning.assert_called_once()
         warning_msg = mock_logger.warning.call_args[0][0]
         assert "reset" in warning_msg.lower() or "budget" in warning_msg.lower()
+        assert result == (current, Decimal("10.75"))
+
+    def test_extractors_support_raw_litellm_key_info_payload(self):
+        """Raw /key/info responses with nested info fields should be parsed correctly."""
+        payload = _raw_litellm_key_info_payload(
+            spend=0.0024948,
+            budget_reset_at="2026-03-24T00:00:00+00:00",
+            max_budget=1.0,
+            budget_duration="24h",
+        )[0]
+
+        assert LiteLLMSpendCollectorService._extract_budget_period_spend(payload) == Decimal("0.0024948")
+        assert LiteLLMSpendCollectorService._extract_budget_reset_at(payload) == datetime(
+            2026,
+            3,
+            24,
+            0,
+            0,
+            tzinfo=timezone.utc,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +368,33 @@ def _make_setting(project_name: str, api_key: str):
     return setting, api_key
 
 
+def _spending_payload(total_spend: float, budget_reset_at: str | None = None) -> list[dict[str, float | str | None]]:
+    payload: dict[str, float | str | None] = {"total_spend": total_spend}
+    if budget_reset_at is not None:
+        payload["budget_reset_at"] = budget_reset_at
+    return [payload]
+
+
+def _raw_litellm_key_info_payload(
+    spend: float,
+    budget_reset_at: str | None = None,
+    max_budget: float | None = None,
+    budget_duration: str | None = None,
+) -> list[dict]:
+    return [
+        {
+            "key": "sk-1",
+            "info": {
+                "key_alias": "test@example.com",
+                "spend": spend,
+                "max_budget": max_budget,
+                "budget_duration": budget_duration,
+                "budget_reset_at": budget_reset_at,
+            },
+        }
+    ]
+
+
 class TestCollect:
     """Tests for LiteLLMSpendCollectorService.collect()."""
 
@@ -288,7 +429,7 @@ class TestCollect:
         service._app_repository.aget_all_non_deleted = AsyncMock(
             return_value=[_make_app("foo-bar"), _make_app("baz-qux")]
         )
-        service._tracking_repository.get_latest_by_key_hashes = AsyncMock(return_value={})
+        service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
         service._tracking_repository.insert_entries = AsyncMock()
 
         # _build_credential_result returns good_cred for good_setting, bad_cred for bad_setting
@@ -318,7 +459,7 @@ class TestCollect:
             async def spending_side_effect(fn, keys):
                 assert len(keys) == 1
                 if keys[0] == good_key:
-                    return [{"total_spend": 2.5}]
+                    return _spending_payload(2.5)
                 return None
 
             mock_to_thread.side_effect = spending_side_effect
@@ -331,6 +472,8 @@ class TestCollect:
         assert len(inserted_rows) == 1
         assert inserted_rows[0].key_hash == good_hash
         assert inserted_rows[0].project_name == "foo-bar"
+        assert inserted_rows[0].budget_period_spend == Decimal("2.5")
+        assert inserted_rows[0].cumulative_spend == Decimal("2.5")
 
     @pytest.mark.asyncio
     async def test_collect_normal_delta(
@@ -338,12 +481,12 @@ class TestCollect:
         mock_session,
         async_session_ctx,
     ):
-        """Normal delta: current > prev → daily_spend = current - prev."""
+        """Normal delta: lifetime cumulative grows by the period-spend delta."""
         service = _make_service()
         api_key = "sk-normal-key"
         key_hash = _sha256(api_key)
 
-        prev_cumulative = Decimal("3.00")
+        prev_cumulative = Decimal("10.00")
         current_spend = 5.50
 
         setting = MagicMock()
@@ -354,8 +497,13 @@ class TestCollect:
         cred.api_key = api_key
 
         service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[_make_app("foo-bar")])
-        prev_row = _prev_row(key_hash, prev_cumulative)
-        service._tracking_repository.get_latest_by_key_hashes = AsyncMock(return_value={key_hash: prev_row})
+        prev_row = _prev_row(
+            key_hash,
+            cumulative=prev_cumulative,
+            budget_period_spend=Decimal("3.00"),
+            budget_reset_at=datetime(2026, 3, 18, 0, 0, tzinfo=timezone.utc),
+        )
+        service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={key_hash: prev_row})
         service._tracking_repository.insert_entries = AsyncMock()
 
         with (
@@ -367,7 +515,7 @@ class TestCollect:
             ),
             patch(
                 "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
-                return_value=[{"total_spend": current_spend}],
+                return_value=_spending_payload(current_spend, "2026-03-18T00:00:00+00:00"),
             ),
             patch(
                 "codemie.service.chargeback.spend_collector_service.get_async_session",
@@ -379,8 +527,10 @@ class TestCollect:
 
         assert count == 1
         rows = service._tracking_repository.insert_entries.call_args[0][1]
-        assert rows[0].daily_spend == Decimal("5.50") - prev_cumulative
-        assert rows[0].cumulative_spend == Decimal("5.50")
+        assert rows[0].daily_spend == Decimal("2.50")
+        assert rows[0].cumulative_spend == Decimal("12.50")
+        assert rows[0].budget_period_spend == Decimal("5.50")
+        assert rows[0].spend_date == datetime(2026, 3, 17, 0, 0, tzinfo=timezone.utc)
 
     @pytest.mark.asyncio
     async def test_collect_first_run_bootstrap(
@@ -388,7 +538,7 @@ class TestCollect:
         mock_session,
         async_session_ctx,
     ):
-        """First-run bootstrap: no prior row → daily_spend equals current_spend."""
+        """First-run bootstrap: current budget-period spend seeds both tracked values."""
         service = _make_service()
         api_key = "sk-bootstrap-key"
 
@@ -401,7 +551,7 @@ class TestCollect:
 
         service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[_make_app("alpha-beta")])
         # No prior rows
-        service._tracking_repository.get_latest_by_key_hashes = AsyncMock(return_value={})
+        service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
         service._tracking_repository.insert_entries = AsyncMock()
 
         with (
@@ -413,7 +563,7 @@ class TestCollect:
             ),
             patch(
                 "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
-                return_value=[{"total_spend": 7.0}],
+                return_value=_spending_payload(7.0, "2026-03-18T00:00:00+00:00"),
             ),
             patch(
                 "codemie.service.chargeback.spend_collector_service.get_async_session",
@@ -427,6 +577,254 @@ class TestCollect:
         rows = service._tracking_repository.insert_entries.call_args[0][1]
         assert rows[0].daily_spend == Decimal("7.0")
         assert rows[0].cumulative_spend == Decimal("7.0")
+        assert rows[0].budget_period_spend == Decimal("7.0")
+
+    @pytest.mark.asyncio
+    async def test_collect_skips_zero_delta_snapshots(
+        self,
+        mock_session,
+        async_session_ctx,
+    ):
+        """Zero-delta snapshots are not persisted."""
+        service = _make_service()
+        api_key = "sk-zero-key"
+        key_hash = _sha256(api_key)
+
+        setting = MagicMock()
+        setting.id = "s1"
+        setting.project_name = "zero-app"
+
+        cred = MagicMock()
+        cred.api_key = api_key
+
+        service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[_make_app("zero-app")])
+        prev_row = _prev_row(
+            key_hash,
+            cumulative=Decimal("10.00"),
+            budget_period_spend=Decimal("3.00"),
+            budget_reset_at=datetime(2026, 3, 18, 0, 0, tzinfo=timezone.utc),
+        )
+        service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={key_hash: prev_row})
+        service._tracking_repository.insert_entries = AsyncMock()
+
+        with (
+            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                return_value=cred,
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
+                return_value=_spending_payload(3.0, "2026-03-18T00:00:00+00:00"),
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                return_value=async_session_ctx(),
+            ),
+        ):
+            mock_settings.get_by_project_names.return_value = [setting]
+            count = await service.collect(target_date=date(2026, 3, 17))
+
+        assert count == 0
+        service._tracking_repository.insert_entries.assert_called_once_with(mock_session, [])
+
+    @pytest.mark.asyncio
+    async def test_collect_skips_first_snapshot_when_spend_is_zero(
+        self,
+        mock_session,
+        async_session_ctx,
+    ):
+        """A brand-new key with zero spend should not create a snapshot row."""
+        service = _make_service()
+        api_key = "sk-zero-bootstrap"
+
+        setting = MagicMock()
+        setting.id = "s1"
+        setting.project_name = "zero-bootstrap"
+
+        cred = MagicMock()
+        cred.api_key = api_key
+
+        service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[_make_app("zero-bootstrap")])
+        service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
+        service._tracking_repository.insert_entries = AsyncMock()
+
+        with (
+            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                return_value=cred,
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
+                return_value=_spending_payload(0.0, "2026-03-18T00:00:00+00:00"),
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                return_value=async_session_ctx(),
+            ),
+        ):
+            mock_settings.get_by_project_names.return_value = [setting]
+            count = await service.collect(target_date=date(2026, 3, 17))
+
+        assert count == 0
+        service._tracking_repository.insert_entries.assert_called_once_with(mock_session, [])
+
+    @pytest.mark.asyncio
+    async def test_collect_after_budget_reset_uses_current_budget_period_spend(
+        self,
+        mock_session,
+        async_session_ctx,
+    ):
+        """After a reset boundary, the current budget-period spend becomes the delta."""
+        service = _make_service()
+        api_key = "sk-reset-key"
+        key_hash = _sha256(api_key)
+
+        setting = MagicMock()
+        setting.id = "s1"
+        setting.project_name = "reset-app"
+
+        cred = MagicMock()
+        cred.api_key = api_key
+
+        service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[_make_app("reset-app")])
+        prev_row = _prev_row(
+            key_hash,
+            cumulative=Decimal("10.00"),
+            budget_period_spend=Decimal("9.00"),
+            budget_reset_at=datetime(2026, 3, 17, 0, 0, tzinfo=timezone.utc),
+            spend_date=datetime(2026, 3, 16, 23, 55, tzinfo=timezone.utc),
+        )
+        service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={key_hash: prev_row})
+        service._tracking_repository.insert_entries = AsyncMock()
+
+        with (
+            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                return_value=cred,
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
+                return_value=_spending_payload(0.75, "2026-03-18T00:00:00+00:00"),
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                return_value=async_session_ctx(),
+            ),
+        ):
+            mock_settings.get_by_project_names.return_value = [setting]
+            count = await service.collect(target_date=datetime(2026, 3, 17, 0, 5, tzinfo=timezone.utc))
+
+        assert count == 1
+        rows = service._tracking_repository.insert_entries.call_args[0][1]
+        assert rows[0].daily_spend == Decimal("0.75")
+        assert rows[0].cumulative_spend == Decimal("10.75")
+        assert rows[0].budget_period_spend == Decimal("0.75")
+
+    @pytest.mark.asyncio
+    async def test_collect_uses_exact_snapshot_timestamp_for_baseline_lookup(
+        self,
+        mock_session,
+        async_session_ctx,
+    ):
+        """Baseline lookup should use the exact snapshot timestamp, including milliseconds."""
+        service = _make_service()
+        api_key = "sk-boundary-key"
+        key_hash = _sha256(api_key)
+        snapshot_at = datetime(2026, 3, 17, 12, 34, 56, 789000, tzinfo=timezone.utc)
+
+        setting = MagicMock()
+        setting.id = "s1"
+        setting.project_name = "boundary-app"
+
+        cred = MagicMock()
+        cred.api_key = api_key
+
+        service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[_make_app("boundary-app")])
+        service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
+        service._tracking_repository.insert_entries = AsyncMock()
+
+        with (
+            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                return_value=cred,
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
+                return_value=_spending_payload(1.0, "2026-03-18T00:00:00+00:00"),
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                return_value=async_session_ctx(),
+            ),
+        ):
+            mock_settings.get_by_project_names.return_value = [setting]
+            await service.collect(target_date=snapshot_at)
+
+        service._tracking_repository.get_latest_before_by_key_hashes.assert_awaited_once_with(
+            mock_session,
+            [key_hash],
+            snapshot_at,
+        )
+
+    @pytest.mark.asyncio
+    async def test_collect_accepts_raw_litellm_key_info_response(
+        self,
+        mock_session,
+        async_session_ctx,
+    ):
+        """Collector should support raw /key/info payloads with spend nested under info."""
+        service = _make_service()
+        api_key = "sk-raw-shape"
+
+        setting = MagicMock()
+        setting.id = "s1"
+        setting.project_name = "raw-shape"
+
+        cred = MagicMock()
+        cred.api_key = api_key
+
+        service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[_make_app("raw-shape")])
+        service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
+        service._tracking_repository.insert_entries = AsyncMock()
+
+        with (
+            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                return_value=cred,
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
+                return_value=_raw_litellm_key_info_payload(
+                    spend=0.0024948,
+                    budget_reset_at="2026-03-24T00:00:00+00:00",
+                    max_budget=1.0,
+                    budget_duration="24h",
+                ),
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                return_value=async_session_ctx(),
+            ),
+        ):
+            mock_settings.get_by_project_names.return_value = [setting]
+            count = await service.collect(target_date=date(2026, 3, 23))
+
+        assert count == 1
+        rows = service._tracking_repository.insert_entries.call_args[0][1]
+        assert rows[0].daily_spend == Decimal("0.0024948")
+        assert rows[0].cumulative_spend == Decimal("0.0024948")
+        assert rows[0].budget_period_spend == Decimal("0.0024948")
+        assert rows[0].budget_reset_at == datetime(2026, 3, 24, 0, 0, tzinfo=timezone.utc)
 
     @pytest.mark.asyncio
     async def test_collect_no_matching_projects(

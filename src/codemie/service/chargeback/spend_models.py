@@ -14,12 +14,12 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import Column, Date, Index, Numeric, UniqueConstraint
+from sqlalchemy import Column, Index, Numeric, UniqueConstraint
 from sqlalchemy.dialects.postgresql import TIMESTAMP, UUID as PG_UUID
 from sqlalchemy.sql import func
 from sqlmodel import Field, SQLModel
@@ -28,8 +28,9 @@ from sqlmodel import Field, SQLModel
 class ProjectCostTracking(SQLModel, table=True):
     """Daily per-key cost tracking row for LiteLLM spend chargeback.
 
-    Stores one row per LiteLLM API key per day. Idempotency is enforced via
-    UNIQUE (key_hash, spend_date) with INSERT ON CONFLICT DO NOTHING.
+    Stores one row per LiteLLM API key per snapshot. ``cumulative_spend`` is the
+    lifetime spend that never resets. ``budget_period_spend`` is the spend value
+    reported by LiteLLM for the active budget period and may reset.
     """
 
     __tablename__ = "project_cost_tracking"
@@ -37,7 +38,9 @@ class ProjectCostTracking(SQLModel, table=True):
     id: UUID = Field(sa_column=Column(PG_UUID(as_uuid=True), primary_key=True))
     project_name: str = Field(nullable=False)
     key_hash: str = Field(nullable=False)
-    spend_date: date = Field(sa_column=Column(Date, nullable=False))
+    spend_date: datetime = Field(
+        sa_column=Column(TIMESTAMP(timezone=True), nullable=False),
+    )
     daily_spend: Decimal = Field(
         sa_column=Column(Numeric(18, 9), nullable=False),
         default=Decimal("0"),
@@ -45,6 +48,14 @@ class ProjectCostTracking(SQLModel, table=True):
     cumulative_spend: Decimal = Field(
         sa_column=Column(Numeric(18, 9), nullable=False),
         default=Decimal("0"),
+    )
+    budget_period_spend: Decimal = Field(
+        sa_column=Column(Numeric(18, 9), nullable=False),
+        default=Decimal("0"),
+    )
+    budget_reset_at: Optional[datetime] = Field(
+        sa_column=Column(TIMESTAMP(timezone=True), nullable=True),
+        default=None,
     )
     # Server default NOW(); nullable in Python so insert dict can omit it and let DB fill it
     created_at: Optional[datetime] = Field(
