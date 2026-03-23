@@ -32,6 +32,7 @@ from codemie.workflows.constants import CONTEXT_STORE_VARIABLE
 class CheckpointSaver(BaseCheckpointSaver):
     """
     Implementation of the BaseCheckpointSaver that uses Postgres as the storage backend.
+    Stores only last state
     Relies on WorkflowExecution > WorkflowExecutionCheckpoint data model for storing the checkpoints.
     """
 
@@ -88,14 +89,17 @@ class CheckpointSaver(BaseCheckpointSaver):
             )
 
     def put(self, config: RunnableConfig, checkpoint: Checkpoint, metadata: CheckpointMetadata, *args):
+        """
+        Updates checkpoints of workflow record. Overwrites all stored checkpoints with most recent one
+        """
         execution_config = self._find_workflow_execution(config["configurable"]["thread_id"])
-        execution_config.checkpoints.append(
+        execution_config.checkpoints = [
             WorkflowExecutionCheckpoint(
                 timestamp=checkpoint['ts'],
                 data=self._serialize(checkpoint),
                 metadata=self._serialize(metadata),
             )
-        )
+        ]
         execution_config.update(refresh=True)
 
         return {"configurable": {"thread_id": config["configurable"]["thread_id"], "thread_ts": checkpoint['ts']}}

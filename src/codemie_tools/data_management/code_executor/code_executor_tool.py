@@ -398,8 +398,6 @@ class CodeExecutorTool(CodeMieTool):
             ToolException: If execution fails, security validation fails,
                           session acquisition fails, or file upload fails
         """
-        logger.debug("*" * 100)
-        logger.debug(f"{self.config=}")
         # Log execution mode and reason
         if self.config.execution_mode == ExecutionMode.LOCAL:
             logger.debug(

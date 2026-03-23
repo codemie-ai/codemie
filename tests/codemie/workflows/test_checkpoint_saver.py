@@ -99,10 +99,10 @@ def test_put(mock_get_execution_by_id, instance, mock_config, mock_workflow_exec
 
     instance.put(config=mock_config, checkpoint={'ts': '123'}, metadata={'metadata': 'test_metadata'})
 
-    assert mock_workflow_execution.checkpoints[1].timestamp == '123'
+    assert mock_workflow_execution.checkpoints[0].timestamp == '123'
     # Verify data is serialized correctly by deserializing and checking value
-    assert instance._deserialize(mock_workflow_execution.checkpoints[1].data) == {'ts': '123'}
-    assert instance._deserialize(mock_workflow_execution.checkpoints[1].metadata) == {'metadata': 'test_metadata'}
+    assert instance._deserialize(mock_workflow_execution.checkpoints[0].data) == {'ts': '123'}
+    assert instance._deserialize(mock_workflow_execution.checkpoints[0].metadata) == {'metadata': 'test_metadata'}
 
     assert mock_workflow_execution.update.called
 
