@@ -51,6 +51,17 @@ from codemie.workflows.models import AgentMessages
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage
 from langgraph.constants import END
 
+# Patterns blocked in condition expressions (checked on expression with string literals stripped)
+_CONDITION_DANGEROUS_PATTERNS: list[str] = [
+    r"\b__import__\b",  # import via builtin
+    r"\bimport\b",
+    r"\beval\b",  # recursive eval
+    r"\bexec\b",  # arbitrary code execution
+    r"\bcompile\b",  # code compilation
+    r"\bopen\s*\(",  # file access
+    r"__\w+__",  # dunder attributes (sandbox escape vectors)
+]
+
 
 def extract_json_content(response: str) -> Optional[Any]:
     """
@@ -387,6 +398,13 @@ def _evaluate_expression(condition: str, local_vars: dict) -> bool:
     """Evaluates a single condition with the given execution result."""
     try:
         logger.debug(f"Evaluate condition. Condition: {condition}. LocalVars: {local_vars}")
+        # Strip string literals before pattern matching to avoid false positives on string values
+        expr_without_strings = re.sub(r"'[^']*'", "''", condition)
+        expr_without_strings = re.sub(r'"[^"]*"', '""', expr_without_strings)
+        for pattern in _CONDITION_DANGEROUS_PATTERNS:
+            if re.search(pattern, expr_without_strings):
+                logger.error(f"Condition expression blocked — dangerous pattern '{pattern}': {condition}")
+                return False
         return bool(eval(condition, {}, local_vars))
     except Exception as e:
         logger.error(f"Error evaluating condition: {condition}. Error: {str(e)}")
