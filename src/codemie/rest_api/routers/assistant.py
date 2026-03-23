@@ -89,6 +89,7 @@ from codemie.service.aws_bedrock.bedrock_agentcore_runtime_service import Bedroc
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
 from codemie.service.mcp.mcp_tester import MCPServerTester
 from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
+from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 from codemie.service.monitoring.metrics_constants import MetricsAttributes, MCP_SERVERS_ASSISTANT_METRIC
 from codemie.service.guardrail.guardrail_service import GuardrailService
 from codemie.service.request_summary_manager import request_summary_manager
@@ -1614,6 +1615,8 @@ def check_mcp_server(request: MCPServerCheckRequest, user: User = Depends(authen
         success, message = MCPServerTester(request, user).test()
 
         return JSONResponse(status_code=status.HTTP_200_OK, content={"success": success, "message": message})
+    except BrokerAuthRequiredException:
+        raise
     except Exception as e:
         raise ExtendedHTTPException(
             code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1989,6 +1992,8 @@ def _ask_assistant(
         )
         _save_error(request_uuid, request, error, user, assistant)
         raise error from mce
+    except BrokerAuthRequiredException:
+        raise
     except Exception as e:
         error = _create_assistant_error(
             "Assistant Error",

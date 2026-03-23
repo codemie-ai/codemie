@@ -18,6 +18,7 @@ from codemie.configs import logger
 from codemie.rest_api.models.assistant import MCPServerDetails, MCPServerCheckRequest
 from codemie.rest_api.security.user import User
 from codemie.service.mcp.toolkit_service import MCPToolkitService
+from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 
 
 class MCPServerTester:
@@ -37,6 +38,8 @@ class MCPServerTester:
 
             logger.info(f"Testing passed for MCP tools from {self.mcp_server.name} server. Tools count={len(tools)}")
             return True, 'Success'
+        except BrokerAuthRequiredException:
+            raise
         except Exception as e:
             # Log error but continue with other MCP servers if this one fails
             return False, f"{str(e)}.\nPlease, check the configuration."
