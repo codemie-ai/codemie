@@ -522,7 +522,7 @@ def _get_key_spending_columns() -> list[dict]:
 
 
 def _build_key_spending_tabular_data(
-    user_email: str,
+    user_identifier: str,
     user_personal_spending: dict | None,
     user_proxy_spending: dict | None,
     user_premium_spending: dict | None,
@@ -535,7 +535,7 @@ def _build_key_spending_tabular_data(
     - Subsequent rows: Individual LiteLLM key details (if any)
 
     Args:
-        user_email: User's email to display as project name for personal budget
+        user_identifier: Best available user label to display for personal budget
         user_personal_spending: Dict with user's personal budget data from get_customer_spending()
                                 Fields: total_spend, max_budget, budget_reset_at
         user_proxy_spending: Dict with user's proxy/CLI budget data from
@@ -559,7 +559,7 @@ def _build_key_spending_tabular_data(
 
         all_rows.append(
             {
-                "project_name": user_email,
+                "project_name": user_identifier,
                 "current_spending": round(current_spend, 2),
                 "budget_reset_at": reset_at if reset_at else None,
                 "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
@@ -575,7 +575,7 @@ def _build_key_spending_tabular_data(
 
         all_rows.append(
             {
-                "project_name": f"{user_email} (premium)",
+                "project_name": f"{user_identifier} (premium)",
                 "current_spending": round(current_spend, 2),
                 "budget_reset_at": reset_at if reset_at else None,
                 "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
@@ -591,7 +591,7 @@ def _build_key_spending_tabular_data(
 
         all_rows.append(
             {
-                "project_name": f"{user_email} (cli)",
+                "project_name": f"{user_identifier} (cli)",
                 "current_spending": round(current_spend, 2),
                 "budget_reset_at": reset_at if reset_at else None,
                 "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
@@ -2418,10 +2418,11 @@ async def get_user_budget_usage(
     # Extract only USER-scoped keys (filter out project keys)
     # Each key now has project_name already enriched by get_user_keys_spending()
     user_keys_spending = keys_spending_data.user_keys if keys_spending_data else []
+    user_budget_label = user.email or user.username or user.id
 
     # Build tabular response structure
     columns, rows = _build_key_spending_tabular_data(
-        user.email,
+        user_budget_label,
         user_personal_spending,
         user_proxy_spending,
         user_premium_spending,
