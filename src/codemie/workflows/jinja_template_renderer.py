@@ -15,9 +15,10 @@
 import json
 from typing import List
 
-from jinja2 import Template, TemplateSyntaxError
+from jinja2 import TemplateSyntaxError
 
 from codemie.configs import logger
+from codemie.core.template_security import render_secure_template
 
 # Default template for summary if none provided
 DEFAULT_TEMPLATE = """# Summary
@@ -78,12 +79,9 @@ class TemplateRenderer:
             # Use provided template or default
             template = template_str if template_str is not None else DEFAULT_TEMPLATE
             logger.debug(f"Using template: {template}.")
-            template_object = Template(template)
+            rendered_content = render_secure_template(template, {"items": json_data_list}, autoescape=False)
         except TemplateSyntaxError as e:
             logger.error(f"Syntax error in {template}, error: {e}")
             raise e
-
-        # Render template with all JSON data
-        rendered_content = template_object.render(items=json_data_list)
 
         return rendered_content

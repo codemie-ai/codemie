@@ -583,6 +583,7 @@ def render_secure_template(
     context_name: str = "template",
     allowed_context_keys: Optional[set[str]] = None,
     validate_input: bool = True,
+    autoescape: bool = True,
 ) -> str:
     """
     Render a Jinja2 template with comprehensive security protections.
@@ -602,6 +603,9 @@ def render_secure_template(
         context_name: Name of the context (for logging)
         allowed_context_keys: Optional set of allowed context keys (whitelist)
         validate_input: Whether to validate template for attack patterns (default: True)
+        autoescape: Whether to HTML-escape variable output (default: True). Set to False
+            for non-HTML contexts such as workflow data transforms where values like
+            "A & B" must not become "A &amp; B".
 
     Returns:
         str: The rendered template string
@@ -641,7 +645,7 @@ def render_secure_template(
         safe_context = sanitize_template_context(context, allowed_context_keys)
 
         # Step 3: Create secure sandbox environment
-        env = RestrictedSandboxEnvironment()
+        env = RestrictedSandboxEnvironment(autoescape=autoescape)
 
         # Step 4: Render template
         template = env.from_string(processed_template)

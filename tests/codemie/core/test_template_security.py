@@ -893,3 +893,55 @@ class TestEdgeCasesAndCornerCases:
         template = '   \n\n   '
         result = render_secure_template(template, {})
         assert result == template
+
+
+class TestAutoescapeParameter:
+    """Tests for the autoescape parameter added to render_secure_template (EPMCDME-10987).
+
+    autoescape=True (default) is appropriate for HTML/system-prompt contexts where
+    XSS prevention matters. autoescape=False is required for non-HTML workflow data
+    (TransformNode, TemplateRenderer) to avoid mangling values that contain '&', '<', '>'.
+    """
+
+    def test_autoescape_true_by_default_escapes_ampersand(self):
+        """Default autoescape=True must HTML-escape '&' to prevent XSS in HTML contexts."""
+        result = render_secure_template("{{ value }}", {"value": "A & B"})
+
+        assert result == "A &amp; B"
+
+    def test_autoescape_true_by_default_escapes_angle_brackets(self):
+        """Default autoescape=True must HTML-escape '<' and '>'."""
+        result = render_secure_template("{{ value }}", {"value": "<b>bold</b>"})
+
+        assert result == "&lt;b&gt;bold&lt;/b&gt;"
+
+    def test_autoescape_false_preserves_ampersand(self):
+        """autoescape=False must not escape '&' — correct for non-HTML workflow output."""
+        result = render_secure_template("{{ value }}", {"value": "A & B"}, autoescape=False)
+
+        assert result == "A & B"
+
+    def test_autoescape_false_preserves_angle_brackets(self):
+        """autoescape=False must not escape '<' and '>' in output."""
+        result = render_secure_template("{{ value }}", {"value": "score <10 or >90"}, autoescape=False)
+
+        assert result == "score <10 or >90"
+
+    def test_autoescape_false_still_blocks_forbidden_patterns(self):
+        """SSTI forbidden patterns must be blocked regardless of the autoescape setting."""
+        payload = "{{ ''.__class__.__mro__[1].__subclasses__() }}"
+
+        with pytest.raises(TemplateSecurityError):
+            render_secure_template(payload, {}, autoescape=False)
+
+    def test_autoescape_false_still_blocks_private_attribute_access_via_sandbox(self):
+        """Sandbox must block private attribute access even when autoescape is disabled.
+
+        validate_input=False bypasses the pattern check so only the RestrictedSandboxEnvironment
+        is responsible for blocking. Accessing __class__ on a string (a '_'-prefixed attribute)
+        must be rejected by is_safe_attribute regardless of the autoescape setting.
+        """
+        payload = "{{ ''.__class__ }}"
+
+        with pytest.raises(TemplateSecurityError):
+            render_secure_template(payload, {}, autoescape=False, validate_input=False)

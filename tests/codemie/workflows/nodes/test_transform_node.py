@@ -997,7 +997,9 @@ class TestTransformNodeErrorHandling:
         custom_node.id = "test-node"
         custom_node.config = {
             'input_source': 'context_store',
-            'mappings': [{'output_field': 'result', 'type': 'template', 'template': '{{ unclosed }'}],
+            'mappings': [
+                {'output_field': 'result', 'type': 'template', 'template': '{% if %}missing condition{% endif %}'}
+            ],
         }
 
         node = TransformNode(
@@ -2164,3 +2166,171 @@ class TestTransformNodeHelperMethods:
         assert isinstance(result, str)
         parsed = json.loads(result)
         assert parsed == output
+
+
+TEMPLATE_SSTI_PAYLOADS = [
+    # MRO traversal to reach Python internals
+    "{{ ''.__class__.__mro__[1].__subclasses__() }}",
+    # __import__ direct call
+    "{{ __import__('os').popen('id').read() }}",
+    # File read via open()
+    "{{ open('/etc/passwd').read() }}",
+    # __globals__ access via class chain
+    "{{ config.__class__.__init__.__globals__ }}",
+]
+
+
+class TestTransformNodeTemplateSecurity:
+    """Security regression tests for EPMCDME-10987.
+
+    Before the fix, _render_template() used jinja2.Template directly (unsandboxed),
+    allowing arbitrary OS command execution via Jinja2 Server-Side Template Injection.
+    After the fix, render_secure_template() with RestrictedSandboxEnvironment is used.
+    """
+
+    def test_exact_rce_exploit_from_ticket_is_blocked(
+        self,
+        mock_callbacks,
+        mock_workflow_execution_service,
+        mock_thought_queue,
+        mock_workflow_state,
+    ):
+        """Exact RCE payload from EPMCDME-10987 must raise TransformationError, not execute."""
+        exploit_template = "Hello {{self._init.globals.builtins.import_('os').popen('whoami').read()}}"
+        custom_node = Mock(spec=CustomWorkflowNode)
+        custom_node.id = "test-rce-node"
+        custom_node.config = {
+            'input_source': 'context_store',
+            'mappings': [{'output_field': 'result', 'type': 'template', 'template': exploit_template}],
+        }
+        node = TransformNode(
+            callbacks=mock_callbacks,
+            workflow_execution_service=mock_workflow_execution_service,
+            thought_queue=mock_thought_queue,
+            workflow_state=mock_workflow_state,
+            custom_node=custom_node,
+        )
+
+        state_schema = {'context_store': {}, 'messages': []}
+
+        with pytest.raises(TransformationError, match="Template security violation"):
+            node.execute(state_schema, {})
+
+    @pytest.mark.parametrize("malicious_template", TEMPLATE_SSTI_PAYLOADS)
+    def test_ssti_payloads_raise_transformation_error(
+        self,
+        malicious_template,
+        mock_callbacks,
+        mock_workflow_execution_service,
+        mock_thought_queue,
+        mock_workflow_state,
+    ):
+        """Known SSTI attack payloads must raise TransformationError, not execute code."""
+        custom_node = Mock(spec=CustomWorkflowNode)
+        custom_node.id = "test-ssti-node"
+        custom_node.config = {
+            'input_source': 'context_store',
+            'mappings': [{'output_field': 'result', 'type': 'template', 'template': malicious_template}],
+        }
+        node = TransformNode(
+            callbacks=mock_callbacks,
+            workflow_execution_service=mock_workflow_execution_service,
+            thought_queue=mock_thought_queue,
+            workflow_state=mock_workflow_state,
+            custom_node=custom_node,
+        )
+
+        state_schema = {'context_store': {}, 'messages': []}
+
+        with pytest.raises(TransformationError, match="Template security violation"):
+            node.execute(state_schema, {})
+
+    def test_template_does_not_html_escape_ampersand(
+        self,
+        mock_callbacks,
+        mock_workflow_execution_service,
+        mock_thought_queue,
+        mock_workflow_state,
+    ):
+        """Template output must not HTML-escape '&' — Transform node output is not HTML."""
+        custom_node = Mock(spec=CustomWorkflowNode)
+        custom_node.id = "test-autoescape-node"
+        custom_node.config = {
+            'input_source': 'context_store',
+            'mappings': [{'output_field': 'result', 'type': 'template', 'template': '{{ status }}'}],
+        }
+        node = TransformNode(
+            callbacks=mock_callbacks,
+            workflow_execution_service=mock_workflow_execution_service,
+            thought_queue=mock_thought_queue,
+            workflow_state=mock_workflow_state,
+            custom_node=custom_node,
+        )
+
+        state_schema = {'context_store': {'status': 'open & running'}, 'messages': []}
+        result = node.execute(state_schema, {})
+
+        assert result['result'] == 'open & running'
+        assert '&amp;' not in result['result']
+
+    def test_template_does_not_html_escape_angle_brackets(
+        self,
+        mock_callbacks,
+        mock_workflow_execution_service,
+        mock_thought_queue,
+        mock_workflow_state,
+    ):
+        """Template output must not HTML-escape '<' or '>' — Transform node output is not HTML."""
+        custom_node = Mock(spec=CustomWorkflowNode)
+        custom_node.id = "test-autoescape-angle-node"
+        custom_node.config = {
+            'input_source': 'context_store',
+            'mappings': [{'output_field': 'result', 'type': 'template', 'template': '{{ description }}'}],
+        }
+        node = TransformNode(
+            callbacks=mock_callbacks,
+            workflow_execution_service=mock_workflow_execution_service,
+            thought_queue=mock_thought_queue,
+            workflow_state=mock_workflow_state,
+            custom_node=custom_node,
+        )
+
+        state_schema = {'context_store': {'description': 'score <10 or >90'}, 'messages': []}
+        result = node.execute(state_schema, {})
+
+        assert result['result'] == 'score <10 or >90'
+        assert '&lt;' not in result['result']
+        assert '&gt;' not in result['result']
+
+    def test_legitimate_template_renders_correctly_in_sandbox(
+        self,
+        mock_callbacks,
+        mock_workflow_execution_service,
+        mock_thought_queue,
+        mock_workflow_state,
+    ):
+        """Sandboxed rendering must not break legitimate template variable substitution."""
+        custom_node = Mock(spec=CustomWorkflowNode)
+        custom_node.id = "test-legit-template-node"
+        custom_node.config = {
+            'input_source': 'context_store',
+            'mappings': [
+                {
+                    'output_field': 'greeting',
+                    'type': 'template',
+                    'template': 'Hello {{ name }}, your status is {{ status }}',
+                }
+            ],
+        }
+        node = TransformNode(
+            callbacks=mock_callbacks,
+            workflow_execution_service=mock_workflow_execution_service,
+            thought_queue=mock_thought_queue,
+            workflow_state=mock_workflow_state,
+            custom_node=custom_node,
+        )
+
+        state_schema = {'context_store': {'name': 'Alice', 'status': 'active'}, 'messages': []}
+        result = node.execute(state_schema, {})
+
+        assert result == {'greeting': 'Hello Alice, your status is active'}

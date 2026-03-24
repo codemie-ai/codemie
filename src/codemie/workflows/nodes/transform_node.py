@@ -16,9 +16,11 @@ import json
 import re
 from typing import Any, Optional, Type
 
-from jinja2 import Template, TemplateSyntaxError
+from jinja2 import TemplateSyntaxError
+
 
 from codemie.configs import logger
+from codemie.core.template_security import TemplateSecurityError, render_secure_template
 from codemie.core.thought_queue import ThoughtQueue
 from codemie.core.workflow_models import CustomWorkflowNode, WorkflowState
 from codemie.service.workflow_execution import WorkflowExecutionService
@@ -494,25 +496,34 @@ class TransformNode(BaseNode[AgentMessages]):
         return expr
 
     def _render_template(self, source_data: dict, template: str) -> str:
-        """Render Jinja2 template.
+        """Render Jinja2 template in a restricted sandbox to prevent SSTI/RCE.
+
+        Supported: variable substitution ({{ var }}), conditionals ({% if %}),
+        loops ({% for %}), and standard filters (|length, |upper, |join, etc.).
+
+        Blocked: access to Python internals (__class__, __import__, etc.),
+        OS/subprocess calls (os., open(), popen()), and private attributes (_x).
+        Violations raise TransformationError("Template security violation: ...").
+
+        Output is not HTML-escaped — transform output is plain workflow data.
 
         Args:
-            source_data: Data to use in template rendering
+            source_data: Data available as template variables
             template: Jinja2 template string
 
         Returns:
             str: Rendered template
 
         Raises:
-            TransformationError: If template rendering fails
+            TransformationError: If rendering fails or a security violation is detected
         """
         if not template:
             return ""
 
         try:
-            template_obj = Template(template)
-            rendered = template_obj.render(source_data)
-            return rendered
+            return render_secure_template(template, source_data, autoescape=False)
+        except TemplateSecurityError as e:
+            raise TransformationError(f"Template security violation: {str(e)}") from e
         except TemplateSyntaxError as e:
             raise TransformationError(f"Template syntax error: {str(e)}") from e
         except Exception as e:
