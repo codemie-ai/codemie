@@ -179,19 +179,23 @@ class TestMetricNameToListFromGroup:
 
         Arrange: SUMMARY_METRICS group
         Act: Call to_list_from_group
-        Assert: Returns correct list of 6 summary metric strings (includes both old and new CLI metrics)
+        Assert: Returns correct list of 10 summary metric strings (includes CLI, MCP, webhook, skill metrics)
         """
         # Arrange & Act
         result = MetricName.to_list_from_group(MetricName.SUMMARY_METRICS)
 
         # Assert
-        assert len(result) == 6
+        assert len(result) == 10
         assert "conversation_assistant_usage" in result
         assert "datasource_tokens_usage" in result
         assert "workflow_execution_total" in result
         assert "codemie_cli_tool_usage_total" in result  # NEW CLI metric (primary)
         assert "codemie_cli_usage_total" in result  # OLD CLI metric (backward compatibility)
         assert "codemie_litellm_proxy_usage" in result  # CLI LLM proxy metric
+        assert "create_assistant" in result  # MCP create metric
+        assert "update_assistant" in result  # MCP update metric
+        assert "webhook_invocation_total" in result  # Webhook metric
+        assert "codemie_skill_tool_invoked" in result  # Skill metric
 
     def test_to_list_from_group_tools_metrics(self):
         """Verify TOOLS_METRICS group conversion.
@@ -311,12 +315,13 @@ class TestMetricGroups:
     def test_summary_metrics_group_is_defined(self):
         """Verify SUMMARY_METRICS constant structure.
 
-        Assert: Exists, is a list, contains correct 6 MetricName members (includes both old and new CLI metrics)
+        Assert: Exists, is a list, contains correct 10 MetricName members
+        (includes CLI, MCP, webhook, and skill metrics)
         """
         # Assert
         assert hasattr(MetricName, 'SUMMARY_METRICS')
         assert isinstance(MetricName.SUMMARY_METRICS, list)
-        assert len(MetricName.SUMMARY_METRICS) == 6
+        assert len(MetricName.SUMMARY_METRICS) == 10
 
         assert MetricName.CONVERSATION_ASSISTANT_USAGE in MetricName.SUMMARY_METRICS
         assert MetricName.DATASOURCE_TOKENS_USAGE in MetricName.SUMMARY_METRICS
@@ -326,6 +331,10 @@ class TestMetricGroups:
             MetricName.CLI_COMMAND_EXECUTION_TOTAL in MetricName.SUMMARY_METRICS
         )  # OLD CLI metric (backward compatibility)
         assert MetricName.CLI_LLM_USAGE_TOTAL in MetricName.SUMMARY_METRICS  # CLI LLM proxy metric
+        assert MetricName.MCP_CREATE_ASSISTANT in MetricName.SUMMARY_METRICS
+        assert MetricName.MCP_UPDATE_ASSISTANT in MetricName.SUMMARY_METRICS
+        assert MetricName.WEBHOOK_INVOCATION_TOTAL in MetricName.SUMMARY_METRICS
+        assert MetricName.SKILL_TOOL_INVOKED in MetricName.SUMMARY_METRICS
 
     def test_tools_metrics_group_is_defined(self):
         """Verify TOOLS_METRICS constant structure.
@@ -448,7 +457,7 @@ class TestMetricNameIntegration:
         Act: Call both methods
         Assert: Results are equivalent (order may differ)
         """
-        # Arrange & Act - Include all CLI metrics to match SUMMARY_METRICS
+        # Arrange & Act - Include all 10 metrics to match SUMMARY_METRICS
         explicit_result = MetricName.to_list(
             MetricName.CONVERSATION_ASSISTANT_USAGE,
             MetricName.DATASOURCE_TOKENS_USAGE,
@@ -456,6 +465,10 @@ class TestMetricNameIntegration:
             MetricName.CLI_TOOL_USAGE_TOTAL,  # New CLI metric
             MetricName.CLI_COMMAND_EXECUTION_TOTAL,  # Old CLI metric
             MetricName.CLI_LLM_USAGE_TOTAL,
+            MetricName.MCP_CREATE_ASSISTANT,
+            MetricName.MCP_UPDATE_ASSISTANT,
+            MetricName.WEBHOOK_INVOCATION_TOTAL,
+            MetricName.SKILL_TOOL_INVOKED,
         )
 
         group_result = MetricName.to_list_from_group(MetricName.SUMMARY_METRICS)

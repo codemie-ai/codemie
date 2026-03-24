@@ -160,12 +160,13 @@ class SecureQueryBuilder:
         # Note: If should_clauses is empty, minimum_should_match=0 returns 0 results (safe)
         return {"bool": {"should": should_clauses, "minimum_should_match": 1 if should_clauses else 0}}
 
-    def add_time_range(self, start: datetime, end: datetime) -> SecureQueryBuilder:
+    def add_time_range(self, start: datetime, end: datetime, timestamp_field: str = "@timestamp") -> SecureQueryBuilder:
         """Add time range filter to query.
 
         Args:
             start: Start datetime for range filter
             end: End datetime for range filter
+            timestamp_field: Elasticsearch field to filter on (default: "@timestamp")
 
         Returns:
             Self for method chaining
@@ -173,7 +174,7 @@ class SecureQueryBuilder:
         self._query["bool"]["filter"].append(
             {
                 "range": {
-                    "@timestamp": {
+                    timestamp_field: {
                         "gte": start.isoformat(),
                         "lte": end.isoformat(),
                         "format": "strict_date_optional_time",

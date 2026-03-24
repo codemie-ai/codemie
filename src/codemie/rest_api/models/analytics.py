@@ -55,6 +55,7 @@ class Metric(BaseModel):
     value: Any = Field(..., description="Metric value")
     format: str | None = Field(None, description="Display format hint")
     description: str | None = Field(None, description="Metric description")
+    fixed_timeframe: str | None = Field(None, description="Fixed time window this metric always reflects")
     secondary_metrics: list['Metric'] | None = Field(None, description="Nested secondary metrics for hierarchical data")
 
 
@@ -116,6 +117,7 @@ class TabularResponse(BaseModel):
     data: TabularData = Field(..., description="Tabular data")
     metadata: ResponseMetadata = Field(..., description=RESPONSE_METADATA_DESC)
     pagination: PaginationMetadata | None = Field(None, description="Pagination info")
+    fixed_timeframe: str | None = Field(None, description="Fixed time window this response always reflects")
 
 
 class CliSummaryData(BaseModel):

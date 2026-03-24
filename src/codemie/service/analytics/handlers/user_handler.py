@@ -265,6 +265,197 @@ class UserHandler(CLICostAdjustmentMixin):
             {"id": "total_cost_usd", "label": "Total Cost ($)", "type": "number", "format": "currency"},
         ]
 
+    async def get_users_platform_spending(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get platform spending per user (Assistants + Workflows + Datasources, no CLI).
+
+        Groups by user_email and sums money_spent for platform metrics only.
+
+        Args:
+            time_period: Predefined time range
+            start_date: Custom range start
+            end_date: Custom range end
+            users: Filter by specific users (optional)
+            projects: Filter by specific projects (optional)
+            page: Page number for pagination
+            per_page: Number of results per page
+
+        Returns:
+            Tabular response with columns: user_email, total_cost_usd
+        """
+        logger.info("Requesting users-platform-spending analytics")
+
+        platform_metrics = MetricName.to_list(
+            MetricName.CONVERSATION_ASSISTANT_USAGE,
+            MetricName.WORKFLOW_EXECUTION_TOTAL,
+            MetricName.DATASOURCE_TOKENS_USAGE,
+        )
+
+        def parse_platform(result: dict) -> list[dict]:
+            return self._parse_simple_spending_result(result, "user_email")
+
+        return await self._pipeline.execute_tabular_query(
+            agg_builder=lambda query, fetch_size: self._build_simple_spending_aggregation(
+                query, fetch_size, USER_EMAIL_KEYWORD_FIELD
+            ),
+            result_parser=parse_platform,
+            columns=self._get_users_spending_columns(),
+            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            metric_filters=platform_metrics,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+            use_bucket_selector=False,
+        )
+
+    async def get_users_cli_spending(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get CLI-only spending per user (grouped by user_name).
+
+        Filters to codemie_litellm_proxy_usage with cli_request=true
+        and groups by attributes.user_name.keyword.
+
+        Args:
+            time_period: Predefined time range
+            start_date: Custom range start
+            end_date: Custom range end
+            users: Filter by specific users (optional)
+            projects: Filter by specific projects (optional)
+            page: Page number for pagination
+            per_page: Number of results per page
+
+        Returns:
+            Tabular response with columns: user_name, total_cost_usd
+        """
+        logger.info("Requesting users-cli-spending analytics")
+
+        from codemie.service.analytics.handlers.field_constants import USER_NAME_KEYWORD_FIELD
+
+        return await self._pipeline.execute_tabular_query(
+            agg_builder=lambda query, fetch_size: self._build_cli_spending_aggregation(query, fetch_size),
+            result_parser=self._parse_cli_spending_result,
+            columns=self._get_cli_spending_columns(),
+            group_by_field=USER_NAME_KEYWORD_FIELD,
+            metric_filters=MetricName.to_list(MetricName.CLI_LLM_USAGE_TOTAL),
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+            use_bucket_selector=True,
+        )
+
+    def _build_simple_spending_aggregation(self, query: dict, fetch_size: int, group_by_field: str) -> dict:
+        """Build terms aggregation for simple spending (sum money_spent, no CLI adjustment)."""
+        from codemie.service.analytics.aggregation_builder import AggregationBuilder
+
+        sub_aggs = {
+            "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
+        }
+
+        terms_agg = AggregationBuilder.build_terms_agg(
+            group_by_field=group_by_field,
+            fetch_size=fetch_size,
+            order={"total_cost": "desc"},
+            sub_aggs=sub_aggs,
+        )
+
+        return {
+            "query": query,
+            "size": 0,
+            "aggs": {"paginated_results": terms_agg},
+        }
+
+    def _parse_simple_spending_result(self, result: dict, field_name: str) -> list[dict]:
+        """Parse simple spending result (no CLI adjustment)."""
+        buckets = result.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
+        rows = []
+
+        for bucket in buckets:
+            key = bucket.get("key", "")
+            if not key:
+                continue
+            total_cost = bucket.get("total_cost", {}).get("value", 0) or 0
+            rows.append({field_name: key, "total_cost_usd": round(total_cost, 2)})
+
+        logger.debug(f"Parsed simple-spending result: total_buckets={len(buckets)}, rows_parsed={len(rows)}")
+        return rows
+
+    def _build_cli_spending_aggregation(self, query: dict, fetch_size: int) -> dict:
+        """Build terms aggregation for CLI spending, filtered to cli_request=true."""
+        from codemie.service.analytics.aggregation_builder import AggregationBuilder
+        from codemie.service.analytics.handlers.field_constants import USER_NAME_KEYWORD_FIELD
+
+        sub_aggs = {
+            "cli_request_filter": {
+                "filter": {"term": {CLI_REQUEST_FIELD: True}},
+                "aggs": {"total_cost": {"sum": {"field": MONEY_SPENT_FIELD}}},
+            },
+            "has_cli_request": {
+                "bucket_selector": {
+                    "buckets_path": {"cost": "cli_request_filter>total_cost"},
+                    "script": "params.cost > 0",
+                }
+            },
+        }
+
+        terms_agg = AggregationBuilder.build_terms_agg(
+            group_by_field=USER_NAME_KEYWORD_FIELD,
+            fetch_size=fetch_size,
+            order={"cli_request_filter>total_cost": "desc"},
+            sub_aggs=sub_aggs,
+        )
+
+        return {
+            "query": query,
+            "size": 0,
+            "aggs": {"paginated_results": terms_agg},
+        }
+
+    def _parse_cli_spending_result(self, result: dict) -> list[dict]:
+        """Parse CLI spending result grouped by user_name."""
+        buckets = result.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
+        rows = []
+
+        for bucket in buckets:
+            user_name = bucket.get("key", "")
+            if not user_name:
+                continue
+            total_cost = bucket.get("cli_request_filter", {}).get("total_cost", {}).get("value", 0) or 0
+            rows.append({"user_name": user_name, "total_cost_usd": round(total_cost, 2)})
+
+        logger.debug(f"Parsed cli-spending result: total_buckets={len(buckets)}, rows_parsed={len(rows)}")
+        return rows
+
+    def _get_cli_spending_columns(self) -> list[dict]:
+        """Get column definitions for CLI spending."""
+        return [
+            {"id": "user_name", "label": "User Name", "type": "string"},
+            {"id": "total_cost_usd", "label": "CLI Cost ($)", "type": "number", "format": "currency"},
+        ]
+
     async def get_users_activity(
         self,
         time_period: str | None = None,

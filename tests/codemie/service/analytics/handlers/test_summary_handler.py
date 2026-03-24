@@ -60,38 +60,29 @@ class TestGetSummaries:
         mock_repository.execute_aggregation_query.side_effect = [
             # First call: unique_users query
             {"aggregations": {"unique_users": {"value": 12}}},
-            # Second call: main query with nested structure
+            # Second call: main query
             {
                 "aggregations": {
-                    "web_llm_tokens": {
-                        "input_tokens": {"value": 80000},
-                        "cached_input_tokens": {"value": 15000},
-                        "output_tokens": {"value": 40000},
-                    },
-                    "cli_tokens": {
-                        "cli_input_tokens": {"value": 20000},
-                        "cli_cached_input_tokens": {"value": 5000},
-                        "cli_output_tokens": {"value": 10000},
+                    "total_tokens_agg": {
+                        "input_tokens": {"value": 100000},
+                        "output_tokens": {"value": 50000},
+                        "cache_read_input_tokens": {"value": 20000},
+                        "cache_creation_tokens": {"value": 0},
                     },
                     "total_money_spent": {"sum": {"value": 123.456}},
+                    "platform_llm_cost": {"money_spent": {"value": 97.956}},
                     "unique_assistants": {"count": {"value": 100}},
                     "unique_workflows": {"count": {"value": 50}},
                     "embedding_metrics": {
                         "input_tokens": {"value": 5000},
                         "money_spent": {"value": 0.5},
                     },
-                    "llm_cost": {
-                        "money_spent": {"value": 122.956},
-                    },
-                    "cli_cost": {
-                        "money_spent": {"value": 25.50},
-                    },
-                }
-            },
-            # Third call: CLI costs query (separate query with adjusted dates)
-            {
-                "aggregations": {
-                    "total_cost": {"value": 25.50},
+                    "cli_cost": {"money_spent": {"value": 25.50}},
+                    "cli_invoked": {"doc_count": 10},
+                    "cli_unique_sessions": {"count": {"value": 3}},
+                    "mcps_invoked": {"count": {"value": 2}},
+                    "webhooks_invoked": {"count": {"value": 5}},
+                    "skills_invoked": {"count": {"value": 7}},
                 }
             },
         ]
@@ -104,8 +95,8 @@ class TestGetSummaries:
         assert "data" in result
         assert "metrics" in result["data"]
         assert "metadata" in result
-        # Verify repository was called three times (unique_users + main + CLI costs)
-        assert mock_repository.execute_aggregation_query.call_count == 3
+        # Verify repository was called twice (unique_users + main)
+        assert mock_repository.execute_aggregation_query.call_count == 2
 
     @pytest.mark.asyncio
     @patch("codemie.service.analytics.handlers.cli_cost_processor.config.CLI_METRICS_CUTOFF_DATE", "2024-01-01")
@@ -116,38 +107,29 @@ class TestGetSummaries:
         mock_repository.execute_aggregation_query.side_effect = [
             # First call: unique_users query
             {"aggregations": {"unique_users": {"value": 0}}},
-            # Second call: main query with nested structure
+            # Second call: main query
             {
                 "aggregations": {
-                    "web_llm_tokens": {
+                    "total_tokens_agg": {
                         "input_tokens": {"value": 0},
-                        "cached_input_tokens": {"value": 0},
                         "output_tokens": {"value": 0},
-                    },
-                    "cli_tokens": {
-                        "cli_input_tokens": {"value": 0},
-                        "cli_cached_input_tokens": {"value": 0},
-                        "cli_output_tokens": {"value": 0},
+                        "cache_read_input_tokens": {"value": 0},
+                        "cache_creation_tokens": {"value": 0},
                     },
                     "total_money_spent": {"sum": {"value": 0.0}},
+                    "platform_llm_cost": {"money_spent": {"value": 0.0}},
                     "unique_assistants": {"count": {"value": 0}},
                     "unique_workflows": {"count": {"value": 0}},
                     "embedding_metrics": {
                         "input_tokens": {"value": 0},
                         "money_spent": {"value": 0.0},
                     },
-                    "llm_cost": {
-                        "money_spent": {"value": 0.0},
-                    },
-                    "cli_cost": {
-                        "money_spent": {"value": 0.0},
-                    },
-                }
-            },
-            # Third call: CLI costs query (separate query with adjusted dates)
-            {
-                "aggregations": {
-                    "total_cost": {"value": 0.0},
+                    "cli_cost": {"money_spent": {"value": 0.0}},
+                    "cli_invoked": {"doc_count": 0},
+                    "cli_unique_sessions": {"count": {"value": 0}},
+                    "mcps_invoked": {"count": {"value": 0}},
+                    "webhooks_invoked": {"count": {"value": 0}},
+                    "skills_invoked": {"count": {"value": 0}},
                 }
             },
         ]
@@ -156,9 +138,8 @@ class TestGetSummaries:
         result = await handler.get_summaries(time_period="last_7_days")
 
         # Assert
-        # Verify that repository was called three times (unique_users + main + CLI costs)
-        assert mock_repository.execute_aggregation_query.call_count == 3
-        # The pipeline internally uses SUMMARY_METRICS filters (includes CLI_COMMAND_EXECUTION_TOTAL)
+        # Verify that repository was called twice (unique_users + main)
+        assert mock_repository.execute_aggregation_query.call_count == 2
         assert result is not None
 
 
@@ -178,34 +159,29 @@ class TestAggregationBuilder:
         assert agg_body["size"] == 0  # Aggregation only, no docs
         assert "aggs" in agg_body
 
-        # Verify 8 aggregations exist (web_llm_tokens, cli_tokens, total_money_spent, 2 unique counts, embeddings, llm_cost, cli_cost)
-        assert len(agg_body["aggs"]) == 8
-        assert "web_llm_tokens" in agg_body["aggs"]
-        assert "cli_tokens" in agg_body["aggs"]
+        # Verify 11 aggregations exist
+        assert len(agg_body["aggs"]) == 11
+        assert "total_tokens_agg" in agg_body["aggs"]
         assert "total_money_spent" in agg_body["aggs"]
+        assert "platform_llm_cost" in agg_body["aggs"]
         assert "unique_assistants" in agg_body["aggs"]
         assert "unique_workflows" in agg_body["aggs"]
         assert "embedding_metrics" in agg_body["aggs"]
-        assert "llm_cost" in agg_body["aggs"]
         assert "cli_cost" in agg_body["aggs"]
+        assert "cli_invoked" in agg_body["aggs"]
+        assert "mcps_invoked" in agg_body["aggs"]
+        assert "webhooks_invoked" in agg_body["aggs"]
+        assert "skills_invoked" in agg_body["aggs"]
 
-        # Verify web_llm_tokens has nested structure with filter
-        web_llm_aggs = agg_body["aggs"]["web_llm_tokens"]["aggs"]
-        assert "input_tokens" in web_llm_aggs
-        assert "output_tokens" in web_llm_aggs
-        assert "cached_input_tokens" in web_llm_aggs
-        assert web_llm_aggs["input_tokens"]["sum"]["field"] == "attributes.input_tokens"
-        assert web_llm_aggs["cached_input_tokens"]["sum"]["field"] == "attributes.cache_read_input_tokens"
-        assert web_llm_aggs["output_tokens"]["sum"]["field"] == "attributes.output_tokens"
-
-        # Verify CLI tokens are nested in cli_tokens bucket with filter
-        cli_tokens_aggs = agg_body["aggs"]["cli_tokens"]["aggs"]
-        assert "cli_input_tokens" in cli_tokens_aggs
-        assert "cli_output_tokens" in cli_tokens_aggs
-        assert "cli_cached_input_tokens" in cli_tokens_aggs
-        assert cli_tokens_aggs["cli_input_tokens"]["sum"]["field"] == "attributes.input_tokens"
-        assert cli_tokens_aggs["cli_cached_input_tokens"]["sum"]["field"] == "attributes.cache_read_input_tokens"
-        assert cli_tokens_aggs["cli_output_tokens"]["sum"]["field"] == "attributes.output_tokens"
+        # Verify total_tokens_agg has nested structure with filter
+        tokens_aggs = agg_body["aggs"]["total_tokens_agg"]["aggs"]
+        assert "input_tokens" in tokens_aggs
+        assert "output_tokens" in tokens_aggs
+        assert "cache_read_input_tokens" in tokens_aggs
+        assert "cache_creation_tokens" in tokens_aggs
+        assert tokens_aggs["input_tokens"]["sum"]["field"] == "attributes.input_tokens"
+        assert tokens_aggs["cache_read_input_tokens"]["sum"]["field"] == "attributes.cache_read_input_tokens"
+        assert tokens_aggs["output_tokens"]["sum"]["field"] == "attributes.output_tokens"
 
         # Verify money spent has nested structure with filter (to exclude OLD CLI metric)
         assert "filter" in agg_body["aggs"]["total_money_spent"]
@@ -217,70 +193,68 @@ class TestMetricsBuilder:
     """Tests for metrics builder methods."""
 
     def test_build_summaries_metrics_parses_es_result(self, handler):
-        """Verify metrics are extracted from ES result correctly (web LLM + CLI + embeddings + unique counts)."""
+        """Verify metrics are extracted from ES result correctly."""
         # Arrange
         result = {
             "aggregations": {
-                "web_llm_tokens": {
-                    "input_tokens": {"value": 80000},
-                    "cached_input_tokens": {"value": 15000},
-                    "output_tokens": {"value": 40000},
-                },
-                "cli_tokens": {
-                    "cli_input_tokens": {"value": 20000},
-                    "cli_cached_input_tokens": {"value": 5000},
-                    "cli_output_tokens": {"value": 10000},
+                "total_tokens_agg": {
+                    "input_tokens": {"value": 100000},
+                    "output_tokens": {"value": 50000},
+                    "cache_read_input_tokens": {"value": 20000},
+                    "cache_creation_tokens": {"value": 1000},
                 },
                 "total_money_spent": {"sum": {"value": 123.456}},
+                "platform_llm_cost": {"money_spent": {"value": 97.956}},
                 "unique_assistants": {"count": {"value": 100}},
                 "unique_workflows": {"count": {"value": 50}},
                 "embedding_metrics": {
                     "input_tokens": {"value": 5000},
                     "money_spent": {"value": 0.5},
                 },
-                "llm_cost": {
-                    "money_spent": {"value": 122.956},
-                },
-                "cli_cost": {
-                    "money_spent": {"value": 25.50},
-                },
+                "cli_cost": {"money_spent": {"value": 25.50}},
+                "cli_invoked": {"doc_count": 10},
+                "cli_unique_sessions": {"count": {"value": 3}},
+                "mcps_invoked": {"count": {"value": 2}},
+                "webhooks_invoked": {"count": {"value": 5}},
+                "skills_invoked": {"count": {"value": 7}},
             }
         }
 
         # Act
         metrics = handler._build_summaries_metrics(result, unique_users_count=12)
 
-        # Assert
-        assert len(metrics) == 11  # 3 LLM token metrics + 1 embedding token + 3 unique counts + 4 cost metrics
+        # Assert - 14 metrics total
+        assert len(metrics) == 14
 
-        # Verify input tokens metric (web + CLI, LLM only)
+        # Verify input tokens metric
         input_metric = next(m for m in metrics if m["id"] == "total_input_tokens")
         assert input_metric["label"] == "LLM Input Tokens"
         assert input_metric["type"] == "number"
-        assert input_metric["value"] == 100000  # 80000 + 20000
+        assert input_metric["value"] == 100000
         assert input_metric["format"] == "number"
 
-        # Verify cached input tokens metric (web + CLI, LLM only)
+        # Verify cached input tokens metric
         cached_metric = next(m for m in metrics if m["id"] == "total_cached_input_tokens")
-        assert cached_metric["value"] == 20000  # 15000 + 5000
+        assert cached_metric["value"] == 20000
 
-        # Verify output tokens metric (web + CLI, LLM only)
+        # Verify output tokens metric
         output_metric = next(m for m in metrics if m["id"] == "total_output_tokens")
-        assert output_metric["value"] == 50000  # 40000 + 10000
+        assert output_metric["value"] == 50000
 
-        # Verify embedding metrics
-        embedding_tokens_metric = next(m for m in metrics if m["id"] == "embedding_input_tokens")
-        assert embedding_tokens_metric["value"] == 5000
+        # Verify total tokens (input + output + cached + cache_creation)
+        total_metric = next(m for m in metrics if m["id"] == "total_tokens")
+        assert total_metric["value"] == 171000  # 100000 + 50000 + 20000 + 1000
 
         # Verify unique counts
-        unique_users_metric = next(m for m in metrics if m["id"] == "unique_active_users")
-        assert unique_users_metric["value"] == 12
-
         unique_assistants_metric = next(m for m in metrics if m["id"] == "unique_assistants_invoked")
         assert unique_assistants_metric["value"] == 100
 
         unique_workflows_metric = next(m for m in metrics if m["id"] == "unique_workflows_invoked")
         assert unique_workflows_metric["value"] == 50
+
+        # Verify CLI metrics
+        cli_invoked_metric = next(m for m in metrics if m["id"] == "cli_invoked")
+        assert cli_invoked_metric["value"] == 10
 
     def test_build_summaries_metrics_handles_missing_aggregations(self, handler):
         """Verify graceful handling when ES returns no aggregations."""
@@ -291,7 +265,7 @@ class TestMetricsBuilder:
         metrics = handler._build_summaries_metrics(result, unique_users_count=0)
 
         # Assert
-        assert len(metrics) == 11
+        assert len(metrics) == 14
         # All values should default to 0 or 0.0
         for metric in metrics:
             assert metric["value"] == 0 or metric["value"] == 0.0
@@ -303,12 +277,16 @@ class TestMetricsBuilder:
         # This test verifies behavior when value key is missing entirely (uses default 0)
         result = {
             "aggregations": {
-                "web_llm_tokens": {},  # Missing nested aggs
-                "cli_tokens": {},
+                "total_tokens_agg": {},  # Missing nested aggs
                 "total_money_spent": {},
+                "platform_llm_cost": {},
                 "embedding_metrics": {},
-                "llm_cost": {},
                 "cli_cost": {},
+                "cli_invoked": {},
+                "cli_unique_sessions": {},
+                "mcps_invoked": {},
+                "webhooks_invoked": {},
+                "skills_invoked": {},
             }
         }
 
@@ -316,38 +294,36 @@ class TestMetricsBuilder:
         metrics = handler._build_summaries_metrics(result, unique_users_count=0)
 
         # Assert
-        assert len(metrics) == 11
+        assert len(metrics) == 14
         # When value key is missing, .get("value", 0) returns 0
         for metric in metrics:
             assert metric["value"] == 0 or metric["value"] == 0.0
 
     def test_build_summaries_metrics_combines_web_and_cli_tokens(self, handler):
-        """Verify metrics correctly sum web LLM + CLI token values (excludes embeddings)."""
-        # Arrange
+        """Verify metrics are extracted from combined token aggregation."""
+        # Arrange - tokens are combined in total_tokens_agg (excludes legacy CLI metric)
         result = {
             "aggregations": {
-                "web_llm_tokens": {
-                    "input_tokens": {"value": 50000},
-                    "cached_input_tokens": {"value": 10000},
-                    "output_tokens": {"value": 25000},
+                "total_tokens_agg": {
+                    "input_tokens": {"value": 80000},  # web + CLI combined
+                    "output_tokens": {"value": 40000},
+                    "cache_read_input_tokens": {"value": 18000},
+                    "cache_creation_tokens": {"value": 0},
                 },
-                "cli_tokens": {
-                    "cli_input_tokens": {"value": 30000},
-                    "cli_cached_input_tokens": {"value": 8000},
-                    "cli_output_tokens": {"value": 15000},
-                },
+                "total_money_spent": {"sum": {"value": 0.0}},
+                "platform_llm_cost": {"money_spent": {"value": 75.25}},
                 "unique_assistants": {"count": {"value": 75}},
                 "unique_workflows": {"count": {"value": 25}},
                 "embedding_metrics": {
                     "input_tokens": {"value": 2000},
                     "money_spent": {"value": 0.25},
                 },
-                "llm_cost": {
-                    "money_spent": {"value": 75.25},
-                },
-                "cli_cost": {
-                    "money_spent": {"value": 30.00},
-                },
+                "cli_cost": {"money_spent": {"value": 30.00}},
+                "cli_invoked": {"doc_count": 0},
+                "cli_unique_sessions": {"count": {"value": 0}},
+                "mcps_invoked": {"count": {"value": 0}},
+                "webhooks_invoked": {"count": {"value": 0}},
+                "skills_invoked": {"count": {"value": 0}},
             }
         }
 
@@ -355,26 +331,19 @@ class TestMetricsBuilder:
         metrics = handler._build_summaries_metrics(result, unique_users_count=5)
 
         # Assert
-        assert len(metrics) == 11
+        assert len(metrics) == 14
 
-        # Verify combined LLM values (excludes embeddings)
+        # Verify token values (from combined total_tokens_agg)
         input_metric = next(m for m in metrics if m["id"] == "total_input_tokens")
-        assert input_metric["value"] == 80000  # 50000 (web LLM) + 30000 (CLI)
+        assert input_metric["value"] == 80000
 
         cached_metric = next(m for m in metrics if m["id"] == "total_cached_input_tokens")
-        assert cached_metric["value"] == 18000  # 10000 (web LLM) + 8000 (CLI)
+        assert cached_metric["value"] == 18000
 
         output_metric = next(m for m in metrics if m["id"] == "total_output_tokens")
-        assert output_metric["value"] == 40000  # 25000 (web LLM) + 15000 (CLI)
-
-        # Verify embedding metrics are separate
-        embedding_tokens_metric = next(m for m in metrics if m["id"] == "embedding_input_tokens")
-        assert embedding_tokens_metric["value"] == 2000
+        assert output_metric["value"] == 40000
 
         # Verify unique counts
-        unique_users_metric = next(m for m in metrics if m["id"] == "unique_active_users")
-        assert unique_users_metric["value"] == 5
-
         unique_assistants_metric = next(m for m in metrics if m["id"] == "unique_assistants_invoked")
         assert unique_assistants_metric["value"] == 75
 
@@ -383,32 +352,29 @@ class TestMetricsBuilder:
 
     def test_build_summaries_metrics_handles_missing_cli_fields(self, handler):
         """Verify graceful handling when only web LLM metrics exist (no CLI data)."""
-        # Arrange - Web-only user scenario
+        # Arrange - Web-only user scenario (CLI cost = 0, but all tokens in total_tokens_agg)
         result = {
             "aggregations": {
-                "web_llm_tokens": {
+                "total_tokens_agg": {
                     "input_tokens": {"value": 60000},
-                    "cached_input_tokens": {"value": 12000},
                     "output_tokens": {"value": 30000},
-                },
-                "cli_tokens": {
-                    "cli_input_tokens": {"value": 0},  # No CLI usage
-                    "cli_cached_input_tokens": {"value": 0},  # No CLI usage
-                    "cli_output_tokens": {"value": 0},  # No CLI usage
+                    "cache_read_input_tokens": {"value": 12000},
+                    "cache_creation_tokens": {"value": 0},
                 },
                 "total_money_spent": {"sum": {"value": 45.75}},
+                "platform_llm_cost": {"money_spent": {"value": 45.65}},
                 "unique_assistants": {"count": {"value": 10}},
                 "unique_workflows": {"count": {"value": 5}},
                 "embedding_metrics": {
                     "input_tokens": {"value": 1000},
                     "money_spent": {"value": 0.10},
                 },
-                "llm_cost": {
-                    "money_spent": {"value": 45.65},
-                },
-                "cli_cost": {
-                    "money_spent": {"value": 0.0},  # No CLI usage
-                },
+                "cli_cost": {"money_spent": {"value": 0.0}},  # No CLI usage
+                "cli_invoked": {"doc_count": 0},
+                "cli_unique_sessions": {"count": {"value": 0}},
+                "mcps_invoked": {"count": {"value": 0}},
+                "webhooks_invoked": {"count": {"value": 0}},
+                "skills_invoked": {"count": {"value": 0}},
             }
         }
 
@@ -416,31 +382,28 @@ class TestMetricsBuilder:
         metrics = handler._build_summaries_metrics(result, unique_users_count=3)
 
         # Assert
-        assert len(metrics) == 11
+        assert len(metrics) == 14
 
-        # Verify values match web-only LLM usage
+        # Verify values match token data
         input_metric = next(m for m in metrics if m["id"] == "total_input_tokens")
-        assert input_metric["value"] == 60000  # Only web LLM tokens
+        assert input_metric["value"] == 60000
 
         cached_metric = next(m for m in metrics if m["id"] == "total_cached_input_tokens")
-        assert cached_metric["value"] == 12000  # Only web LLM tokens
+        assert cached_metric["value"] == 12000
 
         output_metric = next(m for m in metrics if m["id"] == "total_output_tokens")
-        assert output_metric["value"] == 30000  # Only web LLM tokens
-
-        # Verify embedding tokens
-        embedding_tokens_metric = next(m for m in metrics if m["id"] == "embedding_input_tokens")
-        assert embedding_tokens_metric["value"] == 1000
+        assert output_metric["value"] == 30000
 
         # Verify unique counts
-        unique_users_metric = next(m for m in metrics if m["id"] == "unique_active_users")
-        assert unique_users_metric["value"] == 3
-
         unique_assistants_metric = next(m for m in metrics if m["id"] == "unique_assistants_invoked")
         assert unique_assistants_metric["value"] == 10
 
         unique_workflows_metric = next(m for m in metrics if m["id"] == "unique_workflows_invoked")
         assert unique_workflows_metric["value"] == 5
+
+        # Verify CLI cost is 0
+        cli_cost_metric = next(m for m in metrics if m["id"] == "cli_cost")
+        assert cli_cost_metric["value"] == 0.0
 
 
 class TestPlatformCostCalculation:

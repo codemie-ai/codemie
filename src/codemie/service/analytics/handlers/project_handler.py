@@ -108,7 +108,18 @@ class ProjectHandler(CLICostAdjustmentMixin):
 
         # Define sub-aggregations (metrics)
         sub_aggs = {
-            "total_cost": {"sum": {"field": MONEY_SPENT_FIELD}},
+            # Exclude legacy CLI metric (CLI_COMMAND_EXECUTION_TOTAL) to avoid double-counting
+            # pre-cutoff costs. Mirrors the pattern used in summary_handler.py.
+            "total_cost": {
+                "filter": {
+                    "bool": {
+                        "must_not": [
+                            {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_COMMAND_EXECUTION_TOTAL.value}}
+                        ]
+                    }
+                },
+                "aggs": {"sum": {"sum": {"field": MONEY_SPENT_FIELD}}},
+            },
             # Add CLI-specific cost aggregation for cutoff handling (use LiteLLM proxy metric)
             "cli_cost": {
                 "filter": {
@@ -128,7 +139,7 @@ class ProjectHandler(CLICostAdjustmentMixin):
         terms_agg = AggregationBuilder.build_terms_agg(
             group_by_field=PROJECT_KEYWORD_FIELD,
             fetch_size=fetch_size,
-            order={"total_cost": "desc"},
+            order={"total_cost>sum": "desc"},
             sub_aggs=sub_aggs,
         )
 
@@ -156,7 +167,7 @@ class ProjectHandler(CLICostAdjustmentMixin):
 
         for bucket in buckets:
             project_name = bucket["key"]
-            total_cost_original = bucket.get("total_cost", {}).get("value", 0) or 0
+            total_cost_original = bucket.get("total_cost", {}).get("sum", {}).get("value", 0) or 0
             cli_cost_original = bucket.get("cli_cost", {}).get("sum", {}).get("value", 0) or 0
 
             # Get adjusted CLI cost for this project (default to 0 if not in map)

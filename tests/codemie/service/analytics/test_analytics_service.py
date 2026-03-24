@@ -145,17 +145,18 @@ class TestAnalyticsServiceDelegation:
     Testing 2-3 representative methods from different handlers.
     """
 
+    @patch("codemie.service.analytics.analytics_service.EngagementHandler")
     @patch("codemie.service.analytics.analytics_service.SummaryHandler")
     @patch("codemie.service.analytics.analytics_service.MetricsElasticRepository")
     @pytest.mark.asyncio
     async def test_get_summaries_delegates_to_summary_handler(
-        self, mock_repository, mock_summary_handler_class, mock_user
+        self, mock_repository, mock_summary_handler_class, mock_engagement_handler_class, mock_user
     ):
         """Verify get_summaries delegates correctly to SummaryHandler.
 
         Tests that:
         - summary_handler.get_summaries is called once with correct parameters
-        - result equals mocked return value
+        - result contains base metrics plus DAU and MAU
         """
         # Arrange
         mock_repo_instance = MagicMock()
@@ -164,8 +165,16 @@ class TestAnalyticsServiceDelegation:
         mock_handler_instance = MagicMock()
         mock_summary_handler_class.return_value = mock_handler_instance
 
-        expected_result = {"total_tokens": 1000, "total_cost": 0.05}
-        mock_handler_instance.get_summaries = AsyncMock(return_value=expected_result)
+        base_result = {
+            "data": {"metrics": [{"id": "total_tokens", "value": 1000}]},
+            "metadata": {},
+        }
+        mock_handler_instance.get_summaries = AsyncMock(return_value=base_result)
+
+        mock_engagement_instance = MagicMock()
+        mock_engagement_handler_class.return_value = mock_engagement_instance
+        mock_engagement_instance.get_dau = AsyncMock(return_value={"data": {"metrics": [{"id": "dau", "value": 5}]}})
+        mock_engagement_instance.get_mau = AsyncMock(return_value={"data": {"metrics": [{"id": "mau", "value": 50}]}})
 
         service = AnalyticsService(mock_user)
 
@@ -176,7 +185,7 @@ class TestAnalyticsServiceDelegation:
             projects=["project1"],
         )
 
-        # Assert
+        # Assert - summary_handler called with correct params
         mock_handler_instance.get_summaries.assert_called_once_with(
             time_period="last_30_days",
             start_date=None,
@@ -184,7 +193,13 @@ class TestAnalyticsServiceDelegation:
             users=["user1", "user2"],
             projects=["project1"],
         )
-        assert result == expected_result
+        # Result contains base metrics + DAU + MAU
+        assert "data" in result
+        assert "metrics" in result["data"]
+        metric_ids = [m["id"] for m in result["data"]["metrics"]]
+        assert "total_tokens" in metric_ids
+        assert "dau" in metric_ids
+        assert "mau" in metric_ids
 
     @patch("codemie.service.analytics.analytics_service.AssistantHandler")
     @patch("codemie.service.analytics.analytics_service.MetricsElasticRepository")

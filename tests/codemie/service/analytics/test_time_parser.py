@@ -56,11 +56,11 @@ class TestTimeParser:
             mock_datetime.min = datetime.min
             start, end = TimeParser.parse("last_30_days", None, None)
 
-        # Assert - Calendar day boundaries: 30 days including today
-        assert end == datetime(2025, 12, 19, 23, 59, 59, 999999, tzinfo=timezone.utc)
-        assert start == datetime(2025, 11, 20, 0, 0, 0, tzinfo=timezone.utc)
-        # Verify it's 30 complete calendar days
-        assert (end.date() - start.date()).days == 29  # 29 days difference = 30 days inclusive
+        # Assert - end = now, start = midnight(now - 30 days)
+        assert end == fixed_now
+        assert start == datetime(2025, 11, 19, 0, 0, 0, tzinfo=timezone.utc)
+        # Verify it's a 30-day range
+        assert (end.date() - start.date()).days == 30
 
     def test_parse_last_year(self):
         """Verify 'last_year' returns correct 365-day range with calendar day boundaries."""
@@ -74,11 +74,11 @@ class TestTimeParser:
             mock_datetime.min = datetime.min
             start, end = TimeParser.parse("last_year", None, None)
 
-        # Assert - Calendar day boundaries: 365 days including today
-        assert end == datetime(2025, 12, 19, 23, 59, 59, 999999, tzinfo=timezone.utc)
-        assert start == datetime(2024, 12, 20, 0, 0, 0, tzinfo=timezone.utc)
-        # Verify it's 365 complete calendar days
-        assert (end.date() - start.date()).days == 364  # 364 days difference = 365 days inclusive
+        # Assert - end = now, start = midnight(now - 365 days)
+        assert end == fixed_now
+        assert start == datetime(2024, 12, 19, 0, 0, 0, tzinfo=timezone.utc)
+        # Verify it's a 365-day range
+        assert (end.date() - start.date()).days == 365
 
     def test_parse_all_predefined_periods(self):
         """Verify all periods in PERIODS dict work correctly."""
@@ -102,14 +102,11 @@ class TestTimeParser:
                 # Verify start < end
                 assert start < end
 
-                # For day-based periods, verify calendar day boundaries
+                # For day-based periods, verify boundaries
                 if period in TimeParser.DAY_BASED_PERIODS:
-                    # End should be end of day
-                    assert end.hour == 23
-                    assert end.minute == 59
-                    assert end.second == 59
-                    assert end.microsecond == 999999
-                    # Start should be start of day
+                    # End should be now (current time, not end-of-day)
+                    assert end == fixed_now
+                    # Start should be start of day (midnight)
                     assert start.hour == 0
                     assert start.minute == 0
                     assert start.second == 0
@@ -230,9 +227,9 @@ class TestTimeParser:
             mock_datetime.min = datetime.min
             start, end = TimeParser.parse(None, None, None)
 
-        # Assert - Calendar day boundaries: 30 days including today
-        assert end == datetime(2025, 12, 19, 23, 59, 59, 999999, tzinfo=timezone.utc)
-        assert start == datetime(2025, 11, 20, 0, 0, 0, tzinfo=timezone.utc)
+        # Assert - end = now, start = midnight(now - 30 days)
+        assert end == fixed_now
+        assert start == datetime(2025, 11, 19, 0, 0, 0, tzinfo=timezone.utc)
 
     # ========== Parameter Priority Tests ==========
 
@@ -250,9 +247,9 @@ class TestTimeParser:
             mock_datetime.min = datetime.min
             start, end = TimeParser.parse("last_7_days", start_date, end_date)
 
-        # Assert - Should return 7-day range based on time_period (calendar day boundaries)
-        assert end == datetime(2025, 12, 19, 23, 59, 59, 999999, tzinfo=timezone.utc)
-        assert start == datetime(2025, 12, 13, 0, 0, 0, tzinfo=timezone.utc)
+        # Assert - Should return 7-day range based on time_period (end=now, start=midnight(now-7d))
+        assert end == fixed_now
+        assert start == datetime(2025, 12, 12, 0, 0, 0, tzinfo=timezone.utc)
 
         # Custom dates should be ignored
         assert start != start_date
@@ -373,11 +370,11 @@ class TestTimeParser:
             mock_datetime.min = datetime.min
             start, end = TimeParser.parse("last_60_days", None, None)
 
-        # Assert - Calendar day boundaries: 60 days including today
-        assert end == datetime(2025, 12, 19, 23, 59, 59, 999999, tzinfo=timezone.utc)
-        assert start == datetime(2025, 10, 21, 0, 0, 0, tzinfo=timezone.utc)
-        # Verify it's 60 complete calendar days
-        assert (end.date() - start.date()).days == 59  # 59 days difference = 60 days inclusive
+        # Assert - end = now, start = midnight(now - 60 days)
+        assert end == fixed_now
+        assert start == datetime(2025, 10, 20, 0, 0, 0, tzinfo=timezone.utc)
+        # Verify it's a 60-day range
+        assert (end.date() - start.date()).days == 60
 
     def test_parse_custom_range_same_start_and_end_date(self):
         """Verify custom range where start_date equals end_date fails validation."""

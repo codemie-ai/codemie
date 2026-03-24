@@ -316,6 +316,7 @@ class AnalyticsQueryPipeline:
         end_date: datetime | None = None,
         users: list[str] | None = None,
         projects: list[str] | None = None,
+        timestamp_field: str = "@timestamp",
     ) -> dict:
         """Execute analytics query that returns summary metrics.
 
@@ -328,6 +329,7 @@ class AnalyticsQueryPipeline:
             end_date: Custom range end
             users: Filter by users
             projects: Filter by projects
+            timestamp_field: Elasticsearch timestamp field for time range filter
 
         Returns:
             Summary response with metrics and metadata
@@ -336,7 +338,7 @@ class AnalyticsQueryPipeline:
 
         # Parse time and build query
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
-        query = self._build_query(start_dt, end_dt, users, projects, metric_filters)
+        query = self._build_query(start_dt, end_dt, users, projects, metric_filters, timestamp_field)
 
         # Build aggregation
         agg_body = agg_builder(query)
@@ -514,11 +516,33 @@ class AnalyticsQueryPipeline:
         users: list[str] | None,
         projects: list[str] | None,
         metric_filters: list[str] | None,
+        timestamp_field: str = "@timestamp",
     ) -> dict:
         """Build secure query with all filters."""
         query_builder = SecureQueryBuilder(self._user)
-        query_builder.add_time_range(start_dt, end_dt)
+        query_builder.add_time_range(start_dt, end_dt, timestamp_field)
 
+        if metric_filters:
+            query_builder.add_metric_filter(metric_filters)
+        if users:
+            query_builder.add_user_filter(users)
+        if projects:
+            query_builder.add_project_filter(projects)
+
+        return query_builder.build()
+
+    def _build_query_without_time_filter(
+        self,
+        users: list[str] | None,
+        projects: list[str] | None,
+        metric_filters: list[str] | None,
+    ) -> dict:
+        """Build secure query WITHOUT time filter — for all-time engagement metrics (DAU, MAU, weekly).
+
+        Access control (project/user scoping) is still fully applied.
+        """
+        query_builder = SecureQueryBuilder(self._user)
+        # NOTE: no add_time_range() — intentionally omitted for all-time queries
         if metric_filters:
             query_builder.add_metric_filter(metric_filters)
         if users:

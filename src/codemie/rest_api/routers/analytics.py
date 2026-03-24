@@ -50,6 +50,8 @@ logger = logging.getLogger(__name__)
 
 # Query parameter descriptions
 PROJECTS_FILTER_ADMIN_DESC = "Filter by projects (comma-separated, admin only)"
+USERS_FILTER_DESC = "Filter by users (comma-separated user IDs)"
+PROJECTS_FILTER_DESC = "Filter by projects (comma-separated project names)"
 
 ERROR_MSG_PROJECT_EMPTY = "project field cannot be empty or whitespace-only"
 ERROR_MSG_ACCESS_DENIED = "Access denied"
@@ -626,8 +628,11 @@ def _create_response(data: dict, model_class) -> JSONResponse:
     validated = model_class(**data)
     response_dict = validated.model_dump(by_alias=True)
     response = JSONResponse(content=response_dict, status_code=status.HTTP_200_OK)
-    response.headers["Cache-Control"] = "public, max-age=300"
-    response.headers["ETag"] = hashlib.md5(json.dumps(response_dict, sort_keys=True).encode()).hexdigest()
+    if config.is_local:
+        response.headers["Cache-Control"] = "no-store"
+    else:
+        response.headers["Cache-Control"] = "public, max-age=300"
+        response.headers["ETag"] = hashlib.md5(json.dumps(response_dict, sort_keys=True).encode()).hexdigest()
     return response
 
 
@@ -660,12 +665,8 @@ async def get_summaries(
         description="Custom range end (ISO 8601 format). Use with start_date instead of time_period.",
         examples=["2025-12-01T00:00:00Z"],
     ),
-    users: str | None = Query(
-        None, description="Filter by users (comma-separated user IDs)", examples=["user1@example.com,user2@example.com"]
-    ),
-    projects: str | None = Query(
-        None, description="Filter by projects (comma-separated project names)", examples=["codemie,project-alpha"]
-    ),
+    users: str | None = Query(None, description=USERS_FILTER_DESC),
+    projects: str | None = Query(None, description=PROJECTS_FILTER_DESC, examples=["codemie,project-alpha"]),
 ) -> JSONResponse:
     """Get summary metrics: total input/output tokens, cached tokens, money spent.
 
@@ -1188,11 +1189,10 @@ async def get_users_list(
         examples=["2025-12-01T00:00:00Z"],
     ),
     users: str | None = Query(
-        None, description="Filter by users (comma-separated user IDs)", examples=["user1@example.com,user2@example.com"]
+        None,
+        description=USERS_FILTER_DESC,
     ),
-    projects: str | None = Query(
-        None, description="Filter by projects (comma-separated project names)", examples=["codemie,project-alpha"]
-    ),
+    projects: str | None = Query(None, description=PROJECTS_FILTER_DESC, examples=["codemie,project-alpha"]),
 ) -> JSONResponse:
     """Get list of unique users from metrics logs.
 
@@ -2438,3 +2438,109 @@ async def get_user_budget_usage(
         execution_time_ms=execution_time_ms,
         totals=None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Engagement widget: weekly histogram
+# This endpoint intentionally omits time_period/start_date/end_date params.
+# The underlying query always operates on the last 7 days.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/engagement/weekly-histogram",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get weekly spending histogram",
+    description=(
+        "Returns a time series with one row per 3-hour interval showing money spent "
+        "broken down by source: Assistants, Workflows, Datasources, CLI. "
+        "Always covers the last 7 days — the dashboard time filter is intentionally ignored."
+    ),
+)
+@handle_analytics_errors("engagement weekly histogram")
+async def get_engagement_weekly_histogram(
+    user: User = Depends(authenticate),
+    users: str | None = Query(None, description=USERS_FILTER_DESC),
+    projects: str | None = Query(None, description=PROJECTS_FILTER_DESC, examples=["codemie"]),
+) -> JSONResponse:
+    """Get weekly spending histogram — 3h intervals, always last 7 days."""
+    logger.info(f"User {user.id} requesting weekly spending histogram")
+    service = AnalyticsService(user)
+    response_data = await service.get_weekly_spending(
+        users=[u.strip() for u in users.split(",")] if users else None,
+        projects=[p.strip() for p in projects.split(",")] if projects else None,
+    )
+    return _create_response(response_data, TabularResponse)
+
+
+# ---------------------------------------------------------------------------
+# Spending breakdown by user (platform vs CLI)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/spending/by-users/platform",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get platform spending per user",
+    description="Returns per-user spending for platform metrics (Assistants, Workflows, Datasources).",
+)
+@handle_analytics_errors("platform spending by users")
+async def get_spending_by_users_platform(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get platform spending per user (Assistants + Workflows + Datasources)."""
+    service = AnalyticsService(user)
+    data = await service.get_users_platform_spending(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/spending/by-users/cli",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get CLI spending per user",
+    description="Returns per-user spending for CLI proxy usage only (cli_request=true), grouped by user_name.",
+)
+@handle_analytics_errors("CLI spending by users")
+async def get_spending_by_users_cli(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get CLI-only spending per user grouped by user_name."""
+    service = AnalyticsService(user)
+    data = await service.get_users_cli_spending(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)

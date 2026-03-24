@@ -19,6 +19,7 @@ This module orchestrates analytics queries by delegating to domain-specific hand
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
@@ -28,6 +29,7 @@ from codemie.service.analytics.handlers.assistant_handler import AssistantHandle
 from codemie.service.analytics.handlers.budget_handler import BudgetHandler
 from codemie.service.analytics.handlers.cli_handler import CLIHandler
 from codemie.service.analytics.handlers.embeddings_handler import EmbeddingsHandler
+from codemie.service.analytics.handlers.engagement_handler import EngagementHandler
 from codemie.service.analytics.handlers.llm_handler import LLMHandler
 from codemie.service.analytics.handlers.mcp_handler import MCPHandler
 from codemie.service.analytics.handlers.project_handler import ProjectHandler
@@ -68,6 +70,7 @@ class AnalyticsService:
         self._mcp_handler_instance: MCPHandler | None = None
         self._llm_handler_instance: LLMHandler | None = None
         self._embeddings_handler_instance: EmbeddingsHandler | None = None
+        self._engagement_handler_instance: EngagementHandler | None = None
 
     @property
     def _adoption_handler(self) -> AIAdoptionHandler:
@@ -160,6 +163,13 @@ class AnalyticsService:
             self._embeddings_handler_instance = EmbeddingsHandler(self._user, self._repository)
         return self._embeddings_handler_instance
 
+    @property
+    def _engagement_handler(self) -> EngagementHandler:
+        """Lazy-load engagement handler."""
+        if self._engagement_handler_instance is None:
+            self._engagement_handler_instance = EngagementHandler(self._user, self._repository)
+        return self._engagement_handler_instance
+
     # Summary endpoints
     async def get_summaries(
         self,
@@ -169,14 +179,25 @@ class AnalyticsService:
         users: list[str] | None = None,
         projects: list[str] | None = None,
     ) -> dict:
-        """Get summary metrics: tokens, costs, usage statistics."""
-        return await self._summary_handler.get_summaries(
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
+        """Get summary metrics: tokens, costs, usage statistics, DAU and MAU.
+
+        DAU and MAU are fetched concurrently and appended to the base summaries.
+        They always reflect all-time data (ignoring the time filter).
+        """
+        base, dau, mau = await asyncio.gather(
+            self._summary_handler.get_summaries(
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+            ),
+            self._engagement_handler.get_dau(users=users, projects=projects),
+            self._engagement_handler.get_mau(users=users, projects=projects),
         )
+        metrics = base["data"]["metrics"]
+        metrics[8:8] = dau["data"]["metrics"] + mau["data"]["metrics"]
+        return base
 
     # Assistant endpoints
     async def get_assistants_chats(
@@ -278,6 +299,48 @@ class AnalyticsService:
     ) -> dict:
         """Get users spending analytics."""
         return await self._user_handler.get_users_spending(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_users_platform_spending(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get platform spending per user (Assistants + Workflows + Datasources, no CLI)."""
+        return await self._user_handler.get_users_platform_spending(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_users_cli_spending(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get CLI-only spending per user (grouped by user_name)."""
+        return await self._user_handler.get_users_cli_spending(
             time_period=time_period,
             start_date=start_date,
             end_date=end_date,
@@ -1054,3 +1117,60 @@ class AnalyticsService:
             Dict with framework configuration
         """
         return await self._adoption_handler.get_ai_adoption_config()
+
+    # Engagement endpoint: weekly histogram (ignores time filter)
+
+    async def get_weekly_spending(
+        self,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+    ) -> dict:
+        """Get weekly spending histogram in 3h intervals, broken down by source — ignores dashboard time filter."""
+        return await self._engagement_handler.get_weekly_spending(
+            users=users,
+            projects=projects,
+        )
+
+    # Money-spent drill-down endpoints
+
+    async def get_agents_money_spent(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get per-assistant money-spent drill-down table."""
+        return await self._assistant_handler.get_agents_money_spent(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_workflows_money_spent(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get per-workflow money-spent drill-down table."""
+        return await self._workflow_handler.get_workflows_money_spent(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )

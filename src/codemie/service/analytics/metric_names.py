@@ -59,6 +59,7 @@ class MetricName(str, Enum):
     CLI_AGENT_USAGE_TOTAL = "cli_agent_usage_total"
     CLI_ERROR_TOTAL = "cli_error_total"
     CLI_REPOSITORY_ACTIVITY_TOTAL = "cli_repository_activity_total"
+    SKILL_TOOL_INVOKED = "codemie_skill_tool_invoked"
 
     # LLM Proxy metrics
     LLM_PROXY_REQUESTS_TOTAL = "llm_proxy_requests_total"
@@ -111,6 +112,10 @@ MetricName.SUMMARY_METRICS = [
     MetricName.CLI_TOOL_USAGE_TOTAL,  # New CLI session metric (primary)
     MetricName.CLI_COMMAND_EXECUTION_TOTAL,  # Legacy CLI session metric (fallback for backward compatibility)
     MetricName.CLI_LLM_USAGE_TOTAL,  # Token/cost data from LiteLLM proxy
+    MetricName.MCP_CREATE_ASSISTANT,
+    MetricName.MCP_UPDATE_ASSISTANT,
+    MetricName.WEBHOOK_INVOCATION_TOTAL,
+    MetricName.SKILL_TOOL_INVOKED,
 ]
 
 MetricName.TOOLS_METRICS = [
@@ -139,12 +144,13 @@ MetricName.ACTIVITY_METRICS = [
     MetricName.DATASOURCE_TOKENS_USAGE,
 ]
 
-# Spending metrics - same as activity for consistency
+# Spending metrics - cost-bearing metrics only (excludes CLI session metrics)
+# Aligns with summary handler: CLI_COMMAND_EXECUTION_TOTAL and CLI_TOOL_USAGE_TOTAL are
+# session tracking metrics without money_spent values; including them causes double-counting.
+# CLI costs come exclusively from CLI_LLM_USAGE_TOTAL (filtered by cli_request=true in sub-aggs).
 MetricName.SPENDING_METRICS = [
     MetricName.CONVERSATION_ASSISTANT_USAGE,
-    MetricName.CLI_TOOL_USAGE_TOTAL,  # New CLI session metric (primary)
-    MetricName.CLI_COMMAND_EXECUTION_TOTAL,  # Legacy CLI session metric (fallback)
-    MetricName.CLI_LLM_USAGE_TOTAL,  # Token/cost data from LiteLLM proxy
+    MetricName.CLI_LLM_USAGE_TOTAL,  # Token/cost data from LiteLLM proxy (cli_request=true for CLI costs)
     MetricName.WORKFLOW_EXECUTION_TOTAL,
     MetricName.DATASOURCE_TOKENS_USAGE,
 ]

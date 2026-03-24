@@ -16,15 +16,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
-from codemie.service.analytics.handlers.cli_cost_processor import CLICostAdjustmentMixin
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
-from codemie.service.analytics.time_parser import TimeParser
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +33,10 @@ OUTPUT_TOKENS_FIELD = "attributes.output_tokens"
 CACHED_INPUT_TOKENS_FIELD = "attributes.cache_read_input_tokens"
 MONEY_SPENT_FIELD = "attributes.money_spent"
 CLI_REQUEST_FIELD = "attributes.cli_request"
+METRIC_NAME_KEYWORD_FIELD = "metric_name.keyword"
 
 
-class SummaryHandler(CLICostAdjustmentMixin):
+class SummaryHandler:
     """Handler for summary metrics: tokens, costs, usage statistics."""
 
     def __init__(self, user: User, repository: MetricsElasticRepository):
@@ -66,8 +66,6 @@ class SummaryHandler(CLICostAdjustmentMixin):
         """
         logger.info(f"Requesting summaries. Period={time_period}")
 
-        start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
-
         # Execute separate query for unique_users first (without metric_name filter)
         unique_users_count = await self._get_unique_users_count(
             time_period=time_period,
@@ -77,72 +75,17 @@ class SummaryHandler(CLICostAdjustmentMixin):
             projects=projects,
         )
 
-        # Query 1: Get all metrics with original dates
-        main_result = await self._pipeline.execute_summary_query(
+        return await self._pipeline.execute_summary_query(
             agg_builder=self._build_summaries_aggregation,
             metrics_builder=lambda result: self._build_summaries_metrics(result, unique_users_count),
-            metric_filters=MetricName.to_list_from_group(MetricName.SUMMARY_METRICS),
+            metric_filters=None,
             time_period=time_period,
             start_date=start_date,
             end_date=end_date,
             users=users,
             projects=projects,
+            timestamp_field="time",
         )
-
-        # Query 2: Get CLI costs separately with adjusted dates (using mixin)
-        # Example: If querying Jan 1 - Feb 3 (cutoff Feb 2), this returns costs for Feb 2 - Feb 3 only
-        cli_costs_result = await self.get_cli_costs_with_adjustment(
-            start_dt, end_dt, users, projects, include_cache_costs=False
-        )
-        cli_cost_adjusted = cli_costs_result["total_cost"]
-
-        # Merge: Replace CLI costs and recalculate platform_cost and total_money_spent
-        # Note: Query 1 uses NEW CLI metric but includes all dates.
-        # Query 2 returns adjusted CLI cost (respecting cutoff date).
-        # We replace the original CLI cost with the adjusted one.
-        metrics = main_result["data"]["metrics"]
-        cli_cost_original = None
-        total_money_original = None
-        embedding_cost_value = None
-
-        # Find original values from Query 1
-        for metric in metrics:
-            if metric["id"] == "cli_cost":
-                cli_cost_original = metric["value"]
-            elif metric["id"] == "total_money_spent":
-                total_money_original = metric["value"]
-            elif metric["id"] == "embedding_cost":
-                embedding_cost_value = metric["value"]
-
-        # Calculate adjustment (can be negative if original costs were inflated)
-        # Example: cli_cost_adjusted=$10 (Feb 2-3 only) - cli_cost_original=$100 (Jan 1 - Feb 3) = -$90
-        if cli_cost_original is not None:
-            cli_cost_adjustment = cli_cost_adjusted - cli_cost_original
-
-            # Calculate original LLM cost (total - embedding)
-            # LLM cost includes both platform and CLI costs
-            # Note: use `is not None` — embedding_cost_value can legitimately be 0.0 (falsy)
-            original_llm_cost = (
-                (total_money_original - embedding_cost_value)
-                if total_money_original is not None and embedding_cost_value is not None
-                else 0
-            )
-
-            # Calculate adjusted LLM cost (remove inflated CLI costs)
-            adjusted_llm_cost = original_llm_cost + cli_cost_adjustment
-
-            # Update affected metrics
-            for metric in metrics:
-                if metric["id"] == "cli_cost":
-                    metric["value"] = round(cli_cost_adjusted, 2)
-                elif metric["id"] == "platform_cost":
-                    # Recalculate platform_cost = adjusted_llm_cost - adjusted_cli_cost
-                    metric["value"] = round(adjusted_llm_cost - cli_cost_adjusted, 2)
-                elif metric["id"] == "total_money_spent":
-                    # Adjust total spending based on CLI cost adjustment
-                    metric["value"] = round(total_money_original + cli_cost_adjustment, 2)
-
-        return main_result
 
     def _build_summaries_aggregation(self, query: dict) -> dict:
         """Build aggregation for summaries (web + NEW CLI metric).
@@ -150,43 +93,24 @@ class SummaryHandler(CLICostAdjustmentMixin):
         Note: Excludes OLD CLI metric (CLI_COMMAND_EXECUTION_TOTAL) from total_money_spent
         to avoid double-counting. Uses only NEW CLI metric (CLI_LLM_USAGE_TOTAL) for costs.
         """
-        # LLM metrics filter (excludes embeddings)
-        llm_metrics_filter = {
-            "terms": {
-                "metric_name.keyword": [
-                    MetricName.CONVERSATION_ASSISTANT_USAGE.value,
-                    MetricName.WORKFLOW_EXECUTION_TOTAL.value,
-                ]
-            }
-        }
-
-        return {
+        agg_body = {
             "query": query,
             "size": 0,
             "aggs": {
-                # Web LLM metrics (filtered to exclude embeddings)
-                "web_llm_tokens": {
-                    "filter": llm_metrics_filter,
-                    "aggs": {
-                        "input_tokens": {"sum": {"field": INPUT_TOKENS_FIELD}},
-                        "output_tokens": {"sum": {"field": OUTPUT_TOKENS_FIELD}},
-                        "cached_input_tokens": {"sum": {"field": CACHED_INPUT_TOKENS_FIELD}},
-                    },
-                },
-                # CLI metrics (use LiteLLM proxy metric with cli_request=true filter)
-                "cli_tokens": {
+                # All tokens except legacy CLI metric (matches Kibana scope)
+                "total_tokens_agg": {
                     "filter": {
                         "bool": {
-                            "filter": [
-                                {"term": {"metric_name.keyword": MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                                {"term": {CLI_REQUEST_FIELD: True}},
+                            "must_not": [
+                                {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_COMMAND_EXECUTION_TOTAL.value}}
                             ]
                         }
                     },
                     "aggs": {
-                        "cli_input_tokens": {"sum": {"field": INPUT_TOKENS_FIELD}},
-                        "cli_output_tokens": {"sum": {"field": OUTPUT_TOKENS_FIELD}},
-                        "cli_cached_input_tokens": {"sum": {"field": CACHED_INPUT_TOKENS_FIELD}},
+                        "input_tokens": {"sum": {"field": INPUT_TOKENS_FIELD}},
+                        "output_tokens": {"sum": {"field": OUTPUT_TOKENS_FIELD}},
+                        "cache_read_input_tokens": {"sum": {"field": CACHED_INPUT_TOKENS_FIELD}},
+                        "cache_creation_tokens": {"sum": {"field": "attributes.cache_creation_tokens"}},
                     },
                 },
                 # Total money spent (exclude OLD CLI metric to avoid double-counting)
@@ -195,7 +119,7 @@ class SummaryHandler(CLICostAdjustmentMixin):
                     "filter": {
                         "bool": {
                             "must_not": [
-                                {"term": {"metric_name.keyword": MetricName.CLI_COMMAND_EXECUTION_TOTAL.value}}
+                                {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_COMMAND_EXECUTION_TOTAL.value}}
                             ]
                         }
                     },
@@ -203,57 +127,35 @@ class SummaryHandler(CLICostAdjustmentMixin):
                         "sum": {"sum": {"field": MONEY_SPENT_FIELD}},
                     },
                 },
-                # Unique counts with metric-specific filters
-                "unique_assistants": {
-                    "filter": {"term": {"metric_name.keyword": "conversation_assistant_usage"}},
-                    "aggs": {
-                        "count": {
-                            "cardinality": {
-                                "field": "attributes.assistant_id.keyword",
-                                "precision_threshold": 1000,
-                            }
+                # Platform LLM cost (conversation + workflow + datasource, matches Kibana formula)
+                "platform_llm_cost": {
+                    "filter": {
+                        "terms": {
+                            METRIC_NAME_KEYWORD_FIELD: [
+                                MetricName.CONVERSATION_ASSISTANT_USAGE.value,
+                                MetricName.WORKFLOW_EXECUTION_TOTAL.value,
+                                MetricName.DATASOURCE_TOKENS_USAGE.value,
+                            ]
                         }
                     },
-                },
-                "unique_workflows": {
-                    "filter": {"term": {"metric_name.keyword": "workflow_execution_total"}},
                     "aggs": {
-                        "count": {
-                            "cardinality": {
-                                "field": "attributes.workflow_name.keyword",
-                                "precision_threshold": 1000,
-                            }
-                        }
-                    },
-                },
-                # Embedding metrics (filtered to datasource_tokens_usage only)
-                "embedding_metrics": {
-                    "filter": {"term": {"metric_name.keyword": MetricName.DATASOURCE_TOKENS_USAGE.value}},
-                    "aggs": {
-                        "input_tokens": {"sum": {"field": INPUT_TOKENS_FIELD}},
                         "money_spent": {"sum": {"field": MONEY_SPENT_FIELD}},
                     },
                 },
-                # LLM cost (filtered to LLM-related metrics, excluding embeddings)
-                "llm_cost": {
-                    "filter": {
-                        "bool": {
-                            "should": [
-                                {"term": {"metric_name.keyword": MetricName.CONVERSATION_ASSISTANT_USAGE.value}},
-                                {"term": {"metric_name.keyword": MetricName.WORKFLOW_EXECUTION_TOTAL.value}},
-                                {
-                                    "bool": {
-                                        "filter": [
-                                            {"term": {"metric_name.keyword": MetricName.CLI_LLM_USAGE_TOTAL.value}},
-                                            {"term": {CLI_REQUEST_FIELD: True}},
-                                        ]
-                                    }
-                                },
-                            ],
-                            "minimum_should_match": 1,
-                        }
-                    },
+                # Unique counts with metric-specific filters
+                "unique_assistants": {
+                    "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: "conversation_assistant_usage"}},
+                    "aggs": {"count": {"cardinality": {"field": "attributes.assistant_id.keyword"}}},
+                },
+                "unique_workflows": {
+                    "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: "workflow_execution_total"}},
+                    "aggs": {"count": {"cardinality": {"field": "attributes.workflow_name.keyword"}}},
+                },
+                # Embedding metrics (filtered to datasource_tokens_usage only)
+                "embedding_metrics": {
+                    "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.DATASOURCE_TOKENS_USAGE.value}},
                     "aggs": {
+                        "input_tokens": {"sum": {"field": INPUT_TOKENS_FIELD}},
                         "money_spent": {"sum": {"field": MONEY_SPENT_FIELD}},
                     },
                 },
@@ -262,7 +164,7 @@ class SummaryHandler(CLICostAdjustmentMixin):
                     "filter": {
                         "bool": {
                             "filter": [
-                                {"term": {"metric_name.keyword": MetricName.CLI_LLM_USAGE_TOTAL.value}},
+                                {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_LLM_USAGE_TOTAL.value}},
                                 {"term": {CLI_REQUEST_FIELD: True}},
                             ]
                         }
@@ -271,8 +173,47 @@ class SummaryHandler(CLICostAdjustmentMixin):
                         "money_spent": {"sum": {"field": MONEY_SPENT_FIELD}},
                     },
                 },
+                # CLI invocations count (matches Kibana: doc_count of llm_proxy_*_total docs)
+                "cli_invoked": {
+                    "filter": {
+                        "bool": {
+                            "filter": [
+                                {
+                                    "bool": {
+                                        "should": [
+                                            {"query_string": {"fields": ["metric_name"], "query": "llm_proxy_*_total"}}
+                                        ],
+                                        "minimum_should_match": 1,
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                },
+                # MCPs invoked (matches Kibana: cardinality(mcp_name) for docs with mcp_name field)
+                "mcps_invoked": {
+                    "filter": {
+                        "bool": {
+                            "should": [{"exists": {"field": "attributes.mcp_name.keyword"}}],
+                            "minimum_should_match": 1,
+                        }
+                    },
+                    "aggs": {"count": {"cardinality": {"field": "attributes.mcp_name.keyword"}}},
+                },
+                # Webhooks invoked (matches Kibana: value_count(webhook_id) across all docs)
+                "webhooks_invoked": {
+                    "filter": {"match_all": {}},
+                    "aggs": {"count": {"value_count": {"field": "attributes.webhook_id.keyword"}}},
+                },
+                # Skills invoked (matches Kibana: cardinality(skill_id) across all docs)
+                "skills_invoked": {
+                    "filter": {"match_all": {}},
+                    "aggs": {"count": {"cardinality": {"field": "attributes.skill_id.keyword"}}},
+                },
             },
         }
+        logger.info(f"Summaries ES query body:\n{json.dumps(agg_body, indent=2, default=str)}")
+        return agg_body
 
     async def _get_unique_users_count(
         self,
@@ -317,6 +258,7 @@ class SummaryHandler(CLICostAdjustmentMixin):
             end_date=end_date,
             users=users,
             projects=projects,
+            timestamp_field="time",
         )
 
         data_metrics = result.get("data", {}).get("metrics", {})
@@ -329,34 +271,28 @@ class SummaryHandler(CLICostAdjustmentMixin):
 
         Combines web + CLI tokens for LLM operations, excludes embeddings.
 
-        Returns 11 metrics:
-        - LLM Tokens (3): total_input_tokens, total_cached_input_tokens, total_output_tokens
+        Returns 17 metrics:
+        - LLM Tokens (5): total_tokens, total_input_tokens, total_cache_creation_tokens,
+                          total_cached_input_tokens, total_output_tokens
         - Embedding Tokens (1): embedding_input_tokens
         - Counts (3): unique_active_users, unique_assistants_invoked, unique_workflows_invoked
         - Money (4): platform_cost, cli_cost, embedding_cost, total_money_spent
+        - CLI (1): cli_invoked
+        - Integrations (3): mcps_invoked, webhooks_invoked, skills_invoked
 
         Note: platform_cost = llm_cost - cli_cost (conversation + workflow only, excludes CLI)
         """
         aggs = result.get("aggregations", {})
 
-        # Extract web LLM tokens (filtered to exclude embeddings)
-        web_llm_aggs = aggs.get("web_llm_tokens", {})
-        web_input = int(web_llm_aggs.get("input_tokens", {}).get("value", 0))
-        web_output = int(web_llm_aggs.get("output_tokens", {}).get("value", 0))
-        web_cached = int(web_llm_aggs.get("cached_input_tokens", {}).get("value", 0))
+        # All tokens except legacy CLI metric (matches Kibana scope)
+        total_tokens_data = aggs.get("total_tokens_agg", {})
+        input_tokens = int(total_tokens_data.get("input_tokens", {}).get("value", 0))
+        output_tokens = int(total_tokens_data.get("output_tokens", {}).get("value", 0))
+        cached_input_tokens = int(total_tokens_data.get("cache_read_input_tokens", {}).get("value", 0))
+        total_cache_creation_tokens = int(total_tokens_data.get("cache_creation_tokens", {}).get("value", 0))
+        total_tokens = input_tokens + output_tokens + cached_input_tokens + total_cache_creation_tokens
 
-        # CLI tokens (from nested cli_tokens bucket)
-        cli_tokens_aggs = aggs.get("cli_tokens", {})
-        cli_input = int(cli_tokens_aggs.get("cli_input_tokens", {}).get("value", 0))
-        cli_output = int(cli_tokens_aggs.get("cli_output_tokens", {}).get("value", 0))
-        cli_cached = int(cli_tokens_aggs.get("cli_cached_input_tokens", {}).get("value", 0))
-
-        # Sum web + CLI tokens (LLM only)
-        input_tokens = web_input + cli_input
-        cached_input_tokens = web_cached + cli_cached
-        output_tokens = web_output + cli_output
-
-        # Total money spent (excludes OLD CLI metric, uses NEW CLI metric)
+        # Total money spent (excludes legacy CLI metric, matches Kibana formula)
         money_spent = float(aggs.get("total_money_spent", {}).get("sum", {}).get("value", 0.0))
 
         # Extract unique counts
@@ -372,15 +308,22 @@ class SummaryHandler(CLICostAdjustmentMixin):
         # Extract CLI-specific cost
         cli_money_spent = float(aggs.get("cli_cost", {}).get("money_spent", {}).get("value", 0.0))
 
-        # Calculate platform cost (total - cli - embedding, never negative)
-        # Derived from total_money_spent rather than llm_cost agg to avoid ES aggregation discrepancies
-        platform_money_spent = max(0.0, money_spent - cli_money_spent - embedding_money_spent)
+        # Extract new usage counts
+        cli_invoked_count = int(aggs.get("cli_invoked", {}).get("doc_count", 0))
+        mcps_invoked_count = int(aggs.get("mcps_invoked", {}).get("count", {}).get("value", 0))
+        webhooks_invoked_count = int(aggs.get("webhooks_invoked", {}).get("count", {}).get("value", 0))
+        skills_invoked_count = int(aggs.get("skills_invoked", {}).get("count", {}).get("value", 0))
+
+        # Platform LLM cost (conversation + workflow + datasource, direct from dedicated agg)
+        platform_money_spent = float(aggs.get("platform_llm_cost", {}).get("money_spent", {}).get("value", 0.0))
 
         logger.debug(
             f"Parsed summary metrics: "
-            f"llm_input_tokens={input_tokens} (web={web_input}, cli={cli_input}), "
-            f"llm_cached_tokens={cached_input_tokens} (web={web_cached}, cli={cli_cached}), "
-            f"llm_output_tokens={output_tokens} (web={web_output}, cli={cli_output}), "
+            f"input_tokens={input_tokens}, "
+            f"cached_input_tokens={cached_input_tokens}, "
+            f"output_tokens={output_tokens}, "
+            f"cache_creation_tokens={total_cache_creation_tokens}, "
+            f"total_tokens={total_tokens}, "
             f"embedding_input_tokens={embedding_input_tokens}, "
             f"platform_cost=${platform_money_spent:.2f}, "
             f"cli_cost=${cli_money_spent:.2f}, "
@@ -389,7 +332,10 @@ class SummaryHandler(CLICostAdjustmentMixin):
             f"unique_users={unique_users}, "
             f"unique_assistants={unique_assistants}, "
             f"unique_workflows={unique_workflows}, "
-            f"metrics_built=11"
+            f"cli_invoked={cli_invoked_count}, "
+            f"mcps_invoked={mcps_invoked_count}, "
+            f"webhooks_invoked={webhooks_invoked_count}, "
+            f"skills_invoked={skills_invoked_count}"
         )
 
         return [
@@ -399,7 +345,7 @@ class SummaryHandler(CLICostAdjustmentMixin):
                 "type": "number",
                 "value": round(money_spent, 2),
                 "format": "currency",
-                "description": "Total cost in USD across all usage types",
+                "description": "Total cost across all usage types",
             },
             {
                 "id": "platform_cost",
@@ -407,7 +353,7 @@ class SummaryHandler(CLICostAdjustmentMixin):
                 "type": "number",
                 "value": round(platform_money_spent, 2),
                 "format": "currency",
-                "description": "Total cost for platform LLM operations (conversations, workflows - excluding CLI)",
+                "description": "Platform LLM cost (conversations, workflows)",
             },
             {
                 "id": "cli_cost",
@@ -415,15 +361,15 @@ class SummaryHandler(CLICostAdjustmentMixin):
                 "type": "number",
                 "value": round(cli_money_spent, 2),
                 "format": "currency",
-                "description": "Total cost in USD for CLI operations",
+                "description": "CLI operations cost",
             },
             {
-                "id": "embedding_cost",
-                "label": "Embedding Cost",
+                "id": "total_tokens",
+                "label": "Total Tokens",
                 "type": "number",
-                "value": round(embedding_money_spent, 4),
-                "format": "currency",
-                "description": "Total cost in USD for embedding operations",
+                "value": total_tokens,
+                "format": "number",
+                "description": "Total LLM tokens",
             },
             {
                 "id": "total_input_tokens",
@@ -431,15 +377,23 @@ class SummaryHandler(CLICostAdjustmentMixin):
                 "type": "number",
                 "value": input_tokens,
                 "format": "number",
-                "description": "Total input tokens for LLM operations (conversations, workflows, CLI)",
+                "description": "LLM input tokens",
             },
             {
                 "id": "total_cached_input_tokens",
-                "label": "LLM Cached Input Tokens",
+                "label": "Total Cache Read Tokens",
                 "type": "number",
                 "value": cached_input_tokens,
                 "format": "number",
-                "description": "Total cached input tokens (prompt caching) for LLM operations",
+                "description": "Cached input tokens (prompt caching)",
+            },
+            {
+                "id": "total_cache_creation_tokens",
+                "label": "Total Cache Creation Tokens",
+                "type": "number",
+                "value": total_cache_creation_tokens,
+                "format": "number",
+                "description": "Cache creation tokens",
             },
             {
                 "id": "total_output_tokens",
@@ -447,23 +401,7 @@ class SummaryHandler(CLICostAdjustmentMixin):
                 "type": "number",
                 "value": output_tokens,
                 "format": "number",
-                "description": "Total output tokens generated by LLM operations",
-            },
-            {
-                "id": "embedding_input_tokens",
-                "label": "Embedding Input Tokens",
-                "type": "number",
-                "value": embedding_input_tokens,
-                "format": "number",
-                "description": "Total input tokens used for embedding operations",
-            },
-            {
-                "id": "unique_active_users",
-                "label": "Unique Active Users",
-                "type": "number",
-                "value": unique_users,
-                "format": "number",
-                "description": "Number of distinct users who have interacted with the system",
+                "description": "LLM output tokens",
             },
             {
                 "id": "unique_assistants_invoked",
@@ -471,14 +409,46 @@ class SummaryHandler(CLICostAdjustmentMixin):
                 "type": "number",
                 "value": unique_assistants,
                 "format": "number",
-                "description": "Number of distinct assistants that have been invoked",
+                "description": "Distinct assistants invoked",
             },
             {
                 "id": "unique_workflows_invoked",
-                "label": "Unique Workflows Invoked",
+                "label": "Total Workflow Invocations",
                 "type": "number",
                 "value": unique_workflows,
                 "format": "number",
-                "description": "Number of distinct workflows that have been executed",
+                "description": "Workflow executions",
+            },
+            {
+                "id": "cli_invoked",
+                "label": "CLI Invoked",
+                "type": "number",
+                "value": cli_invoked_count,
+                "format": "number",
+                "description": "CLI invocations",
+            },
+            {
+                "id": "mcps_invoked",
+                "label": "MCPs Invoked",
+                "type": "number",
+                "value": mcps_invoked_count,
+                "format": "number",
+                "description": "MCP invocations",
+            },
+            {
+                "id": "webhooks_invoked",
+                "label": "Webhooks Invoked",
+                "type": "number",
+                "value": webhooks_invoked_count,
+                "format": "number",
+                "description": "Webhook invocations",
+            },
+            {
+                "id": "skills_invoked",
+                "label": "Skills Invoked",
+                "type": "number",
+                "value": skills_invoked_count,
+                "format": "number",
+                "description": "Skill invocations",
             },
         ]

@@ -144,7 +144,7 @@ class TestAnalyticsQueryPipeline:
         # Assert - Verify call order and arguments
         mock_time_parser.parse.assert_called_once_with("last_30_days", None, None)
         mock_query_builder_class.assert_called_once_with(pipeline._user)
-        mock_builder.add_time_range.assert_called_once_with(sample_start_dt, sample_end_dt)
+        mock_builder.add_time_range.assert_called_once_with(sample_start_dt, sample_end_dt, "@timestamp")
         mock_builder.build.assert_called_once()
         # Parallel queries: agg_builder called TWICE (data + totals) with fetch_size=10000
         assert mock_agg_builder.call_count == 2
@@ -519,7 +519,7 @@ class TestAnalyticsQueryPipeline:
         # Assert - Verify call order
         mock_time_parser.parse.assert_called_once_with("last_7_days", None, None)
         mock_query_builder_class.assert_called_once_with(pipeline._user)
-        mock_builder.add_time_range.assert_called_once_with(sample_start_dt, sample_end_dt)
+        mock_builder.add_time_range.assert_called_once_with(sample_start_dt, sample_end_dt, "@timestamp")
         mock_builder.build.assert_called_once()
         mock_agg_builder.assert_called_once_with({"query": "built"})
         mock_repository.execute_aggregation_query.assert_called_once_with({"agg": "body"})
@@ -679,7 +679,7 @@ class TestAnalyticsQueryPipeline:
         )
 
         # Assert - Verify all filters were added
-        mock_builder.add_time_range.assert_called_once_with(sample_start_dt, sample_end_dt)
+        mock_builder.add_time_range.assert_called_once_with(sample_start_dt, sample_end_dt, "@timestamp")
         mock_builder.add_metric_filter.assert_called_once_with(["metric1"])
         mock_builder.add_user_filter.assert_called_once_with(["user1"])
         mock_builder.add_project_filter.assert_called_once_with(["proj1"])
@@ -758,7 +758,7 @@ class TestAnalyticsQueryPipeline:
         pipeline._build_query(sample_start_dt, sample_end_dt, None, None, None)
 
         # Assert
-        mock_builder.add_time_range.assert_called_once_with(sample_start_dt, sample_end_dt)
+        mock_builder.add_time_range.assert_called_once_with(sample_start_dt, sample_end_dt, "@timestamp")
 
     @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
     def test_build_query_conditionally_adds_optional_filters(

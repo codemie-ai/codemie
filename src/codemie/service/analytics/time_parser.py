@@ -166,19 +166,13 @@ class TimeParser:
 
             now = datetime.now(timezone.utc)
 
-            # For day-based periods, use calendar day boundaries
+            # For day-based periods: end = now, start = midnight UTC of (now - N days)
+            # Matches Kibana behaviour: lte=now, gte=midnight(now - N*days)
             if time_period in TimeParser.DAY_BASED_PERIODS:
-                # End at the end of today
-                end = TimeParser._get_end_of_day(now)
-                # Start at the beginning of (today - N days + 1)
-                # For "last_7_days", we want 7 complete days including today
-                # So: today, yesterday, and 5 more days = 7 days total
-                days_back = delta.days - 1  # Subtract 1 because we include today
-                start_date_only = now.date() - timedelta(days=days_back)
-                start_dt = datetime.combine(start_date_only, datetime.min.time(), timezone.utc)
-                start = TimeParser._get_start_of_day(start_dt)
+                end = now
+                start = TimeParser._get_start_of_day(now - delta)
                 logger.debug(
-                    f"Parsed predefined time period (calendar days): period={time_period}, "
+                    f"Parsed predefined time period (Kibana-style): period={time_period}, "
                     f"calendar_days={delta.days}, "
                     f"start={start.isoformat()}, end={end.isoformat()}"
                 )
@@ -201,14 +195,11 @@ class TimeParser:
         if start_date or end_date:
             return TimeParser._parse_custom_range(start_date, end_date)
 
-        # Case 4: Default to last 30 days (using calendar day boundaries)
+        # Case 4: Default to last 30 days (Kibana-style: end=now, start=midnight(now-30d))
         now = datetime.now(timezone.utc)
-        end = TimeParser._get_end_of_day(now)
-        days_back = 29  # 30 days including today = today + 29 previous days
-        start_date_only = now.date() - timedelta(days=days_back)
-        start_dt = datetime.combine(start_date_only, datetime.min.time(), timezone.utc)
-        start = TimeParser._get_start_of_day(start_dt)
+        end = now
+        start = TimeParser._get_start_of_day(now - timedelta(days=30))
         logger.debug(
-            f"Using default time period (last 30 calendar days): start={start.isoformat()}, end={end.isoformat()}"
+            f"Using default time period (last 30 days, Kibana-style): start={start.isoformat()}, end={end.isoformat()}"
         )
         return start, end
