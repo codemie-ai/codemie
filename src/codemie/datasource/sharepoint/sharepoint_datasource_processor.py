@@ -30,7 +30,6 @@ from codemie.datasource.base_datasource_processor import (
 )
 from codemie.datasource.datasources_config import SHAREPOINT_CONFIG
 from codemie.datasource.exceptions import (
-    EmptyResultException,
     InvalidQueryException,
     MissingIntegrationException,
     UnauthorizedException,
@@ -336,40 +335,60 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
         include_pages: bool = True,
         include_documents: bool = True,
         include_lists: bool = True,
-    ) -> int:
+        setting_id: str | None = None,
+    ) -> None:
         """
-        Validate SharePoint connection and return document count.
+        Validate SharePoint connection with a lightweight site-accessibility check.
+
+        Performs a single API call to verify credentials and site URL are valid.
+        Does not traverse files or count documents, so it returns quickly regardless
+        of how many files the site contains.
+
+        Note: For oauth auth_type, only the presence of a stored access token is
+        checked — token expiry is not validated here and will surface at indexing time.
 
         Args:
             credentials: SharePoint credentials
             site_url: SharePoint site URL
-            path_filter: Path filter
+            path_filter: Path filter (stored for indexing, not validated here)
             include_pages: Whether to include site pages
             include_documents: Whether to include documents
             include_lists: Whether to include list items
-
-        Returns:
-            Number of documents found
+            setting_id: OAuth setting ID used for token refresh (oauth auth types only)
 
         Raises:
-            InvalidQueryException: If connection fails
-            EmptyResultException: If no documents found
+            InvalidQueryException: If site URL is missing or connection fails
+            UnauthorizedException: If authentication fails
+            MissingIntegrationException: If credentials are missing
         """
         if not site_url or not site_url.strip():
             raise InvalidQueryException("SharePoint Site URL", "Site URL is required")
 
-        index_stats = cls.validate_creds_and_loader(
+        loader = SharePointLoader(
             site_url=site_url,
             path_filter=path_filter,
-            credentials=credentials,
+            auth_config=SharePointAuthConfig(
+                auth_type=credentials.auth_type,
+                tenant_id=credentials.tenant_id or "",
+                client_id=credentials.client_id or "",
+                client_secret=credentials.client_secret or "",
+                access_token=credentials.access_token or "",
+                refresh_token=credentials.refresh_token or "",
+                expires_at=credentials.expires_at or 0,
+                setting_id=setting_id,
+            ),
             include_pages=include_pages,
             include_documents=include_documents,
             include_lists=include_lists,
         )
-
-        docs_count = index_stats.get(SharePointLoader.DOCUMENTS_COUNT_KEY, 0)
-
-        if not docs_count:
-            raise EmptyResultException("SharePoint Query")
-
-        return docs_count
+        try:
+            loader.validate_connection()
+        except UnauthorizedException as e:
+            logger.error(f"SharePoint authentication failed for {site_url}: {e}")
+            raise
+        except MissingIntegrationException as e:
+            logger.error(f"SharePoint credentials missing for {site_url}: {e}")
+            raise
+        except requests.exceptions.RequestException as e:
+            logger.error(f"SharePoint connection error for {site_url}: {e}")
+            raise InvalidQueryException("SharePoint Connection", str(e))

@@ -203,18 +203,10 @@ class TestSharePointProcessorConnectionValidation:
 
     @patch("codemie.datasource.sharepoint.sharepoint_datasource_processor.SharePointLoader")
     def test_check_sharepoint_connection_success(self, mock_loader_class, sharepoint_credentials):
-        """Test successful connection check."""
-        from codemie.datasource.loader.sharepoint_loader import SharePointLoader
-
+        """Test successful connection check calls validate_connection and returns None."""
         mock_loader = MagicMock()
-        mock_loader.fetch_remote_stats.return_value = {
-            SharePointLoader.DOCUMENTS_COUNT_KEY: 10,
-            SharePointLoader.TOTAL_DOCUMENTS_KEY: 10,
-            SharePointLoader.SKIPPED_DOCUMENTS_KEY: 0,
-        }
+        mock_loader.validate_connection.return_value = None
         mock_loader_class.return_value = mock_loader
-        # Ensure mock class has the constant attribute
-        mock_loader_class.DOCUMENTS_COUNT_KEY = SharePointLoader.DOCUMENTS_COUNT_KEY
 
         result = SharePointDatasourceProcessor.check_sharepoint_connection(
             credentials=sharepoint_credentials,
@@ -225,7 +217,8 @@ class TestSharePointProcessorConnectionValidation:
             include_lists=True,
         )
 
-        assert result == 10
+        assert result is None
+        mock_loader.validate_connection.assert_called_once()
 
     def test_check_sharepoint_connection_empty_url(self, sharepoint_credentials):
         """Test connection check with empty URL."""
@@ -239,19 +232,15 @@ class TestSharePointProcessorConnectionValidation:
             )
 
     @patch("codemie.datasource.sharepoint.sharepoint_datasource_processor.SharePointLoader")
-    def test_check_sharepoint_connection_empty_result(self, mock_loader_class, sharepoint_credentials):
-        """Test connection check with empty result."""
-        from codemie.datasource.exceptions import EmptyResultException
+    def test_check_sharepoint_connection_auth_failure(self, mock_loader_class, sharepoint_credentials):
+        """Test connection check propagates UnauthorizedException from validate_connection."""
+        from codemie.datasource.exceptions import UnauthorizedException
 
         mock_loader = MagicMock()
-        mock_loader.fetch_remote_stats.return_value = {
-            "documents_count_key": 0,
-            "total_documents": 0,
-            "skipped_documents": 0,
-        }
+        mock_loader.validate_connection.side_effect = UnauthorizedException("SharePoint")
         mock_loader_class.return_value = mock_loader
 
-        with pytest.raises(EmptyResultException):
+        with pytest.raises(UnauthorizedException):
             SharePointDatasourceProcessor.check_sharepoint_connection(
                 credentials=sharepoint_credentials,
                 site_url="https://tenant.sharepoint.com/sites/testsite",

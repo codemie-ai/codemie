@@ -27,7 +27,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Iterator
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import requests
 from langchain_community.document_loaders import CSVLoader, PyMuPDFLoader, UnstructuredPowerPointLoader
@@ -227,6 +227,9 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
         self._site_id: str | None = None
         self._site_hostname: str | None = None
         self._site_path: str | None = None
+        # Maps drive_id -> site-relative library path (e.g. "Shared Documents")
+        # Populated lazily by _get_all_drives() and used in _get_file_relative_path()
+        self._drive_library_paths: dict[str, str] = {}
 
         # Statistics tracking
         self._total_files_found = 0
@@ -557,6 +560,8 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
         drives_url = f"{SHAREPOINT_CONFIG.graph_base_url}/{SHAREPOINT_CONFIG.graph_api_version}/sites/{site_id}/drives"
 
         drives = []
+        # Computed once; self.site_url is immutable for the lifetime of this loader.
+        site_prefix = urlparse(self.site_url).path.rstrip("/")
         url = drives_url
         while url:
             data = self._make_graph_request(url)
@@ -564,9 +569,16 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
                 break
 
             for drive in data.get("value", []):
-                drives.append(
-                    {"id": drive.get("id"), "name": drive.get("name", "Unknown"), "web_url": drive.get("webUrl", "")}
-                )
+                drive_id = drive.get("id")
+                drive_web_url = drive.get("webUrl", "")
+                drives.append({"id": drive_id, "name": drive.get("name", "Unknown"), "web_url": drive_web_url})
+                # Cache the site-relative library path extracted from the drive's webUrl.
+                # drive.webUrl looks like https://tenant/sites/MySite/Shared Documents
+                # We need "Shared Documents" (the URL segment, not the display name).
+                if drive_id and drive_web_url:
+                    drive_path = urlparse(unquote(drive_web_url)).path
+                    if drive_path.lower().startswith(site_prefix.lower() + "/"):
+                        self._drive_library_paths[drive_id] = drive_path[len(site_prefix) + 1 :]
 
             url = data.get(self.ODATA_NEXT_LINK)
 
@@ -587,6 +599,71 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
         if folder_path == "root":
             return f"{base_url}/root/children"
         return f"{base_url}/items/{folder_path}/children"
+
+    def _extract_drive_folder(self, item: dict) -> tuple[str, str]:
+        """
+        Parse parentReference from a Graph API driveItem into (drive_id, folder_in_drive).
+
+        parentReference.path has the form:
+            "/drives/{driveId}/root:/folder/subfolder"  → folder_in_drive = "folder/subfolder"
+            "/drives/{driveId}/root:"                   → folder_in_drive = "" (library root)
+
+        Returns:
+            Tuple of (drive_id, folder_in_drive) — both empty strings on missing data.
+        """
+        parent_ref = item.get("parentReference", {})
+        drive_id = parent_ref.get("driveId", "")
+        parent_path = unquote(parent_ref.get("path", ""))
+        folder_in_drive = parent_path.split(":", 1)[1].strip("/") if ":" in parent_path else ""
+        return drive_id, folder_in_drive
+
+    def _get_file_relative_path(self, item: dict) -> str:
+        """
+        Build the site-relative path of a file for filter matching.
+
+        Combines the library URL-path (from the drive's webUrl, cached in
+        _drive_library_paths) with the folder path from parentReference.path,
+        yielding a path like:
+            "Shared Documents/test folder/another folder/file.xlsx"
+
+        This is reliable for all file types, including Office files whose
+        webUrl points to the Online viewer (/_layouts/15/Doc.aspx) rather
+        than the actual file path.
+
+        Falls back to just the filename when drive mapping is unavailable.
+        """
+        file_name = item.get("name", "")
+        drive_id, folder_in_drive = self._extract_drive_folder(item)
+
+        library_path = self._drive_library_paths.get(drive_id, "")
+        if not library_path:
+            logger.debug(
+                f"Drive {drive_id!r} not in library path cache; "
+                f"files_filter path matching falling back to filename only for {file_name!r}"
+            )
+            return file_name
+
+        if folder_in_drive:
+            return f"{library_path}/{folder_in_drive}/{file_name}"
+        return f"{library_path}/{file_name}"
+
+    def _get_file_library_relative_path(self, item: dict) -> str:
+        """
+        Build the path of a file relative to its document library root.
+
+        Unlike _get_file_relative_path this omits the library name itself, e.g.:
+            "CodeMie Dev team/testing/file.xlsx"
+        instead of:
+            "Shared Documents/CodeMie Dev team/testing/file.xlsx"
+
+        Used together with _get_file_relative_path so that files_filter patterns
+        work regardless of whether the user includes the library name or not.
+        """
+        file_name = item.get("name", "")
+        _, folder_in_drive = self._extract_drive_folder(item)
+        if folder_in_drive:
+            return f"{folder_in_drive}/{file_name}"
+        return file_name
 
     def _should_skip_file(self, item: dict) -> tuple[bool, str | None]:
         """
@@ -612,10 +689,22 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
         # Apply user-defined files filter (gitignore-style patterns)
         if self.files_filter.strip():
             include_spec, exclude_spec, has_include_patterns = _create_pathspec_from_filter(self.files_filter)
-            if exclude_spec.match_file(file_name):
+            # Build two candidate paths:
+            # - full:    "Shared Documents/CodeMie Dev team/testing/file.xlsx"
+            # - in_lib:  "CodeMie Dev team/testing/file.xlsx"
+            # We match against both so users can write the filter either way
+            # (with or without the document library name as a prefix).
+            full_path = self._get_file_relative_path(item)
+            in_lib_path = self._get_file_library_relative_path(item)
+            logger.debug(
+                f"files_filter match: full_path={full_path!r} in_lib_path={in_lib_path!r} filter={self.files_filter!r}"
+            )
+            if exclude_spec.match_file(full_path) or exclude_spec.match_file(in_lib_path):
                 logger.debug(f"Skipping file excluded by files_filter: {file_name}")
                 return True, "files_filter"
-            if has_include_patterns and not include_spec.match_file(file_name):
+            if has_include_patterns and not (
+                include_spec.match_file(full_path) or include_spec.match_file(in_lib_path)
+            ):
                 logger.debug(f"Skipping file not matching files_filter include patterns: {file_name}")
                 return True, "files_filter"
 
@@ -931,9 +1020,11 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
         if self.path_filter == "*":
             return True
 
-        # Simple wildcard matching
-        filter_pattern = self.path_filter.replace("*", ".*")
-        return bool(re.search(filter_pattern, url, re.IGNORECASE))
+        # URL-decode so user-entered paths with spaces match %20-encoded URLs
+        decoded_url = unquote(url)
+        # Escape regex special chars in the filter, then restore * as wildcard
+        escaped_pattern = re.escape(self.path_filter).replace(r"\*", ".*")
+        return bool(re.search(escaped_pattern, decoded_url, re.IGNORECASE))
 
     def _transform_to_doc(self, item: dict) -> Document:
         """
@@ -1199,6 +1290,22 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
                 logger.info(f"User-created list '{list_name}': {list_items_count} items")
 
         return lists_count
+
+    def validate_connection(self) -> None:
+        """
+        Validate SharePoint credentials and site accessibility.
+
+        Makes a single lightweight API call (site ID lookup) to verify the connection
+        without traversing any files or folders.
+
+        Note: For oauth auth_type, only the presence of a stored access token is
+        checked — token expiry is not validated here and will surface at indexing time.
+
+        Raises:
+            MissingIntegrationException: If credentials are missing
+            UnauthorizedException: If site is inaccessible with current credentials
+        """
+        self._validate_creds()
 
     def fetch_remote_stats(self) -> dict[str, Any]:
         """
