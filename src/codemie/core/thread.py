@@ -64,11 +64,8 @@ class ThreadedGenerator:
         if thought:
             thought_id = thought.get('id', '')
             is_nested_to_latest = thought.get('parent_id') == UniqueThoughtParentIds.LATEST.value
-            message = thought.get('message') or ''
-            children = thought.get('children') or []
-            metadata = thought.get('metadata', {})
-            output_format = thought.get('output_format')
-            in_progress = thought.get('in_progress', False)
+            message = thought.get('message', '')
+            children = thought.get('children', [])
 
             existing_thought = next((item for item in self.thoughts if item['id'] == thought_id), None)
 
@@ -76,9 +73,6 @@ class ThreadedGenerator:
                 existing_thought['message'] += message
                 existing_thought['children'] += children
                 existing_thought['error'] = thought.get('error', False)
-                existing_thought['metadata'] = {**existing_thought.get('metadata', {}), **metadata}
-                existing_thought['output_format'] = output_format
-                existing_thought['in_progress'] = in_progress
             else:
                 thought_object = {
                     'id': thought_id,
@@ -89,9 +83,6 @@ class ThreadedGenerator:
                     'parent_id': thought.get('parent_id', None),
                     'input_text': thought.get('input_text', ''),
                     'error': thought.get('error', False),
-                    'metadata': metadata,
-                    'output_format': output_format,
-                    'in_progress': in_progress,
                 }
 
                 if is_nested_to_latest:
@@ -116,12 +107,5 @@ class ThreadedGenerator:
             if existing_child_thought:
                 existing_child_thought['message'] += thought_object['message']
                 existing_child_thought['children'] += thought_object['children']
-                existing_child_thought['error'] = thought_object.get('error', False)
-                existing_child_thought['metadata'] = {
-                    **existing_child_thought.get('metadata', {}),
-                    **thought_object.get('metadata', {}),
-                }
-                existing_child_thought['output_format'] = thought_object.get('output_format')
-                existing_child_thought['in_progress'] = thought_object.get('in_progress', False)
             else:
                 latest_thought['children'].append(thought_object)

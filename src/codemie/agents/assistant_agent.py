@@ -35,15 +35,9 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
-from codemie.agents.agent_log_utils import (
-    serialize_messages_for_log,
-    serialize_tool_calls_for_log,
-    truncate_log_content,
-)
 from codemie.agents.callbacks.agent_invoke_callback import AgentInvokeCallback
 from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
 from codemie.agents.callbacks.monitoring_callback import MonitoringCallback
-from codemie.agents.callbacks.tool_error_capture_callback import ToolErrorCaptureCallback
 from codemie.agents.structured_tool_agent import create_structured_tool_calling_agent
 from codemie.agents.utils import (
     ExecutionErrorEnum,
@@ -76,9 +70,6 @@ from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
 from codemie.service.background_tasks_service import BackgroundTasksService
-from codemie.service.conversation.history_compaction_service import ConversationHistoryCompactionService
-from codemie.service.constants import AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY
-from codemie.service.dynamic_config_service import DynamicConfigService
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.mcp.models import MCPToolInvocationResponse
 from codemie.templates.agents.assistant_base import json_react_template_v2, user_prompt, markdown_response_prompt
@@ -136,13 +127,6 @@ def get_react_json_prompt_template(system_prompt):
 
 
 class AIToolsAgent:
-    @staticmethod
-    def _is_conversation_replay_v2_enabled() -> bool:
-        return DynamicConfigService.get_bool_value_safe(
-            AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY,
-            default=config.AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED,
-        )
-
     def __init__(
         self,
         agent_name: str,
@@ -187,9 +171,6 @@ class AIToolsAgent:
         self.output_schema = self._preprocess_output_schema(output_schema) if output_schema else None
         self.assistant = assistant
         self.trace_context = trace_context  # Store for trace unification
-        self.tool_error_callback = (
-            ToolErrorCaptureCallback(agent_name=agent_name) if self._is_conversation_replay_v2_enabled() else None
-        )
 
         set_logging_info(uuid=request_uuid, user_id=user.id, user_email=user.username)
         self.agent_name = agent_name
@@ -222,7 +203,6 @@ class AIToolsAgent:
                 if self.stream_steps and self.thread_generator
                 else [AgentInvokeCallback()]
             ),
-            *([self.tool_error_callback] if self.tool_error_callback else []),
         ]
 
         # Add unique default callbacks
@@ -370,18 +350,7 @@ class AIToolsAgent:
         input_task = input_text if input_text else self._task
         raw_history = history if history else self.request.history
         history = self._filter_history(self._transform_history(raw_history))
-        if self._is_conversation_replay_v2_enabled():
-            history = ConversationHistoryCompactionService.compact_messages(
-                messages=history,
-                llm_model=self.llm_model,
-                request_id=self.request_uuid,
-            )
         inputs = {"input": input_task, "chat_history": history}
-        logger.debug(
-            f"AIToolsAgent input payload. Agent={self.agent_name}, "
-            f"Input={self._truncate_log_content(input_task)}, "
-            f"ChatHistory={self._serialize_messages_for_log(history)}"
-        )
 
         return inputs
 
@@ -422,9 +391,7 @@ class AIToolsAgent:
             history = []
         filtered_history = self._filter_history(history)
         logger.debug(
-            f"Invoking workflow task. Agent={self.agent_name}, "
-            f"Input={self._truncate_log_content(workflow_input)}, "
-            f"ChatHistory={self._serialize_messages_for_log(self._transform_history(filtered_history))}"
+            f"Invoking workflow task. Agent={self.agent_name}, Input={workflow_input}, ChatHistory={filtered_history}"
         )
         try:
             if self.is_pure_chain():
@@ -440,7 +407,7 @@ class AIToolsAgent:
             return TaskResult.failed_result(str(e), original_exc=e)
 
     def _invoke_agent(self, inputs):
-        logger.debug(f"Invoking task. Agent={self.agent_name}. Inputs={self._serialize_inputs_for_log(inputs)}")
+        logger.debug(f"Invoking task. Agent={self.agent_name}. Inputs={inputs}")
         # Config will be retrieved from PureChatChain
         if self.assistant and BedrockOrchestratorService.is_bedrock_assistant(self.assistant):
             logger.info("Invoking bedrock assistant generation.")
@@ -451,10 +418,7 @@ class AIToolsAgent:
                 chat_history=inputs.get("chat_history", []),
             )
             output = response.get("output", "")
-            logger.debug(
-                f"Bedrock response received. Agent={self.agent_name}, "
-                f"Output={self._truncate_log_content(str(output))}"
-            )
+            logger.info(f"Bedrock response: {output}")
             response = GenerationResult(
                 generated=output,
                 time_elapsed=None,
@@ -468,7 +432,7 @@ class AIToolsAgent:
             else:
                 response = self.agent_executor.invoke(inputs, config=self._get_run_config())
 
-        logger.debug(f"Invoking task. Agent={self.agent_name}. Response={self._serialize_response_for_log(response)}")
+        logger.debug(f"Invoking task. Agent={self.agent_name}. Response={response}")
         return response
 
     def _get_run_config(self):
@@ -490,32 +454,6 @@ class AIToolsAgent:
             trace_context=self.trace_context,  # Pass trace context for workflow unification
         )
 
-    @staticmethod
-    def _serialize_messages_for_log(messages: list[Any]) -> str:
-        return serialize_messages_for_log(messages)
-
-    @staticmethod
-    def _serialize_tool_calls_for_log(tool_calls: list[dict[str, Any]]) -> list[dict[str, str | None]]:
-        return serialize_tool_calls_for_log(tool_calls)
-
-    @staticmethod
-    def _truncate_log_content(content: Any) -> str:
-        return truncate_log_content(content)
-
-    @classmethod
-    def _serialize_inputs_for_log(cls, inputs: dict[str, Any]) -> str:
-        payload: dict[str, Any] = {}
-        for key, value in inputs.items():
-            if key == "chat_history" and isinstance(value, list):
-                payload[key] = json.loads(serialize_messages_for_log(value))
-                continue
-            payload[key] = truncate_log_content(str(value))
-        return json.dumps(payload, ensure_ascii=True, default=str)
-
-    @classmethod
-    def _serialize_response_for_log(cls, response: Any) -> str:
-        return cls._truncate_log_content(str(response))
-
     def generate(self, background_task_id: str = "") -> GenerationResult:
         start_time = time()
         try:
@@ -528,10 +466,7 @@ class AIToolsAgent:
                     conversation_id=self.conversation_id,
                 )
                 output = response.get("output", "")
-                logger.debug(
-                    f"Bedrock response received. Agent={self.agent_name}, "
-                    f"Output={self._truncate_log_content(str(output))}"
-                )
+                logger.info(f"Bedrock response: {output}")
                 token_used = None  # Bedrock doesn't provide token usage
             elif self.is_pure_chain():
                 response = self.agent_executor.generate()
@@ -559,7 +494,6 @@ class AIToolsAgent:
                 input_tokens_used=None,
                 tokens_used=token_used,
                 success=True,
-                tool_errors=self._get_tool_errors(),
             )
         except Exception:
             stacktrace = traceback.format_exc()
@@ -576,7 +510,6 @@ class AIToolsAgent:
                 input_tokens_used=None,
                 tokens_used=None,
                 success=False,
-                tool_errors=self._get_tool_errors(),
             )
 
     def stream(self):
@@ -702,12 +635,9 @@ class AIToolsAgent:
     def _transform_history(history: List[ChatMessage]) -> list:
         """Convert history to list of chain-compatible messages"""
         transformed_history = []
-        supports_rich_history = AIToolsAgent._is_conversation_replay_v2_enabled()
 
         for item in history:
-            if supports_rich_history and isinstance(item, BaseMessage):
-                transformed_history.append(item)
-            elif item.role == ChatRole.USER:
+            if item.role == ChatRole.USER:
                 transformed_history.append(HumanMessage(content=item.message))
             elif item.role == ChatRole.ASSISTANT:
                 transformed_history.append(AIMessage(content=item.message))
@@ -716,20 +646,7 @@ class AIToolsAgent:
 
     @classmethod
     def _filter_history(cls, history: list) -> list:
-        if not cls._is_conversation_replay_v2_enabled():
-            return [item for item in history if item.content]
-
-        filtered_history = []
-        for item in history:
-            if getattr(item, "content", None):
-                filtered_history.append(item)
-                continue
-            if isinstance(item, ToolMessage):
-                filtered_history.append(item)
-                continue
-            if isinstance(item, AIMessage) and getattr(item, "tool_calls", None):
-                filtered_history.append(item)
-        return filtered_history
+        return [item for item in history if item.content]
 
     def set_thread_context(self, context: dict, parent_thought_id: str):
         self.thread_context = context
@@ -772,11 +689,6 @@ class AIToolsAgent:
     @property
     def _do_nothing(self):
         return lambda x: x
-
-    def _get_tool_errors(self):
-        if not self.tool_error_callback or not self.tool_error_callback.has_errors():
-            return None
-        return self.tool_error_callback.tool_errors
 
 
 @deprecated

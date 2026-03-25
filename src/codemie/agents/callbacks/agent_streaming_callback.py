@@ -13,17 +13,12 @@
 # limitations under the License.
 
 import uuid
-from typing import Dict, Any, List, Union
-
 from langchain_core.agents import AgentAction, AgentFinish
 from langchain_core.callbacks import StreamingStdOutCallbackHandler
 from langchain_core.outputs import LLMResult
+from typing import Dict, Any, List, Union
 
-from codemie.agents.callbacks.callback_utils import (
-    _build_tool_metadata,
-    _summarize_tool_output,
-    _truncate_for_log,
-)
+
 from codemie.chains.base import StreamedGenerationResult, Thought, ThoughtOutputFormat, ThoughtAuthorType
 from codemie.core.constants import ToolNamePrefix
 from codemie.configs import logger
@@ -33,10 +28,6 @@ from codemie.core.utils import extract_text_from_llm_output
 from codemie.core.thought_queue import ThoughtQueue
 from codemie.core.constants import OUTPUT_FORMAT
 from codemie.service.mcp.models import MCPToolInvocationResponse
-from codemie.service.conversation.history_projection_service import (
-    TOOL_STATUS_COMPLETED,
-    TOOL_STATUS_ERROR,
-)
 
 
 class AgentStreamingCallback(StreamingStdOutCallbackHandler):
@@ -81,7 +72,6 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
             input_text=input_text,
             message='',
             in_progress=True,
-            metadata=_build_tool_metadata(tool_name, input_text) if input_text else {},
         )
 
     def reset_current_thought(self):
@@ -152,12 +142,6 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
     def on_tool_start(self, serialized: Dict[str, Any], input_str: str, **kwargs: Any) -> None:
         output_format = kwargs.get('metadata', {}).get(OUTPUT_FORMAT)
         self.set_current_thought(tool_name=serialized['name'], input_text=input_str, output_format=output_format)
-        replay_metadata = getattr(self.current_thought, "metadata", None)
-        thought_author_name = getattr(self.current_thought, "author_name", None)
-        logger.debug(
-            f"Streaming callback tool start. Tool={thought_author_name or serialized['name']}, "
-            f"Input={_truncate_for_log(input_str)}, ReplayMetadata={replay_metadata}"
-        )
 
         self.gen.send(
             StreamedGenerationResult(
@@ -180,16 +164,6 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         message = f"{output} \n\n"
         self.current_thought.message = self._escape_message(message)
         self.current_thought.in_progress = False
-        replay_metadata = getattr(self.current_thought, "metadata", None)
-        thought_author_name = getattr(self.current_thought, "author_name", None)
-        if replay_metadata:
-            tool_name = replay_metadata.get("tool_name", "").lower()
-            replay_metadata["status"] = TOOL_STATUS_COMPLETED
-            replay_metadata["result_summary"] = _summarize_tool_output(tool_name, str(output))
-        logger.debug(
-            f"Streaming callback tool end. Tool={thought_author_name}, "
-            f"Output={_truncate_for_log(str(output))}, ReplayMetadata={replay_metadata}"
-        )
 
         self.gen.send(
             StreamedGenerationResult(
@@ -205,16 +179,6 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         self.current_thought.message = self._escape_message(str(error))
         self.current_thought.error = True
         self.current_thought.in_progress = False
-        replay_metadata = getattr(self.current_thought, "metadata", None)
-        thought_author_name = getattr(self.current_thought, "author_name", None)
-        if replay_metadata:
-            tool_name = replay_metadata.get("tool_name", "").lower()
-            replay_metadata["status"] = TOOL_STATUS_ERROR
-            replay_metadata["result_summary"] = _summarize_tool_output(tool_name, str(error))
-        logger.debug(
-            f"Streaming callback tool error. Tool={thought_author_name}, "
-            f"Error={_truncate_for_log(str(error))}, ReplayMetadata={replay_metadata}"
-        )
 
         self.gen.send(
             StreamedGenerationResult(
