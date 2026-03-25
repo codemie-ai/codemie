@@ -528,3 +528,71 @@ class TestSaveChatHistory:
             mock_logger.debug.assert_called_once()
             call_args = mock_logger.debug.call_args[0][0]
             assert "save_history=False" in call_args
+
+
+def test_populate_conversation_history_uses_legacy_chat_history_when_feature_flag_disabled():
+    user = Mock(spec=User)
+    user.id = "user-123"
+    user.username = "testuser"
+    user.name = "Test User"
+
+    assistant = Mock()
+    assistant.id = "assistant-123"
+    assistant.llm_model_type = "test-model"
+
+    handler = StandardAssistantHandler(assistant=assistant, user=user, request_uuid="test-uuid")
+    request = AssistantChatRequest(conversation_id="conv-123", history=[], text="hello")
+
+    conversation = Mock()
+    legacy_history = [Mock(message="legacy")]
+    conversation.to_chat_history.return_value = legacy_history
+    conversation.user_id = "user-123"
+
+    with (
+        patch(
+            "codemie.rest_api.handlers.assistant_handlers.DynamicConfigService.get_typed_value",
+            return_value=False,
+        ),
+        patch("codemie.rest_api.handlers.assistant_handlers.Conversation.find_by_id", return_value=conversation),
+        patch("codemie.rest_api.handlers.assistant_handlers.Ability.can", return_value=True),
+        patch(
+            "codemie.rest_api.handlers.assistant_handlers.ConversationHistoryProjectionService.build_for_request"
+        ) as projection_mock,
+    ):
+        handler._populate_conversation_history(request)
+
+    projection_mock.assert_not_called()
+    conversation.to_chat_history.assert_called_once_with()
+    assert request.history == legacy_history
+
+
+def test_filter_thoughts_drops_replay_only_entries_when_feature_flag_disabled():
+    thoughts = [
+        {
+            "id": "tool-thought",
+            "message": "",
+            "author_name": "Search Tool",
+            "author_type": "tool",
+            "input_text": '{"query": "release notes"}',
+            "error": False,
+            "metadata": {"replay_type": "tool_replay"},
+        },
+        {
+            "id": "assistant-thought",
+            "message": "visible message",
+            "author_name": "Assistant",
+            "author_type": "assistant",
+            "input_text": "",
+            "error": False,
+        },
+    ]
+
+    with patch(
+        "codemie.rest_api.handlers.assistant_handlers.DynamicConfigService.get_typed_value",
+        return_value=False,
+    ):
+        filtered = StandardAssistantHandler._filter_thoughts(thoughts)
+
+    assert len(filtered) == 1
+    assert filtered[0].id == "assistant-thought"
+    assert filtered[0].message == "visible message"

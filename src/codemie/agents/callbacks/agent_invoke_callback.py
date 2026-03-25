@@ -13,15 +13,25 @@
 # limitations under the License.
 
 import uuid
+from typing import Dict, Any, List, Optional
+
 from langchain_core.agents import AgentAction, AgentFinish
 from langchain_core.callbacks import StreamingStdOutCallbackHandler
 from langchain_core.outputs import LLMResult
-from typing import Dict, Any, List, Optional
 
+from codemie.agents.callbacks.callback_utils import (
+    _build_tool_metadata,
+    _summarize_tool_output,
+    _truncate_for_log,
+)
 from codemie.chains.base import Thought, ThoughtOutputFormat, ThoughtAuthorType
 from codemie.configs import logger
 from codemie.core.utils import extract_text_from_llm_output
 from codemie.core.constants import OUTPUT_FORMAT
+from codemie.service.conversation.history_projection_service import (
+    TOOL_STATUS_COMPLETED,
+    TOOL_STATUS_ERROR,
+)
 
 
 class AgentInvokeCallback(StreamingStdOutCallbackHandler):
@@ -61,6 +71,10 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
                 existing_thought['children'] += thought.children
                 if thought.error:
                     existing_thought['error'] = thought.error
+                if thought.metadata:
+                    existing_thought['metadata'] = {**existing_thought.get('metadata', {}), **thought.metadata}
+                existing_thought['in_progress'] = thought.in_progress
+                existing_thought['output_format'] = thought.output_format
             else:
                 thought_object = {
                     'id': thought.id,
@@ -71,6 +85,9 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
                     'author_type': thought.author_type,
                     'parent_id': thought.parent_id,
                     'error': thought.error,
+                    'metadata': thought.metadata,
+                    'in_progress': thought.in_progress,
+                    'output_format': thought.output_format,
                 }
                 self.thoughts.append(thought_object)
 
@@ -92,6 +109,7 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
             input_text=input_text,
             message='',
             in_progress=True,
+            metadata=_build_tool_metadata(tool_name, input_text) if input_text else {},
         )
 
     def reset_current_thought(self):
@@ -158,6 +176,15 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
         message = f"{output} \n\n"
         self.current_thought.message = self._escape_message(message)
         self.current_thought.in_progress = False
+        replay_metadata = getattr(self.current_thought, "metadata", None)
+        if replay_metadata:
+            tool_name = replay_metadata.get("tool_name", "").lower()
+            replay_metadata["status"] = TOOL_STATUS_COMPLETED
+            replay_metadata["result_summary"] = _summarize_tool_output(tool_name, str(output))
+        logger.debug(
+            f"Invoke callback tool end. Tool={self.current_thought.author_name}, "
+            f"Output={_truncate_for_log(str(output))}, ReplayMetadata={replay_metadata}"
+        )
 
         self.thought_processing(self.current_thought)
         self.reset_current_thought()
@@ -168,6 +195,15 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
         self.current_thought.message = self._escape_message(str(error))
         self.current_thought.error = True
         self.current_thought.in_progress = False
+        replay_metadata = getattr(self.current_thought, "metadata", None)
+        if replay_metadata:
+            tool_name = replay_metadata.get("tool_name", "").lower()
+            replay_metadata["status"] = TOOL_STATUS_ERROR
+            replay_metadata["result_summary"] = _summarize_tool_output(tool_name, str(error))
+        logger.debug(
+            f"Invoke callback tool error. Tool={self.current_thought.author_name}, "
+            f"Error={_truncate_for_log(str(error))}, ReplayMetadata={replay_metadata}"
+        )
 
         self.thought_processing(self.current_thought)
         self.reset_current_thought()

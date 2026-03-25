@@ -888,3 +888,30 @@ def test_get_typed_value_returns_none_when_get_returns_none(mock_get):
     # Assert
     assert result is None
     mock_get.assert_called_once_with("SOME_KEY", None)
+
+
+@patch.object(DynamicConfigService, "get_typed_value", return_value=True)
+def test_get_typed_value_safe_returns_value(mock_get_typed_value):
+    """get_typed_value_safe returns typed value when lookup succeeds"""
+    result = DynamicConfigService.get_typed_value_safe("FEATURE_X_ENABLED", bool, default=False)
+
+    assert result is True
+    mock_get_typed_value.assert_called_once_with("FEATURE_X_ENABLED", bool, False)
+
+
+@patch.object(DynamicConfigService, "get_typed_value", side_effect=ExtendedHTTPException(code=500, message="boom"))
+def test_get_typed_value_safe_returns_default_on_error(mock_get_typed_value):
+    """get_typed_value_safe returns provided default when lookup fails"""
+    result = DynamicConfigService.get_typed_value_safe("FEATURE_X_ENABLED", bool, default=False)
+
+    assert result is False
+    mock_get_typed_value.assert_called_once_with("FEATURE_X_ENABLED", bool, False)
+
+
+@patch.object(DynamicConfigService, "get_typed_value_safe", return_value=True)
+def test_get_bool_value_safe_returns_boolean(mock_get_typed_value_safe):
+    """get_bool_value_safe delegates to boolean typed helper"""
+    result = DynamicConfigService.get_bool_value_safe("FEATURE_X_ENABLED", default=False)
+
+    assert result is True
+    mock_get_typed_value_safe.assert_called_once_with("FEATURE_X_ENABLED", bool, default=False)
