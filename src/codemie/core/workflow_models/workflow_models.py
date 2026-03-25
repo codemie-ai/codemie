@@ -213,6 +213,21 @@ class WorkflowNextState(BaseModel):
         # Only removes "temp_data" and "intermediate_result", keeps all other keys
     """
 
+    include_in_iterator_context: list[str] = Field(default=["*"])
+    """
+    Whitelist of context store keys to copy into each iterator branch (iter_key).
+    Default: ["*"] — copies the entire context store (backward-compatible).
+
+    Use specific keys to prevent large data from being duplicated across N branches,
+    which would cause the LangGraph checkpoint to exceed PostgreSQL JSONB size limits.
+    Only the listed keys will be present in each branch's context_store copy.
+    The parent context store is not affected.
+
+    Example:
+        include_in_iterator_context: ["current_goal", "channel", "jira_project_key"]
+        # Branches only get small metadata; review_batches stays in parent store only.
+    """
+
     append_to_context: bool = False
     """
     If true, all values written to context_store by this state are accumulated

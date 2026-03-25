@@ -603,3 +603,116 @@ def test_tc_imr_003_reduce_with_iteration_source(mock_user, mock_thought_queue, 
 
     # The reducer collects all outputs
     # A reduce node can then aggregate/summarize these results
+
+
+@patch('codemie.workflows.workflow.WorkflowExecutionService')
+def test_tc_imr_011_include_in_iterator_context_whitelist(
+    mock_wf_exec_service, mock_user, mock_thought_queue, basic_workflow_config
+):
+    """
+    TC_IMR_011: include_in_iterator_context — whitelist filters context for parallel branches.
+
+    Only listed keys should be present in each branch's context_store.
+    Large keys not in the whitelist must not be copied, preventing checkpoint overflow.
+    """
+    # Arrange
+    workflow_state = WorkflowState(
+        id="filtered_map",
+        task="Map with filtered context",
+        next=WorkflowNextState(
+            state_id="worker",
+            iter_key="tasks",
+            include_in_iterator_context=["current_goal", "channel"],
+        ),
+        assistant_id="assistant_1",
+    )
+
+    large_payload = ["review"] * 1000  # simulates review_batches
+    context = {
+        "current_goal": "analyse",
+        "channel": "mobile",
+        "review_batches": large_payload,
+        "next_review_batch": large_payload,
+    }
+
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: context,
+        MESSAGES_VARIABLE: [],
+        ITER_SOURCE: '{"tasks": ["t1", "t2"]}',
+    }
+
+    executor = WorkflowExecutor(
+        workflow_config=basic_workflow_config,
+        user_input="test",
+        user=mock_user,
+        thought_queue=mock_thought_queue,
+        execution_id="exec_123",
+    )
+
+    # Act
+    send_actions = executor.continue_iteration(state_schema, workflow_state)
+
+    # Assert
+    assert len(send_actions) == 2
+    for action in send_actions:
+        branch_ctx = action.arg[CONTEXT_STORE_VARIABLE]
+        assert "current_goal" in branch_ctx
+        assert "channel" in branch_ctx
+        assert "review_batches" not in branch_ctx
+        assert "next_review_batch" not in branch_ctx
+
+    # Parent context store must be untouched — large keys still present for the outer loop
+    parent_ctx = state_schema[CONTEXT_STORE_VARIABLE]
+    assert "review_batches" in parent_ctx
+    assert "next_review_batch" in parent_ctx
+    assert parent_ctx["review_batches"] is large_payload
+
+
+@patch('codemie.workflows.workflow.WorkflowExecutionService')
+def test_tc_imr_012_include_in_iterator_context_wildcard_default(
+    mock_wf_exec_service, mock_user, mock_thought_queue, basic_workflow_config
+):
+    """
+    TC_IMR_012: include_in_iterator_context — wildcard "*" copies full context (backward-compatible default).
+
+    When the field is not specified or equals ["*"], behavior must be identical to before:
+    all context_store keys are copied into each branch.
+    """
+    # Arrange
+    workflow_state = WorkflowState(
+        id="full_context_map",
+        task="Map with full context copy",
+        next=WorkflowNextState(
+            state_id="worker",
+            iter_key="tasks",
+            # include_in_iterator_context not set → defaults to ["*"]
+        ),
+        assistant_id="assistant_1",
+    )
+
+    context = {"key_a": "val_a", "key_b": "val_b", "key_c": "val_c"}
+
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: context,
+        MESSAGES_VARIABLE: [],
+        ITER_SOURCE: '{"tasks": ["x", "y"]}',
+    }
+
+    executor = WorkflowExecutor(
+        workflow_config=basic_workflow_config,
+        user_input="test",
+        user=mock_user,
+        thought_queue=mock_thought_queue,
+        execution_id="exec_123",
+    )
+
+    # Act
+    send_actions = executor.continue_iteration(state_schema, workflow_state)
+
+    # Assert
+    assert len(send_actions) == 2
+    for action in send_actions:
+        branch_ctx = action.arg[CONTEXT_STORE_VARIABLE]
+        assert branch_ctx["key_a"] == "val_a"
+        assert branch_ctx["key_b"] == "val_b"
+        assert branch_ctx["key_c"] == "val_c"

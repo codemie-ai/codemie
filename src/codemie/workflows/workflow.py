@@ -574,6 +574,23 @@ class WorkflowExecutor:
             items_to_process = [source]
         return items_to_process
 
+    @classmethod
+    def _build_parallel_context(
+        cls, context_store: dict[str, Any], workflow_state: WorkflowState, is_in_iteration: bool
+    ) -> dict[str, Any]:
+        """Return the context_store copy for a parallel branch.
+
+        For nested iterations (is_in_iteration=True) the original reference is reused.
+        For first-level parallelization a copy is made, filtered by include_in_iterator_context.
+        ["*"] (default) copies the entire store; any other list whitelists specific keys.
+        """
+        if is_in_iteration:
+            return context_store
+        include_keys = workflow_state.next.include_in_iterator_context
+        if include_keys == ["*"]:
+            return {**context_store}
+        return {k: v for k, v in context_store.items() if k in include_keys}
+
     def continue_iteration(self, state_schema: dict[str, Any], workflow_state: WorkflowState) -> List[Send]:
         messages = get_messages_from_state_schema(state_schema=state_schema)
         context_store = get_context_store_from_state_schema(state_schema=state_schema)
@@ -611,6 +628,8 @@ class WorkflowExecutor:
         # Detect nested iteration: if ITERATION_NODE_NUMBER_KEY exists, we're already in a parallel branch
         is_in_iteration = iter_number is not None and iter_number > 0
 
+        parallel_context = self._build_parallel_context(context_store, workflow_state, is_in_iteration)
+
         send_actions = [
             Send(
                 send_to_node,
@@ -618,7 +637,7 @@ class WorkflowExecutor:
                     TASK_KEY: item,
                     # Clone only for first-level parallelization, not nested
                     MESSAGES_VARIABLE: messages.copy() if not is_in_iteration else messages,
-                    CONTEXT_STORE_VARIABLE: {**context_store} if not is_in_iteration else context_store,
+                    CONTEXT_STORE_VARIABLE: parallel_context,
                     ITERATION_NODE_NUMBER_KEY: iter_number if iter_number else index + 1,
                     TOTAL_ITERATIONS_KEY: total_iterations,
                     FIRST_STATE_IN_ITERATION: iter_key not in state_schema,

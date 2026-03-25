@@ -138,6 +138,10 @@ $defs:
           reset_keys_in_context_store:
             type: array
             items: {type: string}
+          include_in_iterator_context:
+            type: array
+            items: {type: string}
+            default: ["*"]
           append_to_context: {type: boolean, default: false}
           condition:
             type: object
