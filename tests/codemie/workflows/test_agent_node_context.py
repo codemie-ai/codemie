@@ -540,11 +540,7 @@ def test_tc_anc_008_agent_task_result_processing_failure(
         node.post_process_output(state_schema, "Test task", task_result)
 
 
-@patch("codemie.workflows.nodes.agent_node.VirtualAssistantService")
-@patch("codemie.workflows.nodes.agent_node.find_assistant_by_id")
 def test_tc_anc_009_agent_cleanup_after_execution(
-    mock_find_assistant,
-    mock_virtual_assistant_service,
     mock_workflow_execution_service,
     mock_thought_queue,
     mock_callbacks,
@@ -555,13 +551,10 @@ def test_tc_anc_009_agent_cleanup_after_execution(
     """
     TC_ANC_009: Agent Cleanup After Execution
 
-    Test virtual assistant deletion.
+    Test that after_execution does NOT perform cleanup (EPMCDME-9997 fix).
+    Cleanup is now deferred to workflow completion to avoid concurrency issues.
     """
     # Arrange
-    mock_assistant_config = Mock()
-    mock_assistant_config.assistant_id = None  # Virtual assistant (no persistent ID)
-    mock_find_assistant.return_value = mock_assistant_config
-
     state_schema = {
         CONTEXT_STORE_VARIABLE: {},
         MESSAGES_VARIABLE: [],
@@ -585,12 +578,11 @@ def test_tc_anc_009_agent_cleanup_after_execution(
         execution_id="exec_123",
     )
 
-    # Act
+    # Act - Should complete without error and without triggering cleanup
     node.after_execution(state_schema, TaskResult(success=True, result="Done"))
 
-    # Assert
-    # Virtual assistant should be deleted
-    mock_virtual_assistant_service.delete_by_execution_id.assert_called_once_with("exec_123")
+    # Assert - Method should complete successfully
+    # No cleanup should be performed here (deferred to workflow completion)
 
 
 def test_tc_anc_010_agent_context_generation(

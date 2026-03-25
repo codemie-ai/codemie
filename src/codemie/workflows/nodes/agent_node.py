@@ -20,7 +20,6 @@ from codemie.enterprise.langfuse import get_workflow_trace_context
 from codemie.core.exceptions import TaskException
 from codemie.core.thought_queue import ThoughtQueue
 from codemie.rest_api.security.user import User
-from codemie.service.assistant import VirtualAssistantService
 from codemie.service.tools.dynamic_value_utils import process_string
 from codemie.service.workflow_execution import WorkflowExecutionService
 from codemie.workflows.callbacks.base_callback import BaseCallback
@@ -188,12 +187,6 @@ class AgentNode(BaseNode[AgentMessages]):
             **kwargs: Additional keyword arguments
         """
         super().after_execution(state_schema, result, *args, **kwargs)
-
-        assistant_config = find_assistant_by_id(
-            assistants=self.workflow_config.assistants, assistant_id=self.workflow_state.assistant_id
-        )
-        if not assistant_config.assistant_id:
-            VirtualAssistantService.delete_by_execution_id(self.execution_id)
 
     def generate_execution_context(self, state_schema: Type[StateSchemaType]) -> dict:
         """Generate execution context with initialized assistant.

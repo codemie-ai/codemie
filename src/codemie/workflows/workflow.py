@@ -29,6 +29,7 @@ from langchain_core.runnables.graph import CurveStyle, NodeStyles
 from langgraph.constants import END
 from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
+from codemie.service.assistant import VirtualAssistantService
 from langgraph.types import Send
 from pydantic import ValidationError
 
@@ -820,6 +821,7 @@ class WorkflowExecutor:
                 self._auto_delete_execution()
             # Clear trace context to prevent memory leaks
             clear_workflow_trace_context(self.execution_id)
+            VirtualAssistantService.delete_by_execution_id(self.execution_id)
 
     def _start_thought_consumer_if_enabled(self, enable_verbose_consumer: bool):
         """Start ThoughtConsumer for database persistence if enabled."""
