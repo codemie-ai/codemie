@@ -98,6 +98,7 @@ AGENT_TOOL_MATCHERS = ("agent", "skill")
 SESSION_COMPLETED_STATUSES = ("completed", "failed", "interrupted")
 TOTAL_COST_LABEL = "Total Cost"
 USAGE_COUNT_LABEL = "Usage Count"
+NET_LINES_LABEL = "Net Lines"
 
 
 class CLIHandler(CLICostAdjustmentMixin):
@@ -1397,6 +1398,31 @@ class CLIHandler(CLICostAdjustmentMixin):
             per_page=per_page,
         )
 
+    async def get_cli_insights_all_users(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get all CLI users table data for CLI insights."""
+        rows = await self._get_cli_insights_user_rows(time_period, start_date, end_date, users, projects)
+        rows.sort(key=lambda row: row["total_cost"], reverse=True)
+        return self._format_custom_tabular_response(
+            rows=rows,
+            columns=self._get_cli_insights_all_users_columns(),
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
     async def get_cli_insights_user_detail(
         self,
         user_name: str,
@@ -1807,9 +1833,10 @@ class CLIHandler(CLICostAdjustmentMixin):
                     "user_email": user_email,
                     "classification": classification,
                     "total_sessions": total_sessions,
+                    "total_lines_added": total_lines_added,
+                    "total_lines_removed": total_lines_removed,
                     "net_lines": total_lines_added - total_lines_removed,
                     "total_cost": total_cost,
-                    "total_lines_added": total_lines_added,
                 }
             )
         return rows
@@ -2483,7 +2510,7 @@ class CLIHandler(CLICostAdjustmentMixin):
                 {"id": "classification", "label": "Category", "type": "string"},
                 {"id": "cost", "label": "Cost", "type": "number", "format": "currency"},
                 {"id": "sessions", "label": "Sessions", "type": "number", "format": "number"},
-                {"id": "net_lines", "label": "Net Lines", "type": "number", "format": "number"},
+                {"id": "net_lines", "label": NET_LINES_LABEL, "type": "number", "format": "number"},
             ],
             rows=rows,
             filters_applied={},
@@ -2900,7 +2927,18 @@ class CLIHandler(CLICostAdjustmentMixin):
             {"id": "user_name", "label": "User", "type": "string"},
             {"id": "classification", "label": "Classification", "type": "string"},
             {"id": "total_sessions", "label": "Sessions", "type": "number"},
-            {"id": "net_lines", "label": "Net Lines", "type": "number"},
+            {"id": "net_lines", "label": NET_LINES_LABEL, "type": "number"},
+            {"id": "total_cost", "label": "Cost", "type": "number", "format": "currency"},
+        ]
+
+    def _get_cli_insights_all_users_columns(self) -> list[dict]:
+        return [
+            {"id": "user_name", "label": "User", "type": "string"},
+            {"id": "classification", "label": "Classification", "type": "string"},
+            {"id": "total_sessions", "label": "Sessions", "type": "number"},
+            {"id": "total_lines_added", "label": "Lines Added", "type": "number"},
+            {"id": "total_lines_removed", "label": "Lines Removed", "type": "number"},
+            {"id": "net_lines", "label": NET_LINES_LABEL, "type": "number"},
             {"id": "total_cost", "label": "Cost", "type": "number", "format": "currency"},
         ]
 

@@ -696,6 +696,10 @@ class AnalyticsService:
         """Get CLI Insights Top Spenders table data."""
         return await self._cli_handler.get_cli_insights_top_spenders(**kwargs)
 
+    async def get_cli_insights_all_users(self, **kwargs) -> dict:
+        """Get CLI Insights all users table data."""
+        return await self._cli_handler.get_cli_insights_all_users(**kwargs)
+
     async def get_cli_insights_user_detail(self, **kwargs) -> dict:
         """Get CLI Insights user detail drilldown data."""
         return await self._cli_handler.get_cli_insights_user_detail(**kwargs)

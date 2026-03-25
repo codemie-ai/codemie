@@ -1789,6 +1789,37 @@ async def get_cli_insights_top_spenders(
 
 
 @router.get(
+    "/cli-insights-users",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+)
+@handle_analytics_errors("CLI insights all users analytics")
+async def get_cli_insights_all_users(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get CLI Insights all users table data."""
+    service = AnalyticsService(user)
+    data = await service.get_cli_insights_all_users(
+        time_period=time_period,
+        start_date=start_date,
+        end_date=end_date,
+        users=[u.strip() for u in users.split(",")] if users else None,
+        projects=[p.strip() for p in projects.split(",")] if projects else None,
+        page=page,
+        per_page=per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
     "/cli-insights-user-detail",
     status_code=status.HTTP_200_OK,
     response_model=AnalyticsDetailResponse,
