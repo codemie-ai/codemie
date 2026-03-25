@@ -131,6 +131,7 @@ class SkillCategory(str, Enum):
 # Validation constants
 MAX_CATEGORIES_PER_SKILL = 3
 MAX_CATEGORIES_ERROR_MSG = "Maximum 3 categories allowed per skill"
+MAX_CONTENT_LENGTH = 30000
 
 
 # =============================================================================
@@ -154,7 +155,7 @@ class SkillCreateRequest(BaseModel):
     content: str = Field(
         description="Markdown content (skill instructions)",
         min_length=100,
-        max_length=300000,
+        max_length=MAX_CONTENT_LENGTH,
     )
     project: str = Field(description="Project this skill belongs to")
     visibility: SkillVisibility = Field(
@@ -197,7 +198,7 @@ class SkillUpdateRequest(BaseModel):
 
     name: str | None = Field(default=None, min_length=3, max_length=64)
     description: str | None = Field(default=None, min_length=10, max_length=1000)
-    content: str | None = Field(default=None, min_length=100, max_length=100000)
+    content: str | None = Field(default=None, min_length=100, max_length=MAX_CONTENT_LENGTH)
     project: str | None = Field(default=None, description="Project this skill belongs to")
     visibility: SkillVisibility | None = None
     categories: list[SkillCategory] | None = None
@@ -266,6 +267,56 @@ class PublishToMarketplaceRequest(BaseModel):
         if v is not None and len(v) > MAX_CATEGORIES_PER_SKILL:
             raise ValueError(MAX_CATEGORIES_ERROR_MSG)
         return v
+
+
+class SkillInstructionsGenerateRequest(BaseModel):
+    """Request model for generating skill instructions with AI"""
+
+    description: str | None = Field(
+        default=None,
+        description="User description/instructions (can be empty for automatic quality review in refine mode)",
+        max_length=10000,
+    )
+
+    existing_content: str | None = Field(
+        default=None,
+        description="Existing instructions to refine/improve (if provided, triggers refine mode)",
+        max_length=MAX_CONTENT_LENGTH,
+    )
+
+    skill_name: str | None = Field(
+        default=None,
+        description="Optional skill name for context",
+        max_length=64,
+    )
+
+    llm_model: str | None = Field(
+        default=None,
+        description="Optional LLM model to use (defaults to system default)",
+    )
+
+    @field_validator("description")
+    @classmethod
+    def validate_description_length(cls, v: str | None) -> str | None:
+        """Validate description length with custom error message"""
+        if v is not None and len(v) > 10000:
+            raise ValueError("Prompt must not exceed 10000 characters")
+        return v
+
+
+class SkillInstructionsGenerateResponse(BaseModel):
+    """Response model for generated skill instructions"""
+
+    content: str = Field(
+        ...,
+        description="Generated skill instructions in Anthropic Claude-compatible format",
+        max_length=MAX_CONTENT_LENGTH,
+    )
+
+    metadata: dict = Field(
+        default_factory=dict,
+        description="Additional metadata about generation (model used, tokens, etc.)",
+    )
 
 
 # =============================================================================

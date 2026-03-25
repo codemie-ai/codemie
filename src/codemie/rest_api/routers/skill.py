@@ -18,7 +18,7 @@ REST API endpoints for Skills management.
 
 import json
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -31,6 +31,8 @@ from codemie.rest_api.models.skill import (
     SkillCreateRequest,
     SkillDetailResponse,
     SkillImportRequest,
+    SkillInstructionsGenerateRequest,
+    SkillInstructionsGenerateResponse,
     SkillListPaginatedResponse,
     SkillListResponse,
     SkillScopeFilter,
@@ -670,3 +672,58 @@ def unpublish_skill_from_marketplace(
     """
     SkillService.unpublish_from_marketplace(skill_id, user)
     return BaseResponse(message=f"Skill {skill_id} unpublished from marketplace successfully")
+
+
+# =============================================================================
+# AI Generation Endpoints
+# =============================================================================
+
+
+@router.post(
+    "/skills/instructions/generate",
+    status_code=status.HTTP_200_OK,
+    response_model=SkillInstructionsGenerateResponse,
+)
+def generate_skill_instructions(
+    raw_request: Request,
+    request: SkillInstructionsGenerateRequest,
+    user: User = Depends(authenticate),
+):
+    """
+    Generate skill instructions from user description.
+    Returns comprehensive instructions in Anthropic Claude-compatible format.
+    Automatically refines existing instructions if provided.
+    """
+    try:
+        request_id = raw_request.state.uuid
+
+        from codemie.configs.logger import set_logging_info
+
+        set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
+
+        # Set LiteLLM context with user's credentials
+        from codemie.service.llm_service.utils import set_llm_context
+
+        set_llm_context(project_name=user.current_project, user_id=user.id)
+
+        result = SkillService.generate_instructions(
+            description=request.description,
+            user=user,
+            existing_content=request.existing_content,
+            skill_name=request.skill_name,
+            llm_model=request.llm_model,
+            request_id=request_id,
+        )
+
+        return result
+
+    except Exception as e:
+        from codemie.configs import logger
+
+        logger.error(f"Failed to generate skill instructions: {str(e)}", exc_info=True)
+        raise ExtendedHTTPException(
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            message="Failed to generate instructions",
+            details=f"An error occurred while generating instructions: {str(e)}",
+            help="Try refining your description or using a different model.",
+        )

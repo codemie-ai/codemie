@@ -211,3 +211,46 @@ class SkillMonitoringService(BaseMonitoringService):
                 name=f"{SKILL_EXPORTED_METRIC}_error",
                 attributes=attributes,
             )
+
+    @classmethod
+    def send_skill_instruction_generation_metric(
+        cls,
+        success: bool,
+        user: 'User',
+        mode: str,
+        model: str,
+        error: str | None = None,
+        additional_attributes: dict | None = None,
+    ):
+        """
+        Send metrics when AI-powered skill instruction generation is used.
+
+        Args:
+            success: Whether the generation was successful
+            user: User requesting the generation
+            mode: Generation mode ("generate" or "refine")
+            model: LLM model used for generation
+            error: Error message if generation failed
+            additional_attributes: Any additional attributes to include
+        """
+        attributes = {
+            MetricsAttributes.USER_ID: user.id,
+            MetricsAttributes.USER_NAME: user.name,
+            MetricsAttributes.USER_EMAIL: user.username,
+            MetricsAttributes.PROJECT: user.current_project if hasattr(user, 'current_project') else "unknown",
+            "mode": mode,
+            "model": model,
+        }
+
+        if error:
+            attributes["error"] = error
+
+        if additional_attributes:
+            attributes.update(additional_attributes)
+
+        metric_name = "skill.instruction.generation" if success else "skill.instruction.generation.error"
+
+        cls.send_count_metric(
+            name=metric_name,
+            attributes=attributes,
+        )

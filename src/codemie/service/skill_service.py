@@ -100,6 +100,10 @@ class SkillErrors:
 class SkillService:
     """Business logic for skill management"""
 
+    # Validation constants
+    MIN_CONTENT_LENGTH = 100
+    MIN_INSTRUCTION_LENGTH = 500
+
     # ============================================================================
     # Access Control Helpers
     # ============================================================================
@@ -578,7 +582,7 @@ class SkillService:
                 help="Name must be lowercase letters, numbers, and hyphens only.",
             )
 
-        if len(result.content) < 100:
+        if len(result.content) < SkillService.MIN_CONTENT_LENGTH:
             raise ExtendedHTTPException(
                 code=status.HTTP_400_BAD_REQUEST,
                 message="Invalid skill content",
@@ -1077,6 +1081,366 @@ description: {skill.description}
         # Update skill - set visibility to PRIVATE
         SkillRepository.update(skill_id, {"visibility": SkillVisibility.PRIVATE})
         logger.info(f"Unpublished skill '{skill.name}' (ID: {skill_id}) from marketplace by user '{user.id}'")
+
+    # ============================================================================
+    # AI-Powered Instruction Generation
+    # ============================================================================
+
+    @staticmethod
+    def _validate_instruction_format(instructions: str) -> None:
+        """
+        Validate generated instruction format.
+
+        Args:
+            instructions: Generated instructions to validate
+
+        Raises:
+            ExtendedHTTPException: If format is invalid
+        """
+        # Check minimum length
+        if len(instructions) < SkillService.MIN_INSTRUCTION_LENGTH:
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST,
+                message="Generated instructions too short",
+                details=(
+                    f"Instructions must be at least {SkillService.MIN_INSTRUCTION_LENGTH} "
+                    f"characters (got {len(instructions)})"
+                ),
+                help="Try providing more detailed description",
+            )
+
+        # Check for required sections
+        required_sections = ["overview", "instructions", "examples"]
+        instructions_lower = instructions.lower()
+        missing_sections = [section for section in required_sections if section not in instructions_lower]
+
+        if missing_sections:
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST,
+                message="Generated instructions missing required sections",
+                details=f"Missing sections: {', '.join(missing_sections)}",
+                help="Try regenerating with more specific requirements",
+            )
+
+        # Check for placeholders/incomplete content
+        from codemie.templates.skills.skill_instruction_generator_prompt import FORBIDDEN_PLACEHOLDERS
+
+        found_placeholders = [p for p in FORBIDDEN_PLACEHOLDERS if p in instructions]
+
+        if found_placeholders:
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST,
+                message="Generated instructions contain placeholders",
+                details=f"Found incomplete content: {', '.join(found_placeholders)}",
+                help="Try regenerating for complete instructions",
+            )
+
+    @staticmethod
+    def _normalize_string_input(value: str | None) -> str | None:
+        """Normalize string input by converting empty strings to None."""
+        return None if value is not None and not value.strip() else value
+
+    @staticmethod
+    def _prepare_refine_prompt(description: str | None, existing_content: str):
+        """Prepare prompt and variables for refine mode."""
+        from codemie.templates.skills.skill_instruction_generator_prompt import (
+            SKILL_INSTRUCTION_GENERATOR_SYSTEM_PROMPT,
+            SKILL_INSTRUCTION_REFINE_PROMPT,
+            USER_REFINE_INSTRUCTIONS,
+            AUTOMATIC_QUALITY_REVIEW_INSTRUCTIONS,
+            FORBIDDEN_PLACEHOLDERS,
+        )
+        from langchain_core.prompts import ChatPromptTemplate
+
+        refinement_instructions = (
+            USER_REFINE_INSTRUCTIONS.format(description=description)
+            if description and description.strip()
+            else AUTOMATIC_QUALITY_REVIEW_INSTRUCTIONS
+        )
+
+        # Format forbidden placeholders as a bulleted list
+        forbidden_placeholders_text = "\n".join(f"- `{placeholder}`" for placeholder in FORBIDDEN_PLACEHOLDERS)
+
+        # Inject forbidden placeholders into system prompt
+        system_prompt = SKILL_INSTRUCTION_GENERATOR_SYSTEM_PROMPT.format(
+            forbidden_placeholders=forbidden_placeholders_text
+        )
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt),
+                ("human", SKILL_INSTRUCTION_REFINE_PROMPT),
+            ]
+        )
+        variables = {
+            "existing_instructions": existing_content,
+            "refinement_mode_instructions": refinement_instructions,
+        }
+        return prompt, variables
+
+    @staticmethod
+    def _prepare_generate_prompt(description: str | None, existing_content: str | None, skill_name: str | None):
+        """Prepare prompt and variables for generate mode."""
+        from codemie.templates.skills.skill_instruction_generator_prompt import (
+            SKILL_INSTRUCTION_GENERATOR_SYSTEM_PROMPT,
+            SKILL_INSTRUCTION_GENERATOR_USER_PROMPT,
+            FORBIDDEN_PLACEHOLDERS,
+        )
+        from langchain_core.prompts import ChatPromptTemplate
+
+        user_instructions = (
+            f"**Skill Description**: {description}" if description else "No specific description provided"
+        )
+
+        existing_instructions_context = (
+            f"\n**Existing Instructions to Improve**:\n```markdown\n{existing_content}\n```\n"
+            if existing_content
+            else ""
+        )
+
+        skill_name_context = f"\n**Skill Name**: {skill_name}\n" if skill_name else ""
+
+        # Format forbidden placeholders as a bulleted list
+        forbidden_placeholders_text = "\n".join(f"- `{placeholder}`" for placeholder in FORBIDDEN_PLACEHOLDERS)
+
+        # Inject forbidden placeholders into system prompt
+        system_prompt = SKILL_INSTRUCTION_GENERATOR_SYSTEM_PROMPT.format(
+            forbidden_placeholders=forbidden_placeholders_text
+        )
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt),
+                ("human", SKILL_INSTRUCTION_GENERATOR_USER_PROMPT),
+            ]
+        )
+        variables = {
+            "user_instructions": user_instructions,
+            "existing_instructions_context": existing_instructions_context,
+            "skill_name_context": skill_name_context,
+        }
+        return prompt, variables
+
+    @staticmethod
+    def _invoke_llm_and_validate(prompt, variables, structured_llm):
+        """Invoke LLM chain and validate the generated instructions."""
+        chain = prompt | structured_llm
+        logger.debug(f"Invoking LLM for instruction generation. Variables: {variables.keys()}")
+
+        result = chain.invoke(variables)
+
+        # Assemble structured sections into final markdown content
+        sections = []
+
+        # Add overview section
+        sections.append(f"## Overview\n\n{result.overview}")
+
+        # Add important section if provided
+        if result.important:
+            sections.append(f"\n## Important\n\n{result.important}")
+
+        # Add instructions section
+        sections.append(f"\n## Instructions\n\n{result.instructions}")
+
+        # Add examples section
+        sections.append(f"\n## Examples\n\n{result.examples}")
+
+        # Add troubleshooting section if provided
+        if result.troubleshooting:
+            sections.append(f"\n## Troubleshooting\n\n{result.troubleshooting}")
+
+        # Join all sections
+        assembled_instructions = "\n".join(sections)
+
+        logger.debug(f"Assembled instructions length: {len(assembled_instructions)} characters")
+
+        # Validate the assembled content (redundant but provides extra safety)
+        SkillService._validate_instruction_format(assembled_instructions)
+
+        return assembled_instructions
+
+    @staticmethod
+    def _send_error_metric_and_raise(user: User, mode: str, model: str, error: Exception):
+        """Send error metric and raise HTTP exception."""
+        logger.error(f"Failed to generate skill instructions: {str(error)}", exc_info=True)
+
+        SkillMonitoringService.send_skill_instruction_generation_metric(
+            success=False,
+            user=user,
+            mode=mode,
+            model=model,
+            error=str(error),
+        )
+
+        raise ExtendedHTTPException(
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            message="Failed to generate instructions",
+            details=f"An error occurred while generating instructions: {str(error)}",
+            help="Try refining your description or using a different model.",
+        )
+
+    @staticmethod
+    def generate_instructions(
+        description: str | None,
+        user: User,
+        existing_content: str | None = None,
+        skill_name: str | None = None,
+        llm_model: str | None = None,
+        request_id: str | None = None,
+    ):
+        """
+        Generate skill instructions using AI.
+
+        Mode is automatically determined:
+        - If existing_content is provided → refine mode
+        - Otherwise → generate mode
+
+        Args:
+            description: User description/instructions (required for generate, optional for refine)
+            user: Current user (for LLM context/permissions)
+            existing_content: Optional existing instructions to refine
+            skill_name: Optional skill name for context
+            llm_model: Optional specific LLM model (defaults to system default)
+            request_id: Optional request ID for tracking/logging
+
+        Returns:
+            SkillInstructionsGenerateResponse with generated instructions
+
+        Raises:
+            ExtendedHTTPException: On validation or generation failure
+        """
+        # Initialize variables with defaults for error handling
+        mode = "unknown"
+        model_to_use = llm_model or "unknown"
+
+        from codemie.core.dependecies import get_llm_by_credentials
+        from codemie.service.llm_service.llm_service import llm_service
+        from pydantic import BaseModel, Field as PydanticField
+
+        try:
+            # Normalize inputs
+            description = SkillService._normalize_string_input(description)
+            existing_content = SkillService._normalize_string_input(existing_content)
+            skill_name = SkillService._normalize_string_input(skill_name)
+
+            # Auto-determine mode
+            mode = "refine" if existing_content else "generate"
+
+            # Validate refine mode requirements
+            if mode == "refine" and not existing_content:
+                raise ExtendedHTTPException(
+                    code=status.HTTP_400_BAD_REQUEST,
+                    message="Existing content required for refine mode",
+                    details="Mode is 'refine' but no existing_content provided",
+                    help="Provide existing_content or use mode='generate'",
+                )
+
+            # Setup model and logging
+            model_to_use = llm_model or llm_service.default_llm_model
+            logger.info(
+                f"Generating skill instructions. Mode={mode}, Model={model_to_use}, "
+                f"User={user.id}, RequestID={request_id}"
+            )
+
+            # Initialize LLM with structured output
+            llm = get_llm_by_credentials(llm_model=model_to_use, temperature=0.7, streaming=False)
+
+            class SkillInstructionsStructured(BaseModel):
+                """Structured sections for skill instructions - validated independently."""
+
+                overview: str = PydanticField(
+                    description="One sentence overview of what this skill enables. Must be concise.",
+                    min_length=20,
+                    max_length=300,
+                )
+
+                important: str | None = PydanticField(
+                    description=(
+                        "Critical rules or must-follow guidelines. "
+                        "Only include if truly critical. Use bullet points."
+                    ),
+                    default=None,
+                    min_length=50,
+                    max_length=2000,
+                )
+
+                instructions: str = PydanticField(
+                    description=(
+                        "Step-by-step instructions with clear actions. Format as markdown with:\n"
+                        "### Step 1: [Action Name]\n"
+                        "[Explanation]\n\n"
+                        "**Example:** [Concrete example]\n\n"
+                        "**Expected result:** [What success looks like]"
+                    ),
+                    min_length=200,
+                    max_length=10000,
+                )
+
+                examples: str = PydanticField(
+                    description=(
+                        "At least 2 concrete usage examples. Format as markdown with:\n"
+                        "### Example 1: [Scenario]\n"
+                        "**User says:** \"[Trigger phrase]\"\n\n"
+                        "**Actions:**\n"
+                        "1. [Step]\n"
+                        "2. [Step]\n\n"
+                        "**Result:** [Outcome]"
+                    ),
+                    min_length=200,
+                    max_length=10000,
+                )
+
+                troubleshooting: str | None = PydanticField(
+                    description=(
+                        "Troubleshooting section for common errors. Format as:\n"
+                        "### Error: \"[Error message]\"\n"
+                        "**Cause:** [Why it happens]\n"
+                        "**Solution:** [How to fix]"
+                    ),
+                    default=None,
+                    min_length=100,
+                    max_length=5000,
+                )
+
+            structured_llm = llm.with_structured_output(SkillInstructionsStructured)
+
+            # Prepare prompt based on mode
+            prompt, variables = (
+                SkillService._prepare_refine_prompt(description, existing_content)
+                if mode == "refine"
+                else SkillService._prepare_generate_prompt(description, existing_content, skill_name)
+            )
+
+            # Invoke LLM and validate
+            instructions = SkillService._invoke_llm_and_validate(prompt, variables, structured_llm)
+
+            # Send success metric
+            SkillMonitoringService.send_skill_instruction_generation_metric(
+                success=True,
+                user=user,
+                mode=mode,
+                model=model_to_use,
+            )
+
+            logger.info(f"Successfully generated skill instructions. Mode={mode}, Length={len(instructions)}")
+
+            # Return response
+            from codemie.rest_api.models.skill import SkillInstructionsGenerateResponse
+
+            return SkillInstructionsGenerateResponse(
+                content=instructions,
+                metadata={
+                    "model": model_to_use,
+                    "mode": mode,
+                    "request_id": request_id,
+                    "length": len(instructions),
+                },
+            )
+
+        except ExtendedHTTPException:
+            raise
+        except Exception as e:
+            SkillService._send_error_metric_and_raise(user=user, mode=mode, model=model_to_use, error=e)
 
 
 # Create singleton instance for sync access from tools
