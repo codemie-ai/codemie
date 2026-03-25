@@ -51,10 +51,8 @@ class MetricName(str, Enum):
     BUDGET_HARD_LIMIT_VIOLATION = "codemie_llm_hard_budget_limit"
 
     # CLI metrics
+    CLI_SESSION_TOTAL = "codemie_cli_session_total"  # Session lifecycle metric (start/end)
     CLI_TOOL_USAGE_TOTAL = "codemie_cli_tool_usage_total"  # New CLI session metric with tool usage tracking
-    CLI_COMMAND_EXECUTION_TOTAL = (
-        "codemie_cli_usage_total"  # Legacy CLI session metric (kept for backward compatibility)
-    )
     CLI_LLM_USAGE_TOTAL = "codemie_litellm_proxy_usage"  # Token/cost data from LiteLLM proxy (filter: cli_request=true)
     CLI_AGENT_USAGE_TOTAL = "cli_agent_usage_total"
     CLI_ERROR_TOTAL = "cli_error_total"
@@ -109,8 +107,8 @@ MetricName.SUMMARY_METRICS = [
     MetricName.CONVERSATION_ASSISTANT_USAGE,
     MetricName.DATASOURCE_TOKENS_USAGE,
     MetricName.WORKFLOW_EXECUTION_TOTAL,
+    MetricName.CLI_SESSION_TOTAL,
     MetricName.CLI_TOOL_USAGE_TOTAL,  # New CLI session metric (primary)
-    MetricName.CLI_COMMAND_EXECUTION_TOTAL,  # Legacy CLI session metric (fallback for backward compatibility)
     MetricName.CLI_LLM_USAGE_TOTAL,  # Token/cost data from LiteLLM proxy
     MetricName.MCP_CREATE_ASSISTANT,
     MetricName.MCP_UPDATE_ASSISTANT,
@@ -137,17 +135,15 @@ MetricName.USAGE_METRICS = [
 # Activity metrics - all metrics that indicate project/user activity
 MetricName.ACTIVITY_METRICS = [
     MetricName.CONVERSATION_ASSISTANT_USAGE,
+    MetricName.CLI_SESSION_TOTAL,
     MetricName.CLI_TOOL_USAGE_TOTAL,  # New CLI session metric (primary)
-    MetricName.CLI_COMMAND_EXECUTION_TOTAL,  # Legacy CLI session metric (fallback)
     MetricName.CLI_LLM_USAGE_TOTAL,  # Token/cost data from LiteLLM proxy
     MetricName.WORKFLOW_EXECUTION_TOTAL,
     MetricName.DATASOURCE_TOKENS_USAGE,
 ]
 
-# Spending metrics - cost-bearing metrics only (excludes CLI session metrics)
-# Aligns with summary handler: CLI_COMMAND_EXECUTION_TOTAL and CLI_TOOL_USAGE_TOTAL are
-# session tracking metrics without money_spent values; including them causes double-counting.
-# CLI costs come exclusively from CLI_LLM_USAGE_TOTAL (filtered by cli_request=true in sub-aggs).
+# Spending metrics - cost-bearing metrics only (excludes CLI session metrics).
+# CLI costs come exclusively from CLI_LLM_USAGE_TOTAL.
 MetricName.SPENDING_METRICS = [
     MetricName.CONVERSATION_ASSISTANT_USAGE,
     MetricName.CLI_LLM_USAGE_TOTAL,  # Token/cost data from LiteLLM proxy (cli_request=true for CLI costs)

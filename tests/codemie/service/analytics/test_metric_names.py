@@ -127,20 +127,20 @@ class TestMetricNameToList:
     def test_to_list_with_cli_metrics(self):
         """Verify CLI-specific metrics conversion.
 
-        Arrange: CLI metric enum values (including both old and new)
+        Arrange: CLI metric enum values
         Act: Call to_list
         Assert: Returns correct CLI metric strings
         """
         # Arrange & Act
         result = MetricName.to_list(
+            MetricName.CLI_SESSION_TOTAL,
             MetricName.CLI_TOOL_USAGE_TOTAL,
-            MetricName.CLI_COMMAND_EXECUTION_TOTAL,
             MetricName.CLI_ERROR_TOTAL,
         )
 
         # Assert
+        assert "codemie_cli_session_total" in result
         assert "codemie_cli_tool_usage_total" in result  # New metric
-        assert "codemie_cli_usage_total" in result  # Old metric
         assert "cli_error_total" in result
         assert len(result) == 3
 
@@ -189,8 +189,8 @@ class TestMetricNameToListFromGroup:
         assert "conversation_assistant_usage" in result
         assert "datasource_tokens_usage" in result
         assert "workflow_execution_total" in result
+        assert "codemie_cli_session_total" in result
         assert "codemie_cli_tool_usage_total" in result  # NEW CLI metric (primary)
-        assert "codemie_cli_usage_total" in result  # OLD CLI metric (backward compatibility)
         assert "codemie_litellm_proxy_usage" in result  # CLI LLM proxy metric
         assert "create_assistant" in result  # MCP create metric
         assert "update_assistant" in result  # MCP update metric
@@ -296,17 +296,13 @@ class TestCLIToolUsageTotalConstant:
         # Assert
         assert MetricName.CLI_TOOL_USAGE_TOTAL in MetricName.SUMMARY_METRICS
 
-    def test_both_cli_metrics_coexist(self):
-        """Verify both old and new CLI metrics coexist for backward compatibility.
-
-        Assert: Both CLI_TOOL_USAGE_TOTAL and CLI_COMMAND_EXECUTION_TOTAL are defined
-        """
+    def test_cli_metrics_are_grouped_without_legacy_metric(self):
+        """Verify grouped CLI metrics use only current telemetry names."""
         # Assert
         assert MetricName.CLI_TOOL_USAGE_TOTAL.value == "codemie_cli_tool_usage_total"
-        assert MetricName.CLI_COMMAND_EXECUTION_TOTAL.value == "codemie_cli_usage_total"
-        # Both should be in SUMMARY_METRICS
+        assert MetricName.CLI_SESSION_TOTAL.value == "codemie_cli_session_total"
         assert MetricName.CLI_TOOL_USAGE_TOTAL in MetricName.SUMMARY_METRICS
-        assert MetricName.CLI_COMMAND_EXECUTION_TOTAL in MetricName.SUMMARY_METRICS
+        assert MetricName.CLI_SESSION_TOTAL in MetricName.SUMMARY_METRICS
 
 
 class TestMetricGroups:
@@ -326,10 +322,8 @@ class TestMetricGroups:
         assert MetricName.CONVERSATION_ASSISTANT_USAGE in MetricName.SUMMARY_METRICS
         assert MetricName.DATASOURCE_TOKENS_USAGE in MetricName.SUMMARY_METRICS
         assert MetricName.WORKFLOW_EXECUTION_TOTAL in MetricName.SUMMARY_METRICS
+        assert MetricName.CLI_SESSION_TOTAL in MetricName.SUMMARY_METRICS
         assert MetricName.CLI_TOOL_USAGE_TOTAL in MetricName.SUMMARY_METRICS  # NEW CLI metric (primary)
-        assert (
-            MetricName.CLI_COMMAND_EXECUTION_TOTAL in MetricName.SUMMARY_METRICS
-        )  # OLD CLI metric (backward compatibility)
         assert MetricName.CLI_LLM_USAGE_TOTAL in MetricName.SUMMARY_METRICS  # CLI LLM proxy metric
         assert MetricName.MCP_CREATE_ASSISTANT in MetricName.SUMMARY_METRICS
         assert MetricName.MCP_UPDATE_ASSISTANT in MetricName.SUMMARY_METRICS
@@ -442,8 +436,8 @@ class TestMetricNameIntegration:
         assert hasattr(MetricName, 'MCP_UPDATE_ASSISTANT')
 
         # Assert CLI metrics
+        assert hasattr(MetricName, 'CLI_SESSION_TOTAL')
         assert hasattr(MetricName, 'CLI_TOOL_USAGE_TOTAL')  # New CLI metric
-        assert hasattr(MetricName, 'CLI_COMMAND_EXECUTION_TOTAL')  # Old CLI metric
         assert hasattr(MetricName, 'CLI_ERROR_TOTAL')
 
         # Assert budget metrics
@@ -462,8 +456,8 @@ class TestMetricNameIntegration:
             MetricName.CONVERSATION_ASSISTANT_USAGE,
             MetricName.DATASOURCE_TOKENS_USAGE,
             MetricName.WORKFLOW_EXECUTION_TOTAL,
+            MetricName.CLI_SESSION_TOTAL,
             MetricName.CLI_TOOL_USAGE_TOTAL,  # New CLI metric
-            MetricName.CLI_COMMAND_EXECUTION_TOTAL,  # Old CLI metric
             MetricName.CLI_LLM_USAGE_TOTAL,
             MetricName.MCP_CREATE_ASSISTANT,
             MetricName.MCP_UPDATE_ASSISTANT,

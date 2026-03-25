@@ -119,7 +119,7 @@ class LLMHandler:
             group_by_field="attributes.llm_model.keyword",
             metric_filters=[
                 MetricName.CONVERSATION_ASSISTANT_USAGE.value,
-                MetricName.CLI_COMMAND_EXECUTION_TOTAL.value,
+                MetricName.CLI_TOOL_USAGE_TOTAL.value,
                 MetricName.CLI_AGENT_USAGE_TOTAL.value,
                 MetricName.LLM_PROXY_REQUESTS_TOTAL.value,
             ],

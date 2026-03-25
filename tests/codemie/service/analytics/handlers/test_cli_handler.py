@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -51,202 +51,206 @@ def handler(mock_user, mock_repository):
 class TestCLISummary:
     """Tests for CLI summary metrics."""
 
-    def test_build_cli_summary_aggregation_structure(self, handler):
-        """Verify CLI summary aggregation has metrics with correct filters.
+    @pytest.mark.asyncio
+    async def test_get_cli_summary_returns_overview_metrics_with_dau_and_mau(self, handler):
+        """Verify cli-summary returns the overview cards plus CLI DAU/MAU."""
+        handler._pipeline.execute_summary_query = AsyncMock(
+            side_effect=[
+                {
+                    "data": {
+                        "metrics": [
+                            {"id": "input_tokens", "label": "Input Tokens", "type": "number", "value": 100},
+                            {
+                                "id": "cached_creation_tokens",
+                                "label": "Cache Creation Tokens",
+                                "type": "number",
+                                "value": 10,
+                            },
+                            {"id": "cached_tokens_read", "label": "Cache Read Tokens", "type": "number", "value": 20},
+                            {"id": "output_tokens", "label": "Output Tokens", "type": "number", "value": 30},
+                            {"id": "unique_users", "label": "Unique Users", "type": "number", "value": 5},
+                            {"id": "unique_projects", "label": "Total Projects", "type": "number", "value": 4},
+                            {"id": "unique_sessions", "label": "Unique Sessions", "type": "number", "value": 9},
+                            {"id": "unique_repos", "label": "Unique Repositories", "type": "number", "value": 7},
+                        ]
+                    }
+                },
+                {
+                    "data": {
+                        "metrics": [
+                            {
+                                "id": "dau",
+                                "label": "DAU",
+                                "type": "number",
+                                "value": 2,
+                                "format": "number",
+                                "description": "Distinct CLI proxy users active in last 1 day",
+                                "fixed_timeframe": "Last 1 day",
+                            }
+                        ]
+                    }
+                },
+                {
+                    "data": {
+                        "metrics": [
+                            {
+                                "id": "mau",
+                                "label": "MAU",
+                                "type": "number",
+                                "value": 11,
+                                "format": "number",
+                                "description": "Distinct CLI proxy users active in last 1 month",
+                                "fixed_timeframe": "Last 1 month",
+                            }
+                        ]
+                    }
+                },
+            ]
+        )
+        handler.get_cli_costs_with_adjustment = AsyncMock(return_value={"total_cost": 123.45})
 
-        Note: Cost metrics (total_cost, cache_read_cost, cache_creation_cost) are now
-        handled separately with cutoff date adjustments, so they're not in this aggregation.
-        """
+        response = await handler.get_cli_summary(time_period="last_30_days")
+
+        assert [metric["id"] for metric in response["data"]["metrics"]] == [
+            "unique_users",
+            "dau",
+            "mau",
+            "unique_sessions",
+            "cli_cost",
+            "total_tokens",
+            "unique_projects",
+            "unique_repos",
+        ]
+        assert [metric["label"] for metric in response["data"]["metrics"]] == [
+            "Total Users",
+            "DAU",
+            "MAU",
+            "Total Sessions",
+            "Total Cost",
+            "Total Tokens",
+            "Total Projects",
+            "Repositories",
+        ]
+        assert next(metric for metric in response["data"]["metrics"] if metric["id"] == "cli_cost")["value"] == 123.45
+        assert (
+            next(metric for metric in response["data"]["metrics"] if metric["id"] == "unique_users")["description"]
+            == "Distinct CLI users"
+        )
+        assert (
+            next(metric for metric in response["data"]["metrics"] if metric["id"] == "cli_cost")["description"]
+            == "Total CLI proxy cost"
+        )
+        assert next(metric for metric in response["data"]["metrics"] if metric["id"] == "total_tokens")["value"] == 160
+        assert (
+            next(metric for metric in response["data"]["metrics"] if metric["id"] == "total_tokens")["description"]
+            == "Total CLI proxy tokens"
+        )
+        assert (
+            next(metric for metric in response["data"]["metrics"] if metric["id"] == "dau")["fixed_timeframe"]
+            == "Last 1 day"
+        )
+        assert (
+            next(metric for metric in response["data"]["metrics"] if metric["id"] == "mau")["fixed_timeframe"]
+            == "Last 1 month"
+        )
+
+    def test_build_cli_summary_aggregation_structure(self, handler):
+        """Verify CLI summary aggregation only includes overview metrics and token inputs."""
         query = {"bool": {"filter": []}}
         agg_body = handler._build_cli_summary_aggregation(query)
 
         assert agg_body["query"] == query
         assert agg_body["size"] == 0
 
-        # Verify all metrics exist (excluding cost metrics which are handled separately)
         expected_metrics = [
             "unique_users",
             "unique_sessions",
+            "unique_projects",
             "unique_repos",
             "input_tokens",
             "output_tokens",
             "cached_tokens_read",
-            "cached_creation_tokens",  # Added this instead of cache_creation_cost
-            "cli_invoked",
-            "cli_avg_session",
-            "cli_max_session_duration",
-            "proxy_requests_count",
-            "proxy_errors_count",
-            "proxy_failed_calls",
-            "total_lines_added",
-            "total_lines_removed",
-            "total_created_files",
-            "total_prompts",
-            "total_deleted_lines",
-            "total_deleted_files",
-            "total_modified_files",
+            "cached_creation_tokens",
         ]
         for metric in expected_metrics:
             assert metric in agg_body["aggs"], f"Missing metric: {metric}"
 
-        # Verify metric filters (now using 'terms' for dual-metric support)
+        assert set(agg_body["aggs"]) == set(expected_metrics)
+
         cli_filter = agg_body["aggs"]["unique_users"]["filter"]["bool"]["filter"][0]
-        assert "terms" in cli_filter
-        assert "codemie_cli_tool_usage_total" in cli_filter["terms"]["metric_name.keyword"]
-        assert "codemie_cli_usage_total" in cli_filter["terms"]["metric_name.keyword"]
-        assert (
-            agg_body["aggs"]["proxy_requests_count"]["filter"]["bool"]["filter"][0]["term"]["metric_name.keyword"]
-            == "llm_proxy_requests_total"
-        )
-        assert (
-            agg_body["aggs"]["proxy_errors_count"]["filter"]["bool"]["filter"][0]["term"]["metric_name.keyword"]
-            == "llm_proxy_errors_total"
+        assert cli_filter == {"term": {"metric_name.keyword": "codemie_cli_tool_usage_total"}}
+
+        session_filter = agg_body["aggs"]["unique_sessions"]["filter"]["bool"]["filter"][0]
+        assert session_filter == {"term": {"metric_name.keyword": "codemie_cli_session_total"}}
+
+    def test_build_cli_active_users_aggregation_uses_proxy_metrics_only(self, handler):
+        """Verify CLI DAU/MAU use proxy usage records only."""
+        query = {"bool": {"filter": []}}
+
+        agg_body = handler._build_cli_active_users_aggregation(query)
+
+        filters = agg_body["aggs"]["unique_users"]["filter"]["bool"]["filter"]
+        assert {"term": {"metric_name.keyword": "codemie_litellm_proxy_usage"}} in filters
+        assert {"term": {"attributes.cli_request": True}} in filters
+        assert agg_body["aggs"]["unique_users"]["aggs"]["count"]["cardinality"]["field"] == "attributes.user_id.keyword"
+
+    def test_parse_cli_active_users_result_builds_fixed_window_metric(self, handler):
+        """Verify CLI active users parser returns a fixed-timeframe metric."""
+        result = {"aggregations": {"unique_users": {"count": {"value": 17}}}}
+
+        metrics = handler._parse_cli_active_users_result(
+            result,
+            metric_id="dau",
+            label="DAU",
+            fixed_timeframe="Last 1 day",
         )
 
-    def test_parse_cli_summary_result_all_17_metrics(self, handler):
-        """Verify all 18 metrics are parsed correctly.
+        assert metrics == [
+            {
+                "id": "dau",
+                "label": "DAU",
+                "type": "number",
+                "value": 17,
+                "format": "number",
+                "description": "Distinct CLI proxy users active in last 1 day",
+                "fixed_timeframe": "Last 1 day",
+            }
+        ]
 
-        Note: Cost metrics (total_cost, cache_read_cost, cache_creation_cost) are now
-        handled separately with cutoff date adjustments, so they're not in this result.
-        """
+    def test_parse_cli_summary_result_builds_only_underlying_overview_metrics(self, handler):
+        """Verify only the base metrics needed by the overview are parsed."""
         result = {
             "aggregations": {
                 "unique_users": {"count": {"value": 25}},
                 "unique_sessions": {"count": {"value": 50}},
+                "unique_projects": {"count": {"value": 12}},
                 "unique_repos": {"count": {"value": 10}},
                 "input_tokens": {"total": {"value": 100000}},
                 "output_tokens": {"total": {"value": 50000}},
                 "cached_tokens_read": {"total": {"value": 20000}},
                 "cached_creation_tokens": {"total": {"value": 10000}},
-                # Cost metrics removed - handled separately with cutoff adjustments
-                "cli_invoked": {"count": {"value": 500}},
-                "cli_avg_session": {"avg_duration": {"value": 45000.5}},
-                "cli_max_session_duration": {"max_duration": {"value": 120000}},
-                "proxy_requests_count": {"doc_count": 1000},
-                "proxy_errors_count": {"doc_count": 50},
-                "proxy_failed_calls": {"count": {"value": 50}},
-                "total_lines_added": {"total": {"value": 5000}},
-                "total_lines_removed": {"total": {"value": 2000}},
-                "total_created_files": {"total": {"value": 30}},
-                "total_prompts": {"total": {"value": 200}},
-                "total_deleted_lines": {"total": {"value": 2000}},
-                "total_deleted_files": {"total": {"value": 5}},
-                "total_modified_files": {"total": {"value": 80}},
             }
         }
 
         metrics = handler._parse_cli_summary_result(result)
 
-        assert len(metrics) == 18  # Changed from 21 to 18 (removed 3 cost metrics)
-        # Verify key metrics (excluding cost metrics which are now handled separately)
+        assert len(metrics) == 8
+        assert [metric["id"] for metric in metrics] == [
+            "input_tokens",
+            "cached_creation_tokens",
+            "cached_tokens_read",
+            "output_tokens",
+            "unique_users",
+            "unique_projects",
+            "unique_sessions",
+            "unique_repos",
+        ]
         assert next(m for m in metrics if m["id"] == "unique_users")["value"] == 25
+        assert next(m for m in metrics if m["id"] == "unique_users")["description"] == "Distinct CLI users"
+        assert next(m for m in metrics if m["id"] == "unique_projects")["value"] == 12
+        assert next(m for m in metrics if m["id"] == "unique_projects")["description"] == "Distinct CLI projects"
         assert next(m for m in metrics if m["id"] == "input_tokens")["value"] == 100000
-        assert next(m for m in metrics if m["id"] == "cli_avg_session")["value"] == 45000
-        assert next(m for m in metrics if m["id"] == "total_created_files")["value"] == 30
-
-    def test_parse_cli_summary_proxy_success_rate_calculation(self, handler):
-        """Verify proxy success rate is calculated as (requests - errors) / requests * 100."""
-        result = {
-            "aggregations": {
-                "unique_users": {"count": {"value": 0}},
-                "unique_sessions": {"count": {"value": 0}},
-                "unique_repos": {"count": {"value": 0}},
-                "input_tokens": {"total": {"value": 0}},
-                "output_tokens": {"total": {"value": 0}},
-                "cached_tokens_read": {"total": {"value": 0}},
-                "total_cost": {"total": {"value": 0}},
-                "cache_read_cost": {"total": {"value": 0}},
-                "cache_creation_cost": {"total": {"value": 0}},
-                "cli_invoked": {"count": {"value": 0}},
-                "cli_avg_session": {"avg_duration": {}},
-                "cli_max_session_duration": {"max_duration": {}},
-                "proxy_requests_count": {"doc_count": 1000},
-                "proxy_errors_count": {"doc_count": 50},
-                "proxy_failed_calls": {"count": {"value": 0}},
-                "total_lines_added": {"total": {"value": 0}},
-                "total_lines_removed": {"total": {"value": 0}},
-                "total_created_files": {"total": {"value": 0}},
-                "total_prompts": {"total": {"value": 0}},
-                "total_deleted_lines": {"total": {"value": 0}},
-                "total_deleted_files": {"total": {"value": 0}},
-                "total_modified_files": {"total": {"value": 0}},
-            }
-        }
-
-        metrics = handler._parse_cli_summary_result(result)
-
-        proxy_success_rate = next(m for m in metrics if m["id"] == "proxy_success_rate")
-        # (1000 - 50) / 1000 * 100 = 95.0%
-        assert proxy_success_rate["value"] == 95.0
-
-    def test_parse_cli_summary_proxy_success_rate_zero_requests(self, handler):
-        """Verify proxy success rate is N/A when no requests exist (avoid division by zero)."""
-        result = {
-            "aggregations": {
-                "unique_users": {"count": {"value": 0}},
-                "unique_sessions": {"count": {"value": 0}},
-                "unique_repos": {"count": {"value": 0}},
-                "input_tokens": {"total": {"value": 0}},
-                "output_tokens": {"total": {"value": 0}},
-                "cached_tokens_read": {"total": {"value": 0}},
-                "total_cost": {"total": {"value": 0}},
-                "cache_read_cost": {"total": {"value": 0}},
-                "cache_creation_cost": {"total": {"value": 0}},
-                "cli_invoked": {"count": {"value": 0}},
-                "cli_avg_session": {"avg_duration": {}},
-                "cli_max_session_duration": {"max_duration": {}},
-                "proxy_requests_count": {"doc_count": 0},
-                "proxy_errors_count": {"doc_count": 0},
-                "proxy_failed_calls": {"count": {"value": 0}},
-                "total_lines_added": {"total": {"value": 0}},
-                "total_lines_removed": {"total": {"value": 0}},
-                "total_created_files": {"total": {"value": 0}},
-                "total_prompts": {"total": {"value": 0}},
-                "total_deleted_lines": {"total": {"value": 0}},
-                "total_deleted_files": {"total": {"value": 0}},
-                "total_modified_files": {"total": {"value": 0}},
-            }
-        }
-
-        metrics = handler._parse_cli_summary_result(result)
-
-        proxy_success_rate = next(m for m in metrics if m["id"] == "proxy_success_rate")
-        assert proxy_success_rate["value"] == "N/A"
-
-    def test_parse_cli_summary_net_new_lines_calculation(self, handler):
-        """Verify net new lines is calculated as lines_added - lines_removed."""
-        result = {
-            "aggregations": {
-                "unique_users": {"count": {"value": 0}},
-                "unique_sessions": {"count": {"value": 0}},
-                "unique_repos": {"count": {"value": 0}},
-                "input_tokens": {"total": {"value": 0}},
-                "output_tokens": {"total": {"value": 0}},
-                "cached_tokens_read": {"total": {"value": 0}},
-                "total_cost": {"total": {"value": 0}},
-                "cache_read_cost": {"total": {"value": 0}},
-                "cache_creation_cost": {"total": {"value": 0}},
-                "cli_invoked": {"count": {"value": 0}},
-                "cli_avg_session": {"avg_duration": {}},
-                "cli_max_session_duration": {"max_duration": {}},
-                "proxy_requests_count": {"doc_count": 0},
-                "proxy_errors_count": {"doc_count": 0},
-                "proxy_failed_calls": {"count": {"value": 0}},
-                "total_lines_added": {"total": {"value": 5000}},
-                "total_lines_removed": {"total": {"value": 2000}},
-                "total_created_files": {"total": {"value": 0}},
-                "total_prompts": {"total": {"value": 0}},
-                "total_deleted_lines": {"total": {"value": 2000}},
-                "total_deleted_files": {"total": {"value": 0}},
-                "total_modified_files": {"total": {"value": 0}},
-            }
-        }
-
-        metrics = handler._parse_cli_summary_result(result)
-
-        net_new_lines = next(m for m in metrics if m["id"] == "net_new_lines")
-        # 5000 - 2000 = 3000
-        assert net_new_lines["value"] == 3000
+        assert next(m for m in metrics if m["id"] == "unique_repos")["value"] == 10
 
 
 class TestCLIAgents:
@@ -1107,3 +1111,334 @@ class TestCLIToolsUsage:
         assert rows[2]["session_count"] == 800
         assert rows[3]["tool_name"] == "Bash"
         assert rows[3]["session_count"] == 600
+
+
+class TestCLIInsightsHelpers:
+    """Tests for CLI Insights helper transformations."""
+
+    @pytest.mark.asyncio
+    async def test_get_cli_time_pattern_rows_uses_sunday_first_weekday_order(self, handler, mock_repository):
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={
+                "aggregations": {
+                    "hourly_buckets": {
+                        "buckets": [
+                            {"key_as_string": "2026-03-22T10:00:00.000Z", "doc_count": 5},
+                            {"key_as_string": "2026-03-23T10:00:00.000Z", "doc_count": 7},
+                        ]
+                    }
+                }
+            }
+        )
+
+        rows = await handler._get_cli_time_pattern_rows("last_7_days", None, None, None, None)
+
+        assert rows["weekday"]["Sun"]["weekday_index"] == 0
+        assert rows["weekday"]["Sun"]["activity_count"] == 5
+        assert rows["weekday"]["Mon"]["weekday_index"] == 1
+        assert rows["weekday"]["Mon"]["activity_count"] == 7
+
+    @pytest.mark.asyncio
+    async def test_get_cli_insights_project_rows_skips_blank_project_name(self, handler, mock_repository):
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={
+                "aggregations": {
+                    "projects": {
+                        "buckets": [
+                            {
+                                "key": "",
+                                "cost_bucket": {"total_cost": {"value": 9334.5}},
+                                "repositories": {"buckets": {"buckets": []}},
+                                "branches": {"buckets": {"buckets": []}},
+                            },
+                            {
+                                "key": "epm-cdme",
+                                "cost_bucket": {"total_cost": {"value": 120.0}},
+                                "repositories": {"buckets": {"buckets": [{"key": "JnJ/payment-service/backend"}]}},
+                                "branches": {"buckets": {"buckets": [{"key": "feature/ABC-123-auth"}]}},
+                            },
+                        ]
+                    }
+                }
+            }
+        )
+
+        rows = await handler._get_cli_insights_project_rows("last_30_days", None, None, None, None)
+
+        assert len(rows) == 1
+        assert rows[0]["project_name"] == "epm-cdme"
+        assert rows[0]["total_cost"] == 120.0
+
+    @pytest.mark.asyncio
+    async def test_get_cli_insights_top_spenders(self, handler):
+        handler._get_cli_insights_user_rows = AsyncMock(
+            return_value=[
+                {
+                    "user_id": "u-2",
+                    "user_name": "Bob",
+                    "user_email": "bob@example.com",
+                    "classification": "learning",
+                    "total_sessions": 3,
+                    "net_lines": 12,
+                    "total_cost": 40.0,
+                    "total_lines_added": 20,
+                },
+                {
+                    "user_id": "u-1",
+                    "user_name": "Alice",
+                    "user_email": "alice@example.com",
+                    "classification": "production",
+                    "total_sessions": 8,
+                    "net_lines": 140,
+                    "total_cost": 120.0,
+                    "total_lines_added": 200,
+                },
+            ]
+        )
+
+        response = await handler.get_cli_insights_top_spenders(time_period="last_30_days")
+
+        assert [row["rank"] for row in response["data"]["rows"]] == [1, 2]
+        assert response["data"]["rows"][0]["user_name"] == "Alice"
+        assert response["data"]["rows"][0]["classification"] == "production"
+        assert response["data"]["rows"][0]["total_sessions"] == 8
+        assert response["data"]["rows"][0]["net_lines"] == 140
+        assert response["data"]["rows"][0]["total_cost"] == 120.0
+        assert response["data"]["columns"][0]["id"] == "rank"
+        assert response["data"]["columns"][1]["id"] == "user_name"
+        assert response["data"]["columns"][5]["id"] == "total_cost"
+
+    @pytest.mark.asyncio
+    async def test_get_cli_insights_user_detail(self, handler, mock_repository):
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value={
+                "aggregations": {
+                    "user_name": {"top": [{"metrics": {"attributes.user_name.keyword": "Pavlo Chaikivskyi"}}]},
+                    "user_email": {
+                        "top": [{"metrics": {"attributes.user_email.keyword": "pavlo_chaikivskyi@epam.com"}}]
+                    },
+                    "tool_usage": {
+                        "total_prompts": {"value": 18097},
+                        "total_commands": {"value": 520},
+                        "total_lines_added": {"value": 9349},
+                        "total_lines_removed": {"value": 2530},
+                        "files_created": {"value": 62},
+                        "files_modified": {"value": 563},
+                        "files_deleted": {"value": 0},
+                        "unique_repositories": {"value": 12},
+                        "projects": {"buckets": [{"key": "epm-cdme"}]},
+                        "branches": {"buckets": [{"key": "main"}, {"key": "aws/pc-codemie"}]},
+                    },
+                    "session_usage": {
+                        "total_sessions": {"value": 52},
+                        "active_days": {"buckets": [{"key_as_string": "2026-03-01"}, {"key_as_string": "2026-03-02"}]},
+                    },
+                    "completed_sessions": {"avg_duration_ms": {"value": 9480000}},
+                    "proxy_usage": {
+                        "total_cost": {"value": 1210.894},
+                        "models": {"buckets": [{"key": "claude-sonnet-4-6", "doc_count": 3583}]},
+                    },
+                    "repositories": {
+                        "buckets": [
+                            {
+                                "key": "infra/codemie-terraform-gcp-platform",
+                                "usage": {
+                                    "lines_added": {"value": 5685},
+                                    "lines_removed": {"value": 788},
+                                    "branches": {"buckets": [{"key": "epmcdme-9952"}, {"key": "main"}]},
+                                    "projects": {"buckets": [{"key": "epm-cdme"}]},
+                                },
+                                "sessions": {"count": {"value": 23}},
+                                "proxy": {"total_cost": {"value": 74.87}},
+                            },
+                            {
+                                "key": "home/pavlo_chaikivskyi",
+                                "usage": {
+                                    "lines_added": {"value": 152},
+                                    "lines_removed": {"value": 24},
+                                    "branches": {"buckets": [{"key": "HEAD"}]},
+                                    "projects": {"buckets": [{"key": "epm-cdme"}]},
+                                },
+                                "sessions": {"count": {"value": 3}},
+                                "proxy": {"total_cost": {"value": 11.81}},
+                            },
+                        ]
+                    },
+                }
+            }
+        )
+        mock_repository.execute_search_query = AsyncMock(
+            return_value={
+                "hits": {
+                    "hits": [
+                        {
+                            "_source": {
+                                "attributes": {
+                                    "tool_names": ["Bash", "Edit", "Read"],
+                                    "tool_counts": [12, 5, 8],
+                                }
+                            }
+                        },
+                        {
+                            "_source": {
+                                "attributes": {
+                                    "tool_names": ["Bash", "Write"],
+                                    "tool_counts": [3, 2],
+                                }
+                            }
+                        },
+                    ]
+                }
+            }
+        )
+
+        response = await handler.get_cli_insights_user_detail(
+            user_name="Pavlo Chaikivskyi",
+            time_period="last_30_days",
+        )
+
+        assert response["data"]["user_name"] == "Pavlo Chaikivskyi"
+        assert response["data"]["user_email"] == "pavlo_chaikivskyi@epam.com"
+        assert response["data"]["total_sessions"] == 52
+        assert response["data"]["total_prompts"] == 18097
+        assert response["data"]["net_lines"] == 6819
+        assert response["data"]["files_modified"] == 563
+        assert response["data"]["unique_projects"] == ["epm-cdme"]
+        assert response["data"]["branches_used"] == ["main", "aws/pc-codemie"]
+        assert set(response["data"]) >= {
+            "user_name",
+            "user_email",
+            "classification",
+            "primary_category",
+            "total_sessions",
+            "total_commands",
+            "unique_repositories",
+            "total_cost",
+            "total_prompts",
+            "net_lines",
+            "files_created",
+            "files_deleted",
+            "files_modified",
+            "active_days",
+            "avg_session_duration_min",
+            "prompts_per_session",
+            "est_monthly_20d",
+            "is_multi_category",
+            "category_diversity_score",
+            "rule_reasons",
+            "unique_projects",
+            "branches_used",
+            "category_breakdown",
+            "repository_classifications",
+            "tools",
+            "models",
+            "tool_profile",
+            "key_metrics",
+            "tools_chart",
+            "models_chart",
+            "workflow_intent_metrics",
+            "classification_metrics",
+            "category_breakdown_chart",
+            "repositories_table",
+        }
+        assert set(response["data"]["repository_classifications"][0]) == {
+            "repository",
+            "sessions",
+            "cost",
+            "classification",
+            "net_lines",
+            "branches",
+        }
+        assert response["data"]["tools"][0] == {"tool_name": "Bash", "usage_count": 15}
+        assert response["data"]["models"][0] == {"model_name": "claude-sonnet-4-6", "count": 3583}
+        assert response["data"]["tool_profile"]["primary_intent_label"]
+        assert response["data"]["category_breakdown"]
+        assert response["data"]["key_metrics"]["data"]["metrics"][0]["label"] == "Total Cost"
+        assert response["data"]["tools_chart"]["data"]["columns"][0]["id"] == "tool_name"
+        assert response["data"]["models_chart"]["data"]["columns"][0]["id"] == "model_name"
+        assert response["data"]["workflow_intent_metrics"]["data"]["metrics"][0]["id"] == "primary_intent"
+        assert response["data"]["classification_metrics"]["data"]["metrics"][0]["id"] == "primary_category"
+        assert response["data"]["category_breakdown_chart"]["data"]["columns"][1]["id"] == "percentage"
+        assert response["data"]["repositories_table"]["data"]["columns"][0]["id"] == "repository"
+        assert response["data"]["repositories_table"]["data"]["rows"][0]["branches"] == ["epmcdme-9952", "main"]
+
+    def test_build_cli_insights_user_aggregation_uses_session_total_for_unique_sessions(self, handler):
+        aggregation = handler._build_cli_insights_user_aggregation({"bool": {"filter": []}})
+        usage_filter = aggregation["aggs"]["users"]["aggs"]["projects"]["filter"]
+        session_filter = aggregation["aggs"]["users"]["aggs"]["total_sessions"]["filter"]
+        lines_added_filter = aggregation["aggs"]["users"]["aggs"]["total_lines_added"]["filter"]
+        lines_removed_filter = aggregation["aggs"]["users"]["aggs"]["total_lines_removed"]["filter"]
+        cost_filter = aggregation["aggs"]["users"]["aggs"]["cost_bucket"]["filter"]
+
+        assert usage_filter == {"term": {"metric_name.keyword": "codemie_cli_tool_usage_total"}}
+        assert session_filter == {"term": {"metric_name.keyword": "codemie_cli_session_total"}}
+        assert lines_added_filter == {"term": {"metric_name.keyword": "codemie_cli_tool_usage_total"}}
+        assert lines_removed_filter == {"term": {"metric_name.keyword": "codemie_cli_tool_usage_total"}}
+        assert cost_filter == {"term": {"metric_name.keyword": "codemie_litellm_proxy_usage"}}
+
+    def test_build_cli_insights_project_aggregation_uses_cli_tool_usage_metric(self, handler):
+        aggregation = handler._build_cli_insights_project_aggregation({"bool": {"filter": []}})
+        usage_filter = aggregation["aggs"]["projects"]["aggs"]["repositories"]["filter"]
+        cost_filter = aggregation["aggs"]["projects"]["aggs"]["cost_bucket"]["filter"]
+
+        assert usage_filter == {"term": {"metric_name.keyword": "codemie_cli_tool_usage_total"}}
+        assert aggregation["aggs"]["projects"]["aggs"]["branches"]["filter"] == usage_filter
+        assert cost_filter == {"term": {"metric_name.keyword": "codemie_litellm_proxy_usage"}}
+
+    def test_build_cli_insights_user_detail_aggregation_uses_current_cli_metrics(self, handler):
+        aggregation = handler._build_cli_insights_user_detail_aggregation({"bool": {"filter": []}})
+
+        assert aggregation["aggs"]["tool_usage"]["filter"] == {
+            "term": {"metric_name.keyword": "codemie_cli_tool_usage_total"}
+        }
+        assert aggregation["aggs"]["session_usage"]["filter"] == {
+            "term": {"metric_name.keyword": "codemie_cli_session_total"}
+        }
+        assert aggregation["aggs"]["proxy_usage"]["filter"] == {
+            "term": {"metric_name.keyword": "codemie_litellm_proxy_usage"}
+        }
+        status_filters = aggregation["aggs"]["completed_sessions"]["filter"]["bool"]["filter"]
+        assert {"term": {"metric_name.keyword": "codemie_cli_session_total"}} in status_filters
+        assert {"terms": {"attributes.status.keyword": ["completed", "failed", "interrupted"]}} in status_filters
+
+    def test_extract_cli_tool_counts_supports_dict_tool_counts(self, handler):
+        result = {
+            "hits": {
+                "hits": [
+                    {
+                        "_source": {
+                            "attributes": {
+                                "tool_names": ["Bash", "Read", "Edit"],
+                                "tool_counts": {"Bash": 12, "Read": 7, "Edit": 3},
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+
+        tool_counts = handler._extract_cli_tool_counts(result)
+
+        assert tool_counts == [("Bash", 12), ("Read", 7), ("Edit", 3)]
+
+    def test_classify_cli_entity_learning(self, handler):
+        classification, confidence = handler._classify_cli_entity(
+            repositories=["tutorials/react-course"],
+            branches=["main"],
+            project_name="demo@epam.com",
+            total_cost=2.0,
+        )
+
+        assert classification in {"learning", "pet_project", "experimental"}
+        assert 0 <= confidence <= 1
+
+    def test_classify_cli_entity_production(self, handler):
+        classification, confidence = handler._classify_cli_entity(
+            repositories=["JnJ/payment-service/backend"],
+            branches=["feature/ABC-123-auth"],
+            project_name="team-project",
+            total_cost=200.0,
+        )
+
+        assert classification == "production"
+        assert confidence > 0

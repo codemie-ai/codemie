@@ -108,16 +108,8 @@ class ProjectHandler(CLICostAdjustmentMixin):
 
         # Define sub-aggregations (metrics)
         sub_aggs = {
-            # Exclude legacy CLI metric (CLI_COMMAND_EXECUTION_TOTAL) to avoid double-counting
-            # pre-cutoff costs. Mirrors the pattern used in summary_handler.py.
             "total_cost": {
-                "filter": {
-                    "bool": {
-                        "must_not": [
-                            {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_COMMAND_EXECUTION_TOTAL.value}}
-                        ]
-                    }
-                },
+                "filter": {"match_all": {}},
                 "aggs": {"sum": {"sum": {"field": MONEY_SPENT_FIELD}}},
             },
             # Add CLI-specific cost aggregation for cutoff handling (use LiteLLM proxy metric)

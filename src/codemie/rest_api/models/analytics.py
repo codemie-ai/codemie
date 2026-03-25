@@ -133,6 +133,13 @@ class CliSummaryResponse(BaseModel):
     metadata: ResponseMetadata = Field(..., description=RESPONSE_METADATA_DESC)
 
 
+class AnalyticsDetailResponse(BaseModel):
+    """Response for analytics detail/drilldown endpoints."""
+
+    data: dict[str, Any] = Field(..., description="Detail payload")
+    metadata: ResponseMetadata = Field(..., description=RESPONSE_METADATA_DESC)
+
+
 class UserListItem(BaseModel):
     """Individual user item in users list."""
 

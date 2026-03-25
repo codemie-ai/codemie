@@ -23,7 +23,6 @@ from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
 from codemie.service.monitoring.metrics_constants import MetricsAttributes
-from codemie.core.utils import calculate_cli_metric_cost
 
 router = APIRouter(tags=["Metrics"], prefix="/v1", dependencies=[Depends(authenticate)])
 
@@ -80,22 +79,6 @@ def send_metric(
             attributes[MetricsAttributes.CODEMIE_CLI] = x_codemie_cli
         if x_codemie_client:
             attributes[MetricsAttributes.CODEMIE_CLIENT] = x_codemie_client
-
-        if x_codemie_cli and request.name == "codemie_cli_usage_total" and 'money_spent' not in attributes:
-            # Calculate cost for CLI metrics if not already present
-            money_spent, cached_cost, cache_creation_cost = calculate_cli_metric_cost(attributes)
-            attributes[MetricsAttributes.MONEY_SPENT] = money_spent
-            attributes[MetricsAttributes.CACHED_TOKENS_MONEY_SPENT] = cached_cost
-            attributes[MetricsAttributes.CACHE_CREATION_TOKENS_MONEY_SPENT] = cache_creation_cost
-
-            logger.debug(
-                f"Calculated CLI cost: model={attributes.get('llm_model')}, "
-                f"input={attributes.get('total_input_tokens')}, "
-                f"cache_creation={attributes.get('total_cache_creation_tokens')}, "
-                f"cache_read={attributes.get('total_cache_read_input_tokens')}, "
-                f"output={attributes.get('total_output_tokens')}, "
-                f"total=${money_spent:.6f}, cached=${cached_cost:.6f}, creation=${cache_creation_cost:.6f}"
-            )
 
         BaseMonitoringService.send_count_metric(name=metric_name, attributes=attributes)
 

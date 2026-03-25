@@ -737,6 +737,100 @@ class TestCliEndpoints:
         assert isinstance(response, JSONResponse)
         assert response.status_code == status.HTTP_200_OK
 
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    async def test_cli_insights_weekday_pattern_endpoint(
+        self, mock_service_class, mock_user, sample_tabular_response_data
+    ):
+        """Verify CLI insights weekday pattern endpoint returns tabular response."""
+        from codemie.rest_api.routers.analytics import get_cli_insights_weekday_pattern
+
+        mock_service = AsyncMock()
+        mock_service.get_cli_insights_weekday_pattern.return_value = sample_tabular_response_data
+        mock_service_class.return_value = mock_service
+
+        response = await get_cli_insights_weekday_pattern(
+            user=mock_user,
+            time_period="last_30_days",
+            start_date=None,
+            end_date=None,
+            users=None,
+            projects=None,
+            page=0,
+            per_page=50,
+        )
+
+        mock_service.get_cli_insights_weekday_pattern.assert_called_once()
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == status.HTTP_200_OK
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    async def test_cli_insights_top_spenders_endpoint(
+        self, mock_service_class, mock_user, sample_tabular_response_data
+    ):
+        """Verify CLI insights Top Spenders endpoint returns tabular response."""
+        from codemie.rest_api.routers.analytics import get_cli_insights_top_spenders
+
+        mock_service = AsyncMock()
+        mock_service.get_cli_insights_top_spenders.return_value = sample_tabular_response_data
+        mock_service_class.return_value = mock_service
+
+        response = await get_cli_insights_top_spenders(
+            user=mock_user,
+            time_period="last_30_days",
+            start_date=None,
+            end_date=None,
+            users=None,
+            projects=None,
+            page=0,
+            per_page=50,
+        )
+
+        mock_service.get_cli_insights_top_spenders.assert_called_once()
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == status.HTTP_200_OK
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    async def test_cli_insights_user_detail_endpoint(self, mock_service_class, mock_user):
+        """Verify CLI insights user detail endpoint returns detail response."""
+        from codemie.rest_api.routers.analytics import get_cli_insights_user_detail
+
+        mock_service = AsyncMock()
+        mock_service.get_cli_insights_user_detail.return_value = {
+            "data": {"user_name": "Pavlo Chaikivskyi"},
+            "metadata": {
+                "timestamp": "2026-03-24T10:00:00Z",
+                "data_as_of": "2026-03-24T10:00:00Z",
+                "filters_applied": {},
+                "execution_time_ms": 0.0,
+            },
+        }
+        mock_service_class.return_value = mock_service
+
+        response = await get_cli_insights_user_detail(
+            user=mock_user,
+            user_name="Pavlo Chaikivskyi",
+            time_period="last_30_days",
+            start_date=None,
+            end_date=None,
+            users=None,
+            projects=None,
+        )
+
+        mock_service.get_cli_insights_user_detail.assert_called_once_with(
+            user_name="Pavlo Chaikivskyi",
+            user_id=None,
+            time_period="last_30_days",
+            start_date=None,
+            end_date=None,
+            users=None,
+            projects=None,
+        )
+        assert isinstance(response, JSONResponse)
+        assert response.status_code == status.HTTP_200_OK
+
 
 class TestUsersListEndpoint:
     """Tests for the /v1/analytics/users endpoint."""

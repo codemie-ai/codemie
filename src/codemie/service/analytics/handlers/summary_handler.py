@@ -88,24 +88,13 @@ class SummaryHandler:
         )
 
     def _build_summaries_aggregation(self, query: dict) -> dict:
-        """Build aggregation for summaries (web + NEW CLI metric).
-
-        Note: Excludes OLD CLI metric (CLI_COMMAND_EXECUTION_TOTAL) from total_money_spent
-        to avoid double-counting. Uses only NEW CLI metric (CLI_LLM_USAGE_TOTAL) for costs.
-        """
+        """Build aggregation for summaries (web + current CLI metrics)."""
         agg_body = {
             "query": query,
             "size": 0,
             "aggs": {
-                # All tokens except legacy CLI metric (matches Kibana scope)
                 "total_tokens_agg": {
-                    "filter": {
-                        "bool": {
-                            "must_not": [
-                                {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_COMMAND_EXECUTION_TOTAL.value}}
-                            ]
-                        }
-                    },
+                    "filter": {"match_all": {}},
                     "aggs": {
                         "input_tokens": {"sum": {"field": INPUT_TOKENS_FIELD}},
                         "output_tokens": {"sum": {"field": OUTPUT_TOKENS_FIELD}},
@@ -113,16 +102,8 @@ class SummaryHandler:
                         "cache_creation_tokens": {"sum": {"field": "attributes.cache_creation_tokens"}},
                     },
                 },
-                # Total money spent (exclude OLD CLI metric to avoid double-counting)
-                # Uses NEW CLI metric (CLI_LLM_USAGE_TOTAL) for accurate CLI costs
                 "total_money_spent": {
-                    "filter": {
-                        "bool": {
-                            "must_not": [
-                                {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CLI_COMMAND_EXECUTION_TOTAL.value}}
-                            ]
-                        }
-                    },
+                    "filter": {"match_all": {}},
                     "aggs": {
                         "sum": {"sum": {"field": MONEY_SPENT_FIELD}},
                     },
