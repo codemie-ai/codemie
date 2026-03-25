@@ -71,6 +71,7 @@ class SkillSortBy(str, Enum):
 
     CREATED_DATE = "created_date"
     ASSISTANTS_COUNT = "assistants_count"
+    RELEVANCE = "relevance"
 
 
 class SkillCategory(str, Enum):

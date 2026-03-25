@@ -23,7 +23,7 @@ from datetime import datetime, UTC
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, or_, and_, delete, literal_column, cast, String
+from sqlalchemy import func, or_, and_, delete, literal_column, cast, String, case
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlmodel import Session, select
 
@@ -474,7 +474,12 @@ class SkillRepository:
             page: Page number (0-indexed)
             per_page: Items per page
             marketplace_filter: Controls marketplace skill inclusion (DEFAULT/EXCLUDE/INCLUDE)
-            sort_by: Sort field (CREATED_DATE or ASSISTANTS_COUNT)
+            sort_by: Sort field (CREATED_DATE, ASSISTANTS_COUNT, or RELEVANCE)
+                Context-aware 4-priority sorting for RELEVANCE:
+                - WITHOUT project filter: 1) User non-PUBLIC, 2) User PUBLIC,
+                  3) Others non-PUBLIC (all accessible), 4) Others PUBLIC
+                - WITH project filter: 1) User non-PUBLIC, 2) User PUBLIC,
+                  3) Others non-PUBLIC (from filtered project), 4) Others PUBLIC
 
         Returns:
             SkillListResult with skills, counts, and pagination metadata
@@ -511,7 +516,71 @@ class SkillRepository:
             total = session.exec(count_query).one()
 
             # Apply ordering based on sort_by parameter
-            if sort_by == SkillSortBy.ASSISTANTS_COUNT:
+            if sort_by == SkillSortBy.RELEVANCE:
+                # Build CASE expression for relevance priority sorting
+                # Priority 1: User's own non-marketplace skills (any project)
+                # Priority 2: User's own marketplace skills (PUBLIC)
+                # Priority 3: Other users' non-marketplace skills (filtered by project if provided)
+                # Priority 4: Other users' marketplace skills (PUBLIC)
+
+                # Determine if we should filter Priority 3 by project
+                # project filter = filters.project (from request query parameters)
+                # If project filter exists and contains exactly one project:
+                #   Priority 3 = other users' non-PUBLIC skills from THAT project only
+                # Otherwise: Priority 3 = other users' non-PUBLIC skills from ALL accessible projects
+                if project is not None and len(project) == 1:
+                    priority_3_condition = and_(
+                        Skill.created_by["id"].astext != user_id,
+                        Skill.project == project[0],
+                        Skill.visibility != SkillVisibility.PUBLIC,
+                    )
+                else:
+                    priority_3_condition = and_(
+                        Skill.created_by["id"].astext != user_id,
+                        Skill.visibility != SkillVisibility.PUBLIC,
+                    )
+
+                relevance_priority = case(
+                    # Priority 1: User's non-marketplace skills (any project)
+                    (
+                        and_(
+                            Skill.created_by["id"].astext == user_id,
+                            Skill.visibility != SkillVisibility.PUBLIC,
+                        ),
+                        1,
+                    ),
+                    # Priority 2: User's marketplace skills (PUBLIC, any project)
+                    (
+                        and_(
+                            Skill.created_by["id"].astext == user_id,
+                            Skill.visibility == SkillVisibility.PUBLIC,
+                        ),
+                        2,
+                    ),
+                    # Priority 3: Other users' non-marketplace skills (context-aware)
+                    (priority_3_condition, 3),
+                    # Priority 4: Other users' marketplace skills (PUBLIC)
+                    (
+                        and_(
+                            Skill.created_by["id"].astext != user_id,
+                            Skill.visibility == SkillVisibility.PUBLIC,
+                        ),
+                        4,
+                    ),
+                    # Fallback (should not happen)
+                    else_=5,
+                )
+
+                paginated_query = (
+                    filtered_query.order_by(
+                        relevance_priority.asc(),  # Primary: relevance priority
+                        Skill.created_date.desc(),  # Secondary: newest first within each priority
+                    )
+                    .offset(page * per_page)
+                    .limit(per_page)
+                )
+
+            elif sort_by == SkillSortBy.ASSISTANTS_COUNT:
                 # Create subquery to count assistants for each skill
                 from codemie.rest_api.models.assistant import Assistant
 

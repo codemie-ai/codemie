@@ -199,7 +199,9 @@ def list_skills(
     assistant_id: str | None = Query(None, description="Mark skills attached to this assistant"),
     page: int = Query(0, ge=0, description="Page number (0-indexed)"),
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
-    sort_by: SkillSortBy | None = Query(None, description="Sort by field ('created_date' or 'assistants_count')"),
+    sort_by: SkillSortBy | None = Query(
+        None, description="Sort by field ('created_date', 'assistants_count', or 'relevance')"
+    ),
 ):
     """
     List skills accessible to the current user.
@@ -225,7 +227,23 @@ def list_skills(
     Supports sorting via 'sort_by' parameter:
     - assistants_count: Sort by number of assistants using the skill (descending)
     - created_date: Sort by creation date (descending)
-    - Default: created_date for non-marketplace, assistants_count for marketplace
+    - relevance: Sort by relevance with context-aware 4-priority ranking
+
+      WITHOUT project filter (chat with assistant):
+        1. User's own non-marketplace skills (all projects)
+        2. User's own marketplace skills (PUBLIC)
+        3. Other users' non-marketplace skills (all accessible projects)
+        4. Other users' marketplace skills (PUBLIC)
+      Example: ?assistant_id=X&sort_by=relevance
+
+      WITH project filter (assistant editing):
+        1. User's own non-marketplace skills (all projects)
+        2. User's own marketplace skills (PUBLIC)
+        3. Other users' non-marketplace skills from specified project only
+        4. Other users' marketplace skills (PUBLIC)
+      Example: ?filters={"project":"demo","scope":"project_with_marketplace"}&sort_by=relevance
+    - Default: relevance when assistant_id OR single project provided, otherwise
+      created_date (non-marketplace) or assistants_count (marketplace)
     """
     # Parse filters parameter
     parsed_filters = _parse_filters(filters)
@@ -268,8 +286,9 @@ def list_skills(
     # Convert categories strings to enums
     categories = _parse_categories(categories_str)
 
+    # No validation needed - backend will handle sorting based on available context
+
     # Auto-set default sort_by based on scope/visibility
-    # Marketplace (public) skills default to assistants_count, others to created_date
     if sort_by is None:
         is_marketplace_view = scope_value == SkillScopeFilter.MARKETPLACE.value or visibility == SkillVisibility.PUBLIC
         sort_by = SkillSortBy.ASSISTANTS_COUNT if is_marketplace_view else SkillSortBy.CREATED_DATE

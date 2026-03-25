@@ -155,7 +155,7 @@ class SkillService:
             per_page: Items per page
             assistant_id: If provided, marks which skills are attached to this assistant
             marketplace_filter: Controls marketplace skill inclusion (DEFAULT/EXCLUDE/INCLUDE)
-            sort_by: Sort field (CREATED_DATE or ASSISTANTS_COUNT)
+            sort_by: Sort field (CREATED_DATE, ASSISTANTS_COUNT, or RELEVANCE)
 
         Returns:
             Paginated list of skills with metadata
