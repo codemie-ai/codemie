@@ -19,7 +19,7 @@ FROM python:${PYTHON_VERSION}-slim AS builder
 
 # Set environment variables
 ENV PYTHONPATH=/app/src \
-    POETRY_VERSION=2.1.2 \
+    POETRY_VERSION=2.3.2 \
     POETRY_HOME="/opt/poetry" \
     POETRY_VIRTUALENVS_CREATE=false \
     VIRTUAL_ENV="/venv"
@@ -44,6 +44,7 @@ RUN python -m venv $VIRTUAL_ENV
 # Install Poetry - respects $POETRY_VERSION & $POETRY_HOME
 # hadolint ignore=DL4006
 RUN curl -sSL https://install.python-poetry.org | python -
+RUN poetry self add jaraco.context@6.1.0 wheel@0.46.2
 
 # Set working directory
 WORKDIR /app
