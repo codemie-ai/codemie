@@ -376,3 +376,32 @@ def test_optional_fields(optional_nullable_explicit_set: dict) -> None:
         assert getattr(index_info, field) is None, field
 
     assert getattr(index_info, expected_empty_list_default_field) == []
+
+
+class TestIndexInfoGetIndexIdentifier:
+    """Tests for IndexInfo.get_index_identifier() ES index name sanitization (EPMCDME-11324)."""
+
+    def _make_code_index(self, project_name: str, repo_name: str) -> IndexInfo:
+        return IndexInfo(
+            project_name=project_name,
+            description="desc",
+            repo_name=repo_name,
+            index_type="code",
+        )
+
+    def test_code_index_lowercased(self):
+        index = self._make_code_index("MyProject", "my-repo")
+        assert index.get_index_identifier() == "myproject-my-repo-code"
+
+    def test_code_index_email_like_project_name_at_sign_preserved(self):
+        # @ is valid in Elasticsearch index names and is intentionally kept as-is
+        index = self._make_code_index("Kostiantyn.Khomenko@medecision.com", "awf-rules")
+        assert index.get_index_identifier() == "kostiantyn.khomenko@medecision.com-awf-rules-code"
+
+    def test_code_index_already_lowercase_unchanged(self):
+        index = self._make_code_index("myapp", "my-repo")
+        assert index.get_index_identifier() == "myapp-my-repo-code"
+
+    def test_code_index_space_in_project_name_replaced(self):
+        index = self._make_code_index("My Project", "repo")
+        assert index.get_index_identifier() == "my_project-repo-code"

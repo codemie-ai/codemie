@@ -255,7 +255,7 @@ class GitRepo(BaseModelWithSQLSupport, BaseGitRepo, table=True):
 
     @staticmethod
     def identifier_from_fields(app_id: str, name: str, index_type: CodeIndexType):
-        return f"{app_id}-{name}-{index_type.value}"
+        return sanitize_es_index_name(f"{app_id}-{name}-{index_type.value}")
 
     def get_type(self) -> str:
         """
@@ -389,6 +389,22 @@ class CostCenter(SQLModel, table=True):
     deleted_at: Optional[datetime] = SQLField(default=None, index=True)
 
 
+_ES_INDEX_INVALID_CHARS = ['"', ' ', '\\', '/', ',', '|', '>', '?', '*', '<', ':', '#']
+
+
+def sanitize_es_index_name(name: str) -> str:
+    """Sanitize a string to be a valid Elasticsearch index name.
+
+    Elasticsearch requires index names to be lowercase and not contain
+    specific special characters.
+    """
+    identifier = name.lower()
+    for char in _ES_INDEX_INVALID_CHARS:
+        if char in identifier:
+            identifier = identifier.replace(char, "_")
+    return identifier
+
+
 class BaseKnowledgeBase(ConfiguredModel):
     name: str
 
@@ -397,16 +413,8 @@ class KnowledgeBase(BaseKnowledgeBase, AbstractElasticModel):
     name: str
     type: str
 
-    _IDENTIFIER_INVALID_CHARS = ['"', ' ', '\\', '/', ',', '|', '>', '?', '*', '<', ':']
-
     def get_identifier(self) -> str:
-        identifier = self.name.lower()
-
-        for char in self._IDENTIFIER_INVALID_CHARS:
-            if char in identifier:
-                identifier = identifier.replace(char, "_")
-
-        return identifier
+        return sanitize_es_index_name(self.name)
 
 
 class ChatMessage(ConfiguredModel):

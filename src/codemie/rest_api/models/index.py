@@ -26,10 +26,9 @@ from pydantic import computed_field, model_validator, BaseModel, Field, field_va
 
 from codemie.configs import logger, config
 from codemie.core.ability import Ability, Owned, Action
-from codemie.core.models import KnowledgeBase, TokensUsage
+from codemie.core.models import CreatedByUser, GitRepo, KnowledgeBase, TokensUsage, sanitize_es_index_name
 from codemie.datasource.datasources_config import CONFLUENCE_CONFIG, STORAGE_CONFIG
 from codemie.rest_api.models.base import BaseModelWithSQLSupport, PydanticType
-from codemie.core.models import CreatedByUser, GitRepo
 from codemie.rest_api.models.guardrail import GuardrailAssignmentItem, GuardrailEntity
 from codemie.rest_api.security.user import User
 from codemie.service.constants import FullDatasourceTypes
@@ -930,7 +929,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
                 return KnowledgeBase(name=kb_name, type=self.index_type).get_identifier()
         else:
             # Non-KB types (code, platform, etc.) always use project-scoped naming
-            return '-'.join((self.project_name, self.repo_name, self.index_type))
+            return sanitize_es_index_name('-'.join((self.project_name, self.repo_name, self.index_type)))
 
     def get_completed_chunks(self, chunks: List[str]) -> List[str]:
         """
