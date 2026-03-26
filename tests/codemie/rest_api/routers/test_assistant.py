@@ -20,7 +20,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.guardrail import GuardrailEntity, GuardrailSource
-from codemie.rest_api.routers.assistant import _ask_assistant
+from codemie.rest_api.routers.assistant import _ask_assistant, _resolve_billing_project
 from codemie.rest_api.security.user import User
 
 
@@ -32,6 +32,7 @@ def mock_user():
     user.username = "testuser"
     user.name = "Test User"
     user.is_admin = False
+    user.project_names = ["test-project"]
     user.admin_project_names = ["test-project"]
     return user
 
@@ -386,3 +387,264 @@ class TestPrepareAssistantForExecutionWithSkills:
         # Verify execution_assistant is a different object from both
         assert execution_assistant is not original_assistant
         assert execution_assistant is not versioned_assistant
+
+
+class TestResolveBillingProject:
+    """Unit tests for _resolve_billing_project — project attribution logic for marketplace assistants."""
+
+    def _make_assistant(self, project: str, is_global: bool | None) -> MagicMock:
+        a = MagicMock(spec=Assistant)
+        a.project = project
+        a.is_global = is_global
+        return a
+
+    def _make_user(
+        self, email: str, project_names: list[str], admin_project_names: list[str] | None = None
+    ) -> MagicMock:
+        u = MagicMock(spec=User)
+        u.id = "user-123"
+        u.email = email
+        u.project_names = project_names
+        u.admin_project_names = admin_project_names or []
+        return u
+
+    def test_non_marketplace_assistant_returns_assistant_project(self):
+        """Non-marketplace assistants always use their own project regardless of membership."""
+        assistant = self._make_assistant("owner-project", is_global=False)
+        user = self._make_user("user@example.com", project_names=["other-project"])
+
+        assert _resolve_billing_project(assistant, user) == "owner-project"
+
+    def test_non_marketplace_assistant_with_none_is_global(self):
+        """is_global=None (falsy) is treated the same as is_global=False."""
+        assistant = self._make_assistant("owner-project", is_global=None)
+        user = self._make_user("user@example.com", project_names=[])
+
+        assert _resolve_billing_project(assistant, user) == "owner-project"
+
+    def test_marketplace_assistant_member_returns_assistant_project(self):
+        """Project member using a marketplace assistant: no substitution needed."""
+        assistant = self._make_assistant("owner-project", is_global=True)
+        user = self._make_user("user@example.com", project_names=["owner-project", "another-project"])
+
+        assert _resolve_billing_project(assistant, user) == "owner-project"
+
+    def test_marketplace_assistant_non_member_returns_user_email(self):
+        """Non-member using a marketplace assistant: billing redirected to user's personal project."""
+        assistant = self._make_assistant("owner-project", is_global=True)
+        user = self._make_user("user@example.com", project_names=["my-project"])
+
+        assert _resolve_billing_project(assistant, user) == "user@example.com"
+
+    def test_marketplace_assistant_non_member_no_projects_returns_user_email(self):
+        """Non-member with no projects at all: fallback is still user email."""
+        assistant = self._make_assistant("owner-project", is_global=True)
+        user = self._make_user("user@example.com", project_names=[])
+
+        assert _resolve_billing_project(assistant, user) == "user@example.com"
+
+    def test_marketplace_assistant_admin_only_member_returns_assistant_project(self):
+        """User in admin_project_names but not project_names is still treated as a member."""
+        assistant = self._make_assistant("owner-project", is_global=True)
+        user = self._make_user("admin@example.com", project_names=[], admin_project_names=["owner-project"])
+
+        assert _resolve_billing_project(assistant, user) == "owner-project"
+
+    def test_marketplace_assistant_project_names_none_treated_as_empty(self):
+        """project_names=None does not raise TypeError; falls through to email fallback."""
+        assistant = self._make_assistant("owner-project", is_global=True)
+        user = self._make_user("user@example.com", project_names=None)
+
+        assert _resolve_billing_project(assistant, user) == "user@example.com"
+
+    def test_raises_when_assistant_project_is_none(self):
+        """assistant.project=None raises ExtendedHTTPException (invariant violation)."""
+        from codemie.core.exceptions import ExtendedHTTPException
+
+        assistant = self._make_assistant(None, is_global=False)
+        user = self._make_user("user@example.com", project_names=[])
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            _resolve_billing_project(assistant, user)
+        assert exc_info.value.code == 500
+
+    def test_raises_when_user_email_is_empty(self):
+        """user.email='' raises ExtendedHTTPException when it would be used as billing project."""
+        from codemie.core.exceptions import ExtendedHTTPException
+
+        assistant = self._make_assistant("owner-project", is_global=True)
+        user = self._make_user("", project_names=["other-project"])
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            _resolve_billing_project(assistant, user)
+        assert exc_info.value.code == 500
+
+
+class TestAskAssistantBillingProjectSubstitution:
+    """Integration tests verifying that _ask_assistant applies billing-project substitution correctly."""
+
+    def _make_request(self):
+        raw = MagicMock()
+        raw.state.uuid = "test-uuid"
+        return raw
+
+    @patch("codemie.rest_api.routers.assistant._validate_remote_entities_and_raise")
+    @patch("codemie.rest_api.routers.assistant._validate_assistant_supports_model_change_and_raise")
+    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant.Ability")
+    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    def test_non_marketplace_assistant_uses_original_project(
+        self, mock_get_handler, mock_ability, mock_create_summary, mock_record_usage, _mv, _vr
+    ):
+        """Non-marketplace assistant: project attribution unchanged."""
+        assistant = MagicMock(spec=Assistant)
+        assistant.id = "a-1"
+        assistant.project = "owner-project"
+        assistant.is_global = False
+
+        user = MagicMock(spec=User)
+        user.email = "user@example.com"
+        user.project_names = ["my-project"]
+        user.admin_project_names = []
+
+        mock_ability.return_value.can.return_value = True
+        mock_get_handler.return_value.process_request.return_value = {}
+
+        _ask_assistant(assistant, self._make_request(), AssistantChatRequest(text=None), user, MagicMock())
+
+        mock_create_summary.assert_called_once_with(
+            request_id="test-uuid",
+            project_name="owner-project",
+            user=user.as_user_model(),
+        )
+
+    @patch("codemie.rest_api.routers.assistant._validate_remote_entities_and_raise")
+    @patch("codemie.rest_api.routers.assistant._validate_assistant_supports_model_change_and_raise")
+    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant.Ability")
+    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    def test_marketplace_assistant_member_uses_original_project(
+        self, mock_get_handler, mock_ability, mock_create_summary, mock_record_usage, _mv, _vr
+    ):
+        """Marketplace assistant accessed by a project member: no substitution."""
+        assistant = MagicMock(spec=Assistant)
+        assistant.id = "a-1"
+        assistant.project = "owner-project"
+        assistant.is_global = True
+
+        user = MagicMock(spec=User)
+        user.email = "user@example.com"
+        user.project_names = ["owner-project", "my-project"]
+        user.admin_project_names = ["owner-project"]
+
+        mock_ability.return_value.can.return_value = True
+        mock_get_handler.return_value.process_request.return_value = {}
+
+        _ask_assistant(assistant, self._make_request(), AssistantChatRequest(text=None), user, MagicMock())
+
+        mock_create_summary.assert_called_once_with(
+            request_id="test-uuid",
+            project_name="owner-project",
+            user=user.as_user_model(),
+        )
+
+    @patch("codemie.rest_api.routers.assistant._validate_remote_entities_and_raise")
+    @patch("codemie.rest_api.routers.assistant._validate_assistant_supports_model_change_and_raise")
+    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant.Ability")
+    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    def test_marketplace_assistant_non_member_uses_user_email(
+        self, mock_get_handler, mock_ability, mock_create_summary, mock_record_usage, _mv, _vr
+    ):
+        """Marketplace assistant accessed by a non-member: billing redirected to user's personal project."""
+        assistant = MagicMock(spec=Assistant)
+        assistant.id = "a-1"
+        assistant.project = "owner-project"
+        assistant.is_global = True
+        # model_copy must return a copy whose .project reflects the update dict
+        copied = MagicMock(spec=Assistant)
+        copied.project = "user@example.com"
+        assistant.model_copy.return_value = copied
+
+        user = MagicMock(spec=User)
+        user.email = "user@example.com"
+        user.project_names = ["my-project"]
+        user.admin_project_names = []
+
+        mock_ability.return_value.can.return_value = True
+        mock_get_handler.return_value.process_request.return_value = {}
+
+        _ask_assistant(assistant, self._make_request(), AssistantChatRequest(text=None), user, MagicMock())
+
+        assistant.model_copy.assert_called_once_with(update={"project": "user@example.com"})
+        mock_create_summary.assert_called_once_with(
+            request_id="test-uuid",
+            project_name="user@example.com",
+            user=user.as_user_model(),
+        )
+        # get_request_handler must receive the substituted assistant copy, not the original
+        handler_assistant_arg = mock_get_handler.call_args.args[0]
+        assert handler_assistant_arg is copied
+
+    @patch("codemie.rest_api.routers.assistant._validate_remote_entities_and_raise")
+    @patch("codemie.rest_api.routers.assistant._validate_assistant_supports_model_change_and_raise")
+    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant.Ability")
+    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    def test_marketplace_assistant_admin_only_treated_as_member(
+        self, mock_get_handler, mock_ability, mock_create_summary, mock_record_usage, _mv, _vr
+    ):
+        """User in admin_project_names but not project_names is still treated as a member."""
+        assistant = MagicMock(spec=Assistant)
+        assistant.id = "a-1"
+        assistant.project = "owner-project"
+        assistant.is_global = True
+
+        user = MagicMock(spec=User)
+        user.email = "admin@example.com"
+        user.project_names = []
+        user.admin_project_names = ["owner-project"]  # admin-only membership
+
+        mock_ability.return_value.can.return_value = True
+        mock_get_handler.return_value.process_request.return_value = {}
+
+        _ask_assistant(assistant, self._make_request(), AssistantChatRequest(text=None), user, MagicMock())
+
+        mock_create_summary.assert_called_once_with(
+            request_id="test-uuid",
+            project_name="owner-project",
+            user=user.as_user_model(),
+        )
+
+    @patch("codemie.rest_api.routers.assistant._validate_remote_entities_and_raise")
+    @patch("codemie.rest_api.routers.assistant._validate_assistant_supports_model_change_and_raise")
+    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant.Ability")
+    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    def test_record_usage_always_receives_original_assistant_project(
+        self, mock_get_handler, mock_ability, mock_create_summary, mock_record_usage, _mv, _vr
+    ):
+        """record_usage must always see the original assistant project, not the substituted one."""
+        assistant = MagicMock(spec=Assistant)
+        assistant.id = "a-1"
+        assistant.project = "owner-project"
+        assistant.is_global = True
+
+        user = MagicMock(spec=User)
+        user.email = "user@example.com"
+        user.project_names = ["my-project"]
+        user.admin_project_names = []
+
+        mock_ability.return_value.can.return_value = True
+        mock_get_handler.return_value.process_request.return_value = {}
+
+        _ask_assistant(assistant, self._make_request(), AssistantChatRequest(text=None), user, MagicMock())
+
+        # record_usage must be called with the ORIGINAL assistant (original project intact)
+        call_kwargs = mock_record_usage.call_args.kwargs
+        assert call_kwargs["assistant"].project == "owner-project"

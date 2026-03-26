@@ -165,6 +165,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.ruff]
 indent-width = 4
 line-length = 120
+exclude = [".claude"]
 
 [tool.ruff.format]
 quote-style = "preserve"
