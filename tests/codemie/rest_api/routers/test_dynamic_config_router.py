@@ -71,7 +71,7 @@ def mock_admin_user():
         admin_project_names=["project1"],
         knowledge_bases=["kb1"],
         user_type="admin",
-        is_super_admin=True,
+        is_admin=True,
     )
 
 
@@ -87,7 +87,7 @@ def mock_regular_user():
         admin_project_names=[],
         knowledge_bases=["kb1"],
         user_type="regular",
-        is_super_admin=False,
+        is_admin=False,
     )
 
 

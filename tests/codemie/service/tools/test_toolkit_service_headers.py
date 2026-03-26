@@ -110,6 +110,7 @@ class TestToolkitServiceGetToolsWithHeaders:
         user = Mock(spec=User)
         user.id = 'user-123'
         user.name = 'Test User'  # Required by ToolkitService.get_tools
+        user.is_admin = False
 
         test_headers = {'X-Tenant-ID': 'tenant-123', 'X-User-ID': 'user-456'}
 
@@ -182,6 +183,7 @@ class TestToolkitServiceGetToolsWithHeaders:
         user = Mock(spec=User)
         user.id = 'user-123'
         user.name = 'Test User'  # Required by ToolkitService.get_tools
+        user.is_admin = False
 
         test_headers = {'X-Tenant-ID': 'tenant-123'}
 
@@ -257,6 +259,7 @@ class TestToolkitServiceGetToolsWithHeaders:
         user = Mock(spec=User)
         user.id = 'user-123'
         user.name = 'Test User'  # Required by ToolkitService.get_tools
+        user.is_admin = False
 
         test_headers = {'X-Tenant-ID': 'tenant-123'}
 
@@ -332,6 +335,7 @@ class TestToolkitServiceGetToolsWithHeaders:
         user = Mock(spec=User)
         user.id = 'user-123'
         user.name = 'Test User'  # Required by ToolkitService.get_tools
+        user.is_admin = False
 
         test_headers = {'X-Tenant-ID': 'tenant-123', 'X-Request-ID': 'req-789'}
 
@@ -409,6 +413,7 @@ class TestToolkitServiceGetToolsWithHeaders:
         user = Mock(spec=User)
         user.id = 'user-123'
         user.name = 'Test User'  # Required by ToolkitService.get_tools
+        user.is_admin = False
 
         # Act - call without request_headers
         tools = ToolkitService.get_tools(

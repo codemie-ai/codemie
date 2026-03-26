@@ -51,7 +51,7 @@ def sample_user_db():
         auth_source="local",
         user_type="regular",
         is_active=True,
-        is_super_admin=False,
+        is_admin=False,
         email_verified=True,
         last_login_at=datetime.now(UTC),
         project_limit=3,
@@ -100,7 +100,7 @@ class TestCodeMieUserDetailProjects:
 
         # Act - Story 10: Pass requesting user context (self-request as super admin to see all projects)
         result = UserManagementService.get_user_with_relationships(
-            mock_session, sample_user_db.id, sample_user_db.id, is_super_admin=True
+            mock_session, sample_user_db.id, sample_user_db.id, is_admin=True
         )
 
         # Assert
@@ -124,7 +124,7 @@ class TestCodeMieUserDetailProjects:
 
         # Act - Story 10: Pass requesting user context (self-request as super admin to see all projects)
         result = UserManagementService.get_user_with_relationships(
-            mock_session, sample_user_db.id, sample_user_db.id, is_super_admin=True
+            mock_session, sample_user_db.id, sample_user_db.id, is_admin=True
         )
 
         # Assert
@@ -159,14 +159,16 @@ class TestAdminUserListItemProjects:
             ),
         ]
         projects_map = {sample_user_db.id: user_projects}
-        # Story 7: Repository now returns (users, projects_map, total)
-        mock_repo.list_users.return_value = (users, projects_map, 1)
+        # Repository primitives: count, query, fetch projects map
+        mock_repo.count_users.return_value = 1
+        mock_repo.query_users.return_value = users
+        mock_repo.fetch_projects_map.return_value = projects_map
         # Story 10 Code Review R2: Mock bulk visibility filtering to return filtered map
         mock_user_proj_repo.filter_visible_projects_from_map.return_value = {sample_user_db.id: user_projects}
 
         # Act - Story 10: Pass requesting user context (admin user sees all projects)
         result = UserManagementService.list_users(
-            mock_session, requesting_user_id="admin-user", is_super_admin=True, page=0, per_page=20
+            mock_session, requesting_user_id="admin-user", is_admin=True, page=0, per_page=20
         )
 
         # Assert
@@ -188,20 +190,24 @@ class TestAdminUserListItemProjects:
         user1 = sample_user_db
         user2 = UserDB(**{**sample_user_db.model_dump(), "id": str(uuid4()), "email": "user2@example.com"})
         users = [user1, user2]
-        # Story 7: Repository returns projects via JOIN (no separate get_projects_for_users call)
-        mock_repo.list_users.return_value = (users, {}, 2)
+        # Repository primitives: count, query, fetch projects map
+        mock_repo.count_users.return_value = 2
+        mock_repo.query_users.return_value = users
+        mock_repo.fetch_projects_map.return_value = {}
         # Story 10 Code Review R2: Mock bulk filtering to return empty filtered map
         mock_user_proj_repo.filter_visible_projects_from_map.return_value = {}
 
         # Act - Story 10: Pass requesting user context (admin user sees all projects)
         UserManagementService.list_users(
-            mock_session, requesting_user_id="admin-user", is_super_admin=True, page=0, per_page=20
+            mock_session, requesting_user_id="admin-user", is_admin=True, page=0, per_page=20
         )
 
         # Assert
-        # Story 7: Verify list_users was called (includes JOIN now, no separate batch fetch)
-        mock_repo.list_users.assert_called_once()
-        # get_projects_for_users should NOT be called (moved into list_users via JOIN)
+        # Verify primitives are called (count, query, fetch_projects_map)
+        mock_repo.count_users.assert_called_once()
+        mock_repo.query_users.assert_called_once()
+        mock_repo.fetch_projects_map.assert_called_once()
+        # get_projects_for_users should NOT be called (batch fetch via fetch_projects_map)
         mock_repo.get_projects_for_users.assert_not_called()
         # Story 10 Code Review R2: Verify bulk filtering was called (not per-user queries)
         mock_user_proj_repo.filter_visible_projects_from_map.assert_called_once()
@@ -249,7 +255,7 @@ class TestResponseModelTerminology:
             picture=None,
             user_type="regular",
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
             auth_source="local",
             email_verified=True,
             last_login_at=None,
@@ -277,7 +283,7 @@ class TestResponseModelTerminology:
             name="Test User",
             user_type="regular",
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
             auth_source="local",
             last_login_at=None,
             projects=[ProjectInfo(name="proj1", is_project_admin=False)],
@@ -314,7 +320,7 @@ class TestSnakeCaseNaming:
             picture=None,
             user_type="regular",
             is_active=True,
-            is_super_admin=True,
+            is_admin=True,
             auth_source="local",
             email_verified=True,
             last_login_at=None,
@@ -328,7 +334,7 @@ class TestSnakeCaseNaming:
         json_data = detail.model_dump()
 
         # Check key fields use snake_case
-        assert "is_super_admin" in json_data  # Not isAdmin or is-super-admin
+        assert "is_admin" in json_data  # Not isAdmin or is-super-admin
         assert "is_active" in json_data
         assert "user_type" in json_data
         assert "auth_source" in json_data
@@ -356,7 +362,7 @@ class TestUserResponseSnakeCase:
             name="Test User",
             username="testuser",
             email="test@example.com",
-            is_super_admin=True,
+            is_admin=True,
             projects=[ProjectInfoResponse(name="proj1", is_project_admin=True)],
             picture="http://example.com/pic.jpg",
             knowledge_bases=["kb1", "kb2"],
@@ -368,26 +374,23 @@ class TestUserResponseSnakeCase:
 
         # Assert - verify snake_case primary fields are present
         assert "user_id" in json_data
-        assert "is_super_admin" in json_data
+        assert "is_admin" in json_data
         assert "knowledge_bases" in json_data
         assert "user_type" in json_data
 
-        # Assert - legacy camelCase fields exist for UI backward compatibility
-        assert "userId" in json_data
-        assert "userType" in json_data
-        assert "isAdmin" in json_data
-
-        # Assert - camelCase aliases that were never added as fields are absent
+        # Assert - camelCase fields are absent (UserResponse uses snake_case only)
+        assert "userId" not in json_data
+        assert "userType" not in json_data
+        assert "isAdmin" not in json_data
         assert "isSuperAdmin" not in json_data
         assert "knowledgeBases" not in json_data
 
-        # Assert - legacy snake_case fields exist with defaults for backward compatibility
-        assert "is_admin" in json_data  # legacy field for UI compatibility
+        # Assert - legacy fields exist for backward compatibility
         assert "applications" in json_data
         assert "applications_admin" in json_data
 
-    def test_user_response_uses_is_super_admin_not_is_admin(self):
-        """Test UserResponse uses is_super_admin (Story 3 terminology standardization)"""
+    def test_user_response_uses_is_admin_not_is_admin(self):
+        """Test UserResponse uses is_admin (Story 3 terminology standardization)"""
         from codemie.core.models import UserResponse
 
         # Arrange & Act
@@ -396,7 +399,7 @@ class TestUserResponseSnakeCase:
             name="Test User",
             username="testuser",
             email="test@example.com",
-            is_super_admin=True,
+            is_admin=True,
             projects=[],
             picture="",
             knowledge_bases=[],
@@ -406,11 +409,8 @@ class TestUserResponseSnakeCase:
         json_data = user_response.model_dump()
 
         # Assert
-        assert "is_super_admin" in json_data
-        assert json_data["is_super_admin"] is True
-        # Legacy is_admin field exists for backward compatibility but defaults to False
         assert "is_admin" in json_data
-        assert json_data["is_admin"] is False
+        assert json_data["is_admin"] is True
 
 
 class TestPaginationEnvelope:
@@ -439,12 +439,13 @@ class TestPaginationEnvelope:
         from codemie.rest_api.models.user_management import PaginatedUserListResponse
 
         # Arrange
-        # Story 7: Repository returns (users, projects_map, total)
-        mock_repo.list_users.return_value = ([], {}, 0)
+        # Service has early return when users list is empty (count_users + query_users called)
+        mock_repo.count_users.return_value = 0
+        mock_repo.query_users.return_value = []
 
         # Act - Story 10: Pass requesting user context (admin user sees all projects)
         result = UserManagementService.list_users(
-            mock_session, requesting_user_id="admin-user", is_super_admin=True, page=0, per_page=20
+            mock_session, requesting_user_id="admin-user", is_admin=True, page=0, per_page=20
         )
 
         # Assert

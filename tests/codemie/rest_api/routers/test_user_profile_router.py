@@ -44,7 +44,7 @@ def regular_user() -> User:
         username="testuser",
         email="testuser@example.com",
         name="Test User",
-        is_super_admin=False,
+        is_admin=False,
         project_names=["demo"],
         admin_project_names=[],
         knowledge_bases=["kb-1"],
@@ -128,8 +128,8 @@ class TestUpdateProfileSuccess:
         assert result.username == "testuser"
         assert result.email == "newemail@example.com"
         assert result.picture == "https://example.com/new-picture.jpg"
-        # is_super_admin comes from user.is_admin property (may be True in local/dev)
-        assert result.is_super_admin == regular_user.is_admin
+        # is_admin comes from user.is_admin property (may be True in local/dev)
+        assert result.is_admin == regular_user.is_admin
         assert result.user_type == "local"
         assert result.knowledge_bases == ["kb-1"]
         assert len(result.projects) == 2
@@ -574,7 +574,7 @@ class TestUpdateProfileResponseStructure:
     @patch("codemie.rest_api.security.user.config")  # Patch where User.is_admin uses it
     @patch("codemie.rest_api.routers.user_profile_router.config")
     @pytest.mark.asyncio
-    async def test_update_profile_response_includes_is_super_admin(
+    async def test_update_profile_response_includes_is_admin(
         self,
         mock_router_config,
         mock_user_config,
@@ -583,7 +583,7 @@ class TestUpdateProfileResponseStructure:
         mock_user_project_repo,
         mock_user_projects,
     ):
-        """Test response includes is_super_admin from authenticated user context."""
+        """Test response includes is_admin from authenticated user context."""
         # Arrange - Configure router
         mock_router_config.ENABLE_USER_MANAGEMENT = True
         mock_router_config.IDP_PROVIDER = "local"
@@ -597,7 +597,7 @@ class TestUpdateProfileResponseStructure:
             id="admin-1",
             username="admin",
             email="admin@example.com",
-            is_super_admin=True,
+            is_admin=True,
             project_names=["demo"],
             admin_project_names=["demo"],
             knowledge_bases=[],
@@ -622,8 +622,8 @@ class TestUpdateProfileResponseStructure:
         # Act
         result = await update_profile(data=payload, user=super_admin_user)
 
-        # Assert: is_super_admin comes from authenticated user context
-        assert result.is_super_admin is True
+        # Assert: is_admin comes from authenticated user context
+        assert result.is_admin is True
         assert result.user_id == "admin-1"
 
     @patch("codemie.repository.user_project_repository.user_project_repository")

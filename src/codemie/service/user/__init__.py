@@ -22,7 +22,6 @@ This package provides domain-specific services for user management:
 - user_management_service: User CRUD and admin operations
 - user_access_service: Project and KB access management
 - user_profile_service: Profile self-service operations
-- project_service: Shared project creation business logic
 """
 
 from codemie.service.user.application_service import (
@@ -53,14 +52,6 @@ from codemie.service.user.user_profile_service import (
     UserProfileService,
     user_profile_service,
 )
-from codemie.service.user.project_visibility_service import (
-    ProjectVisibilityService,
-    project_visibility_service,
-)
-from codemie.service.user.project_service import (
-    ProjectService,
-    project_service,
-)
 
 __all__ = [
     # Classes
@@ -71,8 +62,6 @@ __all__ = [
     "UserManagementService",
     "UserAccessService",
     "UserProfileService",
-    "ProjectVisibilityService",
-    "ProjectService",
     # Singleton instances
     "application_service",
     "authentication_service",
@@ -81,6 +70,4 @@ __all__ = [
     "user_management_service",
     "user_access_service",
     "user_profile_service",
-    "project_visibility_service",
-    "project_service",
 ]

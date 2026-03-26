@@ -79,7 +79,7 @@ class SecureQueryBuilder:
         access_ctx = AccessFilter(self._user).get_project_access_context()
 
         # Super admins bypass project filtering entirely (unrestricted access)
-        if access_ctx.is_super_admin:
+        if access_ctx.is_admin:
             logger.info(
                 f"Super admin {self._user.id}: skipping project access filter "
                 f"(unrestricted access to all analytics data)"
@@ -262,7 +262,7 @@ class SecureQueryBuilder:
         access_ctx = AccessFilter(self._user).get_project_access_context()
 
         # Super admins can filter by any project (skip validation)
-        if access_ctx.is_super_admin:
+        if access_ctx.is_admin:
             self._query["bool"]["must"].append({"terms": {PROJECT_FIELD: projects}})
             logger.debug(f"Super admin project filter applied: project_count={len(projects)}, projects={projects}")
             return self

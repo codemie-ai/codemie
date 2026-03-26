@@ -86,30 +86,24 @@ class ProjectCostTrackingRepository:
         if not rows:
             return
 
-        base_insert = insert(ProjectCostTracking)
-        stmt = base_insert.values(
-            [
-                {
-                    "id": row.id,
-                    "project_name": row.project_name,
-                    "key_hash": row.key_hash,
-                    "spend_date": row.spend_date,
-                    "daily_spend": row.daily_spend,
-                    "cumulative_spend": row.cumulative_spend,
-                    "budget_period_spend": row.budget_period_spend,
-                    "budget_reset_at": row.budget_reset_at,
-                }
-                for row in rows
-            ]
-        ).on_conflict_do_update(
-            index_elements=["key_hash", "spend_date"],
-            set_={
-                "project_name": base_insert.excluded.project_name,
-                "daily_spend": base_insert.excluded.daily_spend,
-                "cumulative_spend": base_insert.excluded.cumulative_spend,
-                "budget_period_spend": base_insert.excluded.budget_period_spend,
-                "budget_reset_at": base_insert.excluded.budget_reset_at,
-            },
+        stmt = (
+            insert(ProjectCostTracking)
+            .values(
+                [
+                    {
+                        "id": row.id,
+                        "project_name": row.project_name,
+                        "cost_center_id": row.cost_center_id,
+                        "cost_center_name": row.cost_center_name,
+                        "key_hash": row.key_hash,
+                        "spend_date": row.spend_date,
+                        "daily_spend": row.daily_spend,
+                        "cumulative_spend": row.cumulative_spend,
+                    }
+                    for row in rows
+                ]
+            )
+            .on_conflict_do_nothing(index_elements=["key_hash", "spend_date"])
         )
 
         await session.execute(stmt)

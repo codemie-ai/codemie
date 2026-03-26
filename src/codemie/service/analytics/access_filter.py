@@ -44,7 +44,7 @@ class ProjectAccessContext:
                             Query filter: user_id.keyword = user_id AND project IN list
         admin_projects: Projects where user is an admin (sees all users' data).
                        Query filter: project IN list (no user_id restriction)
-        is_super_admin: If True, user has unrestricted access to ALL data (no project filtering).
+        is_admin: If True, user has unrestricted access to ALL data (no project filtering).
                        When True, plain_user_projects and admin_projects are ignored.
 
     Note:
@@ -56,7 +56,7 @@ class ProjectAccessContext:
         ...     user_id="user-123",
         ...     plain_user_projects=["proj-a", "proj-b"],
         ...     admin_projects=["proj-c"],
-        ...     is_super_admin=False
+        ...     is_admin=False
         ... )
         >>> # User sees own data in proj-a/proj-b, all data in proj-c
 
@@ -64,7 +64,7 @@ class ProjectAccessContext:
         ...     user_id="admin-456",
         ...     plain_user_projects=[],
         ...     admin_projects=[],
-        ...     is_super_admin=True
+        ...     is_admin=True
         ... )
         >>> # Super admin sees ALL data across ALL projects (no filtering)
     """
@@ -72,7 +72,7 @@ class ProjectAccessContext:
     user_id: str
     plain_user_projects: list[str]
     admin_projects: list[str]
-    is_super_admin: bool = False
+    is_admin: bool = False
 
     def __post_init__(self) -> None:
         """Validate dataclass fields after initialization."""
@@ -127,9 +127,7 @@ class AccessFilter:
         # Check if user is super admin (unrestricted access)
         if self._user.is_admin:
             logger.info(f"Super admin detected: user_id={user_id}, granting unrestricted access to all analytics data")
-            context = ProjectAccessContext(
-                user_id=user_id, plain_user_projects=[], admin_projects=[], is_super_admin=True
-            )
+            context = ProjectAccessContext(user_id=user_id, plain_user_projects=[], admin_projects=[], is_admin=True)
             # Store in cache
             self._context_cache[user_id] = context
             logger.debug(f"Cache STORED (super admin): user_id={user_id}, cache_size={len(self._context_cache)}")
@@ -152,7 +150,7 @@ class AccessFilter:
             user_id=user_id,
             plain_user_projects=plain_user_projects,
             admin_projects=admin_projects,
-            is_super_admin=False,
+            is_admin=False,
         )
 
         # Store in cache

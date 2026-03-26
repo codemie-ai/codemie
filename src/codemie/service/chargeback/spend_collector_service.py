@@ -19,12 +19,14 @@ import hashlib
 import re
 from datetime import date, datetime, time, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from uuid import UUID
 from uuid import uuid4
 
 from codemie.clients.postgres import get_async_session
 from codemie.configs import config, logger
 from codemie.enterprise.litellm.dependencies import get_all_keys_spending
 from codemie.repository.application_repository import ApplicationRepository
+from codemie.repository.cost_center_repository import cost_center_repository
 from codemie.repository.project_cost_tracking_repository import ProjectCostTrackingRepository
 from codemie.rest_api.models.settings import CredentialTypes, LiteLLMCredentials, Settings
 from codemie.service.chargeback.spend_models import ProjectCostTracking
@@ -79,6 +81,11 @@ class LiteLLMSpendCollectorService:
             # Load all non-deleted applications, filter by configured patterns/list
             all_apps = await self._app_repository.aget_all_non_deleted(session)
             matching_project_names = self._filter_project_names([app.name for app in all_apps])
+            apps_by_name = {app.name: app for app in all_apps}
+            cost_center_ids = [
+                app.cost_center_id for app in all_apps if isinstance(getattr(app, "cost_center_id", None), UUID)
+            ]
+            cost_center_map = await cost_center_repository.aget_by_ids(session, cost_center_ids)
             logger.debug(
                 f"Found {len(all_apps)} total apps; {len(matching_project_names)} pass project filter: "
                 f"{matching_project_names}"
@@ -127,6 +134,11 @@ class LiteLLMSpendCollectorService:
             # Per-key: query LiteLLM spend, compute delta, build row
             rows_to_insert: list[ProjectCostTracking] = []
             for api_key, (project_name, key_hash) in key_details.items():
+                project = apps_by_name.get(project_name)
+                project_cost_center_id = getattr(project, "cost_center_id", None)
+                cost_center = (
+                    cost_center_map.get(project_cost_center_id) if isinstance(project_cost_center_id, UUID) else None
+                )
                 # Query LiteLLM for this key's cumulative spend (sync HTTP — run off the event loop)
                 logger.debug(f"Querying LiteLLM spend for project '{project_name}' (hash prefix: {key_hash[:8]}...)")
                 spending_result = await asyncio.to_thread(get_all_keys_spending, [api_key])
@@ -173,6 +185,8 @@ class LiteLLMSpendCollectorService:
                     ProjectCostTracking(
                         id=uuid4(),
                         project_name=project_name,
+                        cost_center_id=cost_center.id if cost_center else None,
+                        cost_center_name=cost_center.name if cost_center else None,
                         key_hash=key_hash,
                         spend_date=target_snapshot_at,
                         daily_spend=daily_spend,

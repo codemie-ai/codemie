@@ -35,7 +35,7 @@ def mock_user():
         picture=None,
         user_type="regular",
         is_active=True,
-        is_super_admin=False,
+        is_admin=False,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -78,7 +78,7 @@ class TestGetUserWithRelationships:
         mock_get_visible.return_value = mock_user_projects
 
         result = UserManagementService.get_user_with_relationships(
-            mock_session, "target_user", "super_admin", is_super_admin=True, is_project_admin=False
+            mock_session, "target_user", "super_admin", is_admin=True, is_project_admin=False
         )
 
         # Verify get_visible_projects_for_user was called (Story 10 logic)
@@ -102,7 +102,7 @@ class TestGetUserWithRelationships:
         mock_get_admin_visible.return_value = mock_filtered_projects
 
         result = UserManagementService.get_user_with_relationships(
-            mock_session, "target_user", "project_admin", is_super_admin=False, is_project_admin=True
+            mock_session, "target_user", "project_admin", is_admin=False, is_project_admin=True
         )
 
         # Verify get_admin_visible_projects_for_user was called (Story 18 logic)
@@ -126,7 +126,7 @@ class TestGetUserWithRelationships:
         mock_get_admin_visible.return_value = []
 
         result = UserManagementService.get_user_with_relationships(
-            mock_session, "target_user", "project_admin", is_super_admin=False, is_project_admin=True
+            mock_session, "target_user", "project_admin", is_admin=False, is_project_admin=True
         )
 
         # Verify empty projects list
@@ -146,7 +146,7 @@ class TestGetUserWithRelationships:
             return_value=mock_filtered_projects,
         ):
             result = UserManagementService.get_user_with_relationships(
-                mock_session, "target_user", "project_admin", is_super_admin=False, is_project_admin=True
+                mock_session, "target_user", "project_admin", is_admin=False, is_project_admin=True
             )
 
         # Verify all knowledge bases are returned
@@ -160,7 +160,7 @@ class TestGetUserWithRelationships:
         mock_get_user.return_value = None
 
         result = UserManagementService.get_user_with_relationships(
-            mock_session, "non_existent_user", "admin", is_super_admin=True, is_project_admin=False
+            mock_session, "non_existent_user", "admin", is_admin=True, is_project_admin=False
         )
 
         assert result is None
@@ -174,7 +174,7 @@ class TestGetUserWithRelationships:
         mock_get_kb.return_value = []
 
         result = UserManagementService.get_user_with_relationships(
-            mock_session, "target_user", "regular_user", is_super_admin=False, is_project_admin=False
+            mock_session, "target_user", "regular_user", is_admin=False, is_project_admin=False
         )
 
         # Regular users should get empty projects (they shouldn't reach this point due to API auth)
@@ -193,7 +193,7 @@ class TestGetUserWithRelationships:
         mock_get_admin_visible.return_value = mock_filtered_projects
 
         result = UserManagementService.get_user_with_relationships(
-            mock_session, "target_user", "project_admin", is_super_admin=False, is_project_admin=True
+            mock_session, "target_user", "project_admin", is_admin=False, is_project_admin=True
         )
 
         # Check is_project_admin flags are preserved
@@ -220,7 +220,7 @@ class TestGetUserDetailFlow:
             picture=mock_user.picture,
             user_type=mock_user.user_type,
             is_active=mock_user.is_active,
-            is_super_admin=mock_user.is_super_admin,
+            is_admin=mock_user.is_admin,
             auth_source=mock_user.auth_source,
             email_verified=mock_user.email_verified,
             last_login_at=mock_user.last_login_at,
@@ -233,14 +233,12 @@ class TestGetUserDetailFlow:
         )
         mock_get_relationships.return_value = admin_detail
 
-        UserManagementService.get_user_detail(
-            "target_user", "project_admin", is_super_admin=False, is_project_admin=True
-        )
+        UserManagementService.get_user_detail("target_user", "project_admin", is_admin=False, is_project_admin=True)
 
         # Verify is_project_admin flag was passed
         args, _ = mock_get_relationships.call_args
         assert args[2] == "project_admin"  # requesting_user_id
-        assert args[3] is False  # is_super_admin
+        assert args[3] is False  # is_admin
         assert args[4] is True  # is_project_admin
 
     @patch("codemie.service.user.user_management_service.UserManagementService.get_user_with_relationships")
@@ -251,9 +249,7 @@ class TestGetUserDetailFlow:
         mock_get_relationships.return_value = None
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            UserManagementService.get_user_detail(
-                "non_existent_user", "admin", is_super_admin=True, is_project_admin=False
-            )
+            UserManagementService.get_user_detail("non_existent_user", "admin", is_admin=True, is_project_admin=False)
 
         assert exc_info.value.code == 404
         assert exc_info.value.message == "User not found"

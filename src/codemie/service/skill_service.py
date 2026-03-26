@@ -987,7 +987,7 @@ description: {skill.description}
         authors = SkillRepository.get_skill_authors(
             user_id=user.id,
             user_applications=user.project_names,
-            user_is_global_admin=user.is_super_admin,
+            user_is_global_admin=user.is_admin,
             user_admin_projects=user.admin_project_names,
         )
 

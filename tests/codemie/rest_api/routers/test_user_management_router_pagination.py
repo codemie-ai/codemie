@@ -33,7 +33,7 @@ def mock_user():
         email="test@example.com",
         username="test",
         name="Test User",
-        is_super_admin=True,
+        is_admin=True,
         is_active=True,
     )
 
@@ -61,9 +61,7 @@ class TestPerPageValidation:
             page=0,
             per_page=10,
             search=None,
-            is_active=None,
-            project_name=None,
-            user_type=None,
+            filters=None,
             user=mock_user,
             _=mock_admin_access,
         )
@@ -85,9 +83,7 @@ class TestPerPageValidation:
             page=0,
             per_page=20,
             search=None,
-            is_active=None,
-            project_name=None,
-            user_type=None,
+            filters=None,
             user=mock_user,
             _=mock_admin_access,
         )
@@ -108,9 +104,7 @@ class TestPerPageValidation:
             page=0,
             per_page=50,
             search=None,
-            is_active=None,
-            project_name=None,
-            user_type=None,
+            filters=None,
             user=mock_user,
             _=mock_admin_access,
         )
@@ -131,9 +125,7 @@ class TestPerPageValidation:
             page=0,
             per_page=100,
             search=None,
-            is_active=None,
-            project_name=None,
-            user_type=None,
+            filters=None,
             user=mock_user,
             _=mock_admin_access,
         )
@@ -150,9 +142,7 @@ class TestPerPageValidation:
                 page=0,
                 per_page=1,
                 search=None,
-                is_active=None,
-                project_name=None,
-                user_type=None,
+                filters=None,
                 user=mock_user,
                 _=mock_admin_access,
             )
@@ -170,9 +160,7 @@ class TestPerPageValidation:
                 page=0,
                 per_page=9,
                 search=None,
-                is_active=None,
-                project_name=None,
-                user_type=None,
+                filters=None,
                 user=mock_user,
                 _=mock_admin_access,
             )
@@ -189,9 +177,7 @@ class TestPerPageValidation:
                 page=0,
                 per_page=15,
                 search=None,
-                is_active=None,
-                project_name=None,
-                user_type=None,
+                filters=None,
                 user=mock_user,
                 _=mock_admin_access,
             )
@@ -208,9 +194,7 @@ class TestPerPageValidation:
                 page=0,
                 per_page=101,
                 search=None,
-                is_active=None,
-                project_name=None,
-                user_type=None,
+                filters=None,
                 user=mock_user,
                 _=mock_admin_access,
             )
@@ -227,9 +211,7 @@ class TestPerPageValidation:
                 page=0,
                 per_page=25,
                 search=None,
-                is_active=None,
-                project_name=None,
-                user_type=None,
+                filters=None,
                 user=mock_user,
                 _=mock_admin_access,
             )

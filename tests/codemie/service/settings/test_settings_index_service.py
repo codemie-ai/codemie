@@ -133,11 +133,13 @@ def test_get_users_for_project_settings_app_admin(mock_session_class):
     ]
     mock_session.exec.return_value.all.return_value = mock_users
 
-    regular_user = User(id="user", roles=["user"], admin_project_names=["demo", "project1"])
+    from codemie.configs import config as _cfg
+
+    with patch.object(_cfg, 'ENV', 'dev'), patch.object(_cfg, 'ENABLE_USER_MANAGEMENT', True):
+        regular_user = User(id="user", roles=["user"], admin_project_names=["demo", "project1"], is_admin=False)
 
     # When
-    with patch.object(type(regular_user), 'is_admin', new_callable=lambda: property(lambda self: False)):
-        result = SettingsIndexService.get_users(user=regular_user, settings_type=SettingType.PROJECT)
+    result = SettingsIndexService.get_users(user=regular_user, settings_type=SettingType.PROJECT)
 
     # Then
     assert len(result) == 2

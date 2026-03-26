@@ -37,6 +37,8 @@ class ProjectCostTracking(SQLModel, table=True):
 
     id: UUID = Field(sa_column=Column(PG_UUID(as_uuid=True), primary_key=True))
     project_name: str = Field(nullable=False)
+    cost_center_id: Optional[UUID] = Field(default=None, sa_column=Column(PG_UUID(as_uuid=True), nullable=True))
+    cost_center_name: Optional[str] = Field(default=None, nullable=True)
     key_hash: str = Field(nullable=False)
     spend_date: datetime = Field(
         sa_column=Column(TIMESTAMP(timezone=True), nullable=False),

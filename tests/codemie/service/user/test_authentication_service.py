@@ -28,6 +28,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from codemie.configs import config  # noqa: F401 (used in test_build_security_user patch)
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.user_management import UserDB, UserProject
 from codemie.rest_api.security import user as security_user
@@ -289,7 +290,7 @@ class TestLoadUserForAuth:
             email="test@example.com",
             picture="https://example.com/pic.jpg",
             user_type="human",
-            is_super_admin=False,
+            is_admin=False,
         )
 
         mock_projects = [
@@ -322,7 +323,7 @@ class TestLoadUserForAuth:
             assert result.project_names == ["project1", "project2"]
             assert result.admin_project_names == ["project1"]
             assert result.knowledge_bases == ["kb1", "kb2"]
-            assert result.is_super_admin is False
+            assert result.is_admin is False
 
     @pytest.mark.asyncio
     async def test_load_user_for_auth_not_found(self):
@@ -362,7 +363,7 @@ class TestCreateUserFromIdp:
             project_names=["project1", "project2"],
             admin_project_names=["project1"],
             knowledge_bases=["kb1"],
-            is_super_admin=False,
+            is_admin=False,
         )
 
         mock_created_user = UserDB(
@@ -375,7 +376,7 @@ class TestCreateUserFromIdp:
             auth_source="keycloak",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
         )
 
         with (
@@ -427,7 +428,7 @@ class TestCreateUserFromIdp:
             project_names=[],
             admin_project_names=[],
             knowledge_bases=[],
-            is_super_admin=False,
+            is_admin=False,
         )
 
         # Act & Assert
@@ -439,7 +440,7 @@ class TestCreateUserFromIdp:
 
     @pytest.mark.asyncio
     async def test_create_user_from_idp_admin_role(self):
-        """Sets is_super_admin=True when user has admin role"""
+        """Sets is_admin=True when user has admin role"""
         # Arrange
         session = AsyncMock()
         user_id = str(uuid4())
@@ -454,7 +455,7 @@ class TestCreateUserFromIdp:
             project_names=[],
             admin_project_names=[],
             knowledge_bases=[],
-            is_super_admin=False,
+            is_admin=False,
         )
 
         with (
@@ -487,7 +488,7 @@ class TestCreateUserFromIdp:
             # Assert
             call_args = mock_user_repo.acreate.call_args[0]
             created_user = call_args[1]
-            assert created_user.is_super_admin is True
+            assert created_user.is_admin is True
 
 
 class TestSyncIdpUserProfile:
@@ -519,7 +520,7 @@ class TestSyncIdpUserProfile:
             project_names=[],
             admin_project_names=[],
             knowledge_bases=[],
-            is_super_admin=False,
+            is_admin=False,
         )
 
         with patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo:
@@ -563,7 +564,7 @@ class TestSyncIdpUserProfile:
             project_names=[],
             admin_project_names=[],
             knowledge_bases=[],
-            is_super_admin=False,
+            is_admin=False,
         )
 
         with patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo:
@@ -593,11 +594,12 @@ class TestBuildSecurityUser:
             email="test@example.com",
             picture="https://example.com/pic.jpg",
             user_type="human",
-            is_super_admin=True,
+            is_admin=True,
         )
 
-        # Act
-        result = AuthenticationService._build_security_user(db_user, auth_token)
+        # Act - patch config so resolve_is_admin preserves the passed is_admin=True value
+        with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
+            result = AuthenticationService._build_security_user(db_user, auth_token)
 
         # Assert
         assert isinstance(result, security_user.User)
@@ -607,7 +609,7 @@ class TestBuildSecurityUser:
         assert result.email == "test@example.com"
         assert result.picture == "https://example.com/pic.jpg"
         assert result.user_type == "human"
-        assert result.is_super_admin is True
+        assert result.is_admin is True
         assert result.auth_token == auth_token
         # Relationships empty (populated later)
         assert result.project_names == []
@@ -669,7 +671,7 @@ class TestAuthenticatePersistentUser:
             project_names=[],
             admin_project_names=[],
             knowledge_bases=[],
-            is_super_admin=False,
+            is_admin=False,
         )
 
         mock_session = AsyncMock()
@@ -702,7 +704,7 @@ class TestAuthenticatePersistentUser:
                 project_names=["project1"],
                 admin_project_names=[],
                 knowledge_bases=[],
-                is_super_admin=False,
+                is_admin=False,
                 auth_token=auth_token,
             )
             mock_finalize.return_value = expected_user
@@ -733,7 +735,7 @@ class TestAuthenticatePersistentUser:
             project_names=["project1"],
             admin_project_names=[],
             knowledge_bases=[],
-            is_super_admin=False,
+            is_admin=False,
         )
 
         created_user = UserDB(
@@ -775,7 +777,7 @@ class TestAuthenticatePersistentUser:
                 project_names=["project1"],
                 admin_project_names=[],
                 knowledge_bases=[],
-                is_super_admin=False,
+                is_admin=False,
                 auth_token=auth_token,
             )
             mock_finalize.return_value = expected_user
@@ -816,7 +818,7 @@ class TestAuthenticatePersistentUser:
             project_names=[],
             admin_project_names=[],
             knowledge_bases=[],
-            is_super_admin=False,
+            is_admin=False,
         )
 
         mock_session = AsyncMock()
@@ -853,7 +855,7 @@ class TestAuthenticatePersistentUser:
                 project_names=[],
                 admin_project_names=[],
                 knowledge_bases=[],
-                is_super_admin=False,
+                is_admin=False,
                 auth_token=auth_token,
             )
             mock_finalize.return_value = expected_user
@@ -893,7 +895,7 @@ class TestAuthenticatePersistentUser:
             project_names=[],
             admin_project_names=[],
             knowledge_bases=[],
-            is_super_admin=False,
+            is_admin=False,
         )
 
         mock_session = AsyncMock()
@@ -980,7 +982,7 @@ class TestAuthenticateDevHeader:
             name="Dev User",
             auth_source="dev_header",
             is_active=True,
-            is_super_admin=True,
+            is_admin=True,
         )
 
         mock_session = AsyncMock()
@@ -1007,7 +1009,7 @@ class TestAuthenticateDevHeader:
                 project_names=[],
                 admin_project_names=[],
                 knowledge_bases=[],
-                is_super_admin=True,
+                is_admin=True,
             )
             mock_finalize.return_value = expected_user
 
@@ -1035,7 +1037,7 @@ class TestAuthenticateDevHeader:
             auth_source="dev_header",
             email_verified=True,
             is_active=True,
-            is_super_admin=True,
+            is_admin=True,
         )
 
         with (
@@ -1062,7 +1064,7 @@ class TestAuthenticateDevHeader:
                 project_names=[],
                 admin_project_names=[],
                 knowledge_bases=[],
-                is_super_admin=True,
+                is_admin=True,
             )
             mock_finalize.return_value = expected_user
 
@@ -1075,7 +1077,7 @@ class TestAuthenticateDevHeader:
             created_call = mock_user_repo.acreate.call_args[0][1]
             assert created_call.id == user_id
             assert created_call.auth_source == "dev_header"
-            assert created_call.is_super_admin is True
+            assert created_call.is_admin is True
             mock_logger.info.assert_called_once()
             assert f"user_id={user_id}" in mock_logger.info.call_args[0][0]
 
@@ -1100,7 +1102,7 @@ class TestAuthenticatePersistentUserRaceCondition:
             project_names=[],
             admin_project_names=[],
             knowledge_bases=[],
-            is_super_admin=False,
+            is_admin=False,
         )
 
         created_user = UserDB(
@@ -1153,7 +1155,7 @@ class TestAuthenticatePersistentUserRaceCondition:
                 project_names=[],
                 admin_project_names=[],
                 knowledge_bases=[],
-                is_super_admin=False,
+                is_admin=False,
                 auth_token=auth_token,
             )
             mock_finalize.return_value = expected_user
@@ -1190,7 +1192,7 @@ class TestAuthenticateAndLogin:
             picture="https://example.com/pic.jpg",
             user_type="human",
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
             auth_source="local",
             email_verified=True,
             password_hash="$argon2id$v=19$m=65536,t=3,p=4$hash",

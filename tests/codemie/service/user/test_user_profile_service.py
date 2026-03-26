@@ -42,7 +42,7 @@ class TestBuildProfileUpdates:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
         )
         name = "New Name"
 
@@ -72,7 +72,7 @@ class TestBuildProfileUpdates:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
         )
         picture = "https://example.com/new-picture.jpg"
 
@@ -103,7 +103,7 @@ class TestBuildProfileUpdates:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
         )
         new_email = "new@example.com"
 
@@ -135,7 +135,7 @@ class TestBuildProfileUpdates:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
         )
         name = "New Name"
 
@@ -165,7 +165,7 @@ class TestBuildProfileUpdates:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
         )
 
         # Act & Assert
@@ -193,7 +193,7 @@ class TestBuildProfileUpdates:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
         )
         new_email = "new@example.com"
 
@@ -245,7 +245,7 @@ class TestValidateEmailUniqueness:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
         )
         mock_user_repo.get_by_email.return_value = existing_user
 
@@ -272,7 +272,7 @@ class TestValidateEmailUniqueness:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
         )
         mock_user_repo.get_by_email.return_value = same_user
 
@@ -355,7 +355,7 @@ class TestUpdateProfile:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
         )
 
         updated_user = UserDB(
@@ -366,7 +366,7 @@ class TestUpdateProfile:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
         )
 
         mock_session = MagicMock()
@@ -386,7 +386,7 @@ class TestUpdateProfile:
         mock_send_email.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("codemie.service.user.personal_project_service.personal_project_service")
+    @patch("codemie.service.project.personal_project_service.personal_project_service")
     @patch("codemie.service.user.user_profile_service.UserProfileService._send_verification_email_safe")
     @patch("codemie.service.user.user_profile_service.config")
     @patch("codemie.service.user.user_profile_service.email_token_repository")
@@ -417,7 +417,7 @@ class TestUpdateProfile:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
         )
 
         updated_user = UserDB(
@@ -428,7 +428,7 @@ class TestUpdateProfile:
             auth_source="local",
             email_verified=False,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
         )
 
         mock_session = MagicMock()

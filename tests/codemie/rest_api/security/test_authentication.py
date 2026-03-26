@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import pytest
-from unittest.mock import patch, PropertyMock, MagicMock
+from unittest.mock import patch, MagicMock
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.authentication import (
@@ -21,7 +21,6 @@ from codemie.rest_api.security.authentication import (
     admin_access_only,
     application_access_check,
     kb_access_check,
-    project_admin_or_super_admin_access,
     project_admin_or_super_admin_user_list_access,
     project_admin_or_super_admin_user_detail_access,
 )
@@ -65,70 +64,14 @@ async def test_admin_access_only_success(mocker):
 
 
 @pytest.mark.anyio
+@patch.object(config, 'ENV', 'dev')
+@patch.object(config, 'ENABLE_USER_MANAGEMENT', True)
 async def test_admin_access_only_failure(mocker):
     request = mocker.MagicMock()
-    request.state.user = User(id='1', username='test', roles=[])
+    request.state.user = User(id='1', username='test', roles=[], is_admin=False)
 
-    with patch('codemie.rest_api.security.user.User.is_admin', new_callable=PropertyMock) as is_admin_mock:
-        is_admin_mock.return_value = False
-
-        with pytest.raises(ExtendedHTTPException):
-            await admin_access_only(request)
-
-
-@pytest.mark.anyio
-@patch("codemie.service.user.project_visibility_service.project_visibility_service")
-async def test_project_admin_or_super_admin_access_resolves_and_caches_project(
-    mock_visibility_service,
-):
-    request = MagicMock()
-    request.path_params = {"projectName": "shared-proj"}
-    request.method = "POST"
-    request.url.path = "/v1/projects/shared-proj/assignment"
-    request.state = MagicMock()
-    request.state.project_admin_access_cache = {}
-
-    user = User(id="user-1", username="test", is_super_admin=False)
-    project = MagicMock(name="project", project_type="shared")
-    mock_visibility_service.authorize_project_admin_or_super_admin.return_value = project
-
-    result_first = await project_admin_or_super_admin_access(request=request, user=user)
-    result_second = await project_admin_or_super_admin_access(request=request, user=user)
-
-    assert result_first is project
-    assert result_second is project
-    mock_visibility_service.authorize_project_admin_or_super_admin.assert_called_once_with(
-        project_name="shared-proj",
-        user_id="user-1",
-        is_super_admin=False,
-        action="POST /v1/projects/shared-proj/assignment",
-    )
-
-
-@pytest.mark.anyio
-@patch("codemie.service.user.project_visibility_service.project_visibility_service")
-async def test_project_admin_or_super_admin_access_requires_project_path_parameter(mock_visibility_service):
-    request = MagicMock()
-    request.path_params = {}
-    request.method = "POST"
-    request.url.path = "/v1/projects/assignment"
-    request.state = MagicMock()
-
-    user = User(id="user-1", username="test", is_super_admin=False)
-    mock_visibility_service.raise_project_not_found.side_effect = ExtendedHTTPException(
-        code=404, message="Project not found"
-    )
-
-    with pytest.raises(ExtendedHTTPException) as exc_info:
-        await project_admin_or_super_admin_access(request=request, user=user)
-
-    assert exc_info.value.code == 404
-    assert exc_info.value.message == "Project not found"
-    mock_visibility_service.raise_project_not_found.assert_called_once_with(
-        user_id="user-1",
-        project_name="<missing>",
-        action="POST /v1/projects/assignment",
-    )
+    with pytest.raises(ExtendedHTTPException):
+        await admin_access_only(request)
 
 
 def test_application_access_check_success(mocker):
@@ -139,15 +82,14 @@ def test_application_access_check_success(mocker):
     assert result is None
 
 
+@patch.object(config, 'ENV', 'dev')
+@patch.object(config, 'ENABLE_USER_MANAGEMENT', True)
 def test_application_access_check_failure(mocker):
     request = mocker.MagicMock()
-    request.state.user = User(id='1', username='test', project_names=['app1'])
+    request.state.user = User(id='1', username='test', project_names=['app1'], is_admin=False)
 
-    with patch('codemie.rest_api.security.user.User.is_admin', new_callable=PropertyMock) as is_admin_mock:
-        is_admin_mock.return_value = False
-
-        with pytest.raises(ExtendedHTTPException):
-            application_access_check(request, 'app2')
+    with pytest.raises(ExtendedHTTPException):
+        application_access_check(request, 'app2')
 
 
 def test_kb_access_check_success(mocker):
@@ -158,15 +100,14 @@ def test_kb_access_check_success(mocker):
     assert result is None
 
 
+@patch.object(config, 'ENV', 'dev')
+@patch.object(config, 'ENABLE_USER_MANAGEMENT', True)
 def test_kb_access_check_failure(mocker):
     request = mocker.MagicMock()
-    request.state.user = User(id='1', username='test', knowledge_bases=['kb1'])
+    request.state.user = User(id='1', username='test', knowledge_bases=['kb1'], is_admin=False)
 
-    with patch('codemie.rest_api.security.user.User.is_admin', new_callable=PropertyMock) as is_admin_mock:
-        is_admin_mock.return_value = False
-
-        with pytest.raises(ExtendedHTTPException):
-            kb_access_check(request, 'kb2')
+    with pytest.raises(ExtendedHTTPException):
+        kb_access_check(request, 'kb2')
 
 
 @pytest.mark.anyio
@@ -176,7 +117,7 @@ async def test_user_list_access_super_admin():
     """Test that super admins can access user list endpoint (Story 17)"""
     # Arrange
     request = MagicMock()
-    request.state.user = User(id="admin-1", username="admin", is_super_admin=True, roles=["admin"])
+    request.state.user = User(id="admin-1", username="admin", is_admin=True, roles=["admin"])
 
     # Act
     result = await project_admin_or_super_admin_user_list_access(request)
@@ -195,7 +136,7 @@ async def test_user_list_access_project_admin():
     request.state.user = User(
         id="proj-admin-1",
         username="project_admin",
-        is_super_admin=False,
+        is_admin=False,
         admin_project_names=["project1", "project2"],
     )
 
@@ -216,7 +157,7 @@ async def test_user_list_access_regular_user():
     request.state.user = User(
         id="user-1",
         username="regular_user",
-        is_super_admin=False,
+        is_admin=False,
         admin_project_names=[],
         project_names=["project1"],
     )
@@ -237,7 +178,7 @@ async def test_user_detail_access_super_admin():
     """Test that super admins can access any user detail endpoint (Story 18)"""
     # Arrange
     request = MagicMock()
-    request.state.user = User(id="admin-1", username="admin", is_super_admin=True, roles=["admin"])
+    request.state.user = User(id="admin-1", username="admin", is_admin=True, roles=["admin"])
     request.path_params = {"user_id": "target-user-123"}
 
     # Act
@@ -264,7 +205,7 @@ async def test_user_detail_access_project_admin_can_view(
     request.state.user = User(
         id="proj-admin-1",
         username="project_admin",
-        is_super_admin=False,
+        is_admin=False,
         admin_project_names=["shared-project"],
     )
     request.path_params = {"user_id": "target-user-123"}
@@ -306,7 +247,7 @@ async def test_user_detail_access_project_admin_cannot_view(
     request.state.user = User(
         id="proj-admin-1",
         username="project_admin",
-        is_super_admin=False,
+        is_admin=False,
         admin_project_names=["project-a"],
     )
     request.path_params = {"user_id": "other-user-456"}
@@ -339,7 +280,7 @@ async def test_user_detail_access_regular_user_denied():
     request.state.user = User(
         id="user-1",
         username="regular_user",
-        is_super_admin=False,
+        is_admin=False,
         admin_project_names=[],
         project_names=["project1"],
     )
@@ -364,7 +305,7 @@ async def test_user_detail_access_project_admin_missing_user_id():
     request.state.user = User(
         id="proj-admin-1",
         username="project_admin",
-        is_super_admin=False,
+        is_admin=False,
         admin_project_names=["project1"],
     )
     request.path_params = {}  # Missing user_id
@@ -392,7 +333,7 @@ async def test_user_detail_access_project_admin_user_not_exists(
     request.state.user = User(
         id="proj-admin-1",
         username="project_admin",
-        is_super_admin=False,
+        is_admin=False,
         admin_project_names=["project1"],
     )
     request.path_params = {"user_id": "nonexistent-user"}

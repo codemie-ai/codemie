@@ -65,7 +65,7 @@ def sample_user():
         name="Test User",
         password_hash="$argon2id$v=19$...",
         is_active=True,
-        is_super_admin=False,
+        is_admin=False,
         auth_source="local",
         email_verified=True,
         date=datetime.now(UTC),

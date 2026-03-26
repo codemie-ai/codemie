@@ -53,7 +53,7 @@ def super_admin_user():
         password_hash="hashed",
         auth_source="local",
         is_active=True,
-        is_super_admin=True,
+        is_admin=True,
         email_verified=True,
         date=datetime.now(UTC),
         update_date=datetime.now(UTC),
@@ -71,7 +71,7 @@ def regular_user():
         password_hash="hashed",
         auth_source="local",
         is_active=True,
-        is_super_admin=False,
+        is_admin=False,
         email_verified=True,
         date=datetime.now(UTC),
         update_date=datetime.now(UTC),
@@ -87,7 +87,7 @@ def regular_user():
 @patch("codemie.service.user.user_management_service.user_repository")
 @patch("codemie.clients.postgres.get_session")
 def test_self_revocation_blocked(mock_get_session, mock_repo, mock_logger, super_admin_user):
-    """AC-1: Super admin calling PUT /v1/admin/users/{own_id} with is_super_admin=false receives 403"""
+    """AC-1: Super admin calling PUT /v1/admin/users/{own_id} with is_admin=false receives 403"""
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
@@ -98,7 +98,7 @@ def test_self_revocation_blocked(mock_get_session, mock_repo, mock_logger, super
         UserManagementService.update_user_fields(
             user_id="super-admin-1",
             actor_user_id="super-admin-1",  # Same as target = self-revocation
-            is_super_admin=False,
+            is_admin=False,
         )
 
     # Verify exception
@@ -134,7 +134,7 @@ def test_last_admin_status_revocation_blocked(mock_get_session, mock_repo, mock_
         UserManagementService.update_user_fields(
             user_id="super-admin-1",
             actor_user_id="other-admin",  # Different actor
-            is_super_admin=False,
+            is_admin=False,
         )
 
     # Verify exception
@@ -193,7 +193,7 @@ def test_symmetric_revocation_with_two_admins(mock_get_session, mock_repo, mock_
         username="admin2",
         email="admin2@example.com",
         name="Admin Two",
-        is_super_admin=True,
+        is_admin=True,
         is_active=True,
         auth_source="local",
         date=datetime.now(UTC),
@@ -214,7 +214,7 @@ def test_symmetric_revocation_with_two_admins(mock_get_session, mock_repo, mock_
         picture=None,
         user_type="regular",
         is_active=True,
-        is_super_admin=False,  # Revoked
+        is_admin=False,  # Revoked
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -231,11 +231,11 @@ def test_symmetric_revocation_with_two_admins(mock_get_session, mock_repo, mock_
     result = UserManagementService.update_user_fields(
         user_id="super-admin-2",
         actor_user_id="super-admin-1",
-        is_super_admin=False,  # Admin A revokes Admin B
+        is_admin=False,  # Admin A revokes Admin B
     )
 
     # Assert
-    assert result.is_super_admin is False
+    assert result.is_admin is False
     mock_repo.count_active_superadmins.assert_called_once_with(mock_session)
 
 
@@ -264,7 +264,7 @@ def test_revocation_succeeds_with_three_admins(mock_get_session, mock_repo, mock
         picture=None,
         user_type="regular",
         is_active=True,
-        is_super_admin=False,
+        is_admin=False,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -279,11 +279,11 @@ def test_revocation_succeeds_with_three_admins(mock_get_session, mock_repo, mock
 
     # Act
     result = UserManagementService.update_user_fields(
-        user_id="super-admin-1", actor_user_id="other-admin", is_super_admin=False
+        user_id="super-admin-1", actor_user_id="other-admin", is_admin=False
     )
 
     # Assert
-    assert result.is_super_admin is False
+    assert result.is_admin is False
     mock_repo.count_active_superadmins.assert_called_once_with(mock_session)
 
 
@@ -304,7 +304,7 @@ def test_promotion_to_super_admin_unrestricted(mock_get_session, mock_repo, mock
     mock_repo.update.return_value = regular_user
 
     promoted_user = regular_user
-    promoted_user.is_super_admin = True
+    promoted_user.is_admin = True
 
     mock_result = CodeMieUserDetail(
         id=promoted_user.id,
@@ -314,7 +314,7 @@ def test_promotion_to_super_admin_unrestricted(mock_get_session, mock_repo, mock
         picture=None,
         user_type="regular",
         is_active=True,
-        is_super_admin=True,  # Promoted
+        is_admin=True,  # Promoted
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -331,11 +331,11 @@ def test_promotion_to_super_admin_unrestricted(mock_get_session, mock_repo, mock
     result = UserManagementService.update_user_fields(
         user_id="regular-1",
         actor_user_id="super-admin-1",
-        is_super_admin=True,  # Promote to admin
+        is_admin=True,  # Promote to admin
     )
 
     # Assert
-    assert result.is_super_admin is True
+    assert result.is_admin is True
     # count_active_superadmins should NOT be called for promotion
     mock_repo.count_active_superadmins.assert_not_called()
 
@@ -362,7 +362,7 @@ def test_self_revocation_blocked_even_with_multiple_admins(mock_get_session, moc
         UserManagementService.update_user_fields(
             user_id="super-admin-1",
             actor_user_id="super-admin-1",
-            is_super_admin=False,  # Self-revocation
+            is_admin=False,  # Self-revocation
         )
 
     # Verify exception
@@ -390,9 +390,7 @@ def test_blocked_operations_are_logged(mock_get_session, mock_repo, mock_logger,
 
     # Test self-revocation logging
     with suppress(ExtendedHTTPException):
-        UserManagementService.update_user_fields(
-            user_id="super-admin-1", actor_user_id="super-admin-1", is_super_admin=False
-        )
+        UserManagementService.update_user_fields(user_id="super-admin-1", actor_user_id="super-admin-1", is_admin=False)
 
     # Verify logging contains required fields
     log_call = mock_logger.warning.call_args[0][0]
@@ -436,9 +434,7 @@ def test_protection_applies_to_update_endpoint(mock_get_session, mock_repo, supe
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.update_user_fields(
-            user_id="super-admin-1", actor_user_id="other-admin", is_super_admin=False
-        )
+        UserManagementService.update_user_fields(user_id="super-admin-1", actor_user_id="other-admin", is_admin=False)
 
     assert exc_info.value.code == 403
 
@@ -452,7 +448,7 @@ def test_protection_applies_to_update_endpoint(mock_get_session, mock_repo, supe
 @patch("codemie.service.user.user_management_service.user_repository")
 @patch("codemie.clients.postgres.get_session")
 def test_regular_user_to_false_is_noop(mock_get_session, mock_repo, mock_get_relationships, regular_user):
-    """Setting is_super_admin=false on regular user should succeed (no-op)"""
+    """Setting is_admin=false on regular user should succeed (no-op)"""
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
@@ -467,7 +463,7 @@ def test_regular_user_to_false_is_noop(mock_get_session, mock_repo, mock_get_rel
         picture=None,
         user_type="regular",
         is_active=True,
-        is_super_admin=False,  # Remains false
+        is_admin=False,  # Remains false
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -480,13 +476,11 @@ def test_regular_user_to_false_is_noop(mock_get_session, mock_repo, mock_get_rel
     )
     mock_get_relationships.return_value = mock_result
 
-    # Act - setting is_super_admin=false on a regular user
-    result = UserManagementService.update_user_fields(
-        user_id="regular-1", actor_user_id="admin-1", is_super_admin=False
-    )
+    # Act - setting is_admin=false on a regular user
+    result = UserManagementService.update_user_fields(user_id="regular-1", actor_user_id="admin-1", is_admin=False)
 
     # Assert
-    assert result.is_super_admin is False
+    assert result.is_admin is False
     # Protection logic should NOT be triggered since user is NOT currently a super admin
     # count_active_superadmins is only called when revoking EXISTING super admin status
     mock_repo.count_active_superadmins.assert_not_called()
@@ -503,20 +497,22 @@ def test_user_not_found_returns_404(mock_get_session, mock_repo):
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.update_user_fields(user_id="nonexistent", actor_user_id="admin", is_super_admin=False)
+        UserManagementService.update_user_fields(user_id="nonexistent", actor_user_id="admin", is_admin=False)
 
     assert exc_info.value.code == 404
     assert "User not found" in exc_info.value.message
 
 
+@patch("codemie.service.user.user_management_service.config")
 @patch("codemie.service.user.user_management_service.UserManagementService.get_user_with_relationships")
 @patch("codemie.service.user.user_management_service.user_repository")
 @patch("codemie.clients.postgres.get_session")
 def test_other_fields_can_be_updated_without_triggering_protection(
-    mock_get_session, mock_repo, mock_get_relationships, super_admin_user
+    mock_get_session, mock_repo, mock_get_relationships, mock_config, super_admin_user
 ):
     """Updating other fields (name, email) should not trigger super admin protection"""
     # Arrange
+    mock_config.IDP_PROVIDER = "local"
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
     mock_repo.get_by_id.return_value = super_admin_user
@@ -530,7 +526,7 @@ def test_other_fields_can_be_updated_without_triggering_protection(
         picture=None,
         user_type="regular",
         is_active=True,
-        is_super_admin=True,  # Unchanged
+        is_admin=True,  # Unchanged
         auth_source="local",
         email_verified=True,
         last_login_at=None,

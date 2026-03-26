@@ -21,29 +21,34 @@ from unittest.mock import MagicMock, patch
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.user import User
-from codemie.service.user.project_service import ProjectService
+from codemie.service.project.project_service import ProjectService
 
 
 @pytest.fixture
 def regular_user() -> User:
-    return User(id="user-1", username="user1", email="user1@example.com", is_super_admin=False)
+    with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
+        return User(id="user-1", username="user1", email="user1@example.com", is_admin=False)
 
 
 @pytest.fixture
 def super_admin_user() -> User:
-    return User(id="admin-1", username="admin", email="admin@example.com", is_super_admin=True)
+    with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
+        return User(id="admin-1", username="admin", email="admin@example.com", is_admin=True)
 
 
 class TestProjectServiceCreateSharedProject:
-    @patch("codemie.service.user.project_service.user_project_repository")
-    @patch("codemie.service.user.project_service.application_repository")
-    @patch("codemie.service.user.project_service.user_repository")
-    @patch("codemie.service.user.project_service.get_session")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.user_repository")
+    @patch("codemie.service.project.project_service.cost_center_service")
+    @patch("codemie.service.project.project_service.get_session")
     def test_create_shared_project_success(
         self,
         mock_get_session,
+        mock_cost_center_service,
         mock_user_repository,
         mock_application_repository,
         mock_user_project_repository,
@@ -52,6 +57,7 @@ class TestProjectServiceCreateSharedProject:
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__.return_value = mock_session
         mock_user_repository.get_active_by_id.return_value = MagicMock(project_limit=3)
+        mock_cost_center_service.ensure_exists_for_project.return_value = None
         mock_application_repository.count_shared_projects_created_by_user.return_value = 1
         mock_application_repository.get_by_name_case_insensitive.return_value = None
         project = SimpleNamespace(
@@ -85,9 +91,9 @@ class TestProjectServiceCreateSharedProject:
         )
         mock_session.commit.assert_called_once()
 
-    @patch("codemie.service.user.project_service.application_repository")
-    @patch("codemie.service.user.project_service.user_repository")
-    @patch("codemie.service.user.project_service.get_session")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.user_repository")
+    @patch("codemie.service.project.project_service.get_session")
     def test_duplicate_error_uses_existing_project_casing(
         self,
         mock_get_session,
@@ -111,9 +117,9 @@ class TestProjectServiceCreateSharedProject:
         assert exc_info.value.code == 409
         assert exc_info.value.message == "Project 'my-project' already exists. Please choose a different name."
 
-    @patch("codemie.service.user.project_service.application_repository")
-    @patch("codemie.service.user.project_service.user_repository")
-    @patch("codemie.service.user.project_service.get_session")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.user_repository")
+    @patch("codemie.service.project.project_service.get_session")
     def test_integrity_error_conflict_is_chained_and_uses_existing_casing(
         self,
         mock_get_session,
@@ -144,9 +150,9 @@ class TestProjectServiceCreateSharedProject:
         assert exc_info.value.__cause__ is integrity_error
         mock_session.rollback.assert_called_once()
 
-    @patch("codemie.service.user.project_service.application_repository")
-    @patch("codemie.service.user.project_service.user_repository")
-    @patch("codemie.service.user.project_service.get_session")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.user_repository")
+    @patch("codemie.service.project.project_service.get_session")
     def test_project_limit_reached_returns_403(
         self,
         mock_get_session,
@@ -173,9 +179,9 @@ class TestProjectServiceCreateSharedProject:
         )
         mock_application_repository.create.assert_not_called()
 
-    @patch("codemie.service.user.project_service.application_repository")
-    @patch("codemie.service.user.project_service.user_repository")
-    @patch("codemie.service.user.project_service.get_session")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.user_repository")
+    @patch("codemie.service.project.project_service.get_session")
     def test_grandfathered_limit_reached_returns_403_with_delete_guidance(
         self,
         mock_get_session,
@@ -202,9 +208,9 @@ class TestProjectServiceCreateSharedProject:
         )
         mock_application_repository.create.assert_not_called()
 
-    @patch("codemie.service.user.project_service.application_repository")
-    @patch("codemie.service.user.project_service.user_repository")
-    @patch("codemie.service.user.project_service.get_session")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.user_repository")
+    @patch("codemie.service.project.project_service.get_session")
     def test_zero_limit_returns_403_with_zero_ratio_message(
         self,
         mock_get_session,
@@ -231,9 +237,9 @@ class TestProjectServiceCreateSharedProject:
         )
         mock_application_repository.create.assert_not_called()
 
-    @patch("codemie.service.user.project_service.application_repository")
-    @patch("codemie.service.user.project_service.user_repository")
-    @patch("codemie.service.user.project_service.get_session")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.user_repository")
+    @patch("codemie.service.project.project_service.get_session")
     def test_non_super_admin_with_null_limit_is_rejected(
         self,
         mock_get_session,
@@ -257,8 +263,8 @@ class TestProjectServiceCreateSharedProject:
         mock_application_repository.count_shared_projects_created_by_user.assert_not_called()
         mock_application_repository.create.assert_not_called()
 
-    @patch("codemie.service.user.project_service.user_repository")
-    @patch("codemie.service.user.project_service.get_session")
+    @patch("codemie.service.project.project_service.user_repository")
+    @patch("codemie.service.project.project_service.get_session")
     def test_missing_active_user_returns_401_account_is_deactivated(
         self,
         mock_get_session,
@@ -279,10 +285,10 @@ class TestProjectServiceCreateSharedProject:
         assert exc_info.value.code == 401
         assert exc_info.value.message == "Account is deactivated"
 
-    @patch("codemie.service.user.project_service.user_project_repository")
-    @patch("codemie.service.user.project_service.application_repository")
-    @patch("codemie.service.user.project_service.user_repository")
-    @patch("codemie.service.user.project_service.get_session")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.user_repository")
+    @patch("codemie.service.project.project_service.get_session")
     def test_super_admin_bypasses_project_limit(
         self,
         mock_get_session,

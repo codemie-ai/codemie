@@ -68,7 +68,7 @@ def admin_user():
         email="admin@example.com",
         username="admin",
         name="Admin User",
-        is_super_admin=True,
+        is_admin=True,
         project_names=["demo"],
         admin_project_names=[],
     )
@@ -82,7 +82,7 @@ def regular_user():
         email="user@example.com",
         username="user",
         name="Regular User",
-        is_super_admin=False,
+        is_admin=False,
         project_names=["demo"],
         admin_project_names=[],
     )
@@ -99,7 +99,7 @@ def mock_user_detail():
         picture=None,
         user_type="regular",
         is_active=True,
-        is_super_admin=False,
+        is_admin=False,
         auth_source="local",
         email_verified=False,
         last_login_at=None,
@@ -142,7 +142,7 @@ class TestCreateUser:
             username="newuser",
             password="SecurePass123!",
             name="New User",
-            is_super_admin=False,
+            is_admin=False,
         )
 
         mock_service.create_local_user_with_flow.return_value = mock_user_detail
@@ -157,7 +157,7 @@ class TestCreateUser:
             username="newuser",
             password="SecurePass123!",
             name="New User",
-            is_super_admin=False,
+            is_admin=False,
             actor_user_id="admin-123",
         )
 
@@ -249,7 +249,7 @@ class TestUpdateUser:
             email=None,
             username=None,
             user_type=None,
-            is_super_admin=None,
+            is_admin=None,
             is_active=True,
             project_limit=None,
             project_limit_provided=False,
@@ -444,7 +444,7 @@ class TestProjectAccess:
             user_id="user-456",
             project_name="demo-project",
             is_project_admin=False,
-            actor_user_id="admin-123",
+            actor=admin_user,
         )
 
     @patch("codemie.rest_api.routers.user_management_router.config")
@@ -520,7 +520,7 @@ class TestProjectAccess:
         mock_service.revoke_project_access.assert_called_once_with(
             user_id="user-456",
             project_name="demo-project",
-            actor_user_id="admin-123",
+            actor=admin_user,
         )
 
     @patch("codemie.rest_api.routers.user_management_router.config")
@@ -673,7 +673,7 @@ class TestListUsers:
                     name="User One",
                     user_type="regular",
                     is_active=True,
-                    is_super_admin=False,
+                    is_admin=False,
                     auth_source="local",
                     last_login_at=None,
                     projects=[],
@@ -690,9 +690,7 @@ class TestListUsers:
             page=0,
             per_page=20,
             search=None,
-            is_active=None,
-            project_name=None,
-            user_type=None,
+            filters=None,
             user=admin_user,
             _=None,
         )
@@ -716,9 +714,7 @@ class TestListUsers:
                 page=0,
                 per_page=20,
                 search=None,
-                is_active=None,
-                project_name=None,
-                user_type=None,
+                filters=None,
                 user=admin_user,
                 _=None,
             )
@@ -741,9 +737,7 @@ class TestListUsers:
                 page=0,
                 per_page=15,  # Invalid value
                 search=None,
-                is_active=None,
-                project_name=None,
-                user_type=None,
+                filters=None,
                 user=admin_user,
                 _=None,
             )
@@ -875,7 +869,7 @@ class TestUpdateProjectAccess:
             user_id="user-456",
             project_name="demo-project",
             is_project_admin=True,
-            actor_user_id="admin-123",
+            actor=admin_user,
         )
 
     @patch("codemie.rest_api.routers.user_management_router.config")

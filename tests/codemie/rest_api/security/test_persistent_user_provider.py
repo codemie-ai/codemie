@@ -138,7 +138,7 @@ class TestPersistentUserProvider:
             email="dev@example.com",
             name="Dev User",
             auth_token="dev-token",
-            is_super_admin=False,
+            is_admin=False,
             projects=[],
             knowledge_bases=[],
         )
@@ -183,7 +183,7 @@ class TestPersistentUserProvider:
             email="user@example.com",
             name="JWT User",
             auth_token=jwt_token,
-            is_super_admin=False,
+            is_admin=False,
             projects=[],
             knowledge_bases=[],
         )
@@ -215,7 +215,7 @@ class TestPersistentUserProvider:
             email="idp@example.com",
             name="IDP User",
             auth_token="idp-bearer-token",
-            is_super_admin=False,
+            is_admin=False,
             projects=[],
             knowledge_bases=[],
         )
@@ -228,7 +228,7 @@ class TestPersistentUserProvider:
             email="idp@example.com",
             name="IDP User",
             auth_token="idp-bearer-token",
-            is_super_admin=False,
+            is_admin=False,
             projects=[],
             knowledge_bases=[],
         )
@@ -277,7 +277,7 @@ class TestPersistentUserProvider:
             email="prod@example.com",
             name="Prod User",
             auth_token=jwt_token,
-            is_super_admin=False,
+            is_admin=False,
             projects=[],
             knowledge_bases=[],
         )
@@ -307,7 +307,7 @@ class TestPersistentUserProvider:
             email="notoken@example.com",
             name="No Token User",
             auth_token=None,  # Missing token
-            is_super_admin=False,
+            is_admin=False,
             projects=[],
             knowledge_bases=[],
         )
@@ -320,7 +320,7 @@ class TestPersistentUserProvider:
             email="notoken@example.com",
             name="No Token User",
             auth_token="",  # Should default to empty string
-            is_super_admin=False,
+            is_admin=False,
             projects=[],
             knowledge_bases=[],
         )

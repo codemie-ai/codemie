@@ -157,7 +157,7 @@ class TestUserResponseModel:
             name="Test User",
             username="testuser",
             email="test@example.com",
-            is_super_admin=False,
+            is_admin=False,
         )
 
         # Assert
@@ -166,7 +166,7 @@ class TestUserResponseModel:
     def test_user_response_email_default_empty(self):
         """Test UserResponse email field defaults to empty string."""
         # Arrange & Act
-        user = UserResponse(user_id="user-123", name="Test User", username="testuser", is_super_admin=False)
+        user = UserResponse(user_id="user-123", name="Test User", username="testuser", is_admin=False)
 
         # Assert
         assert user.email == ""
@@ -184,7 +184,7 @@ class TestUserResponseModel:
             user_id="user-123",
             name="Test User",
             username="testuser",
-            is_super_admin=False,
+            is_admin=False,
             projects=projects,
         )
 
@@ -195,25 +195,25 @@ class TestUserResponseModel:
         assert user.projects[1].name == "project2"
         assert user.projects[1].is_project_admin is False
 
-    def test_user_response_is_super_admin_field(self):
-        """Test UserResponse includes is_super_admin field."""
+    def test_user_response_is_admin_field(self):
+        """Test UserResponse includes is_admin field."""
         # Arrange & Act
         admin_user = UserResponse(
             user_id="admin-123",
             name="Admin User",
             username="admin",
-            is_super_admin=True,
+            is_admin=True,
         )
         regular_user = UserResponse(
             user_id="user-123",
             name="Regular User",
             username="user",
-            is_super_admin=False,
+            is_admin=False,
         )
 
         # Assert
-        assert admin_user.is_super_admin is True
-        assert regular_user.is_super_admin is False
+        assert admin_user.is_admin is True
+        assert regular_user.is_admin is False
 
     def test_user_response_legacy_fields(self):
         """Test UserResponse includes legacy applications fields for backward compatibility."""
@@ -222,10 +222,9 @@ class TestUserResponseModel:
             user_id="user-123",
             name="Test User",
             username="testuser",
-            is_super_admin=False,
+            is_admin=True,
             applications=["app1", "app2"],
             applications_admin=["app1"],
-            is_admin=True,
         )
 
         # Assert - legacy fields present
@@ -241,7 +240,7 @@ class TestUserResponseModel:
             name="Test User",
             username="testuser",
             email="test@example.com",
-            is_super_admin=True,
+            is_admin=True,
         )
 
         # Act
@@ -249,11 +248,10 @@ class TestUserResponseModel:
 
         # Assert - primary fields are in snake_case
         assert "user_id" in user_dict
-        assert "is_super_admin" in user_dict
+        assert "is_admin" in user_dict
         assert "knowledge_bases" in user_dict
-        # Legacy camelCase fields exist for UI backward compatibility
-        assert "userId" in user_dict
         # camelCase aliases that were never added as fields are absent
+        assert "userId" not in user_dict
         assert "isSuperAdmin" not in user_dict
 
 

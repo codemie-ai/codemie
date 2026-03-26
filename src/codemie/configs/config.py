@@ -143,6 +143,7 @@ class Config(BaseSettings):
     ENABLE_USER_MANAGEMENT: bool = False  # Master switch for new user management system
 
     USER_PROJECT_LIMIT: int = 3  # Max number of shared projects per user (enforced when ENABLE_USER_MANAGEMENT=True)
+    COST_CENTER_NAME_PATTERN: str = r"^[a-z0-9]+-[a-z0-9]+$"
     # ===========================================
     # SuperAdmin Bootstrap
     # ===========================================

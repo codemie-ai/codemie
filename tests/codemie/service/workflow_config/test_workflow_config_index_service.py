@@ -14,6 +14,7 @@
 
 import pytest
 from unittest.mock import patch, MagicMock
+from codemie.configs import config
 from codemie.rest_api.security.user import User
 from codemie.service.workflow_config.workflow_config_index_service import WorkflowConfigIndexService
 
@@ -25,7 +26,8 @@ def mock_admin_user():
 
 @pytest.fixture
 def mock_user():
-    return User(id='test_user', roles=['user'], project_names=['demo'])
+    with patch.object(config, 'ENV', 'dev'), patch.object(config, 'ENABLE_USER_MANAGEMENT', True):
+        return User(id='test_user', roles=['user'], project_names=['demo'], is_admin=False)
 
 
 @patch('codemie.service.workflow_config.workflow_config_index_service.Session')
@@ -66,14 +68,12 @@ def test_workflow_config_index_service_all_for_user(mock_session_class, mock_use
     mock_session.exec.return_value.all.return_value = []
     mock_session.exec.return_value.one.return_value = 0
 
-    # Mock is_admin to return False for this test
-    with patch.object(type(mock_user), 'is_admin', new_callable=lambda: property(lambda self: False)):
-        WorkflowConfigIndexService.run(user=mock_user, filter_by_user=False, page=0, per_page=20)
+    WorkflowConfigIndexService.run(user=mock_user, filter_by_user=False, page=0, per_page=20)
 
-        # Verify complex query for regular user
-        actual_query = str(mock_session.exec.call_args[0][0])
-        expected_conditions = "WHERE (workflows.project IN (__[POSTCOMPILE_project_1]) AND workflows.shared OR workflows.project IN (__[POSTCOMPILE_project_2]) OR (workflows.created_by ->> :created_by_1) = :param_1) AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST\n LIMIT :param_2 OFFSET :param_3"
-        assert actual_query.endswith(expected_conditions)
+    # Verify complex query for regular user
+    actual_query = str(mock_session.exec.call_args[0][0])
+    expected_conditions = "WHERE (workflows.project IN (__[POSTCOMPILE_project_1]) AND workflows.shared OR workflows.project IN (__[POSTCOMPILE_project_2]) OR (workflows.created_by ->> :created_by_1) = :param_1) AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST\n LIMIT :param_2 OFFSET :param_3"
+    assert actual_query.endswith(expected_conditions)
 
 
 @patch('codemie.service.workflow_config.workflow_config_index_service.Session')
@@ -129,20 +129,18 @@ def test_get_users_for_regular_user(mock_session_class, mock_user):
 
     mock_session.exec.return_value.all.return_value = [mock_creator]
 
-    # Mock is_admin to return False for this test
-    with patch.object(type(mock_user), 'is_admin', new_callable=lambda: property(lambda self: False)):
-        result = WorkflowConfigIndexService.get_users(user=mock_user)
+    result = WorkflowConfigIndexService.get_users(user=mock_user)
 
-        assert len(result) == 1
-        assert result[0].id == "user1"
-        assert result[0].username == "user1"
-        assert result[0].name == "User One"
+    assert len(result) == 1
+    assert result[0].id == "user1"
+    assert result[0].username == "user1"
+    assert result[0].name == "User One"
 
-        # Verify query includes visibility filters for regular user
-        actual_query = str(mock_session.exec.call_args[0][0])
-        assert "SELECT DISTINCT workflows.created_by" in actual_query
-        # Should include project/shared conditions for non-admin
-        assert "workflows.project" in actual_query
+    # Verify query includes visibility filters for regular user
+    actual_query = str(mock_session.exec.call_args[0][0])
+    assert "SELECT DISTINCT workflows.created_by" in actual_query
+    # Should include project/shared conditions for non-admin
+    assert "workflows.project" in actual_query
 
 
 @patch('codemie.service.workflow_config.workflow_config_index_service.Session')

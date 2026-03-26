@@ -35,7 +35,7 @@ from codemie.repository.user_repository import user_repository
 from codemie.rest_api.models.dynamic_config import ConfigValueType
 from codemie.rest_api.models.user_management import UserDB
 from codemie.service.dynamic_config_service import DynamicConfigService
-from codemie.service.user.personal_project_service import PersonalProjectService
+from codemie.service.project.personal_project_service import PersonalProjectService
 
 # Advisory lock ID for Postgres (stable hash of "keycloak_migration")
 _LOCK_ID = 7734269302

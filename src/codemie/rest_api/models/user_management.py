@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Optional
 from uuid import uuid4
 
@@ -46,7 +47,7 @@ class UserDB(BaseModelWithSQLSupport, table=True):
     picture: Optional[str] = SQLField(default=None)
     user_type: str = SQLField(default="regular")  # 'regular' | 'external'
     is_active: bool = SQLField(default=True, index=True)
-    is_super_admin: bool = SQLField(default=False, index=True)
+    is_admin: bool = SQLField(default=False, index=True)
     auth_source: str = SQLField(default="local")  # 'local' | 'keycloak' | 'oidc'
     email_verified: bool = SQLField(default=False)
     last_login_at: Optional[datetime] = SQLField(default=None)
@@ -162,7 +163,7 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=3, max_length=50)
     password: str = Field(min_length=config.PASSWORD_MIN_LENGTH)
     name: Optional[str] = None
-    is_super_admin: bool = False
+    is_admin: bool = False
 
 
 class UserUpdateRequest(BaseModel):
@@ -188,7 +189,7 @@ class UserUpdateRequest(BaseModel):
     email: Optional[str] = None  # str for IDP identifiers (not EmailStr); Story 8: local mode only
     username: Optional[str] = None  # Story 8: Immutable - always rejected if provided
     user_type: Optional[str] = None  # Story 8: 'regular' or 'external'; local mode only
-    is_super_admin: Optional[bool] = None
+    is_admin: Optional[bool] = None
     is_active: Optional[bool] = None  # See Task 18 for deactivation semantics
     project_limit: Optional[int] = None  # Max shared projects; NULL = unlimited (super admins only)
     project_limit_provided: bool = Field(default=False, exclude=True)
@@ -227,7 +228,7 @@ class CodeMieUserDetail(BaseModel):
     picture: Optional[str]
     user_type: str
     is_active: bool
-    is_super_admin: bool
+    is_admin: bool
     auth_source: str
     email_verified: bool
     last_login_at: Optional[datetime]
@@ -248,7 +249,7 @@ class AdminUserListItem(BaseModel):
     name: Optional[str]
     user_type: str
     is_active: bool
-    is_super_admin: bool
+    is_admin: bool
     auth_source: str
     last_login_at: Optional[datetime]
     projects: list[ProjectInfo] = Field(default_factory=list)
@@ -287,6 +288,21 @@ class KnowledgeBaseAccessRequest(BaseModel):
     """Request to grant knowledge base access"""
 
     kb_name: str
+
+
+class PlatformRole(StrEnum):
+    USER = "user"
+    PLATFORM_ADMIN = "platform_admin"
+    SUPER_ADMIN = "super_admin"
+
+
+class UserListFilters(BaseModel):
+    """Parsed filters for GET /users list endpoint."""
+
+    projects: Optional[list[str]] = None
+    user_type: Optional[str] = None
+    is_active: Optional[bool] = None
+    platform_role: Optional[PlatformRole] = None
 
 
 class PaginatedUserListResponse(BaseModel):

@@ -48,7 +48,7 @@ class TestApplicationRepositoryPagination:
             projects, total = application_repository.list_visible_projects_paginated(
                 session=mock_session,
                 user_id="user-1",
-                is_super_admin=False,
+                is_admin=False,
                 search=None,
                 page=2,
                 per_page=10,
@@ -73,7 +73,7 @@ class TestApplicationRepositoryPagination:
             projects, total = application_repository.list_visible_projects_paginated(
                 session=mock_session,
                 user_id="user-1",
-                is_super_admin=False,
+                is_admin=False,
                 search="analytics",
                 page=0,
                 per_page=20,
@@ -98,7 +98,7 @@ class TestApplicationRepositoryPagination:
             projects, total = application_repository.list_visible_projects_paginated(
                 session=mock_session,
                 user_id="admin-1",
-                is_super_admin=True,
+                is_admin=True,
                 search=None,
                 page=0,
                 per_page=20,
@@ -117,7 +117,7 @@ class TestApplicationRepositoryPagination:
             application_repository.list_visible_projects_paginated(
                 session=mock_session,
                 user_id="user-1",
-                is_super_admin=True,
+                is_admin=True,
                 search=None,
                 page=0,
                 per_page=20,
@@ -210,7 +210,7 @@ class TestApplicationRepositoryPaginationIntegration:
             projects, total = application_repository.list_visible_projects_paginated(
                 session=mock_session,
                 user_id="user-1",
-                is_super_admin=False,
+                is_admin=False,
                 search="dashboard",
                 page=0,
                 per_page=20,
@@ -223,24 +223,24 @@ class TestApplicationRepositoryPaginationIntegration:
         assert mock_session.exec.call_count == 2
 
     def test_pagination_handles_search_with_special_characters(self):
-        """Pagination applies wildcard-safe search via _apply_search."""
+        """Pagination applies wildcard-safe search via _apply_search_filters."""
         mock_session = MagicMock()
         mock_session.exec.return_value.one.return_value = 0
         mock_session.exec.return_value.all.return_value = []
 
         with patch.object(
-            application_repository, "_apply_search", side_effect=lambda statement, _: statement
+            application_repository, "_apply_search_filters", side_effect=lambda statement, _: statement
         ) as mock_search:
             application_repository.list_visible_projects_paginated(
                 session=mock_session,
                 user_id="user-1",
-                is_super_admin=True,
+                is_admin=True,
                 search="analytics_%dashboard",  # Wildcard character
                 page=0,
                 per_page=20,
             )
 
-        # Verify _apply_search was called with search term
+        # Verify _apply_search_filters was called with search term (called twice: count + data)
         mock_search.assert_called()
         call_args = mock_search.call_args[0]
         assert call_args[1] == "analytics_%dashboard"

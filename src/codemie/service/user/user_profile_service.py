@@ -196,7 +196,7 @@ class UserProfileService:
 
             # Reconcile personal project on email change (FR-7.1)
             if email_changed and new_email:
-                from codemie.service.user.personal_project_service import personal_project_service
+                from codemie.service.project.personal_project_service import personal_project_service
 
                 await personal_project_service.reconcile_personal_project_on_email_change(user_id, old_email, new_email)
 

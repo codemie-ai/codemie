@@ -14,8 +14,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
+from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,9 +65,11 @@ class ApplicationRepository:
 
         Code Review R4: Separated from _apply_search to allow count queries without ORDER BY.
 
+        Searches both name (exact + partial) and description (partial, case-insensitive).
+
         Args:
             statement: Base SELECT statement
-            search: Optional search string (substring match on name)
+            search: Optional search string (substring match on name and description)
 
         Returns:
             Modified SELECT statement with search filters only (no ordering)
@@ -76,7 +79,11 @@ class ApplicationRepository:
 
         escaped_query = escape_like_wildcards(search)
         return statement.where(
-            or_(Application.name == search, Application.name.ilike(f"%{escaped_query}%", escape="\\"))
+            or_(
+                Application.name == search,
+                Application.name.ilike(f"%{escaped_query}%", escape="\\"),
+                Application.description.ilike(f"%{escaped_query}%", escape="\\"),
+            )
         )
 
     @staticmethod
@@ -99,7 +106,6 @@ class ApplicationRepository:
         if not search:
             return statement
 
-        # Add exact-match-first ordering when search is provided
         return statement.order_by(case((Application.name == search, 1), else_=2))
 
     def get_by_name(self, session: Session, name: str) -> Optional[Application]:
@@ -143,6 +149,7 @@ class ApplicationRepository:
         description: Optional[str] = None,
         project_type: str = "shared",
         created_by: Optional[str] = None,
+        cost_center_id: UUID | None = None,
     ) -> Application:
         """Create new application
 
@@ -168,6 +175,7 @@ class ApplicationRepository:
             description=description,
             project_type=project_type,
             created_by=created_by,
+            cost_center_id=cost_center_id,
             date=now,
             update_date=now,
         )
@@ -255,7 +263,7 @@ class ApplicationRepository:
         self,
         session: Session,
         user_id: str,
-        is_super_admin: bool,
+        is_admin: bool,
         search: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[Application]:
@@ -269,7 +277,7 @@ class ApplicationRepository:
         statement = select(Application)
         statement = self._apply_search(statement, search)
 
-        if is_super_admin:
+        if is_admin:
             statement = statement.where(Application.deleted_at.is_(None))
         else:
             statement = statement.where(self._build_visibility_condition(user_id))
@@ -283,7 +291,7 @@ class ApplicationRepository:
         self,
         session: Session,
         user_id: str,
-        is_super_admin: bool,
+        is_admin: bool,
         search: Optional[str] = None,
         page: int = 0,
         per_page: int = 20,
@@ -301,7 +309,7 @@ class ApplicationRepository:
         Args:
             session: Database session
             user_id: Requesting user ID
-            is_super_admin: Whether user is super admin
+            is_admin: Whether user is super admin
             search: Optional search query (substring match on name)
             page: Page number (0-indexed)
             per_page: Items per page
@@ -313,7 +321,7 @@ class ApplicationRepository:
         count_base_statement = select(Application)
         count_base_statement = self._apply_search_filters(count_base_statement, search)
 
-        if is_super_admin:
+        if is_admin:
             count_base_statement = count_base_statement.where(Application.deleted_at.is_(None))
         else:
             visibility_condition = self._build_visibility_condition(user_id)
@@ -325,16 +333,22 @@ class ApplicationRepository:
 
         # Build data statement: filters + ordering
         data_statement = select(Application)
-        data_statement = self._apply_search(data_statement, search)  # Includes search ordering
+        data_statement = self._apply_search_filters(data_statement, search)
 
-        if is_super_admin:
+        if is_admin:
             data_statement = data_statement.where(Application.deleted_at.is_(None))
         else:
             visibility_condition = self._build_visibility_condition(user_id)
             data_statement = data_statement.where(visibility_condition)
 
-        # Add deterministic secondary ordering (stable across pages)
-        data_statement = data_statement.order_by(Application.date.desc(), Application.name.asc())
+        if search:
+            data_statement = data_statement.order_by(
+                case((Application.name == search, 1), else_=2),
+                Application.date.desc(),
+                Application.name.asc(),
+            )
+        else:
+            data_statement = data_statement.order_by(Application.date.desc(), Application.name.asc())
 
         # Paginate results
         offset = page * per_page
@@ -377,37 +391,16 @@ class ApplicationRepository:
         session: Session,
         project_name: str,
         user_id: str,
-        is_super_admin: bool,
+        is_admin: bool,
     ) -> Optional[Application]:
         """Get a visible project by exact name for a user."""
         statement = select(Application).where(Application.name == project_name)
 
-        if is_super_admin:
+        if is_admin:
             statement = statement.where(Application.deleted_at.is_(None))
         else:
             statement = statement.where(self._build_visibility_condition(user_id))
 
-        return session.exec(statement).first()
-
-    def get_project_authorization_context(
-        self,
-        session: Session,
-        project_name: str,
-        user_id: str,
-    ) -> Optional[tuple[Application, bool | None]]:
-        """Fetch project and requester's admin membership in a single query.
-
-        Code Review R2: Excludes soft-deleted projects to prevent authorization on deleted projects.
-        """
-        membership_join_condition = and_(
-            UserProject.project_name == Application.name,
-            UserProject.user_id == user_id,
-        )
-        statement = (
-            select(Application, UserProject.is_project_admin)
-            .outerjoin(UserProject, membership_join_condition)
-            .where(Application.name == project_name, Application.deleted_at.is_(None))
-        )
         return session.exec(statement).first()
 
     def get_project_owner(self, session: Session, project_name: str) -> Optional[str]:
@@ -423,7 +416,7 @@ class ApplicationRepository:
         application = self.get_by_name(session, project_name)
         return application.created_by if application else None
 
-    def can_user_see_project(self, session: Session, project_name: str, user_id: str, is_super_admin: bool) -> bool:
+    def can_user_see_project(self, session: Session, project_name: str, user_id: str, is_admin: bool) -> bool:
         """Check if user can see project based on visibility rules
 
         Story 11 Visibility Rules:
@@ -435,12 +428,12 @@ class ApplicationRepository:
             session: Database session
             project_name: Project name
             user_id: User ID
-            is_super_admin: Whether user is super admin
+            is_admin: Whether user is super admin
 
         Returns:
             True if user can see project, False otherwise
         """
-        return self.get_visible_project(session, project_name, user_id, is_super_admin) is not None
+        return self.get_visible_project(session, project_name, user_id, is_admin) is not None
 
     def get_project_types_bulk(self, session: Session, project_names: list[str]) -> dict[str, tuple[str, str | None]]:
         """Get project types and creators for multiple projects in single query
@@ -485,6 +478,113 @@ class ApplicationRepository:
         result = session.exec(statement).one()
         return int(result)
 
+    def update_fields(
+        self,
+        session: Session,
+        project_name: str,
+        new_name: str | None = None,
+        new_description: str | None = None,
+    ) -> Application:
+        """Update mutable fields of an Application record.
+
+        Args:
+            session: Database session
+            project_name: Current project name (used to load the record)
+            new_name: If provided, sets Application.name (not the PK id column)
+            new_description: If provided, sets Application.description
+
+        Returns:
+            Updated Application instance (flushed, not committed)
+
+        Note:
+            For renames, caller must cascade UserProject.project_name before calling this.
+        """
+        project = self.get_by_name(session, project_name)
+        if new_name is not None:
+            project.name = new_name
+        if new_description is not None:
+            project.description = new_description
+        project.update_date = datetime.now(UTC)
+        session.add(project)
+        session.flush()
+        session.refresh(project)
+        logger.debug(f"Updated application fields: name={project.name}")
+        return project
+
+    def get_project_entity_counts_bulk(self, session: Session, project_names: list[str]) -> dict[str, dict]:
+        """Bulk-count assistants, workflows, integrations, datasources, and skills per project.
+
+        Runs one GROUP BY query per entity type (5 total) and merges results into a single dict.
+        Lazy imports are used to avoid circular-import risk at module load time.
+
+        Args:
+            session: Database session
+            project_names: List of project names to query
+
+        Returns:
+            Dict mapping project_name -> {"assistants_count": N, "workflows_count": N,
+            "integrations_count": N, "datasources_count": N, "skills_count": N}
+        """
+        if not project_names:
+            return {}
+
+        from codemie.core.workflow_models.workflow_config import WorkflowConfig
+        from codemie.rest_api.models.assistant import Assistant
+        from codemie.rest_api.models.index import IndexInfo
+        from codemie.rest_api.models.settings import Settings
+        from codemie.rest_api.models.skill import Skill
+
+        result: dict[str, dict] = {
+            name: {
+                "assistants_count": 0,
+                "workflows_count": 0,
+                "integrations_count": 0,
+                "datasources_count": 0,
+                "skills_count": 0,
+            }
+            for name in project_names
+        }
+
+        for proj, cnt in session.exec(
+            select(Assistant.project, func.count(Assistant.id))
+            .where(Assistant.project.in_(project_names))
+            .group_by(Assistant.project)
+        ).all():
+            if proj in result:
+                result[proj]["assistants_count"] = int(cnt)
+
+        for proj, cnt in session.exec(
+            select(WorkflowConfig.project, func.count(WorkflowConfig.id))
+            .where(WorkflowConfig.project.in_(project_names))
+            .group_by(WorkflowConfig.project)
+        ).all():
+            if proj in result:
+                result[proj]["workflows_count"] = int(cnt)
+
+        for proj, cnt in session.exec(
+            select(Skill.project, func.count(Skill.id)).where(Skill.project.in_(project_names)).group_by(Skill.project)
+        ).all():
+            if proj in result:
+                result[proj]["skills_count"] = int(cnt)
+
+        for proj, cnt in session.exec(
+            select(IndexInfo.project_name, func.count(IndexInfo.id))
+            .where(IndexInfo.project_name.in_(project_names))
+            .group_by(IndexInfo.project_name)
+        ).all():
+            if proj in result:
+                result[proj]["datasources_count"] = int(cnt)
+
+        for proj, cnt in session.exec(
+            select(Settings.project_name, func.count(Settings.id))
+            .where(Settings.project_name.in_(project_names))
+            .group_by(Settings.project_name)
+        ).all():
+            if proj in result:
+                result[proj]["integrations_count"] = int(cnt)
+
+        return result
+
     def get_project_members(self, session: Session, project_name: str) -> list[UserProject]:
         """Get all members for a project.
 
@@ -499,6 +599,47 @@ class ApplicationRepository:
         """
         statement = select(UserProject).where(UserProject.project_name == project_name)
         return list(session.exec(statement).all())
+
+    def update_project(
+        self,
+        session: Session,
+        application: Application,
+        *,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        cost_center_id: UUID | None = None,
+    ) -> Application:
+        """Update mutable project fields."""
+        if name is not None:
+            application.id = name
+            application.name = name
+        if description is not None:
+            application.description = description
+        application.cost_center_id = cost_center_id
+        application.update_date = datetime.now()
+        session.add(application)
+        session.flush()
+        session.refresh(application)
+        return application
+
+    def list_projects_by_cost_center_id(self, session: Session, cost_center_id: UUID) -> list[Application]:
+        """Return active projects linked to the given cost center."""
+        statement = (
+            select(Application)
+            .where(Application.cost_center_id == cost_center_id)
+            .where(Application.deleted_at.is_(None))
+            .order_by(Application.date.desc(), Application.name.asc())
+        )
+        return list(session.exec(statement).all())
+
+    def count_active_projects_by_cost_center_id(self, session: Session, cost_center_id: UUID) -> int:
+        """Count active projects linked to the given cost center."""
+        statement = (
+            select(func.count(Application.id))
+            .where(Application.cost_center_id == cost_center_id)
+            .where(Application.deleted_at.is_(None))
+        )
+        return int(session.exec(statement).one())
 
     # ===========================================
     # Async methods (AsyncSession)
@@ -523,6 +664,7 @@ class ApplicationRepository:
         description: Optional[str] = None,
         project_type: str = "shared",
         created_by: Optional[str] = None,
+        cost_center_id: UUID | None = None,
     ) -> Application:
         """Create new application (async)"""
         now = datetime.now()
@@ -532,6 +674,7 @@ class ApplicationRepository:
             description=description,
             project_type=project_type,
             created_by=created_by,
+            cost_center_id=cost_center_id,
             date=now,
             update_date=now,
         )

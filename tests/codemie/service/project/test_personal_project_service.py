@@ -37,7 +37,7 @@ import pytest
 
 from codemie.core.models import Application
 from codemie.rest_api.models.user_management import UserProject
-from codemie.service.user.personal_project_service import PersonalProjectService
+from codemie.service.project.personal_project_service import PersonalProjectService
 
 
 def _make_async_session_cm(mock_session):
@@ -69,12 +69,12 @@ class TestPersonalProjectService:
 
         # Mock: No existing personal project
         with patch(
-            "codemie.service.user.personal_project_service.PersonalProjectService._has_personal_project_complete",
+            "codemie.service.project.personal_project_service.PersonalProjectService._has_personal_project_complete",
             new_callable=AsyncMock,
             return_value=False,
         ):
             with patch(
-                "codemie.service.user.personal_project_service.PersonalProjectService._create_personal_project",
+                "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
             ) as mock_create:
                 # Act
@@ -99,12 +99,12 @@ class TestPersonalProjectService:
 
         # Mock: Personal project already exists
         with patch(
-            "codemie.service.user.personal_project_service.PersonalProjectService._has_personal_project_complete",
+            "codemie.service.project.personal_project_service.PersonalProjectService._has_personal_project_complete",
             new_callable=AsyncMock,
             return_value=True,
         ):
             with patch(
-                "codemie.service.user.personal_project_service.PersonalProjectService._create_personal_project",
+                "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
             ) as mock_create:
                 # Act
@@ -137,7 +137,7 @@ class TestPersonalProjectService:
 
     @pytest.mark.asyncio
     @patch("codemie.clients.postgres.get_async_session")
-    @patch("codemie.service.user.personal_project_service.logger")
+    @patch("codemie.service.project.personal_project_service.logger")
     async def test_ensure_personal_project_logs_failure_without_pii(self, mock_logger, mock_get_async_session):
         """AC-6.8 + Review Fix: Logs errors without email (PII protection)"""
         # Arrange
@@ -176,12 +176,12 @@ class TestPersonalProjectService:
         mock_get_async_session.return_value = _make_async_session_cm(mock_session)
 
         with patch(
-            "codemie.service.user.personal_project_service.PersonalProjectService._has_personal_project_complete",
+            "codemie.service.project.personal_project_service.PersonalProjectService._has_personal_project_complete",
             new_callable=AsyncMock,
             return_value=False,
         ):
             with patch(
-                "codemie.service.user.personal_project_service.PersonalProjectService._create_personal_project",
+                "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
             ):
                 # Act
@@ -197,8 +197,8 @@ class TestPersonalProjectService:
     # ===========================================
 
     @pytest.mark.asyncio
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_has_personal_project_complete_requires_both_records(self, mock_app_repo, mock_user_proj_repo):
         """Review Fix: Checks BOTH Application AND user_projects mapping"""
         # Arrange
@@ -223,8 +223,8 @@ class TestPersonalProjectService:
         mock_user_proj_repo.aget_by_user_and_project.assert_called_once_with(session, user_id, user_email)
 
     @pytest.mark.asyncio
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_has_personal_project_incomplete_missing_user_mapping(self, mock_app_repo, mock_user_proj_repo):
         """Review Fix: Returns False when Application exists but user_projects mapping missing"""
         # Arrange
@@ -246,7 +246,7 @@ class TestPersonalProjectService:
         assert result is False  # Incomplete - mapping missing
 
     @pytest.mark.asyncio
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_has_personal_project_complete_returns_false_when_missing(self, mock_app_repo):
         """Check detection when no personal project exists"""
         # Arrange
@@ -268,8 +268,8 @@ class TestPersonalProjectService:
     # ===========================================
 
     @pytest.mark.asyncio
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_create_personal_project_with_correct_fields(self, mock_app_repo, mock_user_proj_repo):
         """AC-6.2, AC-6.3, AC-6.4: Create with correct name, type, creator"""
         # Arrange
@@ -309,8 +309,8 @@ class TestPersonalProjectService:
         session.flush.assert_called()
 
     @pytest.mark.asyncio
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_create_personal_project_with_is_project_admin_false(self, mock_app_repo, mock_user_proj_repo):
         """AC-6.5: User assigned as member with is_project_admin=false (Phase 2)"""
         # Arrange
@@ -335,8 +335,8 @@ class TestPersonalProjectService:
         mock_user_proj_repo.aadd_project.assert_called_once_with(session, user_id, user_email, is_project_admin=False)
 
     @pytest.mark.asyncio
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_create_personal_project_idempotent_user_mapping(self, mock_app_repo, mock_user_proj_repo):
         """AC-6.6: Idempotent - does not recreate existing user-project mapping"""
         # Arrange
@@ -362,8 +362,8 @@ class TestPersonalProjectService:
         mock_user_proj_repo.aadd_project.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_create_personal_project_prevents_unsafe_shared_conversion(self, mock_app_repo, mock_user_proj_repo):
         """Review Fix: Prevents converting shared projects with other users"""
         # Arrange
@@ -388,8 +388,8 @@ class TestPersonalProjectService:
         mock_user_proj_repo.aget_by_project_name.assert_called_once_with(session, user_email)
 
     @pytest.mark.asyncio
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_create_personal_project_uses_email_as_name(self, mock_app_repo, mock_user_proj_repo):
         """AC-6.2: Project name uses email format (with special characters)"""
         # Arrange
@@ -421,8 +421,8 @@ class TestPersonalProjectService:
             mock_user_proj_repo.aadd_project.assert_called_with(session, user_id, user_email, is_project_admin=False)
 
     @pytest.mark.asyncio
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_create_personal_project_sets_description(self, mock_app_repo, mock_user_proj_repo):
         """AC-6.X: Personal project has description 'Personal Project for {user_email}'"""
         # Arrange
@@ -455,8 +455,8 @@ class TestPersonalProjectService:
 
     @pytest.mark.asyncio
     @patch("codemie.clients.postgres.get_async_session")
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_first_time_registration_flow_after_commit(
         self, mock_app_repo, mock_user_proj_repo, mock_get_async_session
     ):
@@ -498,8 +498,8 @@ class TestPersonalProjectService:
         )
 
     @pytest.mark.asyncio
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_safe_conversion_allows_single_user_project(self, mock_app_repo, mock_user_proj_repo):
         """Review Round 2: Validates conversion is allowed when only current user has access"""
         # Arrange
@@ -528,8 +528,8 @@ class TestPersonalProjectService:
         session.add.assert_called()
 
     @pytest.mark.asyncio
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_unsafe_conversion_rejects_single_other_user(self, mock_app_repo, mock_user_proj_repo):
         """Review Round 2: Validates conversion is rejected when ONE other user has access"""
         # Arrange
@@ -550,8 +550,8 @@ class TestPersonalProjectService:
             await PersonalProjectService._create_personal_project(session, user_id, user_email)
 
     @pytest.mark.asyncio
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_create_personal_project_uses_get_or_create_for_race_condition(
         self, mock_app_repo, mock_user_proj_repo
     ):
@@ -606,12 +606,12 @@ class TestConcurrentPersonalProjectCreation:
         call_results = []
 
         with patch(
-            "codemie.service.user.personal_project_service.PersonalProjectService._has_personal_project_complete",
+            "codemie.service.project.personal_project_service.PersonalProjectService._has_personal_project_complete",
             new_callable=AsyncMock,
             return_value=False,
         ):
             with patch(
-                "codemie.service.user.personal_project_service.PersonalProjectService._create_personal_project",
+                "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
             ):
                 # Simulate two concurrent calls
@@ -651,12 +651,12 @@ class TestConcurrentPersonalProjectCreation:
         mock_session.commit = AsyncMock(side_effect=commit_side_effect)
 
         with patch(
-            "codemie.service.user.personal_project_service.PersonalProjectService._has_personal_project_complete",
+            "codemie.service.project.personal_project_service.PersonalProjectService._has_personal_project_complete",
             new_callable=AsyncMock,
             return_value=False,
         ):
             with patch(
-                "codemie.service.user.personal_project_service.PersonalProjectService._create_personal_project",
+                "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
             ):
                 # First call succeeds
@@ -692,12 +692,12 @@ class TestConcurrentPersonalProjectCreation:
         mock_get_async_session.return_value = _make_async_session_cm(mock_session)
 
         with patch(
-            "codemie.service.user.personal_project_service.PersonalProjectService._has_personal_project_complete",
+            "codemie.service.project.personal_project_service.PersonalProjectService._has_personal_project_complete",
             new_callable=AsyncMock,
             return_value=False,
         ):
             with patch(
-                "codemie.service.user.personal_project_service.PersonalProjectService._create_personal_project",
+                "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
             ):
                 result2 = await PersonalProjectService.ensure_personal_project_async(user_id, user_email)
@@ -717,12 +717,12 @@ class TestConcurrentPersonalProjectCreation:
         mock_get_async_session.return_value = _make_async_session_cm(mock_session)
 
         with patch(
-            "codemie.service.user.personal_project_service.PersonalProjectService._has_personal_project_complete",
+            "codemie.service.project.personal_project_service.PersonalProjectService._has_personal_project_complete",
             new_callable=AsyncMock,
             return_value=False,
         ):
             with patch(
-                "codemie.service.user.personal_project_service.PersonalProjectService._create_personal_project",
+                "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
             ):
                 results = await asyncio.gather(
@@ -746,7 +746,7 @@ class TestPersonalProjectServiceEdgeCases:
 
     @pytest.mark.asyncio
     @patch("codemie.clients.postgres.get_async_session")
-    @patch("codemie.service.user.personal_project_service.logger")
+    @patch("codemie.service.project.personal_project_service.logger")
     async def test_ensure_personal_project_commit_failure_non_blocking(self, mock_logger, mock_get_async_session):
         """Edge case: Commit fails but method returns False without raising"""
         # Arrange
@@ -759,12 +759,12 @@ class TestPersonalProjectServiceEdgeCases:
         mock_get_async_session.return_value = _make_async_session_cm(mock_session)
 
         with patch(
-            "codemie.service.user.personal_project_service.PersonalProjectService._has_personal_project_complete",
+            "codemie.service.project.personal_project_service.PersonalProjectService._has_personal_project_complete",
             new_callable=AsyncMock,
             return_value=False,
         ):
             with patch(
-                "codemie.service.user.personal_project_service.PersonalProjectService._create_personal_project",
+                "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
             ):
                 # Act
@@ -789,12 +789,12 @@ class TestPersonalProjectServiceEdgeCases:
         mock_get_async_session.return_value = _make_async_session_cm(mock_session)
 
         with patch(
-            "codemie.service.user.personal_project_service.PersonalProjectService._has_personal_project_complete",
+            "codemie.service.project.personal_project_service.PersonalProjectService._has_personal_project_complete",
             new_callable=AsyncMock,
             return_value=False,
         ):
             with patch(
-                "codemie.service.user.personal_project_service.PersonalProjectService._create_personal_project",
+                "codemie.service.project.personal_project_service.PersonalProjectService._create_personal_project",
                 new_callable=AsyncMock,
                 side_effect=ValueError("Cannot convert shared project"),
             ):
@@ -839,9 +839,9 @@ class TestPersonalProjectServiceEdgeCases:
 
     @pytest.mark.asyncio
     @patch("codemie.clients.postgres.get_async_session")
-    @patch("codemie.service.user.personal_project_service.PersonalProjectService.ensure_personal_project_async")
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.PersonalProjectService.ensure_personal_project_async")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_reconcile_email_change_old_project_exists(
         self, mock_app_repo, mock_user_proj_repo, mock_ensure, mock_get_async_session
     ):
@@ -875,8 +875,8 @@ class TestPersonalProjectServiceEdgeCases:
 
     @pytest.mark.asyncio
     @patch("codemie.clients.postgres.get_async_session")
-    @patch("codemie.service.user.personal_project_service.PersonalProjectService.ensure_personal_project_async")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.PersonalProjectService.ensure_personal_project_async")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_reconcile_email_change_old_project_not_found(
         self, mock_app_repo, mock_ensure, mock_get_async_session
     ):
@@ -906,8 +906,8 @@ class TestPersonalProjectServiceEdgeCases:
 
     @pytest.mark.asyncio
     @patch("codemie.clients.postgres.get_async_session")
-    @patch("codemie.service.user.personal_project_service.PersonalProjectService.ensure_personal_project_async")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.PersonalProjectService.ensure_personal_project_async")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_reconcile_email_change_old_project_not_personal(
         self, mock_app_repo, mock_ensure, mock_get_async_session
     ):
@@ -938,8 +938,8 @@ class TestPersonalProjectServiceEdgeCases:
 
     @pytest.mark.asyncio
     @patch("codemie.clients.postgres.get_async_session")
-    @patch("codemie.service.user.personal_project_service.PersonalProjectService.ensure_personal_project_async")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.PersonalProjectService.ensure_personal_project_async")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_reconcile_email_change_old_project_different_owner(
         self, mock_app_repo, mock_ensure, mock_get_async_session
     ):
@@ -970,7 +970,7 @@ class TestPersonalProjectServiceEdgeCases:
 
     @pytest.mark.asyncio
     @patch("codemie.clients.postgres.get_async_session")
-    @patch("codemie.service.user.personal_project_service.logger")
+    @patch("codemie.service.project.personal_project_service.logger")
     async def test_reconcile_email_change_exception_non_blocking(self, mock_logger, mock_get_async_session):
         """Test reconciliation failure is non-blocking - returns False and logs error"""
         # Arrange
@@ -999,9 +999,9 @@ class TestPersonalProjectServiceEdgeCases:
 
     @pytest.mark.asyncio
     @patch("codemie.clients.postgres.get_async_session")
-    @patch("codemie.service.user.personal_project_service.PersonalProjectService.ensure_personal_project_async")
-    @patch("codemie.service.user.personal_project_service.user_project_repository")
-    @patch("codemie.service.user.personal_project_service.application_repository")
+    @patch("codemie.service.project.personal_project_service.PersonalProjectService.ensure_personal_project_async")
+    @patch("codemie.service.project.personal_project_service.user_project_repository")
+    @patch("codemie.service.project.personal_project_service.application_repository")
     async def test_reconcile_email_change_new_project_creation_fails(
         self, mock_app_repo, mock_user_proj_repo, mock_ensure, mock_get_async_session
     ):

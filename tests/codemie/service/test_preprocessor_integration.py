@@ -95,6 +95,7 @@ def mock_user():
     user = MagicMock(spec=User)
     user.id = "test-user-id"
     user.name = "Test User"
+    user.is_admin = False
     return user
 
 

@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from __future__ import annotations
-
 from datetime import datetime, UTC
 from typing import Optional
 
@@ -21,7 +19,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, select, func, or_
 
 from codemie.core.db_utils import escape_like_wildcards
-from codemie.rest_api.models.user_management import UserDB, UserProject, UserKnowledgeBase
+from codemie.rest_api.models.user_management import (
+    UserDB,
+    UserListFilters,
+    PlatformRole,
+    UserProject,
+    UserKnowledgeBase,
+)
 
 
 class UserRepository:
@@ -149,131 +153,47 @@ class UserRepository:
         session.flush()
         return True
 
-    def list_users(
+    def count_users(
         self,
         session: Session,
+        search: Optional[str] = None,
+        filters: UserListFilters = UserListFilters(),
+    ) -> int:
+        """Count users matching search + filters (no pagination)."""
+        query = self._apply_filters(select(UserDB), search, filters)
+        return session.exec(select(func.count()).select_from(query.subquery())).one()
+
+    def query_users(
+        self,
+        session: Session,
+        search: Optional[str] = None,
+        filters: UserListFilters = UserListFilters(),
         page: int = 0,
         per_page: int = 20,
-        search: Optional[str] = None,
-        is_active: Optional[bool] = None,
-        project_name: Optional[str] = None,
-        user_type: Optional[str] = None,
-    ) -> tuple[list[UserDB], dict[str, list[UserProject]], int]:
-        """List users with filters and pagination (0-indexed)
+    ) -> list[UserDB]:
+        """Return a paginated page of users matching search + filters."""
+        query = self._apply_filters(select(UserDB), search, filters)
+        return list(session.exec(query.order_by(UserDB.date.desc()).offset(page * per_page).limit(per_page)).all())
 
-        Uses LEFT JOIN to fetch users and their projects in a single optimized query
-        to prevent N+1 query problems.
+    def fetch_projects_map(self, session: Session, user_ids: list[str]) -> dict[str, list[UserProject]]:
+        """Bulk-load project memberships for a set of user IDs via a single LEFT JOIN query."""
+        if not user_ids:
+            return {}
 
-        Note: Shows ALL users including deactivated (deleted_at IS NOT NULL).
-        Admin panel can manage both active and inactive users.
-
-        Args:
-            session: Database session
-            page: Page number (0-indexed, page=0 is first page)
-            per_page: Items per page
-            search: Search term for email, username, or name
-            is_active: Filter by active status
-            project_name: Filter by project access
-            user_type: Filter by user type ('regular' or 'external')
-
-        Returns:
-            Tuple of (users list, projects map, total count)
-            projects_map: Dict mapping user_id to list of UserProject objects
-        """
-        # Base query: include ALL users (even deactivated)
-        query = select(UserDB)
-
-        # Search filter (email, username, name)
-        # Security: Escape LIKE wildcards to prevent information leakage (Story 2, NFR-3.1)
-        if search:
-            escaped_search = escape_like_wildcards(search)
-            search_pattern = f"%{escaped_search}%"
-            # Explicit escape parameter ensures PostgreSQL interprets backslashes correctly
-            query = query.where(
-                or_(
-                    UserDB.email.ilike(search_pattern, escape="\\"),
-                    UserDB.username.ilike(search_pattern, escape="\\"),
-                    UserDB.name.ilike(search_pattern, escape="\\"),
-                )
-            )
-
-        # Active status filter (coupled with deleted_at per spec)
-        # is_active=True means: is_active=True AND deleted_at IS NULL
-        # is_active=False means: is_active=False OR deleted_at IS NOT NULL
-        if is_active is not None:
-            if is_active:
-                query = query.where(UserDB.is_active, UserDB.deleted_at.is_(None))
-            else:
-                query = query.where(or_(~UserDB.is_active, UserDB.deleted_at.isnot(None)))
-
-        # User type filter (Story 7)
-        if user_type:
-            query = query.where(UserDB.user_type == user_type)
-
-        # Project filter (Story 7: use EXISTS to avoid JOIN cardinality issues)
-        if project_name:
-            # Use WHERE EXISTS subquery instead of JOIN to keep user-only cardinality
-            # This prevents JOIN from affecting count/pagination row counts
-            project_exists = (
-                select(UserProject.id)
-                .where(UserProject.user_id == UserDB.id, UserProject.project_name == project_name)
-                .exists()
-            )
-            query = query.where(project_exists)
-
-        # Get total count BEFORE pagination
-        count_query = select(func.count()).select_from(query.subquery())
-        total = session.exec(count_query).one()
-
-        # Apply ordering BEFORE pagination (clarity: order → offset → limit)
-        query = query.order_by(UserDB.date.desc())
-
-        # Apply pagination to users (0-indexed: page=0 is first page)
-        query = query.offset(page * per_page).limit(per_page)
-
-        # Execute paginated user query
-        users = list(session.exec(query).all())
-
-        # If no users found, return early with empty projects map
-        if not users:
-            return users, {}, total
-
-        # Story 7: Optimized JOIN strategy for N+1 prevention
-        # ----------------------------------------------------------
-        # Goal: Fetch all projects for paginated users in a single query
-        # Strategy: LEFT OUTER JOIN between users and user_projects tables
-        # Why LEFT JOIN: Ensures users without projects still appear in results
-        # Why separate query: Pagination is applied to users first, then JOIN fetches
-        #                     projects only for the paginated user subset
-        #
-        # Query breakdown:
-        # 1. Count query: Total users matching filters (for pagination metadata)
-        # 2. User query: Paginated users (OFFSET/LIMIT on user rows only)
-        # 3. JOIN query: Fetch user+project pairs for paginated user IDs
-        #
-        # This avoids:
-        # - N+1 queries: No per-user project fetches in a loop
-        # - JOIN pagination issues: Pagination on users, not on joined rows
-        # - Cartesian explosion: Only join paginated users' projects
-        user_ids = [u.id for u in users]
-        join_query = (
+        rows = session.exec(
             select(UserDB, UserProject)
             .outerjoin(UserProject, UserDB.id == UserProject.user_id)
             .where(UserDB.id.in_(user_ids))  # type: ignore[attr-defined]
             .order_by(UserDB.date.desc(), UserProject.project_name)
-        )
-        join_results = session.exec(join_query).all()
+        ).all()
 
-        # Group projects by user_id in application layer (Story 7 requirement)
-        # Python grouping is fast and keeps SQL simple
         projects_map: dict[str, list[UserProject]] = {}
-        for user_row, project_row in join_results:
+        for user_row, project_row in rows:
             if user_row.id not in projects_map:
                 projects_map[user_row.id] = []
-            if project_row:  # LEFT JOIN returns None for users without projects
+            if project_row:
                 projects_map[user_row.id].append(project_row)
-
-        return users, projects_map, total
+        return projects_map
 
     def count_active_superadmins(self, session: Session) -> int:
         """Count active SuperAdmin users
@@ -284,9 +204,7 @@ class UserRepository:
         Returns:
             Number of active SuperAdmins
         """
-        statement = select(func.count(UserDB.id)).where(
-            UserDB.is_super_admin, UserDB.is_active, UserDB.deleted_at.is_(None)
-        )
+        statement = select(func.count(UserDB.id)).where(UserDB.is_admin, UserDB.is_active, UserDB.deleted_at.is_(None))
         return session.exec(statement).one()
 
     def update_last_login(self, session: Session, user_id: str) -> bool:
@@ -333,6 +251,26 @@ class UserRepository:
             True if exists, False otherwise
         """
         return self.get_by_username(session, username) is not None
+
+    def get_by_emails(self, session: Session, emails: list[str]) -> dict[str, "UserDB"]:
+        """Bulk-fetch users by email (case-insensitive), returning a lower-email → UserDB map.
+
+        Args:
+            session: Database session
+            emails: List of email addresses to look up
+
+        Returns:
+            Dict mapping lowercased email to UserDB for each found user
+        """
+        if not emails:
+            return {}
+
+        lower_emails = [e.lower() for e in emails]
+        statement = select(UserDB).where(
+            func.lower(UserDB.email).in_(lower_emails)  # type: ignore[attr-defined]
+        )
+        users = session.exec(statement).all()
+        return {u.email.lower(): u for u in users}
 
     def get_existing_user_ids(self, session: Session, user_ids: list[str]) -> set[str]:
         """Check which user IDs exist in the database.
@@ -476,6 +414,64 @@ class UserRepository:
         session.add(user)
         await session.flush()
         return True
+
+    @staticmethod
+    def _apply_filters(query, search: Optional[str], filters: UserListFilters):
+        """Apply search text and structured filters to a UserDB SELECT query."""
+        query = query.where(UserDB.deleted_at.is_(None))
+
+        if search:
+            escaped = escape_like_wildcards(search)
+            pattern = f"%{escaped}%"
+            query = query.where(
+                or_(
+                    UserDB.email.ilike(pattern, escape="\\"),
+                    UserDB.username.ilike(pattern, escape="\\"),
+                    UserDB.name.ilike(pattern, escape="\\"),
+                )
+            )
+
+        if filters.user_type:
+            query = query.where(UserDB.user_type == filters.user_type)
+
+        if filters.is_active is not None:
+            query = query.where(UserDB.is_active == filters.is_active)
+
+        if filters.platform_role:
+            query = UserRepository._apply_platform_role_filter(query, filters.platform_role)
+
+        if filters.projects:
+            project_exists = (
+                select(UserProject.id)
+                .where(
+                    UserProject.user_id == UserDB.id,
+                    UserProject.project_name.in_(filters.projects),  # type: ignore[attr-defined]
+                )
+                .exists()
+            )
+            query = query.where(project_exists)
+
+        return query
+
+    @staticmethod
+    def _apply_platform_role_filter(query, role: PlatformRole):
+        """Return query with a WHERE clause matching the given platform role.
+
+        Roles are mutually exclusive:
+        - SUPER_ADMIN     → is_admin = true
+        - PLATFORM_ADMIN  → NOT super admin AND has at least one project-admin membership
+        - USER            → NOT super admin AND no project-admin membership
+        """
+        if role == PlatformRole.SUPER_ADMIN:
+            return query.where(UserDB.is_admin)
+
+        is_project_admin = (
+            select(UserProject.id).where(UserProject.user_id == UserDB.id, UserProject.is_project_admin).exists()
+        )
+        if role == PlatformRole.PLATFORM_ADMIN:
+            return query.where(~UserDB.is_admin, is_project_admin)
+
+        return query.where(~UserDB.is_admin, ~is_project_admin)
 
 
 # Singleton instance

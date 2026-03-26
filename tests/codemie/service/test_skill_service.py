@@ -231,11 +231,9 @@ class TestAccessControl:
         assert ability.can(Action.DELETE, sample_skill) is True
 
     def test_admin_has_full_access(self, sample_skill):
-        # Arrange - admin user
-        admin_user = User(id="admin-123", username="admin", project_names=["project-x"], admin_project_names=[])
-
         # Act & Assert
         with patch("codemie.rest_api.security.user.config.ENV", "local"):  # Makes user admin
+            admin_user = User(id="admin-123", username="admin", project_names=["project-x"], admin_project_names=[])
             ability = Ability(admin_user)
             assert ability.can(Action.READ, sample_skill) is True
             assert ability.can(Action.WRITE, sample_skill) is True
@@ -1101,7 +1099,7 @@ class TestListSkills:
         mock_repository.list_accessible_to_user.assert_called_once_with(
             user_id=owner_user.id,
             user_applications=owner_user.project_names,
-            user_is_global_admin=owner_user.is_super_admin,
+            user_is_global_admin=owner_user.is_admin,
             user_admin_projects=owner_user.admin_project_names,
             project=["project-a"],
             visibility=SkillVisibility.PUBLIC,
@@ -1260,7 +1258,6 @@ class TestAssistantSkillOperations:
 
     def test_attach_skill_admin_can_attach(self, mock_repository):
         # Arrange
-        admin_user = User(id="admin-789", username="admin", name="Admin User", project_names=["project-a"])
         # Create a public skill so admin can read it
         admin_skill = Skill(
             id=str(uuid4()),
@@ -1280,6 +1277,7 @@ class TestAssistantSkillOperations:
 
         # Act
         with patch("codemie.rest_api.security.user.config.ENV", "local"):  # Makes user admin
+            admin_user = User(id="admin-789", username="admin", name="Admin User", project_names=["project-a"])
             with patch("codemie.rest_api.models.assistant.Assistant") as mock_assistant_class:
                 mock_assistant_class.find_by_id.return_value = mock_assistant
                 with patch.object(SkillRepository, "get_by_id", mock_repository.get_by_id):
@@ -1481,12 +1479,12 @@ class TestMarketplaceOperations:
 
     def test_publish_to_marketplace_admin_can_publish(self, mock_repository, sample_skill):
         # Arrange
-        admin_user = User(id="admin-789", username="admin", name="Admin User", project_names=["project-a"])
         mock_repository.get_by_id.return_value = sample_skill
         mock_repository.update.return_value = sample_skill
 
         # Act
         with patch("codemie.rest_api.security.user.config.ENV", "local"):  # Makes user admin
+            admin_user = User(id="admin-789", username="admin", name="Admin User", project_names=["project-a"])
             with patch.object(SkillRepository, "get_by_id", mock_repository.get_by_id):
                 with patch.object(SkillRepository, "update", mock_repository.update):
                     SkillService.publish_to_marketplace(sample_skill.id, admin_user)
@@ -1572,12 +1570,12 @@ class TestMarketplaceOperations:
 
     def test_unpublish_from_marketplace_admin_can_unpublish(self, mock_repository, public_skill):
         # Arrange
-        admin_user = User(id="admin-789", username="admin", name="Admin User", project_names=["project-a"])
         mock_repository.get_by_id.return_value = public_skill
         mock_repository.update.return_value = public_skill
 
         # Act
         with patch("codemie.rest_api.security.user.config.ENV", "local"):  # Makes user admin
+            admin_user = User(id="admin-789", username="admin", name="Admin User", project_names=["project-a"])
             with patch.object(SkillRepository, "get_by_id", mock_repository.get_by_id):
                 with patch.object(SkillRepository, "update", mock_repository.update):
                     SkillService.unpublish_from_marketplace(public_skill.id, admin_user)

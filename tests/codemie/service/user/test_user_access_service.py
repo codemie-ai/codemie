@@ -144,7 +144,7 @@ class TestGrantProjectAccess:
             user_id="user-123",
             project_name="project-alpha",
             is_project_admin=True,
-            actor_user_id="admin-456",
+            actor=MagicMock(id="admin-456", is_admin=False),
         )
 
         # Assert
@@ -173,7 +173,7 @@ class TestGrantProjectAccess:
                 user_id="nonexistent-user",
                 project_name="project-alpha",
                 is_project_admin=False,
-                actor_user_id="admin-456",
+                actor=MagicMock(id="admin-456", is_admin=False),
             )
 
         assert exc_info.value.code == 404
@@ -193,7 +193,7 @@ class TestGrantProjectAccess:
 
         mock_user = MagicMock(id="user-123")
         mock_user_repo.get_by_id.return_value = mock_user
-        mock_app_repo.is_personal_project.return_value = True
+        mock_app_repo.get_by_name.return_value = MagicMock(project_type="personal", created_by="other-user")
 
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -201,7 +201,7 @@ class TestGrantProjectAccess:
                 user_id="user-123",
                 project_name="personal@example.com",
                 is_project_admin=False,
-                actor_user_id="admin-456",
+                actor=MagicMock(id="admin-456", is_admin=False),
             )
 
         assert exc_info.value.code == 404
@@ -235,7 +235,7 @@ class TestGrantProjectAccess:
                 user_id="user-123",
                 project_name="project-alpha",
                 is_project_admin=False,
-                actor_user_id="admin-456",
+                actor=MagicMock(id="admin-456", is_admin=False),
             )
 
         assert exc_info.value.code == 409
@@ -275,7 +275,7 @@ class TestUpdateUserProjectAccess:
             user_id="user-123",
             project_name="project-alpha",
             is_project_admin=True,
-            actor_user_id="admin-456",
+            actor=MagicMock(id="admin-456", is_admin=False),
         )
 
         # Assert
@@ -303,7 +303,7 @@ class TestUpdateUserProjectAccess:
                 user_id="nonexistent-user",
                 project_name="project-alpha",
                 is_project_admin=True,
-                actor_user_id="admin-456",
+                actor=MagicMock(id="admin-456", is_admin=False),
             )
 
         assert exc_info.value.code == 404
@@ -323,7 +323,7 @@ class TestUpdateUserProjectAccess:
 
         mock_user = MagicMock(id="user-123")
         mock_user_repo.get_by_id.return_value = mock_user
-        mock_app_repo.is_personal_project.return_value = True
+        mock_app_repo.get_by_name.return_value = MagicMock(project_type="personal", created_by="other-user")
 
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -331,7 +331,7 @@ class TestUpdateUserProjectAccess:
                 user_id="user-123",
                 project_name="personal@example.com",
                 is_project_admin=True,
-                actor_user_id="admin-456",
+                actor=MagicMock(id="admin-456", is_admin=False),
             )
 
         assert exc_info.value.code == 404
@@ -362,7 +362,7 @@ class TestUpdateUserProjectAccess:
                 user_id="user-123",
                 project_name="project-alpha",
                 is_project_admin=True,
-                actor_user_id="admin-456",
+                actor=MagicMock(id="admin-456", is_admin=False),
             )
 
         assert exc_info.value.code == 404
@@ -398,7 +398,7 @@ class TestRevokeProjectAccess:
 
         # Act
         result = UserAccessService.revoke_project_access(
-            user_id="user-123", project_name="project-alpha", actor_user_id="admin-456"
+            user_id="user-123", project_name="project-alpha", actor=MagicMock(id="admin-456", is_admin=False)
         )
 
         # Assert
@@ -424,7 +424,7 @@ class TestRevokeProjectAccess:
             UserAccessService.revoke_project_access(
                 user_id="nonexistent-user",
                 project_name="project-alpha",
-                actor_user_id="admin-456",
+                actor=MagicMock(id="admin-456", is_admin=False),
             )
 
         assert exc_info.value.code == 404
@@ -444,14 +444,14 @@ class TestRevokeProjectAccess:
 
         mock_user = MagicMock(id="user-123")
         mock_user_repo.get_by_id.return_value = mock_user
-        mock_app_repo.is_personal_project.return_value = True
+        mock_app_repo.get_by_name.return_value = MagicMock(project_type="personal", created_by="other-user")
 
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:
             UserAccessService.revoke_project_access(
                 user_id="user-123",
                 project_name="personal@example.com",
-                actor_user_id="admin-456",
+                actor=MagicMock(id="admin-456", is_admin=False),
             )
 
         assert exc_info.value.code == 404
@@ -479,7 +479,7 @@ class TestRevokeProjectAccess:
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:
             UserAccessService.revoke_project_access(
-                user_id="user-123", project_name="project-alpha", actor_user_id="admin-456"
+                user_id="user-123", project_name="project-alpha", actor=MagicMock(id="admin-456", is_admin=False)
             )
 
         assert exc_info.value.code == 404

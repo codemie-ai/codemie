@@ -54,7 +54,7 @@ class TestProjectVisibilityFiltering:
 
             # Act: Alice requesting her own projects
             visible = user_project_repository.get_visible_projects_for_user(
-                session=mock_session, target_user_id=user_id, requesting_user_id=user_id, is_super_admin=False
+                session=mock_session, target_user_id=user_id, requesting_user_id=user_id, is_admin=False
             )
 
             # Assert: Alice sees both projects
@@ -92,7 +92,7 @@ class TestProjectVisibilityFiltering:
 
             # Act: Bob requesting Alice's projects (Bob is not super admin)
             visible = user_project_repository.get_visible_projects_for_user(
-                session=mock_session, target_user_id=alice_id, requesting_user_id=bob_id, is_super_admin=False
+                session=mock_session, target_user_id=alice_id, requesting_user_id=bob_id, is_admin=False
             )
 
             # Assert: Bob sees nothing (not creator of personal, not member of shared)
@@ -126,7 +126,7 @@ class TestProjectVisibilityFiltering:
 
             # Act: Bob requesting Alice's projects (Bob is shared project member)
             visible = user_project_repository.get_visible_projects_for_user(
-                session=mock_session, target_user_id=alice_id, requesting_user_id=bob_id, is_super_admin=False
+                session=mock_session, target_user_id=alice_id, requesting_user_id=bob_id, is_admin=False
             )
 
             # Assert: Bob sees shared project only
@@ -156,7 +156,7 @@ class TestProjectVisibilityFiltering:
 
             # Act: Admin requesting Alice's projects (admin IS super admin)
             visible = user_project_repository.get_visible_projects_for_user(
-                session=mock_session, target_user_id=alice_id, requesting_user_id=admin_id, is_super_admin=True
+                session=mock_session, target_user_id=alice_id, requesting_user_id=admin_id, is_admin=True
             )
 
             # Assert: Admin sees both projects
@@ -194,7 +194,7 @@ class TestProjectVisibilityFiltering:
 
             # Act: Bob requesting Alice's projects
             visible = user_project_repository.get_visible_projects_for_user(
-                session=mock_session, target_user_id=alice_id, requesting_user_id=bob_id, is_super_admin=False
+                session=mock_session, target_user_id=alice_id, requesting_user_id=bob_id, is_admin=False
             )
 
             # Assert: Bob sees only shared project where he is a member
@@ -211,7 +211,7 @@ class TestProjectVisibilityFiltering:
         with patch.object(user_project_repository, "get_by_user_id", return_value=[]):
             # Act
             visible = user_project_repository.get_visible_projects_for_user(
-                session=mock_session, target_user_id=alice_id, requesting_user_id=bob_id, is_super_admin=False
+                session=mock_session, target_user_id=alice_id, requesting_user_id=bob_id, is_admin=False
             )
 
             # Assert

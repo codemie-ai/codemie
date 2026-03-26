@@ -22,7 +22,7 @@ import pytest
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
 from codemie.rest_api.models.user_management import UserDB, UserProject
-from codemie.service.user.project_assignment_service import ProjectAssignmentService, project_assignment_service
+from codemie.service.project.project_assignment_service import ProjectAssignmentService, project_assignment_service
 
 
 class TestProjectAssignmentServiceValidation:
@@ -54,9 +54,9 @@ class TestProjectAssignmentServiceValidation:
 class TestProjectAssignmentServiceSingleAssignment:
     """Test suite for ProjectAssignmentService - single user assignment"""
 
-    @patch("codemie.service.user.project_assignment_service.user_repository")
-    @patch("codemie.service.user.project_assignment_service.user_project_repository")
-    @patch("codemie.service.user.project_assignment_service.logger")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.logger")
     def test_assign_user_success(self, mock_logger, mock_user_project_repo, mock_user_repo):
         """Test successful user assignment to project"""
         # Arrange
@@ -76,7 +76,7 @@ class TestProjectAssignmentServiceSingleAssignment:
             user_id=user_id,
             project_name=project_name,
             is_project_admin=True,
-            requesting_user_id=requesting_user_id,
+            actor=MagicMock(id=requesting_user_id, is_admin=False),
             action="POST /v1/projects/team-project/users/user-123",
         )
 
@@ -90,18 +90,13 @@ class TestProjectAssignmentServiceSingleAssignment:
         )
         mock_logger.info.assert_called_once()
 
-    @patch("codemie.service.user.project_assignment_service.project_visibility_service")
-    def test_assign_user_personal_project_rejected(self, mock_visibility_service):
+    def test_assign_user_personal_project_rejected(self):
         """Test that assignment to personal project is rejected (FR-5.1: Hidden as 404)"""
         # Arrange
         mock_session = MagicMock()
         project = Application(id=str(uuid4()), name="user1-personal", project_type="personal")
         user_id = str(uuid4())
         requesting_user_id = str(uuid4())
-
-        mock_visibility_service.raise_project_not_found.side_effect = ExtendedHTTPException(
-            code=404, message="Project not found"
-        )
 
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -111,14 +106,13 @@ class TestProjectAssignmentServiceSingleAssignment:
                 user_id=user_id,
                 project_name="user1-personal",
                 is_project_admin=False,
-                requesting_user_id=requesting_user_id,
+                actor=MagicMock(id=requesting_user_id, is_admin=False),
                 action="POST /v1/projects/user1-personal/users/user-123",
             )
 
         assert exc_info.value.code == 404
-        mock_visibility_service.raise_project_not_found.assert_called_once()
 
-    @patch("codemie.service.user.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
     def test_assign_user_not_found(self, mock_user_repo):
         """Test assignment fails when target user does not exist (FR-5.1: 404)"""
         # Arrange
@@ -136,7 +130,7 @@ class TestProjectAssignmentServiceSingleAssignment:
                 user_id=user_id,
                 project_name="team-project",
                 is_project_admin=False,
-                requesting_user_id=str(uuid4()),
+                actor=MagicMock(id=str(uuid4()), is_admin=False),
                 action="POST /v1/projects/team-project/users/user-123",
             )
 
@@ -144,8 +138,8 @@ class TestProjectAssignmentServiceSingleAssignment:
         assert "User not found" in exc_info.value.message
         assert user_id in exc_info.value.details
 
-    @patch("codemie.service.user.project_assignment_service.user_repository")
-    @patch("codemie.service.user.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
     def test_assign_user_already_assigned(self, mock_user_project_repo, mock_user_repo):
         """Test assignment fails when user is already assigned to project (FR-5.1: 409)"""
         # Arrange
@@ -166,7 +160,7 @@ class TestProjectAssignmentServiceSingleAssignment:
                 user_id=user_id,
                 project_name="team-project",
                 is_project_admin=False,
-                requesting_user_id=str(uuid4()),
+                actor=MagicMock(id=str(uuid4()), is_admin=False),
                 action="POST /v1/projects/team-project/users/user-123",
             )
 
@@ -178,9 +172,9 @@ class TestProjectAssignmentServiceSingleAssignment:
 class TestProjectAssignmentServiceRoleUpdate:
     """Test suite for ProjectAssignmentService - role update"""
 
-    @patch("codemie.service.user.project_assignment_service.user_repository")
-    @patch("codemie.service.user.project_assignment_service.user_project_repository")
-    @patch("codemie.service.user.project_assignment_service.logger")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.logger")
     def test_update_role_success(self, mock_logger, mock_user_project_repo, mock_user_repo):
         """Test successful role update for project member"""
         # Arrange
@@ -201,7 +195,7 @@ class TestProjectAssignmentServiceRoleUpdate:
             user_id=user_id,
             project_name=project_name,
             is_project_admin=True,
-            requesting_user_id=requesting_user_id,
+            actor=MagicMock(id=requesting_user_id, is_admin=False),
             action="PUT /v1/projects/team-project/users/user-123",
         )
 
@@ -213,8 +207,8 @@ class TestProjectAssignmentServiceRoleUpdate:
         mock_user_project_repo.update_admin_status.assert_called_once_with(mock_session, user_id, project_name, True)
         mock_logger.info.assert_called_once()
 
-    @patch("codemie.service.user.project_assignment_service.user_repository")
-    @patch("codemie.service.user.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
     def test_update_role_not_assigned(self, mock_user_project_repo, mock_user_repo):
         """Test role update fails when user is not assigned to project (FR-5.1: 404)"""
         # Arrange
@@ -233,7 +227,7 @@ class TestProjectAssignmentServiceRoleUpdate:
                 user_id=user_id,
                 project_name="team-project",
                 is_project_admin=True,
-                requesting_user_id=str(uuid4()),
+                actor=MagicMock(id=str(uuid4()), is_admin=False),
                 action="PUT /v1/projects/team-project/users/user-123",
             )
 
@@ -245,9 +239,9 @@ class TestProjectAssignmentServiceRoleUpdate:
 class TestProjectAssignmentServiceBulkAssign:
     """Test suite for ProjectAssignmentService - bulk assignment"""
 
-    @patch("codemie.service.user.project_assignment_service.user_repository")
-    @patch("codemie.service.user.project_assignment_service.user_project_repository")
-    @patch("codemie.service.user.project_assignment_service.logger")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.logger")
     def test_bulk_assign_success_new_users(self, mock_logger, mock_user_project_repo, mock_user_repo):
         """Test successful bulk assignment of new users (FR-5.2: all-or-nothing)"""
         # Arrange
@@ -269,7 +263,7 @@ class TestProjectAssignmentServiceBulkAssign:
             project=project,
             users=users,
             project_name="team-project",
-            requesting_user_id=str(uuid4()),
+            actor=MagicMock(id=str(uuid4()), is_admin=False),
             action="POST /v1/projects/team-project/users/bulk",
         )
 
@@ -281,9 +275,9 @@ class TestProjectAssignmentServiceBulkAssign:
         mock_session.flush.assert_called_once()
         mock_logger.info.assert_called_once()
 
-    @patch("codemie.service.user.project_assignment_service.user_repository")
-    @patch("codemie.service.user.project_assignment_service.user_project_repository")
-    @patch("codemie.service.user.project_assignment_service.logger")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.logger")
     def test_bulk_assign_upsert_existing(self, mock_logger, mock_user_project_repo, mock_user_repo):
         """Test bulk assign with mix of new and existing users (upsert behavior)"""
         # Arrange
@@ -306,7 +300,7 @@ class TestProjectAssignmentServiceBulkAssign:
             project=project,
             users=users,
             project_name="team-project",
-            requesting_user_id=str(uuid4()),
+            actor=MagicMock(id=str(uuid4()), is_admin=False),
             action="POST /v1/projects/team-project/users/bulk",
         )
 
@@ -318,7 +312,7 @@ class TestProjectAssignmentServiceBulkAssign:
         mock_session.flush.assert_called_once()
         mock_logger.info.assert_called_once()
 
-    @patch("codemie.service.user.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
     def test_bulk_assign_duplicate_ids(self, mock_user_repo):
         """Test bulk assign fails with duplicate user_ids in request (FR-5.2: 400)"""
         # Arrange
@@ -337,7 +331,7 @@ class TestProjectAssignmentServiceBulkAssign:
                 project=project,
                 users=users,
                 project_name="team-project",
-                requesting_user_id=str(uuid4()),
+                actor=MagicMock(id=str(uuid4()), is_admin=False),
                 action="POST /v1/projects/team-project/users/bulk",
             )
 
@@ -345,7 +339,7 @@ class TestProjectAssignmentServiceBulkAssign:
         assert "Duplicate user IDs" in exc_info.value.message
         assert duplicate_id in exc_info.value.details
 
-    @patch("codemie.service.user.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
     def test_bulk_assign_users_not_found(self, mock_user_repo):
         """Test bulk assign fails when one or more users don't exist (FR-5.2: 404)"""
         # Arrange
@@ -367,7 +361,7 @@ class TestProjectAssignmentServiceBulkAssign:
                 project=project,
                 users=users,
                 project_name="team-project",
-                requesting_user_id=str(uuid4()),
+                actor=MagicMock(id=str(uuid4()), is_admin=False),
                 action="POST /v1/projects/team-project/users/bulk",
             )
 
@@ -379,9 +373,9 @@ class TestProjectAssignmentServiceBulkAssign:
 class TestProjectAssignmentServiceBulkRemove:
     """Test suite for ProjectAssignmentService - bulk removal"""
 
-    @patch("codemie.service.user.project_assignment_service.user_repository")
-    @patch("codemie.service.user.project_assignment_service.user_project_repository")
-    @patch("codemie.service.user.project_assignment_service.logger")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.logger")
     def test_bulk_remove_success(self, mock_logger, mock_user_project_repo, mock_user_repo):
         """Test successful bulk removal of users from project (FR-5.3: all-or-nothing)"""
         # Arrange
@@ -402,7 +396,7 @@ class TestProjectAssignmentServiceBulkRemove:
             project=project,
             user_ids=user_ids,
             project_name="team-project",
-            requesting_user_id=str(uuid4()),
+            actor=MagicMock(id=str(uuid4()), is_admin=False),
             action="DELETE /v1/projects/team-project/users/bulk",
         )
 
@@ -413,8 +407,8 @@ class TestProjectAssignmentServiceBulkRemove:
         mock_session.flush.assert_called_once()
         mock_logger.info.assert_called_once()
 
-    @patch("codemie.service.user.project_assignment_service.user_repository")
-    @patch("codemie.service.user.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
     def test_bulk_remove_not_assigned(self, mock_user_project_repo, mock_user_repo):
         """Test bulk remove fails when one or more users are not assigned (FR-5.3: 404)"""
         # Arrange
@@ -435,7 +429,7 @@ class TestProjectAssignmentServiceBulkRemove:
                 project=project,
                 user_ids=user_ids,
                 project_name="team-project",
-                requesting_user_id=str(uuid4()),
+                actor=MagicMock(id=str(uuid4()), is_admin=False),
                 action="DELETE /v1/projects/team-project/users/bulk",
             )
 
@@ -447,9 +441,9 @@ class TestProjectAssignmentServiceBulkRemove:
 class TestProjectAssignmentServiceSingleRemoval:
     """Test suite for ProjectAssignmentService - single user removal"""
 
-    @patch("codemie.service.user.project_assignment_service.user_repository")
-    @patch("codemie.service.user.project_assignment_service.user_project_repository")
-    @patch("codemie.service.user.project_assignment_service.logger")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.logger")
     def test_remove_user_success(self, mock_logger, mock_user_project_repo, mock_user_repo):
         """Test successful removal of user from project"""
         # Arrange
@@ -468,7 +462,7 @@ class TestProjectAssignmentServiceSingleRemoval:
             project=project,
             user_id=user_id,
             project_name=project_name,
-            requesting_user_id=requesting_user_id,
+            actor=MagicMock(id=requesting_user_id, is_admin=False),
             action="DELETE /v1/projects/team-project/users/user-123",
         )
 
@@ -479,8 +473,8 @@ class TestProjectAssignmentServiceSingleRemoval:
         mock_user_project_repo.remove_project.assert_called_once_with(mock_session, user_id, project_name)
         mock_logger.info.assert_called_once()
 
-    @patch("codemie.service.user.project_assignment_service.user_repository")
-    @patch("codemie.service.user.project_assignment_service.user_project_repository")
+    @patch("codemie.service.project.project_assignment_service.user_repository")
+    @patch("codemie.service.project.project_assignment_service.user_project_repository")
     def test_remove_user_not_assigned(self, mock_user_project_repo, mock_user_repo):
         """Test removal fails when user is not assigned to project (FR-5.1: 404)"""
         # Arrange
@@ -498,7 +492,7 @@ class TestProjectAssignmentServiceSingleRemoval:
                 project=project,
                 user_id=user_id,
                 project_name="team-project",
-                requesting_user_id=str(uuid4()),
+                actor=MagicMock(id=str(uuid4()), is_admin=False),
                 action="DELETE /v1/projects/team-project/users/user-123",
             )
 

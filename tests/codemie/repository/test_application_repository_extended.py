@@ -570,7 +570,7 @@ class TestApplicationRepositoryVisibilityHelpers:
             session=mock_session,
             project_name="proj-a",
             user_id="admin-1",
-            is_super_admin=True,
+            is_admin=True,
         )
 
         # Assert
@@ -608,7 +608,7 @@ class TestApplicationRepositoryVisibilityHelpers:
         assert result is base_statement
 
     def test_apply_search_filters_applies_exact_and_ilike_conditions(self):
-        """_apply_search_filters applies both exact match and ILIKE conditions."""
+        """_apply_search_filters applies exact name match, name ILIKE, and description ILIKE."""
         # Arrange
         from sqlmodel import select
 
@@ -619,9 +619,9 @@ class TestApplicationRepositoryVisibilityHelpers:
 
         # Assert
         query_text = _compile_sql(result)
-        # Should have OR condition with exact match and ILIKE
+        # Should have OR condition covering name (exact + partial) and description (partial)
         assert "applications.name" in query_text
-        # Note: ILIKE rendering may vary, but query should be modified
+        assert "applications.description" in query_text
 
     def test_apply_search_delegates_to_apply_search_filters(self):
         """_apply_search delegates filtering to _apply_search_filters."""

@@ -22,21 +22,40 @@ from datetime import UTC, datetime
 
 from sqlmodel import Session
 
-from codemie.configs import logger
+from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
 from codemie.repository.user_project_repository import user_project_repository
 from codemie.repository.user_repository import user_repository
 from codemie.rest_api.models.user_management import UserProject
-from codemie.service.user.project_visibility_service import project_visibility_service
+from codemie.rest_api.security.user import User
 
 
 _USER_NOT_FOUND = "User not found"
 _VERIFY_USER_ID_HELP = "Verify the user ID and try again"
+_PERSONAL_PROJECT_MEMBERSHIP = "Cannot modify membership of a personal project"
 
 
 class ProjectAssignmentService:
     """Service for managing project membership assignments"""
+
+    @staticmethod
+    def _reject_if_personal_project(project: Application, actor: User, action: str) -> None:
+        """Block membership changes on personal projects.
+
+        Super admin or project owner → 403 (project existence is known).
+        Otherwise → 404 (hide project existence from unrelated callers).
+        """
+        if project.project_type != Application.ProjectType.PERSONAL:
+            return
+
+        http_method = action.split()[0] if action else "UNKNOWN"
+        logger.warning(f"personal_project_assignment_blocked: user_id={actor.id}, method={http_method}")
+
+        if actor.is_admin or project.created_by == actor.id:
+            raise ExtendedHTTPException(code=403, message=_PERSONAL_PROJECT_MEMBERSHIP)
+
+        raise ExtendedHTTPException(code=404, message="Project not found")
 
     @staticmethod
     def _validate_user_id_format(user_id: str) -> None:
@@ -59,7 +78,7 @@ class ProjectAssignmentService:
         user_id: str,
         project_name: str,
         is_project_admin: bool,
-        requesting_user_id: str,
+        actor: User,
         action: str,
     ) -> dict:
         """Assign a user to a project.
@@ -70,7 +89,7 @@ class ProjectAssignmentService:
             user_id: Target user ID to assign
             project_name: Project name
             is_project_admin: Whether user should be project admin
-            requesting_user_id: ID of user making the request
+            actor: User performing the request
             action: Action string for logging (e.g., "POST /v1/projects/...")
 
         Returns:
@@ -80,12 +99,7 @@ class ProjectAssignmentService:
             ExtendedHTTPException: On validation failures
         """
         # Reject personal project modification
-        if project.project_type == "personal":
-            project_visibility_service.raise_project_not_found(
-                user_id=requesting_user_id,
-                project_name=project_name,
-                action=action,
-            )
+        ProjectAssignmentService._reject_if_personal_project(project, actor, action)
 
         # Validate user_id format before DB lookup
         ProjectAssignmentService._validate_user_id_format(user_id)
@@ -120,7 +134,7 @@ class ProjectAssignmentService:
 
         logger.info(
             f"User assigned to project: user_id={user_id}, project={project_name}, "
-            f"is_admin={is_project_admin}, by={requesting_user_id}"
+            f"is_admin={is_project_admin}, by={actor.id}"
         )
 
         return {
@@ -137,7 +151,7 @@ class ProjectAssignmentService:
         user_id: str,
         project_name: str,
         is_project_admin: bool,
-        requesting_user_id: str,
+        actor: User,
         action: str,
     ) -> dict:
         """Update user's project admin status.
@@ -148,7 +162,7 @@ class ProjectAssignmentService:
             user_id: Target user ID
             project_name: Project name
             is_project_admin: New admin status
-            requesting_user_id: ID of user making the request
+            actor: User performing the request
             action: Action string for logging
 
         Returns:
@@ -158,12 +172,7 @@ class ProjectAssignmentService:
             ExtendedHTTPException: On validation failures
         """
         # Reject personal project modification
-        if project.project_type == "personal":
-            project_visibility_service.raise_project_not_found(
-                user_id=requesting_user_id,
-                project_name=project_name,
-                action=action,
-            )
+        ProjectAssignmentService._reject_if_personal_project(project, actor, action)
 
         # Validate user_id format before DB lookup
         ProjectAssignmentService._validate_user_id_format(user_id)
@@ -193,7 +202,7 @@ class ProjectAssignmentService:
 
         logger.info(
             f"User role updated: user_id={user_id}, project={project_name}, "
-            f"is_admin={is_project_admin}, by={requesting_user_id}"
+            f"is_admin={is_project_admin}, by={actor.id}"
         )
 
         return {
@@ -209,7 +218,7 @@ class ProjectAssignmentService:
         project: Application,
         users: list[dict],
         project_name: str,
-        requesting_user_id: str,
+        actor: User,
         action: str,
     ) -> list[dict]:
         """Bulk assign/upsert users to a project (all-or-nothing).
@@ -229,7 +238,7 @@ class ProjectAssignmentService:
             project: Authorized project from dependency
             users: List of dicts with 'user_id' and 'is_project_admin' keys
             project_name: Project name
-            requesting_user_id: ID of user making the request
+            actor: User performing the request
             action: Action string for logging
 
         Returns:
@@ -239,18 +248,14 @@ class ProjectAssignmentService:
             ExtendedHTTPException: On validation failures
         """
         # Reject personal project modification
-        if project.project_type == "personal":
-            project_visibility_service.raise_project_not_found(
-                user_id=requesting_user_id,
-                project_name=project_name,
-                action=action,
-            )
+        ProjectAssignmentService._reject_if_personal_project(project, actor, action)
 
         # Check for duplicate user_ids in request
         user_ids = [u["user_id"] for u in users]
         if len(user_ids) != len(set(user_ids)):
-            seen = set()
-            duplicates = sorted({uid for uid in user_ids if uid in seen or seen.add(uid)})
+            from collections import Counter
+
+            duplicates = sorted(uid for uid, count in Counter(user_ids).items() if count > 1)
             raise ExtendedHTTPException(
                 code=400,
                 message="Duplicate user IDs in request",
@@ -318,7 +323,7 @@ class ProjectAssignmentService:
         logger.info(
             f"Bulk assignment completed: project={project_name}, "
             f"assigned={assigned_count}, updated={updated_count}, "
-            f"total={len(users)}, by={requesting_user_id}"
+            f"total={len(users)}, by={actor.id}"
         )
 
         return results
@@ -329,7 +334,7 @@ class ProjectAssignmentService:
         project: Application,
         user_ids: list[str],
         project_name: str,
-        requesting_user_id: str,
+        actor: User,
         action: str,
     ) -> list[dict]:
         """Bulk remove users from a project (all-or-nothing).
@@ -349,7 +354,7 @@ class ProjectAssignmentService:
             project: Authorized project from dependency
             user_ids: List of user UUIDs to remove
             project_name: Project name
-            requesting_user_id: ID of user making the request
+            actor: User performing the request
             action: Action string for logging
 
         Returns:
@@ -359,18 +364,14 @@ class ProjectAssignmentService:
             ExtendedHTTPException: On validation failures
         """
         # Reject personal project modification
-        if project.project_type == "personal":
-            project_visibility_service.raise_project_not_found(
-                user_id=requesting_user_id,
-                project_name=project_name,
-                action=action,
-            )
+        ProjectAssignmentService._reject_if_personal_project(project, actor, action)
 
         # Check for duplicate user_ids in request
         unique_ids = set(user_ids)
         if len(user_ids) != len(unique_ids):
-            seen = set()
-            duplicates = sorted({uid for uid in user_ids if uid in seen or seen.add(uid)})
+            from collections import Counter
+
+            duplicates = sorted(uid for uid, count in Counter(user_ids).items() if count > 1)
             raise ExtendedHTTPException(
                 code=400,
                 message="Duplicate user IDs in request",
@@ -411,7 +412,7 @@ class ProjectAssignmentService:
 
         results = [{"user_id": uid, "action": "removed"} for uid in user_ids]
 
-        logger.info(f"Bulk removal completed: project={project_name}, removed={len(user_ids)}, by={requesting_user_id}")
+        logger.info(f"Bulk removal completed: project={project_name}, removed={len(user_ids)}, by={actor.id}")
 
         return results
 
@@ -421,7 +422,7 @@ class ProjectAssignmentService:
         project: Application,
         user_id: str,
         project_name: str,
-        requesting_user_id: str,
+        actor: User,
         action: str,
     ) -> dict:
         """Remove a user from a project.
@@ -431,7 +432,7 @@ class ProjectAssignmentService:
             project: Authorized project from dependency
             user_id: Target user ID to remove
             project_name: Project name
-            requesting_user_id: ID of user making the request
+            actor: User performing the request
             action: Action string for logging
 
         Returns:
@@ -441,12 +442,7 @@ class ProjectAssignmentService:
             ExtendedHTTPException: On validation failures
         """
         # Reject personal project modification
-        if project.project_type == "personal":
-            project_visibility_service.raise_project_not_found(
-                user_id=requesting_user_id,
-                project_name=project_name,
-                action=action,
-            )
+        ProjectAssignmentService._reject_if_personal_project(project, actor, action)
 
         # Validate user_id format before DB lookup
         ProjectAssignmentService._validate_user_id_format(user_id)
@@ -471,7 +467,7 @@ class ProjectAssignmentService:
                 help="Verify the user is assigned to this project",
             )
 
-        logger.info(f"User removed from project: user_id={user_id}, project={project_name}, by={requesting_user_id}")
+        logger.info(f"User removed from project: user_id={user_id}, project={project_name}, by={actor.id}")
 
         return {
             "message": "User removed from project successfully",

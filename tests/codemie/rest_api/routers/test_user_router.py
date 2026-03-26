@@ -93,9 +93,9 @@ async def test_get_user_basic(mock_authenticate, mock_user):
     # Note: name in response comes from User.full_name which returns username when available
     assert data["name"] == "testuser"
     assert data["email"] == "test@example.com"
-    # Note: In local ENV, both is_admin and is_super_admin can be True (dev override)
+    # Note: In local ENV, both is_admin and is_admin can be True (dev override)
     # Just verify they're boolean values
-    assert isinstance(data["is_super_admin"], bool)
+    assert isinstance(data["is_admin"], bool)
     assert isinstance(data["is_admin"], bool)
     assert data["picture"] == "https://example.com/avatar.png"
     assert len(data["projects"]) == 2

@@ -65,7 +65,7 @@ class TestBulkVisibilityFiltering:
         with patch.object(user_project_repository, "get_project_names_for_user", return_value={"shared-proj"}):
             # Act: Non-super-admin requesting visibility filtering
             filtered = user_project_repository.filter_visible_projects_from_map(
-                mock_session, projects_map, requesting_user_id=requester_id, is_super_admin=False
+                mock_session, projects_map, requesting_user_id=requester_id, is_admin=False
             )
 
         # Assert: only requester memberships are visible
@@ -99,7 +99,7 @@ class TestBulkVisibilityFiltering:
 
         # Act: Super admin requesting
         filtered = user_project_repository.filter_visible_projects_from_map(
-            mock_session, projects_map, requesting_user_id=admin_id, is_super_admin=True
+            mock_session, projects_map, requesting_user_id=admin_id, is_admin=True
         )
 
         # Assert: Super admin sees both projects
@@ -128,7 +128,7 @@ class TestBulkVisibilityFiltering:
 
         # Act: Alice requesting her own projects
         filtered = user_project_repository.filter_visible_projects_from_map(
-            mock_session, projects_map, requesting_user_id=alice_id, is_super_admin=False
+            mock_session, projects_map, requesting_user_id=alice_id, is_admin=False
         )
 
         # Assert: Alice sees both projects
@@ -158,7 +158,7 @@ class TestBulkVisibilityFiltering:
         with patch.object(user_project_repository, "get_project_names_for_user", return_value={"shared-2"}) as mock_get:
             # Act
             filtered = user_project_repository.filter_visible_projects_from_map(
-                mock_session, projects_map, requesting_user_id=requester_id, is_super_admin=False
+                mock_session, projects_map, requesting_user_id=requester_id, is_admin=False
             )
 
         # Assert
@@ -188,7 +188,7 @@ class TestBulkVisibilityFiltering:
         with patch.object(user_project_repository, "get_project_names_for_user") as mock_get:
             # Act
             filtered = user_project_repository.filter_visible_projects_from_map(
-                mock_session, projects_map, requesting_user_id=requester_id, is_super_admin=False
+                mock_session, projects_map, requesting_user_id=requester_id, is_admin=False
             )
 
         # Assert
@@ -203,7 +203,7 @@ class TestBulkVisibilityFiltering:
 
         # Act
         filtered = user_project_repository.filter_visible_projects_from_map(
-            mock_session, {}, requesting_user_id="user-123", is_super_admin=False
+            mock_session, {}, requesting_user_id="user-123", is_admin=False
         )
 
         # Assert
@@ -243,7 +243,7 @@ class TestBulkVisibilityFiltering:
 
         # Act
         user_project_repository.filter_visible_projects_from_map(
-            mock_session, projects_map, requesting_user_id="requester", is_super_admin=False
+            mock_session, projects_map, requesting_user_id="requester", is_admin=False
         )
 
         # Assert: Only ONE bulk query made (not 3 separate queries for 3 users)

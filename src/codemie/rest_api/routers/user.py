@@ -73,23 +73,17 @@ def _get_user_response(user: User) -> UserResponse:
 
     return UserResponse(
         user_id=user.id,
-        userId=user.id,
         name=user.full_name,
         username=user.username,
         email=user.email,
-        is_super_admin=user.is_admin,
+        is_admin=user.is_admin,
         picture=user.picture,
         projects=projects,
         project_limit=user.project_limit,
         knowledge_bases=user.knowledge_bases,
         user_type=user.user_type,
-        userType=user.user_type,
-        #
         applications=user.applications,
         applications_admin=user.applications_admin,
-        applicationsAdmin=user.applications_admin,
-        is_admin=user.is_admin,
-        isAdmin=user.is_admin,
     )
 
 

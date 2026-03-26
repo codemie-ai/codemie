@@ -33,7 +33,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.user_repository import user_repository
 from codemie.repository.email_token_repository import email_token_repository
 from codemie.rest_api.models.user_management import UserDB, CodeMieUserDetail, ProjectInfo
-from codemie.service.user.personal_project_service import personal_project_service
+from codemie.service.project.personal_project_service import personal_project_service
 
 
 class RegistrationService:
@@ -86,7 +86,7 @@ class RegistrationService:
             auth_source="local",
             email_verified=not config.EMAIL_VERIFICATION_ENABLED,  # Pre-verify if disabled
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
             project_limit=config.USER_PROJECT_LIMIT,
         )
 
@@ -210,7 +210,7 @@ class RegistrationService:
                     picture=user.picture,
                     user_type=user.user_type,
                     is_active=user.is_active,
-                    is_super_admin=user.is_super_admin,
+                    is_admin=user.is_admin,
                     auth_source=user.auth_source,
                     email_verified=True,
                     last_login_at=user.last_login_at,

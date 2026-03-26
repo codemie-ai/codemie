@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.dynamic_config import ConfigValueType, DynamicConfig
 from codemie.rest_api.security.user import User
@@ -35,39 +36,41 @@ from codemie.service.dynamic_config_service import DynamicConfigService
 @pytest.fixture
 def mock_user():
     """Super admin user fixture"""
-    return User(
-        id="admin-123",
-        name="Admin User",
-        username="admin",
-        email="admin@example.com",
-        roles=[],
-        project_names=[],
-        admin_project_names=[],
-        picture="",
-        knowledge_bases=[],
-        user_type="regular",
-        is_super_admin=True,
-        auth_token=None,
-    )
+    with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
+        return User(
+            id="admin-123",
+            name="Admin User",
+            username="admin",
+            email="admin@example.com",
+            roles=[],
+            project_names=[],
+            admin_project_names=[],
+            picture="",
+            knowledge_bases=[],
+            user_type="regular",
+            is_admin=True,
+            auth_token=None,
+        )
 
 
 @pytest.fixture
 def mock_regular_user():
     """Regular user fixture (not admin)"""
-    return User(
-        id="user-123",
-        name="Regular User",
-        username="user",
-        email="user@example.com",
-        roles=[],
-        project_names=[],
-        admin_project_names=[],
-        picture="",
-        knowledge_bases=[],
-        user_type="regular",
-        is_super_admin=False,
-        auth_token=None,
-    )
+    with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
+        return User(
+            id="user-123",
+            name="Regular User",
+            username="user",
+            email="user@example.com",
+            roles=[],
+            project_names=[],
+            admin_project_names=[],
+            picture="",
+            knowledge_bases=[],
+            user_type="regular",
+            is_admin=False,
+            auth_token=None,
+        )
 
 
 @pytest.fixture

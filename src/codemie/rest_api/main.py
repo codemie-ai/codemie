@@ -62,6 +62,7 @@ from codemie.rest_api.routers import (
     user_settings,
     project_settings,
     projects,
+    cost_centers,
     llm_models,
     files,
     conversation,
@@ -560,6 +561,7 @@ app.include_router(workflow_executions.router)
 app.include_router(user_settings.router)
 app.include_router(project_settings.router)
 app.include_router(projects.router)
+app.include_router(cost_centers.router)
 app.include_router(llm_models.router)
 app.include_router(llm_models.proxy_router)
 app.include_router(guardrail.router)

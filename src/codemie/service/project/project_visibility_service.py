@@ -23,51 +23,17 @@ from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
 from codemie.repository.application_repository import application_repository
+from codemie.repository.cost_center_repository import cost_center_repository
 
 
 class ProjectVisibilityService:
     """Service for project visibility and project-level authorization checks."""
 
     @staticmethod
-    def _is_project_visible_to_user(
-        project: Application,
-        user_id: str,
-        is_super_admin: bool,
-        membership_is_project_admin: bool | None,
-    ) -> bool:
-        """Evaluate Story 11 visibility rules using pre-fetched context."""
-        if is_super_admin:
-            return True
-
-        if project.project_type == "personal":
-            return project.created_by == user_id
-
-        return membership_is_project_admin is not None
-
-    @staticmethod
-    def raise_project_not_found(user_id: str, project_name: str, action: str) -> None:
-        timestamp = datetime.now(UTC).isoformat()
-        # Code Review R3: Do not log project_name OR action path (both may contain PII)
-        # action format is "METHOD /path/with/project_name" - extract only HTTP method
-        http_method = action.split()[0] if action else "UNKNOWN"
-        log_details = ", ".join(
-            [
-                f"user_id={user_id}",
-                f"method={http_method}",
-                f"timestamp={timestamp}",
-            ]
-        )
-        logger.warning(f"project_authorization_failed: {log_details}")
-        raise ExtendedHTTPException(
-            code=404,
-            message="Project not found",
-        )
-
-    @staticmethod
     def list_visible_projects(
         session: Session,
         user_id: str,
-        is_super_admin: bool,
+        is_admin: bool,
         search: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> list[Application]:
@@ -75,7 +41,7 @@ class ProjectVisibilityService:
         return application_repository.list_visible_projects(
             session=session,
             user_id=user_id,
-            is_super_admin=is_super_admin,
+            is_admin=is_admin,
             search=search,
             limit=limit,
         )
@@ -84,10 +50,11 @@ class ProjectVisibilityService:
     def list_visible_projects_paginated(
         session: Session,
         user_id: str,
-        is_super_admin: bool,
+        is_admin: bool,
         search: Optional[str] = None,
         page: int = 0,
         per_page: int = 20,
+        include_counters: bool = True,
     ) -> tuple[list[dict], int]:
         """List projects visible to user with pagination and member counts.
 
@@ -97,11 +64,12 @@ class ProjectVisibilityService:
             Tuple of (enriched_projects, total_count) where each project dict includes:
             - name, description, project_type, created_by, created_at (from Application)
             - user_count, admin_count (aggregated from user_projects)
+            - counters (dict with resource counts, or None if include_counters=False)
         """
         projects, total_count = application_repository.list_visible_projects_paginated(
             session=session,
             user_id=user_id,
-            is_super_admin=is_super_admin,
+            is_admin=is_admin,
             search=search,
             page=page,
             per_page=per_page,
@@ -113,11 +81,20 @@ class ProjectVisibilityService:
         # Bulk-load member counts for all projects
         project_names = [p.name for p in projects]
         member_counts = application_repository.get_project_member_counts_bulk(session, project_names)
+        cost_center_map = cost_center_repository.get_by_ids(
+            session, [project.cost_center_id for project in projects if project.cost_center_id]
+        )
+
+        # Bulk-load entity counts when requested
+        entity_counts: dict[str, dict] = {}
+        if include_counters:
+            entity_counts = application_repository.get_project_entity_counts_bulk(session, project_names)
 
         # Enrich projects with counts
         enriched = []
         for project in projects:
             user_count, admin_count = member_counts.get(project.name, (0, 0))
+            cost_center = cost_center_map.get(project.cost_center_id) if project.cost_center_id else None
             enriched.append(
                 {
                     "name": project.name,
@@ -127,6 +104,9 @@ class ProjectVisibilityService:
                     "created_at": project.date,
                     "user_count": user_count,
                     "admin_count": admin_count,
+                    "counters": entity_counts.get(project.name) if include_counters else None,
+                    "cost_center_id": project.cost_center_id,
+                    "cost_center_name": cost_center.name if cost_center else None,
                 }
             )
 
@@ -137,7 +117,7 @@ class ProjectVisibilityService:
         session: Session,
         project_name: str,
         user_id: str,
-        is_super_admin: bool,
+        is_admin: bool,
         action: str,
     ) -> Application:
         """Get project by name if visible, otherwise 404."""
@@ -145,10 +125,15 @@ class ProjectVisibilityService:
             session=session,
             project_name=project_name,
             user_id=user_id,
-            is_super_admin=is_super_admin,
+            is_admin=is_admin,
         )
         if not project:
-            ProjectVisibilityService.raise_project_not_found(user_id, project_name, action)
+            timestamp = datetime.now(UTC).isoformat()
+            http_method = action.split()[0] if action else "UNKNOWN"
+            logger.warning(
+                f"project_authorization_failed: user_id={user_id}, method={http_method}, timestamp={timestamp}"
+            )
+            raise ExtendedHTTPException(code=404, message="Project not found")
         return project
 
     @staticmethod
@@ -156,7 +141,7 @@ class ProjectVisibilityService:
         session: Session,
         project_name: str,
         user_id: str,
-        is_super_admin: bool,
+        is_admin: bool,
         action: str,
     ) -> dict:
         """Get project detail with member list if visible, otherwise 404.
@@ -166,13 +151,14 @@ class ProjectVisibilityService:
         Returns:
             Dict with project fields + members list
         """
-        project = ProjectVisibilityService.get_visible_project_or_404(
-            session, project_name, user_id, is_super_admin, action
-        )
+        project = ProjectVisibilityService.get_visible_project_or_404(session, project_name, user_id, is_admin, action)
 
         # Get member counts
         member_counts = application_repository.get_project_member_counts_bulk(session, [project.name])
         user_count, admin_count = member_counts.get(project.name, (0, 0))
+        cost_center = (
+            cost_center_repository.get_by_id(session, project.cost_center_id) if project.cost_center_id else None
+        )
 
         # Get member list
         members = application_repository.get_project_members(session, project.name)
@@ -193,58 +179,10 @@ class ProjectVisibilityService:
             "created_at": project.date,
             "user_count": user_count,
             "admin_count": admin_count,
+            "cost_center_id": project.cost_center_id,
+            "cost_center_name": cost_center.name if cost_center else None,
             "members": member_list,
         }
-
-    @staticmethod
-    def ensure_project_admin_or_super_admin_or_404(
-        session: Session,
-        project_name: str,
-        user_id: str,
-        is_super_admin: bool,
-        action: str,
-    ) -> Application:
-        """Require project visibility and project-admin/super-admin permissions."""
-        authorization_context = application_repository.get_project_authorization_context(
-            session=session,
-            project_name=project_name,
-            user_id=user_id,
-        )
-        if not authorization_context:
-            ProjectVisibilityService.raise_project_not_found(user_id, project_name, action)
-
-        project, membership_is_project_admin = authorization_context
-        if not ProjectVisibilityService._is_project_visible_to_user(
-            project,
-            user_id,
-            is_super_admin,
-            membership_is_project_admin,
-        ):
-            ProjectVisibilityService.raise_project_not_found(user_id, project_name, action)
-
-        if not is_super_admin and not bool(membership_is_project_admin):
-            ProjectVisibilityService.raise_project_not_found(user_id, project_name, action)
-
-        return project
-
-    @staticmethod
-    def authorize_project_admin_or_super_admin(
-        project_name: str,
-        user_id: str,
-        is_super_admin: bool,
-        action: str,
-    ) -> Application:
-        """Authorize project access via a service-layer DB session."""
-        from codemie.clients.postgres import get_session
-
-        with get_session() as session:
-            return ProjectVisibilityService.ensure_project_admin_or_super_admin_or_404(
-                session=session,
-                project_name=project_name,
-                user_id=user_id,
-                is_super_admin=is_super_admin,
-                action=action,
-            )
 
 
 project_visibility_service = ProjectVisibilityService()

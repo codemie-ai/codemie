@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi import status
 
+from codemie.configs import config  # noqa: F401 - used in patch.object calls
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.ai_kata import (
     AIKata,
@@ -79,7 +80,8 @@ def admin_user():
 @pytest.fixture
 def regular_user():
     """Regular user fixture."""
-    return User(id="user123", username="user", name="Regular User")
+    with patch.object(config, "ENV", "dev"), patch.object(config, "ENABLE_USER_MANAGEMENT", True):
+        return User(id="user123", username="user", name="Regular User", is_admin=False)
 
 
 @pytest.fixture
@@ -158,10 +160,8 @@ def test_create_kata_success(kata_service, admin_user, sample_kata_request, mock
 
 def test_create_kata_permission_denied(kata_service, regular_user, sample_kata_request):
     """Test kata creation fails for non-admin user."""
-    # Mock is_admin property to return False
-    with patch.object(type(regular_user), "is_admin", property(lambda self: False)):
-        with pytest.raises(PermissionAccessDenied, match=".*administrators.*"):
-            kata_service.create_kata(sample_kata_request, regular_user)
+    with pytest.raises(PermissionAccessDenied, match=".*administrators.*"):
+        kata_service.create_kata(sample_kata_request, regular_user)
 
 
 def test_create_kata_validation_error_whitespace_title(kata_service, admin_user):
@@ -377,9 +377,8 @@ def test_update_kata_success(kata_service, admin_user, sample_kata_request, samp
 
 def test_update_kata_permission_denied(kata_service, regular_user, sample_kata_request):
     """Test kata update fails for non-admin user."""
-    with patch.object(type(regular_user), "is_admin", property(lambda self: False)):
-        with pytest.raises(PermissionAccessDenied, match=".*administrators.*"):
-            kata_service.update_kata("kata123", sample_kata_request, regular_user)
+    with pytest.raises(PermissionAccessDenied, match=".*administrators.*"):
+        kata_service.update_kata("kata123", sample_kata_request, regular_user)
 
 
 def test_update_kata_not_found(kata_service, admin_user, sample_kata_request, mock_repository):
@@ -428,9 +427,8 @@ def test_publish_kata_success(kata_service, admin_user, sample_kata, mock_reposi
 
 def test_publish_kata_permission_denied(kata_service, regular_user):
     """Test kata publish fails for non-admin user."""
-    with patch.object(type(regular_user), "is_admin", property(lambda self: False)):
-        with pytest.raises(PermissionAccessDenied, match=".*administrators.*"):
-            kata_service.publish_kata("kata123", regular_user)
+    with pytest.raises(PermissionAccessDenied, match=".*administrators.*"):
+        kata_service.publish_kata("kata123", regular_user)
 
 
 def test_publish_kata_not_found(kata_service, admin_user, mock_repository):
@@ -459,9 +457,8 @@ def test_archive_kata_success(kata_service, admin_user, sample_kata, mock_reposi
 
 def test_archive_kata_permission_denied(kata_service, regular_user):
     """Test kata archive fails for non-admin user."""
-    with patch.object(type(regular_user), "is_admin", property(lambda self: False)):
-        with pytest.raises(PermissionAccessDenied, match=".*administrators.*"):
-            kata_service.archive_kata("kata123", regular_user)
+    with pytest.raises(PermissionAccessDenied, match=".*administrators.*"):
+        kata_service.archive_kata("kata123", regular_user)
 
 
 def test_archive_kata_not_found(kata_service, admin_user, mock_repository):
@@ -490,9 +487,8 @@ def test_delete_kata_success(kata_service, admin_user, sample_kata, mock_reposit
 
 def test_delete_kata_permission_denied(kata_service, regular_user):
     """Test kata delete fails for non-admin user."""
-    with patch.object(type(regular_user), "is_admin", property(lambda self: False)):
-        with pytest.raises(PermissionAccessDenied, match=".*administrators.*"):
-            kata_service.delete_kata("kata123", regular_user)
+    with pytest.raises(PermissionAccessDenied, match=".*administrators.*"):
+        kata_service.delete_kata("kata123", regular_user)
 
 
 def test_delete_kata_not_found(kata_service, admin_user, mock_repository):

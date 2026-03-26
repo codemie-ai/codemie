@@ -270,7 +270,7 @@ async def test_create_user_constructs_userdb_and_calls_acreate(mock_repo):
         "name": "Test User",
         "auth_source": "keycloak",
         "is_active": True,
-        "is_super_admin": False,
+        "is_admin": False,
         "email_verified": True,
     }
 

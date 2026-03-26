@@ -86,7 +86,7 @@ def mock_user():
         email="user@example.com",
         username="user123",
         name="Test User",
-        is_super_admin=False,
+        is_admin=False,
         project_names=["project-a"],
         admin_project_names=[],
     )
@@ -103,7 +103,7 @@ def mock_user_detail():
         picture=None,
         user_type="regular",
         is_active=True,
-        is_super_admin=False,
+        is_admin=False,
         auth_source="local",
         email_verified=True,
         last_login_at=None,

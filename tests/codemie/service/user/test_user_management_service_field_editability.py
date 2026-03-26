@@ -24,7 +24,7 @@ Tests cover:
 - AC-13: Deactivation sets deleted_at and is_active=false
 - AC-15: Non-existent user_id returns 404
 
-Note: AC-11 (is_super_admin revocation) and AC-12 (project_limit validation)
+Note: AC-11 (is_admin revocation) and AC-12 (project_limit validation)
 are covered by Story 5 and Story 6 tests respectively.
 """
 
@@ -56,7 +56,7 @@ def local_user():
         password_hash="hashed",
         auth_source="local",
         is_active=True,
-        is_super_admin=False,
+        is_admin=False,
         email_verified=True,
         project_limit=3,
         date=datetime.now(UTC),
@@ -76,7 +76,7 @@ def idp_user():
         password_hash=None,
         auth_source="keycloak",
         is_active=True,
-        is_super_admin=False,
+        is_admin=False,
         email_verified=True,
         project_limit=3,
         date=datetime.now(UTC),
@@ -111,7 +111,7 @@ def test_email_update_local_mode_success(mock_get_session, mock_repo, local_user
         picture=None,
         user_type=updated_user.user_type,
         is_active=updated_user.is_active,
-        is_super_admin=updated_user.is_super_admin,
+        is_admin=updated_user.is_admin,
         auth_source=updated_user.auth_source,
         email_verified=updated_user.email_verified,
         last_login_at=updated_user.last_login_at,
@@ -221,7 +221,7 @@ def test_user_type_update_local_mode_success(mock_get_session, mock_repo, local_
         password_hash="hashed",
         auth_source="local",
         is_active=True,
-        is_super_admin=True,
+        is_admin=True,
         email_verified=True,
         project_limit=None,
         date=datetime.now(UTC),
@@ -243,7 +243,7 @@ def test_user_type_update_local_mode_success(mock_get_session, mock_repo, local_
         picture=None,
         user_type="external",
         is_active=updated_user.is_active,
-        is_super_admin=updated_user.is_super_admin,
+        is_admin=updated_user.is_admin,
         auth_source=updated_user.auth_source,
         email_verified=updated_user.email_verified,
         last_login_at=updated_user.last_login_at,
@@ -332,7 +332,7 @@ def test_user_type_case_insensitive_normalization(mock_get_session, mock_repo, l
         password_hash="hashed",
         auth_source="local",
         is_active=True,
-        is_super_admin=True,
+        is_admin=True,
         email_verified=True,
         project_limit=None,
         date=datetime.now(UTC),
@@ -354,7 +354,7 @@ def test_user_type_case_insensitive_normalization(mock_get_session, mock_repo, l
         picture=None,
         user_type="external",
         is_active=updated_user.is_active,
-        is_super_admin=updated_user.is_super_admin,
+        is_admin=updated_user.is_admin,
         auth_source=updated_user.auth_source,
         email_verified=updated_user.email_verified,
         last_login_at=updated_user.last_login_at,
@@ -408,7 +408,7 @@ def test_name_and_picture_editable_in_idp_mode(mock_get_session, mock_repo, idp_
         picture="https://example.com/pic.jpg",
         user_type=updated_user.user_type,
         is_active=updated_user.is_active,
-        is_super_admin=updated_user.is_super_admin,
+        is_admin=updated_user.is_admin,
         auth_source=updated_user.auth_source,
         email_verified=updated_user.email_verified,
         last_login_at=updated_user.last_login_at,
@@ -455,7 +455,7 @@ def test_user_not_found_returns_404(mock_get_session, mock_repo):
 
     # Act & Assert - Story 10: Pass requesting user context
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.get_user_detail("nonexistent-id", "admin-user", is_super_admin=True)
+        UserManagementService.get_user_detail("nonexistent-id", "admin-user", is_admin=True)
 
     # Verify exception
     assert exc_info.value.code == 404
@@ -523,7 +523,7 @@ def super_admin_user():
         password_hash="hashed",
         auth_source="local",
         is_active=True,
-        is_super_admin=True,
+        is_admin=True,
         email_verified=True,
         project_limit=None,
         date=datetime.now(UTC),
@@ -543,7 +543,7 @@ def regular_admin_user():
         password_hash="hashed",
         auth_source="local",
         is_active=True,
-        is_super_admin=False,
+        is_admin=False,
         email_verified=True,
         project_limit=3,
         date=datetime.now(UTC),
@@ -575,7 +575,7 @@ def test_user_type_update_requires_super_admin(mock_get_session, mock_repo, supe
         picture=None,
         user_type="external",
         is_active=updated_user.is_active,
-        is_super_admin=updated_user.is_super_admin,
+        is_admin=updated_user.is_admin,
         auth_source=updated_user.auth_source,
         email_verified=updated_user.email_verified,
         last_login_at=updated_user.last_login_at,
@@ -648,7 +648,7 @@ def test_deactivation_via_put_is_active_false(mock_get_session, mock_repo, local
         picture=None,
         user_type=deactivated_user.user_type,
         is_active=False,
-        is_super_admin=deactivated_user.is_super_admin,
+        is_admin=deactivated_user.is_admin,
         auth_source=deactivated_user.auth_source,
         email_verified=deactivated_user.email_verified,
         last_login_at=deactivated_user.last_login_at,
@@ -710,7 +710,7 @@ def test_get_user_detail_includes_all_required_fields(mock_get_session, mock_rep
     mock_repo.get_user_knowledge_bases.return_value = ["kb1", "kb2"]
 
     # Act
-    result = UserManagementService.get_user_detail("user-local-1", "admin-user", is_super_admin=True)
+    result = UserManagementService.get_user_detail("user-local-1", "admin-user", is_admin=True)
 
     # Assert - verify all required fields are present
     assert hasattr(result, "id")
@@ -720,7 +720,7 @@ def test_get_user_detail_includes_all_required_fields(mock_get_session, mock_rep
     assert hasattr(result, "picture")
     assert hasattr(result, "user_type")
     assert hasattr(result, "is_active")
-    assert hasattr(result, "is_super_admin")
+    assert hasattr(result, "is_admin")
     assert hasattr(result, "auth_source")
     assert hasattr(result, "email_verified")
     assert hasattr(result, "last_login_at")
@@ -777,7 +777,7 @@ def test_projects_response_uses_name_key_not_project_name(mock_get_session, mock
     mock_user_proj_repo.get_visible_projects_for_user.return_value = mock_projects
 
     # Act
-    result = UserManagementService.get_user_detail("user-local-1", "admin-user", is_super_admin=True)
+    result = UserManagementService.get_user_detail("user-local-1", "admin-user", is_admin=True)
 
     # Assert - projects should use 'name' not 'project_name'
     assert len(result.projects) == 2

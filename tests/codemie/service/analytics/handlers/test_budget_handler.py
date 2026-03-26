@@ -32,6 +32,7 @@ def mock_user():
     user.project_names = []
     user.admin_project_names = []
     user.is_global_user = False
+    user.is_admin = False
     user.id = "test-user-id"
     return user
 

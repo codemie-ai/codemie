@@ -25,6 +25,7 @@ Handles personal project creation including:
 from __future__ import annotations
 
 from codemie.configs.logger import logger
+from codemie.core.models import Application
 from codemie.repository.user_project_repository import user_project_repository
 from codemie.repository.application_repository import application_repository
 
@@ -101,7 +102,11 @@ class PersonalProjectService:
         try:
             async with get_async_session() as session:
                 old_app = await application_repository.aget_by_name(session, old_email)
-                if old_app and old_app.project_type == "personal" and old_app.created_by == user_id:
+                if (
+                    old_app
+                    and old_app.project_type == Application.ProjectType.PERSONAL
+                    and old_app.created_by == user_id
+                ):
                     old_app.deleted_at = datetime.now(UTC).replace(tzinfo=None)
                     session.add(old_app)
                     await user_project_repository.aremove_project(session, user_id, old_email)
@@ -142,7 +147,7 @@ class PersonalProjectService:
             return False
 
         application = applications
-        if application.project_type != "personal" or application.created_by != user_id:
+        if application.project_type != Application.ProjectType.PERSONAL or application.created_by != user_id:
             return False
 
         # Check 2: user_projects mapping exists
@@ -191,8 +196,8 @@ class PersonalProjectService:
                 )
 
             # Safe to convert: Update to personal project
-            if existing_app.project_type != "personal" or existing_app.created_by != user_id:
-                existing_app.project_type = "personal"
+            if existing_app.project_type != Application.ProjectType.PERSONAL or existing_app.created_by != user_id:
+                existing_app.project_type = Application.ProjectType.PERSONAL
                 existing_app.created_by = user_id
                 existing_app.description = f"Personal Project for {user_email}"
                 session.add(existing_app)
@@ -201,7 +206,7 @@ class PersonalProjectService:
         else:
             # Create new application (get_or_create handles race conditions)
             application = await application_repository.aget_or_create(session, user_email)
-            application.project_type = "personal"
+            application.project_type = Application.ProjectType.PERSONAL
             application.created_by = user_id
             application.description = f"Personal Project for {user_email}"
             session.add(application)

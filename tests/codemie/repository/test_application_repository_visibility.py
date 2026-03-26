@@ -45,7 +45,7 @@ class TestApplicationRepositoryVisibility:
                     mock_session,
                     project_name="proj-a",
                     user_id="user-1",
-                    is_super_admin=False,
+                    is_admin=False,
                 )
                 is True
             )
@@ -61,7 +61,7 @@ class TestApplicationRepositoryVisibility:
                     mock_session,
                     project_name="proj-a",
                     user_id="user-1",
-                    is_super_admin=False,
+                    is_admin=False,
                 )
                 is False
             )
@@ -76,7 +76,7 @@ class TestApplicationRepositoryVisibility:
                 mock_session,
                 project_name="proj-a",
                 user_id="user-1",
-                is_super_admin=False,
+                is_admin=False,
             )
 
         mock_visibility.assert_called_once_with("user-1")
@@ -101,7 +101,7 @@ class TestApplicationRepositoryVisibility:
             application_repository.list_visible_projects(
                 session=mock_session,
                 user_id="user-1",
-                is_super_admin=False,
+                is_admin=False,
                 search="proj",
                 limit=25,
             )
@@ -120,29 +120,11 @@ class TestApplicationRepositoryVisibility:
             application_repository.list_visible_projects(
                 session=mock_session,
                 user_id="admin-1",
-                is_super_admin=True,
+                is_admin=True,
                 search=None,
             )
 
         mock_visibility.assert_not_called()
-
-    def test_get_project_authorization_context_uses_single_join_query(self):
-        """Authorization context should be loaded via one query with membership join."""
-        mock_session = MagicMock()
-        mock_row = (MagicMock(name="project"), True)
-        mock_session.exec.return_value.first.return_value = mock_row
-
-        result = application_repository.get_project_authorization_context(
-            session=mock_session,
-            project_name="shared-proj",
-            user_id="user-1",
-        )
-
-        assert result == mock_row
-        query_text = _compile_sql(mock_session.exec.call_args[0][0])
-        assert "join" in query_text
-        assert "user_projects.user_id" in query_text
-        assert "applications.name" in query_text
 
 
 class TestApplicationRepositoryCreationAndLookup:

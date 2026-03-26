@@ -20,9 +20,15 @@ This file is automatically loaded by pytest before running any tests.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from dotenv import load_dotenv
+
+# Load test env vars at module level so they are set before any codemie module
+# is imported and Config() is instantiated (pydantic-settings reads env at init time).
+load_dotenv(Path(__file__).parent / ".env.test", override=True)
 
 
 @pytest.fixture(scope="session", autouse=True)

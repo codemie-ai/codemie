@@ -17,7 +17,7 @@ import uuid
 from abc import abstractmethod, ABC
 from datetime import datetime
 from enum import Enum
-from typing import Optional, Any
+from typing import TYPE_CHECKING, Optional, Any
 from typing_extensions import Annotated
 
 
@@ -37,7 +37,11 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 
 from codemie.configs import config
+from codemie.core.ability import Owned
 from codemie.core.constants import CodeIndexType, ChatRole, BackgroundTaskStatus
+
+if TYPE_CHECKING:
+    from codemie.rest_api.security.user import User
 from codemie.core.db_utils import escape_like_wildcards
 from codemie.core.utils import get_url_domain
 from codemie.core.exceptions import ExtendedHTTPException
@@ -48,7 +52,7 @@ from codemie.rest_api.models.base import (
     PydanticListType,
 )
 from codemie.rest_api.models.standard import PostResponse
-from sqlmodel import Field as SQLField, Column, CheckConstraint, Index, select, or_, case, Session, String
+from sqlmodel import SQLModel, Field as SQLField, Column, CheckConstraint, Index, select, or_, case, Session, String
 
 PORT_PATTERN = r"(?:\d{1,4}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])"
 LINK_PATTERN = rf"^https?:\/\/[A-Za-z0-9][A-Za-z0-9\-\.]*[A-Za-z0-9](?:\.[A-Za-z]{{2,}}|\:{PORT_PATTERN})(?:\/.*)?$"
@@ -311,13 +315,19 @@ class LLMBulkRetirementRequest(ConfiguredModel):
     check_models_existence: bool = True
 
 
-class Application(BaseModelWithSQLSupport, table=True):
+class Application(BaseModelWithSQLSupport, Owned, table=True):
     __tablename__ = "applications"
+
+    class ProjectType(str, Enum):
+        PERSONAL = "personal"
+        SHARED = "shared"
+
     name: str
     description: Optional[str] = SQLField(default=None, max_length=500)  # Project description
     git_repos: list[GitRepo] = SQLField(default_factory=list, sa_column=Column(PydanticListType(GitRepo)))
-    project_type: str = SQLField(default="shared")  # 'personal' | 'shared'
+    project_type: str = SQLField(default=ProjectType.SHARED)
     created_by: Optional[str] = SQLField(default=None, max_length=255)  # User ID of creator (widened for non-UUID IDPs)
+    cost_center_id: Optional[uuid.UUID] = SQLField(default=None, foreign_key="cost_centers.id", index=True)
     deleted_at: Optional[datetime] = SQLField(default=None)  # Soft-delete timestamp for project lifecycle
 
     # Custom PostgreSQL indexes
@@ -352,6 +362,31 @@ class Application(BaseModelWithSQLSupport, table=True):
 
         with Session(cls.get_engine()) as session:
             return session.exec(stmt).all()
+
+    def is_owned_by(self, user: "User") -> bool:
+        return self.created_by is not None and self.created_by == user.id
+
+    def is_managed_by(self, user: "User") -> bool:
+        return user.is_admin or self.name in user.admin_project_names
+
+    def is_shared_with(self, user: "User") -> bool:
+        if user.is_admin:
+            return True
+        if self.project_type == self.ProjectType.PERSONAL:
+            return False
+        return self.name in user.project_names
+
+
+class CostCenter(SQLModel, table=True):
+    __tablename__ = "cost_centers"
+
+    id: uuid.UUID = SQLField(default_factory=uuid.uuid4, primary_key=True)
+    name: str = SQLField(nullable=False, max_length=255)
+    description: Optional[str] = SQLField(default=None, max_length=500)
+    created_by: str = SQLField(nullable=False, max_length=255)
+    date: datetime = SQLField(nullable=False)
+    update_date: datetime = SQLField(nullable=False)
+    deleted_at: Optional[datetime] = SQLField(default=None, index=True)
 
 
 class BaseKnowledgeBase(ConfiguredModel):
@@ -607,50 +642,23 @@ class UserResponse(BaseModel):
 
     Note: Does NOT inherit from ConfiguredModel to avoid camelCase aliasing.
     All fields serialize as snake_case per FR-4.1 terminology standardization.
-    The camelCase fields (userId, userType, isAdmin, applicationsAdmin) are legacy aliases
-    auto-populated for backward compatibility with the UI.
     """
 
     user_id: str
-    # for back compatibility with legacy UI until it is migrated to use snake_case fields
-    userId: str = Field(default="")  # noqa: N815
     name: str
     username: str
     email: str = Field(default="")  # Added for user management (EPMCDME-10160)
-    is_super_admin: bool  # Story 3: Standardized from is_admin to is_super_admin
     # Phase 2: Replaced applications/applications_admin with projects array
     projects: list[ProjectInfoResponse] = Field(default_factory=list)
     project_limit: Optional[int] = None  # NULL = unlimited (super admins); None when user management disabled
     picture: str = Field(default="")
     knowledge_bases: list[str] = Field(default_factory=list)
     user_type: Optional[str] = None
-    # for back compatibility with legacy UI until it is migrated to use snake_case fields
-    userType: Optional[str] = None  # noqa: N815
     # These are kept to support legacy UI.
     # They will be removed once UI is migrated to use projects array instead of applications
     applications: list[str] = Field(default_factory=list)
     applications_admin: list[str] = Field(default_factory=list)
-    # for back compatibility with legacy UI until it is migrated to use snake_case fields
-    applicationsAdmin: list[str] = Field(default_factory=list)  # noqa: N815
     is_admin: bool = False
-    # for back compatibility with legacy UI until it is migrated to use snake_case fields
-    isAdmin: bool = False  # noqa: N815
-
-    @model_validator(mode="before")
-    @classmethod
-    def populate_legacy_camel_case_fields(cls, values: Any) -> Any:
-        """Auto-populate camelCase legacy fields from their snake_case counterparts."""
-        if not isinstance(values, dict):
-            return values
-        if "userId" not in values:
-            values["userId"] = values.get("user_id", "")
-        if "userType" not in values:
-            values["userType"] = values.get("user_type")
-        if "isAdmin" not in values:
-            values["isAdmin"] = values.get("is_admin", False)
-        if "applicationsAdmin" not in values:
-            values["applicationsAdmin"] = values.get("applications_admin", [])
-        return values
 
 
 class ApplicationsResponse(ConfiguredModel):

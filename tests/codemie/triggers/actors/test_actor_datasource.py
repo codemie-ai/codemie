@@ -34,6 +34,8 @@ def mock_logger():
 def mock_user():
     user = MagicMock(spec=User)
     user.id = "test_user_id"
+    user.roles = []
+    user.is_admin = False
     return user
 
 

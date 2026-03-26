@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,26 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for UserRepository.list_users() with project JOIN optimization (Story 7).
+"""Unit tests for UserRepository primitives: count_users, query_users, fetch_projects_map.
 
 Tests verify:
-- Projects array population via LEFT JOIN
-- N+1 query prevention (single JOIN query)
-- Pagination correctness (users, not join rows)
-- user_type filter
-- Combined filters
-- Empty projects handling
+- fetch_projects_map: Projects array population via LEFT JOIN (Story 7)
+- fetch_projects_map: N+1 prevention (single JOIN query for all users)
+- count_users / query_users: Pagination correctness
+- _apply_filters: user_type, platform_role, projects, search filters
+- _apply_platform_role_filter: SUPER_ADMIN, PLATFORM_ADMIN, USER branches
 """
 
 import pytest
 from uuid import uuid4
 from datetime import datetime, UTC
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from sqlmodel import Session
 
 from codemie.repository.user_repository import UserRepository
-from codemie.rest_api.models.user_management import UserDB, UserProject
+from codemie.rest_api.models.user_management import UserDB, UserProject, UserListFilters, PlatformRole
 
 
 @pytest.fixture
@@ -57,7 +56,7 @@ def sample_users_with_projects():
         name="User One",
         user_type="regular",
         is_active=True,
-        is_super_admin=False,
+        is_admin=False,
         auth_source="local",
         email_verified=True,
         date=datetime.now(UTC),
@@ -70,7 +69,7 @@ def sample_users_with_projects():
         name="User Two",
         user_type="external",
         is_active=True,
-        is_super_admin=False,
+        is_admin=False,
         auth_source="keycloak",
         email_verified=True,
         date=datetime.now(UTC),
@@ -83,7 +82,7 @@ def sample_users_with_projects():
         name="User Three",
         user_type="regular",
         is_active=True,
-        is_super_admin=False,
+        is_admin=False,
         auth_source="local",
         email_verified=True,
         date=datetime.now(UTC),
@@ -118,251 +117,323 @@ def sample_users_with_projects():
     }
 
 
-class TestUserRepositoryListWithProjects:
-    """Test user list endpoint with projects JOIN optimization (Story 7)."""
+# ===========================================
+# fetch_projects_map tests
+# ===========================================
 
-    def test_list_users_includes_projects_array(self, user_repository, db_session, sample_users_with_projects, mocker):
-        """AC: Each user object in list response contains projects array with [{ name, is_project_admin }]."""
+
+class TestFetchProjectsMap:
+    """Test UserRepository.fetch_projects_map() — LEFT JOIN optimization (Story 7)."""
+
+    def test_builds_projects_map_from_join_rows(self, user_repository, db_session, sample_users_with_projects):
+        """fetch_projects_map correctly groups projects by user_id from JOIN rows."""
         data = sample_users_with_projects
-        users = data["users"]
         join_results = data["join_results"]
 
-        # Mock count query
-        mock_count_result = MagicMock()
-        mock_count_result.one.return_value = 3
-
-        # Mock user query
-        mock_user_result = MagicMock()
-        mock_user_result.all.return_value = users
-
-        # Mock JOIN query
         mock_join_result = MagicMock()
         mock_join_result.all.return_value = join_results
+        db_session.exec.return_value = mock_join_result
 
-        # Setup side_effect for 3 exec calls: count, user pagination, JOIN
-        db_session.exec.side_effect = [mock_count_result, mock_user_result, mock_join_result]
+        user_ids = [u.id for u in data["users"]]
+        projects_map = user_repository.fetch_projects_map(db_session, user_ids)
 
-        # Execute
-        result_users, projects_map, total = user_repository.list_users(db_session, page=0, per_page=20)
+        assert len(projects_map[data["users"][0].id]) == 2
+        assert projects_map[data["users"][0].id][0].project_name == "project-a"
+        assert projects_map[data["users"][0].id][0].is_project_admin is True
+        assert projects_map[data["users"][0].id][1].project_name == "project-b"
+        assert projects_map[data["users"][0].id][1].is_project_admin is False
 
-        # Verify results
-        assert total == 3
-        assert len(result_users) == 3
+        assert len(projects_map[data["users"][1].id]) == 1
+        assert projects_map[data["users"][1].id][0].project_name == "project-a"
 
-        # Verify projects_map structure
-        assert users[0].id in projects_map
-        assert len(projects_map[users[0].id]) == 2  # user1 has 2 projects
-        assert projects_map[users[0].id][0].project_name == "project-a"
-        assert projects_map[users[0].id][0].is_project_admin is True
-        assert projects_map[users[0].id][1].project_name == "project-b"
-        assert projects_map[users[0].id][1].is_project_admin is False
-
-        assert users[1].id in projects_map
-        assert len(projects_map[users[1].id]) == 1  # user2 has 1 project
-
-        assert users[2].id in projects_map
-        assert len(projects_map[users[2].id]) == 0  # user3 has no projects (empty array)
-
-    def test_users_without_projects_return_empty_array(
-        self, user_repository, db_session, sample_users_with_projects, mocker
-    ):
-        """AC: Users without project assignments return empty projects: [] array."""
+    def test_users_without_projects_get_empty_list(self, user_repository, db_session, sample_users_with_projects):
+        """Users with no project assignments appear in map with empty list."""
         data = sample_users_with_projects
         user_no_projects = data["users"][2]  # user3 has no projects
-        join_results = [(user_no_projects, None)]
 
-        # Mock count query
-        mock_count_result = MagicMock()
-        mock_count_result.one.return_value = 1
-
-        # Mock user query
-        mock_user_result = MagicMock()
-        mock_user_result.all.return_value = [user_no_projects]
-
-        # Mock JOIN query (LEFT JOIN returns None for no projects)
         mock_join_result = MagicMock()
-        mock_join_result.all.return_value = join_results
+        mock_join_result.all.return_value = [(user_no_projects, None)]
+        db_session.exec.return_value = mock_join_result
 
-        db_session.exec.side_effect = [mock_count_result, mock_user_result, mock_join_result]
+        projects_map = user_repository.fetch_projects_map(db_session, [user_no_projects.id])
 
-        # Execute
-        result_users, projects_map, total = user_repository.list_users(db_session, page=0, per_page=20)
-
-        # Verify empty projects array
         assert user_no_projects.id in projects_map
         assert projects_map[user_no_projects.id] == []
         assert isinstance(projects_map[user_no_projects.id], list)
 
-    def test_pagination_paginates_users_not_join_rows(
-        self, user_repository, db_session, sample_users_with_projects, mocker
-    ):
-        """AC: Pagination correctly paginates users (not user-project join rows)."""
+    def test_single_query_for_all_users_no_n_plus_1(self, user_repository, db_session, sample_users_with_projects):
+        """Single exec call fetches projects for all users (no N+1 queries)."""
         data = sample_users_with_projects
-        users = data["users"][:2]  # Paginated result: 2 users
-        join_results = data["join_results"][:3]  # 3 join rows for 2 users
 
-        # Mock count query - total 3 users
-        mock_count_result = MagicMock()
-        mock_count_result.one.return_value = 3
+        mock_join_result = MagicMock()
+        mock_join_result.all.return_value = data["join_results"]
+        db_session.exec.return_value = mock_join_result
 
-        # Mock user query - page 0, per_page 2 returns 2 users
-        mock_user_result = MagicMock()
-        mock_user_result.all.return_value = users
+        user_ids = [u.id for u in data["users"]]
+        user_repository.fetch_projects_map(db_session, user_ids)
 
-        # Mock JOIN query - 3 rows for 2 users
+        # Single exec call — NOT 1 + N calls (one per user)
+        assert db_session.exec.call_count == 1
+
+    def test_empty_user_ids_returns_empty_map(self, user_repository, db_session):
+        """fetch_projects_map with empty user_ids returns {} without querying DB."""
+        projects_map = user_repository.fetch_projects_map(db_session, [])
+
+        assert projects_map == {}
+        db_session.exec.assert_not_called()
+
+    def test_mixed_users_projects_and_none(self, user_repository, db_session, sample_users_with_projects):
+        """Handles mixed JOIN rows: some with projects, some with None."""
+        data = sample_users_with_projects
+        join_results = data["join_results"]  # includes user3 → None
+
         mock_join_result = MagicMock()
         mock_join_result.all.return_value = join_results
+        db_session.exec.return_value = mock_join_result
 
-        db_session.exec.side_effect = [mock_count_result, mock_user_result, mock_join_result]
+        user_ids = [u.id for u in data["users"]]
+        projects_map = user_repository.fetch_projects_map(db_session, user_ids)
 
-        # Execute with pagination
-        result_users, projects_map, total = user_repository.list_users(db_session, page=0, per_page=2)
+        # user1: 2 projects, user2: 1 project, user3: 0 projects
+        assert len(projects_map[data["users"][0].id]) == 2
+        assert len(projects_map[data["users"][1].id]) == 1
+        assert len(projects_map[data["users"][2].id]) == 0
 
-        # Verify pagination is on users, not join rows
-        assert total == 3  # Total users (not join row count)
-        assert len(result_users) == 2  # Paginated to 2 users
-        assert len(projects_map) == 2  # Projects for 2 users
 
-    def test_user_type_filter(self, user_repository, db_session, sample_users_with_projects, mocker):
-        """AC: Filter by user_type returns correct subset."""
-        data = sample_users_with_projects
-        # Filter for 'regular' users: user1 and user3
-        regular_users = [u for u in data["users"] if u.user_type == "regular"]
-        regular_join_results = [
-            (data["users"][0], data["projects"][data["users"][0].id][0]),
-            (data["users"][0], data["projects"][data["users"][0].id][1]),
-            (data["users"][2], None),  # user3 with no projects
-        ]
+# ===========================================
+# count_users tests
+# ===========================================
 
-        # Mock count query
+
+class TestCountUsers:
+    """Test UserRepository.count_users()."""
+
+    def test_returns_total_count(self, user_repository, db_session):
+        """count_users returns COUNT(*) from single exec call."""
         mock_count_result = MagicMock()
-        mock_count_result.one.return_value = 2
+        mock_count_result.one.return_value = 42
+        db_session.exec.return_value = mock_count_result
 
-        # Mock user query
-        mock_user_result = MagicMock()
-        mock_user_result.all.return_value = regular_users
+        total = user_repository.count_users(db_session)
 
-        # Mock JOIN query
-        mock_join_result = MagicMock()
-        mock_join_result.all.return_value = regular_join_results
+        assert total == 42
+        assert db_session.exec.call_count == 1
 
-        db_session.exec.side_effect = [mock_count_result, mock_user_result, mock_join_result]
-
-        # Execute with user_type filter
-        result_users, projects_map, total = user_repository.list_users(db_session, user_type="regular")
-
-        # Verify filtered results
-        assert total == 2
-        assert len(result_users) == 2
-        assert all(u.user_type == "regular" for u in result_users)
-
-    def test_combined_filters(self, user_repository, db_session, sample_users_with_projects, mocker):
-        """AC: Combined filters work correctly (AND logic)."""
-        data = sample_users_with_projects
-        # Filter: user_type='regular' AND is_active=True
-        filtered_users = [data["users"][0]]  # Only user1 matches
-        filtered_join_results = [
-            (data["users"][0], data["projects"][data["users"][0].id][0]),
-            (data["users"][0], data["projects"][data["users"][0].id][1]),
-        ]
-
-        # Mock count query
-        mock_count_result = MagicMock()
-        mock_count_result.one.return_value = 1
-
-        # Mock user query
-        mock_user_result = MagicMock()
-        mock_user_result.all.return_value = filtered_users
-
-        # Mock JOIN query
-        mock_join_result = MagicMock()
-        mock_join_result.all.return_value = filtered_join_results
-
-        db_session.exec.side_effect = [mock_count_result, mock_user_result, mock_join_result]
-
-        # Execute with combined filters
-        result_users, projects_map, total = user_repository.list_users(
-            db_session, user_type="regular", is_active=True, search="user1"
-        )
-
-        # Verify combined filter results
-        assert total == 1
-        assert len(result_users) == 1
-        assert result_users[0].user_type == "regular"
-        assert result_users[0].is_active is True
-
-    def test_empty_result_set(self, user_repository, db_session, mocker):
-        """AC: Empty result set returns { data: [], pagination: { total: 0, ... } }."""
-        # Mock count query - 0 results
+    def test_returns_zero_for_empty_table(self, user_repository, db_session):
+        """count_users returns 0 when no users match."""
         mock_count_result = MagicMock()
         mock_count_result.one.return_value = 0
+        db_session.exec.return_value = mock_count_result
 
-        # Mock user query - empty list
+        total = user_repository.count_users(db_session, search="nonexistent")
+
+        assert total == 0
+
+    def test_count_reflects_users_not_join_rows(self, user_repository, db_session):
+        """count_users counts UserDB rows, not join rows (important for N users with multiple projects)."""
+        mock_count_result = MagicMock()
+        mock_count_result.one.return_value = 3  # 3 users, even if they have 5 total projects
+        db_session.exec.return_value = mock_count_result
+
+        total = user_repository.count_users(db_session)
+
+        assert total == 3
+
+
+# ===========================================
+# query_users tests
+# ===========================================
+
+
+class TestQueryUsers:
+    """Test UserRepository.query_users()."""
+
+    def test_returns_paginated_users(self, user_repository, db_session, sample_users_with_projects):
+        """query_users returns list of UserDB objects."""
+        data = sample_users_with_projects
+        users = data["users"][:2]
+
+        mock_user_result = MagicMock()
+        mock_user_result.all.return_value = users
+        db_session.exec.return_value = mock_user_result
+
+        result = user_repository.query_users(db_session, filters=UserListFilters(), page=0, per_page=2)
+
+        assert len(result) == 2
+        assert result == users
+
+    def test_returns_empty_list_when_no_matches(self, user_repository, db_session):
+        """query_users returns empty list when no users match filters."""
         mock_user_result = MagicMock()
         mock_user_result.all.return_value = []
+        db_session.exec.return_value = mock_user_result
 
-        db_session.exec.side_effect = [mock_count_result, mock_user_result]
+        result = user_repository.query_users(db_session, search="no-match", filters=UserListFilters())
 
-        # Execute with filters that match nothing
-        result_users, projects_map, total = user_repository.list_users(db_session, search="nonexistent")
+        assert result == []
 
-        # Verify empty result
-        assert total == 0
-        assert result_users == []
-        assert projects_map == {}
-
-    def test_single_join_query_prevents_n_plus_1(self, user_repository, db_session, sample_users_with_projects, mocker):
-        """AC: Single database query fetches users and their projects (verify via query logging - no N+1)."""
-        data = sample_users_with_projects
-        users = data["users"]
-        join_results = data["join_results"]
-
-        # Mock count query
-        mock_count_result = MagicMock()
-        mock_count_result.one.return_value = 3
-
-        # Mock user query
+    def test_single_exec_call(self, user_repository, db_session, sample_users_with_projects):
+        """query_users makes exactly 1 exec call (no N+1)."""
         mock_user_result = MagicMock()
-        mock_user_result.all.return_value = users
+        mock_user_result.all.return_value = sample_users_with_projects["users"]
+        db_session.exec.return_value = mock_user_result
 
-        # Mock JOIN query (single query for all projects)
-        mock_join_result = MagicMock()
-        mock_join_result.all.return_value = join_results
+        user_repository.query_users(db_session, filters=UserListFilters())
 
-        db_session.exec.side_effect = [mock_count_result, mock_user_result, mock_join_result]
+        assert db_session.exec.call_count == 1
 
-        # Execute
-        result_users, projects_map, total = user_repository.list_users(db_session)
 
-        # Verify: 3 exec calls total (count, users, JOIN)
-        # NOT 1 + N calls (1 for users, N for each user's projects)
-        assert db_session.exec.call_count == 3  # count + users + JOIN (not 1 + N)
+# ===========================================
+# _apply_platform_role_filter tests
+# ===========================================
 
-    def test_total_count_reflects_user_count_not_join_count(
-        self, user_repository, db_session, sample_users_with_projects, mocker
-    ):
-        """AC: Total count in pagination reflects user count (not join row count)."""
-        data = sample_users_with_projects
-        users = data["users"]  # 3 users
-        join_results = data["join_results"]  # 4 join rows (user1 has 2 projects)
 
-        # Mock count query - 3 users (not 4 join rows)
-        mock_count_result = MagicMock()
-        mock_count_result.one.return_value = 3
+class TestApplyPlatformRoleFilter:
+    """Test UserRepository._apply_platform_role_filter static method — all 3 branches."""
 
-        # Mock user query
-        mock_user_result = MagicMock()
-        mock_user_result.all.return_value = users
+    def _make_mock_query(self):
+        """Return a mock query object that records .where() calls."""
+        query = MagicMock()
+        query.where.return_value = query
+        return query
 
-        # Mock JOIN query
-        mock_join_result = MagicMock()
-        mock_join_result.all.return_value = join_results
+    def test_super_admin_filters_by_is_admin_column(self):
+        """SUPER_ADMIN branch: WHERE is_admin = true."""
+        query = self._make_mock_query()
 
-        db_session.exec.side_effect = [mock_count_result, mock_user_result, mock_join_result]
+        result = UserRepository._apply_platform_role_filter(query, PlatformRole.SUPER_ADMIN)
 
-        # Execute
-        result_users, projects_map, total = user_repository.list_users(db_session)
+        # Should call query.where with UserDB.is_admin
+        query.where.assert_called_once()
+        assert result is query
 
-        # Verify total is user count, not join row count
-        assert total == 3  # User count
-        assert len(join_results) == 4  # Join row count (different)
+    def test_platform_admin_filters_not_super_admin_and_has_project_admin(self):
+        """PLATFORM_ADMIN branch: WHERE NOT super_admin AND EXISTS project_admin membership."""
+        query = self._make_mock_query()
+
+        result = UserRepository._apply_platform_role_filter(query, PlatformRole.PLATFORM_ADMIN)
+
+        # Should call query.where with ~is_admin + EXISTS condition
+        query.where.assert_called_once()
+        args = query.where.call_args[0]
+        assert len(args) == 2  # Two conditions: ~super_admin, EXISTS
+        assert result is query
+
+    def test_user_filters_not_super_admin_and_no_project_admin(self):
+        """USER branch: WHERE NOT super_admin AND NOT EXISTS project_admin membership."""
+        query = self._make_mock_query()
+
+        result = UserRepository._apply_platform_role_filter(query, PlatformRole.USER)
+
+        # Should call query.where with ~is_admin + ~EXISTS condition
+        query.where.assert_called_once()
+        args = query.where.call_args[0]
+        assert len(args) == 2  # Two conditions: ~super_admin, ~EXISTS
+        assert result is query
+
+    def test_platform_admin_and_user_receive_different_where_clauses(self):
+        """PLATFORM_ADMIN and USER receive different WHERE clauses (EXISTS vs ~EXISTS)."""
+        query_admin = self._make_mock_query()
+        query_user = self._make_mock_query()
+
+        UserRepository._apply_platform_role_filter(query_admin, PlatformRole.PLATFORM_ADMIN)
+        UserRepository._apply_platform_role_filter(query_user, PlatformRole.USER)
+
+        args_admin = query_admin.where.call_args[0]
+        args_user = query_user.where.call_args[0]
+
+        # Both have 2 args, but 2nd arg differs (EXISTS vs ~EXISTS)
+        assert len(args_admin) == 2
+        assert len(args_user) == 2
+        # The first arg (~is_admin) is the same; second arg is different
+        assert str(args_admin[1]) != str(args_user[1])
+
+
+# ===========================================
+# _apply_filters tests
+# ===========================================
+
+
+class TestApplyFilters:
+    """Test UserRepository._apply_filters() — search text and structured filters."""
+
+    def _make_mock_query(self):
+        query = MagicMock()
+        query.where.return_value = query
+        return query
+
+    def test_no_filters_returns_query_unchanged(self):
+        """With empty filters and no search, only the base deleted_at filter is applied."""
+        query = self._make_mock_query()
+
+        result = UserRepository._apply_filters(query, search=None, filters=UserListFilters())
+
+        # Base filter: WHERE deleted_at IS NULL always added
+        query.where.assert_called_once()
+        assert result is query
+
+    def test_search_adds_ilike_where_clause(self):
+        """Non-empty search term adds OR ilike WHERE clause (plus base deleted_at filter)."""
+        query = self._make_mock_query()
+
+        result = UserRepository._apply_filters(query, search="alice", filters=UserListFilters())
+
+        # Base deleted_at filter + search ilike filter = 2 calls
+        assert query.where.call_count == 2
+        assert result is query
+
+    def test_user_type_filter_adds_where_clause(self):
+        """user_type filter adds WHERE user_type = value (plus base deleted_at filter)."""
+        query = self._make_mock_query()
+
+        result = UserRepository._apply_filters(query, search=None, filters=UserListFilters(user_type="external"))
+
+        # Base deleted_at filter + user_type filter = 2 calls
+        assert query.where.call_count == 2
+        assert result is query
+
+    def test_projects_filter_adds_exists_where_clause(self):
+        """projects filter adds WHERE EXISTS user_projects clause (plus base deleted_at filter)."""
+        query = self._make_mock_query()
+
+        result = UserRepository._apply_filters(
+            query, search=None, filters=UserListFilters(projects=["proj-a", "proj-b"])
+        )
+
+        # Base deleted_at filter + projects exists filter = 2 calls
+        assert query.where.call_count == 2
+        assert result is query
+
+    @patch.object(UserRepository, "_apply_platform_role_filter")
+    def test_platform_role_delegates_to_helper(self, mock_role_filter):
+        """platform_role filter delegates to _apply_platform_role_filter."""
+        mock_role_filter.return_value = MagicMock()
+        query = self._make_mock_query()
+
+        UserRepository._apply_filters(
+            query, search=None, filters=UserListFilters(platform_role=PlatformRole.SUPER_ADMIN)
+        )
+
+        mock_role_filter.assert_called_once_with(query, PlatformRole.SUPER_ADMIN)
+
+    def test_multiple_filters_chain_where_calls(self):
+        """Multiple filters each add a WHERE clause (chained), plus base deleted_at filter."""
+        query = self._make_mock_query()
+
+        UserRepository._apply_filters(
+            query,
+            search="test",
+            filters=UserListFilters(user_type="regular", projects=["proj-x"]),
+        )
+
+        # Base deleted_at + search + user_type + projects = 4 where calls
+        assert query.where.call_count == 4
+
+    def test_empty_search_string_skips_ilike(self):
+        """Empty string search is falsy — no ilike clause added, only base deleted_at filter."""
+        query = self._make_mock_query()
+
+        UserRepository._apply_filters(query, search="", filters=UserListFilters())
+
+        # Base filter only: WHERE deleted_at IS NULL
+        query.where.assert_called_once()

@@ -48,7 +48,7 @@ class TestPersonalProjectAssignmentBlocking:
         mock_user_repo.get_by_id.return_value = mock_user
 
         # Personal project check returns True
-        mock_app_repo.is_personal_project.return_value = True
+        mock_app_repo.get_by_name.return_value = MagicMock(project_type="personal", created_by="other-user")
 
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -56,7 +56,7 @@ class TestPersonalProjectAssignmentBlocking:
                 user_id="user-123",
                 project_name="alice@example.com",
                 is_project_admin=False,
-                actor_user_id="admin-456",
+                actor=MagicMock(id="admin-456", is_admin=False),
             )
 
         # Assert: 404 (not 403) to hide project existence
@@ -84,7 +84,7 @@ class TestPersonalProjectAssignmentBlocking:
         mock_user_repo.get_by_id.return_value = mock_user
 
         # Personal project check returns True
-        mock_app_repo.is_personal_project.return_value = True
+        mock_app_repo.get_by_name.return_value = MagicMock(project_type="personal", created_by="other-user")
 
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -92,7 +92,7 @@ class TestPersonalProjectAssignmentBlocking:
                 user_id="user-123",
                 project_name="alice@example.com",
                 is_project_admin=True,
-                actor_user_id="admin-456",
+                actor=MagicMock(id="admin-456", is_admin=False),
             )
 
         # Assert: 404 (not 403) to hide project existence
@@ -120,12 +120,14 @@ class TestPersonalProjectAssignmentBlocking:
         mock_user_repo.get_by_id.return_value = mock_user
 
         # Personal project check returns True
-        mock_app_repo.is_personal_project.return_value = True
+        mock_app_repo.get_by_name.return_value = MagicMock(project_type="personal", created_by="other-user")
 
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:
             UserAccessService.revoke_project_access(
-                user_id="user-123", project_name="alice@example.com", actor_user_id="admin-456"
+                user_id="user-123",
+                project_name="alice@example.com",
+                actor=MagicMock(id="admin-456", is_admin=False),
             )
 
         # Assert: 404 (not 403) to hide project existence
@@ -153,7 +155,7 @@ class TestPersonalProjectAssignmentBlocking:
         mock_user_repo.get_by_id.return_value = mock_user
 
         # Shared project (not personal)
-        mock_app_repo.is_personal_project.return_value = False
+        mock_app_repo.get_by_name.return_value = None  # Not a personal project
         mock_user_project_repo.get_by_user_and_project.return_value = None  # No existing access
 
         # Act
@@ -161,7 +163,7 @@ class TestPersonalProjectAssignmentBlocking:
             user_id="user-123",
             project_name="shared-project",
             is_project_admin=False,
-            actor_user_id="admin-456",
+            actor=MagicMock(id="admin-456", is_admin=False),
         )
 
         # Assert: Success
@@ -181,7 +183,7 @@ class TestPersonalProjectAssignmentBlocking:
         mock_user_repo.get_by_id.return_value = mock_user
 
         # Personal project check returns True
-        mock_app_repo.is_personal_project.return_value = True
+        mock_app_repo.get_by_name.return_value = MagicMock(project_type="personal", created_by="other-user")
 
         # Act & Assert: Super admin as actor
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -189,7 +191,7 @@ class TestPersonalProjectAssignmentBlocking:
                 user_id="user-123",
                 project_name="alice@example.com",
                 is_project_admin=False,
-                actor_user_id="super-admin-789",  # Super admin trying
+                actor=MagicMock(id="super-admin-789", is_admin=False),  # Non-super-admin actor
             )
 
         # Assert: Still 404 (no special treatment for super admin)

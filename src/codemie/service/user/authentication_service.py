@@ -40,7 +40,7 @@ from codemie.repository.user_kb_repository import user_kb_repository
 from codemie.repository.application_repository import application_repository
 from codemie.rest_api.models.user_management import UserDB, CodeMieUserDetail, ProjectInfo
 from codemie.rest_api.security import user as security_user
-from codemie.service.user.personal_project_service import personal_project_service
+from codemie.service.project.personal_project_service import personal_project_service
 
 _INVALID_EMAIL_OR_PASSWORD = "Invalid email or password"
 _ACCOUNT_DEACTIVATED = "Account is deactivated"
@@ -158,7 +158,7 @@ class AuthenticationService:
             project_names=[p.project_name for p in projects],
             admin_project_names=[p.project_name for p in projects if p.is_project_admin],
             knowledge_bases=[kb.kb_name for kb in kbs],
-            is_super_admin=db_user.is_super_admin,
+            is_admin=db_user.is_admin,
             project_limit=db_user.project_limit,
         )
 
@@ -197,7 +197,7 @@ class AuthenticationService:
             auth_source=config.IDP_PROVIDER,
             email_verified=True,  # IDP users pre-verified
             is_active=True,
-            is_super_admin=legacy_is_admin,
+            is_admin=legacy_is_admin,
             project_limit=config.USER_PROJECT_LIMIT,
         )
         db_user = await user_repository.acreate(session, db_user)
@@ -320,7 +320,7 @@ class AuthenticationService:
             project_names=[],
             admin_project_names=[],
             knowledge_bases=[],
-            is_super_admin=db_user.is_super_admin,
+            is_admin=db_user.is_admin,
             project_limit=db_user.project_limit,
             auth_token=auth_token,
         )
@@ -573,7 +573,7 @@ class AuthenticationService:
                     auth_source="dev_header",
                     email_verified=True,
                     is_active=True,
-                    is_super_admin=True,  # Persist superadmin
+                    is_admin=True,  # Persist superadmin
                 )
                 db_user = await user_repository.acreate(session, db_user)
                 logger.info(f"Dev header user created: user_id={db_user.id}")
@@ -627,7 +627,7 @@ class AuthenticationService:
                 picture=user.picture,
                 user_type=user.user_type,
                 is_active=user.is_active,
-                is_super_admin=user.is_super_admin,
+                is_admin=user.is_admin,
                 auth_source=user.auth_source,
                 email_verified=user.email_verified,
                 last_login_at=user.last_login_at,

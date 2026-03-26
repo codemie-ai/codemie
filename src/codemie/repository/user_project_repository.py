@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import datetime, UTC
 from typing import Optional
 
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, func, select
 
@@ -222,8 +223,28 @@ class UserProjectRepository:
         session.flush()
         return count
 
+    def rename_project_cascade(self, session: Session, old_name: str, new_name: str) -> int:
+        """Bulk-update project_name in user_projects table when a project is renamed.
+
+        Args:
+            session: Database session
+            old_name: Current project name
+            new_name: New project name
+
+        Returns:
+            Number of membership rows updated
+
+        Note:
+            Called after UserProject.project_name cascade, before Application.name update.
+            Flushes but does not commit; caller controls transaction boundaries.
+        """
+        stmt = sa_update(UserProject).where(UserProject.project_name == old_name).values(project_name=new_name)
+        result = session.execute(stmt)
+        session.flush()
+        return result.rowcount
+
     def get_visible_projects_for_user(
-        self, session: Session, target_user_id: str, requesting_user_id: str, is_super_admin: bool
+        self, session: Session, target_user_id: str, requesting_user_id: str, is_admin: bool
     ) -> list[UserProject]:
         """Get projects visible to requesting user for target user
 
@@ -237,7 +258,7 @@ class UserProjectRepository:
             session: Database session
             target_user_id: User whose projects to retrieve
             requesting_user_id: User requesting the list
-            is_super_admin: Whether requesting user is super admin
+            is_admin: Whether requesting user is super admin
 
         Returns:
             List of UserProject records visible to requesting user
@@ -255,7 +276,7 @@ class UserProjectRepository:
         project_info = application_repository.get_project_types_bulk(session, project_names)
 
         requesting_user_project_names: set[str] | None = None
-        if not is_super_admin:
+        if not is_admin:
             # Reuse target list for self-views to avoid an additional query.
             if requesting_user_id == target_user_id:
                 requesting_user_project_names = {project.project_name for project in all_projects}
@@ -267,7 +288,7 @@ class UserProjectRepository:
             all_projects,
             project_info,
             requesting_user_id,
-            is_super_admin,
+            is_admin,
             requesting_user_project_names,
         )
 
@@ -276,7 +297,7 @@ class UserProjectRepository:
         session: Session,
         projects_map: dict[str, list[UserProject]],
         requesting_user_id: str,
-        is_super_admin: bool,
+        is_admin: bool,
     ) -> dict[str, list[UserProject]]:
         """Filter pre-fetched projects by visibility rules (for bulk operations)
 
@@ -287,7 +308,7 @@ class UserProjectRepository:
             session: Database session
             projects_map: Dict mapping user_id -> list of UserProject (from JOIN query)
             requesting_user_id: User requesting the list
-            is_super_admin: Whether requesting user is super admin
+            is_admin: Whether requesting user is super admin
 
         Returns:
             Dict mapping user_id -> filtered list of visible UserProject records
@@ -308,7 +329,7 @@ class UserProjectRepository:
         # Filter projects for each user
         filtered_map = {}
         requesting_user_project_names: set[str] | None = None
-        if not is_super_admin:
+        if not is_admin:
             if requesting_user_id in projects_map:
                 requesting_user_project_names = {project.project_name for project in projects_map[requesting_user_id]}
             else:
@@ -323,7 +344,7 @@ class UserProjectRepository:
                 user_projects,
                 project_info,
                 requesting_user_id,
-                is_super_admin,
+                is_admin,
                 requesting_user_project_names,
             )
             filtered_map[user_id] = visible_projects
@@ -335,7 +356,7 @@ class UserProjectRepository:
         projects: list[UserProject],
         project_info: dict[str, tuple[str, str | None]],
         requesting_user_id: str,
-        is_super_admin: bool,
+        is_admin: bool,
         requesting_user_project_names: set[str] | None,
     ) -> list[UserProject]:
         """Internal helper to filter projects by visibility rules
@@ -346,7 +367,7 @@ class UserProjectRepository:
             projects: List of UserProject records to filter
             project_info: Dict mapping project_name -> (project_type, created_by)
             requesting_user_id: User requesting the list
-            is_super_admin: Whether requesting user is super admin
+            is_admin: Whether requesting user is super admin
             requesting_user_project_names: Projects requester belongs to
 
         Returns:
@@ -363,7 +384,7 @@ class UserProjectRepository:
             project_type, created_by = info
             is_personal = project_type == "personal"
 
-            if is_super_admin:
+            if is_admin:
                 visible_projects.append(project)
                 continue
 

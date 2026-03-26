@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ from datetime import datetime, UTC
 from sqlmodel import Session
 
 from codemie.repository.user_repository import UserRepository
-from codemie.rest_api.models.user_management import UserDB
+from codemie.rest_api.models.user_management import UserDB, UserListFilters
 
 
 @pytest.fixture
@@ -99,28 +99,14 @@ class TestUserRepositorySearchSecurity:
 
     def test_search_with_percent_wildcard_escaped(self, user_repository, db_session, sample_users, mocker):
         """AC: Search for % returns only records with literal % character."""
-        # Mock session.exec to return sample users
         mock_result = mocker.MagicMock()
         mock_result.all.return_value = [sample_users[3]]  # User with %
+        db_session.exec.return_value = mock_result
 
-        # Mock count query
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = 1
+        users = user_repository.query_users(db_session, search="%", filters=UserListFilters())
 
-        # Mock JOIN query (Story 7: returns user-project pairs)
-        mock_join_result = mocker.MagicMock()
-        mock_join_result.all.return_value = [(sample_users[3], None)]  # User with no projects
-
-        # Story 7: 3 exec calls now (count, users, JOIN)
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        # Search for percent sign
-        users, projects_map, total = user_repository.list_users(db_session, search="%")
-
-        # Verify query was called (escaping happens inside)
         assert db_session.exec.called
         # In real DB, this would only match "percent%test@example.com"
-        # Mock returns filtered result
         assert len(users) == 1
 
     def test_search_with_underscore_wildcard_escaped(self, user_repository, db_session, sample_users, mocker):
@@ -129,17 +115,7 @@ class TestUserRepositorySearchSecurity:
         mock_result.all.return_value = [sample_users[4]]  # User with underscore
         db_session.exec.return_value = mock_result
 
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = 1
-        # Mock JOIN query (Story 7)
-
-        mock_join_result = mocker.MagicMock()
-
-        mock_join_result.all.return_value = []  # Default empty projects
-
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        users, projects_map, total = user_repository.list_users(db_session, search="_")
+        users = user_repository.query_users(db_session, search="_", filters=UserListFilters())
 
         assert db_session.exec.called
         assert len(users) == 1
@@ -152,17 +128,7 @@ class TestUserRepositorySearchSecurity:
         mock_result.all.return_value = []  # No literal "%admin%"
         db_session.exec.return_value = mock_result
 
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = 0
-        # Mock JOIN query (Story 7)
-
-        mock_join_result = mocker.MagicMock()
-
-        mock_join_result.all.return_value = []  # Default empty projects
-
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        users, projects_map, total = user_repository.list_users(db_session, search="%admin%")
+        users = user_repository.query_users(db_session, search="%admin%", filters=UserListFilters())
 
         # Should not return admin@example.com (would match without escaping)
         assert len(users) == 0
@@ -175,42 +141,20 @@ class TestUserRepositorySearchSecurity:
         mock_result.all.return_value = []  # No literal "t_st" in test data
         db_session.exec.return_value = mock_result
 
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = 0
-        # Mock JOIN query (Story 7)
-
-        mock_join_result = mocker.MagicMock()
-
-        mock_join_result.all.return_value = []  # Default empty projects
-
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        users, projects_map, total = user_repository.list_users(db_session, search="t_st")
+        users = user_repository.query_users(db_session, search="t_st", filters=UserListFilters())
 
         # Should not match "test@example.com" (would match without escaping)
         assert len(users) == 0
 
     def test_search_normal_text_works(self, user_repository, db_session, sample_users, mocker):
         """AC: Normal search functionality unaffected by escaping."""
-        # Normal search should still work
         mock_result = mocker.MagicMock()
         mock_result.all.return_value = [sample_users[1]]  # test@example.com
         db_session.exec.return_value = mock_result
 
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = 1
-        # Mock JOIN query (Story 7)
-
-        mock_join_result = mocker.MagicMock()
-
-        mock_join_result.all.return_value = []  # Default empty projects
-
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        users, projects_map, total = user_repository.list_users(db_session, search="test")
+        users = user_repository.query_users(db_session, search="test", filters=UserListFilters())
 
         assert db_session.exec.called
-        # Normal search still works
         assert len(users) == 1
 
     def test_search_case_insensitive_still_works(self, user_repository, db_session, sample_users, mocker):
@@ -219,17 +163,7 @@ class TestUserRepositorySearchSecurity:
         mock_result.all.return_value = [sample_users[0]]  # Admin User
         db_session.exec.return_value = mock_result
 
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = 1
-        # Mock JOIN query (Story 7)
-
-        mock_join_result = mocker.MagicMock()
-
-        mock_join_result.all.return_value = []  # Default empty projects
-
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        users, projects_map, total = user_repository.list_users(db_session, search="ADMIN")
+        users = user_repository.query_users(db_session, search="ADMIN", filters=UserListFilters())
 
         assert db_session.exec.called
         assert len(users) == 1
@@ -240,17 +174,7 @@ class TestUserRepositorySearchSecurity:
         mock_result.all.return_value = []
         db_session.exec.return_value = mock_result
 
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = 0
-        # Mock JOIN query (Story 7)
-
-        mock_join_result = mocker.MagicMock()
-
-        mock_join_result.all.return_value = []  # Default empty projects
-
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        users, projects_map, total = user_repository.list_users(db_session, search="a%b_c")
+        users = user_repository.query_users(db_session, search="a%b_c", filters=UserListFilters())
 
         # Should only match literal "a%b_c", not use as wildcard pattern
         assert db_session.exec.called
@@ -262,17 +186,7 @@ class TestUserRepositorySearchSecurity:
         mock_result.all.return_value = sample_users
         db_session.exec.return_value = mock_result
 
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = len(sample_users)
-        # Mock JOIN query (Story 7)
-
-        mock_join_result = mocker.MagicMock()
-
-        mock_join_result.all.return_value = []  # Default empty projects
-
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        users, projects_map, total = user_repository.list_users(db_session, search="")
+        users = user_repository.query_users(db_session, search="", filters=UserListFilters())
 
         assert len(users) == len(sample_users)
 
@@ -282,17 +196,7 @@ class TestUserRepositorySearchSecurity:
         mock_result.all.return_value = sample_users
         db_session.exec.return_value = mock_result
 
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = len(sample_users)
-        # Mock JOIN query (Story 7)
-
-        mock_join_result = mocker.MagicMock()
-
-        mock_join_result.all.return_value = []  # Default empty projects
-
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        users, projects_map, total = user_repository.list_users(db_session, search=None)
+        users = user_repository.query_users(db_session, search=None, filters=UserListFilters())
 
         assert len(users) == len(sample_users)
 
@@ -306,17 +210,7 @@ class TestUserRepositorySearchFields:
         mock_result.all.return_value = [sample_users[2]]  # alice@example.com
         db_session.exec.return_value = mock_result
 
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = 1
-        # Mock JOIN query (Story 7)
-
-        mock_join_result = mocker.MagicMock()
-
-        mock_join_result.all.return_value = []  # Default empty projects
-
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        users, projects_map, total = user_repository.list_users(db_session, search="alice@")
+        users = user_repository.query_users(db_session, search="alice@", filters=UserListFilters())
 
         assert len(users) == 1
 
@@ -326,17 +220,7 @@ class TestUserRepositorySearchFields:
         mock_result.all.return_value = [sample_users[1]]  # test_user
         db_session.exec.return_value = mock_result
 
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = 1
-        # Mock JOIN query (Story 7)
-
-        mock_join_result = mocker.MagicMock()
-
-        mock_join_result.all.return_value = []  # Default empty projects
-
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        users, projects_map, total = user_repository.list_users(db_session, search="test")
+        users = user_repository.query_users(db_session, search="test", filters=UserListFilters())
 
         assert len(users) == 1
 
@@ -346,17 +230,7 @@ class TestUserRepositorySearchFields:
         mock_result.all.return_value = [sample_users[0]]  # Admin User
         db_session.exec.return_value = mock_result
 
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = 1
-        # Mock JOIN query (Story 7)
-
-        mock_join_result = mocker.MagicMock()
-
-        mock_join_result.all.return_value = []  # Default empty projects
-
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        users, projects_map, total = user_repository.list_users(db_session, search="Admin User")
+        users = user_repository.query_users(db_session, search="Admin User", filters=UserListFilters())
 
         assert len(users) == 1
 
@@ -366,25 +240,13 @@ class TestUserRepositoryPagination:
 
     def test_pagination_with_search(self, user_repository, db_session, sample_users, mocker):
         """Test pagination works with search query."""
-        # First page
         mock_result = mocker.MagicMock()
         mock_result.all.return_value = sample_users[:2]
         db_session.exec.return_value = mock_result
 
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = 5
-        # Mock JOIN query (Story 7)
-
-        mock_join_result = mocker.MagicMock()
-
-        mock_join_result.all.return_value = []  # Default empty projects
-
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        users, projects_map, total = user_repository.list_users(db_session, page=0, per_page=2, search="example")
+        users = user_repository.query_users(db_session, search="example", filters=UserListFilters(), page=0, per_page=2)
 
         assert len(users) == 2
-        assert total == 5
 
     def test_pagination_second_page(self, user_repository, db_session, sample_users, mocker):
         """Test second page of results."""
@@ -392,17 +254,6 @@ class TestUserRepositoryPagination:
         mock_result.all.return_value = sample_users[2:4]
         db_session.exec.return_value = mock_result
 
-        mock_count_result = mocker.MagicMock()
-        mock_count_result.one.return_value = 5
-        # Mock JOIN query (Story 7)
-
-        mock_join_result = mocker.MagicMock()
-
-        mock_join_result.all.return_value = []  # Default empty projects
-
-        db_session.exec.side_effect = [mock_count_result, mock_result, mock_join_result]
-
-        users, projects_map, total = user_repository.list_users(db_session, page=1, per_page=2)
+        users = user_repository.query_users(db_session, filters=UserListFilters(), page=1, per_page=2)
 
         assert len(users) == 2
-        assert total == 5

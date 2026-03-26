@@ -235,6 +235,7 @@ class TestGetAllSettingsForUser:
         user.id = "user-123"
         user.project_names = []
         user.admin_project_names = []
+        user.is_admin = True
 
         single_setting = [MagicMock()]
         mock_get_all_settings.return_value = single_setting
@@ -265,6 +266,7 @@ class TestGetAllSettingsForUser:
         user.id = "user-123"
         user.project_names = None
         user.admin_project_names = None
+        user.is_admin = True
 
         single_setting = [MagicMock()]
         mock_get_all_settings.return_value = single_setting

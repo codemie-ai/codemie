@@ -54,6 +54,7 @@ class TestToolkitService:
         user = Mock(spec=User)
         user.id = "test-user-id"
         user.name = "Test User"
+        user.is_admin = False
         return user
 
     @pytest.fixture
@@ -1471,6 +1472,8 @@ class TestMergeSkillToolkits:
         mock_request.enable_code_interpreter = None
         mock_user = Mock(spec=User)
         mock_user.id = "test-user-id"
+        mock_user.is_admin = False
+        mock_user.roles = []
 
         with patch.object(ToolkitService, "_merge_skill_toolkits", return_value=[mock_merged_toolkit]) as mock_merge:
             with patch.object(ToolkitService, "get_core_tools", return_value=[]):
@@ -1502,6 +1505,8 @@ class TestMergeSkillToolkits:
         mock_request.enable_code_interpreter = None
         mock_user = Mock(spec=User)
         mock_user.id = "test-user-id"
+        mock_user.is_admin = False
+        mock_user.roles = []
 
         with patch.object(ToolkitService, "_merge_skill_toolkits", return_value=[merged_toolkit]):
             with patch.object(ToolkitService, "get_core_tools", return_value=[]):

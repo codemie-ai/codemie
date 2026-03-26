@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, model_validator
 
 from codemie.core.constants import Environment, DEMO_PROJECT
 from codemie.core.models import UserEntity
@@ -35,16 +35,32 @@ class User(BaseModel):
     id: str
     username: str = ""
     name: str = ""
-    email: str = ""  # Added for local auth and profile management (EPMCDME-10160)
+    email: str = ""
     roles: list = Field(default_factory=list)
     project_names: list[str] = Field(default_factory=lambda: ['demo'])
     admin_project_names: list[str] = Field(default_factory=list)
     picture: str = ""
     knowledge_bases: list = Field(default_factory=list)
     user_type: str | None = 'regular'
-    is_super_admin: bool = Field(default=False, exclude=True)  # Used when flag ON (EPMCDME-10160)
+    is_admin: bool = Field(default=False)
     project_limit: int | None = Field(default=None)  # NULL = unlimited (super admins); set from DB when flag ON
     auth_token: str | None = Field(None, exclude=True)
+
+    @model_validator(mode='after')
+    def resolve_is_admin(self) -> 'User':
+        """Resolve is_admin at construction time.
+
+        - ENV=local: Always True (dev override)
+        - ENABLE_USER_MANAGEMENT=False: Legacy IDP role-based
+        - ENABLE_USER_MANAGEMENT=True: Value passed from DB at construction
+        """
+        if Environment.LOCAL.value == config.ENV:
+            self.is_admin = True
+        elif not config.ENABLE_USER_MANAGEMENT:
+            self.is_admin = (bool(config.ADMIN_USER_ID) and self.id == config.ADMIN_USER_ID) or (
+                config.ADMIN_ROLE_NAME in self.roles
+            )
+        return self
 
     @computed_field
     @property
@@ -59,31 +75,6 @@ class User(BaseModel):
     @property
     def full_name(self):
         return self.username or self.name or self.id
-
-    @property
-    def is_admin(self) -> bool:
-        """Check if user has admin privileges
-
-        Behavior depends on feature flag and environment (EPMCDME-10160):
-        - ENV=local: Always True (dev override)
-        - ENABLE_USER_MANAGEMENT=False: Legacy IDP role-based
-        - ENABLE_USER_MANAGEMENT=True: Database is_super_admin
-
-        Returns:
-            bool: True if user is admin
-        """
-        # Local dev environment override (always admin)
-        if Environment.LOCAL.value == config.ENV:
-            return True
-
-        # Flag OFF: use legacy behavior (IDP roles)
-        if not config.ENABLE_USER_MANAGEMENT:
-            if config.ADMIN_USER_ID and self.id == config.ADMIN_USER_ID:
-                return True
-            return config.ADMIN_ROLE_NAME in self.roles
-
-        # Flag ON: use database is_super_admin
-        return self.is_super_admin
 
     @property
     def is_applications_admin(self) -> bool:

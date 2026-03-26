@@ -27,6 +27,7 @@ Code Review Addressed:
 import pytest
 from unittest.mock import patch, MagicMock
 
+from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.routers.user_management_router import list_users, router
 from codemie.rest_api.security.authentication import (
@@ -38,48 +39,47 @@ from codemie.rest_api.security.user import User
 
 @pytest.fixture
 def super_admin_user():
-    """Mock super admin user
-
-    Note: In non-local environments with ENABLE_USER_MANAGEMENT=True,
-    is_admin property returns is_super_admin value.
-    """
-    return User(
-        id="super-admin",
-        email="admin@example.com",
-        username="admin",
-        name="Super Admin",
-        is_super_admin=True,
-        project_names=["demo"],
-        admin_project_names=[],
-    )
+    """Mock super admin user"""
+    with patch.object(config, 'ENV', 'dev'), patch.object(config, 'ENABLE_USER_MANAGEMENT', True):
+        return User(
+            id="super-admin",
+            email="admin@example.com",
+            username="admin",
+            name="Super Admin",
+            is_admin=True,
+            project_names=["demo"],
+            admin_project_names=[],
+        )
 
 
 @pytest.fixture
 def project_admin_user():
     """Mock project admin user (not super admin, but admin of at least one project)"""
-    return User(
-        id="project-admin",
-        email="padmin@example.com",
-        username="padmin",
-        name="Project Admin",
-        is_super_admin=False,
-        project_names=["project-a", "project-b"],
-        admin_project_names=["project-a"],  # Admin of project-a
-    )
+    with patch.object(config, 'ENV', 'dev'), patch.object(config, 'ENABLE_USER_MANAGEMENT', True):
+        return User(
+            id="project-admin",
+            email="padmin@example.com",
+            username="padmin",
+            name="Project Admin",
+            is_admin=False,
+            project_names=["project-a", "project-b"],
+            admin_project_names=["project-a"],  # Admin of project-a
+        )
 
 
 @pytest.fixture
 def regular_user():
     """Mock regular user (no admin privileges)"""
-    return User(
-        id="regular-user",
-        email="user@example.com",
-        username="user",
-        name="Regular User",
-        is_super_admin=False,
-        project_names=["demo"],
-        admin_project_names=[],  # Not admin of any project
-    )
+    with patch.object(config, 'ENV', 'dev'), patch.object(config, 'ENABLE_USER_MANAGEMENT', True):
+        return User(
+            id="regular-user",
+            email="user@example.com",
+            username="user",
+            name="Regular User",
+            is_admin=False,
+            project_names=["demo"],
+            admin_project_names=[],  # Not admin of any project
+        )
 
 
 @pytest.fixture
@@ -96,7 +96,7 @@ class TestProjectAdminOrSuperAdminUserListAccess:
     @patch("codemie.rest_api.security.user.config")
     async def test_super_admin_authorized(self, mock_config, mock_request, super_admin_user):
         """AC: Super admin can access user list"""
-        # Ensure user management is enabled so is_admin returns is_super_admin
+        # Ensure user management is enabled so is_admin returns is_admin
         mock_config.ENABLE_USER_MANAGEMENT = True
         mock_config.ENV = "test"  # Not local, to test actual logic
         mock_request.state.user = super_admin_user
@@ -157,9 +157,7 @@ class TestUserListEndpoint:
             page=0,
             per_page=20,
             search=None,
-            is_active=None,
-            project_name=None,
-            user_type=None,
+            filters=None,
             user=project_admin_user,
             _=None,  # Authorization dependency returns None if successful
         )
@@ -192,18 +190,16 @@ class TestUserListEndpoint:
             page=0,
             per_page=20,
             search=None,
-            is_active=None,
-            project_name=None,
-            user_type=None,
+            filters=None,
             user=project_admin_user,
             _=None,
         )
 
         # Service returns all users without filtering
         assert len(result["data"]) == 3
-        # Verify no project_name filter was applied
+        # Verify no projects filter was applied
         call_kwargs = mock_service.list_users_with_flow.call_args[1]
-        assert call_kwargs["project_name"] is None
+        assert call_kwargs["filters"].projects is None
 
     @patch("codemie.rest_api.routers.user_management_router.config")
     @patch("codemie.rest_api.routers.user_management_router.user_management_service")
@@ -219,30 +215,23 @@ class TestUserListEndpoint:
             page=0,
             per_page=20,
             search="john",
-            is_active=None,
-            project_name=None,
-            user_type=None,
+            filters=None,
             user=project_admin_user,
             _=None,
         )
 
         assert result is not None
-        # Verify search parameter was passed to service
-        mock_service.list_users_with_flow.assert_called_once_with(
-            requesting_user_id=project_admin_user.id,
-            is_super_admin=project_admin_user.is_admin,
-            page=0,
-            per_page=20,
-            search="john",
-            is_active=None,
-            project_name=None,
-            user_type=None,
-        )
+        # Verify search and empty filters were passed to service
+        call_kwargs = mock_service.list_users_with_flow.call_args[1]
+        assert call_kwargs["search"] == "john"
+        assert call_kwargs["filters"].projects is None
+        assert call_kwargs["filters"].user_type is None
+        assert call_kwargs["filters"].platform_role is None
 
     @patch("codemie.rest_api.routers.user_management_router.config")
     @patch("codemie.rest_api.routers.user_management_router.user_management_service")
     def test_project_admin_can_use_pagination(self, mock_service, mock_config, project_admin_user):
-        """AC: Project admin can use all existing filters and pagination"""
+        """AC: Project admin can use filters and pagination"""
         mock_config.ENABLE_USER_MANAGEMENT = True
         mock_service.list_users_with_flow.return_value = {
             "data": [],
@@ -253,21 +242,18 @@ class TestUserListEndpoint:
             page=2,
             per_page=10,
             search=None,
-            is_active=True,
-            project_name="project-x",
-            user_type="regular",
+            filters='{"projects":["project-x"],"user_type":"regular"}',
             user=project_admin_user,
             _=None,
         )
 
         assert result is not None
-        # Verify all filters were passed
+        # Verify pagination and filters were passed correctly
         call_args = mock_service.list_users_with_flow.call_args[1]
         assert call_args["page"] == 2
         assert call_args["per_page"] == 10
-        assert call_args["is_active"] is True
-        assert call_args["project_name"] == "project-x"
-        assert call_args["user_type"] == "regular"
+        assert call_args["filters"].projects == ["project-x"]
+        assert call_args["filters"].user_type == "regular"
 
     @patch("codemie.rest_api.routers.user_management_router.config")
     @patch("codemie.rest_api.routers.user_management_router.user_management_service")
@@ -283,9 +269,7 @@ class TestUserListEndpoint:
             page=0,
             per_page=20,
             search=None,
-            is_active=None,
-            project_name=None,
-            user_type=None,
+            filters=None,
             user=super_admin_user,
             _=None,
         )
@@ -317,7 +301,7 @@ class TestOtherEndpointsRemainSuperAdminOnly:
     @patch("codemie.rest_api.security.user.config")
     async def test_super_admin_retains_full_access(self, mock_config, mock_request, super_admin_user):
         """AC: Super admin can still access all admin endpoints"""
-        # Ensure user management is enabled so is_admin returns is_super_admin
+        # Ensure user management is enabled so is_admin returns is_admin
         mock_config.ENABLE_USER_MANAGEMENT = True
         mock_config.ENV = "test"  # Not local, to test actual logic
         mock_request.state.user = super_admin_user
@@ -419,7 +403,7 @@ class TestEdgeCases:
             email="multi@example.com",
             username="multi",
             name="Multi Admin",
-            is_super_admin=False,
+            is_admin=False,
             project_names=["p1", "p2", "p3"],
             admin_project_names=["p1", "p2", "p3"],  # Admin of multiple projects
         )
@@ -440,7 +424,7 @@ class TestEdgeCases:
             email="member@example.com",
             username="member",
             name="Project Member",
-            is_super_admin=False,
+            is_admin=False,
             project_names=["project-a", "project-b"],
             admin_project_names=[],  # Has project access but not admin
         )
@@ -467,7 +451,7 @@ class TestEdgeCases:
             email="no-admin@example.com",
             username="no-admin",
             name="No Admin",
-            is_super_admin=False,
+            is_admin=False,
             project_names=["project-a"],
             admin_project_names=[],
         )
@@ -479,7 +463,7 @@ class TestEdgeCases:
             email="with-admin@example.com",
             username="with-admin",
             name="With Admin",
-            is_super_admin=False,
+            is_admin=False,
             project_names=["project-a"],
             admin_project_names=["project-a"],
         )

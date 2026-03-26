@@ -133,6 +133,14 @@ components:
       name: "Generated Assistant Icons"
       description: "Enable generated icons for assistants"
 
+  - id: "features:userAbilityToCreateProject"
+    settings:
+      enabled: true
+  
+  - id: "features:costCenters"
+    settings:
+      enabled: true
+      
 preconfigured_assistants:
   - id: "codemie-onboarding"
     settings:

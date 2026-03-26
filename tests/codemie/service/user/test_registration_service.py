@@ -56,7 +56,7 @@ class TestRegistrationService:
             auth_source="local",
             email_verified=False,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
             project_limit=10,
         )
         mock_user_repo.create.return_value = expected_user
@@ -141,7 +141,7 @@ class TestRegistrationService:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
             project_limit=10,
         )
         mock_user_repo.create.return_value = created_user
@@ -177,7 +177,7 @@ class TestRegistrationService:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
             project_limit=10,
         )
         mock_user_repo.update.return_value = verified_user
@@ -272,7 +272,7 @@ class TestRegistrationService:
             auth_source="local",
             email_verified=False,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
             project_limit=10,
         )
         mock_user_repo.create.return_value = registered_user
@@ -332,7 +332,7 @@ class TestRegistrationService:
             auth_source="local",
             email_verified=False,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
             project_limit=10,
         )
         mock_user_repo.create.return_value = registered_user
@@ -396,7 +396,7 @@ class TestRegistrationService:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
             project_limit=10,
         )
         mock_user_repo.create.return_value = registered_user
@@ -454,7 +454,7 @@ class TestRegistrationService:
             auth_source="local",
             email_verified=True,
             is_active=True,
-            is_super_admin=False,
+            is_admin=False,
             project_limit=10,
         )
         mock_user_repo.update.return_value = verified_user

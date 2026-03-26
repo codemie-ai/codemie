@@ -19,7 +19,6 @@ from fastapi.security import APIKeyHeader
 
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.core.models import Application
 from codemie.rest_api.security.idp.local import USER_ID_HEADER, LocalIdp
 from codemie.rest_api.security.user import User
 from codemie.rest_api.security.user_context import set_current_user, set_current_auth_token
@@ -31,8 +30,6 @@ BEARER_AUTHORIZATION_HEADER = "Authorization"
 ACCESS_DENIED_MESSAGE = "Access denied"
 _ADMIN_OR_PROJECT_ADMIN_REQUIRED = "This action requires administrator or project administrator privileges."
 _CONTACT_ADMIN_HELP = "If you believe you should have access, please contact your system administrator."
-PROJECT_NAME_PATH_KEYS = ("projectName", "project_name", "name")
-
 BIND_KEY_HEADER = "X-Bind-Key"
 
 user_id_header = APIKeyHeader(name=USER_ID_HEADER, auto_error=False, scheme_name=USER_ID_HEADER)
@@ -249,49 +246,6 @@ async def project_admin_or_super_admin_user_detail_access(request: Request):
         details=_ADMIN_OR_PROJECT_ADMIN_REQUIRED,
         help=_CONTACT_ADMIN_HELP,
     )
-
-
-async def project_admin_or_super_admin_access(
-    request: Request,
-    user: User = Depends(authenticate),
-) -> Application:
-    """Authorize project-level management access for super admins or project admins."""
-    from codemie.service.user.project_visibility_service import project_visibility_service
-
-    project_name = None
-    for key in PROJECT_NAME_PATH_KEYS:
-        value = request.path_params.get(key)
-        if value:
-            project_name = value
-            break
-
-    action = f"{request.method} {request.url.path}"
-    if not project_name:
-        project_visibility_service.raise_project_not_found(
-            user_id=user.id,
-            project_name="<missing>",
-            action=action,
-        )
-
-    cache_key = project_name
-    cache = getattr(request.state, "project_admin_access_cache", None)
-    if cache is None:
-        cache = {}
-        request.state.project_admin_access_cache = cache
-
-    cached_project = cache.get(cache_key)
-    if cached_project is not None:
-        return cached_project
-
-    project = project_visibility_service.authorize_project_admin_or_super_admin(
-        project_name=project_name,
-        user_id=user.id,
-        is_super_admin=user.is_super_admin,
-        action=action,
-    )
-
-    cache[cache_key] = project
-    return project
 
 
 def application_access_check(request: Request, app_name: str):

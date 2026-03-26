@@ -12,11 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from enum import Enum
+from typing import TYPE_CHECKING
+
 from sqlalchemy.orm.exc import DetachedInstanceError
 
-from codemie.rest_api.security.user import User
+if TYPE_CHECKING:
+    from codemie.rest_api.security.user import User
 
 # these cannot be edited
 REMOTE_ENTITIES = ["Assistant", "WorkflowConfig", "Guardrail", "IndexInfo"]
@@ -143,6 +148,11 @@ class Ability:
             Action.DELETE: [Role.OWNED_BY, Role.MANAGED_BY, Role.ADMIN],
         },
         "Skill": {
+            Action.READ: [Role.SHARED_WITH, Role.OWNED_BY, Role.MANAGED_BY, Role.ADMIN],
+            Action.WRITE: [Role.OWNED_BY, Role.MANAGED_BY, Role.ADMIN],
+            Action.DELETE: [Role.OWNED_BY, Role.MANAGED_BY, Role.ADMIN],
+        },
+        "Application": {
             Action.READ: [Role.SHARED_WITH, Role.OWNED_BY, Role.MANAGED_BY, Role.ADMIN],
             Action.WRITE: [Role.OWNED_BY, Role.MANAGED_BY, Role.ADMIN],
             Action.DELETE: [Role.OWNED_BY, Role.MANAGED_BY, Role.ADMIN],

@@ -701,7 +701,7 @@ class TestAccessFilter:
         ctx = access_filter.get_project_access_context()
 
         assert ctx.user_id == "super-admin-1"
-        assert ctx.is_super_admin is True
+        assert ctx.is_admin is True
         assert ctx.plain_user_projects == []
         assert ctx.admin_projects == []
 
@@ -720,8 +720,8 @@ class TestAccessFilter:
         ctx = access_filter.get_project_access_context()
 
         assert ctx.user_id == "super-admin-2"
-        assert ctx.is_super_admin is True
-        # Project lists are empty but is_super_admin flag grants full access
+        assert ctx.is_admin is True
+        # Project lists are empty but is_admin flag grants full access
         assert ctx.plain_user_projects == []
         assert ctx.admin_projects == []
 
@@ -741,4 +741,4 @@ class TestAccessFilter:
 
         # Super admin flag should be set (project lists ignored by query builder)
         assert ctx.user_id == "super-admin-3"
-        assert ctx.is_super_admin is True
+        assert ctx.is_admin is True

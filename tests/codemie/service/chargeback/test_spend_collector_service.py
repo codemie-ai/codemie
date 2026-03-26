@@ -20,6 +20,7 @@ import hashlib
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -944,6 +945,57 @@ class TestCollect:
 
         assert count == 0
         service._tracking_repository.insert_entries.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_collect_persists_cost_center_fields(
+        self,
+        mock_session,
+        async_session_ctx,
+    ):
+        service = _make_service()
+        api_key = "sk-cost-center-key"
+        cost_center_id = uuid4()
+
+        app = _make_app("foo-bar")
+        app.cost_center_id = cost_center_id
+
+        setting = MagicMock()
+        setting.id = "s1"
+        setting.project_name = "foo-bar"
+
+        cred = MagicMock()
+        cred.api_key = api_key
+
+        service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[app])
+        service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
+        service._tracking_repository.insert_entries = AsyncMock()
+
+        with (
+            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                return_value=cred,
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
+                return_value=[{"total_spend": 1.25}],
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                return_value=async_session_ctx(),
+            ),
+            patch(
+                "codemie.service.chargeback.spend_collector_service.cost_center_repository.aget_by_ids",
+                new=AsyncMock(return_value={cost_center_id: SimpleNamespace(id=cost_center_id, name="epm-cdme")}),
+            ),
+        ):
+            mock_settings.get_by_project_names.return_value = [setting]
+            await service.collect(target_date=date(2026, 3, 17))
+
+        inserted_rows = service._tracking_repository.insert_entries.call_args[0][1]
+        assert inserted_rows[0].cost_center_id == cost_center_id
+        assert inserted_rows[0].cost_center_name == "epm-cdme"
 
 
 # ---------------------------------------------------------------------------
