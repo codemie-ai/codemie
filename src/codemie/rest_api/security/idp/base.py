@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from typing import List, Union
 from fastapi import Request
 
 from codemie.rest_api.security.user import User
@@ -40,7 +39,7 @@ class BaseIdp(ABC):
         pass
 
     @staticmethod
-    def _parse_attribute_to_list(value: Union[str, List[str], None]) -> List[str]:
+    def _parse_attribute_to_list(value: str | list[str] | None) -> list[str]:
         """
         Parse SSO attribute value to a flat list of strings.
 

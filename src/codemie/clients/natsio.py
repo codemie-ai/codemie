@@ -15,7 +15,7 @@
 """Client module for the NATS.io client."""
 
 import ssl
-from typing import List, Union, Optional, Any, Dict
+from typing import Optional, Any, Dict
 
 import nats
 
@@ -26,7 +26,7 @@ class Client:
     """Client class is the facade for the NATS.io client."""
 
     # Default NATS server configuration
-    nats_servers: Union[str, List[str]] = [config.NATS_SERVERS_URI]
+    nats_servers: str | list[str] = [config.NATS_SERVERS_URI]
 
     # Default NATS options
     nats_options: Dict[str, Any] = {
@@ -54,7 +54,7 @@ class Client:
 
     def __init__(
         self,
-        nats_servers: Union[str, List[str]] = None,
+        nats_servers: str | list[str] = None,
         nats_options: Optional[Dict[str, Any]] = None,
     ):
         """

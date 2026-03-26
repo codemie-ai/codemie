@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from datetime import datetime
-from typing import Union, AsyncIterable
+from typing import AsyncIterable
 from uuid import uuid4
 
 from codemie.configs import logger
@@ -79,7 +79,7 @@ class CodemieTaskManager(TaskManager):
 
     async def on_send_task_subscribe(
         self, request: SendTaskStreamingRequest
-    ) -> Union[AsyncIterable[SendTaskStreamingResponse], JSONRPCResponse]:
+    ) -> AsyncIterable[SendTaskStreamingResponse] | JSONRPCResponse:
         raise new_not_implemented_error(request.id)
 
     @staticmethod
@@ -101,7 +101,7 @@ class CodemieTaskManager(TaskManager):
         return task
 
     @staticmethod
-    def _validate_request(request: Union[SendTaskRequest, SendTaskStreamingRequest]) -> JSONRPCResponse | None:
+    def _validate_request(request: SendTaskRequest | SendTaskStreamingRequest) -> JSONRPCResponse | None:
         task_send_params: TaskSendParams = request.params
         if not are_modalities_compatible(task_send_params.acceptedOutputModes, SUPPORTED_CONTENT_TYPES):
             logger.warning(
@@ -151,7 +151,7 @@ class CodemieTaskManager(TaskManager):
         except Exception as e:
             return self._process_error_response(request, e)
 
-    def _setup_agent(self, request: Union[SendTaskRequest, SendTaskStreamingRequest], task: Task):
+    def _setup_agent(self, request: SendTaskRequest | SendTaskStreamingRequest, task: Task):
         """Set up the agent and assistant request for task processing."""
         task_send_params = request.params
         query = self._get_user_query(task_send_params)

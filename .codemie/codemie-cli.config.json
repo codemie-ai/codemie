@@ -15,6 +15,15 @@
       "name": "epm-cdme",
       "codemieAssistants": [
         {
+          "id": "dc92440f-030e-47dd-9b22-666bbf56d381",
+          "name": "TAF Regression Advisor",
+          "slug": "taf-regression-advisor",
+          "description": "Assistant that suggests what tests cases from TAF must be run depending on the changes mage in backend/frontend codebase",
+          "project": "epm-cdme",
+          "registeredAt": "2026-03-25T13:23:36.036Z",
+          "registrationMode": "skill"
+        },
+        {
           "id": "05959338-06de-477d-9cc3-08369f858057",
           "name": "AI/Run FAQ",
           "slug": "codemie-onboarding",

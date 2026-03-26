@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, List, Optional, Type, Union
+from typing import Any, List, Optional, Type
 from codemie.configs import logger
 from codemie.core.dependecies import get_llm_by_credentials
 from codemie.core.thought_queue import ThoughtQueue
@@ -154,7 +154,7 @@ class StateProcessorNode(BaseNode[AgentMessages]):
         stop=stop_after_attempt(5), wait=wait_exponential(1), retry=retry_if_exception_type(ValueError), reraise=True
     )
     def _fetch_states(
-        self, execution_id: str, state_name: str, states_status_filter: Union[List[str], None]
+        self, execution_id: str, state_name: str, states_status_filter: list[str] | None
     ) -> List[WorkflowExecutionStateWithThougths]:
         states_data = WorkflowExecutionStatesIndexService.run(
             execution_id=execution_id,

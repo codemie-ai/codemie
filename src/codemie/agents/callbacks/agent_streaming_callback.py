@@ -16,7 +16,7 @@ import uuid
 from langchain_core.agents import AgentAction, AgentFinish
 from langchain_core.callbacks import StreamingStdOutCallbackHandler
 from langchain_core.outputs import LLMResult
-from typing import Dict, Any, List, Union
+from typing import Dict, Any, List
 
 
 from codemie.chains.base import StreamedGenerationResult, Thought, ThoughtOutputFormat, ThoughtAuthorType
@@ -33,7 +33,7 @@ from codemie.service.mcp.models import MCPToolInvocationResponse
 class AgentStreamingCallback(StreamingStdOutCallbackHandler):
     GENERIC_TOOL_NAME = "CodeMie Thoughts"
 
-    def __init__(self, gen: Union[ThoughtQueue, ThreadedGenerator]):
+    def __init__(self, gen: ThoughtQueue | ThreadedGenerator):
         super().__init__()
         self.gen = gen
         self.parent_id = None

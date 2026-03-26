@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, List, Optional, Union
+from typing import Callable, List, Optional
 
 from codemie_tools.base.constants import SOURCE_DOCUMENT_KEY, SOURCE_FIELD_KEY, FILE_CONTENT_FIELD_KEY
 from langchain_core.documents import Document
@@ -35,8 +35,8 @@ class CodeRepoBaseToolMixin(BaseCodeToolMixin):
 
     @staticmethod
     def _create_batches(
-        items: Union[List[str], List[Document]], max_tokens: int, calculate_tokens_count: Callable
-    ) -> Union[List[List[str]], List[List[Document]]]:
+        items: list[str] | list[Document], max_tokens: int, calculate_tokens_count: Callable
+    ) -> list[list[str]] | list[list[Document]]:
         batches = []
         current_batch = []
         current_batch_tokens = 0
@@ -68,7 +68,7 @@ class SearchCodeRepoBaseToolMixin(CodeRepoBaseToolMixin):
         query: str,
         documents: List[Document],
         calculate_tokens_count: Callable,
-        request_id: Union[str, None],
+        request_id: str | None,
         llm_model: str,
         keywords_list: Optional[List[str]] = None,
         limit_docs_count: Optional[int] = None,
@@ -181,8 +181,8 @@ class SearchCodeRepoBaseToolMixin(CodeRepoBaseToolMixin):
         batch: List[Document],
         query: str,
         filter_chain,
-        keywords_list: Union[List[str], None],
-        limit_docs_count: Union[int, None],
+        keywords_list: list[str] | None,
+        limit_docs_count: int | None,
     ) -> List[Document]:
         """
         Filters a batch of documents by relevance using the filter chain.

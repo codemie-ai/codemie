@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from abc import ABC, abstractmethod
-from typing import Union, AsyncIterable
+from typing import AsyncIterable
 
 from codemie.rest_api.a2a.types import (
     GetTaskRequest,
@@ -38,5 +38,5 @@ class TaskManager(ABC):
     @abstractmethod
     async def on_send_task_subscribe(
         self, request: SendTaskStreamingRequest
-    ) -> Union[AsyncIterable[SendTaskStreamingResponse], JSONRPCResponse]:
+    ) -> AsyncIterable[SendTaskStreamingResponse] | JSONRPCResponse:
         pass

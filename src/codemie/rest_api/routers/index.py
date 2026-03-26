@@ -554,18 +554,17 @@ def _get_repository_with_project_change(
     application: Application,
     repo_name: str,
     index_info: IndexInfo,
-    app_name: str,
     request: UpdateIndexRequest,
 ) -> GitRepo:
     """Get repository and handle project change if needed."""
     app_repositories = GitRepo.get_by_app_id(application.name)
     repository = next((repo for repo in app_repositories if repo.name == repo_name), None)
 
-    if repository and request.new_project_name and index_info.project_name != app_name:
+    if repository and request.new_project_name and repository.app_id != request.new_project_name:
         try:
             new_repo = GitRepo(
                 **repository.model_dump(exclude={"app_id", "id", "original_storage"}),
-                app_id=index_info.project_name,
+                app_id=request.new_project_name,
             )
             new_repo.id = new_repo.get_identifier()
             new_repo.original_storage = repository.get_identifier()
@@ -573,6 +572,13 @@ def _get_repository_with_project_change(
             repository = new_repo
         except Exception:
             logger.error(f"Repository already exist for new project name {request.new_project_name}")
+
+    if not repository:
+        all_repos_with_name = GitRepo.get_all_by_fields({"name": repo_name})
+        repository = next(
+            (r for r in all_repos_with_name if r.link == index_info.link),
+            None,
+        )
 
     if not repository:
         raise ExtendedHTTPException(
@@ -637,7 +643,7 @@ def update_index_application(
             help=APPLICATION_NOT_FOUND_HELP,
         ) from e
 
-    repository = _get_repository_with_project_change(application, repo_name, index_info, app_name, request)
+    repository = _get_repository_with_project_change(application, repo_name, index_info, request)
 
     if request.name:
         _handle_index_and_repository_update(index_info, request, user, app_name, repo_name, repository)

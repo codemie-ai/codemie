@@ -21,7 +21,7 @@ import threading
 import jsonschema
 from inspect import signature
 from contextlib import contextmanager
-from typing import Union, Dict, Type, List, Any, Optional
+from typing import Dict, Type, List, Any, Optional
 
 from pydantic import BaseModel
 from langchain_core.tools import ToolException
@@ -80,7 +80,7 @@ class ThreadSafeStdout:
 sys.stdout = ThreadSafeStdout(sys.stdout)
 
 
-def parse_tool_input(args_schema: Type[BaseModel], tool_input: Union[str, Dict]):
+def parse_tool_input(args_schema: Type[BaseModel], tool_input: str | Dict):
     try:
         input_args = args_schema
         logger.info(f"Starting parser with input: {tool_input}")

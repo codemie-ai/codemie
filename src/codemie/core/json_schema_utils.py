@@ -16,7 +16,7 @@ import inspect
 import textwrap
 from collections.abc import Mapping
 from types import UnionType
-from typing import Annotated, Any, Literal, TypeAlias, Union, get_args, get_origin
+from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, create_model
 from pydantic.fields import FieldInfo
@@ -28,11 +28,11 @@ from pydantic_core import PydanticUndefined
 from codemie.configs import logger
 
 # Type Aliases for clarity
-JsonSchema: TypeAlias = dict[str, Any]
-FieldName: TypeAlias = str
-TypeName: TypeAlias = str
-TypeAnnotation: TypeAlias = Any
-FieldDefinition: TypeAlias = tuple[TypeAnnotation, FieldInfo]
+type JsonSchema = dict[str, Any]
+type FieldName = str
+type TypeName = str
+type TypeAnnotation = Any
+type FieldDefinition = tuple[TypeAnnotation, FieldInfo]
 
 
 class Cache:
