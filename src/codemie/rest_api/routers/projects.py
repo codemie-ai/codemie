@@ -358,7 +358,7 @@ def update_project(
         description=project.description or "",
         project_type=project.project_type,
         created_by=project.created_by or user.id,
-        created_at=project.date,
+        created_at=project.date or datetime.now(UTC),
         cost_center_id=getattr(project, "cost_center_id", None),
         cost_center_name=_resolve_cost_center_name(getattr(project, "cost_center_id", None)),
     )
