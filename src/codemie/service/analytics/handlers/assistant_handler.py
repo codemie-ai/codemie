@@ -21,7 +21,7 @@ from datetime import datetime
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
-from codemie.service.analytics.handlers.field_constants import METRIC_NAME_KEYWORD_FIELD
+from codemie.service.analytics.handlers.field_constants import METRIC_NAME_KEYWORD_FIELD, USER_EMAIL_KEYWORD_FIELD
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
 
@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 # Elasticsearch field constants
 ASSISTANT_NAME_KEYWORD_FIELD = "attributes.assistant_name.keyword"
+TIMESTAMP_FIELD = "@timestamp"
+UNIQUE_USERS_LABEL = "Unique Users"
 
 
 class AssistantHandler:
@@ -108,7 +110,7 @@ FROM codemie_metrics_logs
     cost_rounded = ROUND(total_cost, 2),
     avg_execution_rounded = ROUND(avg_execution_time, 2)
 | SORT total_messages DESC, attributes.assistant_name.keyword ASC
-| LIMIT 500
+| LIMIT 1000
 """
 
         return await self._pipeline.execute_esql_query(
@@ -186,7 +188,7 @@ FROM codemie_metrics_logs
             {"id": "assistant", "label": "Assistant", "type": "string"},
             {"id": "total_chats", "label": "Total Chats", "type": "number"},
             {"id": "total_messages", "label": "Total Messages", "type": "number"},
-            {"id": "unique_users", "label": "Unique Users", "type": "number"},
+            {"id": "unique_users", "label": UNIQUE_USERS_LABEL, "type": "number"},
             {"id": "min_msg_per_chat", "label": "Min Msg/Chat", "type": "number"},
             {"id": "median_msg_per_chat", "label": "Median Msg/Chat", "type": "number"},
             {"id": "avg_msg_per_chat", "label": "Avg Msg/Chat", "type": "number"},
@@ -394,7 +396,7 @@ FROM codemie_metrics_logs
                         "top_metrics": {
                             "metrics": {"field": "attributes.error_class.keyword"},
                             "size": 1,
-                            "sort": {"@timestamp": "desc"},
+                            "sort": {TIMESTAMP_FIELD: "desc"},
                         }
                     }
                 },
@@ -465,8 +467,313 @@ FROM codemie_metrics_logs
             {"id": "assistant_name", "label": "Assistant Name", "type": "string"},
             {"id": "total_conversations", "label": "Total Conversations", "type": "number"},
             {"id": "total_cost", "label": "Total Cost ($)", "type": "number", "format": "currency"},
-            {"id": "unique_users", "label": "Unique Users", "type": "number"},
+            {"id": "unique_users", "label": UNIQUE_USERS_LABEL, "type": "number"},
             {"id": "unique_tools_used", "label": "Unique Tools Used", "type": "number"},
             {"id": "tool_errors", "label": "Tool Errors", "type": "number"},
             {"id": "last_error", "label": "Last Error", "type": "string"},
+        ]
+
+    async def get_top_agents_usage(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get top agents usage: invocations, cost, unique users, and most recent user per assistant."""
+        logger.info("Requesting top-agents-usage analytics")
+
+        return await self._pipeline.execute_tabular_query(
+            agg_builder=self._build_top_agents_usage_aggregation,
+            result_parser=self._parse_top_agents_usage_result,
+            columns=self._get_top_agents_usage_columns(),
+            group_by_field=ASSISTANT_NAME_KEYWORD_FIELD,
+            metric_filters=None,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    def _build_top_agents_usage_aggregation(self, query: dict, fetch_size: int) -> dict:
+        """Build terms aggregation for top agents usage."""
+        from codemie.service.analytics.aggregation_builder import AggregationBuilder
+
+        sub_aggs = {
+            "1-bucket": {
+                "filter": {
+                    "bool": {
+                        "filter": [
+                            {
+                                "bool": {
+                                    "should": [
+                                        {
+                                            "term": {
+                                                METRIC_NAME_KEYWORD_FIELD: {
+                                                    "value": MetricName.CONVERSATION_ASSISTANT_USAGE.value
+                                                }
+                                            }
+                                        }
+                                    ],
+                                    "minimum_should_match": 1,
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+            "2-bucket": {
+                "filter": {
+                    "bool": {
+                        "filter": [
+                            {
+                                "bool": {
+                                    "should": [
+                                        {
+                                            "term": {
+                                                METRIC_NAME_KEYWORD_FIELD: {
+                                                    "value": MetricName.CONVERSATION_ASSISTANT_USAGE.value
+                                                }
+                                            }
+                                        }
+                                    ],
+                                    "minimum_should_match": 1,
+                                }
+                            }
+                        ]
+                    }
+                },
+                "aggs": {"2-metric": {"sum": {"field": "attributes.money_spent"}}},
+            },
+            "3-bucket": {
+                "filter": {
+                    "bool": {
+                        "filter": [
+                            {
+                                "bool": {
+                                    "should": [
+                                        {
+                                            "term": {
+                                                METRIC_NAME_KEYWORD_FIELD: {
+                                                    "value": MetricName.CONVERSATION_ASSISTANT_USAGE.value
+                                                }
+                                            }
+                                        }
+                                    ],
+                                    "minimum_should_match": 1,
+                                }
+                            }
+                        ]
+                    }
+                },
+                "aggs": {"3-metric": {"cardinality": {"field": "attributes.user_id.keyword"}}},
+            },
+            "4-bucket": {
+                "filter": {"exists": {"field": USER_EMAIL_KEYWORD_FIELD}},
+                "aggs": {
+                    "4-metric": {
+                        "top_metrics": {
+                            "metrics": {"field": USER_EMAIL_KEYWORD_FIELD},
+                            "size": 1,
+                            "sort": {TIMESTAMP_FIELD: "desc"},
+                        }
+                    }
+                },
+            },
+        }
+
+        terms_agg = AggregationBuilder.build_terms_agg(
+            group_by_field=ASSISTANT_NAME_KEYWORD_FIELD,
+            fetch_size=fetch_size,
+            order={"1-bucket": "desc"},
+            sub_aggs=sub_aggs,
+        )
+
+        return {
+            "query": query,
+            "size": 0,
+            "aggs": {"paginated_results": terms_agg},
+        }
+
+    def _parse_top_agents_usage_result(self, result: dict) -> list[dict]:
+        """Parse result for top agents usage."""
+        buckets = result.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
+        rows = []
+        for bucket in buckets:
+            assistant_name = bucket["key"]
+            invocations = bucket.get("1-bucket", {}).get("doc_count", 0)
+            money_spent = bucket.get("2-bucket", {}).get("2-metric", {}).get("value", 0.0)
+            unique_users = bucket.get("3-bucket", {}).get("3-metric", {}).get("value", 0)
+
+            recent_user = None
+            top = bucket.get("4-bucket", {}).get("4-metric", {}).get("top", [])
+            if top:
+                recent_user = top[0].get("metrics", {}).get(USER_EMAIL_KEYWORD_FIELD)
+
+            rows.append(
+                {
+                    "assistant_name": assistant_name,
+                    "invocations": invocations,
+                    "money_spent": round(money_spent or 0, 4),
+                    "unique_users": unique_users,
+                    "recent_user": recent_user or "N/A",
+                }
+            )
+        logger.debug(f"Parsed top-agents-usage result: total_buckets={len(buckets)}, rows_parsed={len(rows)}")
+        return rows
+
+    def _get_top_agents_usage_columns(self) -> list[dict]:
+        """Get column definitions for top agents usage."""
+        return [
+            {"id": "assistant_name", "label": "Assistant Name", "type": "string"},
+            {"id": "invocations", "label": "Invocations", "type": "number"},
+            {"id": "money_spent", "label": "Money Spent ($)", "type": "number", "format": "currency"},
+            {"id": "unique_users", "label": UNIQUE_USERS_LABEL, "type": "number"},
+            {"id": "recent_user", "label": "Recent User", "type": "string"},
+        ]
+
+    async def get_published_to_marketplace(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get published to marketplace analytics: assistants published per user."""
+        logger.info("Requesting published-to-marketplace analytics")
+
+        return await self._pipeline.execute_tabular_query(
+            agg_builder=self._build_published_to_marketplace_aggregation,
+            result_parser=self._parse_published_to_marketplace_result,
+            columns=self._get_published_to_marketplace_columns(),
+            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            metric_filters=[MetricName.PUBLISH_TO_MARKETPLACE.value],
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    def _build_published_to_marketplace_aggregation(self, query: dict, fetch_size: int) -> dict:
+        """Build terms aggregation for published-to-marketplace analytics."""
+        from codemie.service.analytics.aggregation_builder import AggregationBuilder
+
+        def _marketplace_filter() -> dict:
+            return {
+                "bool": {
+                    "filter": [
+                        {
+                            "bool": {
+                                "should": [
+                                    {
+                                        "term": {
+                                            METRIC_NAME_KEYWORD_FIELD: {
+                                                "value": MetricName.PUBLISH_TO_MARKETPLACE.value
+                                            }
+                                        }
+                                    }
+                                ],
+                                "minimum_should_match": 1,
+                            }
+                        }
+                    ]
+                }
+            }
+
+        sub_aggs = {
+            "3-bucket": {
+                "filter": _marketplace_filter(),
+            },
+            "1-bucket": {
+                "filter": _marketplace_filter(),
+                "aggs": {
+                    "1-metric": {
+                        "top_metrics": {
+                            "metrics": {"field": ASSISTANT_NAME_KEYWORD_FIELD},
+                            "size": 1,
+                            "sort": {TIMESTAMP_FIELD: "desc"},
+                        }
+                    }
+                },
+            },
+            "2-bucket": {
+                "filter": _marketplace_filter(),
+                "aggs": {
+                    "2-metric": {
+                        "top_metrics": {
+                            "metrics": {"field": "attributes.project.keyword"},
+                            "size": 1,
+                            "sort": {TIMESTAMP_FIELD: "desc"},
+                        }
+                    }
+                },
+            },
+        }
+
+        terms_agg = AggregationBuilder.build_terms_agg(
+            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            fetch_size=fetch_size,
+            order={"3-bucket": "desc"},
+            sub_aggs=sub_aggs,
+        )
+
+        return {
+            "query": query,
+            "size": 0,
+            "aggs": {"paginated_results": terms_agg},
+        }
+
+    def _parse_published_to_marketplace_result(self, result: dict) -> list[dict]:
+        """Parse result for published-to-marketplace analytics."""
+        buckets = result.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
+        rows = []
+        for bucket in buckets:
+            user_email = bucket["key"]
+            if not user_email:
+                continue
+
+            total_count = bucket.get("3-bucket", {}).get("doc_count", 0)
+            if total_count == 0:
+                continue
+
+            last_assistant = None
+            top1 = bucket.get("1-bucket", {}).get("1-metric", {}).get("top", [])
+            if top1:
+                last_assistant = top1[0].get("metrics", {}).get(ASSISTANT_NAME_KEYWORD_FIELD)
+
+            project = None
+            top2 = bucket.get("2-bucket", {}).get("2-metric", {}).get("top", [])
+            if top2:
+                project = top2[0].get("metrics", {}).get("attributes.project.keyword")
+
+            rows.append(
+                {
+                    "user_email": user_email,
+                    "last_assistant_name": last_assistant or "N/A",
+                    "project": project or "N/A",
+                    "total_count": total_count,
+                }
+            )
+        logger.debug(f"Parsed published-to-marketplace result: total_buckets={len(buckets)}, rows_parsed={len(rows)}")
+        return rows
+
+    def _get_published_to_marketplace_columns(self) -> list[dict]:
+        """Get column definitions for published to marketplace."""
+        return [
+            {"id": "user_email", "label": "User Email", "type": "string"},
+            {"id": "last_assistant_name", "label": "Last Assistant Name", "type": "string"},
+            {"id": "project", "label": "Project", "type": "string"},
+            {"id": "total_count", "label": "Total Published", "type": "number"},
         ]

@@ -45,6 +45,16 @@ class MetricName(str, Enum):
     # MCP metrics (assistant creation/update events with MCP attribution)
     MCP_CREATE_ASSISTANT = "create_assistant"
     MCP_UPDATE_ASSISTANT = "update_assistant"
+    DELETE_ASSISTANT = "delete_assistant"
+
+    # Workflow lifecycle metrics
+    WORKFLOW_CREATED_TOTAL = "workflow_created_total"
+    WORKFLOW_UPDATED_TOTAL = "workflow_updated_total"
+    WORKFLOW_DELETED_TOTAL = "workflow_deleted_total"
+
+    # Sharing and marketplace metrics
+    CONVERSATION_SHARE_CREATE = "conversation_share_create"
+    PUBLISH_TO_MARKETPLACE = "publish_to_marketplace"
 
     # Budget monitoring
     BUDGET_SOFT_LIMIT_WARNING = "codemie_llm_soft_budget_limit"

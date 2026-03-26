@@ -40,6 +40,7 @@ MONEY_SPENT_FIELD = "attributes.money_spent"
 INPUT_TOKENS_FIELD = "attributes.input_tokens"
 OUTPUT_TOKENS_FIELD = "attributes.output_tokens"
 CLI_REQUEST_FIELD = "attributes.cli_request"
+USER_EMAIL_LABEL = "User Email"
 
 
 class UserHandler(CLICostAdjustmentMixin):
@@ -261,7 +262,7 @@ class UserHandler(CLICostAdjustmentMixin):
     def _get_users_spending_columns(self) -> list[dict]:
         """Get column definitions for users spending."""
         return [
-            {"id": "user_email", "label": "User Email", "type": "string"},
+            {"id": "user_email", "label": USER_EMAIL_LABEL, "type": "string"},
             {"id": "total_cost_usd", "label": "Total Cost ($)", "type": "number", "format": "currency"},
         ]
 
@@ -875,4 +876,202 @@ class UserHandler(CLICostAdjustmentMixin):
         return [
             {"id": "date", "label": "Date", "type": "date"},
             {"id": "unique_users", "label": "Unique Users", "type": "number"},
+        ]
+
+    async def get_power_users(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get power users analytics: assistant and workflow creation/update/deletion activity per user."""
+        logger.info("Requesting power-users analytics")
+
+        return await self._pipeline.execute_tabular_query(
+            agg_builder=self._build_power_users_aggregation,
+            result_parser=self._parse_power_users_result,
+            columns=self._get_power_users_columns(),
+            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            metric_filters=None,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    def _build_power_users_aggregation(self, query: dict, fetch_size: int) -> dict:
+        """Build terms aggregation for power users with assistant/workflow lifecycle counts."""
+        from codemie.service.analytics.aggregation_builder import AggregationBuilder
+
+        def _metric_filter(metric_value: str) -> dict:
+            return {
+                "filter": {
+                    "bool": {
+                        "filter": [
+                            {
+                                "bool": {
+                                    "should": [{"term": {METRIC_NAME_KEYWORD_FIELD: {"value": metric_value}}}],
+                                    "minimum_should_match": 1,
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+
+        sub_aggs = {
+            "1-bucket": _metric_filter(MetricName.MCP_CREATE_ASSISTANT.value),
+            "2-bucket": _metric_filter(MetricName.MCP_UPDATE_ASSISTANT.value),
+            "3-bucket": _metric_filter(MetricName.DELETE_ASSISTANT.value),
+            "4-bucket": _metric_filter(MetricName.WORKFLOW_CREATED_TOTAL.value),
+            "5-bucket": _metric_filter(MetricName.WORKFLOW_UPDATED_TOTAL.value),
+            "6-bucket": _metric_filter(MetricName.WORKFLOW_DELETED_TOTAL.value),
+        }
+
+        terms_agg = AggregationBuilder.build_terms_agg(
+            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            fetch_size=fetch_size,
+            order={"1-bucket": "desc"},
+            sub_aggs=sub_aggs,
+        )
+
+        return {
+            "query": query,
+            "size": 0,
+            "aggs": {"paginated_results": terms_agg},
+        }
+
+    def _parse_power_users_result(self, result: dict) -> list[dict]:
+        """Parse result for power users analytics."""
+        buckets = result.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
+        rows = []
+        for bucket in buckets:
+            user_email = bucket["key"]
+            if not user_email:
+                continue
+            rows.append(
+                {
+                    "user_email": user_email,
+                    "created_assistants": bucket.get("1-bucket", {}).get("doc_count", 0),
+                    "updated_assistants": bucket.get("2-bucket", {}).get("doc_count", 0),
+                    "deleted_assistants": bucket.get("3-bucket", {}).get("doc_count", 0),
+                    "created_workflows": bucket.get("4-bucket", {}).get("doc_count", 0),
+                    "updated_workflows": bucket.get("5-bucket", {}).get("doc_count", 0),
+                    "deleted_workflows": bucket.get("6-bucket", {}).get("doc_count", 0),
+                }
+            )
+        logger.debug(f"Parsed power-users result: total_buckets={len(buckets)}, rows_parsed={len(rows)}")
+        return rows
+
+    def _get_power_users_columns(self) -> list[dict]:
+        """Get column definitions for power users."""
+        return [
+            {"id": "user_email", "label": USER_EMAIL_LABEL, "type": "string"},
+            {"id": "created_assistants", "label": "Created Assistants", "type": "number"},
+            {"id": "updated_assistants", "label": "Updated Assistants", "type": "number"},
+            {"id": "deleted_assistants", "label": "Deleted Assistants", "type": "number"},
+            {"id": "created_workflows", "label": "Created Workflows", "type": "number"},
+            {"id": "updated_workflows", "label": "Updated Workflows", "type": "number"},
+            {"id": "deleted_workflows", "label": "Deleted Workflows", "type": "number"},
+        ]
+
+    async def get_knowledge_sharing(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get knowledge sharing analytics: conversation share counts per user."""
+        logger.info("Requesting knowledge-sharing analytics")
+
+        return await self._pipeline.execute_tabular_query(
+            agg_builder=self._build_knowledge_sharing_aggregation,
+            result_parser=self._parse_knowledge_sharing_result,
+            columns=self._get_knowledge_sharing_columns(),
+            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            metric_filters=None,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    def _build_knowledge_sharing_aggregation(self, query: dict, fetch_size: int) -> dict:
+        """Build terms aggregation for knowledge sharing (conversation shares per user)."""
+        from codemie.service.analytics.aggregation_builder import AggregationBuilder
+
+        sub_aggs = {
+            "1-bucket": {
+                "filter": {
+                    "bool": {
+                        "filter": [
+                            {
+                                "bool": {
+                                    "should": [
+                                        {
+                                            "term": {
+                                                METRIC_NAME_KEYWORD_FIELD: {
+                                                    "value": MetricName.CONVERSATION_SHARE_CREATE.value
+                                                }
+                                            }
+                                        }
+                                    ],
+                                    "minimum_should_match": 1,
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        }
+
+        terms_agg = AggregationBuilder.build_terms_agg(
+            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            fetch_size=fetch_size,
+            order={"1-bucket": "desc"},
+            sub_aggs=sub_aggs,
+        )
+
+        return {
+            "query": query,
+            "size": 0,
+            "aggs": {"paginated_results": terms_agg},
+        }
+
+    def _parse_knowledge_sharing_result(self, result: dict) -> list[dict]:
+        """Parse result for knowledge sharing analytics."""
+        buckets = result.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
+        rows = []
+        for bucket in buckets:
+            user_email = bucket["key"]
+            if not user_email:
+                continue
+            rows.append(
+                {
+                    "user_email": user_email,
+                    "shared_chats": bucket.get("1-bucket", {}).get("doc_count", 0),
+                }
+            )
+        logger.debug(f"Parsed knowledge-sharing result: total_buckets={len(buckets)}, rows_parsed={len(rows)}")
+        return rows
+
+    def _get_knowledge_sharing_columns(self) -> list[dict]:
+        """Get column definitions for knowledge sharing."""
+        return [
+            {"id": "user_email", "label": USER_EMAIL_LABEL, "type": "string"},
+            {"id": "shared_chats", "label": "Shared Chats", "type": "number"},
         ]

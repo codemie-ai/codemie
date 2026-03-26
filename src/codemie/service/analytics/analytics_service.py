@@ -783,6 +783,112 @@ class AnalyticsService:
             per_page=per_page,
         )
 
+    # Platform activity endpoints
+    async def get_power_users(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get power users analytics."""
+        return await self._user_handler.get_power_users(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_knowledge_sharing(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get knowledge sharing analytics."""
+        return await self._user_handler.get_knowledge_sharing(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_top_agents_usage(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get top agents usage analytics."""
+        return await self._assistant_handler.get_top_agents_usage(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_top_workflow_usage(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get top workflow usage analytics."""
+        return await self._workflow_handler.get_top_workflow_usage(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_published_to_marketplace(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get published to marketplace analytics."""
+        return await self._assistant_handler.get_published_to_marketplace(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
     # Webhook endpoints
     async def get_webhooks_invocation(
         self,

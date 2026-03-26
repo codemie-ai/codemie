@@ -831,6 +831,152 @@ async def get_agents_usage(
 
 
 @router.get(
+    "/power-users", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("power users analytics")
+async def get_power_users(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get power users analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_power_users(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/knowledge-sharing", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("knowledge sharing analytics")
+async def get_knowledge_sharing(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get knowledge sharing analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_knowledge_sharing(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/top-agents-usage", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
+)
+@handle_analytics_errors("top agents usage analytics")
+async def get_top_agents_usage(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get top agents usage analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_top_agents_usage(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/top-workflow-usage",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+)
+@handle_analytics_errors("top workflow usage analytics")
+async def get_top_workflow_usage(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get top workflow usage analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_top_workflow_usage(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/published-to-marketplace",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+)
+@handle_analytics_errors("published to marketplace analytics")
+async def get_published_to_marketplace(
+    user: User = Depends(authenticate),
+    time_period: str | None = Query(None),
+    start_date: datetime | None = Query(None),
+    end_date: datetime | None = Query(None),
+    users: str | None = Query(None),
+    projects: str | None = Query(None),
+    page: int = Query(0, ge=0),
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+) -> JSONResponse:
+    """Get published to marketplace analytics."""
+    service = AnalyticsService(user)
+    data = await service.get_published_to_marketplace(
+        time_period,
+        start_date,
+        end_date,
+        [u.strip() for u in users.split(",")] if users else None,
+        [p.strip() for p in projects.split(",")] if projects else None,
+        page,
+        per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
     "/webhooks-invocation", status_code=status.HTTP_200_OK, response_model=TabularResponse, response_model_by_alias=True
 )
 @handle_analytics_errors("webhooks invocation analytics")

@@ -56,24 +56,18 @@ class WebhookHandler:
         page: int = 0,
         per_page: int = 20,
     ) -> dict:
-        """Get webhooks invocation analytics with accurate row-level pagination.
+        """Get webhooks invocation analytics grouped by user.
 
-        Returns webhook invocation data as (user, webhook_alias) combinations.
-        Each row represents a unique user-webhook pair with its invocation count.
+        Returns one row per user with total invocations, most recent project, and most recent webhook alias.
         """
         logger.info("Requesting webhooks-invocation analytics")
 
-        # Use specialized method for nested/flattened aggregations to ensure accurate row-level pagination
-        return await self._pipeline.execute_tabular_query_with_flattened_rows(
+        return await self._pipeline.execute_tabular_query(
             agg_builder=lambda query, fetch_size: self._build_webhooks_invocation_aggregation(query, fetch_size),
             result_parser=self._parse_webhooks_invocation_result,
             columns=self._get_webhooks_invocation_columns(),
-            flattening_multiplier=20,  # Higher multiplier for many webhook-user combinations
-            sort_keys=[
-                ("total_invocations", True),  # Primary: Most active first (DESC)
-                ("user_id", False),  # Secondary: Alphabetical (ASC)
-                ("webhook_alias", False),  # Tertiary: Alphabetical (ASC)
-            ],
+            group_by_field=USER_ID_KEYWORD_FIELD,
+            metric_filters=[MetricName.WEBHOOK_INVOCATION_TOTAL.value],
             time_period=time_period,
             start_date=start_date,
             end_date=end_date,
@@ -84,105 +78,126 @@ class WebhookHandler:
         )
 
     def _build_webhooks_invocation_aggregation(self, query: dict, fetch_size: int) -> dict:
-        """Build nested terms aggregation for user and webhook combinations.
+        """Build terms aggregation for webhooks invocation grouped by user."""
+        from codemie.service.analytics.aggregation_builder import AggregationBuilder
 
-        Creates a nested aggregation: user_id -> webhook_alias to get accurate
-        invocation counts per (user, webhook) pair. This prevents overcounting
-        when a user has invoked multiple different webhooks.
-        """
-        # Enhance base query to filter for webhook metrics BEFORE aggregation
-        # This ensures only users with webhook activity are counted and paginated
-        enhanced_query = {
-            "bool": {
-                "must": [
-                    query,  # Original query (time, user, project filters)
-                    {
-                        "bool": {
-                            "should": [
-                                {
-                                    "term": {
-                                        METRIC_NAME_KEYWORD_FIELD: {"value": MetricName.WEBHOOK_INVOCATION_TOTAL.value}
-                                    }
+        sub_aggs = {
+            AGG_WEBHOOK_FILTER: {
+                "filter": {
+                    "bool": {
+                        "filter": [
+                            {
+                                "bool": {
+                                    "should": [
+                                        {
+                                            "term": {
+                                                METRIC_NAME_KEYWORD_FIELD: {
+                                                    "value": MetricName.WEBHOOK_INVOCATION_TOTAL.value
+                                                }
+                                            }
+                                        }
+                                    ],
+                                    "minimum_should_match": 1,
                                 }
-                            ],
-                            "minimum_should_match": 1,
-                        }
-                    },
-                ],
-                "filter": [{"exists": {"field": WEBHOOK_ALIAS_KEYWORD_FIELD}}],
-                "must_not": [{"term": {WEBHOOK_RESOURCE_TYPE_KEYWORD_FIELD: {"value": "verification"}}}],
-            }
-        }
-
-        # Build nested aggregation: user_id -> webhook_alias
-        # Fetch more user buckets to ensure proper pagination after flattening
-        # Use larger multipliers to handle many webhook-user combinations
-        user_fetch_size = max(fetch_size * 3, 200)
-        # Set webhook_fetch_size large enough to capture all webhooks per user
-        # For large datasets, this ensures we don't truncate results
-        webhook_fetch_size = max(fetch_size * 2, 500)
-
-        # Construct full aggregation body with nested terms
-        agg_body = {
-            "query": enhanced_query,
-            "size": 0,
-            "aggs": {
-                AGG_PAGINATED_RESULTS: {
-                    "terms": {
-                        "field": USER_ID_KEYWORD_FIELD,
-                        "size": user_fetch_size,
-                    },
-                    "aggs": {
-                        "webhooks": {
-                            "terms": {
-                                "field": WEBHOOK_ALIAS_KEYWORD_FIELD,
-                                "size": webhook_fetch_size,
-                                "order": {"_count": "desc"},
                             }
+                        ]
+                    }
+                },
+                "aggs": {
+                    "1-metric": {
+                        "top_metrics": {
+                            "metrics": {"field": "attributes.project.keyword"},
+                            "size": 1,
+                            "sort": {"@timestamp": "desc"},
                         }
-                    },
-                }
+                    }
+                },
+            },
+            AGG_ALIAS_FILTER: {
+                "filter": {"exists": {"field": WEBHOOK_ALIAS_KEYWORD_FIELD}},
+                "aggs": {
+                    AGG_ALIAS_METRIC: {
+                        "top_metrics": {
+                            "metrics": {"field": WEBHOOK_ALIAS_KEYWORD_FIELD},
+                            "size": 1,
+                            "sort": {"@timestamp": "desc"},
+                        }
+                    }
+                },
+            },
+            "3-bucket": {
+                "filter": {
+                    "bool": {
+                        "filter": [
+                            {
+                                "bool": {
+                                    "should": [
+                                        {
+                                            "term": {
+                                                METRIC_NAME_KEYWORD_FIELD: {
+                                                    "value": MetricName.WEBHOOK_INVOCATION_TOTAL.value
+                                                }
+                                            }
+                                        }
+                                    ],
+                                    "minimum_should_match": 1,
+                                }
+                            }
+                        ]
+                    }
+                },
             },
         }
 
-        return agg_body
+        terms_agg = AggregationBuilder.build_terms_agg(
+            group_by_field=USER_ID_KEYWORD_FIELD,
+            fetch_size=fetch_size,
+            order={"3-bucket": "desc"},
+            sub_aggs=sub_aggs,
+        )
+
+        return {
+            "query": query,
+            "size": 0,
+            "aggs": {AGG_PAGINATED_RESULTS: terms_agg},
+        }
 
     def _parse_webhooks_invocation_result(self, result: dict) -> list[dict]:
-        """Parse nested result and flatten to user-webhook combinations.
-
-        Extracts (user_id, webhook_alias, invocation_count) tuples from the
-        nested aggregation structure. Sorting is handled by query_pipeline
-        for consistent pagination.
-        """
-        # Extract user buckets from paginated_results
-        user_buckets = result.get("aggregations", {}).get(AGG_PAGINATED_RESULTS, {}).get("buckets", [])
+        """Parse result for webhooks invocation (one row per user)."""
+        buckets = result.get("aggregations", {}).get(AGG_PAGINATED_RESULTS, {}).get("buckets", [])
 
         rows = []
-        for user_bucket in user_buckets:
-            user_id = user_bucket["key"]
-            # Extract nested webhook buckets
-            webhook_buckets = user_bucket.get("webhooks", {}).get("buckets", [])
+        for bucket in buckets:
+            user_id = bucket["key"]
+            total_invocations = bucket.get("3-bucket", {}).get("doc_count", 0)
 
-            for webhook_bucket in webhook_buckets:
-                rows.append(
-                    {
-                        "user_id": user_id,
-                        "webhook_alias": webhook_bucket["key"],
-                        "total_invocations": webhook_bucket["doc_count"],
-                    }
-                )
+            project = None
+            top1 = bucket.get(AGG_WEBHOOK_FILTER, {}).get("1-metric", {}).get("top", [])
+            if top1:
+                project = top1[0].get("metrics", {}).get("attributes.project.keyword")
 
-        logger.debug(
-            f"Parsed webhooks-invocation result: "
-            f"total_user_buckets={len(user_buckets)}, "
-            f"total_combinations={len(rows)}"
-        )
+            webhook_alias = None
+            top2 = bucket.get(AGG_ALIAS_FILTER, {}).get(AGG_ALIAS_METRIC, {}).get("top", [])
+            if top2:
+                webhook_alias = top2[0].get("metrics", {}).get(WEBHOOK_ALIAS_KEYWORD_FIELD)
+
+            rows.append(
+                {
+                    "user_id": user_id,
+                    "project": project or "N/A",
+                    "webhook_alias": webhook_alias or "N/A",
+                    "total_invocations": total_invocations,
+                }
+            )
+
+        logger.debug(f"Parsed webhooks-invocation result: total_buckets={len(buckets)}, rows_parsed={len(rows)}")
         return rows
 
     def _get_webhooks_invocation_columns(self) -> list[dict]:
         """Get column definitions for webhooks invocation."""
         return [
             {"id": "user_id", "label": "User", "type": "string"},
-            {"id": "total_invocations", "label": "Total Invocations", "type": "number"},
+            {"id": "project", "label": "Project", "type": "string"},
             {"id": "webhook_alias", "label": "Webhook Alias", "type": "string"},
+            {"id": "total_invocations", "label": "Total Invocations", "type": "number"},
         ]

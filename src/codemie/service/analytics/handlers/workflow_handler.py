@@ -21,7 +21,7 @@ from datetime import datetime
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
-from codemie.service.analytics.handlers.field_constants import USER_NAME_KEYWORD_FIELD
+from codemie.service.analytics.handlers.field_constants import USER_EMAIL_KEYWORD_FIELD, USER_NAME_KEYWORD_FIELD
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
 
@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 # Elasticsearch field constants
 STATUS_FIELD = "attributes.status.keyword"
 EXECUTION_ID_KEYWORD_FIELD = "attributes.execution_id.keyword"
+WORKFLOW_NAME_KEYWORD_FIELD = "attributes.workflow_name.keyword"
 
 
 class WorkflowHandler:
@@ -59,7 +60,7 @@ class WorkflowHandler:
             agg_builder=lambda query, fetch_size: self._build_workflows_aggregation(query, fetch_size),
             result_parser=self._parse_workflows_result,
             columns=self._get_workflows_columns(),
-            group_by_field="attributes.workflow_name.keyword",
+            group_by_field=WORKFLOW_NAME_KEYWORD_FIELD,
             metric_filters=[MetricName.WORKFLOW_EXECUTION_TOTAL.value],
             time_period=time_period,
             start_date=start_date,
@@ -68,6 +69,7 @@ class WorkflowHandler:
             projects=projects,
             page=page,
             per_page=per_page,
+            use_bucket_selector=True,
         )
 
     def _build_workflows_aggregation(self, query: dict, fetch_size: int) -> dict:
@@ -117,7 +119,7 @@ class WorkflowHandler:
 
         # Build terms aggregation using helper
         terms_agg = AggregationBuilder.build_terms_agg(
-            group_by_field="attributes.workflow_name.keyword",
+            group_by_field=WORKFLOW_NAME_KEYWORD_FIELD,
             fetch_size=fetch_size,
             order={"_count": "desc"},
             sub_aggs=sub_aggs,
@@ -203,4 +205,131 @@ class WorkflowHandler:
             {"id": "avg_time_seconds", "label": "Avg Time (s)", "type": "number"},
             {"id": "users", "label": "Users", "type": "number"},
             {"id": "last_run", "label": "Last Run", "type": "string", "format": "timestamp"},
+        ]
+
+    async def get_top_workflow_usage(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Get top workflow usage: invocations, cost, unique users, and most recent user per workflow."""
+        from codemie.service.analytics.handlers.field_constants import METRIC_NAME_KEYWORD_FIELD
+
+        logger.info("Requesting top-workflow-usage analytics")
+
+        return await self._pipeline.execute_tabular_query(
+            agg_builder=lambda query, fetch_size: self._build_top_workflow_usage_aggregation(
+                query, fetch_size, METRIC_NAME_KEYWORD_FIELD
+            ),
+            result_parser=self._parse_top_workflow_usage_result,
+            columns=self._get_top_workflow_usage_columns(),
+            group_by_field=WORKFLOW_NAME_KEYWORD_FIELD,
+            metric_filters=None,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+            use_bucket_selector=True,
+        )
+
+    def _build_top_workflow_usage_aggregation(self, query: dict, fetch_size: int, metric_name_field: str) -> dict:
+        """Build terms aggregation for top workflow usage."""
+        from codemie.service.analytics.aggregation_builder import AggregationBuilder
+
+        def _workflow_filter() -> dict:
+            return {
+                "bool": {
+                    "filter": [
+                        {
+                            "bool": {
+                                "should": [
+                                    {"term": {metric_name_field: {"value": MetricName.WORKFLOW_EXECUTION_TOTAL.value}}}
+                                ],
+                                "minimum_should_match": 1,
+                            }
+                        }
+                    ]
+                }
+            }
+
+        sub_aggs = {
+            "1-bucket": {"filter": _workflow_filter()},
+            "2-bucket": {
+                "filter": _workflow_filter(),
+                "aggs": {"2-metric": {"sum": {"field": "attributes.money_spent"}}},
+            },
+            "3-bucket": {
+                "filter": _workflow_filter(),
+                "aggs": {"3-metric": {"cardinality": {"field": "attributes.user_id.keyword"}}},
+            },
+            "4-bucket": {
+                "filter": {"exists": {"field": USER_EMAIL_KEYWORD_FIELD}},
+                "aggs": {
+                    "4-metric": {
+                        "top_metrics": {
+                            "metrics": {"field": USER_EMAIL_KEYWORD_FIELD},
+                            "size": 1,
+                            "sort": {"@timestamp": "desc"},
+                        }
+                    }
+                },
+            },
+        }
+
+        terms_agg = AggregationBuilder.build_terms_agg(
+            group_by_field=WORKFLOW_NAME_KEYWORD_FIELD,
+            fetch_size=fetch_size,
+            order={"1-bucket": "desc"},
+            sub_aggs=sub_aggs,
+        )
+
+        return {
+            "query": query,
+            "size": 0,
+            "aggs": {"paginated_results": terms_agg},
+        }
+
+    def _parse_top_workflow_usage_result(self, result: dict) -> list[dict]:
+        """Parse result for top workflow usage."""
+        buckets = result.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
+        rows = []
+        for bucket in buckets:
+            workflow_name = bucket["key"]
+            invocations = bucket.get("1-bucket", {}).get("doc_count", 0)
+            money_spent = bucket.get("2-bucket", {}).get("2-metric", {}).get("value", 0.0)
+            unique_users = bucket.get("3-bucket", {}).get("3-metric", {}).get("value", 0)
+
+            recent_user = None
+            top = bucket.get("4-bucket", {}).get("4-metric", {}).get("top", [])
+            if top:
+                recent_user = top[0].get("metrics", {}).get(USER_EMAIL_KEYWORD_FIELD)
+
+            rows.append(
+                {
+                    "workflow_name": workflow_name,
+                    "invocations": invocations,
+                    "money_spent": round(money_spent or 0, 4),
+                    "unique_users": unique_users,
+                    "recent_user": recent_user or "N/A",
+                }
+            )
+        logger.debug(f"Parsed top-workflow-usage result: total_buckets={len(buckets)}, rows_parsed={len(rows)}")
+        return rows
+
+    def _get_top_workflow_usage_columns(self) -> list[dict]:
+        """Get column definitions for top workflow usage."""
+        return [
+            {"id": "workflow_name", "label": "Workflow Name", "type": "string"},
+            {"id": "invocations", "label": "Invocations", "type": "number"},
+            {"id": "money_spent", "label": "Money Spent ($)", "type": "number", "format": "currency"},
+            {"id": "unique_users", "label": "Unique Users", "type": "number"},
+            {"id": "recent_user", "label": "Recent User", "type": "string"},
         ]
