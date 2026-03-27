@@ -1917,33 +1917,6 @@ def _save_error(
     )
 
 
-def _resolve_billing_project(assistant: Assistant, user: User) -> str:
-    """Return the project to use for billing/analytics attribution.
-
-    For marketplace assistants accessed by non-members, redirect spend
-    to the user's personal project (named after their email) instead of
-    the assistant's owner project.
-    """
-    if not assistant.project:
-        raise ExtendedHTTPException(
-            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            message="Assistant project is not set",
-            details=f"Assistant {assistant.id} has no project assigned.",
-        )
-    if not assistant.is_global:
-        return assistant.project
-    user_projects = set(user.project_names or []) | set(user.admin_project_names or [])
-    if assistant.project in user_projects:
-        return assistant.project
-    if not user.email:
-        raise ExtendedHTTPException(
-            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            message="User email is not set",
-            details=f"Cannot determine billing project for user {user.id}: email is empty.",
-        )
-    return user.email
-
-
 def _ask_assistant(
     assistant: Assistant,
     raw_request: Request,
@@ -1990,14 +1963,6 @@ def _ask_assistant(
 
     try:
         assistant_user_interaction_service.record_usage(assistant=assistant, user=user)
-
-        billing_project = _resolve_billing_project(assistant, user)
-        if billing_project != assistant.project:
-            logger.info(
-                f"Billing project substituted for non-member marketplace access: "
-                f"assistant={assistant.id}, original_project={assistant.project}, billing_project={billing_project}"
-            )
-            assistant = assistant.model_copy(update={"project": billing_project})
 
         request_summary_manager.create_request_summary(
             request_id=request_uuid,
