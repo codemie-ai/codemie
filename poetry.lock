@@ -10463,4 +10463,4 @@ pdf-svg = ["cairosvg"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<3.14"
-content-hash = "c718a55a80ffe2ea470da6a0e4bae3086be9172adcd93b9828e2caf99a3278e2"
+content-hash = "5772a70ba1bd808feade7048611997a6364f58bd732837b4b17c9af3b4b3473e"

@@ -35,6 +35,7 @@ from codemie.core.constants import (
 )
 from codemie.enterprise.litellm.proxy_router import (
     _build_premium_budget_error_body,
+    _check_cli_version,
     _emit_proxy_llm_error_log,
     _extract_request_info,
     _get_integration_api_key,
@@ -1240,3 +1241,94 @@ class TestHandleErrorResponse:
 
         mock_response.aclose.assert_called_once()
         assert result.status_code == 500
+
+
+class TestCheckCliVersion:
+    def _make_request(self, headers: dict) -> MagicMock:
+        """Return a minimal mock Request with the given headers."""
+        mock_request = MagicMock()
+        mock_request.headers = Headers(headers)
+        return mock_request
+
+    def test_check_disabled_when_min_version_empty(self):
+        """No exception when CODEMIE_MIN_CLI_VERSION is empty (feature disabled)."""
+        request = self._make_request({})
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.CODEMIE_MIN_CLI_VERSION = ""
+            _check_cli_version(request)  # must not raise
+
+    def test_lower_version_is_rejected(self):
+        """CLI version below minimum → HTTP 426."""
+        request = self._make_request({HEADER_CODEMIE_CLI: "0.9.0"})
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.CODEMIE_MIN_CLI_VERSION = "1.0.0"
+            with pytest.raises(HTTPException) as exc_info:
+                _check_cli_version(request)
+        assert exc_info.value.status_code == 426
+        assert "0.9.0" in exc_info.value.detail
+        assert "1.0.0" in exc_info.value.detail
+
+    def test_equal_version_is_allowed(self):
+        """CLI version equal to minimum → allowed (no exception)."""
+        request = self._make_request({HEADER_CODEMIE_CLI: "1.0.0"})
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.CODEMIE_MIN_CLI_VERSION = "1.0.0"
+            _check_cli_version(request)  # must not raise
+
+    def test_higher_version_is_allowed(self):
+        """CLI version above minimum → allowed (no exception)."""
+        request = self._make_request({HEADER_CODEMIE_CLI: "2.3.1"})
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.CODEMIE_MIN_CLI_VERSION = "1.0.0"
+            _check_cli_version(request)  # must not raise
+
+    def test_missing_header_is_allowed(self):
+        """Missing X-CodeMie-CLI header → non-CLI request, allowed even when min version configured."""
+        request = self._make_request({})
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.CODEMIE_MIN_CLI_VERSION = "1.0.0"
+            _check_cli_version(request)  # must not raise — non-CLI client
+
+    def test_invalid_version_format_is_rejected(self):
+        """Invalid/unparseable version string → HTTP 426."""
+        request = self._make_request({HEADER_CODEMIE_CLI: "not-a-version"})
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.CODEMIE_MIN_CLI_VERSION = "1.0.0"
+            with pytest.raises(HTTPException) as exc_info:
+                _check_cli_version(request)
+        assert exc_info.value.status_code == 426
+
+    def test_misconfigured_min_version_raises_server_error(self):
+        """Invalid CODEMIE_MIN_CLI_VERSION in config → server error (not a 426 aimed at the client)."""
+        from packaging.version import InvalidVersion
+
+        request = self._make_request({HEADER_CODEMIE_CLI: "1.0.0"})
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.CODEMIE_MIN_CLI_VERSION = "not-a-version"
+            with pytest.raises(InvalidVersion):
+                _check_cli_version(request)
+
+    def test_slash_format_valid_version_is_allowed(self):
+        """Header in 'codemie-cli/X.Y.Z' format with sufficient version → allowed."""
+        request = self._make_request({HEADER_CODEMIE_CLI: "codemie-cli/1.5.0"})
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.CODEMIE_MIN_CLI_VERSION = "1.0.0"
+            _check_cli_version(request)  # must not raise
+
+    def test_slash_format_low_version_is_rejected(self):
+        """Header in 'codemie-cli/X.Y.Z' format with version below minimum → HTTP 426."""
+        request = self._make_request({HEADER_CODEMIE_CLI: "codemie-cli/0.5.0"})
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.CODEMIE_MIN_CLI_VERSION = "1.0.0"
+            with pytest.raises(HTTPException) as exc_info:
+                _check_cli_version(request)
+        assert exc_info.value.status_code == 426
+
+    def test_slash_format_empty_version_is_rejected(self):
+        """Header 'codemie-cli/' (slash with empty version part) → HTTP 426, not 500."""
+        request = self._make_request({HEADER_CODEMIE_CLI: "codemie-cli/"})
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.CODEMIE_MIN_CLI_VERSION = "1.0.0"
+            with pytest.raises(HTTPException) as exc_info:
+                _check_cli_version(request)
+        assert exc_info.value.status_code == 426

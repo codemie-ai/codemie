@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
+from packaging.version import InvalidVersion, Version
 from starlette.datastructures import Headers
 from starlette.responses import StreamingResponse
 
@@ -125,6 +126,53 @@ proxy_router = APIRouter(
     prefix="",
     dependencies=[],
 )
+
+
+def _check_cli_version(request: Request) -> None:
+    """Reject CLI requests whose X-CodeMie-CLI version is below the configured minimum.
+
+    Non-CLI requests (no header) and requests when CODEMIE_MIN_CLI_VERSION is unset
+    are always allowed through.
+    """
+    min_version_str = config.CODEMIE_MIN_CLI_VERSION
+    if not min_version_str:
+        return
+
+    cli_header = request.headers.get(HEADER_CODEMIE_CLI, "").strip()
+    if not cli_header:
+        return
+
+    # Misconfigured CODEMIE_MIN_CLI_VERSION — InvalidVersion propagates as 500.
+    min_version = Version(min_version_str)
+
+    # Header is either "codemie-cli/X.Y.Z" or plain "X.Y.Z".
+    version_str = cli_header.rsplit("/", 1)[-1]
+
+    try:
+        cli_version = Version(version_str)
+    except InvalidVersion:
+        logger.warning(
+            f"Rejected proxy request: invalid CLI version header '{cli_header}', minimum required is {min_version_str}"
+        )
+        raise HTTPException(
+            status_code=426,
+            detail=(
+                f"Unsupported CodeMie CLI version '{cli_header}'. "
+                f"Please upgrade to CodeMie CLI {min_version_str} or higher. "
+                f"Run: npm install -g @codemieai/code"
+            ),
+        )
+
+    if cli_version < min_version:
+        logger.warning(f"Rejected proxy request: CLI version '{cli_version}' is below minimum '{min_version_str}'")
+        raise HTTPException(
+            status_code=426,
+            detail=(
+                f"Unsupported CodeMie CLI version '{cli_version}'. "
+                f"Please upgrade to CodeMie CLI {min_version_str} or higher. "
+                f"Run: npm install -g @codemieai/code"
+            ),
+        )
 
 
 def _extract_request_info(headers: Headers | httpx.Headers | dict) -> dict:
@@ -717,6 +765,9 @@ async def _proxy_to_llm_proxy(
         StreamingResponse: Proxied response
     """
     start_time = datetime.now()
+
+    # Check CLI version
+    _check_cli_version(request)
 
     # Extract request info (uses codemie constants)
     request_info = _extract_request_info(request.headers)

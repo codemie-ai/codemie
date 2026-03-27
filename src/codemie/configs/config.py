@@ -455,6 +455,8 @@ class Config(BaseSettings):
     LITELLM_PREMIUM_MODELS_ALIASES: List[str] = []
     # Budget name for proxy spend attribution. When empty, proxy requests continue using the default budget.
     LITELLM_CLI_BUDGET_NAME: str = ""
+    # Minimum supported CodeMie CLI version for proxy requests.
+    CODEMIE_MIN_CLI_VERSION: str = "0.0.47"
 
     # LiteLLM Cache and Optimization Configuration
     LITELLM_CUSTOMER_CACHE_TTL: int = 300  # 5 minutes - cache customer info TTL
