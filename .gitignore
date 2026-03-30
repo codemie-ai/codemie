@@ -50,3 +50,4 @@ bmad/*
 /.hypothesis/
 /.github/agents/
 /.gitleaksignore
+/.claude/skills/bmad*

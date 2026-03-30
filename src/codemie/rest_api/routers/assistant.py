@@ -1160,7 +1160,7 @@ def publish_assistant_to_marketplace(
     # Set LiteLLM context with user's credentials
     from codemie.service.llm_service.utils import set_llm_context
 
-    set_llm_context(project_name=user.current_project, user_id=user.id)
+    set_llm_context(None, user.current_project, user)
 
     # Track if user bypassed recommendations (for ES analytics)
     published_with_bypass = False
@@ -1488,7 +1488,7 @@ def generate_assistant(raw_request: Request, request: AssistantGeneratorRequest,
         # Set LiteLLM context with user's credentials
         from codemie.service.llm_service.utils import set_llm_context
 
-        set_llm_context(project_name=user.current_project, user_id=user.id)
+        set_llm_context(None, user.current_project, user)
 
         result = AssistantGeneratorService.generate_assistant_details(
             text=request.text,
@@ -1527,7 +1527,7 @@ def generate_assistant_prompt(
         # Set LiteLLM context with user's credentials
         from codemie.service.llm_service.utils import set_llm_context
 
-        set_llm_context(project_name=user.current_project, user_id=user.id)
+        set_llm_context(None, user.current_project, user)
 
         result = AssistantGeneratorService.generate_assistant_prompt(
             user=user,
@@ -1567,7 +1567,7 @@ def refine_with_ai(
         # Set LiteLLM context with user's credentials
         from codemie.service.llm_service.utils import set_llm_context
 
-        set_llm_context(project_name=request.project or user.current_project, user_id=user.id)
+        set_llm_context(None, request.project or user.current_project, user)
 
         refine_details = RefinePromptDetails(
             name=request.name,
@@ -2645,7 +2645,7 @@ def _index_marketplace_assistant(assistant_id: str, user: User, is_update: bool 
 
     from codemie.service.llm_service.utils import set_llm_context
 
-    set_llm_context(project_name=user.current_project, user_id=user.id)
+    set_llm_context(None, user.current_project, user)
 
     operation = "reindexing" if is_update else "indexing"
     try:
@@ -2678,7 +2678,7 @@ def _remove_marketplace_assistant(assistant_id: str, assistant_name: str, user: 
 
     from codemie.service.llm_service.utils import set_llm_context
 
-    set_llm_context(project_name=user.current_project, user_id=user.id)
+    set_llm_context(None, user.current_project, user)
 
     try:
         PlatformIndexingService.remove_single_assistant(assistant_id, assistant_name, user=user)

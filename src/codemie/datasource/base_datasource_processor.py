@@ -158,7 +158,7 @@ class BaseDatasourceProcessor(ABC):
             self.loader = self._init_loader()
             self._on_process_start()
             if self.index and self.user:
-                set_llm_context(self.index.project_name, self.user.id)
+                set_llm_context(None, self.index.project_name, self.user)
             start_time = time.time()
             datasource_remote_stats = self.loader.fetch_remote_stats()
             expected_docs_count = datasource_remote_stats.get(BaseDatasourceLoader.DOCUMENTS_COUNT_KEY)

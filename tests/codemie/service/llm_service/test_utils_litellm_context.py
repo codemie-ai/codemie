@@ -36,6 +36,8 @@ class TestSetLLMContext:
         # Arrange
         project_name = "test-project"
         user_id = "test-user-123"
+        mock_user = MagicMock()
+        mock_user.id = user_id
 
         # Mock LiteLLM credentials
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -48,7 +50,7 @@ class TestSetLLMContext:
         mock_settings_service.get_dial_creds.return_value = dial_creds
 
         # Act
-        set_llm_context(project_name, user_id)
+        set_llm_context(None, project_name, mock_user)
 
         # Assert
         # Verify SettingsService calls
@@ -79,6 +81,8 @@ class TestSetLLMContext:
         # Arrange
         project_name = "test-project"
         user_id = "test-user-123"
+        mock_user = MagicMock()
+        mock_user.id = user_id
 
         # Mock None LiteLLM credentials
         mock_settings_service.get_litellm_creds.return_value = None
@@ -88,7 +92,7 @@ class TestSetLLMContext:
         mock_settings_service.get_dial_creds.return_value = dial_creds
 
         # Act
-        set_llm_context(project_name, user_id)
+        set_llm_context(None, project_name, mock_user)
 
         # Assert
         # Verify SettingsService calls
@@ -119,6 +123,8 @@ class TestSetLLMContext:
         # Arrange
         project_name = "test-project"
         user_id = "test-user-123"
+        mock_user = MagicMock()
+        mock_user.id = user_id
 
         # Mock LiteLLM credentials
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -128,7 +134,7 @@ class TestSetLLMContext:
         mock_settings_service.get_dial_creds.return_value = None
 
         # Act
-        set_llm_context(project_name, user_id)
+        set_llm_context(None, project_name, mock_user)
 
         # Assert
         # Verify SettingsService calls
@@ -159,12 +165,14 @@ class TestSetLLMContext:
         # Arrange
         project_name = "test-project"
         user_id = "test-user-123"
+        mock_user = MagicMock()
+        mock_user.id = user_id
 
         # Mock exception in get_litellm_creds
         mock_settings_service.get_litellm_creds.side_effect = Exception("LiteLLM service error")
 
         # Act
-        set_llm_context(project_name, user_id)
+        set_llm_context(None, project_name, mock_user)
 
         # Assert
         # Verify SettingsService was called
@@ -193,6 +201,8 @@ class TestSetLLMContext:
         # Arrange
         project_name = "test-project"
         user_id = "test-user-123"
+        mock_user = MagicMock()
+        mock_user.id = user_id
 
         # Mock successful LiteLLM credentials
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -202,7 +212,7 @@ class TestSetLLMContext:
         mock_settings_service.get_dial_creds.side_effect = Exception("DIAL service error")
 
         # Act
-        set_llm_context(project_name, user_id)
+        set_llm_context(None, project_name, mock_user)
 
         # Assert
         # Verify both SettingsService methods were called
@@ -237,6 +247,8 @@ class TestSetLLMContext:
         # Arrange
         project_name = "test-project"
         user_id = "test-user-123"
+        mock_user = MagicMock()
+        mock_user.id = user_id
 
         # Mock successful credential retrieval
         litellm_creds = LiteLLMCredentials(api_key="litellm-key", url="https://litellm.test.com")
@@ -249,7 +261,7 @@ class TestSetLLMContext:
         mock_set_litellm_context.side_effect = Exception("Context setting error")
 
         # Act
-        set_llm_context(project_name, user_id)
+        set_llm_context(None, project_name, mock_user)
 
         # Assert
         # Verify SettingsService was called for LiteLLM creds

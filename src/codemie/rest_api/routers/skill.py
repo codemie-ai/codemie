@@ -704,7 +704,7 @@ def generate_skill_instructions(
         # Set LiteLLM context with user's credentials
         from codemie.service.llm_service.utils import set_llm_context
 
-        set_llm_context(project_name=user.current_project, user_id=user.id)
+        set_llm_context(None, user.current_project, user)
 
         result = SkillService.generate_instructions(
             description=request.description,

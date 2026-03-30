@@ -465,7 +465,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             f"assistant_model={assistant.llm_model_type}, "
             f"cache_disabled={cache_disabled}"
         )
-        set_llm_context(assistant.project, user.id)
+        set_llm_context(assistant, None, user)
 
         # Because we do inplace changes in following lines, do a copy to keep external object safe
         request = deepcopy(request)
@@ -722,7 +722,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             f"request_uuid: {request_uuid}"
         )
 
-        set_llm_context(assistant.project, user.id)
+        set_llm_context(assistant, None, user)
         set_disable_prompt_cache(disable_cache)
 
         # Build request with workflow context

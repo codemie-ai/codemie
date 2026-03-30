@@ -798,7 +798,7 @@ class WorkflowExecutor:
             # # This ensures all LLM invocations in workflow nodes use the user's LiteLLM key
             from codemie.service.llm_service.utils import set_llm_context
 
-            set_llm_context(project_name=self.workflow_config.project, user_id=self.user.id)
+            set_llm_context(None, self.workflow_config.project, self.user)
 
             logger.debug(
                 f"Set user context for workflow execution: user_email={user_email}, "

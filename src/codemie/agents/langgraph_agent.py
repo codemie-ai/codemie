@@ -292,7 +292,7 @@ class LangGraphAgent:
         if history is None:
             history = []
         try:
-            set_llm_context(self.assistant.project, self.user.id)
+            set_llm_context(self.assistant, None, self.user)
             inputs = self._get_inputs(input, history)
             inputs.update(args)
             output = self._invoke_agent(inputs).generated
@@ -309,7 +309,7 @@ class LangGraphAgent:
             args = {}
         if history is None:
             history = []
-        set_llm_context(self.assistant.project, self.user.id)
+        set_llm_context(self.assistant, None, self.user)
         logger.debug(f"Invoking workflow task. Agent={self.agent_name}, Input={workflow_input}, ChatHistory={history}")
         try:
             inputs = self._get_inputs(workflow_input, history)
@@ -333,7 +333,7 @@ class LangGraphAgent:
             # Clear previous errors before new execution
             self.tool_error_callback.clear()
 
-            set_llm_context(self.assistant.project, self.user.id)
+            set_llm_context(self.assistant, None, self.user)
             response = self._invoke_agent(self._get_inputs())
             output = response.generated
 
@@ -386,7 +386,7 @@ class LangGraphAgent:
             conversation_id=self.conversation_id,
             user_email=self.user.username,
         )
-        set_llm_context(self.assistant.project, self.user.id)
+        set_llm_context(self.assistant, None, self.user)
 
         execution_start = time()
         chunks_collector = []
@@ -571,7 +571,7 @@ class LangGraphAgent:
 
     def _invoke_agent(self, inputs) -> GenerationResult:
         logger.debug(f"Invoking task. Agent={self.agent_name}. Inputs={inputs}")
-        set_llm_context(self.assistant.project, self.user.id)
+        set_llm_context(self.assistant, None, self.user)
         try:
             output = self._stream_graph(inputs, config=self._get_run_config())
 
