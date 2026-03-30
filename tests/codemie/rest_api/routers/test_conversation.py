@@ -78,7 +78,13 @@ async def test_get_conversation_by_id(user, conversation):
             )
 
         assert response.status_code == 200
-        assert response.json() == conversation.dict()
+        body = response.json()
+        expected = {
+            **conversation.dict(),
+            "very_first_msg_at": None,
+            "very_last_msg_at": None,
+        }
+        assert body == expected
         mock_get_by_id.assert_called_once_with(conversation.id)
 
 

@@ -1133,34 +1133,64 @@ class ConversationService:
         page: int,
         per_page: int,
     ) -> List[ConversationListItem]:
-        """DB-level paginated list of user conversations."""
+        """DB-level paginated list of user conversations.
+
+        Selects only the scalar columns required for ConversationListItem plus SQL-level
+        MIN/MAX subqueries for timestamp bounds. The full ``history`` column is never
+        fetched, avoiding large JSONB payloads crossing the network for list requests.
+        """
         offset = page * per_page
 
         with get_session() as session:
-            query = (
-                select(Conversation)
-                .where(Conversation.user_id == user_id)
-                .order_by(Conversation.update_date.desc().nullslast())
-                .offset(offset)
-                .limit(per_page)
-            )
-            conversations = list(session.exec(query).all())
+            stmt = text("""
+                SELECT
+                    conversation_id,
+                    conversation_name,
+                    folder,
+                    assistant_ids,
+                    initial_assistant_id,
+                    pinned,
+                    date,
+                    update_date,
+                    is_workflow_conversation,
+                    COALESCE(history->0->>'message', '') AS first_message,
+                    (SELECT MIN((elem->>'date')::timestamptz)
+                     FROM jsonb_array_elements(COALESCE(history, '[]'::jsonb)) AS elem
+                     WHERE NULLIF(TRIM(elem->>'date'), '') IS NOT NULL) AS very_first_msg_at,
+                    (SELECT MAX((elem->>'date')::timestamptz)
+                     FROM jsonb_array_elements(COALESCE(history, '[]'::jsonb)) AS elem
+                     WHERE NULLIF(TRIM(elem->>'date'), '') IS NOT NULL) AS very_last_msg_at
+                FROM conversations
+                WHERE user_id = :uid
+                ORDER BY update_date DESC NULLS LAST
+                OFFSET :off LIMIT :lim
+            """).bindparams(uid=user_id, off=offset, lim=per_page)
+            rows = list(session.exec(stmt).all())
 
         result = []
-        for c in conversations:
-            is_workflow = c.is_workflow_conversation or False
+        for row in rows:
+            is_workflow = row.is_workflow_conversation or False
+            first_msg = row.first_message or ""
+            # Mirror Conversation.get_conversation_name() truncation logic.
+            name = (
+                row.conversation_name
+                or (first_msg[:50] + "..." if first_msg and len(first_msg) > 50 else first_msg)
+                or None
+            )
             result.append(
                 ConversationListItem(
-                    id=c.conversation_id,
-                    name=c.get_conversation_name(),
-                    folder=c.folder,
-                    assistant_ids=c.assistant_ids,
-                    initial_assistant_id=c.initial_assistant_id,
-                    pinned=c.pinned,
-                    date=c.update_date or c.date,
+                    id=row.conversation_id,
+                    name=name,
+                    folder=row.folder,
+                    assistant_ids=row.assistant_ids,
+                    initial_assistant_id=row.initial_assistant_id,
+                    pinned=row.pinned,
+                    date=row.update_date or row.date,
                     is_workflow=is_workflow,
-                    workflow_id=c.initial_assistant_id if is_workflow else None,
-                    conversation_id=c.conversation_id if is_workflow else None,
+                    workflow_id=row.initial_assistant_id if is_workflow else None,
+                    conversation_id=row.conversation_id if is_workflow else None,
+                    very_first_msg_at=row.very_first_msg_at,
+                    very_last_msg_at=row.very_last_msg_at,
                 )
             )
         return result
@@ -1172,61 +1202,51 @@ class ConversationService:
         page: int,
         per_page: int,
         sort_order: Optional[SortOrder] = None,
-    ) -> tuple[Optional[Conversation], int]:
-        """DB-level paginated (and optionally sorted) slice of conversation history.
+    ) -> tuple[Conversation | None, int, datetime | None, datetime | None]:
+        """
+        Retrieves a DB-level paginated and optionally sorted slice of conversation history.
 
-        Returns (None, 0) if not found, or (conversation_with_sliced_history, total_count).
-        total_count is the total number of history items (unsliced), for pagination metadata.
+        Returns:
+            tuple: (Conversation instance with sliced history or None, total message count,
+            first message timestamp, last message timestamp).
         """
         offset = page * per_page
 
         with get_session() as session:
-            # Metadata - select all fields except history
+            # Retrieve metadata, total count, and true chronological boundary timestamps in one query.
+            # MIN/MAX subqueries scan the JSONB array for true first/last by date value,
+            # matching the semantics of the Python get_timestamp_bounds() used in other paths.
             meta_stmt = text("""
                 SELECT
-                    id,
-                    conversation_id,
-                    conversation_name,
-                    llm_model,
-                    folder,
-                    pinned,
-                    user_id,
-                    user_name,
-                    assistant_ids,
-                    assistant_data,
-                    initial_assistant_id,
-                    final_user_mark,
-                    final_operator_mark,
-                    project,
-                    mcp_server_single_usage,
-                    is_workflow_conversation,
-                    conversation_details,
-                    assistant_details,
-                    user_abilities,
-                    date,
-                    update_date
+                    id, conversation_id, conversation_name, llm_model, folder, pinned,
+                    user_id, user_name, assistant_ids, assistant_data, initial_assistant_id,
+                    final_user_mark, final_operator_mark, project, mcp_server_single_usage,
+                    is_workflow_conversation, conversation_details, assistant_details,
+                    user_abilities, date, update_date,
+                    jsonb_array_length(COALESCE(history, '[]'::jsonb)) AS total_count,
+                    (SELECT MIN((elem->>'date')::timestamptz)
+                     FROM jsonb_array_elements(COALESCE(history, '[]'::jsonb)) AS elem
+                     WHERE NULLIF(TRIM(elem->>'date'), '') IS NOT NULL) AS very_first_msg_at,
+                    (SELECT MAX((elem->>'date')::timestamptz)
+                     FROM jsonb_array_elements(COALESCE(history, '[]'::jsonb)) AS elem
+                     WHERE NULLIF(TRIM(elem->>'date'), '') IS NOT NULL) AS very_last_msg_at
                 FROM conversations
                 WHERE conversation_id = :cid
             """).bindparams(cid=conversation_id)
             meta_row = session.exec(meta_stmt).first()
+
             if not meta_row:
-                return None, 0
+                return None, 0, None, None
 
-            # Total count of history items
-            count_stmt = text("""
-                SELECT jsonb_array_length(COALESCE(history, '[]'::jsonb))
-                FROM conversations
-                WHERE conversation_id = :cid
-            """).bindparams(cid=conversation_id)
-            total: int = session.exec(count_stmt).scalar() or 0
-
-            # Slice history at DB level — ORDER BY varies by sort_order
+            # Map sorting preferences to SQL clauses. Fallback to original JSONB array order.
             order_clauses = {
                 SortOrder.DESC: "ORDER BY (elem->>'date')::timestamptz DESC NULLS LAST, ord ASC",
                 SortOrder.ASC: "ORDER BY (elem->>'date')::timestamptz ASC NULLS LAST, ord ASC",
             }
             order_clause: str = order_clauses.get(sort_order, "ORDER BY ord")
 
+            # Execute DB-level pagination.
+            # CROSS JOIN LATERAL unpacks only the necessary slice via LIMIT and OFFSET.
             slice_stmt = text(f"""
                 SELECT elem FROM conversations c
                 CROSS JOIN LATERAL jsonb_array_elements(c.history) WITH ORDINALITY AS t(elem, ord)
@@ -1242,4 +1262,16 @@ class ConversationService:
         initial_assistant_id = meta_row.initial_assistant_id
         messages = materialize_history(messages, initial_assistant_id)
 
-        return Conversation(**meta_row._mapping, history=messages), total
+        # Exclude synthetic aggregation columns before model instantiation.
+        conv_kwargs = {
+            k: v
+            for k, v in meta_row._mapping.items()
+            if k not in ('total_count', 'very_first_msg_at', 'very_last_msg_at')
+        }
+
+        return (
+            Conversation(**conv_kwargs, history=messages),
+            meta_row.total_count,
+            meta_row.very_first_msg_at,
+            meta_row.very_last_msg_at,
+        )

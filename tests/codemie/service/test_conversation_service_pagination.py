@@ -16,7 +16,7 @@
 Tests for ConversationService pagination methods.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from codemie.service.conversation_service import ConversationService
@@ -24,25 +24,38 @@ from codemie.rest_api.models.conversation import Conversation, ConversationListI
 
 
 class TestGetUserConversationsPaginated:
-    """Tests for get_user_conversations_paginated method."""
+    """Tests for get_user_conversations_paginated method.
+
+    The method now uses a raw SQL query that projects only the scalar columns
+    needed for ConversationListItem (no full history column) plus SQL MIN/MAX
+    subqueries for timestamp bounds. Mocks must provide SQL-row-style attributes.
+    """
+
+    @staticmethod
+    def _make_mock_row(conv_id: str, name: str = "Test Conv", **kwargs) -> MagicMock:
+        """Return a mock representing one raw SQL result row."""
+        row = MagicMock()
+        row.conversation_id = conv_id
+        row.conversation_name = name
+        row.first_message = ""
+        row.folder = kwargs.get("folder", None)
+        row.assistant_ids = kwargs.get("assistant_ids", ["a1"])
+        row.initial_assistant_id = kwargs.get("initial_assistant_id", "a1")
+        row.pinned = kwargs.get("pinned", False)
+        row.update_date = kwargs.get("update_date", datetime(2025, 1, 15))
+        row.date = kwargs.get("date", datetime(2025, 1, 10))
+        row.is_workflow_conversation = kwargs.get("is_workflow_conversation", False)
+        row.very_first_msg_at = kwargs.get("very_first_msg_at", None)
+        row.very_last_msg_at = kwargs.get("very_last_msg_at", None)
+        return row
 
     @patch("codemie.service.conversation_service.get_session")
     def test_returns_conversation_list_items(self, mock_get_session):
-        """Test that method returns list of ConversationListItem."""
-        # Mock conversation objects
-        mock_conv = MagicMock()
-        mock_conv.conversation_id = "conv-1"
-        mock_conv.get_conversation_name.return_value = "Test Conv"
-        mock_conv.folder = "folder-1"
-        mock_conv.assistant_ids = ["a1"]
-        mock_conv.initial_assistant_id = "a1"
-        mock_conv.pinned = False
-        mock_conv.update_date = datetime(2025, 1, 15)
-        mock_conv.date = datetime(2025, 1, 10)
-        mock_conv.is_workflow_conversation = False
+        """Method returns a list of ConversationListItem from raw SQL rows."""
+        mock_row = self._make_mock_row("conv-1", name="Test Conv", folder="folder-1")
 
         mock_session = MagicMock()
-        mock_session.exec.return_value.all.return_value = [mock_conv]
+        mock_session.exec.return_value.all.return_value = [mock_row]
         mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -53,45 +66,56 @@ class TestGetUserConversationsPaginated:
         assert result[0].id == "conv-1"
 
     @patch("codemie.service.conversation_service.get_session")
+    def test_returns_timestamp_bounds_in_list_items(self, mock_get_session):
+        """List items include very_first_msg_at/very_last_msg_at from SQL MIN/MAX subqueries."""
+        t1 = datetime(2025, 1, 15, 8, 0, tzinfo=timezone.utc)
+        t3 = datetime(2025, 1, 15, 10, 0, tzinfo=timezone.utc)
+
+        mock_row = self._make_mock_row(
+            "conv-ts",
+            name="Conv TS",
+            update_date=t3,
+            date=t1,
+            very_first_msg_at=t1,
+            very_last_msg_at=t3,
+        )
+
+        mock_session = MagicMock()
+        mock_session.exec.return_value.all.return_value = [mock_row]
+        mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = ConversationService.get_user_conversations_paginated(user_id="user-123", page=0, per_page=10)
+
+        assert len(result) == 1
+        assert result[0].very_first_msg_at == t1
+        assert result[0].very_last_msg_at == t3
+
+    @patch("codemie.service.conversation_service.get_session")
     def test_pagination_multiple_pages(self, mock_get_session):
         """Test pagination with 5 items, 2 per page = 3 pages."""
-
-        def make_mock_conv(conv_id):
-            m = MagicMock()
-            m.conversation_id = conv_id
-            m.get_conversation_name.return_value = f"Conv {conv_id}"
-            m.folder = None
-            m.assistant_ids = ["a1"]
-            m.initial_assistant_id = "a1"
-            m.pinned = False
-            m.update_date = datetime(2025, 1, 15)
-            m.date = datetime(2025, 1, 10)
-            m.is_workflow_conversation = False
-            return m
-
-        # Simulate 5 conversations in DB
-        all_convs = [make_mock_conv(f"conv-{i}") for i in range(5)]
+        all_rows = [self._make_mock_row(f"conv-{i}", name=f"Conv conv-{i}") for i in range(5)]
 
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
 
         # Page 0: items 0,1
-        mock_session.exec.return_value.all.return_value = all_convs[0:2]
+        mock_session.exec.return_value.all.return_value = all_rows[0:2]
         page0 = ConversationService.get_user_conversations_paginated(user_id="user-123", page=0, per_page=2)
         assert len(page0) == 2
         assert page0[0].id == "conv-0"
         assert page0[1].id == "conv-1"
 
         # Page 1: items 2,3
-        mock_session.exec.return_value.all.return_value = all_convs[2:4]
+        mock_session.exec.return_value.all.return_value = all_rows[2:4]
         page1 = ConversationService.get_user_conversations_paginated(user_id="user-123", page=1, per_page=2)
         assert len(page1) == 2
         assert page1[0].id == "conv-2"
         assert page1[1].id == "conv-3"
 
         # Page 2: item 4 (last page, 1 item)
-        mock_session.exec.return_value.all.return_value = all_convs[4:5]
+        mock_session.exec.return_value.all.return_value = all_rows[4:5]
         page2 = ConversationService.get_user_conversations_paginated(user_id="user-123", page=2, per_page=2)
         assert len(page2) == 1
         assert page2[0].id == "conv-4"
@@ -129,6 +153,9 @@ class TestGetConversationHistorySlice:
             "user_abilities": None,
             "date": datetime(2025, 1, 1),
             "update_date": datetime(2025, 1, 2),
+            "total_count": 1,
+            "very_first_msg_at": None,
+            "very_last_msg_at": None,
         }
         row = MagicMock()
         for k, v in data.items():
@@ -142,25 +169,21 @@ class TestGetConversationHistorySlice:
         """Test that method returns paginated history and total count."""
         mock_session = MagicMock()
 
-        # Call 1: Metadata query
+        # Call 1: Meta (counts + bounds in one statement)
         mock_result_meta = MagicMock()
         mock_result_meta.first.return_value = self._get_mock_row()
 
-        # Call 2: Count query
-        mock_result_count = MagicMock()
-        mock_result_count.scalar.return_value = 1
-
-        # Call 3: History slice query
+        # Call 2: History slice query
         mock_result_slice = MagicMock()
         mock_result_slice.all.return_value = [({"role": "User", "message": "Hello"},)]
 
-        mock_session.exec.side_effect = [mock_result_meta, mock_result_count, mock_result_slice]
+        mock_session.exec.side_effect = [mock_result_meta, mock_result_slice]
 
         mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
         mock_materialize.side_effect = lambda msgs, _: msgs
 
-        conversation, total = ConversationService.get_conversation_history_slice(
+        conversation, total, first_ts, last_ts = ConversationService.get_conversation_history_slice(
             conversation_id="conv-123", page=0, per_page=50
         )
 
@@ -172,6 +195,8 @@ class TestGetConversationHistorySlice:
         assert conversation.folder == "folder-1"
         assert len(conversation.history) == 1
         assert total == 1
+        assert first_ts is None
+        assert last_ts is None
 
     @patch("codemie.service.conversation_service.get_session")
     def test_returns_none_if_not_found(self, mock_get_session):
@@ -185,12 +210,14 @@ class TestGetConversationHistorySlice:
         mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
 
-        conversation, total = ConversationService.get_conversation_history_slice(
+        conversation, total, first_ts, last_ts = ConversationService.get_conversation_history_slice(
             conversation_id="non-existent", page=0, per_page=50
         )
 
         assert conversation is None
         assert total == 0
+        assert first_ts is None
+        assert last_ts is None
 
     @patch("codemie.service.conversation_service.materialize_history")
     @patch("codemie.service.conversation_service.get_session")
@@ -204,13 +231,13 @@ class TestGetConversationHistorySlice:
         mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
         mock_materialize.side_effect = lambda msgs, _: msgs
 
-        # Mock Metadata (reused)
-        mock_result_meta = MagicMock()
-        mock_result_meta.first.return_value = self._get_mock_row()
+        # Meta row: total_count lives on the same row as conversation columns (single meta query).
+        meta_row = self._get_mock_row()
+        meta_row._mapping = {**meta_row._mapping, "total_count": 5}
+        meta_row.total_count = 5
 
-        # Mock Count (reused): total 5 history items
-        mock_result_count = MagicMock()
-        mock_result_count.scalar.return_value = 5
+        mock_result_meta = MagicMock()
+        mock_result_meta.first.return_value = meta_row
 
         # Helper to create slice result
         def create_slice_result(msgs):
@@ -218,28 +245,20 @@ class TestGetConversationHistorySlice:
             res.all.return_value = [(m,) for m in msgs]
             return res
 
-        # We will make 4 calls to the service. Each call makes 3 DB queries (meta + count + slice).
+        # Four service calls × 2 DB execs each (meta + slice).
         mock_session.exec.side_effect = [
-            # Page 0
             mock_result_meta,
-            mock_result_count,
             create_slice_result(all_messages[0:2]),
-            # Page 1
             mock_result_meta,
-            mock_result_count,
             create_slice_result(all_messages[2:4]),
-            # Page 2
             mock_result_meta,
-            mock_result_count,
             create_slice_result(all_messages[4:5]),
-            # Page 3
             mock_result_meta,
-            mock_result_count,
             create_slice_result([]),
         ]
 
         # Page 0: messages 0,1
-        conv0, total0 = ConversationService.get_conversation_history_slice(
+        conv0, total0, *_ = ConversationService.get_conversation_history_slice(
             conversation_id="conv-123", page=0, per_page=2
         )
         assert len(conv0.history) == 2
@@ -247,7 +266,7 @@ class TestGetConversationHistorySlice:
         assert total0 == 5
 
         # Page 1: messages 2,3
-        conv1, total1 = ConversationService.get_conversation_history_slice(
+        conv1, total1, *_ = ConversationService.get_conversation_history_slice(
             conversation_id="conv-123", page=1, per_page=2
         )
         assert len(conv1.history) == 2
@@ -255,7 +274,7 @@ class TestGetConversationHistorySlice:
         assert total1 == 5
 
         # Page 2: message 4
-        conv2, total2 = ConversationService.get_conversation_history_slice(
+        conv2, total2, *_ = ConversationService.get_conversation_history_slice(
             conversation_id="conv-123", page=2, per_page=2
         )
         assert len(conv2.history) == 1
@@ -263,7 +282,7 @@ class TestGetConversationHistorySlice:
         assert total2 == 5
 
         # Page 3: empty
-        conv3, total3 = ConversationService.get_conversation_history_slice(
+        conv3, total3, *_ = ConversationService.get_conversation_history_slice(
             conversation_id="conv-123", page=3, per_page=2
         )
         assert len(conv3.history) == 0
@@ -281,32 +300,33 @@ class TestGetConversationHistorySlice:
         mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
 
-        # Mock metadata response
+        # Mock meta row (single query: conversation columns + total_count + bounds)
         mock_meta = MagicMock()
         mock_meta._mapping = {
             "conversation_id": "conv-123",
-            # 'history' field is deliberately excluded as the real meta_stmt does not select it
+            "total_count": 0,
+            "very_first_msg_at": None,
+            "very_last_msg_at": None,
         }
         mock_meta.initial_assistant_id = None
+        mock_meta.total_count = 0
+        mock_meta.very_first_msg_at = None
+        mock_meta.very_last_msg_at = None
         mock_result_meta = MagicMock()
         mock_result_meta.first.return_value = mock_meta
-
-        # Mock count response
-        mock_result_count = MagicMock()
-        mock_result_count.scalar.return_value = 0
 
         # Mock slice response (empty list is fine for SQL check)
         mock_result_slice = MagicMock()
         mock_result_slice.all.return_value = []
 
-        mock_session.exec.side_effect = [mock_result_meta, mock_result_count, mock_result_slice]
+        mock_session.exec.side_effect = [mock_result_meta, mock_result_slice]
 
         page = 2
         per_page = 5
         ConversationService.get_conversation_history_slice("conv-123", page, per_page)
 
-        assert mock_session.exec.call_count == 3
-        slice_call_args = mock_session.exec.call_args_list[2]
+        assert mock_session.exec.call_count == 2
+        slice_call_args = mock_session.exec.call_args_list[1]
         sql_statement = str(slice_call_args[0][0])
 
         assert "WHERE c.conversation_id = :cid" in sql_statement, "SQL should filter by 'conversation_id', not 'id'"
@@ -326,13 +346,18 @@ class TestGetConversationHistorySlice:
         mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_meta = MagicMock()
-        mock_meta._mapping = {"conversation_id": "conv-123"}  # No 'history' key
+        mock_meta._mapping = {
+            "conversation_id": "conv-123",
+            "total_count": 1,
+            "very_first_msg_at": None,
+            "very_last_msg_at": None,
+        }
         mock_meta.initial_assistant_id = None
+        mock_meta.total_count = 1
+        mock_meta.very_first_msg_at = None
+        mock_meta.very_last_msg_at = None
         mock_result_meta = MagicMock()
         mock_result_meta.first.return_value = mock_meta
-
-        mock_result_count = MagicMock()
-        mock_result_count.scalar.return_value = 1
 
         message_data = {
             "role": "User",
@@ -352,14 +377,47 @@ class TestGetConversationHistorySlice:
         mock_result_slice = MagicMock()
         mock_result_slice.all.return_value = mock_rows
 
-        mock_session.exec.side_effect = [mock_result_meta, mock_result_count, mock_result_slice]
+        mock_session.exec.side_effect = [mock_result_meta, mock_result_slice]
 
         # Passthrough for materialize
         mock_materialize.side_effect = lambda msgs, _: msgs
 
-        conversation, total = ConversationService.get_conversation_history_slice("conv-123", 0, 10)
+        conversation, total, first_ts, last_ts = ConversationService.get_conversation_history_slice("conv-123", 0, 10)
 
         assert conversation is not None
         assert len(conversation.history) == 1
         assert conversation.history[0].message == "Hello"
         assert total == 1
+        assert first_ts is None
+        assert last_ts is None
+
+    @patch("codemie.service.conversation_service.materialize_history")
+    @patch("codemie.service.conversation_service.get_session")
+    def test_returns_sql_timestamp_bounds(self, mock_get_session, mock_materialize):
+        """SQL MIN/MAX subquery values for very_first_msg_at/very_last_msg_at are forwarded."""
+        t_first = datetime(2025, 6, 1, 8, 0, tzinfo=timezone.utc)
+        t_last = datetime(2025, 6, 1, 18, 0, tzinfo=timezone.utc)
+
+        meta_row = self._get_mock_row()
+        meta_row.very_first_msg_at = t_first
+        meta_row.very_last_msg_at = t_last
+        meta_row._mapping = {**meta_row._mapping, "very_first_msg_at": t_first, "very_last_msg_at": t_last}
+
+        mock_result_meta = MagicMock()
+        mock_result_meta.first.return_value = meta_row
+
+        mock_result_slice = MagicMock()
+        mock_result_slice.all.return_value = []
+
+        mock_session = MagicMock()
+        mock_session.exec.side_effect = [mock_result_meta, mock_result_slice]
+        mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
+        mock_materialize.side_effect = lambda msgs, _: msgs
+
+        conversation, total, first_ts, last_ts = ConversationService.get_conversation_history_slice(
+            conversation_id="conv-123", page=0, per_page=50
+        )
+
+        assert first_ts == t_first
+        assert last_ts == t_last

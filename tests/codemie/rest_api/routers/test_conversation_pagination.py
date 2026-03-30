@@ -67,11 +67,24 @@ def test_get_conversations_without_pagination(mock_get, client):
     Test GET /v1/conversations without pagination parameters.
     Should call Conversation.get_user_conversations.
     """
-    mock_get.return_value = [ConversationListItem(id="conv-1", name="Conv 1", date=datetime(2025, 1, 15))]
+    t_first = datetime(2025, 1, 10, tzinfo=timezone.utc)
+    t_last = datetime(2025, 1, 15, tzinfo=timezone.utc)
+    mock_get.return_value = [
+        ConversationListItem(
+            id="conv-1",
+            name="Conv 1",
+            date=t_last,
+            very_first_msg_at=t_first,
+            very_last_msg_at=t_last,
+        )
+    ]
 
     response = client.get("/v1/conversations")
 
     assert response.status_code == 200
+    data = response.json()
+    assert data[0]["very_first_msg_at"] is not None
+    assert data[0]["very_last_msg_at"] is not None
     mock_get.assert_called_once()
 
 
@@ -83,11 +96,24 @@ def test_get_conversations_with_pagination(mock_paginated, client):
     Test GET /v1/conversations with pagination parameters.
     Should call ConversationService.get_user_conversations_paginated.
     """
-    mock_paginated.return_value = [ConversationListItem(id="conv-2", name="Conv 2", date=datetime(2025, 1, 14))]
+    t_first = datetime(2025, 1, 12, tzinfo=timezone.utc)
+    t_last = datetime(2025, 1, 14, tzinfo=timezone.utc)
+    mock_paginated.return_value = [
+        ConversationListItem(
+            id="conv-2",
+            name="Conv 2",
+            date=t_last,
+            very_first_msg_at=t_first,
+            very_last_msg_at=t_last,
+        )
+    ]
 
     response = client.get("/v1/conversations?page=0&per_page=10")
 
     assert response.status_code == 200
+    data = response.json()
+    assert data[0]["very_first_msg_at"] is not None
+    assert data[0]["very_last_msg_at"] is not None
     mock_paginated.assert_called_once()
 
 
@@ -98,6 +124,35 @@ def test_export_json_without_pagination(mock_find, _mock_can, _mock_assistants, 
     """
     Test GET /v1/conversations/{id}/export without pagination (JSON).
     Should call Conversation.find_by_id.
+    Timestamps appear in the export when messages have dates; absent when they don't.
+    """
+    t_first = datetime(2025, 3, 1, 10, 0, tzinfo=timezone.utc)
+    t_last = datetime(2025, 3, 1, 11, 0, tzinfo=timezone.utc)
+    mock_find.return_value = Conversation(
+        id="conv-123",
+        conversation_id="conv-123",
+        user_id="user-123",
+        history=[
+            GeneratedMessage(role="User", message="Hello", date=t_first),
+            GeneratedMessage(role="Assistant", message="Hi", date=t_last),
+        ],
+    )
+
+    response = client.get("/v1/conversations/conv-123/export?export_format=json")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["very_first_msg_at"] is not None
+    assert data["very_last_msg_at"] is not None
+    mock_find.assert_called_once_with("conv-123")
+
+
+@patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
+@patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
+@patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
+def test_export_json_without_pagination_no_dates(mock_find, _mock_can, _mock_assistants, client):
+    """
+    Timestamps are absent from the export JSON when no messages have a date value.
     """
     mock_find.return_value = Conversation(
         id="conv-123",
@@ -109,6 +164,9 @@ def test_export_json_without_pagination(mock_find, _mock_can, _mock_assistants, 
     response = client.get("/v1/conversations/conv-123/export?export_format=json")
 
     assert response.status_code == 200
+    data = response.json()
+    assert "very_first_msg_at" not in data
+    assert "very_last_msg_at" not in data
     mock_find.assert_called_once_with("conv-123")
 
 
@@ -121,25 +179,31 @@ def test_export_json_with_pagination(mock_slice, _mock_can, _mock_assistants, cl
     """
     Test GET /v1/conversations/{id}/export with pagination (JSON).
     Should call ConversationService.get_conversation_history_slice.
+    Timestamps from the service (full-conversation bounds) appear in the export.
     """
+    t_first = datetime(2025, 3, 1, 9, 0, tzinfo=timezone.utc)
+    t_last = datetime(2025, 3, 1, 11, 0, tzinfo=timezone.utc)
     conv = Conversation(
         id="conv-123",
         conversation_id="conv-123",
         user_id="user-123",
-        history=[GeneratedMessage(role="User", message="Hello")],
+        history=[GeneratedMessage(role="User", message="Hello", date=t_first)],
     )
-    mock_slice.return_value = (conv, 1)
+    mock_slice.return_value = (conv, 1, t_first, t_last)
 
     response = client.get("/v1/conversations/conv-123/export?export_format=json&page=0&per_page=50")
 
     assert response.status_code == 200
+    data = response.json()
+    assert data["very_first_msg_at"] is not None
+    assert data["very_last_msg_at"] is not None
     mock_slice.assert_called_once()
 
 
 @patch(
     "codemie.rest_api.routers.conversation.ConversationService.get_conversation_history_slice",
     new_callable=MagicMock,
-    return_value=(None, 0),
+    return_value=(None, 0, None, None),
 )
 def test_export_json_not_found(mock_slice, client):
     """
@@ -236,7 +300,7 @@ def test_get_conversation_with_page_and_per_page(_mock_can, _mock_assistants, mo
     sliced_conv.history = conv.history[:2]
     sliced_conv.id = conv.id
     sliced_conv.conversation_id = conv.conversation_id
-    mock_slice.return_value = (sliced_conv, 5)
+    mock_slice.return_value = (sliced_conv, 5, None, None)
 
     response = client.get("/v1/conversations/conv-abc?page=0&per_page=2")
 
@@ -269,7 +333,7 @@ def test_get_conversation_with_only_sort_order(_mock_can, _mock_assistants, mock
     using default page/per_page values, and the response includes a pagination block.
     """
     conv = _make_test_conversation(n_messages=3)
-    mock_slice.return_value = (conv, 3)
+    mock_slice.return_value = (conv, 3, None, None)
 
     response = client.get("/v1/conversations/conv-abc?sort_order=asc")
 
@@ -295,7 +359,7 @@ def test_get_conversation_sort_order_desc(_mock_can, _mock_assistants, mock_slic
     sliced_conv.history = conv.history[:2]
     sliced_conv.id = conv.id
     sliced_conv.conversation_id = conv.conversation_id
-    mock_slice.return_value = (sliced_conv, 3)
+    mock_slice.return_value = (sliced_conv, 3, None, None)
 
     response = client.get("/v1/conversations/conv-abc?sort_order=desc&page=0&per_page=2")
 
@@ -315,7 +379,7 @@ def test_get_conversation_sort_order_desc(_mock_can, _mock_assistants, mock_slic
 )
 def test_get_conversation_not_found(mock_slice, client):
     """404 is returned when conversation does not exist, even with pagination params."""
-    mock_slice.return_value = (None, 0)
+    mock_slice.return_value = (None, 0, None, None)
 
     response = client.get("/v1/conversations/no-such-id?page=0&per_page=10")
 

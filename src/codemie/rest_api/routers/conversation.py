@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime
 import io
 import json
 from typing import List, Optional
@@ -49,6 +50,7 @@ from codemie.rest_api.models.conversation_folder import ConversationFolder
 from codemie.rest_api.models.share.shared_conversation import SharedConversation
 from codemie.rest_api.routers.feedback import CONVERSATION_NOT_FOUND_MESSAGE, CONVERSATION_NOT_FOUND_HELP
 from codemie.rest_api.routers.utils import raise_access_denied, remove_nulls
+from codemie.utils.datetime_utils import get_timestamp_bounds
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.conversation import MessageExporter, ExportFormat
@@ -61,6 +63,7 @@ from codemie.service.constants import (
     DEFAULT_PAGE,
 )
 from codemie.service.monitoring.conversation_monitoring_service import ConversationMonitoringService
+
 
 router = APIRouter(
     tags=["Conversation"],
@@ -75,6 +78,48 @@ EXPORT_FORMAT_NOT_SUPPORTED_HELP = (
     "Please select one of the supported export formats and try again."
     + "For additional supported formats, refer to the documentation or contact support."
 )
+
+
+def _enrich_conv_with_workflow(conversation: Conversation, conversation_id: str) -> Conversation:
+    """Populate workflow assistant details for workflow-based conversations.
+
+    Args:
+        conversation: Conversation entity to enrich with assistant metadata.
+        conversation_id: Conversation identifier.
+
+    Returns:
+        The same conversation instance with `assistant_data` populated from workflow
+        config, or fallback data when workflow config is missing.
+    """
+    try:
+        workflow = WorkflowConfig.get_by_id(conversation.initial_assistant_id)
+        conversation.assistant_data = [
+            AssistantDetails(
+                assistant_id=workflow.id,
+                assistant_name=workflow.name,
+                assistant_icon=workflow.icon_url,
+                assistant_type=None,
+                context=None,
+                tools=None,
+                conversation_starters=[],
+            )
+        ]
+    except KeyError:
+        logger.warning(
+            f"Workflow {conversation.initial_assistant_id} not found for conversation {conversation_id}. "
+            f"This is expected if the workflow was deleted. Using fallback data from conversation history."
+        )
+        conversation.assistant_data = [
+            AssistantDetails(
+                assistant_id=conversation.initial_assistant_id,
+                conversation_starters=[],
+            )
+        ]
+    return conversation
+
+
+def _is_pagination_required(page: int | None, per_page: int | None, sort_order: SortOrder | None) -> bool:
+    return page is not None or per_page is not None or sort_order is not None
 
 
 @router.get(
@@ -99,10 +144,13 @@ def get_conversation_by_id(
 
     When no new params are provided, response is identical to before (backward compatible).
     """
-    if page is not None or per_page is not None or sort_order is not None:
+    very_first_msg_at: Optional[datetime] = None
+    very_last_msg_at: Optional[datetime] = None
+
+    if _is_pagination_required(page, per_page, sort_order):
         page_val = DEFAULT_PAGE if page is None else page
         per_page_val = DEFAULT_HISTORY_ITEMS_PER_PAGE if per_page is None else per_page
-        conversation, total = ConversationService.get_conversation_history_slice(
+        conversation, total, very_first_msg_at, very_last_msg_at = ConversationService.get_conversation_history_slice(
             conversation_id=conversation_id,
             page=page_val,
             per_page=per_page_val,
@@ -119,8 +167,9 @@ def get_conversation_by_id(
             has_previous=page_val > 0,
         )
     else:
-        conversation = Conversation.find_by_id(conversation_id)
         pagination_data = None
+        if conversation := Conversation.find_by_id(conversation_id):
+            very_first_msg_at, very_last_msg_at = get_timestamp_bounds(conversation.history)
 
     if not conversation:
         raise ExtendedHTTPException(
@@ -134,30 +183,7 @@ def get_conversation_by_id(
         raise_access_denied("view")
 
     if conversation.is_workflow_conversation:
-        try:
-            workflow = WorkflowConfig.get_by_id(conversation.initial_assistant_id)
-            conversation.assistant_data = [
-                AssistantDetails(
-                    assistant_id=workflow.id,
-                    assistant_name=workflow.name,
-                    assistant_icon=workflow.icon_url,
-                    assistant_type=None,
-                    context=None,
-                    tools=None,
-                    conversation_starters=[],
-                )
-            ]
-        except KeyError:
-            logger.warning(
-                f"Workflow {conversation.initial_assistant_id} not found for conversation {conversation_id}. "
-                f"This is expected if the workflow was deleted. Using fallback data from conversation history."
-            )
-            conversation.assistant_data = [
-                AssistantDetails(
-                    assistant_id=conversation.initial_assistant_id,
-                    conversation_starters=[],
-                )
-            ]
+        conversation = _enrich_conv_with_workflow(conversation, conversation_id)
     else:
         assistants = Assistant.get_by_ids(ids=conversation.assistant_ids, user=user)
         conversation.assistant_data = [
@@ -176,7 +202,11 @@ def get_conversation_by_id(
     conversation.conversation_name = conversation.get_conversation_name()
 
     response = ConversationResponse.model_validate(conversation)
+
     response.pagination = pagination_data
+    response.very_first_msg_at = very_first_msg_at
+    response.very_last_msg_at = very_last_msg_at
+
     return response
 
 
@@ -448,13 +478,13 @@ def update_conversation(
 
 @router.get(
     "/conversations",
-    response_model=List[ConversationListItem],
+    response_model=list[ConversationListItem],
 )
 def get_conversation_list(
     user: User = Depends(authenticate),
     page: Optional[int] = Query(None, ge=DEFAULT_PAGE),
     per_page: Optional[int] = Query(None, ge=1, le=MAX_CONVERSATIONS_PER_PAGE),
-) -> List[ConversationListItem]:
+) -> list[ConversationListItem]:
     """
     Get a list of all user conversations (both assistant chats and workflow conversations).
 
@@ -463,7 +493,7 @@ def get_conversation_list(
     - per_page: Number of items per page. Default 20 when page is provided.
     """
     if page is None and per_page is None:
-        conversations = Conversation.get_user_conversations(user_id=user.id)
+        conversations: list[ConversationListItem] = Conversation.get_user_conversations(user_id=user.id)
         return conversations
 
     # Use defaults if only one param is provided
@@ -668,7 +698,7 @@ def export_conversation(
         page_val: int = DEFAULT_PAGE if page is None else page
         per_page_val: int = DEFAULT_HISTORY_ITEMS_PER_PAGE if per_page is None else per_page
 
-        conversation, _ = ConversationService.get_conversation_history_slice(
+        conversation, _, very_first_msg_at, very_last_msg_at = ConversationService.get_conversation_history_slice(
             conversation_id=conversation_id,
             page=page_val,
             per_page=per_page_val,
@@ -683,8 +713,17 @@ def export_conversation(
         conversation, assistant, assistants = _validate_conversation_access_and_get_assistants(
             user, conversation_id, conversation
         )
+        very_first_msg_at, very_last_msg_at = get_timestamp_bounds(conversation.history)
 
-    return _get_streaming_response(conversation_id, export_format, assistants, conversation, assistant)
+    return _get_streaming_response(
+        conversation_id,
+        export_format,
+        assistants,
+        conversation,
+        assistant,
+        very_first_msg_at=very_first_msg_at,
+        very_last_msg_at=very_last_msg_at,
+    )
 
 
 def _get_streaming_response(
@@ -693,6 +732,8 @@ def _get_streaming_response(
     assistants: List[Assistant],
     conversation: Conversation,
     assistant: Optional[Assistant],
+    very_first_msg_at: Optional[datetime] = None,
+    very_last_msg_at: Optional[datetime] = None,
 ) -> StreamingResponse:
     """
     Generate a streaming response for conversation export.
@@ -703,6 +744,8 @@ def _get_streaming_response(
         assistants: List of assistants involved in the conversation.
         conversation: The conversation object to export.
         assistant: The primary assistant (optional, used for PDF/DOCX export).
+        very_first_msg_at: First message timestamp (JSON export only; aligns with GET conversation).
+        very_last_msg_at: Last message timestamp (JSON export only; aligns with GET conversation).
 
     Returns:
         StreamingResponse: A streaming response containing the exported file.
@@ -715,10 +758,12 @@ def _get_streaming_response(
         result = {
             "assistants": assistants,
             "history": conversation.history,
+            "very_first_msg_at": very_first_msg_at,
+            "very_last_msg_at": very_last_msg_at,
         }
         json_result = jsonable_encoder(result)
         json_result = remove_nulls(json_result)
-        json_bytes = io.BytesIO(json.dumps(json_result).encode('utf-8'))
+        json_bytes = io.BytesIO(json.dumps(json_result).encode("utf-8"))
 
         return StreamingResponse(
             content=json_bytes,

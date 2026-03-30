@@ -33,6 +33,7 @@ from codemie.rest_api.models.base import (
 )
 from codemie.rest_api.models.feedback import MarkEnum
 from codemie.rest_api.security.user import User
+from codemie.utils.datetime_utils import get_timestamp_bounds
 from sqlmodel import Field as SQLField, Session, delete, Column
 from sqlalchemy import Boolean
 from sqlalchemy.dialects.postgresql import JSONB
@@ -411,6 +412,7 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             is_workflow = conversation.is_workflow_conversation or False
             workflow_id = conversation.initial_assistant_id if is_workflow else None
             conversation_id = conversation.conversation_id
+            very_first_msg_at, very_last_msg_at = get_timestamp_bounds(conversation.history)
 
             conversation_list.append(
                 ConversationListItem(
@@ -424,6 +426,8 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
                     is_workflow=is_workflow,
                     workflow_id=workflow_id,
                     conversation_id=conversation_id if is_workflow else None,
+                    very_first_msg_at=very_first_msg_at,
+                    very_last_msg_at=very_last_msg_at,
                 )
             )
 
@@ -517,6 +521,9 @@ class ConversationListItem(BaseModel):
     assistant_ids: Optional[List[str]] = Field(default_factory=list)
     initial_assistant_id: Optional[str] = None
 
+    very_first_msg_at: Optional[datetime] = None
+    very_last_msg_at: Optional[datetime] = None
+
     # Workflow-specific fields
     is_workflow: Optional[bool] = False
     workflow_id: Optional[str] = None
@@ -557,6 +564,8 @@ class ConversationResponse(BaseModel):
     category: Optional[str] = None
     date: Optional[datetime] = None
     update_date: Optional[datetime] = None
+    very_first_msg_at: Optional[datetime] = None
+    very_last_msg_at: Optional[datetime] = None
 
     pagination: Optional[ConversationHistoryPaginationData] = None
 

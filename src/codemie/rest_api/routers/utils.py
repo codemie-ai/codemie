@@ -19,6 +19,7 @@ from fastapi import status
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
 
+
 executor = ThreadPoolExecutor(max_workers=config.THREAD_POOL_MAX_WORKERS)
 
 
