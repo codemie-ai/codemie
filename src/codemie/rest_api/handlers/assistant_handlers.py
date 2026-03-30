@@ -342,6 +342,27 @@ class StandardAssistantHandler(AssistantRequestHandler):
         except Exception as e:
             logger.error(f"Error while saving history for disconnected client: {str(e)}")
 
+    def _build_final_chunk(
+        self,
+        agent,
+        execution_start: float,
+        include_tool_errors: bool,
+        error_detail_level: ErrorDetailLevel,
+    ) -> StreamedGenerationResult | None:
+        if agent is None or not include_tool_errors:
+            return None
+        agent_result = getattr(agent, "last_generation_result", None)
+        if not agent_result:
+            return None
+        tool_errors, agent_error = self._format_errors(agent_result, include_tool_errors, error_detail_level)
+        return StreamedGenerationResult(
+            last=True,
+            success=agent_result.success,
+            agent_error=agent_error,
+            tool_errors=tool_errors,
+            time_elapsed=time() - execution_start,
+        )
+
     def _serve_data(
         self,
         stream,
@@ -352,6 +373,13 @@ class StandardAssistantHandler(AssistantRequestHandler):
         include_tool_errors: bool = False,
         error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
     ):
+        # This generator runs in Thread B (Starlette's iterate_in_threadpool), which is a
+        # different thread from Thread A where build_agent/set_llm_context was called.
+        # contextvars set in Thread A do not propagate to Thread B, so we must re-set the
+        # LLM context here to ensure save_chat_history uses the correct billing project.
+        from codemie.service.llm_service.utils import set_llm_context
+
+        set_llm_context(self.assistant, None, self.user)
         thread = threading.Thread(target=stream)
         thread.start()
         # We pass an empty string to avoid sending the default None value in the chat history.
@@ -362,35 +390,22 @@ class StandardAssistantHandler(AssistantRequestHandler):
                 generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
                 if generation_result.generated is not None:
                     response = generation_result
+                yield value
+                generator_queue.queue.task_done()
+                continue
 
-            else:
-                self.save_chat_history(
-                    ChatHistoryData(
-                        execution_start=execution_start,
-                        request=request,
-                        response=response.generated,
-                        thoughts=generator_queue.thoughts,
-                    )
+            self.save_chat_history(
+                ChatHistoryData(
+                    execution_start=execution_start,
+                    request=request,
+                    response=response.generated,
+                    thoughts=generator_queue.thoughts,
                 )
-                # Yield final chunk with error information if available
-                if agent is not None and include_tool_errors:
-                    agent_result = getattr(agent, "last_generation_result", None)
-                    if agent_result:
-                        tool_errors, agent_error = self._format_errors(
-                            agent_result, include_tool_errors, error_detail_level
-                        )
-                        final_chunk = StreamedGenerationResult(
-                            last=True,
-                            success=agent_result.success,
-                            agent_error=agent_error,
-                            tool_errors=tool_errors,
-                            time_elapsed=time() - execution_start,
-                        )
-                        yield final_chunk.model_dump_json() + "\n"
-                break
-
-            yield value
-            generator_queue.queue.task_done()
+            )
+            final_chunk = self._build_final_chunk(agent, execution_start, include_tool_errors, error_detail_level)
+            if final_chunk:
+                yield final_chunk.model_dump_json() + "\n"
+            break
 
     def _return_security_error_response(
         self,

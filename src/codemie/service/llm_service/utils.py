@@ -23,30 +23,31 @@ from codemie.rest_api.security.user import User
 from codemie.service.settings.settings import SettingsService
 
 
+def _resolve_effective_project(
+    assistant: AssistantBase | None, fallback_project_name: str | None, user: User
+) -> str | None:
+    if assistant is None:
+        return fallback_project_name
+
+    if not assistant.project:
+        raise ExtendedHTTPException(
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            message="Assistant project is not set",
+            details=f"Assistant {assistant.id} has no project assigned.",
+        )
+
+    if not assistant.is_global:
+        return assistant.project
+
+    user_projects = set(user.project_names or []) | set(user.admin_project_names or [])
+    if assistant.project in user_projects or not user.email:
+        return assistant.project
+
+    return user.email
+
+
 def set_llm_context(assistant: AssistantBase | None, fallback_project_name: str | None, user: User):
-    if assistant is not None:
-        if not assistant.project:
-            raise ExtendedHTTPException(
-                code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                message="Assistant project is not set",
-                details=f"Assistant {assistant.id} has no project assigned.",
-            )
-        if not assistant.is_global:
-            effective_project = assistant.project
-        else:
-            user_projects = set(user.project_names or []) | set(user.admin_project_names or [])
-            if assistant.project in user_projects:
-                effective_project = assistant.project
-            elif not user.email:
-                raise ExtendedHTTPException(
-                    code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    message="User email is not set",
-                    details=f"Cannot determine billing project for user {user.id}: email is empty.",
-                )
-            else:
-                effective_project = user.email
-    else:
-        effective_project = fallback_project_name
+    effective_project = _resolve_effective_project(assistant, fallback_project_name, user)
 
     try:
         litellm_creds = SettingsService.get_litellm_creds(project_name=effective_project, user_id=user.id)
