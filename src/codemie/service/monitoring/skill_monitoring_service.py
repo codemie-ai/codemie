@@ -16,6 +16,7 @@
 
 from typing import TYPE_CHECKING
 
+from codemie.core.dependecies import get_current_project
 from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
 from codemie.service.monitoring.metrics_constants import (
     SKILL_MANAGEMENT_METRIC,
@@ -57,7 +58,7 @@ class SkillMonitoringService(BaseMonitoringService):
             MetricsAttributes.SKILL_NAME: skill.name,
             MetricsAttributes.SKILL_VISIBILITY: skill.visibility.value if skill.visibility else "unknown",
             MetricsAttributes.SKILL_CATEGORIES: ",".join(skill.categories) if skill.categories else "",
-            MetricsAttributes.PROJECT: skill.project,
+            MetricsAttributes.PROJECT: get_current_project(fallback=skill.project),
             MetricsAttributes.USER_ID: user.id,
             MetricsAttributes.USER_NAME: user.name,
             MetricsAttributes.USER_EMAIL: user.username,
@@ -105,7 +106,7 @@ class SkillMonitoringService(BaseMonitoringService):
             MetricsAttributes.SKILL_NAME: skill.name,
             MetricsAttributes.ASSISTANT_ID: assistant_id,
             MetricsAttributes.ASSISTANT_NAME: assistant_name,
-            MetricsAttributes.PROJECT: skill.project,
+            MetricsAttributes.PROJECT: get_current_project(fallback=skill.project),
             MetricsAttributes.USER_ID: user.id,
             MetricsAttributes.USER_NAME: user.name,
             MetricsAttributes.OPERATION: operation,
@@ -154,7 +155,7 @@ class SkillMonitoringService(BaseMonitoringService):
             MetricsAttributes.SKILL_ID: skill_id,
             MetricsAttributes.SKILL_NAME: skill_name,
             MetricsAttributes.ASSISTANT_ID: assistant_id,
-            MetricsAttributes.PROJECT: project,
+            MetricsAttributes.PROJECT: get_current_project(fallback=project),
             MetricsAttributes.USER_ID: user_id,
             MetricsAttributes.USER_NAME: user_name,
         }
@@ -193,7 +194,7 @@ class SkillMonitoringService(BaseMonitoringService):
         attributes = {
             MetricsAttributes.SKILL_ID: skill.id,
             MetricsAttributes.SKILL_NAME: skill.name,
-            MetricsAttributes.PROJECT: skill.project,
+            MetricsAttributes.PROJECT: get_current_project(fallback=skill.project),
             MetricsAttributes.USER_ID: user.id,
             MetricsAttributes.USER_NAME: user.name,
         }
@@ -237,7 +238,9 @@ class SkillMonitoringService(BaseMonitoringService):
             MetricsAttributes.USER_ID: user.id,
             MetricsAttributes.USER_NAME: user.name,
             MetricsAttributes.USER_EMAIL: user.username,
-            MetricsAttributes.PROJECT: user.current_project if hasattr(user, 'current_project') else "unknown",
+            MetricsAttributes.PROJECT: get_current_project(
+                fallback=user.current_project if hasattr(user, 'current_project') else None
+            ),
             "mode": mode,
             "model": model,
         }

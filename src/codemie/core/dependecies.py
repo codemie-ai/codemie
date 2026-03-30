@@ -123,6 +123,19 @@ def set_litellm_context(context: LiteLLMContext | None):
         litellm_context.set(context)
 
 
+def get_current_project(fallback: str | None = None) -> str:
+    """Get the billing-aware project from the current LiteLLM context.
+
+    Returns the project resolved by set_llm_context (handles global-assistant
+    billing attribution, e.g. user.email instead of assistant.project).
+    Falls back to *fallback* when no context has been set yet.
+    """
+    ctx = litellm_context.get(None)
+    if ctx and ctx.current_project:
+        return ctx.current_project
+    return fallback or ""
+
+
 def set_disable_prompt_cache(disable: bool):
     """Set prompt cache control flag for current context"""
     disable_prompt_cache.set(disable)

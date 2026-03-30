@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Optional
 
 from codemie.configs import config, logger
+from codemie.core.dependecies import get_current_project
 from codemie.core.constants import (
     REQUEST_ID,
     LLM_MODEL,
@@ -434,7 +435,7 @@ class LLMProxyMonitoringService(BaseMonitoringService):
                 RESPONSE_STATUS: status_code,
                 BRANCH: request_info.get(BRANCH, ""),
                 REPOSITORY: request_info.get(REPOSITORY, ""),
-                MetricsAttributes.PROJECT: request_info.get(PROJECT, ""),
+                MetricsAttributes.PROJECT: get_current_project(fallback=request_info.get(PROJECT)),
                 "cli_request": cli_request,
             }
 

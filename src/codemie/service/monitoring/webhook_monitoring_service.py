@@ -13,6 +13,8 @@
 # limitations under the License.
 
 from typing import Optional
+
+from codemie.core.dependecies import get_current_project
 from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
 from codemie.service.monitoring.metrics_constants import MetricsAttributes
 
@@ -47,7 +49,7 @@ class WebhookMonitoringService(BaseMonitoringService):
         """
         attributes = {
             MetricsAttributes.WEBHOOK_ID: webhook_id,
-            MetricsAttributes.PROJECT: project_name,
+            MetricsAttributes.PROJECT: get_current_project(fallback=project_name),
             MetricsAttributes.USER_ID: user_id,
             MetricsAttributes.WEBHOOK_RESOURCE_TYPE: resource_type,
             MetricsAttributes.WEBHOOK_RESOURCE_ID: resource_id,

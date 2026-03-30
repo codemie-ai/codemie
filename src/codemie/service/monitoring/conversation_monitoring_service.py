@@ -14,6 +14,7 @@
 
 from typing import Optional
 
+from codemie.core.dependecies import get_current_project
 from codemie.core.models import TokensUsage
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.base import ConversationStatus
@@ -65,7 +66,7 @@ class ConversationMonitoringService(BaseMonitoringService):
             MetricsAttributes.CACHE_READ_INPUT_TOKENS: tokens_usage.cached_tokens,
             MetricsAttributes.MONEY_SPENT: tokens_usage.money_spent,
             MetricsAttributes.CACHED_TOKENS_MONEY_SPENT: tokens_usage.cached_tokens_money_spent,
-            MetricsAttributes.PROJECT: assistant.project,
+            MetricsAttributes.PROJECT: get_current_project(fallback=assistant.project),
             MetricsAttributes.EXECUTION_TIME: time_elapsed,
             MetricsAttributes.LLM_MODEL: llm_model,
             MetricsAttributes.CONVERSATION_ID: conversation_id,

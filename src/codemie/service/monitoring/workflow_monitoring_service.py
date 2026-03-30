@@ -15,6 +15,7 @@
 from typing import Optional
 
 from codemie.configs import logger
+from codemie.core.dependecies import get_current_project
 from codemie.core.workflow_models import WorkflowConfig, WorkflowExecution, WorkflowMode
 from codemie.rest_api.security.user import User
 from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
@@ -61,7 +62,7 @@ class WorkflowMonitoringService(BaseMonitoringService):
                             MetricsAttributes.USER_NAME: user.name,
                             MetricsAttributes.USER_EMAIL: user.username,
                             MetricsAttributes.WORKFLOW_NAME: workflow_config.name,
-                            MetricsAttributes.PROJECT: workflow_config.project,
+                            MetricsAttributes.PROJECT: get_current_project(fallback=workflow_config.project),
                             MetricsAttributes.STATUS: workflow_execution_config.overall_status.name,
                             MetricsAttributes.MODE: workflow_config.mode,
                             MetricsAttributes.EXECUTION_ID: workflow_execution_config.execution_id,
@@ -88,7 +89,7 @@ class WorkflowMonitoringService(BaseMonitoringService):
                 MetricsAttributes.USER_NAME: user.name,
                 MetricsAttributes.USER_EMAIL: user.username,
                 MetricsAttributes.WORKFLOW_NAME: workflow_config.name,
-                MetricsAttributes.PROJECT: workflow_config.project,
+                MetricsAttributes.PROJECT: get_current_project(fallback=workflow_config.project),
                 MetricsAttributes.STATUS: workflow_execution_config.overall_status.name,
                 MetricsAttributes.MODE: workflow_config.mode,
                 MetricsAttributes.EXECUTION_ID: workflow_execution_config.execution_id,

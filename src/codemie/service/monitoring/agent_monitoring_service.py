@@ -15,6 +15,7 @@
 from typing import Optional, TYPE_CHECKING, Dict, Any
 
 from codemie.core.constants import AGENT_NAME, LLM_MODEL, USER_NAME, TOOL_TYPE, ToolType, PROJECT
+from codemie.core.dependecies import get_current_project
 from codemie.rest_api.security.user import User
 from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
 from codemie.service.monitoring.metrics_constants import (
@@ -46,7 +47,7 @@ class AgentMonitoringService(BaseMonitoringService):
             MetricsAttributes.LLM_MODEL: metadata.get(LLM_MODEL, ""),
             MetricsAttributes.USER_NAME: metadata.get(USER_NAME, ""),
             MetricsAttributes.TOOL_TYPE: metadata.get(TOOL_TYPE, ToolType.INTERNAL),
-            MetricsAttributes.PROJECT: metadata.get(PROJECT) or "",
+            MetricsAttributes.PROJECT: get_current_project(fallback=metadata.get(PROJECT)),
         }
         if additional_attributes:
             attributes.update(additional_attributes)
@@ -79,7 +80,7 @@ class AgentMonitoringService(BaseMonitoringService):
         attributes = {
             MetricsAttributes.ASSISTANT_NAME: assistant.name,
             MetricsAttributes.ASSISTANT_DESCRIPTION: assistant.description,
-            MetricsAttributes.PROJECT: assistant.project,
+            MetricsAttributes.PROJECT: get_current_project(fallback=assistant.project),
             MetricsAttributes.SLUG: assistant.slug if assistant.slug is not None else assistant.id,
             MetricsAttributes.LLM_MODEL: assistant.llm_model_type,
             MetricsAttributes.USER_ID: user.id,
@@ -129,7 +130,7 @@ class AgentMonitoringService(BaseMonitoringService):
         attributes = {
             MetricsAttributes.ASSISTANT_NAME: assistant.name,
             MetricsAttributes.ASSISTANT_ID: assistant.id,
-            MetricsAttributes.PROJECT: assistant.project,
+            MetricsAttributes.PROJECT: get_current_project(fallback=assistant.project),
             MetricsAttributes.SLUG: assistant.slug if assistant.slug is not None else assistant.id,
             MetricsAttributes.USER_ID: user_id,
         }
