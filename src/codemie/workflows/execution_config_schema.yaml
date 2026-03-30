@@ -3,14 +3,35 @@ $schema: "https://json-schema.org/draft/2020-12/schema"
 
 properties:
 
-  messages_limit_before_summarization: {type: integer}
-  tokens_limit_before_summarization: {type: integer}
+  messages_limit_before_summarization:
+    type: integer
+    minimum: 1
+    maximum: 10000
+
+  tokens_limit_before_summarization:
+    type: integer
+    minimum: 1
+    maximum: 2147483647  # PostgreSQL INTEGER max
+
   type: {type: string}
   enable_summarization_node: {type: boolean}
-  recursion_limit: {type: integer}
-  max_concurrency: {type: integer}
+
+  recursion_limit:
+    type: integer
+    minimum: 1
+    maximum: 100
+
+  max_concurrency:
+    type: integer
+    minimum: 1
+    maximum: 100
+
   verbose: {type: boolean}
-  max_iteration_key_output_limit: {type: integer}
+
+  max_iteration_key_output_limit:
+    type: integer
+    minimum: 1
+    maximum: 10000
 
   assistants:
     type: array
@@ -35,10 +56,22 @@ properties:
   retry_policy:
     type: object
     properties:
-      initial_interval: {type: number}
-      backoff_factor: {type: number}
-      max_interval: {type: number}
-      max_attempts: {type: integer}
+      initial_interval:
+        type: number
+        minimum: 0
+        maximum: 3600000  # Max 1 hour in milliseconds
+      backoff_factor:
+        type: number
+        minimum: 1
+        maximum: 10
+      max_interval:
+        type: number
+        minimum: 0
+        maximum: 3600000  # Max 1 hour in milliseconds
+      max_attempts:
+        type: integer
+        minimum: 1
+        maximum: 100
 
 $defs:
 
@@ -51,7 +84,10 @@ $defs:
       name: {type: string}
       model: {type: string}
       system_prompt: {type: string}
-      limit_tool_output_tokens: {type: integer}
+      limit_tool_output_tokens:
+        type: integer
+        minimum: 1
+        maximum: 2147483647  # PostgreSQL INTEGER max
       tools:
         type: array
         items:
@@ -193,10 +229,22 @@ $defs:
       retry_policy:
         type: object
         properties:
-          initial_interval: {type: number}
-          backoff_factor: {type: number}
-          max_interval: {type: number}
-          max_attempts: {type: integer}
+          initial_interval:
+            type: number
+            minimum: 0
+            maximum: 3600000  # Max 1 hour in milliseconds
+          backoff_factor:
+            type: number
+            minimum: 1
+            maximum: 10
+          max_interval:
+            type: number
+            minimum: 0
+            maximum: 3600000  # Max 1 hour in milliseconds
+          max_attempts:
+            type: integer
+            minimum: 1
+            maximum: 100
       wait_for_user_confirmation:
         type: boolean
         default: false

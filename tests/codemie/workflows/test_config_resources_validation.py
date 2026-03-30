@@ -18,8 +18,7 @@ from unittest.mock import patch, MagicMock
 from codemie.core.workflow_models import WorkflowTool
 from codemie.rest_api.models.assistant import Assistant
 from codemie.service.tools.tool_service import ToolsService
-from codemie.workflows.config_resources_validation import (
-    _extract_tools_from_assistants,
+from codemie.workflows.validation.resources import (
     _extract_datasources,
     _is_assistant_available,
     _is_tool_available,
@@ -69,18 +68,6 @@ def test_find_states_referencing_tool_no_match(mock_workflow_config):
     mock_workflow_config.states = [MagicMock(id="state_1", tool_id="tool_1")]
     states = _find_states_referencing_tool(mock_workflow_config, "nonexistent")
     assert states == []
-
-
-def test_extract_tools_from_assistants_without_tools(mock_workflow_config):
-    mock_workflow_config.assistants = [MagicMock(tools=None)]
-    tools = _extract_tools_from_assistants(mock_workflow_config)
-    assert tools == []
-
-
-def test_extract_tools_from_assistants_no_assistants(mock_workflow_config):
-    mock_workflow_config.assistants = None
-    tools = _extract_tools_from_assistants(mock_workflow_config)
-    assert tools == []
 
 
 def test_extract_datasources_with_ids(mock_workflow_config):
@@ -138,7 +125,7 @@ def test_is_tool_available_not_available(find_toolkit_for_tool, mock_user, mock_
     assert _is_tool_available(mock_workflow_config, mock_tool, mock_user) is False
 
 
-@patch("codemie.workflows.config_resources_validation.MCPToolkitService.get_mcp_server_tools")
+@patch("codemie.workflows.validation.resources.MCPToolkitService.get_mcp_server_tools")
 def test_is_tool_available_mcp_server_available(mock_get_mcp_server_tools, mock_user, mock_workflow_config):
     mock_mcp_server = MagicMock()
     mock_mcp_server.resolve_dynamic_values_in_arguments = False  # Ensure static validation runs
@@ -154,7 +141,7 @@ def test_is_tool_available_mcp_server_available(mock_get_mcp_server_tools, mock_
     assert _is_tool_available(mock_workflow_config, mock_tool, mock_user) is True
 
 
-@patch("codemie.workflows.config_resources_validation.MCPToolkitService.get_mcp_server_tools")
+@patch("codemie.workflows.validation.resources.MCPToolkitService.get_mcp_server_tools")
 def test_is_tool_available_mcp_server_not_available(mock_get_mcp_server_tools, mock_user, mock_workflow_config):
     mock_mcp_server = MagicMock()
     mock_mcp_server.resolve_dynamic_values_in_arguments = False  # Ensure static validation runs
@@ -180,7 +167,7 @@ def test_is_tool_available_mcp_server_dynamic_validation_skip(mock_user, mock_wo
     assert _is_tool_available(mock_workflow_config, mock_tool, mock_user) is True
 
 
-@patch("codemie.workflows.config_resources_validation.MCPToolkitService.get_mcp_server_tools")
+@patch("codemie.workflows.validation.resources.MCPToolkitService.get_mcp_server_tools")
 def test_is_tool_available_mcp_server_static_validation_runs(
     mock_get_mcp_server_tools, mock_user, mock_workflow_config
 ):
@@ -201,7 +188,7 @@ def test_is_tool_available_mcp_server_static_validation_runs(
     mock_get_mcp_server_tools.assert_called_once()
 
 
-@patch("codemie.workflows.config_resources_validation._is_assistant_available", return_value=False)
+@patch("codemie.workflows.validation.resources._is_assistant_available", return_value=False)
 def test_validate_assistants_availability_some_unavailable(
     mock_is_assistant_available, mock_workflow_config, mock_user
 ):
@@ -217,23 +204,24 @@ def test_validate_assistants_availability_some_unavailable(
     assert unavailable == [("id_1", "assistant_1", "state_1"), ("id_2", "assistant_2", "state_2")]
 
 
-@patch("codemie.workflows.config_resources_validation._is_assistant_available", return_value=True)
+@patch("codemie.workflows.validation.resources._is_assistant_available", return_value=True)
 def test_validate_assistants_availability_all_available(mock_is_assistant_available, mock_workflow_config, mock_user):
     mock_workflow_config.assistants = [MagicMock(id="id_1", assistant_id="assistant_1")]
     unavailable = _validate_assistants_availability(mock_workflow_config, mock_user)
     assert unavailable == []
 
 
-@patch("codemie.workflows.config_resources_validation._is_tool_available", return_value=True)
+@patch("codemie.workflows.validation.resources._is_tool_available", return_value=True)
 def test_validate_tools_from_assistants_availability_all_available(
     mock_is_tool_available, mock_workflow_config, mock_user
 ):
-    mock_workflow_config.assistants = [MagicMock(tools=[MagicMock(name="Tool A")])]
-    unavailable = _validate_tools_from_assistants_availability(mock_workflow_config, mock_user)
+    mock_workflow_config.assistants = [MagicMock(tools=[MagicMock(name="Tool A", integration_alias=None)])]
+    unavailable, invalid_integration = _validate_tools_from_assistants_availability(mock_workflow_config, mock_user)
     assert unavailable == []
+    assert invalid_integration == []
 
 
-@patch("codemie.workflows.config_resources_validation._is_tool_available", return_value=False)
+@patch("codemie.workflows.validation.resources._is_tool_available", return_value=False)
 def test_validate_tools_availability_some_unavailable(mock_is_tool_available, mock_workflow_config, mock_user):
     mock_workflow_config.tools = [MagicMock(id="tool_1", tool="Tool A"), MagicMock(id="tool_2", tool="Tool B")]
     mock_workflow_config.states = [
@@ -244,7 +232,7 @@ def test_validate_tools_availability_some_unavailable(mock_is_tool_available, mo
     assert unavailable == [("tool_1", "Tool A", "state_1"), ("tool_2", "Tool B", "state_2")]
 
 
-@patch("codemie.workflows.config_resources_validation._is_tool_available", return_value=True)
+@patch("codemie.workflows.validation.resources._is_tool_available", return_value=True)
 def test_validate_tools_availability_all_available(mock_is_tool_available, mock_workflow_config, mock_user):
     mock_workflow_config.tools = [MagicMock(id="tool_1", tool="Tool A")]
     unavailable = _validate_tools_avaiability(mock_workflow_config, mock_user)
@@ -252,7 +240,7 @@ def test_validate_tools_availability_all_available(mock_is_tool_available, mock_
 
 
 @patch(
-    "codemie.workflows.config_resources_validation._is_datasource_available",
+    "codemie.workflows.validation.resources._is_datasource_available",
     side_effect=lambda ds: ds if ds != "unavailable_ds" else None,
 )
 def test_validate_datasources_availability_some_unavailable(mock_is_datasource_available, mock_workflow_config):
@@ -265,7 +253,7 @@ def test_validate_datasources_availability_some_unavailable(mock_is_datasource_a
     assert unavailable[0] == ("unavailable_ds", "asst_ref_1", "state_1")
 
 
-@patch("codemie.workflows.config_resources_validation._is_datasource_available", return_value=True)
+@patch("codemie.workflows.validation.resources._is_datasource_available", return_value=True)
 def test_validate_datasources_availability_all_available(mock_is_datasource_available, mock_workflow_config):
     mock_workflow_config.assistants = [MagicMock(datasource_ids=["ds_1", "ds_2"])]
     unavailable = _validate_datasources_availability(mock_workflow_config)
@@ -278,21 +266,22 @@ def mock_workflow_config():
     config.assistants = [MagicMock(id="asst_ref_1", assistant_id="assistant_1", datasource_ids=["ds_1"])]
     config.tools = [MagicMock(id="tool_1", tool="Tool A")]
     config.states = [MagicMock(id="state_1", assistant_id="asst_ref_1", tool_id="tool_1")]
+    config.yaml_config = None  # Prevent yaml.compose() from receiving MagicMock
     return config
 
 
-@patch("codemie.workflows.config_resources_validation._is_assistant_available", return_value=True)
-@patch("codemie.workflows.config_resources_validation._is_tool_available", return_value=True)
-@patch("codemie.workflows.config_resources_validation._is_datasource_available", return_value=True)
+@patch("codemie.workflows.validation.resources._is_assistant_available", return_value=True)
+@patch("codemie.workflows.validation.resources._is_tool_available", return_value=True)
+@patch("codemie.workflows.validation.resources._is_datasource_available", return_value=True)
 def test_validate_workflow_config_resources_availability_all_available(
     mock_is_datasource_available, mock_tool_available, mock_assistant_available, mock_workflow_config, mock_user
 ):
     validate_workflow_config_resources_availability(mock_workflow_config, mock_user)
 
 
-@patch("codemie.workflows.config_resources_validation._is_assistant_available", return_value=False)
-@patch("codemie.workflows.config_resources_validation._is_tool_available", return_value=False)
-@patch("codemie.workflows.config_resources_validation._is_datasource_available", return_value=None)
+@patch("codemie.workflows.validation.resources._is_assistant_available", return_value=False)
+@patch("codemie.workflows.validation.resources._is_tool_available", return_value=False)
+@patch("codemie.workflows.validation.resources._is_datasource_available", return_value=None)
 def test_validate_workflow_config_resources_availability_multiple_unavailable_resources(
     mock_is_datasource_available, mock_tool_available, mock_assistant_available, mock_workflow_config, mock_user
 ):
@@ -307,13 +296,16 @@ def test_validate_workflow_config_resources_availability_multiple_unavailable_re
 def test_workflow_config_resources_validation_error_to_dict():
     unavailable_assistants = [("ref_1", "asst_123", "state_1"), ("ref_2", "asst_456", "state_2")]
     unavailable_tools = [("tool_ref_1", "tool_123", "state_3")]
-    unavailable_tools_from_assistants = ["tool_from_asst_1", "tool_from_asst_2"]
-    unavailable_datasources = [("datasource_1", "asst_ref_1", "state_4"), ("datasource_2", "asst_ref_2", "state_5")]
+    unavailable_tools_from_asst_integrations = [
+        ("tool_from_asst_1", "asst_ref_1", "state_4"),
+        ("tool_from_asst_2", "asst_ref_2", "state_5"),
+    ]
+    unavailable_datasources = [("datasource_1", "asst_ref_1", "state_6"), ("datasource_2", "asst_ref_2", "state_7")]
 
     exception = WorkflowConfigResourcesValidationError(
         unavailable_assistants,
         unavailable_tools,
-        unavailable_tools_from_assistants,
+        unavailable_tools_from_asst_integrations,
         unavailable_datasources,
     )
 
@@ -323,27 +315,303 @@ def test_workflow_config_resources_validation_error_to_dict():
     assert "errors" in error_dict
     assert len(error_dict["errors"]) == 7
 
-    assistant_errors = [e for e in error_dict["errors"] if e["resource_type"] == "assistant"]
+    # Check assistant errors
+    assistant_errors = [e for e in error_dict["errors"] if e["path"] == "assistant_id"]
     assert len(assistant_errors) == 2
-    assert assistant_errors[0]["resource_id"] == "asst_123"
-    assert assistant_errors[0]["reference_state"] == "state_1"
-    assert "asst_123" in assistant_errors[0]["message"]
+    assert assistant_errors[0]["details"] == "Assistant 'asst_123' does not exist"
+    assert assistant_errors[0]["state_id"] == "state_1"
 
-    tool_errors = [e for e in error_dict["errors"] if e["resource_type"] == "tool"]
+    # Check tool errors
+    tool_errors = [e for e in error_dict["errors"] if e["path"] == "tool_id"]
     assert len(tool_errors) == 1
-    assert tool_errors[0]["resource_id"] == "tool_123"
-    assert tool_errors[0]["reference_state"] == "state_3"
+    assert tool_errors[0]["details"] == "Tool 'tool_123' does not exist"
+    assert tool_errors[0]["state_id"] == "state_3"
 
-    tool_from_asst_errors = [e for e in error_dict["errors"] if e["resource_type"] == "tool_from_assistant"]
+    # Check tool from assistant errors (no state_id - these are assistant-level errors)
+    tool_from_asst_errors = [e for e in error_dict["errors"] if e["path"] == "tools"]
     assert len(tool_from_asst_errors) == 2
-    assert "reference_state" not in tool_from_asst_errors[0]
+    assert "tool_from_asst_1" in tool_from_asst_errors[0]["details"]
+    assert "asst_ref_1" in tool_from_asst_errors[0]["details"]
+    assert "state_id" not in tool_from_asst_errors[0]
 
-    datasource_errors = [e for e in error_dict["errors"] if e["resource_type"] == "datasource"]
+    # Check datasource errors
+    datasource_errors = [e for e in error_dict["errors"] if e["path"] == "datasource_ids"]
     assert len(datasource_errors) == 2
-    # Now datasources have reference_state mapping to the state that uses them
-    assert datasource_errors[0]["resource_id"] == "datasource_1"
-    assert datasource_errors[0]["reference_state"] == "state_4"
-    assert "asst_ref_1" in datasource_errors[0]["message"]
-    assert datasource_errors[1]["resource_id"] == "datasource_2"
-    assert datasource_errors[1]["reference_state"] == "state_5"
-    assert "asst_ref_2" in datasource_errors[1]["message"]
+    assert (
+        datasource_errors[0]["details"] == "Datasource 'datasource_1' (used by assistant 'asst_ref_1') does not exist"
+    )
+    assert datasource_errors[0]["state_id"] == "state_6"
+    assert (
+        datasource_errors[1]["details"] == "Datasource 'datasource_2' (used by assistant 'asst_ref_2') does not exist"
+    )
+    assert datasource_errors[1]["state_id"] == "state_7"
+
+
+def test_workflow_config_resources_validation_error_to_dict_empty_tool_field():
+    """When a tool definition has an empty 'tool' field the error must point to the
+    tool definition itself (path='tool'), including the state_id of the referencing state."""
+    unavailable_tools = [("tool_ref_1", "", "state_1")]
+
+    exception = WorkflowConfigResourcesValidationError(
+        unavailable_assistants=[],
+        unavailable_tools=unavailable_tools,
+        unavailable_tools_from_asst_integrations=[],
+        unavailable_datasources=[],
+    )
+
+    error_dict = exception.to_dict()
+
+    assert error_dict["error_type"] == "resource_validation"
+    errors = error_dict["errors"]
+    assert len(errors) == 1
+
+    error = errors[0]
+    assert error["path"] == "tool"
+    assert error["message"] == "Tool is required"
+    assert error["details"] == "Tool '' does not exist"
+    assert error["state_id"] == "state_1"
+
+
+@patch.object(ToolsService, "find_toolkit_for_tool")
+def test_is_tool_available_raises_value_error(find_toolkit_for_tool, mock_user, mock_workflow_config):
+    """ValueError from ToolsService is treated as tool unavailable."""
+    find_toolkit_for_tool.side_effect = ValueError("unexpected error")
+    mock_tool = MagicMock()
+    mock_tool.mcp_server = None
+    mock_tool.tool = "tool_1"
+    assert _is_tool_available(mock_workflow_config, mock_tool, mock_user) is False
+
+
+@patch("codemie.workflows.validation.resources.ToolsService.find_setting_for_tool")
+def test_is_integration_alias_valid_valid(mock_find_setting, mock_user):
+    """Valid integration alias (no exception) returns True."""
+    from codemie.workflows.validation.resources import _is_integration_alias_valid
+
+    mock_find_setting.return_value = MagicMock()
+    assert _is_integration_alias_valid(mock_user, "project", "alias") is True
+
+
+@patch("codemie.workflows.validation.resources.ToolsService.find_setting_for_tool")
+def test_is_integration_alias_valid_invalid(mock_find_setting, mock_user):
+    """ValueError from find_setting_for_tool means alias is invalid, returns False."""
+    from codemie.workflows.validation.resources import _is_integration_alias_valid
+
+    mock_find_setting.side_effect = ValueError("not found")
+    assert _is_integration_alias_valid(mock_user, "project", "alias") is False
+
+
+@patch("codemie.workflows.validation.resources._is_assistant_available")
+def test_validate_assistants_availability_skips_none_assistant_id(
+    mock_is_assistant_available, mock_workflow_config, mock_user
+):
+    """Assistants with None assistant_id are skipped without availability check."""
+    mock_workflow_config.assistants = [MagicMock(id="asst_ref_1", assistant_id=None)]
+    unavailable = _validate_assistants_availability(mock_workflow_config, mock_user)
+    assert unavailable == []
+    mock_is_assistant_available.assert_not_called()
+
+
+@patch("codemie.workflows.validation.resources._is_tool_available", return_value=False)
+def test_validate_tools_from_assistants_availability_some_unavailable(
+    mock_is_tool_available, mock_workflow_config, mock_user
+):
+    """Tools that don't exist appear in the unavailable list."""
+    tool_mock = MagicMock()
+    tool_mock.name = "tool_a"
+    tool_mock.integration_alias = None
+    mock_workflow_config.assistants = [MagicMock(id="asst_ref_1", tools=[tool_mock])]
+    mock_workflow_config.states = [MagicMock(id="state_1", assistant_id="asst_ref_1")]
+    unavailable, invalid_integration = _validate_tools_from_assistants_availability(mock_workflow_config, mock_user)
+    assert ("tool_a", "asst_ref_1", "state_1") in unavailable
+    assert invalid_integration == []
+
+
+@patch("codemie.workflows.validation.resources._is_tool_available", return_value=True)
+@patch("codemie.workflows.validation.resources._is_integration_alias_valid", return_value=False)
+def test_validate_tools_from_assistants_availability_invalid_integration(
+    mock_is_integration_alias, mock_is_tool_available, mock_workflow_config, mock_user
+):
+    """Tools with invalid integration_alias appear in the invalid_integration list."""
+    tool_mock = MagicMock()
+    tool_mock.name = "tool_a"
+    tool_mock.integration_alias = "my_alias"
+    mock_workflow_config.assistants = [MagicMock(id="asst_ref_1", tools=[tool_mock])]
+    mock_workflow_config.states = [MagicMock(id="state_1", assistant_id="asst_ref_1")]
+    unavailable, invalid_integration = _validate_tools_from_assistants_availability(mock_workflow_config, mock_user)
+    assert unavailable == []
+    assert ("tool_a", "asst_ref_1", "state_1") in invalid_integration
+
+
+def test_workflow_config_resources_validation_error_to_dict_includes_message_key():
+    """to_dict result includes a top-level 'message' key."""
+    exc = WorkflowConfigResourcesValidationError(
+        unavailable_assistants=[("ref_1", "asst_1", "state_1")],
+        unavailable_tools=[],
+        unavailable_tools_from_asst_integrations=[],
+        unavailable_datasources=[],
+    )
+    error_dict = exc.to_dict()
+    assert error_dict["message"] == "Configuration references unavailable resources"
+
+
+def test_workflow_config_resources_validation_error_to_dict_empty():
+    """to_dict returns empty errors list when all resource lists are empty."""
+    exc = WorkflowConfigResourcesValidationError(
+        unavailable_assistants=[],
+        unavailable_tools=[],
+        unavailable_tools_from_asst_integrations=[],
+        unavailable_datasources=[],
+    )
+    error_dict = exc.to_dict()
+    assert error_dict["error_type"] == "resource_validation"
+    assert error_dict["errors"] == []
+
+
+def test_workflow_config_resources_validation_error_to_dict_with_invalid_integration():
+    """to_dict includes errors for invalid integration tools with correct path and message."""
+    invalid_integration_tools = [("tool_a", "asst_ref_1", "state_1")]
+    exc = WorkflowConfigResourcesValidationError(
+        unavailable_assistants=[],
+        unavailable_tools=[],
+        unavailable_tools_from_asst_integrations=[],
+        unavailable_datasources=[],
+        invalid_integration_tools=invalid_integration_tools,
+    )
+    error_dict = exc.to_dict()
+    errors = error_dict["errors"]
+    assert len(errors) == 1
+    assert errors[0]["path"] == "tools"
+    assert "tool_a" in errors[0]["details"]
+    assert errors[0]["message"] == "Invalid integration settings"
+    assert "state_id" not in errors[0]
+
+
+def test_find_tool_meta_found():
+    """_find_tool_meta returns correct ToolMeta for a matching tool in toolkits_metadata."""
+    toolkits_metadata = [{"toolkit": "my_toolkit", "is_external": False, "tools": [{"name": "tool_a"}]}]
+    exc = WorkflowConfigResourcesValidationError(
+        unavailable_assistants=[("ref", "asst_id", "state_1")],
+        unavailable_tools=[],
+        unavailable_tools_from_asst_integrations=[],
+        unavailable_datasources=[],
+        toolkits_metadata=toolkits_metadata,
+    )
+    meta = exc._find_tool_meta("tool_a")
+    assert meta is not None
+    assert meta.toolkit_name == "my_toolkit"
+    assert meta.tool_name == "tool_a"
+    assert meta.toolkit_type == "tools"
+
+
+def test_find_tool_meta_external_toolkit():
+    """_find_tool_meta sets toolkit_type to 'external-tools' for external toolkits."""
+    toolkits_metadata = [{"toolkit": "ext_toolkit", "is_external": True, "tools": [{"name": "tool_b"}]}]
+    exc = WorkflowConfigResourcesValidationError(
+        unavailable_assistants=[("ref", "asst_id", "state_1")],
+        unavailable_tools=[],
+        unavailable_tools_from_asst_integrations=[],
+        unavailable_datasources=[],
+        toolkits_metadata=toolkits_metadata,
+    )
+    meta = exc._find_tool_meta("tool_b")
+    assert meta is not None
+    assert meta.toolkit_type == "external-tools"
+
+
+def test_find_tool_meta_not_found():
+    """_find_tool_meta returns None when the tool is absent from toolkits_metadata."""
+    exc = WorkflowConfigResourcesValidationError(
+        unavailable_assistants=[],
+        unavailable_tools=[],
+        unavailable_tools_from_asst_integrations=[],
+        unavailable_datasources=[],
+        toolkits_metadata=[{"toolkit": "tk", "is_external": False, "tools": [{"name": "other_tool"}]}],
+    )
+    assert exc._find_tool_meta("nonexistent_tool") is None
+
+
+def test_find_tool_meta_empty_toolkits_metadata():
+    """_find_tool_meta returns None when toolkits_metadata is empty."""
+    exc = WorkflowConfigResourcesValidationError(
+        unavailable_assistants=[],
+        unavailable_tools=[],
+        unavailable_tools_from_asst_integrations=[],
+        unavailable_datasources=[],
+        toolkits_metadata=[],
+    )
+    assert exc._find_tool_meta("some_tool") is None
+
+
+def test_workflow_config_resources_validation_error_creates_yaml_line_finder():
+    """YamlLineFinder is used when workflow_config_dict and line_number_map are provided."""
+    workflow_config_dict = {"states": [{"id": "state_1", "assistant_id": "asst_ref_1"}]}
+    line_number_map = {"states[0].assistant_id": 3}
+    exc = WorkflowConfigResourcesValidationError(
+        unavailable_assistants=[("asst_ref_1", "asst_1", "state_1")],
+        unavailable_tools=[],
+        unavailable_tools_from_asst_integrations=[],
+        unavailable_datasources=[],
+        workflow_config_dict=workflow_config_dict,
+        line_number_map=line_number_map,
+    )
+    config_line = exc.line_finder.find_line_for_state_field("state_1", "assistant_id")
+    assert config_line == 3
+
+
+def test_workflow_config_resources_validation_error_null_line_finder_when_no_config():
+    """NullYamlLineFinder is used when no workflow_config_dict is provided."""
+    exc = WorkflowConfigResourcesValidationError(
+        unavailable_assistants=[("asst_ref_1", "asst_1", "state_1")],
+        unavailable_tools=[],
+        unavailable_tools_from_asst_integrations=[],
+        unavailable_datasources=[],
+    )
+    assert exc.line_finder.find_line_for_state_field("state_1", "assistant_id") is None
+    assert exc.line_finder.find_line_for_assistant_field("asst_1", "tools") is None
+
+
+@patch("codemie.workflows.validation.resources._is_assistant_available", return_value=False)
+@patch("codemie.workflows.validation.resources._is_tool_available", return_value=True)
+@patch("codemie.workflows.validation.resources._is_datasource_available", return_value=True)
+def test_validate_workflow_config_resources_availability_with_yaml_config(
+    mock_is_datasource_available, mock_tool_available, mock_assistant_available, mock_workflow_config, mock_user
+):
+    """When yaml_config is a valid YAML string, line numbers are extracted into the exception."""
+    mock_workflow_config.yaml_config = (
+        "states:\n"
+        "  - id: state_1\n"
+        "    assistant_id: asst_ref_1\n"
+        "assistants:\n"
+        "  - id: asst_ref_1\n"
+        "    assistant_id: assistant_1\n"
+    )
+    with pytest.raises(WorkflowConfigResourcesValidationError) as exc_info:
+        validate_workflow_config_resources_availability(mock_workflow_config, mock_user)
+    assert exc_info.value.workflow_config_dict is not None
+    assert exc_info.value.line_number_map is not None
+
+
+@patch("codemie.workflows.validation.resources._is_assistant_available", return_value=True)
+@patch("codemie.workflows.validation.resources._is_tool_available", return_value=True)
+@patch("codemie.workflows.validation.resources._is_datasource_available", return_value=True)
+@patch("codemie.workflows.validation.resources._is_integration_alias_valid", return_value=False)
+def test_validate_workflow_config_resources_availability_raises_on_invalid_integration(
+    mock_is_integration_alias, mock_is_datasource, mock_tool_available, mock_assistant_available, mock_user
+):
+    """validate raises WorkflowConfigResourcesValidationError when integration alias is invalid."""
+    config = MagicMock()
+    config.tools = []
+    config.assistants = [
+        MagicMock(
+            id="asst_ref_1",
+            assistant_id="assistant_1",
+            datasource_ids=[],
+            tools=[MagicMock(name="tool_a", integration_alias="bad_alias")],
+        )
+    ]
+    config.states = [MagicMock(id="state_1", assistant_id="asst_ref_1")]
+    config.yaml_config = None
+    config.project = "test_project"
+    with pytest.raises(WorkflowConfigResourcesValidationError) as exc_info:
+        validate_workflow_config_resources_availability(config, mock_user)
+    assert len(exc_info.value.invalid_integration_tools) > 0

@@ -145,6 +145,71 @@ class TestWorkflowMCPServers:
         assert len(virtual_assistant.mcp_servers) == 1
         assert virtual_assistant.mcp_servers[0].name == "direct-server"
 
+    def test_workflow_validation_error_includes_mcp_meta(self):
+        """Test that workflow validation errors for MCP servers include meta field with mcp_name"""
+        from codemie.core.workflow_models import WorkflowConfig
+        from codemie.workflows.workflow import WorkflowExecutor
+
+        yaml_config = """
+assistants:
+  - id: assistant_1
+    assistant_id: test-assistant-uuid
+    name: Test Assistant
+    mcp_servers:
+      - name: slack_mcp
+        enabled: "invalid_boolean"  # Invalid: should be boolean, not string
+        config:
+          command: test
+
+states:
+  - id: state_1
+    assistant_id: assistant_1
+    next:
+      state_id: end
+"""
+
+        workflow_config = WorkflowConfig(
+            name="Test Workflow",
+            description="Test",
+            project="test",
+            yaml_config=yaml_config,
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            WorkflowExecutor.validate_workflow(workflow_config, self.mock_user, error_format="json")
+
+        error_dict = exc_info.value.args[0]
+
+        # Verify error structure matches WorkflowValidationErrorDetail format
+        assert error_dict["error_type"] == "workflow_schema"
+        assert "message" in error_dict
+        assert len(error_dict["errors"]) > 0
+
+        # Find the MCP-related error
+        mcp_error = None
+        for err in error_dict["errors"]:
+            # Check if path contains "enabled" (the field that failed validation)
+            if err.get("path") == "enabled":
+                mcp_error = err
+                break
+
+        assert mcp_error is not None, "MCP-related error should be present"
+
+        # Verify WorkflowValidationErrorDetail structure
+        assert "id" in mcp_error, "Error should have UUID id"
+        assert "message" in mcp_error, "Error should have message"
+        assert "path" in mcp_error, "Error should have path"
+        assert "details" in mcp_error, "Error should have details"
+
+        # Verify meta field exists and has correct structure
+        assert "meta" in mcp_error, "Meta field should be present in MCP error"
+        assert "mcp_name" in mcp_error["meta"], "Meta should contain mcp_name"
+        assert mcp_error["meta"]["mcp_name"] == "slack_mcp", "MCP name should match YAML config"
+
+        # Verify state_id is included for MCP errors
+        assert "state_id" in mcp_error, "state_id field should be present in MCP error"
+        assert mcp_error["state_id"] == "state_1", "state_id should reference the state using the assistant"
+
     def teardown_method(self):
         """Clean up after each test"""
         VirtualAssistantService.assistants.clear()

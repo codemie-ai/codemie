@@ -85,15 +85,14 @@ from codemie.workflows.utils import (
     initialize_assistant,
     get_context_store_from_state_schema,
 )
-from codemie.workflows.config_yaml_validation import (
+from codemie.workflows.validation import (
     WorkflowExecutionParsingError,
     WorkflowExecutionConfigSchemaValidationError,
     WorkflowExecutionConfigCrossReferenceValidationError,
     validate_workflow_execution_config_yaml,
-)
-from codemie.workflows.config_resources_validation import (
-    validate_workflow_config_resources_availability,
     WorkflowConfigResourcesValidationError,
+    validate_workflow_config_resources_availability,
+    PydanticErrorTransformer,
 )
 from codemie.workflows.utils.json_utils import UnwrappingJsonPointerEvaluator
 
@@ -208,10 +207,11 @@ class WorkflowExecutor:
         """
         try:
             validate_workflow_execution_config_yaml(workflow_config.yaml_config)
-        except WorkflowExecutionParsingError:
+        except WorkflowExecutionParsingError as e:
+            error_dict = e.to_dict()
             WorkflowExecutor._raise_validation_error(
                 error_format,
-                {"error_type": WorkflowErrorType.PARSING.value, "message": "Invalid YAML format was provided"},
+                error_dict,
                 "\nInvalid YAML format was provided \n".replace('\n', '<br>'),
             )
         except (
@@ -219,7 +219,7 @@ class WorkflowExecutor:
             WorkflowExecutionConfigCrossReferenceValidationError,
         ) as e:
             error_dict = e.to_dict()
-            error_dict["message"] = "Invalid YAML config was provided"
+            # error_dict already has proper 'message' field from new format
             WorkflowExecutor._raise_validation_error(
                 error_format,
                 error_dict,
@@ -229,9 +229,13 @@ class WorkflowExecutor:
         try:
             workflow_config.parse_execution_config()
         except ValidationError as e:
+            # Transform Pydantic errors to WorkflowValidationErrorDetail format
+            errors = PydanticErrorTransformer(e, workflow_config).transform()
+
             json_error = {
                 "error_type": WorkflowErrorType.WORKFLOW_SCHEMA.value,
-                "errors": [{"field": err.get("loc"), "message": err.get("msg")} for err in e.errors()],
+                "message": "Configuration contains validation errors",
+                "errors": errors,
             }
             string_error = f"\nInvalid workflow schema was provided: {e.errors()[0]['msg']}"
             WorkflowExecutor._raise_validation_error(error_format, json_error, string_error)
@@ -247,7 +251,7 @@ class WorkflowExecutor:
             validate_workflow_config_resources_availability(workflow_config, user)
         except WorkflowConfigResourcesValidationError as e:
             error_dict = e.to_dict()
-            error_dict["message"] = "Workflow can't be created because some resources do not exist"
+            # error_dict already has proper 'message' field from new format
             string_error = (
                 f"\nWorkflow can't be created because the following Assistants "
                 f"/ Tools / Data sources do not exist: \n{e}\n".replace('\n', '<br>')

@@ -157,13 +157,11 @@ class BedrockFlowNode(BaseNode):
                 return int(v)
 
             elif et == "BOOLEAN":
-                low = v.strip().lower()
-                if low in ("true", "1", "yes"):
-                    return True
-                elif low in ("false", "0", "no"):
-                    return False
-
-                raise ValueError
+                bool_map = {"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False}
+                low = v.lower()
+                if low not in bool_map:
+                    raise ValueError
+                return bool_map[low]
 
             elif et == "ARRAY":
                 parsed = json.loads(v)
