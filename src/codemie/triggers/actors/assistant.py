@@ -36,6 +36,7 @@ def invoke_assistant(
     data = {
         'conversation_id': str(uuid.uuid4()),
         'text': task,
+        'content_raw': f'<p>{task}</p>',
         'stream': False,
     }
 

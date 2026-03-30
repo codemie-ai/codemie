@@ -51,7 +51,7 @@ class TestInvokeAssistant(unittest.TestCase):
         mock_post.assert_called_once_with(
             url='http://mockserver:8080/v1/assistants/assistant-id/model',
             headers=_EXPECTED_HEADERS,
-            json={'text': 'Do a task', 'stream': False, 'conversation_id': ANY},
+            json={'text': 'Do a task', 'content_raw': '<p>Do a task</p>', 'stream': False, 'conversation_id': ANY},
             timeout=600,
         )
         self.assertTrue(logger.hasHandlers())
@@ -75,7 +75,7 @@ class TestInvokeAssistant(unittest.TestCase):
         mock_post.assert_called_once_with(
             url='http://mockserver:8080/v1/assistants/assistant-id/model',
             headers=_EXPECTED_HEADERS,
-            json={'text': 'Do a task', 'stream': False, 'conversation_id': ANY},
+            json={'text': 'Do a task', 'content_raw': '<p>Do a task</p>', 'stream': False, 'conversation_id': ANY},
             timeout=600,
         )
         self.assertTrue(logger.hasHandlers())
