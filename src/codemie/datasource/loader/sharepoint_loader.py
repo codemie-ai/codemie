@@ -22,31 +22,16 @@ using Microsoft Graph API with Azure AD application authentication.
 from __future__ import annotations
 
 import re
-import tempfile
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 from urllib.parse import unquote, urlparse
 
 import requests
-from langchain_community.document_loaders import CSVLoader, PyMuPDFLoader, UnstructuredPowerPointLoader
-from langchain_community.document_loaders.parsers import BaseImageBlobParser
 from langchain_core.document_loaders import BaseLoader
 from langchain_core.documents import Document
-from langchain_markitdown import (
-    DocxLoader,
-    XlsxLoader,
-    HtmlLoader,
-    EpubLoader,
-    IpynbLoader,
-    OutlookMsgLoader,
-    PlainTextLoader,
-    ZipLoader,
-)
 
 from codemie.configs import logger
-from codemie.core.dependecies import get_llm_by_credentials
 from codemie.core.utils import _create_pathspec_from_filter
 from codemie.datasource.datasources_config import SHAREPOINT_CONFIG
 from codemie.datasource.exceptions import (
@@ -54,7 +39,7 @@ from codemie.datasource.exceptions import (
     UnauthorizedException,
 )
 from codemie.datasource.loader.base_datasource_loader import BaseDatasourceLoader
-from codemie.rest_api.models.index import IndexKnowledgeBaseFileTypes
+from codemie.datasource.loader.file_extraction_utils import extract_documents_from_bytes
 
 _MAX_RETRY_AFTER_SECONDS = 60
 
@@ -108,20 +93,6 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
     # Constants for Microsoft Graph API
     ODATA_NEXT_LINK = "@odata.nextLink"
     FORM_TEMPLATES_FOLDER = "Form Templates"
-
-    # File loaders mapping (same as FilesDatasourceLoader)
-    _LOADERS = {
-        IndexKnowledgeBaseFileTypes.CSV.value: CSVLoader,
-        IndexKnowledgeBaseFileTypes.PDF.value: PyMuPDFLoader,
-        IndexKnowledgeBaseFileTypes.PPTX.value: UnstructuredPowerPointLoader,
-        IndexKnowledgeBaseFileTypes.DOCX.value: DocxLoader,
-        IndexKnowledgeBaseFileTypes.XLSX.value: XlsxLoader,
-        IndexKnowledgeBaseFileTypes.HTML.value: HtmlLoader,
-        IndexKnowledgeBaseFileTypes.EPUB.value: EpubLoader,
-        IndexKnowledgeBaseFileTypes.IPYNB.value: IpynbLoader,
-        IndexKnowledgeBaseFileTypes.MSG.value: OutlookMsgLoader,
-        IndexKnowledgeBaseFileTypes.ZIP.value: ZipLoader,
-    }
 
     # File extensions to explicitly skip (executables, system files, media files)
     # All other files will be attempted with PlainTextLoader as fallback
@@ -235,18 +206,6 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
         self._total_files_found = 0
         self._total_files_processed = 0
         self._total_files_skipped = 0
-
-        # Loader kwargs (same as FilesDatasourceLoader)
-        self._loader_kwargs = {
-            IndexKnowledgeBaseFileTypes.CSV.value: {"csv_args": {"delimiter": ","}},
-            IndexKnowledgeBaseFileTypes.PDF.value: {
-                "mode": "page",
-                "images_inner_format": "markdown-img",
-                "extract_images": True,
-                "extract_tables": "markdown",
-            },
-            IndexKnowledgeBaseFileTypes.XLSX.value: {"split_by_page": True},
-        }
 
         # Parse site URL
         self._parse_site_url()
@@ -816,8 +775,6 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
         """
         Extract documents from file bytes using appropriate loader.
 
-        This method reuses the same loaders as FilesDatasourceLoader for consistency.
-
         Args:
             file_bytes: File content as bytes
             file_ext: File extension (with dot, e.g., ".pdf")
@@ -826,76 +783,13 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
         Returns:
             List of LangChain Document objects
         """
-        documents = []
-
-        # Remove dot from extension for lookup
-        file_ext_no_dot = file_ext.lstrip(".")
-
-        # Get loader class
-        loader_class = self._LOADERS.get(file_ext_no_dot)
-        if not loader_class:
-            # Default to PlainTextLoader for unsupported types
-            loader_class = PlainTextLoader
-
-        # Save to temp file and process
-        with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as temp_file:
-            temp_file.write(file_bytes)
-            temp_file.flush()
-            temp_file_path = temp_file.name
-
-        try:
-            loader_kwargs = self._loader_kwargs.get(file_ext_no_dot, {})
-
-            # Configure image processing for PDF files if multimodal LLM is available
-            if file_ext_no_dot == IndexKnowledgeBaseFileTypes.PDF.value:
-                from codemie.service.llm_service.llm_service import llm_service
-
-                multimodal_llms = llm_service.get_multimodal_llms()
-                if multimodal_llms:
-                    # Use the first available multimodal LLM for image processing
-                    llm = get_llm_by_credentials(
-                        llm_model=multimodal_llms[0],
-                        streaming=False,
-                        request_id=self.request_uuid if self.request_uuid else str(uuid.uuid4()),
-                    )
-                    from langchain_community.document_loaders.parsers import LLMImageBlobParser
-
-                    images_parser: BaseImageBlobParser = LLMImageBlobParser(model=llm)
-                else:
-                    from langchain_community.document_loaders.parsers import TesseractBlobParser
-
-                    images_parser = TesseractBlobParser()
-
-                loader_kwargs["images_parser"] = images_parser
-
-            loader = loader_class(temp_file_path, **loader_kwargs)
-
-            try:
-                for document in loader.lazy_load():
-                    document.metadata["source"] = file_name
-                    # Remove temp file_path from metadata
-                    if "file_path" in document.metadata:
-                        document.metadata["file_path"] = file_name
-                    documents.append(document)
-            except UnicodeDecodeError as e:
-                logger.warning(
-                    f"Failed to load file due to encoding error: {file_name}. "
-                    f"File cannot be decoded with default encoding: {e}",
-                    exc_info=True,
-                )
-            except ValueError:
-                logger.warning(f"Unsupported file type: {file_ext} for file {file_name}", exc_info=True)
-
-        finally:
-            # Clean up temp file
-            import os
-
-            try:
-                os.unlink(temp_file_path)
-            except Exception as e:
-                logger.warning(f"Failed to delete temp file {temp_file_path}: {e}")
-
-        return documents
+        return extract_documents_from_bytes(
+            file_bytes=file_bytes,
+            file_ext=file_ext.lstrip("."),
+            file_name=file_name,
+            request_uuid=self.request_uuid,
+            csv_separator=",",
+        )
 
     # System list names to filter out
     SYSTEM_LIST_NAMES = {

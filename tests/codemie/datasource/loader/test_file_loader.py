@@ -30,16 +30,7 @@ def test_files_datasource_loader_init(sample_files_datasource_loader):
     assert sample_files_datasource_loader.total_count_of_documents == 10
     assert sample_files_datasource_loader.file_repo is not None
     assert sample_files_datasource_loader.files_paths[0].owner == "owner1"
-    assert sample_files_datasource_loader._loader_kwargs == {
-        "csv": {"csv_args": {"delimiter": ","}},
-        "pdf": {
-            "mode": "page",
-            "images_inner_format": "markdown-img",
-            "extract_images": True,
-            "extract_tables": "markdown",
-        },
-        "xlsx": {"split_by_page": True},
-    }
+    assert sample_files_datasource_loader._csv_separator == ","
 
 
 def test_fetch_remote_stats(sample_files_datasource_loader):
