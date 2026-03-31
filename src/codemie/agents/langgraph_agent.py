@@ -74,6 +74,57 @@ langgraph_supervisor.supervisor._supports_disable_parallel_tool_calls = lambda x
 )
 
 
+def _extract_image_blocks(artifact: object) -> list[dict]:
+    """Convert a tool artifact into a list of base64 image content blocks."""
+    if not isinstance(artifact, list):
+        return []
+    return [
+        {
+            "type": "image",
+            "source_type": "base64",
+            "data": item["data"],
+            "mime_type": item["mime_type"],
+        }
+        for item in artifact
+        if isinstance(item, dict) and "data" in item and "mime_type" in item
+    ]
+
+
+def _image_artifact_pre_model_hook(state: dict) -> dict:
+    """Inject image artifacts from ToolMessages into the LLM input.
+
+    This is a native LangGraph ``pre_model_hook`` for ``create_react_agent``.
+    It scans the most recent round of tool messages (everything after the
+    last ``AIMessage``) for ``ToolMessage.artifact`` entries containing
+    downloaded image data and, when found, appends a ``HumanMessage`` with
+    the images to the transient ``llm_input_messages`` list.
+
+    ``llm_input_messages`` is used as LLM input **without** persisting to
+    graph state, so base64 payloads never leak into conversation history.
+    """
+    messages = state.get("messages", [])
+    if not messages:
+        return {"llm_input_messages": messages}
+
+    image_blocks: list[dict] = []
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage):
+            break
+        if isinstance(msg, ToolMessage) and getattr(msg, "artifact", None):
+            image_blocks.extend(_extract_image_blocks(msg.artifact))
+
+    if not image_blocks:
+        return {"llm_input_messages": messages}
+
+    injected = HumanMessage(
+        content=[
+            {"type": "text", "text": "[Attached images from the tool response above]"},
+            *image_blocks,
+        ]
+    )
+    return {"llm_input_messages": [*messages, injected]}
+
+
 class LangGraphAgent:
     # When this agent is run as part of a workflow (instead of natively within LangGraph),
     # LangGraph overrides the max_concurrency of all subgraphs.
@@ -211,6 +262,9 @@ class LangGraphAgent:
                 tool_selection_enabled=self.smart_tool_selection_enabled,
                 tool_selection_limit=self.tool_selection_limit,
                 parallel_tool_calls=False if parallel_tool_calling else None,
+                # Runs for all agents, but does nothing unless a tool
+                # returns image artifacts (e.g. Jira with screenshots).
+                pre_model_hook=_image_artifact_pre_model_hook,
             )
 
         self._configure_tools()

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 import json
 import logging
 import re
@@ -38,6 +39,27 @@ logger = logging.getLogger(__name__)
 JIRA_TEST_URL: str = "/rest/api/2/myself"
 JIRA_ERROR_MSG: str = "Access denied"
 
+IMAGE_MIME_TYPES: set[str] = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"}
+MAX_IMAGE_SIZE_BYTES: int = 5 * 1024 * 1024  # 5 MB
+MAX_IMAGES_PER_RESPONSE: int = 5
+SINGLE_ISSUE_PATTERN: str = r"/rest/api/\d+/issue/[A-Za-z]+-\d+$"
+
+
+class JiraMultimodalResponse:
+    """Container for Jira responses that include downloadable image attachments.
+
+    Carries the textual API response alongside attachment metadata so that
+    ``_post_process_output_content`` can lazily download and analyze images
+    via a multimodal LLM, returning the analysis as text.
+    """
+
+    def __init__(self, text: str, image_attachments: list[dict]) -> None:
+        self.text = text
+        self.image_attachments = image_attachments
+
+    def __str__(self) -> str:
+        return self.text
+
 
 class JiraInput(BaseModel):
     method: str = Field(
@@ -52,6 +74,7 @@ class JiraInput(BaseModel):
         Do not include query parameters in the URL, they must be provided separately in 'params'.
         For search/read operations, you MUST always get "key", "summary", "status", "assignee", "issuetype" and
         set maxResult, until users ask explicitly for more fields.
+        For single-issue GET requests, ALWAYS also include "attachment" in fields.
         """,
     )
     params: Union[str, Dict[str, Any], None] = Field(
@@ -64,6 +87,7 @@ class JiraInput(BaseModel):
 
         For search/read operations, you MUST always get "key", "summary", "status", "assignee", "issuetype" and
         set maxResult, until users ask explicitly for more fields.
+        For single-issue GET requests, ALWAYS also include "attachment" in fields.
         For file attachments, specify the file name(s) to attach: {"file": "filename.ext"} for single file
         or {"files": ["file1.ext", "file2.ext"]} for multiple files.
 
@@ -90,6 +114,7 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin):
     description: str = GENERIC_JIRA_TOOL.description or ""
     args_schema: Type[BaseModel] = JiraInput
     issue_search_pattern: str = r"/rest/api/\d+/search"
+    response_format: str = "content_and_artifact"
 
     def __init__(self, config: JiraConfig):
         super().__init__(config=config)
@@ -127,6 +152,12 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin):
 
         response_string = f"HTTP: {method} {relative_url} -> {response.status_code} {response.reason} {response_text}"
         logger.debug(response_string)
+
+        if method == "GET" and self._is_single_issue_request(relative_url):
+            image_attachments = self._extract_image_attachments(response)
+            if image_attachments:
+                return JiraMultimodalResponse(text=response_string, image_attachments=image_attachments)
+
         return response_string
 
     def _handle_get_request(self, relative_url, payload_params):
@@ -269,3 +300,107 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin):
             "Provide it either in the relative_url (e.g., /rest/api/{version}/issue/{issueKey}/attachments) "
             "or in params as 'issue_key'"
         )
+
+    def _is_single_issue_request(self, relative_url: str) -> bool:
+        """Check whether the URL targets a single Jira issue (not search / bulk)."""
+        return bool(re.match(SINGLE_ISSUE_PATTERN, relative_url))
+
+    def _extract_image_attachments(self, response) -> list[dict]:
+        """Extract image attachment metadata from a single-issue Jira response."""
+        try:
+            response_json = response.json()
+        except Exception as e:
+            logger.warning(f"Failed to parse Jira issue response as JSON: {e}")
+            return []
+
+        fields = response_json.get("fields", {})
+        if "attachment" not in fields:
+            return []
+
+        attachments = fields.get("attachment") or []
+        if not attachments:
+            return []
+
+        image_attachments = []
+        for att in attachments:
+            mime_type = (att.get("mimeType") or "").lower()
+            size = att.get("size", 0)
+            content_url = att.get("content")
+
+            if mime_type in IMAGE_MIME_TYPES and content_url and size <= MAX_IMAGE_SIZE_BYTES:
+                image_attachments.append(
+                    {
+                        "filename": att.get("filename", "image"),
+                        "content_url": content_url,
+                        "mime_type": mime_type,
+                        "size": size,
+                    }
+                )
+
+        return image_attachments[:MAX_IMAGES_PER_RESPONSE]
+
+    def _download_attachment_as_base64(self, content_url: str) -> str | None:
+        """Download a Jira attachment using the authenticated session and return base64 data."""
+        try:
+            response = self.jira.request(
+                method="GET",
+                path=content_url,
+                advanced_mode=True,
+                absolute=True,
+            )
+            if response.status_code == 200 and response.content:
+                return base64.b64encode(response.content).decode("utf-8")
+        except Exception as e:
+            logger.warning(f"Failed to download Jira attachment {content_url}: {e}")
+        return None
+
+    def _download_image_artifacts(self, image_attachments: list[dict]) -> list[dict] | None:
+        """Download image attachments and return them as artifact dicts.
+
+        Each artifact dict contains ``filename``, ``data`` (base64) and
+        ``mime_type`` — ready to be stored on ``ToolMessage.artifact`` and
+        later injected into the LLM context via a ``pre_model_hook``.
+        """
+        artifacts: list[dict] = []
+        for att in image_attachments:
+            base64_data = self._download_attachment_as_base64(att["content_url"])
+            if base64_data:
+                artifacts.append(
+                    {
+                        "filename": att["filename"],
+                        "data": base64_data,
+                        "mime_type": att["mime_type"],
+                    }
+                )
+                logger.info("Downloaded Jira image artifact: %s (%d bytes)", att["filename"], att["size"])
+            else:
+                logger.warning("Skipping image %s — download failed", att["filename"])
+        return artifacts or None
+
+    def _limit_output_content(self, output: Any) -> Any:
+        """Token-limit only the text portion; image metadata is lightweight."""
+        if isinstance(output, JiraMultimodalResponse):
+            limited_text, token_count = super()._limit_output_content(output.text)
+            return JiraMultimodalResponse(
+                text=limited_text if isinstance(limited_text, str) else str(limited_text),
+                image_attachments=output.image_attachments,
+            ), token_count
+        return super()._limit_output_content(output)
+
+    def _post_process_output_content(self, output: Any, *args, **kwargs) -> Any:
+        """Return a ``(content, artifact)`` tuple for ``content_and_artifact``.
+
+        When image attachments are present the artifact carries the
+        downloaded base64 images; a ``pre_model_hook`` on the agent graph
+        will inject them into the LLM context as ``HumanMessage`` content
+        blocks.
+        """
+        if isinstance(output, JiraMultimodalResponse) and output.image_attachments:
+            text = super()._post_process_output_content(output.text, *args, **kwargs)
+            artifacts = self._download_image_artifacts(output.image_attachments)
+            return text, artifacts
+        if isinstance(output, JiraMultimodalResponse):
+            text = super()._post_process_output_content(output.text, *args, **kwargs)
+            return text, None
+        text = super()._post_process_output_content(output, *args, **kwargs)
+        return text, None

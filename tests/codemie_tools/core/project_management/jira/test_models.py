@@ -67,6 +67,7 @@ class TestJiraConfig(unittest.TestCase):
         mock_response.status_code = 200
         mock_response.reason = "OK"
         mock_response.text = '{"key": "TEST-123", "fields": {"summary": "Test Issue"}}'
+        mock_response.json.return_value = {"key": "TEST-123", "fields": {"summary": "Test Issue"}}
         mock_jira_instance.request.return_value = mock_response
         mock_jira_instance.raise_for_status = Mock()
 

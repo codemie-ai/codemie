@@ -44,6 +44,9 @@ def get_jira_tool_description(api_version: int = 2):
     - For status updates: get available statuses first, compare with user input
     - File attachments: To attach files to an issue, use POST method with '/rest/api/{version}/issue/{issueIdOrKey}/attachments'
       and include the file name in params as {"file": "filename.ext"} or {"files": ["file1.ext", "file2.ext"]} for multiple files
+    - Image attachments: When fetching a single issue, ALWAYS include "attachment" in the requested fields
+      (e.g., params={"fields": "key,summary,status,assignee,issuetype,attachment"}).
+      Image attachments (PNG, JPEG, GIF, WebP) are automatically downloaded and passed to the AI model for visual analysis.
 
     JQL status transitions:
     - Basic: status CHANGED TO "Status" BY "user@example.com" DURING (startOfMonth(-1), endOfMonth(-1))

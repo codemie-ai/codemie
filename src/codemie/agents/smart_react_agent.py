@@ -22,6 +22,7 @@ The key insight is that we wrap create_react_agent in a parent graph that handle
 tool selection, rather than reimplementing the react agent logic.
 """
 
+from collections.abc import Callable
 from typing import Literal, Optional, Union
 
 from langchain_core.language_models import BaseChatModel
@@ -46,6 +47,7 @@ def create_smart_react_agent(
     tool_selection_enabled: bool = False,
     tool_selection_limit: int = 3,
     parallel_tool_calls: Optional[bool] = None,
+    pre_model_hook: Optional[Callable[[dict], dict]] = None,
 ):
     """
     Create a ReAct agent with smart tool selection.
@@ -76,7 +78,9 @@ def create_smart_react_agent(
     use_smart_selection = tool_selection_enabled and len(tools) >= config.TOOL_SELECTION_THRESHOLD
 
     if not use_smart_selection:
-        return _create_standard_react_agent(model, tools, prompt, response_format, name, parallel_tool_calls)
+        return _create_standard_react_agent(
+            model, tools, prompt, response_format, name, parallel_tool_calls, pre_model_hook
+        )
 
     # Build tool registry
     tool_registry_obj = ToolRegistry(tools)
@@ -97,6 +101,7 @@ def create_smart_react_agent(
         response_format=response_format,
         name=name,
         parallel_tool_calls=parallel_tool_calls,
+        pre_model_hook=pre_model_hook,
     )
 
     # Compile and return
@@ -114,6 +119,7 @@ def _create_standard_react_agent(
     response_format: Optional[Union[dict, BaseModel]],
     name: Optional[str],
     parallel_tool_calls: Optional[bool],
+    pre_model_hook: Optional[Callable[[dict], dict]] = None,
 ):
     """Create a standard ReAct agent without smart tool selection."""
     logger.debug(
@@ -131,6 +137,7 @@ def _create_standard_react_agent(
         prompt=prompt,
         response_format=response_format,
         name=name,
+        pre_model_hook=pre_model_hook,
     )
 
 
@@ -144,6 +151,7 @@ def _build_smart_react_workflow(
     response_format: Optional[Union[dict, BaseModel]],
     name: Optional[str],
     parallel_tool_calls: Optional[bool],
+    pre_model_hook: Optional[Callable[[dict], dict]] = None,
 ) -> StateGraph:
     """Build the smart ReAct workflow graph with tool selection and agent nodes."""
     # Build the wrapper graph
@@ -168,6 +176,7 @@ def _build_smart_react_workflow(
             response_format=response_format,
             name=name,
             parallel_tool_calls=parallel_tool_calls,
+            pre_model_hook=pre_model_hook,
         )
 
     # Define routing function
@@ -262,6 +271,7 @@ def _execute_agent_with_selected_tools(
     response_format: Optional[Union[dict, BaseModel]],
     name: Optional[str],
     parallel_tool_calls: Optional[bool],
+    pre_model_hook: Optional[Callable[[dict], dict]] = None,
 ) -> dict:
     """Execute create_react_agent with currently available tools."""
     # Get selected tool IDs from state
@@ -282,6 +292,7 @@ def _execute_agent_with_selected_tools(
         response_format=response_format,
         name=name,
         parallel_tool_calls=parallel_tool_calls,
+        pre_model_hook=pre_model_hook,
     )
 
     # Invoke sub-agent with current state
@@ -322,6 +333,7 @@ def _create_sub_agent(
     response_format: Optional[Union[dict, BaseModel]],
     name: Optional[str],
     parallel_tool_calls: Optional[bool],
+    pre_model_hook: Optional[Callable[[dict], dict]] = None,
 ):
     """Create a sub-agent with selected tools."""
     # Handle parallel_tool_calls setting if specified
@@ -339,6 +351,7 @@ def _create_sub_agent(
         prompt=prompt,
         response_format=response_format,  # ✅ Structured output preserved
         name=name,
+        pre_model_hook=pre_model_hook,
     )
 
 
