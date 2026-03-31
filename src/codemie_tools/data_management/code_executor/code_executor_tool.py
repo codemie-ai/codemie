@@ -483,7 +483,7 @@ class CodeExecutorTool(CodeMieTool):
         Raises:
             ToolException: If execution fails or times out
         """
-        engine = LocalExecutionEngine(self.config, self.file_repository, self.user_id)
+        engine = LocalExecutionEngine(self.config, self.file_repository, self.user_id, self.security_policy)
         return engine.execute(code, export_files=export_files, input_files=self.input_files)
 
     def _upload_files_to_sandbox(self, session: SandboxSession, file_objects: List[FileObject], workdir: str) -> None:
