@@ -165,6 +165,17 @@ class AssistantRequestHandler(ABC):
             request_summary_manager.clear_summary(self.request_uuid)
             return
 
+        # Re-set LLM context immediately before the metric is emitted.
+        # save_chat_history may run in any thread/context-copy — e.g. in the
+        # streaming path each next() call on the sync generator receives a fresh
+        # copy_context() snapshot (anyio copies the async event-loop context per
+        # iteration), so any litellm_context set in an earlier iteration is gone.
+        # Resolving it here guarantees the correct billing project in the same
+        # execution context as upsert_chat_history → send_conversation_metric.
+        from codemie.service.llm_service.utils import set_llm_context
+
+        set_llm_context(self.assistant, None, self.user)
+
         tokens_usage = request_summary_manager.get_summary(self.request_uuid).tokens_usage
         ConversationService.upsert_chat_history(
             request=data.request,
@@ -373,13 +384,6 @@ class StandardAssistantHandler(AssistantRequestHandler):
         include_tool_errors: bool = False,
         error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
     ):
-        # This generator runs in Thread B (Starlette's iterate_in_threadpool), which is a
-        # different thread from Thread A where build_agent/set_llm_context was called.
-        # contextvars set in Thread A do not propagate to Thread B, so we must re-set the
-        # LLM context here to ensure save_chat_history uses the correct billing project.
-        from codemie.service.llm_service.utils import set_llm_context
-
-        set_llm_context(self.assistant, None, self.user)
         thread = threading.Thread(target=stream)
         thread.start()
         # We pass an empty string to avoid sending the default None value in the chat history.

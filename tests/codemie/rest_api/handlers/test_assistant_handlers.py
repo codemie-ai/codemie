@@ -496,6 +496,7 @@ class TestSaveChatHistory:
     def test_save_chat_history_calls_upsert_when_true(self, handler, chat_history_data_save_true):
         """When save_history=True, calls ConversationService.upsert_chat_history"""
         with (
+            patch("codemie.service.llm_service.utils.set_llm_context"),
             patch("codemie.rest_api.handlers.assistant_handlers.ConversationService") as mock_service,
             patch("codemie.rest_api.handlers.assistant_handlers.request_summary_manager") as mock_manager,
         ):
