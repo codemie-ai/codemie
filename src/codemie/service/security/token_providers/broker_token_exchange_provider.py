@@ -149,10 +149,7 @@ class BrokerTokenExchangeProvider(BaseTokenProvider):
     @staticmethod
     def _get_http_error_details(e: httpx.HTTPStatusError) -> str:
         """Extract error details from an HTTP error response."""
-        try:
-            return f"HTTP {e.response.status_code}: {e.response.json()}"
-        except ValueError:
-            return f"HTTP {e.response.status_code}: {e.response.text[:1000]}"
+        return f"HTTP {e.response.status_code}"
 
     async def _exchange_token(self, url: str, bearer_token: str) -> str:
         """
