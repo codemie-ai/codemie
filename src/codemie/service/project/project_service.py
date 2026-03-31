@@ -128,10 +128,7 @@ class ProjectService:
                     project_name=validated_name,
                     is_project_admin=True,
                 )
-                # Expunge before commit to preserve loaded attributes for the caller
-                # It is legitimate, because for project flush/refresh is called inside create() method
-                session.expunge(project)
-                # create() uses flush/refresh, but both inserts remain in one transaction and are committed atomically.
+                session.expunge(project)  # Expunge before commit to preserve loaded attributes for the caller
                 session.commit()
                 return project
             except IntegrityError as e:
@@ -154,13 +151,13 @@ class ProjectService:
         cost_center_id: UUID | None = None,
         clear_cost_center: bool = False,
     ) -> Application:
-        if not user.is_admin:
-            raise ExtendedHTTPException(code=403, message=cls.ERRORS.ACCESS_DENIED)
-
         with get_session() as session:
             project = application_repository.get_by_name(session, project_name)
             if not project or project.deleted_at is not None:
                 raise ExtendedHTTPException(code=404, message=cls.ERRORS.PROJECT_NOT_FOUND)
+
+            if not user.is_admin and not user_project_repository.is_admin(session, user.id, project_name):
+                raise ExtendedHTTPException(code=403, message=cls.ERRORS.ACCESS_DENIED)
 
             validated_name: str | None = None
             if name is not None:

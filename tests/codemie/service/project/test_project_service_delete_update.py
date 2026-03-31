@@ -276,10 +276,16 @@ class TestProjectServiceUpdateProject:
         user.id = "user-1"
         return user
 
+    @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
     @patch("codemie.service.project.project_service.get_session")
-    def test_non_super_admin_raises_403(self, mock_get_session, mock_app_repo):
-        """update_project raises 403 when caller is not a super admin."""
+    def test_non_admin_non_project_admin_raises_403(self, mock_get_session, mock_app_repo, mock_upr):
+        """update_project raises 403 when caller is neither a super admin nor a project admin."""
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_app_repo.get_by_name.return_value = _make_app("my-project")
+        mock_upr.is_admin.return_value = False
+
         with pytest.raises(ExtendedHTTPException) as exc_info:
             ProjectService.update_project(
                 user=self._make_regular_user(),
@@ -288,7 +294,32 @@ class TestProjectServiceUpdateProject:
             )
 
         assert exc_info.value.code == 403
-        mock_get_session.assert_not_called()
+        mock_upr.is_admin.assert_called_once_with(mock_session, "user-1", "my-project")
+
+    @patch("codemie.service.project.project_service.cost_center_service")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.get_session")
+    def test_project_admin_can_update(self, mock_get_session, mock_app_repo, mock_upr, mock_cc_service):
+        """update_project succeeds when caller is a project admin (not a super admin)."""
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        project = _make_app("my-project")
+        project.cost_center_id = None
+        mock_app_repo.get_by_name.return_value = project
+        mock_upr.is_admin.return_value = True
+        updated = _make_app("my-project")
+        updated.description = "new desc"
+        mock_app_repo.update_project.return_value = updated
+
+        result = ProjectService.update_project(
+            user=self._make_regular_user(),
+            project_name="my-project",
+            description="new desc",
+        )
+
+        assert result is updated
+        mock_upr.is_admin.assert_called_once_with(mock_session, "user-1", "my-project")
 
     @patch("codemie.service.project.project_service.application_repository")
     @patch("codemie.service.project.project_service.get_session")
