@@ -1524,3 +1524,164 @@ class TestMergeSkillToolkits:
 
         # Smart lookup should NOT be called because selected_toolkits is non-empty
         mock_lookup.get_tools_by_query.assert_not_called()
+
+
+# =============================================================================
+# Merge Skill MCP Servers Tests
+# =============================================================================
+
+
+class TestMergeSkillMcpServers:
+    """Tests for ToolkitService._merge_skill_mcp_servers"""
+
+    def _make_mcp_server(self, name: str):
+        """Helper: create a Mock MCP server with the given name."""
+        server = Mock()
+        server.name = name
+        return server
+
+    def _make_assistant(self, skill_ids=None, mcp_servers=None):
+        """Helper: create a Mock assistant."""
+        assistant = Mock(spec=Assistant)
+        assistant.id = "test-assistant-id"
+        assistant.name = "Test Assistant"
+        assistant.project = "test-project"
+        assistant.skill_ids = skill_ids if skill_ids is not None else []
+        assistant.mcp_servers = mcp_servers if mcp_servers is not None else []
+        return assistant
+
+    def _make_skill(self, name: str, mcp_servers=None):
+        """Helper: create a Mock skill."""
+        skill = Mock()
+        skill.name = name
+        skill.mcp_servers = mcp_servers if mcp_servers is not None else []
+        return skill
+
+    # ------------------------------------------------------------------
+    # No skill_ids – returns assistant mcp_servers unchanged
+    # ------------------------------------------------------------------
+
+    def test_no_skill_ids_returns_assistant_mcp_servers(self):
+        """When no skill_ids, returns copy of assistant.mcp_servers"""
+        server = self._make_mcp_server("my-server")
+        assistant = self._make_assistant(skill_ids=[], mcp_servers=[server])
+
+        result = ToolkitService._merge_skill_mcp_servers(assistant)
+
+        assert result == [server]
+
+    def test_no_skill_ids_empty_mcp_servers_returns_empty(self):
+        """When no skill_ids and no mcp_servers, returns empty list"""
+        assistant = self._make_assistant(skill_ids=[], mcp_servers=[])
+
+        result = ToolkitService._merge_skill_mcp_servers(assistant)
+
+        assert result == []
+
+    def test_no_skill_ids_none_mcp_servers_returns_empty(self):
+        """When no skill_ids and mcp_servers is None, returns empty list"""
+        assistant = self._make_assistant(skill_ids=[], mcp_servers=None)
+
+        result = ToolkitService._merge_skill_mcp_servers(assistant)
+
+        assert result == []
+
+    # ------------------------------------------------------------------
+    # skill_ids present – merging logic
+    # ------------------------------------------------------------------
+
+    def test_merges_new_mcp_server_from_skill(self):
+        """Skill MCP server not present on assistant is appended"""
+        server_a = self._make_mcp_server("server-a")
+        server_b = self._make_mcp_server("server-b")
+        assistant = self._make_assistant(skill_ids=["skill-1"], mcp_servers=[server_a])
+        skill = self._make_skill("skill-1", mcp_servers=[server_b])
+
+        with patch("codemie.service.tools.toolkit_service.SkillRepository") as mock_repo:
+            mock_repo.get_by_ids.return_value = [skill]
+            result = ToolkitService._merge_skill_mcp_servers(assistant)
+
+        assert len(result) == 2
+        assert server_a in result
+        assert server_b in result
+
+    def test_deduplicates_existing_mcp_server_by_name(self):
+        """Skill MCP server with same name as assistant server is not duplicated"""
+        server_a = self._make_mcp_server("server-a")
+        server_a_dup = self._make_mcp_server("server-a")
+        assistant = self._make_assistant(skill_ids=["skill-1"], mcp_servers=[server_a])
+        skill = self._make_skill("skill-1", mcp_servers=[server_a_dup])
+
+        with patch("codemie.service.tools.toolkit_service.SkillRepository") as mock_repo:
+            mock_repo.get_by_ids.return_value = [skill]
+            result = ToolkitService._merge_skill_mcp_servers(assistant)
+
+        assert len(result) == 1
+        assert result[0].name == "server-a"
+
+    def test_merges_mcp_servers_from_multiple_skills(self):
+        """Each skill contributes its unique MCP servers"""
+        server_a = self._make_mcp_server("server-a")
+        server_b = self._make_mcp_server("server-b")
+        server_c = self._make_mcp_server("server-c")
+        assistant = self._make_assistant(skill_ids=["skill-1", "skill-2"], mcp_servers=[server_a])
+        skill_1 = self._make_skill("skill-1", mcp_servers=[server_b])
+        skill_2 = self._make_skill("skill-2", mcp_servers=[server_c])
+
+        with patch("codemie.service.tools.toolkit_service.SkillRepository") as mock_repo:
+            mock_repo.get_by_ids.return_value = [skill_1, skill_2]
+            result = ToolkitService._merge_skill_mcp_servers(assistant)
+
+        assert len(result) == 3
+        names = {s.name for s in result}
+        assert names == {"server-a", "server-b", "server-c"}
+
+    def test_skill_with_empty_mcp_servers_does_not_change_result(self):
+        """Skill with empty mcp_servers list does not modify merged output"""
+        server_a = self._make_mcp_server("server-a")
+        assistant = self._make_assistant(skill_ids=["skill-1"], mcp_servers=[server_a])
+        skill = self._make_skill("skill-1", mcp_servers=[])
+
+        with patch("codemie.service.tools.toolkit_service.SkillRepository") as mock_repo:
+            mock_repo.get_by_ids.return_value = [skill]
+            result = ToolkitService._merge_skill_mcp_servers(assistant)
+
+        assert result == [server_a]
+
+    def test_skill_with_none_mcp_servers_does_not_change_result(self):
+        """Skill with None mcp_servers does not affect merged output"""
+        server_a = self._make_mcp_server("server-a")
+        assistant = self._make_assistant(skill_ids=["skill-1"], mcp_servers=[server_a])
+        skill = self._make_skill("skill-1", mcp_servers=None)
+
+        with patch("codemie.service.tools.toolkit_service.SkillRepository") as mock_repo:
+            mock_repo.get_by_ids.return_value = [skill]
+            result = ToolkitService._merge_skill_mcp_servers(assistant)
+
+        assert result == [server_a]
+
+    def test_no_skills_found_returns_assistant_mcp_servers(self):
+        """When SkillRepository returns empty, only assistant mcp_servers are returned"""
+        server_a = self._make_mcp_server("server-a")
+        assistant = self._make_assistant(skill_ids=["nonexistent"], mcp_servers=[server_a])
+
+        with patch("codemie.service.tools.toolkit_service.SkillRepository") as mock_repo:
+            mock_repo.get_by_ids.return_value = []
+            result = ToolkitService._merge_skill_mcp_servers(assistant)
+
+        assert result == [server_a]
+
+    def test_cross_skill_deduplication(self):
+        """Two skills sharing an MCP server name result in only one entry"""
+        server_shared_1 = self._make_mcp_server("shared-server")
+        server_shared_2 = self._make_mcp_server("shared-server")
+        assistant = self._make_assistant(skill_ids=["skill-1", "skill-2"], mcp_servers=[])
+        skill_1 = self._make_skill("skill-1", mcp_servers=[server_shared_1])
+        skill_2 = self._make_skill("skill-2", mcp_servers=[server_shared_2])
+
+        with patch("codemie.service.tools.toolkit_service.SkillRepository") as mock_repo:
+            mock_repo.get_by_ids.return_value = [skill_1, skill_2]
+            result = ToolkitService._merge_skill_mcp_servers(assistant)
+
+        assert len(result) == 1
+        assert result[0].name == "shared-server"

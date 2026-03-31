@@ -36,9 +36,9 @@ from codemie.core.models import CreatedByUser
 from codemie.rest_api.models.base import BaseModelWithSQLSupport, CommonBaseModel, PydanticType, PydanticListType
 from codemie.rest_api.security.user import User
 
-# ToolKitDetails is imported here to avoid duplication; assistant.py does not import skill.py
-# so there is no circular dependency.
-from codemie.rest_api.models.assistant import ToolKitDetails
+# ToolKitDetails and MCPServerDetails are imported here to avoid duplication; assistant.py does not
+# import skill.py so there is no circular dependency.
+from codemie.rest_api.models.assistant import MCPServerDetails, ToolKitDetails
 
 
 class SkillVisibility(str, Enum):
@@ -170,6 +170,10 @@ class SkillCreateRequest(BaseModel):
         default_factory=list,
         description="Optional list of tools required for this skill to execute correctly",
     )
+    mcp_servers: list[MCPServerDetails] = Field(
+        default_factory=list,
+        description="Optional list of MCP servers required for this skill to execute correctly",
+    )
 
     @field_validator("name")
     @classmethod
@@ -205,6 +209,10 @@ class SkillUpdateRequest(BaseModel):
     toolkits: list[ToolKitDetails] | None = Field(
         default=None,
         description="Optional list of tools required for this skill to execute correctly",
+    )
+    mcp_servers: list[MCPServerDetails] | None = Field(
+        default=None,
+        description="Optional list of MCP servers required for this skill to execute correctly",
     )
 
     @field_validator("name")
@@ -376,6 +384,7 @@ class SkillDetailResponse(BaseModel):
     unique_likes_count: int = Field(default=0)
     unique_dislikes_count: int = Field(default=0)
     toolkits: list[ToolKitDetails] = Field(default_factory=list)
+    mcp_servers: list[MCPServerDetails] = Field(default_factory=list)
 
 
 class SkillListPaginatedResponse(BaseModel):
@@ -418,6 +427,12 @@ class SkillBase(CommonBaseModel, Owned):
     toolkits: list[ToolKitDetails] = SQLField(
         default_factory=list,
         sa_column=Column(PydanticListType(ToolKitDetails), nullable=False, server_default="[]"),
+    )
+
+    # Required MCP servers for this skill (optional)
+    mcp_servers: list[MCPServerDetails] = SQLField(
+        default_factory=list,
+        sa_column=Column(PydanticListType(MCPServerDetails), nullable=False, server_default="[]"),
     )
 
     # Reaction counts
@@ -517,6 +532,7 @@ class Skill(BaseModelWithSQLSupport, SkillBase, table=True):
             unique_likes_count=self.unique_likes_count or 0,
             unique_dislikes_count=self.unique_dislikes_count or 0,
             toolkits=self.toolkits or [],
+            mcp_servers=self.mcp_servers or [],
         )
 
     def to_basic_info(self) -> SkillBasicInfo:

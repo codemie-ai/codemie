@@ -313,6 +313,40 @@ class ToolkitService:
         return merged
 
     @classmethod
+    def _merge_skill_mcp_servers(cls, assistant: Assistant) -> list:
+        """Merge assistant MCP servers with required MCP servers from attached skills.
+
+        Fetches skills referenced by assistant.skill_ids, collects their mcp_servers,
+        and unions them with the assistant's own mcp_servers. De-duplicates by server name
+        so that if a server is already present on the assistant it is not added twice.
+
+        Args:
+            assistant: The assistant whose MCP server list is being assembled
+
+        Returns:
+            Merged list of MCPServerDetails with unique entries
+        """
+        if not assistant.skill_ids:
+            return list(assistant.mcp_servers or [])
+
+        skills = SkillRepository.get_by_ids(assistant.skill_ids)
+
+        existing_server_names = {s.name for s in (assistant.mcp_servers or [])}
+        merged = list(assistant.mcp_servers or [])
+
+        for skill in skills:
+            for mcp_server in skill.mcp_servers or []:
+                if mcp_server.name not in existing_server_names:
+                    merged.append(mcp_server)
+                    existing_server_names.add(mcp_server.name)
+                    logger.debug(
+                        f"Skill '{skill.name}' contributed MCP server '{mcp_server.name}' "
+                        f"to assistant '{assistant.name}'"
+                    )
+
+        return merged
+
+    @classmethod
     def get_tools(
         cls,
         assistant: Assistant,
@@ -695,12 +729,12 @@ class ToolkitService:
             )
         )
 
-        # MCP tools
+        # MCP tools (includes MCP servers contributed by attached skills)
         if config.MCP_CONNECT_ENABLED:
             effective_mcp_server_single_usage = cls._determine_mcp_server_lifecycle(request)
             tools.extend(
                 MCPToolkitService.get_mcp_server_tools(
-                    assistant.mcp_servers,
+                    cls._merge_skill_mcp_servers(assistant),
                     user.id if user else None,
                     assistant.project,
                     request.conversation_id,

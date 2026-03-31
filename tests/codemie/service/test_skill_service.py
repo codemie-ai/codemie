@@ -1750,6 +1750,7 @@ class TestSkillToolkits:
         request.visibility = None
         request.categories = None
         request.toolkits = [toolkit_details]
+        request.mcp_servers = None
 
         # Act
         updates = SkillService._build_skill_updates(request, sample_skill)
@@ -1767,12 +1768,51 @@ class TestSkillToolkits:
         request.visibility = None
         request.categories = None
         request.toolkits = None
+        request.mcp_servers = None
 
         # Act
         updates = SkillService._build_skill_updates(request, sample_skill)
 
         # Assert – toolkits key absent when not set
         assert "toolkits" not in updates
+
+    def test_build_skill_updates_includes_mcp_servers(self, sample_skill):
+        # Arrange – only mcp_servers set in request
+        from codemie.rest_api.models.assistant import MCPServerDetails
+
+        mcp_server = MCPServerDetails(name="my-server")
+        request = MagicMock(spec=SkillUpdateRequest)
+        request.name = None
+        request.description = None
+        request.content = None
+        request.visibility = None
+        request.categories = None
+        request.toolkits = None
+        request.mcp_servers = [mcp_server]
+
+        # Act
+        updates = SkillService._build_skill_updates(request, sample_skill)
+
+        # Assert
+        assert "mcp_servers" in updates
+        assert updates["mcp_servers"] == [mcp_server]
+
+    def test_build_skill_updates_excludes_mcp_servers_when_none(self, sample_skill):
+        # Arrange – mcp_servers not provided in the update
+        request = MagicMock(spec=SkillUpdateRequest)
+        request.name = None
+        request.description = None
+        request.content = None
+        request.visibility = None
+        request.categories = None
+        request.toolkits = None
+        request.mcp_servers = None
+
+        # Act
+        updates = SkillService._build_skill_updates(request, sample_skill)
+
+        # Assert – mcp_servers key absent when not set
+        assert "mcp_servers" not in updates
 
     def test_update_skill_with_toolkits(self, mock_repository, owner_user, sample_skill, toolkit_details):
         # Arrange

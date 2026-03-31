@@ -289,6 +289,7 @@ class SkillService:
             "visibility": request.visibility,
             "categories": [c.value for c in request.categories],
             "toolkits": request.toolkits,
+            "mcp_servers": request.mcp_servers,
             "created_by": CreatedByUser(
                 id=user.id,
                 name=user.name or user.username,
@@ -376,6 +377,8 @@ class SkillService:
             updates["categories"] = [c.value for c in request.categories]
         if request.toolkits is not None:
             updates["toolkits"] = request.toolkits
+        if request.mcp_servers is not None:
+            updates["mcp_servers"] = request.mcp_servers
 
         return updates
 
