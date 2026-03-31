@@ -1431,7 +1431,7 @@ description: {skill.description}
             from codemie.rest_api.models.skill import SkillInstructionsGenerateResponse
 
             return SkillInstructionsGenerateResponse(
-                content=instructions,
+                instructions=instructions,
                 metadata={
                     "model": model_to_use,
                     "mode": mode,

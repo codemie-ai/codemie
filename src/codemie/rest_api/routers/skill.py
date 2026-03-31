@@ -41,10 +41,13 @@ from codemie.rest_api.models.skill import (
     SkillVisibility,
 )
 from codemie.rest_api.models.assistant import AssistantListResponse
+from codemie.rest_api.models.assistant_generator import RefineGeneratorResponse
+from codemie.rest_api.models.skill_generator import SkillGeneratorRequest, SkillGeneratorResponse, SkillRefineRequest
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.rest_api.models.usage.assistant_user_interaction import ReactionType
 from codemie.service.skill_service import SkillService
+from codemie.service.skill_generator_service import SkillGeneratorService
 from codemie.service.skill_user_interaction_service import skill_user_interaction_service
 from codemie.core.models import BaseResponse, CreatedByUser
 from codemie.core.exceptions import ExtendedHTTPException
@@ -680,6 +683,66 @@ def unpublish_skill_from_marketplace(
 
 
 @router.post(
+    "/skills/generate",
+    status_code=status.HTTP_200_OK,
+    response_model=SkillGeneratorResponse,
+)
+def generate_skill(raw_request: Request, request: SkillGeneratorRequest, user: User = Depends(authenticate)):
+    """
+    Generate skill details from user input text using AI.
+
+    Returns a fully populated skill with name, description, content (instructions),
+    categories, and optionally suggested toolkits based on the user's description.
+    """
+    from codemie.configs.logger import set_logging_info
+    from codemie.service.llm_service.utils import set_llm_context
+
+    request_id = raw_request.state.uuid
+    set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
+    set_llm_context(None, user.current_project, user)
+
+    return SkillGeneratorService.generate_skill_details(
+        text=request.text,
+        user=user,
+        llm_model=request.llm_model,
+        include_tools=request.include_tools,
+        request_id=request_id,
+    )
+
+
+@router.post(
+    "/skills/refine",
+    status_code=status.HTTP_200_OK,
+    response_model=RefineGeneratorResponse,
+)
+def refine_skill(raw_request: Request, request: SkillRefineRequest, user: User = Depends(authenticate)):
+    """
+    Refine existing skill fields using AI and return field/toolkit recommendations.
+
+    Accepts the current skill configuration and returns per-field recommendations
+    and toolkit suggestions to improve the skill quality.
+    """
+    from codemie.configs.logger import set_logging_info
+    from codemie.service.llm_service.utils import set_llm_context
+
+    request_id = raw_request.state.uuid
+    set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
+    set_llm_context(None, user.current_project, user)
+
+    return SkillGeneratorService.refine_skill_details(
+        user=user,
+        request_id=request_id,
+        name=request.name,
+        description=request.description,
+        instructions=request.instructions,
+        categories=request.categories,
+        toolkits=request.toolkits,
+        refine_prompt=request.refine_prompt,
+        llm_model=request.llm_model,
+    )
+
+
+@router.post(
     "/skills/instructions/generate",
     status_code=status.HTTP_200_OK,
     response_model=SkillInstructionsGenerateResponse,
@@ -709,7 +772,7 @@ def generate_skill_instructions(
         result = SkillService.generate_instructions(
             description=request.description,
             user=user,
-            existing_content=request.existing_content,
+            existing_content=request.existing_instructions,
             skill_name=request.skill_name,
             llm_model=request.llm_model,
             request_id=request_id,

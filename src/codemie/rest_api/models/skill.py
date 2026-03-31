@@ -286,7 +286,7 @@ class SkillInstructionsGenerateRequest(BaseModel):
         max_length=10000,
     )
 
-    existing_content: str | None = Field(
+    existing_instructions: str | None = Field(
         default=None,
         description="Existing instructions to refine/improve (if provided, triggers refine mode)",
         max_length=MAX_CONTENT_LENGTH,
@@ -315,7 +315,7 @@ class SkillInstructionsGenerateRequest(BaseModel):
 class SkillInstructionsGenerateResponse(BaseModel):
     """Response model for generated skill instructions"""
 
-    content: str = Field(
+    instructions: str = Field(
         ...,
         description="Generated skill instructions in Anthropic Claude-compatible format",
         max_length=MAX_CONTENT_LENGTH,

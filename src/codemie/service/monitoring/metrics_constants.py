@@ -45,6 +45,8 @@ SKILL_MANAGEMENT_METRIC = "codemie_skill_management"
 SKILL_ATTACHED_METRIC = "codemie_skill_attached"
 SKILL_TOOL_INVOKED_METRIC = "codemie_skill_tool_invoked"
 SKILL_EXPORTED_METRIC = "codemie_skill_exported"
+SKILL_GENERATOR_TOTAL_METRIC = "codemie_skill_generator_total"
+SKILL_GENERATOR_ERRORS_METRIC = "codemie_skill_generator_errors_total"
 
 
 class MetricsAttributes:
