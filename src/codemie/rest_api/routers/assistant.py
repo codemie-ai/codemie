@@ -555,6 +555,8 @@ def get_mcp_tools(
 
         return [toolkit_info]
 
+    except BrokerAuthRequiredException:
+        raise
     except MCPToolsInfoServiceError as e:
         logger.error(f"Failed getting MCP tools: {e.message}", exc_info=True)
         raise ExtendedHTTPException(

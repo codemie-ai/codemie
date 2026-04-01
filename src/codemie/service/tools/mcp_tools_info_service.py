@@ -16,6 +16,7 @@ from typing import Optional
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.security.user import User
 from codemie.configs import logger
+from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 
 
 class MCPToolsInfoServiceError(Exception):
@@ -88,6 +89,8 @@ class MCPToolsInfoService:
             return {"toolkit": "MCP", "label": f"{mcp_server_config.name} Tools", "tools": tools_info}
 
         except MCPToolsInfoServiceError:
+            raise
+        except BrokerAuthRequiredException:
             raise
         except Exception as e:
             error_msg = str(e)
