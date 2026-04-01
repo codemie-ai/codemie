@@ -13,9 +13,10 @@
 # limitations under the License.
 
 import logging
-from typing import Any, List, Dict, Optional, Callable
+from typing import Any, List, Dict, Optional, Callable, Iterator
 
 from langchain_community.document_loaders import ConfluenceLoader
+from langchain_core.documents import Document
 from tenacity import (
     before_sleep_log,
     retry,
@@ -99,3 +100,49 @@ class ConfluenceDatasourceLoader(ConfluenceLoader, BaseDatasourceLoader):
                     break
             docs.extend(batch)
         return docs[:max_pages]
+
+    def lazy_load(self) -> Iterator[Document]:
+        """Load all pages in chunks of 1000 to avoid accumulating all pages in memory."""
+        expand = ",".join(
+            [
+                self.content_format.value,
+                "version",
+                *(["metadata.labels"] if self.include_labels else []),
+            ]
+        )
+        start = 0
+        chunk_size = self.max_pages
+
+        while True:
+            logger.info(f"Confluence loader: fetching chunk start={start}, chunk_size={chunk_size}")
+            pages = self.paginate_request(
+                self._search_content_by_cql,
+                cql=self.cql,
+                limit=self.limit,
+                max_pages=chunk_size,
+                include_archived_spaces=self.include_archived_content,
+                expand=expand,
+                start=start,
+            )
+
+            if not pages:
+                logger.info(f"Confluence loader: no pages at start={start}, stopping")
+                break
+
+            logger.info(f"Confluence loader: fetched {len(pages)} pages at start={start}, yielding documents")
+            yield from self.process_pages(
+                pages,
+                include_restricted_content=self.include_restricted_content,
+                include_attachments=self.include_attachments,
+                include_comments=self.include_comments,
+                include_labels=self.include_labels,
+                content_format=self.content_format,
+                ocr_languages=self.ocr_languages,
+                keep_markdown_format=self.keep_markdown_format,
+                keep_newlines=self.keep_newlines,
+            )
+
+            start += len(pages)
+            if len(pages) < chunk_size:
+                logger.info(f"Confluence loader: last chunk ({len(pages)} < {chunk_size}), total pages loaded={start}")
+                break

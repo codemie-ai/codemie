@@ -108,9 +108,9 @@ loaders:
     chunk_overlap: 100
 
   confluence_loader:
-    loader_max_pages: 1000
-    loader_pages_per_request: 20
-    loader_batch_size: 50
+    loader_max_pages: 1000         # Number of pages lazy_load holds in memory at once before yielding and moving to the next chunk
+    loader_pages_per_request: 20   # Number of pages returned by a single Confluence API HTTP request (the ?limit= param)
+    loader_batch_size: 50          # Number of Documents passed to one _process_batch call (splitting + embedding + ES write)
     loader_timeout: 180
 
   file_loader:

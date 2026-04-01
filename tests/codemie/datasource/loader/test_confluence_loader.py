@@ -292,36 +292,6 @@ class TestPaginateRequest:
         assert results[1]['id'] == '2'
         assert results[2]['id'] == '3'
 
-    def test_paginate_request_with_cql_max_pages_limit(self, confluence_loader):
-        """Test paginate_request respects max_pages limit with CQL."""
-        # Arrange
-        confluence_loader.cql = "type=page AND space=TEST"
-        call_count = 0
-
-        def mock_retrieval_method(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return (
-                    [{'id': '1', 'title': 'Page 1'}, {'id': '2', 'title': 'Page 2'}],
-                    "/rest/api/content/search?start=2",
-                )
-            elif call_count == 2:
-                return (
-                    [{'id': '3', 'title': 'Page 3'}, {'id': '4', 'title': 'Page 4'}],
-                    "/rest/api/content/search?start=4",
-                )
-            return ([], "")
-
-        # Act
-        results = confluence_loader.paginate_request(mock_retrieval_method, max_pages=3)
-
-        # Assert
-        assert len(results) == 3
-        assert results[0]['id'] == '1'
-        assert results[1]['id'] == '2'
-        assert results[2]['id'] == '3'
-
     def test_paginate_request_without_cql(self, confluence_loader):
         """Test paginate_request without CQL query (using start parameter)."""
         # Arrange
@@ -346,25 +316,6 @@ class TestPaginateRequest:
         assert len(results) == 3
         assert results[0]['id'] == '1'
         assert results[2]['id'] == '3'
-
-    def test_paginate_request_without_cql_max_pages_limit(self, confluence_loader):
-        """Test paginate_request respects max_pages limit without CQL."""
-        # Arrange
-        confluence_loader.cql = None
-
-        def mock_retrieval_method(**kwargs):
-            start = kwargs.get("start", 0)
-            if start == 0:
-                return [{'id': '1', 'title': 'Page 1'}, {'id': '2', 'title': 'Page 2'}]
-            elif start == 2:
-                return [{'id': '3', 'title': 'Page 3'}, {'id': '4', 'title': 'Page 4'}]
-            return []
-
-        # Act
-        results = confluence_loader.paginate_request(mock_retrieval_method, max_pages=3)
-
-        # Assert
-        assert len(results) == 3
 
     def test_paginate_request_empty_results(self, confluence_loader):
         """Test paginate_request when no results are returned."""
@@ -437,3 +388,170 @@ class TestPaginateRequest:
         # Assert
         assert len(results) == 1
         assert results[0]['id'] == '1'
+
+
+class TestLazyLoad:
+    """Tests for lazy_load method."""
+
+    @pytest.fixture
+    def loader_for_lazy(self, confluence_loader):
+        """Extend the base fixture with attributes required by lazy_load."""
+        from langchain_community.document_loaders.confluence import ContentFormat
+
+        confluence_loader.content_format = ContentFormat.VIEW
+        confluence_loader.max_pages = 1000
+        confluence_loader.limit = 20
+        confluence_loader.include_archived_content = False
+        confluence_loader.include_restricted_content = False
+        confluence_loader.include_attachments = False
+        confluence_loader.include_comments = False
+        confluence_loader.include_labels = False
+        confluence_loader.ocr_languages = None
+        confluence_loader.keep_markdown_format = True
+        confluence_loader.keep_newlines = False
+        return confluence_loader
+
+    def test_lazy_load_single_chunk(self, loader_for_lazy):
+        """Fewer than 1000 pages — paginate_request called once, all Documents yielded."""
+        from langchain_core.documents import Document
+        from unittest.mock import patch
+
+        pages = [{'id': str(i)} for i in range(500)]
+        docs = [Document(page_content=f"page {i}") for i in range(500)]
+
+        with (
+            patch.object(loader_for_lazy, 'paginate_request', return_value=pages) as mock_paginate,
+            patch.object(loader_for_lazy, 'process_pages', return_value=docs),
+        ):
+            result = list(loader_for_lazy.lazy_load())
+
+        assert len(result) == 500
+        assert mock_paginate.call_count == 1
+        _, kwargs = mock_paginate.call_args
+        assert kwargs['start'] == 0
+        assert kwargs['max_pages'] == 1000
+
+    def test_lazy_load_multiple_chunks(self, loader_for_lazy):
+        """2500 pages across 3 chunks — start=0, 1000, 2000 passed; all Documents yielded."""
+        from langchain_core.documents import Document
+        from unittest.mock import patch
+
+        chunk1 = [{'id': str(i)} for i in range(1000)]
+        chunk2 = [{'id': str(i)} for i in range(1000, 2000)]
+        chunk3 = [{'id': str(i)} for i in range(2000, 2500)]
+
+        docs1 = [Document(page_content=f"p{i}") for i in range(1000)]
+        docs2 = [Document(page_content=f"p{i}") for i in range(1000, 2000)]
+        docs3 = [Document(page_content=f"p{i}") for i in range(2000, 2500)]
+
+        with (
+            patch.object(loader_for_lazy, 'paginate_request', side_effect=[chunk1, chunk2, chunk3]) as mock_paginate,
+            patch.object(loader_for_lazy, 'process_pages', side_effect=[docs1, docs2, docs3]),
+        ):
+            result = list(loader_for_lazy.lazy_load())
+
+        assert len(result) == 2500
+        assert mock_paginate.call_count == 3
+
+        starts = [c.kwargs['start'] for c in mock_paginate.call_args_list]
+        assert starts == [0, 1000, 2000]
+
+    def test_lazy_load_empty_space(self, loader_for_lazy):
+        """paginate_request returns empty list — lazy_load yields nothing."""
+        from unittest.mock import patch
+
+        with patch.object(loader_for_lazy, 'paginate_request', return_value=[]) as mock_paginate:
+            result = list(loader_for_lazy.lazy_load())
+
+        assert result == []
+        assert mock_paginate.call_count == 1
+
+
+class TestLazyLoadIntegration:
+    """Integration tests for lazy_load — mocks only self.confluence HTTP client.
+
+    Verifies the full chain: lazy_load → paginate_request → _search_content_by_cql → HTTP.
+    Unit tests mock paginate_request, so they don't cover whether start=N actually
+    reaches the Confluence API. These tests do.
+    """
+
+    @staticmethod
+    def _make_page(page_id: str) -> dict:
+        return {
+            "id": page_id,
+            "title": f"Page {page_id}",
+            "body": {"view": {"value": f"<p>Content of page {page_id}</p>"}},
+            "version": {"when": "2024-01-01"},
+            "_links": {"webui": f"/pages/{page_id}"},
+            "status": "current",
+        }
+
+    @pytest.fixture
+    def loader_integration(self, mock_confluence_client):
+        """Loader with only the HTTP client mocked — all other logic runs for real."""
+        from langchain_community.document_loaders.confluence import ContentFormat
+
+        with patch('langchain_community.document_loaders.ConfluenceLoader.__init__', return_value=None):
+            loader = ConfluenceDatasourceLoader(
+                url="https://confluence.example.com",
+                username="test_user",
+                api_key="test_api_key",
+            )
+        loader.confluence = mock_confluence_client
+        loader.base_url = "https://confluence.example.com"
+        loader.cql = "type=page AND space=TEST"
+        loader.number_of_retries = 3
+        loader.min_retry_seconds = 1
+        loader.max_retry_seconds = 5
+        loader.content_format = ContentFormat.VIEW
+        loader.max_pages = 3  # small chunk size to keep mock responses manageable
+        loader.limit = 3
+        loader.include_archived_content = False
+        loader.include_restricted_content = True  # skip is_public_page API call
+        loader.include_attachments = False
+        loader.include_comments = False
+        loader.include_labels = False
+        loader.ocr_languages = None
+        loader.keep_markdown_format = False
+        loader.keep_newlines = False
+        return loader
+
+    def test_start_offset_sent_per_chunk(self, loader_integration, mock_confluence_client):
+        """start=0, start=3 and start=6 reach the Confluence API as chunk boundaries.
+
+        When a chunk returns exactly chunk_size pages, lazy_load probes the next offset
+        to check whether more pages exist — hence 3 HTTP calls for 2 full chunks.
+        """
+        chunk1 = [self._make_page(str(i)) for i in range(3)]
+        chunk2 = [self._make_page(str(i)) for i in range(3, 6)]
+
+        mock_confluence_client.get.side_effect = [
+            {"results": chunk1, "_links": {}},  # chunk 1: full, probe next
+            {"results": chunk2, "_links": {}},  # chunk 2: full, probe next
+            {"results": [], "_links": {}},  # chunk 3: empty, stop
+        ]
+
+        result = list(loader_integration.lazy_load())
+
+        assert len(result) == 6
+        calls = mock_confluence_client.get.call_args_list
+        assert len(calls) == 3
+        assert calls[0].kwargs["params"]["start"] == 0
+        assert calls[1].kwargs["params"]["start"] == 3
+        assert calls[2].kwargs["params"]["start"] == 6
+
+    def test_all_documents_yielded_across_chunks(self, loader_integration, mock_confluence_client):
+        """All pages from all chunks are returned as Documents with correct metadata."""
+        chunk1 = [self._make_page(str(i)) for i in range(3)]
+        chunk2 = [self._make_page(str(i)) for i in range(3, 5)]  # partial last chunk
+
+        mock_confluence_client.get.side_effect = [
+            {"results": chunk1, "_links": {}},
+            {"results": chunk2, "_links": {}},
+        ]
+
+        result = list(loader_integration.lazy_load())
+
+        assert len(result) == 5
+        titles = [doc.metadata["title"] for doc in result]
+        assert titles == [f"Page {i}" for i in range(5)]
