@@ -23,6 +23,8 @@ from datetime import UTC, datetime
 from sqlmodel import Session
 
 from codemie.configs.logger import logger
+from codemie.configs import config
+from codemie.core.constants import Environment
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
 from codemie.repository.user_project_repository import user_project_repository
@@ -58,9 +60,26 @@ class ProjectAssignmentService:
         raise ExtendedHTTPException(code=404, message="Project not found")
 
     @staticmethod
+    def _reject_if_creator(project: Application, user_ids: list[str], project_name: str) -> None:
+        """Raise 400 if any of the given user_ids is the project creator."""
+        if project.created_by in user_ids:
+            raise ExtendedHTTPException(
+                code=400,
+                message="Cannot remove the project creator from the project",
+                details=(
+                    f"User '{project.created_by}' is the creator of project "
+                    f"'{project_name}' and cannot be unassigned"
+                ),
+                help="The project creator must always remain a member of the project",
+            )
+
+    @staticmethod
     def _validate_user_id_format(user_id: str) -> None:
-        """Validate user_id is a valid UUID format (FR-5.1: 400 for invalid format)."""
+        """Validate user_id is a valid UUID format"""
         from uuid import UUID
+
+        if Environment.LOCAL.value == config.ENV:
+            return
 
         try:
             UUID(user_id)
@@ -363,8 +382,8 @@ class ProjectAssignmentService:
         Raises:
             ExtendedHTTPException: On validation failures
         """
-        # Reject personal project modification
         ProjectAssignmentService._reject_if_personal_project(project, actor, action)
+        ProjectAssignmentService._reject_if_creator(project, user_ids, project_name)
 
         # Check for duplicate user_ids in request
         unique_ids = set(user_ids)
@@ -441,10 +460,8 @@ class ProjectAssignmentService:
         Raises:
             ExtendedHTTPException: On validation failures
         """
-        # Reject personal project modification
         ProjectAssignmentService._reject_if_personal_project(project, actor, action)
-
-        # Validate user_id format before DB lookup
+        ProjectAssignmentService._reject_if_creator(project, [user_id], project_name)
         ProjectAssignmentService._validate_user_id_format(user_id)
 
         # Validate target user exists

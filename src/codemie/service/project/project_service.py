@@ -31,6 +31,7 @@ from codemie.repository.user_project_repository import user_project_repository
 from codemie.repository.user_repository import user_repository
 from codemie.rest_api.security.user import User
 from codemie.service.cost_center_service import cost_center_service
+from codemie.service.user.authentication_service import invalidate_user_from_cache
 
 
 class ProjectService:
@@ -133,6 +134,7 @@ class ProjectService:
                 )
                 session.expunge(project)  # Expunge before commit to preserve loaded attributes for the caller
                 session.commit()
+                invalidate_user_from_cache(user.id)
                 return project
             except IntegrityError as e:
                 session.rollback()

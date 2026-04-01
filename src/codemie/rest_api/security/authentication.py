@@ -129,46 +129,6 @@ async def admin_access_only(request: Request):
         )
 
 
-async def project_admin_or_super_admin_user_list_access(request: Request):
-    """Check if user is super admin or project admin (Story 17)
-
-    Authorization for user list endpoint (GET /v1/admin/users).
-    Project admins need to see all users to add members to their projects.
-
-    Note: Project admin status is determined by User.is_applications_admin property,
-    which derives from applications_admin list populated by authentication service
-    from user_projects table (is_project_admin=true entries).
-
-    Args:
-        request: FastAPI request with authenticated user in state
-
-    Raises:
-        ExtendedHTTPException: 403 if user lacks required privileges
-
-    Returns:
-        None if authorized
-    """
-    user = request.state.user
-
-    # Super admins have full access
-    if user.is_admin:
-        return
-
-    # Project admins (users with is_project_admin=true for at least one project)
-    # Use is_applications_admin property for single source of truth
-    if user.is_applications_admin:
-        return
-
-    # Regular users are denied
-    logger.warning("Access denied: admin or project admin privileges required for user list")
-    raise ExtendedHTTPException(
-        code=status.HTTP_403_FORBIDDEN,
-        message=ACCESS_DENIED_MESSAGE,
-        details=_ADMIN_OR_PROJECT_ADMIN_REQUIRED,
-        help=_CONTACT_ADMIN_HELP,
-    )
-
-
 async def project_admin_or_super_admin_user_detail_access(request: Request):
     """Check if user is super admin or project admin with access to target user (Story 18)
 

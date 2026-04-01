@@ -37,7 +37,6 @@ from codemie.rest_api.models.user_management import (
 from codemie.rest_api.security.authentication import (
     authenticate,
     admin_access_only,
-    project_admin_or_super_admin_user_list_access,
     project_admin_or_super_admin_user_detail_access,
 )
 from codemie.rest_api.security.user import User
@@ -86,7 +85,6 @@ def list_users(
         ),
     ),
     user: User = Depends(authenticate),
-    _: None = Depends(project_admin_or_super_admin_user_list_access),
 ):
     """List all users with pagination and filters
 
@@ -110,7 +108,7 @@ def list_users(
 
     return user_management_service.list_users_with_flow(
         requesting_user_id=user.id,
-        is_admin=user.is_admin,
+        is_project_admin=user.is_admin,
         page=page,
         per_page=per_page,
         search=search,

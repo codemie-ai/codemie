@@ -61,7 +61,6 @@ class TestPerPageValidation:
             search=None,
             filters=None,
             user=mock_user,
-            _=mock_admin_access,
         )
 
         assert result is not None
@@ -83,7 +82,6 @@ class TestPerPageValidation:
             search=None,
             filters=None,
             user=mock_user,
-            _=mock_admin_access,
         )
 
         assert result is not None
@@ -104,7 +102,6 @@ class TestPerPageValidation:
             search=None,
             filters=None,
             user=mock_user,
-            _=mock_admin_access,
         )
 
         assert result is not None
@@ -125,7 +122,6 @@ class TestPerPageValidation:
             search=None,
             filters=None,
             user=mock_user,
-            _=mock_admin_access,
         )
 
         assert result is not None

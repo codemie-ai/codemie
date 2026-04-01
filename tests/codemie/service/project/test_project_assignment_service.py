@@ -51,6 +51,43 @@ class TestProjectAssignmentServiceValidation:
         assert "must be a valid UUID" in exc_info.value.details
 
 
+class TestRejectIfCreator:
+    """Test suite for ProjectAssignmentService._reject_if_creator"""
+
+    def test_raises_400_when_creator_is_sole_target(self):
+        """Test raises 400 when the only target user is the project creator"""
+        creator_id = str(uuid4())
+        project = Application(id=str(uuid4()), name="team-project", project_type="team", created_by=creator_id)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectAssignmentService._reject_if_creator(project, [creator_id], "team-project")
+
+        assert exc_info.value.code == 400
+        assert "Cannot remove the project creator" in exc_info.value.message
+        assert creator_id in exc_info.value.details
+        assert "must always remain a member" in exc_info.value.help
+
+    def test_raises_400_when_creator_among_multiple_ids(self):
+        """Test raises 400 when creator is one of multiple user_ids"""
+        creator_id = str(uuid4())
+        other_id = str(uuid4())
+        project = Application(id=str(uuid4()), name="team-project", project_type="team", created_by=creator_id)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectAssignmentService._reject_if_creator(project, [other_id, creator_id], "team-project")
+
+        assert exc_info.value.code == 400
+        assert creator_id in exc_info.value.details
+
+    def test_passes_when_creator_not_in_list(self):
+        """Test no exception raised when creator is not among the target user_ids"""
+        creator_id = str(uuid4())
+        project = Application(id=str(uuid4()), name="team-project", project_type="team", created_by=creator_id)
+
+        # Should not raise
+        ProjectAssignmentService._reject_if_creator(project, [str(uuid4()), str(uuid4())], "team-project")
+
+
 class TestProjectAssignmentServiceSingleAssignment:
     """Test suite for ProjectAssignmentService - single user assignment"""
 
@@ -407,6 +444,26 @@ class TestProjectAssignmentServiceBulkRemove:
         mock_session.flush.assert_called_once()
         mock_logger.info.assert_called_once()
 
+    def test_bulk_remove_creator_raises_400(self):
+        """Test that including the project creator in bulk removal raises 400"""
+        creator_id = str(uuid4())
+        other_id = str(uuid4())
+        project = Application(id=str(uuid4()), name="team-project", project_type="team", created_by=creator_id)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectAssignmentService.bulk_remove_users_from_project(
+                session=MagicMock(),
+                project=project,
+                user_ids=[other_id, creator_id],
+                project_name="team-project",
+                actor=MagicMock(id=str(uuid4()), is_admin=False),
+                action="DELETE /v1/projects/team-project/users/bulk",
+            )
+
+        assert exc_info.value.code == 400
+        assert "Cannot remove the project creator" in exc_info.value.message
+        assert creator_id in exc_info.value.details
+
     @patch("codemie.service.project.project_assignment_service.user_repository")
     @patch("codemie.service.project.project_assignment_service.user_project_repository")
     def test_bulk_remove_not_assigned(self, mock_user_project_repo, mock_user_repo):
@@ -472,6 +529,25 @@ class TestProjectAssignmentServiceSingleRemoval:
         assert result["project_name"] == project_name
         mock_user_project_repo.remove_project.assert_called_once_with(mock_session, user_id, project_name)
         mock_logger.info.assert_called_once()
+
+    def test_remove_creator_raises_400(self):
+        """Test that removing the project creator raises 400"""
+        creator_id = str(uuid4())
+        project = Application(id=str(uuid4()), name="team-project", project_type="team", created_by=creator_id)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectAssignmentService.remove_user_from_project(
+                session=MagicMock(),
+                project=project,
+                user_id=creator_id,
+                project_name="team-project",
+                actor=MagicMock(id=str(uuid4()), is_admin=False),
+                action="DELETE /v1/projects/team-project/users/creator-id",
+            )
+
+        assert exc_info.value.code == 400
+        assert "Cannot remove the project creator" in exc_info.value.message
+        assert creator_id in exc_info.value.details
 
     @patch("codemie.service.project.project_assignment_service.user_repository")
     @patch("codemie.service.project.project_assignment_service.user_project_repository")

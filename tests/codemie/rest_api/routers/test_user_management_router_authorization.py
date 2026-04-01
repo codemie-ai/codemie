@@ -31,7 +31,6 @@ from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.routers.user_management_router import list_users, router
 from codemie.rest_api.security.authentication import (
-    project_admin_or_super_admin_user_list_access,
     admin_access_only,
 )
 from codemie.rest_api.security.user import User
@@ -89,48 +88,6 @@ def mock_request():
     return request
 
 
-class TestProjectAdminOrSuperAdminUserListAccess:
-    """Test the new authorization dependency (Story 17)"""
-
-    @pytest.mark.asyncio
-    @patch("codemie.rest_api.security.user.config")
-    async def test_super_admin_authorized(self, mock_config, mock_request, super_admin_user):
-        """AC: Super admin can access user list"""
-        # Ensure user management is enabled so is_admin returns is_admin
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        mock_config.ENV = "test"  # Not local, to test actual logic
-        mock_request.state.user = super_admin_user
-
-        # Should not raise exception
-        await project_admin_or_super_admin_user_list_access(mock_request)
-
-    @pytest.mark.asyncio
-    @patch("codemie.rest_api.security.user.config")
-    async def test_project_admin_authorized(self, mock_config, mock_request, project_admin_user):
-        """AC: Project admin can access user list"""
-        # Ensure user management is enabled
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        mock_config.ENV = "test"
-        mock_request.state.user = project_admin_user
-
-        # Should not raise exception
-        await project_admin_or_super_admin_user_list_access(mock_request)
-
-    @pytest.mark.asyncio
-    @patch("codemie.rest_api.security.user.config")
-    async def test_regular_user_forbidden(self, mock_config, mock_request, regular_user):
-        """AC: Regular user (not project admin, not super admin) receives 403"""
-        mock_config.ENV = "production"  # Override local dev environment
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        mock_request.state.user = regular_user
-
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            await project_admin_or_super_admin_user_list_access(mock_request)
-
-        assert exc_info.value.code == 403
-        assert "administrator or project administrator privileges" in exc_info.value.details
-
-
 class TestUserListEndpoint:
     """Test GET /v1/admin/users endpoint authorization (Story 17)"""
 
@@ -159,7 +116,6 @@ class TestUserListEndpoint:
             search=None,
             filters=None,
             user=project_admin_user,
-            _=None,  # Authorization dependency returns None if successful
         )
 
         assert result is not None
@@ -192,7 +148,6 @@ class TestUserListEndpoint:
             search=None,
             filters=None,
             user=project_admin_user,
-            _=None,
         )
 
         # Service returns all users without filtering
@@ -217,7 +172,6 @@ class TestUserListEndpoint:
             search="john",
             filters=None,
             user=project_admin_user,
-            _=None,
         )
 
         assert result is not None
@@ -244,7 +198,6 @@ class TestUserListEndpoint:
             search=None,
             filters='{"projects":["project-x"],"user_type":"regular"}',
             user=project_admin_user,
-            _=None,
         )
 
         assert result is not None
@@ -271,7 +224,6 @@ class TestUserListEndpoint:
             search=None,
             filters=None,
             user=super_admin_user,
-            _=None,
         )
 
         assert result is not None
@@ -314,7 +266,7 @@ class TestBackwardCompatibility:
     """Test backward compatibility requirements (Story 17)"""
 
     def test_list_endpoint_uses_new_dependency(self):
-        """AC: GET /v1/admin/users uses project_admin_or_super_admin_user_list_access"""
+        """AC: GET /v1/admin/users does not use admin_access_only (access control is in service layer)"""
         # Find the list_users route in the router
         list_users_route = None
         for route in router.routes:
@@ -329,16 +281,10 @@ class TestBackwardCompatibility:
 
         assert list_users_route is not None, "list_users route not found"
 
-        # Check that the route has the correct dependency
+        # Check that the route does NOT use admin_access_only (access control is in the service)
         dependencies = list_users_route.dependant.dependencies
         dependency_functions = [dep.call for dep in dependencies]
 
-        # Should have project_admin_or_super_admin_user_list_access
-        assert (
-            project_admin_or_super_admin_user_list_access in dependency_functions
-        ), "list_users should use project_admin_or_super_admin_user_list_access"
-
-        # Should NOT have admin_access_only
         assert admin_access_only not in dependency_functions, "list_users should NOT use admin_access_only"
 
     def test_other_endpoints_remain_super_admin_only(self):
@@ -366,7 +312,7 @@ class TestBackwardCompatibility:
 
             # Skip endpoints changed in Story 17 and Story 18
             if path == "/v1/admin/users" and "GET" in methods:
-                continue  # Story 17: list endpoint uses project_admin_or_super_admin_user_list_access
+                continue
             if path == "/v1/admin/users/{user_id}" and "GET" in methods:
                 continue  # Story 18: user detail endpoint uses project_admin_or_super_admin_user_detail_access
 
@@ -382,97 +328,3 @@ class TestBackwardCompatibility:
                             assert (
                                 admin_access_only in dependency_functions
                             ), f"{method} {path} should use admin_access_only"
-
-                            assert (
-                                project_admin_or_super_admin_user_list_access not in dependency_functions
-                            ), f"{method} {path} should NOT use project_admin_or_super_admin_user_list_access"
-
-
-class TestEdgeCases:
-    """Test edge cases for Story 17"""
-
-    @pytest.mark.asyncio
-    @patch("codemie.rest_api.security.user.config")
-    async def test_project_admin_with_multiple_projects(self, mock_config, mock_request):
-        """Project admin with multiple admin projects should have access"""
-        mock_config.ENABLE_USER_MANAGEMENT = True
-        mock_config.ENV = "test"
-
-        user = User(
-            id="multi-admin",
-            email="multi@example.com",
-            username="multi",
-            name="Multi Admin",
-            is_admin=False,
-            project_names=["p1", "p2", "p3"],
-            admin_project_names=["p1", "p2", "p3"],  # Admin of multiple projects
-        )
-        mock_request.state.user = user
-
-        # Should not raise exception (uses is_applications_admin which checks length)
-        await project_admin_or_super_admin_user_list_access(mock_request)
-
-    @pytest.mark.asyncio
-    @patch("codemie.rest_api.security.user.config")
-    async def test_user_with_project_access_but_not_admin(self, mock_config, mock_request):
-        """User with project access but not admin should be denied"""
-        mock_config.ENV = "production"  # Override local dev environment
-        mock_config.ENABLE_USER_MANAGEMENT = True
-
-        user = User(
-            id="member",
-            email="member@example.com",
-            username="member",
-            name="Project Member",
-            is_admin=False,
-            project_names=["project-a", "project-b"],
-            admin_project_names=[],  # Has project access but not admin
-        )
-        mock_request.state.user = user
-
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            await project_admin_or_super_admin_user_list_access(mock_request)
-
-        assert exc_info.value.code == 403
-
-    @pytest.mark.asyncio
-    @patch("codemie.rest_api.security.user.config")
-    async def test_user_is_applications_admin_property_works(self, mock_config, mock_request):
-        """Verify User.is_applications_admin property is used correctly
-
-        Code Review: Ensure we use the property instead of checking length directly.
-        """
-        mock_config.ENV = "production"
-        mock_config.ENABLE_USER_MANAGEMENT = True
-
-        # User with empty applications_admin list
-        user_no_admin = User(
-            id="no-admin",
-            email="no-admin@example.com",
-            username="no-admin",
-            name="No Admin",
-            is_admin=False,
-            project_names=["project-a"],
-            admin_project_names=[],
-        )
-        assert user_no_admin.is_applications_admin is False
-
-        # User with applications_admin list
-        user_with_admin = User(
-            id="with-admin",
-            email="with-admin@example.com",
-            username="with-admin",
-            name="With Admin",
-            is_admin=False,
-            project_names=["project-a"],
-            admin_project_names=["project-a"],
-        )
-        assert user_with_admin.is_applications_admin is True
-
-        # Test authorization works with property
-        mock_request.state.user = user_no_admin
-        with pytest.raises(ExtendedHTTPException):
-            await project_admin_or_super_admin_user_list_access(mock_request)
-
-        mock_request.state.user = user_with_admin
-        await project_admin_or_super_admin_user_list_access(mock_request)  # Should not raise

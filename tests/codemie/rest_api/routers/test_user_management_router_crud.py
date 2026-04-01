@@ -692,7 +692,6 @@ class TestListUsers:
             search=None,
             filters=None,
             user=admin_user,
-            _=None,
         )
 
         # Assert
@@ -716,7 +715,6 @@ class TestListUsers:
                 search=None,
                 filters=None,
                 user=admin_user,
-                _=None,
             )
 
         assert exc_info.value.code == 400

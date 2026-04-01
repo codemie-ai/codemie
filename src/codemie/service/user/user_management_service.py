@@ -250,7 +250,7 @@ class UserManagementService:
     def list_users(
         session: Session,
         requesting_user_id: str,
-        is_admin: bool,
+        is_project_admin: bool,
         page: int = 0,
         per_page: int = 20,
         search: Optional[str] = None,
@@ -258,12 +258,10 @@ class UserManagementService:
     ) -> PaginatedUserListResponse:
         """List users with pagination and filters
 
-        Story 10: Filters personal projects based on visibility rules.
-
         Args:
             session: Database session
             requesting_user_id: User requesting the list (for visibility filtering)
-            is_admin: Whether requesting user is super admin
+            is_project_admin: Whether requesting user is super admin or project admin
             page: Page number (0-indexed)
             per_page: Items per page
             search: Search term
@@ -276,10 +274,16 @@ class UserManagementService:
 
         resolved_filters = filters or UserListFilters()
 
-        if not is_admin and resolved_filters.platform_role == PlatformRole.SUPER_ADMIN:
-            raise ExtendedHTTPException(
-                code=403, message="Access denied: only super admins can filter by super_admin role"
-            )
+        if not is_project_admin and resolved_filters.platform_role == PlatformRole.SUPER_ADMIN:
+            if not resolved_filters.projects:
+                raise ExtendedHTTPException(
+                    code=403, message="Access denied: only super admins can filter by super_admin role"
+                )
+            user_project_names = user_project_repository.get_project_names_for_user(session, requesting_user_id)
+            if not any(p in user_project_names for p in resolved_filters.projects):
+                raise ExtendedHTTPException(
+                    code=403, message="Access denied: only super admins can filter by super_admin role"
+                )
 
         total = user_repository.count_users(session, search, resolved_filters)
         users = user_repository.query_users(session, search, resolved_filters, page, per_page)
@@ -294,7 +298,7 @@ class UserManagementService:
         # Story 10 Code Review R2: Filter pre-fetched projects_map instead of re-querying per user
         # This prevents per-user query amplification while applying visibility rules
         filtered_projects_map = user_project_repository.filter_visible_projects_from_map(
-            session, projects_map, requesting_user_id, is_admin
+            session, projects_map, requesting_user_id, is_project_admin
         )
 
         items = [
@@ -396,7 +400,7 @@ class UserManagementService:
     @staticmethod
     def list_users_with_flow(
         requesting_user_id: str,
-        is_admin: bool,
+        is_project_admin: bool,
         page: int = 0,
         per_page: int = 20,
         search: Optional[str] = None,
@@ -410,7 +414,7 @@ class UserManagementService:
 
         Args:
             requesting_user_id: User requesting the list (for visibility filtering)
-            is_admin: Whether requesting user is super admin
+            is_project_admin: Whether requesting user is super admin or project admin
             page: Page number (0-indexed)
             per_page: Items per page
             search: Search term
@@ -425,7 +429,7 @@ class UserManagementService:
             return UserManagementService.list_users(
                 session,
                 requesting_user_id=requesting_user_id,
-                is_admin=is_admin,
+                is_project_admin=is_project_admin,
                 page=page,
                 per_page=per_page,
                 search=search,

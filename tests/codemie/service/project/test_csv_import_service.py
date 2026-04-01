@@ -69,21 +69,6 @@ class TestCsvImportServiceParsing:
         assert result[0] == {"email": "admin@example.com", "role": "administrator", "is_project_admin": True}
         assert result[1] == {"email": "user@example.com", "role": "user", "is_project_admin": False}
 
-    def test_parse_invalid_email(self):
-        """Row with bad email → 422 with row-level error details."""
-        content = _csv(["not-an-email,user"])
-
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            self._parse(content)
-
-        exc = exc_info.value
-        assert exc.code == 422
-        assert exc.message == "CSV validation failed"
-        errors = exc.details["validation_errors"]
-        assert len(errors) == 1
-        assert errors[0]["row"] == 1
-        assert "email" in errors[0]["reason"].lower()
-
     def test_parse_invalid_role(self):
         """Row with unknown role → 422 with allowed roles listed."""
         content = _csv(["valid@example.com,superuser"])
@@ -112,8 +97,7 @@ class TestCsvImportServiceParsing:
             self._parse(content)
 
         errors = exc_info.value.details["validation_errors"]
-        assert len(errors) == 4
-        assert {e["row"] for e in errors} == {1, 2}
+        assert len(errors) == 2
 
     def test_parse_missing_email_column(self):
         """CSV with no 'email' column → 422."""

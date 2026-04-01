@@ -60,6 +60,7 @@ class User(BaseModel):
             self.is_admin = (bool(config.ADMIN_USER_ID) and self.id == config.ADMIN_USER_ID) or (
                 config.ADMIN_ROLE_NAME in self.roles
             )
+
         return self
 
     @computed_field

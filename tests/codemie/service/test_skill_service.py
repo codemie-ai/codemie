@@ -232,8 +232,10 @@ class TestAccessControl:
 
     def test_admin_has_full_access(self, sample_skill):
         # Act & Assert
-        with patch("codemie.rest_api.security.user.config.ENV", "local"):  # Makes user admin
-            admin_user = User(id="admin-123", username="admin", project_names=["project-x"], admin_project_names=[])
+        with patch("codemie.rest_api.security.user.config.ENABLE_USER_MANAGEMENT", True):
+            admin_user = User(
+                id="admin-123", username="admin", project_names=["project-x"], admin_project_names=[], is_admin=True
+            )
             ability = Ability(admin_user)
             assert ability.can(Action.READ, sample_skill) is True
             assert ability.can(Action.WRITE, sample_skill) is True

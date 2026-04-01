@@ -168,7 +168,7 @@ class TestAdminUserListItemProjects:
 
         # Act - Story 10: Pass requesting user context (admin user sees all projects)
         result = UserManagementService.list_users(
-            mock_session, requesting_user_id="admin-user", is_admin=True, page=0, per_page=20
+            mock_session, requesting_user_id="admin-user", is_project_admin=True, page=0, per_page=20
         )
 
         # Assert
@@ -199,7 +199,7 @@ class TestAdminUserListItemProjects:
 
         # Act - Story 10: Pass requesting user context (admin user sees all projects)
         UserManagementService.list_users(
-            mock_session, requesting_user_id="admin-user", is_admin=True, page=0, per_page=20
+            mock_session, requesting_user_id="admin-user", is_project_admin=True, page=0, per_page=20
         )
 
         # Assert
@@ -445,7 +445,7 @@ class TestPaginationEnvelope:
 
         # Act - Story 10: Pass requesting user context (admin user sees all projects)
         result = UserManagementService.list_users(
-            mock_session, requesting_user_id="admin-user", is_admin=True, page=0, per_page=20
+            mock_session, requesting_user_id="admin-user", is_project_admin=True, page=0, per_page=20
         )
 
         # Assert

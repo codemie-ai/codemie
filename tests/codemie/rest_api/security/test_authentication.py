@@ -21,7 +21,6 @@ from codemie.rest_api.security.authentication import (
     admin_access_only,
     application_access_check,
     kb_access_check,
-    project_admin_or_super_admin_user_list_access,
     project_admin_or_super_admin_user_detail_access,
 )
 from codemie.rest_api.security.user import User
@@ -108,67 +107,6 @@ def test_kb_access_check_failure(mocker):
 
     with pytest.raises(ExtendedHTTPException):
         kb_access_check(request, 'kb2')
-
-
-@pytest.mark.anyio
-@patch.object(config, 'ENV', 'dev')
-@patch.object(config, 'ENABLE_USER_MANAGEMENT', True)
-async def test_user_list_access_super_admin():
-    """Test that super admins can access user list endpoint (Story 17)"""
-    # Arrange
-    request = MagicMock()
-    request.state.user = User(id="admin-1", username="admin", is_admin=True, roles=["admin"])
-
-    # Act
-    result = await project_admin_or_super_admin_user_list_access(request)
-
-    # Assert
-    assert result is None
-
-
-@pytest.mark.anyio
-@patch.object(config, 'ENV', 'dev')
-@patch.object(config, 'ENABLE_USER_MANAGEMENT', True)
-async def test_user_list_access_project_admin():
-    """Test that project admins can access user list endpoint (Story 17)"""
-    # Arrange
-    request = MagicMock()
-    request.state.user = User(
-        id="proj-admin-1",
-        username="project_admin",
-        is_admin=False,
-        admin_project_names=["project1", "project2"],
-    )
-
-    # Act
-    result = await project_admin_or_super_admin_user_list_access(request)
-
-    # Assert
-    assert result is None
-
-
-@pytest.mark.anyio
-@patch.object(config, 'ENV', 'dev')
-@patch.object(config, 'ENABLE_USER_MANAGEMENT', True)
-async def test_user_list_access_regular_user():
-    """Test that regular users are denied access to user list endpoint (Story 17)"""
-    # Arrange
-    request = MagicMock()
-    request.state.user = User(
-        id="user-1",
-        username="regular_user",
-        is_admin=False,
-        admin_project_names=[],
-        project_names=["project1"],
-    )
-
-    # Act & Assert
-    with pytest.raises(ExtendedHTTPException) as exc_info:
-        await project_admin_or_super_admin_user_list_access(request)
-
-    assert exc_info.value.code == 403
-    assert "Access denied" in exc_info.value.message
-    assert "administrator or project administrator privileges" in exc_info.value.details
 
 
 @pytest.mark.anyio

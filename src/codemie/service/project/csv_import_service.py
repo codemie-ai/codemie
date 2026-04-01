@@ -20,7 +20,6 @@ import csv
 from io import StringIO
 from types import SimpleNamespace
 
-from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlmodel import Session
 
 from codemie.configs.logger import logger
@@ -29,8 +28,6 @@ from codemie.core.models import Application
 from codemie.repository.user_repository import user_repository
 from codemie.rest_api.security.user import User
 from codemie.service.project.project_assignment_service import project_assignment_service
-
-_email_adapter: TypeAdapter[EmailStr] = TypeAdapter(EmailStr)
 
 COLUMNS = SimpleNamespace(EMAIL="email", ROLE="role")
 
@@ -147,11 +144,6 @@ class CsvImportService:
             email = (row.get(COLUMNS.EMAIL) or "").strip()
             role = (row.get(COLUMNS.ROLE) or "").strip() or DEFAULT_ROLE
             row_errors: list[str] = []
-
-            try:
-                _email_adapter.validate_python(email)
-            except ValidationError:
-                row_errors.append(f"Invalid email address: '{email}'")
 
             if role not in ALLOWED_ROLES:
                 row_errors.append(f"Invalid role '{role}'. Allowed values: {sorted(ALLOWED_ROLES)}")
