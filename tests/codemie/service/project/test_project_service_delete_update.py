@@ -91,10 +91,57 @@ class TestProjectServiceDeleteProject:
         mock_app_repo.get_project_entity_counts_bulk.assert_not_called()
         mock_app_repo.delete_by_name.assert_not_called()
 
+    @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
-    def test_project_with_assistants_raises_409(self, mock_app_repo):
+    def test_project_with_assigned_users_raises_409(self, mock_app_repo, mock_upr):
+        """delete_project raises 409 when project has assigned users."""
+        mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = [MagicMock(), MagicMock()]
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.delete_project(
+                session=mock_session,
+                project_name="my-project",
+                project_type=Application.ProjectType.SHARED,
+                actor_id="user-1",
+                action="DELETE /v1/projects/my-project",
+            )
+
+        assert exc_info.value.code == 409
+        assert "my-project" in exc_info.value.message
+        assert exc_info.value.message == ProjectService.ERRORS.HAS_ASSIGNED_USERS.format(name="my-project")
+        assert exc_info.value.details == "Assigned users: 2"
+        mock_app_repo.get_project_entity_counts_bulk.assert_not_called()
+        mock_app_repo.delete_by_name.assert_not_called()
+
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_project_with_one_assigned_user_raises_409(self, mock_app_repo, mock_upr):
+        """delete_project raises 409 even with a single assigned user."""
+        mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = [MagicMock()]
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.delete_project(
+                session=mock_session,
+                project_name="my-project",
+                project_type=Application.ProjectType.SHARED,
+                actor_id="user-1",
+                action="DELETE /v1/projects/my-project",
+            )
+
+        assert exc_info.value.code == 409
+        assert exc_info.value.message == ProjectService.ERRORS.HAS_ASSIGNED_USERS.format(name="my-project")
+        assert exc_info.value.details == "Assigned users: 1"
+        mock_app_repo.get_project_entity_counts_bulk.assert_not_called()
+        mock_app_repo.delete_by_name.assert_not_called()
+
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_project_with_assistants_raises_409(self, mock_app_repo, mock_upr):
         """delete_project raises 409 when project has assistants."""
         mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
         mock_app_repo.get_project_entity_counts_bulk.return_value = _counts_with("my-project", assistants_count=3)
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -111,10 +158,12 @@ class TestProjectServiceDeleteProject:
         assert "deleted" in exc_info.value.message
         mock_app_repo.delete_by_name.assert_not_called()
 
+    @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
-    def test_project_with_workflows_raises_409(self, mock_app_repo):
+    def test_project_with_workflows_raises_409(self, mock_app_repo, mock_upr):
         """delete_project raises 409 when project has workflows."""
         mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
         mock_app_repo.get_project_entity_counts_bulk.return_value = _counts_with("my-project", workflows_count=2)
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -129,10 +178,12 @@ class TestProjectServiceDeleteProject:
         assert exc_info.value.code == 409
         mock_app_repo.delete_by_name.assert_not_called()
 
+    @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
-    def test_project_with_skills_raises_409(self, mock_app_repo):
+    def test_project_with_skills_raises_409(self, mock_app_repo, mock_upr):
         """delete_project raises 409 when project has skills."""
         mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
         mock_app_repo.get_project_entity_counts_bulk.return_value = _counts_with("my-project", skills_count=1)
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -147,10 +198,12 @@ class TestProjectServiceDeleteProject:
         assert exc_info.value.code == 409
         mock_app_repo.delete_by_name.assert_not_called()
 
+    @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
-    def test_project_with_datasources_raises_409(self, mock_app_repo):
+    def test_project_with_datasources_raises_409(self, mock_app_repo, mock_upr):
         """delete_project raises 409 when project has datasources."""
         mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
         mock_app_repo.get_project_entity_counts_bulk.return_value = _counts_with("my-project", datasources_count=5)
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -165,10 +218,12 @@ class TestProjectServiceDeleteProject:
         assert exc_info.value.code == 409
         mock_app_repo.delete_by_name.assert_not_called()
 
+    @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
-    def test_project_with_integrations_raises_409(self, mock_app_repo):
+    def test_project_with_integrations_raises_409(self, mock_app_repo, mock_upr):
         """delete_project raises 409 when project has integrations."""
         mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
         mock_app_repo.get_project_entity_counts_bulk.return_value = _counts_with("my-project", integrations_count=1)
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -183,10 +238,12 @@ class TestProjectServiceDeleteProject:
         assert exc_info.value.code == 409
         mock_app_repo.delete_by_name.assert_not_called()
 
+    @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
-    def test_project_with_resources_details_include_non_zero_counts(self, mock_app_repo):
+    def test_project_with_resources_details_include_non_zero_counts(self, mock_app_repo, mock_upr):
         """delete_project 409 details include non-zero resource counts."""
         mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
         mock_app_repo.get_project_entity_counts_bulk.return_value = _counts_with(
             "my-project", assistants_count=2, workflows_count=1
         )
@@ -206,10 +263,12 @@ class TestProjectServiceDeleteProject:
         assert "assistants_count" in exc_info.value.details
         assert "workflows_count" in exc_info.value.details
 
+    @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
-    def test_empty_project_calls_delete_and_succeeds(self, mock_app_repo):
+    def test_empty_project_calls_delete_and_succeeds(self, mock_app_repo, mock_upr):
         """delete_project calls delete_by_name when project has no resources."""
         mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
         mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
 
         ProjectService.delete_project(
@@ -222,10 +281,12 @@ class TestProjectServiceDeleteProject:
 
         mock_app_repo.delete_by_name.assert_called_once_with(mock_session, "my-project")
 
+    @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
-    def test_empty_counts_dict_calls_delete(self, mock_app_repo):
+    def test_empty_counts_dict_calls_delete(self, mock_app_repo, mock_upr):
         """delete_project treats missing project-name key in counts dict as zero resources."""
         mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
         # Simulate bulk returning no entry for the project
         mock_app_repo.get_project_entity_counts_bulk.return_value = {}
 
@@ -239,10 +300,12 @@ class TestProjectServiceDeleteProject:
 
         mock_app_repo.delete_by_name.assert_called_once_with(mock_session, "ghost-project")
 
+    @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
-    def test_delete_calls_bulk_with_correct_project_name(self, mock_app_repo):
+    def test_delete_calls_bulk_with_correct_project_name(self, mock_app_repo, mock_upr):
         """delete_project passes project_name in list to get_project_entity_counts_bulk."""
         mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
         mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("analytics")
 
         ProjectService.delete_project(

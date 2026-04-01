@@ -84,6 +84,9 @@ class ProjectService:
             "Project '{name}' cannot be {action} because it has assigned resources. "
             "Remove all assistants, workflows, skills, datasources, and integrations first."
         ),
+        HAS_ASSIGNED_USERS=(
+            "Project '{name}' cannot be deleted because it has assigned users. Remove all users first."
+        ),
         PERSONAL_DELETE="Cannot delete a personal project",
         PERSONAL_UPDATE="Cannot update a personal project",
     )
@@ -306,12 +309,25 @@ class ProjectService:
 
         Raises:
             ExtendedHTTPException 403: If project is personal
-            ExtendedHTTPException 409: If project has assigned resources
+            ExtendedHTTPException 409: If project has assigned users (all users must be removed first)
+            ExtendedHTTPException 409: If project has assigned resources (assistants, workflows, etc.)
         """
         if project_type == Application.ProjectType.PERSONAL:
             http_method = action.split()[0] if action else "UNKNOWN"
             logger.warning(f"personal_project_delete_blocked: user_id={actor_id}, method={http_method}")
             raise ExtendedHTTPException(code=403, message=cls.ERRORS.PERSONAL_DELETE)
+
+        assigned = user_project_repository.get_by_project_name(session, project_name)
+        if assigned:
+            logger.warning(
+                f"project_delete_blocked_by_assigned_users: project={project_name}, "
+                f"user_count={len(assigned)}, by={actor_id}"
+            )
+            raise ExtendedHTTPException(
+                code=409,
+                message=cls.ERRORS.HAS_ASSIGNED_USERS.format(name=project_name),
+                details=f"Assigned users: {len(assigned)}",
+            )
 
         cls._check_has_no_resources(session, project_name, "deleted")
         application_repository.delete_by_name(session, project_name)
