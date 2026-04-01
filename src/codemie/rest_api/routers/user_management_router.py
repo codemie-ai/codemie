@@ -98,9 +98,6 @@ def list_users(
     if not config.ENABLE_USER_MANAGEMENT:
         raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
 
-    if per_page not in [10, 20, 50, 100]:
-        raise ExtendedHTTPException(code=400, message="per_page must be one of: 10, 20, 50, 100")
-
     try:
         parsed_filters = json.loads(filters) if filters else {}
     except json.JSONDecodeError:

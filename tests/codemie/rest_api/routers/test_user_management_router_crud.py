@@ -722,29 +722,6 @@ class TestListUsers:
         assert exc_info.value.code == 400
         assert "User management not enabled" in exc_info.value.message
 
-    @patch("codemie.rest_api.routers.user_management_router.config")
-    def test_list_users_invalid_per_page(self, mock_config, admin_user):
-        """Test user listing fails with invalid per_page value.
-
-        AC: Returns 400 when per_page is not 10, 20, 50, or 100
-        """
-        # Arrange
-        mock_config.ENABLE_USER_MANAGEMENT = True
-
-        # Act & Assert
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            list_users(
-                page=0,
-                per_page=15,  # Invalid value
-                search=None,
-                filters=None,
-                user=admin_user,
-                _=None,
-            )
-
-        assert exc_info.value.code == 400
-        assert "per_page must be one of: 10, 20, 50, 100" in exc_info.value.message
-
 
 class TestGetUser:
     """Tests for GET /v1/admin/users/{user_id} endpoint."""

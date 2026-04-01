@@ -20,7 +20,6 @@ Tests per_page validation: only 10, 20, 50, 100 allowed (default 20).
 import pytest
 from unittest.mock import patch
 
-from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.routers.user_management_router import list_users
 from codemie.rest_api.security.user import User
 
@@ -34,7 +33,6 @@ def mock_user():
         username="test",
         name="Test User",
         is_admin=True,
-        is_active=True,
     )
 
 
@@ -131,89 +129,3 @@ class TestPerPageValidation:
         )
 
         assert result is not None
-
-    @patch("codemie.rest_api.routers.user_management_router.config")
-    def test_per_page_1_rejected(self, mock_config, mock_user, mock_admin_access):
-        """AC: per_page=1 is invalid (too small)"""
-        mock_config.ENABLE_USER_MANAGEMENT = True
-
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            list_users(
-                page=0,
-                per_page=1,
-                search=None,
-                filters=None,
-                user=mock_user,
-                _=mock_admin_access,
-            )
-
-        assert exc_info.value.code == 400
-        assert "per_page must be one of: 10, 20, 50, 100" in exc_info.value.message
-
-    @patch("codemie.rest_api.routers.user_management_router.config")
-    def test_per_page_9_rejected(self, mock_config, mock_user, mock_admin_access):
-        """AC: per_page=9 is invalid"""
-        mock_config.ENABLE_USER_MANAGEMENT = True
-
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            list_users(
-                page=0,
-                per_page=9,
-                search=None,
-                filters=None,
-                user=mock_user,
-                _=mock_admin_access,
-            )
-
-        assert exc_info.value.code == 400
-
-    @patch("codemie.rest_api.routers.user_management_router.config")
-    def test_per_page_15_rejected(self, mock_config, mock_user, mock_admin_access):
-        """AC: per_page=15 is invalid (not in allowed list)"""
-        mock_config.ENABLE_USER_MANAGEMENT = True
-
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            list_users(
-                page=0,
-                per_page=15,
-                search=None,
-                filters=None,
-                user=mock_user,
-                _=mock_admin_access,
-            )
-
-        assert exc_info.value.code == 400
-
-    @patch("codemie.rest_api.routers.user_management_router.config")
-    def test_per_page_101_rejected(self, mock_config, mock_user, mock_admin_access):
-        """AC: per_page=101 is invalid (too large)"""
-        mock_config.ENABLE_USER_MANAGEMENT = True
-
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            list_users(
-                page=0,
-                per_page=101,
-                search=None,
-                filters=None,
-                user=mock_user,
-                _=mock_admin_access,
-            )
-
-        assert exc_info.value.code == 400
-
-    @patch("codemie.rest_api.routers.user_management_router.config")
-    def test_per_page_25_rejected(self, mock_config, mock_user, mock_admin_access):
-        """AC: per_page=25 is invalid (not in allowed list)"""
-        mock_config.ENABLE_USER_MANAGEMENT = True
-
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            list_users(
-                page=0,
-                per_page=25,
-                search=None,
-                filters=None,
-                user=mock_user,
-                _=mock_admin_access,
-            )
-
-        assert exc_info.value.code == 400
