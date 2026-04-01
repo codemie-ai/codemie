@@ -299,6 +299,7 @@ class ProjectService:
         project_type: str,
         actor_id: str,
         action: str,
+        creator_id: str | None = None,
     ) -> None:
         """Hard-delete a project after validating it has no assigned resources.
 
@@ -308,6 +309,7 @@ class ProjectService:
             project_type: Project type string (used for personal-project guard)
             actor_id: ID of the requesting user (for logging)
             action: HTTP method+path string for logging (e.g., "DELETE /v1/projects/foo")
+            creator_id: ID of the project creator — excluded from the assigned-users check
 
         Raises:
             ExtendedHTTPException 403: If project is personal
@@ -319,7 +321,9 @@ class ProjectService:
             logger.warning(f"personal_project_delete_blocked: user_id={actor_id}, method={http_method}")
             raise ExtendedHTTPException(code=403, message=cls.ERRORS.PERSONAL_DELETE)
 
-        assigned = user_project_repository.get_by_project_name(session, project_name)
+        assigned = [
+            up for up in user_project_repository.get_by_project_name(session, project_name) if up.user_id != creator_id
+        ]
         if assigned:
             logger.warning(
                 f"project_delete_blocked_by_assigned_users: project={project_name}, "

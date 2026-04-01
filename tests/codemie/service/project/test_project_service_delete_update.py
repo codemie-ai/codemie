@@ -283,6 +283,73 @@ class TestProjectServiceDeleteProject:
 
     @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
+    def test_creator_only_allows_deletion(self, mock_app_repo, mock_upr):
+        """delete_project succeeds when the sole assigned user is the creator."""
+        mock_session = MagicMock()
+        creator_record = MagicMock()
+        creator_record.user_id = "creator-1"
+        mock_upr.get_by_project_name.return_value = [creator_record]
+        mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
+
+        ProjectService.delete_project(
+            session=mock_session,
+            project_name="my-project",
+            project_type=Application.ProjectType.SHARED,
+            actor_id="creator-1",
+            action="DELETE /v1/projects/my-project",
+            creator_id="creator-1",
+        )
+
+        mock_app_repo.delete_by_name.assert_called_once_with(mock_session, "my-project")
+
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_creator_plus_other_user_raises_409(self, mock_app_repo, mock_upr):
+        """delete_project raises 409 with count 1 when creator + 1 other user are assigned."""
+        mock_session = MagicMock()
+        creator_record = MagicMock()
+        creator_record.user_id = "creator-1"
+        other_record = MagicMock()
+        other_record.user_id = "other-user"
+        mock_upr.get_by_project_name.return_value = [creator_record, other_record]
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.delete_project(
+                session=mock_session,
+                project_name="my-project",
+                project_type=Application.ProjectType.SHARED,
+                actor_id="creator-1",
+                action="DELETE /v1/projects/my-project",
+                creator_id="creator-1",
+            )
+
+        assert exc_info.value.code == 409
+        assert exc_info.value.details == "Assigned users: 1"
+        mock_app_repo.delete_by_name.assert_not_called()
+
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_no_creator_id_counts_all_assigned_users(self, mock_app_repo, mock_upr):
+        """delete_project without creator_id counts all assigned users (backward compat)."""
+        mock_session = MagicMock()
+        user_record = MagicMock()
+        user_record.user_id = "some-user"
+        mock_upr.get_by_project_name.return_value = [user_record]
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.delete_project(
+                session=mock_session,
+                project_name="my-project",
+                project_type=Application.ProjectType.SHARED,
+                actor_id="actor-1",
+                action="DELETE /v1/projects/my-project",
+            )
+
+        assert exc_info.value.code == 409
+        assert exc_info.value.details == "Assigned users: 1"
+
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
     def test_empty_counts_dict_calls_delete(self, mock_app_repo, mock_upr):
         """delete_project treats missing project-name key in counts dict as zero resources."""
         mock_session = MagicMock()

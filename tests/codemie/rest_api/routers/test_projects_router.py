@@ -999,6 +999,7 @@ class TestDeleteProjectEndpoint:
             project_type="shared",
             actor_id="user-1",
             action="DELETE /v1/projects/my-project",
+            creator_id=authorized_project.created_by,
         )
         mock_session.commit.assert_called_once()
 

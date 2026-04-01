@@ -437,19 +437,22 @@ class UserRepository:
         if filters.is_active is not None:
             query = query.where(UserDB.is_active == filters.is_active)
 
-        if filters.platform_role:
-            query = UserRepository._apply_platform_role_filter(query, filters.platform_role)
+        if filters.platform_role == PlatformRole.PLATFORM_ADMIN and filters.projects:
+            query = UserRepository._apply_platform_admin_project_filter(query, filters.projects)
+        else:
+            if filters.platform_role:
+                query = UserRepository._apply_platform_role_filter(query, filters.platform_role)
 
-        if filters.projects:
-            project_exists = (
-                select(UserProject.id)
-                .where(
-                    UserProject.user_id == UserDB.id,
-                    UserProject.project_name.in_(filters.projects),  # type: ignore[attr-defined]
+            if filters.projects:
+                project_exists = (
+                    select(UserProject.id)
+                    .where(
+                        UserProject.user_id == UserDB.id,
+                        UserProject.project_name.in_(filters.projects),  # type: ignore[attr-defined]
+                    )
+                    .exists()
                 )
-                .exists()
-            )
-            query = query.where(project_exists)
+                query = query.where(project_exists)
 
         return query
 
@@ -472,6 +475,24 @@ class UserRepository:
             return query.where(~UserDB.is_admin, is_project_admin)
 
         return query.where(~UserDB.is_admin, ~is_project_admin)
+
+    @staticmethod
+    def _apply_platform_admin_project_filter(query, projects: list[str]):
+        """Filter users who are project admin specifically on one of the given projects.
+
+        Used when platform_role=platform_admin and a projects filter are both provided.
+        Replaces the independent role + projects filters with a single combined subquery.
+        """
+        is_admin_on_projects = (
+            select(UserProject.id)
+            .where(
+                UserProject.user_id == UserDB.id,
+                UserProject.is_project_admin,
+                UserProject.project_name.in_(projects),  # type: ignore[attr-defined]
+            )
+            .exists()
+        )
+        return query.where(~UserDB.is_admin, is_admin_on_projects)
 
 
 # Singleton instance

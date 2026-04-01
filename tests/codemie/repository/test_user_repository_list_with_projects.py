@@ -437,3 +437,83 @@ class TestApplyFilters:
 
         # Base filter only: WHERE deleted_at IS NULL
         query.where.assert_called_once()
+
+    @patch.object(UserRepository, "_apply_platform_admin_project_filter")
+    def test_platform_admin_with_projects_delegates_to_combined_filter(self, mock_combined_filter):
+        """platform_admin + projects delegates to _apply_platform_admin_project_filter."""
+        mock_combined_filter.return_value = MagicMock()
+        query = self._make_mock_query()
+
+        UserRepository._apply_filters(
+            query, search=None, filters=UserListFilters(platform_role=PlatformRole.PLATFORM_ADMIN, projects=["proj-a"])
+        )
+
+        mock_combined_filter.assert_called_once_with(query, ["proj-a"])
+
+    @patch.object(UserRepository, "_apply_platform_role_filter")
+    @patch.object(UserRepository, "_apply_platform_admin_project_filter")
+    def test_platform_admin_with_projects_skips_role_filter(self, mock_combined_filter, mock_role_filter):
+        """platform_admin + projects does NOT call _apply_platform_role_filter."""
+        mock_combined_filter.return_value = MagicMock()
+        query = self._make_mock_query()
+
+        UserRepository._apply_filters(
+            query, search=None, filters=UserListFilters(platform_role=PlatformRole.PLATFORM_ADMIN, projects=["proj-a"])
+        )
+
+        mock_role_filter.assert_not_called()
+
+    @patch.object(UserRepository, "_apply_platform_admin_project_filter")
+    @patch.object(UserRepository, "_apply_platform_role_filter")
+    def test_platform_admin_without_projects_uses_role_filter(self, mock_role_filter, mock_combined_filter):
+        """platform_admin without projects uses _apply_platform_role_filter, not combined filter."""
+        mock_role_filter.return_value = MagicMock()
+        query = self._make_mock_query()
+
+        UserRepository._apply_filters(
+            query, search=None, filters=UserListFilters(platform_role=PlatformRole.PLATFORM_ADMIN)
+        )
+
+        mock_role_filter.assert_called_once_with(query, PlatformRole.PLATFORM_ADMIN)
+        mock_combined_filter.assert_not_called()
+
+
+# ===========================================
+# _apply_platform_admin_project_filter tests
+# ===========================================
+
+
+class TestApplyPlatformAdminProjectFilter:
+    """Test UserRepository._apply_platform_admin_project_filter static method."""
+
+    def _make_mock_query(self):
+        query = MagicMock()
+        query.where.return_value = query
+        return query
+
+    def test_adds_single_where_clause_with_two_conditions(self):
+        """Combined filter adds a single WHERE clause with ~is_admin and EXISTS conditions."""
+        query = self._make_mock_query()
+
+        result = UserRepository._apply_platform_admin_project_filter(query, ["proj-a", "proj-b"])
+
+        query.where.assert_called_once()
+        args = query.where.call_args[0]
+        assert len(args) == 2  # ~is_admin + EXISTS(is_project_admin AND project_name IN ...)
+        assert result is query
+
+    def test_exists_subquery_differs_from_plain_platform_admin_filter(self):
+        """Combined filter EXISTS differs from plain _apply_platform_role_filter EXISTS (no project scope)."""
+        query_combined = self._make_mock_query()
+        query_plain = self._make_mock_query()
+
+        UserRepository._apply_platform_admin_project_filter(query_combined, ["proj-a"])
+        UserRepository._apply_platform_role_filter(query_plain, PlatformRole.PLATFORM_ADMIN)
+
+        args_combined = query_combined.where.call_args[0]
+        args_plain = query_plain.where.call_args[0]
+
+        assert len(args_combined) == 2
+        assert len(args_plain) == 2
+        # Same NOT-super-admin condition but different EXISTS subquery
+        assert str(args_combined[1]) != str(args_plain[1])

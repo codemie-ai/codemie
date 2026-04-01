@@ -410,6 +410,7 @@ def delete_project(
             project_type=authorized_project.project_type,
             actor_id=request.state.user.id,
             action=f"{request.method} {request.url.path}",
+            creator_id=authorized_project.created_by,
         )
         session.commit()
 
