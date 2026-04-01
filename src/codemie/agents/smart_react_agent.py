@@ -79,7 +79,13 @@ def create_smart_react_agent(
 
     if not use_smart_selection:
         return _create_standard_react_agent(
-            model, tools, prompt, response_format, name, parallel_tool_calls, pre_model_hook
+            model=model,
+            tools=tools,
+            prompt=prompt,
+            response_format=response_format,
+            name=name,
+            parallel_tool_calls=parallel_tool_calls,
+            pre_model_hook=pre_model_hook,
         )
 
     # Build tool registry

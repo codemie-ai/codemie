@@ -15,6 +15,7 @@
 import pytest
 import typing
 from unittest.mock import ANY, MagicMock, Mock, patch
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
 
@@ -302,3 +303,35 @@ def test_filter_history(history, expected_length):
     filtered = AIToolsAgent._filter_history(history)
     assert len(filtered) == expected_length
     assert all(msg.content for msg in filtered)
+
+
+def test_get_inputs_skips_compaction_when_feature_flag_disabled(agent):
+    agent.request = Mock(
+        history=[ChatMessage(role=ChatRole.USER, message="Hello")],
+        file_names=None,
+    )
+
+    with (
+        patch("codemie.agents.assistant_agent.DynamicConfigService.get_typed_value", return_value=False),
+        patch("codemie.agents.assistant_agent.ConversationHistoryCompactionService.compact_messages") as compact_mock,
+    ):
+        inputs = agent._get_inputs("Custom Input")
+
+    compact_mock.assert_not_called()
+    assert inputs["input"] == "Custom Input"
+    assert inputs["chat_history"] == [HumanMessage(content="Hello")]
+
+
+def test_transform_history_keeps_rich_messages_only_when_feature_flag_enabled():
+    history = [
+        HumanMessage(content="Hello"),
+        ToolMessage(content="tool output", tool_call_id="tool-call-1", name="search_tool"),
+        AIMessage(content="", tool_calls=[{"id": "tool-call-1", "name": "search_tool", "args": {"query": "test"}}]),
+    ]
+
+    with patch("codemie.agents.assistant_agent.DynamicConfigService.get_typed_value", return_value=True):
+        transformed = AIToolsAgent._transform_history(history)
+        filtered = AIToolsAgent._filter_history(transformed)
+
+    assert transformed == history
+    assert filtered == history

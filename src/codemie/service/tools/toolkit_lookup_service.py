@@ -447,21 +447,38 @@ class ToolkitLookupService:
             return message_texts
 
         try:
-            # Handle both list and string history formats
-            history_messages = request.history if isinstance(request.history, list) else []
-
-            # Get last 5 messages (most recent context)
-            recent_messages = history_messages[-5:] if len(history_messages) > 5 else history_messages
-
-            for msg in recent_messages:
-                # Extract message content based on type
-                if hasattr(msg, 'message') and msg.message:
-                    message_texts.append(msg.message)
-                elif isinstance(msg, dict) and 'message' in msg:
-                    message_texts.append(msg['message'])
+            for msg in cls._get_recent_history_messages(request):
+                message_text = cls._extract_history_message_text(msg)
+                if message_text:
+                    message_texts.append(message_text)
 
             logger.debug(f"ToolSearch: Extracted {len(message_texts)} messages from history")
         except Exception as e:
             logger.warning(f"ToolSearch: Failed to extract history for query: {e}")
 
         return message_texts
+
+    @classmethod
+    def _get_recent_history_messages(cls, request: AssistantChatRequest) -> list:
+        history_messages = request.history if isinstance(request.history, list) else []
+        return history_messages[-5:] if len(history_messages) > 5 else history_messages
+
+    @classmethod
+    def _extract_history_message_text(cls, message: object) -> str | None:
+        if hasattr(message, 'message') and message.message:
+            return message.message
+
+        if (
+            hasattr(message, 'content')
+            and message.content
+            and not hasattr(message, 'tool_call_id')
+            and isinstance(message.content, str)
+        ):
+            return message.content
+
+        if isinstance(message, dict):
+            content = message.get('message')
+            if isinstance(content, str):
+                return content
+
+        return None

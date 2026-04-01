@@ -15,7 +15,7 @@
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from codemie.agents.langgraph_agent import _image_artifact_pre_model_hook
+from codemie.agents.langgraph_agent import _compose_pre_model_hooks, _image_artifact_pre_model_hook
 
 
 def _make_tool_message(content: str = "ok", artifact=None, **kwargs) -> ToolMessage:
@@ -148,3 +148,47 @@ class TestHookScoping:
         result = _image_artifact_pre_model_hook({"messages": messages})
         # Last message is AIMessage → reverse walk hits it immediately → no images
         assert result["llm_input_messages"] is messages
+
+
+class TestComposePreModelHooks:
+    def test_returns_none_when_no_hooks(self) -> None:
+        assert _compose_pre_model_hooks() is None
+
+    def test_runs_image_hook_on_compacted_messages(self) -> None:
+        original_messages = [
+            HumanMessage(content="older question"),
+            _make_ai_message(content="", tool_calls=[{"name": "jira", "args": {}, "id": "call_1"}]),
+            _make_tool_message(content="round1", artifact=[{"data": "old", "mime_type": "image/png"}]),
+        ]
+        compacted_messages = [
+            HumanMessage(content="latest question"),
+            _make_ai_message(content="", tool_calls=[{"name": "jira", "args": {}, "id": "call_2"}]),
+            _make_tool_message(content="round2", artifact=[{"data": "new", "mime_type": "image/jpeg"}]),
+        ]
+
+        def compaction_hook(state: dict) -> dict:
+            assert state["messages"] == original_messages
+            return {"llm_input_messages": compacted_messages}
+
+        combined_hook = _compose_pre_model_hooks(compaction_hook, _image_artifact_pre_model_hook)
+
+        result = combined_hook({"messages": original_messages})
+
+        assert result["llm_input_messages"][:-1] == compacted_messages
+        injected = result["llm_input_messages"][-1]
+        assert isinstance(injected, HumanMessage)
+        assert injected.content[1]["data"] == "new"
+
+    def test_preserves_other_hook_updates(self) -> None:
+        def hook_one(state: dict) -> dict:
+            return {"custom": "value"}
+
+        def hook_two(state: dict) -> dict:
+            return {"llm_input_messages": state["messages"]}
+
+        combined_hook = _compose_pre_model_hooks(hook_one, hook_two)
+
+        assert combined_hook({"messages": [HumanMessage(content="hi")]}) == {
+            "custom": "value",
+            "llm_input_messages": [HumanMessage(content="hi")],
+        }

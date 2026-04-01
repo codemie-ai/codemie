@@ -15,18 +15,23 @@
 import json
 import re
 from time import time
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import langgraph_supervisor.supervisor
 from codemie_tools.base.file_object import FileObject
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph_supervisor import create_supervisor, create_handoff_tool
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 
+from codemie.agents.agent_log_utils import (
+    serialize_messages_for_log,
+    serialize_tool_calls_for_log,
+    truncate_log_content,
+)
 from codemie.agents.assistant_agent import TaskResult
 from codemie.agents.callbacks.agent_invoke_callback import AgentInvokeCallback
 from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
@@ -60,6 +65,9 @@ from codemie.core.utils import extract_text_from_llm_output, calculate_tokens, u
 from codemie.rest_api.models.assistant import AssistantBase
 from codemie.rest_api.security.user import User
 from codemie.service.background_tasks_service import BackgroundTasksService
+from codemie.service.conversation.history_compaction_service import ConversationHistoryCompactionService
+from codemie.service.constants import AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY
+from codemie.service.dynamic_config_service import DynamicConfigService
 from codemie.service.file_service.image_service import ImageService
 from codemie.service.llm_service.llm_service import LLMService
 from codemie.service.llm_service.utils import set_llm_context
@@ -125,6 +133,35 @@ def _image_artifact_pre_model_hook(state: dict) -> dict:
     return {"llm_input_messages": [*messages, injected]}
 
 
+def _compose_pre_model_hooks(*hooks) -> Any | None:
+    """Compose multiple LangGraph pre-model hooks into a single hook."""
+    active_hooks = [hook for hook in hooks if hook is not None]
+    if not active_hooks:
+        return None
+
+    def composed_pre_model_hook(state: dict[str, Any]) -> dict[str, Any]:
+        working_state = dict(state)
+        combined_updates: dict[str, Any] = {}
+
+        for hook in active_hooks:
+            hook_result = hook(working_state)
+            if not hook_result:
+                continue
+
+            combined_updates.update(hook_result)
+
+            if "llm_input_messages" in hook_result:
+                llm_input_messages = hook_result["llm_input_messages"]
+                working_state["messages"] = llm_input_messages
+                working_state["llm_input_messages"] = llm_input_messages
+            else:
+                working_state.update(hook_result)
+
+        return combined_updates
+
+    return composed_pre_model_hook
+
+
 class LangGraphAgent:
     # When this agent is run as part of a workflow (instead of natively within LangGraph),
     # LangGraph overrides the max_concurrency of all subgraphs.
@@ -134,6 +171,13 @@ class LangGraphAgent:
     SUPERVISOR_HANDOFF_TOOL_PREFIX = "transfer_to"
     # Maximum allowed length for assistant (agent) name after normalization
     ASSISTANT_NAME_MAX_LENGTH = 64
+
+    @staticmethod
+    def _is_conversation_replay_v2_enabled() -> bool:
+        return DynamicConfigService.get_bool_value_safe(
+            AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY,
+            default=config.AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED,
+        )
 
     def __init__(
         self,
@@ -189,6 +233,14 @@ class LangGraphAgent:
         self.assistant = assistant
         self.override_global_checkpointer = override_global_checkpointer
         self.trace_context = trace_context  # Store for trace unification
+        self.history_compaction_pre_model_hook = (
+            ConversationHistoryCompactionService.build_langgraph_pre_model_hook(
+                llm_model=llm_model,
+                request_id=request_uuid,
+            )
+            if self._is_conversation_replay_v2_enabled()
+            else None
+        )
 
         # Smart tool selection/lookup configuration
         # Controls both:
@@ -262,9 +314,12 @@ class LangGraphAgent:
                 tool_selection_enabled=self.smart_tool_selection_enabled,
                 tool_selection_limit=self.tool_selection_limit,
                 parallel_tool_calls=False if parallel_tool_calling else None,
-                # Runs for all agents, but does nothing unless a tool
-                # returns image artifacts (e.g. Jira with screenshots).
-                pre_model_hook=_image_artifact_pre_model_hook,
+                pre_model_hook=_compose_pre_model_hooks(
+                    self.history_compaction_pre_model_hook,
+                    # Runs for all agents, but does nothing unless a tool
+                    # returns image artifacts (e.g. Jira with screenshots).
+                    _image_artifact_pre_model_hook,
+                ),
             )
 
         self._configure_tools()
@@ -324,6 +379,11 @@ class LangGraphAgent:
             self.supervisor_callbacks.append(AgentStreamingCallback(self.thread_generator))
         # Add unique default callbacks
         callbacks.extend(callback for callback in default_callbacks if self._is_unique_callback(callbacks, callback))
+        logger.debug(
+            f"Configured LangGraph callbacks. Agent={self.agent_name}, "
+            f"Callbacks={[callback.__class__.__name__ for callback in callbacks]}, "
+            f"SupervisorCallbacks={[callback.__class__.__name__ for callback in self.supervisor_callbacks]}"
+        )
 
         return callbacks
 
@@ -364,7 +424,11 @@ class LangGraphAgent:
         if history is None:
             history = []
         set_llm_context(self.assistant, None, self.user)
-        logger.debug(f"Invoking workflow task. Agent={self.agent_name}, Input={workflow_input}, ChatHistory={history}")
+        logger.debug(
+            f"Invoking workflow task. Agent={self.agent_name}, "
+            f"Input={self._truncate_log_content(workflow_input)}, "
+            f"ChatHistory={self._serialize_messages_for_log(self._filter_history(self._transform_history(history)))}"
+        )
         try:
             inputs = self._get_inputs(workflow_input, history)
             inputs.update(args)
@@ -624,7 +688,7 @@ class LangGraphAgent:
         return "".join(chunks_collector), None
 
     def _invoke_agent(self, inputs) -> GenerationResult:
-        logger.debug(f"Invoking task. Agent={self.agent_name}. Inputs={inputs}")
+        logger.debug(f"Invoking task. Agent={self.agent_name}. Inputs={self._serialize_inputs_for_log(inputs)}")
         set_llm_context(self.assistant, None, self.user)
         try:
             output = self._stream_graph(inputs, config=self._get_run_config())
@@ -640,7 +704,9 @@ class LangGraphAgent:
                 tool_errors=self.tool_error_callback.tool_errors if self.tool_error_callback.has_errors() else None,
             )
 
-            logger.debug(f"Invoking task. Agent={self.agent_name}. Response={response}")
+            logger.debug(
+                f"Invoking task. Agent={self.agent_name}. Response={self._serialize_response_for_log(response)}"
+            )
             return response
         except Exception as e:
             user_message, _ = handle_agent_exception(e)
@@ -776,6 +842,10 @@ class LangGraphAgent:
                     )
         input_task = HumanMessage(content=user_input_content)
         agent_inputs = {"messages": [*history, input_task]}
+        logger.debug(
+            f"LangGraphAgent input payload. Agent={self.agent_name}, "
+            f"Messages={self._serialize_messages_for_log(agent_inputs['messages'])}"
+        )
 
         return agent_inputs
 
@@ -815,7 +885,11 @@ class LangGraphAgent:
             self._on_llm_end(response=message)
 
     def __parse_supervisor_update_type(self, value: dict):
-        messages = list(value.values())[0].get("messages", [])
+        state_update = next((item for item in value.values() if isinstance(item, dict)), None)
+        if state_update is None:
+            return
+
+        messages = state_update.get("messages", [])
         if not messages:
             return
         last_message = messages[-1]
@@ -1156,10 +1230,11 @@ class LangGraphAgent:
     def _transform_history(history: List[ChatMessage]) -> list:
         """Convert history to list of chain-compatible messages"""
         transformed_history = []
+        supports_rich_history = LangGraphAgent._is_conversation_replay_v2_enabled()
 
         for item in history:
-            # If already transformed (HumanMessage/AIMessage), keep as is
-            if isinstance(item, (HumanMessage, AIMessage)):
+            # If already transformed (HumanMessage/AIMessage/ToolMessage), keep as is
+            if supports_rich_history and isinstance(item, BaseMessage):
                 transformed_history.append(item)
             # Otherwise, transform ChatMessage to HumanMessage/AIMessage
             elif hasattr(item, 'role'):
@@ -1176,7 +1251,20 @@ class LangGraphAgent:
 
     @classmethod
     def _filter_history(cls, history: list) -> list:
-        return [item for item in history if item.content]
+        if not cls._is_conversation_replay_v2_enabled():
+            return [item for item in history if item.content]
+
+        filtered_history = []
+        for item in history:
+            if getattr(item, "content", None):
+                filtered_history.append(item)
+                continue
+            if isinstance(item, ToolMessage):
+                filtered_history.append(item)
+                continue
+            if isinstance(item, AIMessage) and getattr(item, "tool_calls", None):
+                filtered_history.append(item)
+        return filtered_history
 
     def set_thread_context(self, context: dict, parent_thought_id: str | None):
         self.thread_context = context
@@ -1190,6 +1278,32 @@ class LangGraphAgent:
             if hasattr(callback, "_current_thought"):
                 callback.set_current_thought()
                 callback._current_thought.author_type = ThoughtAuthorType.Agent.value
+
+    @staticmethod
+    def _serialize_messages_for_log(messages: list[Any]) -> str:
+        return serialize_messages_for_log(messages)
+
+    @staticmethod
+    def _serialize_tool_calls_for_log(tool_calls: list[dict]) -> list[dict[str, str | None]]:
+        return serialize_tool_calls_for_log(tool_calls)
+
+    @staticmethod
+    def _truncate_log_content(content: Any) -> str:
+        return truncate_log_content(content)
+
+    @classmethod
+    def _serialize_inputs_for_log(cls, inputs: dict) -> str:
+        payload = {}
+        for key, value in inputs.items():
+            if key == "messages" and isinstance(value, list):
+                payload[key] = json.loads(serialize_messages_for_log(value))
+                continue
+            payload[key] = truncate_log_content(str(value))
+        return json.dumps(payload, ensure_ascii=True, default=str)
+
+    @classmethod
+    def _serialize_response_for_log(cls, response: Any) -> str:
+        return truncate_log_content(str(response))
 
     @property
     def _task(self):

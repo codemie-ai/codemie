@@ -155,6 +155,8 @@ class GithubClient:
         try:
             # Get auth token and add to headers
             token = self.get_auth_token()
+            if not token:
+                raise ToolException("GitHub API request failed with status 401: Bad credentials")
             headers = headers.copy()
             headers["Authorization"] = f"Bearer {token}"
 

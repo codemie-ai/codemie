@@ -21,13 +21,15 @@ from dataclasses import dataclass
 from time import time
 from types import SimpleNamespace
 from typing import List
+
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from pydantic import BaseModel
 
 from fastapi import BackgroundTasks, Request, status
 from starlette.responses import StreamingResponse
 
 from codemie.chains.base import Thought, StreamedGenerationResult
-from codemie.configs import logger
+from codemie.configs import config, logger
 from codemie.core.ability import Ability, Action
 from codemie.core.dependecies import set_disable_prompt_cache
 from codemie.core.errors import ErrorDetailLevel
@@ -44,8 +46,19 @@ from codemie.rest_api.routers.utils import run_in_thread_pool
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.request_utils import extract_custom_headers
 from codemie.service.assistant_service import AssistantService
+from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
+from codemie.service.conversation.history_projection_service import (
+    NATIVE_TOOLS_MODE,
+    PLAIN_CHAT_MODE,
+    TEXT_LEDGER_MODE,
+    TOOL_REPLAY_TYPE,
+    ConversationHistoryProjectionService,
+)
 from codemie.service.background_tasks_service import BackgroundTasksService
+from codemie.service.constants import AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY
 from codemie.service.conversation_service import ConversationService
+from codemie.service.dynamic_config_service import DynamicConfigService
+from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.request_summary_manager import request_summary_manager
 
 
@@ -105,12 +118,18 @@ class AssistantRequestHandler(ABC):
         Raises:
             ExtendedHTTPException: When conversation is not found or access is denied
         """
-        # Skip if history is already provided or conversation_id is missing
-        if request.history or not request.conversation_id:
+        if not self._is_conversation_replay_v2_enabled():
+            self._populate_conversation_history_legacy(request)
+            return
+
+        if not request.conversation_id:
+            logger.debug("Skipping conversation replay history population because conversation_id is missing.")
+            return
+
+        if request.history and not self._should_replace_request_history(request.history):
             logger.debug(
-                f"History is already provided or conversation_id is missing. "
-                f"{len(request.history)} history messages, "
-                f"conversation_id: {request.conversation_id or 'None'}, "
+                f"Keeping request-provided history. ConversationId={request.conversation_id}, "
+                f"HistoryMessages={len(request.history)}"
             )
             return
 
@@ -136,7 +155,10 @@ class AssistantRequestHandler(ABC):
 
         try:
             # Update request with conversation history
-            request.history = conversation.to_chat_history()
+            request.history = ConversationHistoryProjectionService.build_for_request(
+                conversation=conversation,
+                mode=self._resolve_history_projection_mode(request),
+            )
 
             logger.debug(
                 f"Retrieved conversation history for conversation_id: {request.conversation_id}, "
@@ -154,6 +176,98 @@ class AssistantRequestHandler(ABC):
                 details=f"An error occurred while processing conversation history: {str(e)}",
                 help="Please try again or contact support if the issue persists.",
             ) from e
+
+    def _populate_conversation_history_legacy(self, request: AssistantChatRequest) -> None:
+        if request.history or not request.conversation_id:
+            logger.debug(
+                f"History is already provided or conversation_id is missing. "
+                f"{len(request.history)} history messages, "
+                f"conversation_id: {request.conversation_id or 'None'}, "
+            )
+            return
+
+        conversation = Conversation.find_by_id(request.conversation_id)
+
+        if not conversation:
+            logger.debug(f"Conversation {request.conversation_id} not found for user {self.user.id}")
+            return
+
+        if not Ability(self.user).can(Action.READ, conversation):
+            logger.warning(
+                f"User {self.user.id} denied access to conversation {request.conversation_id} "
+                f"owned by {conversation.user_id}"
+            )
+            raise ExtendedHTTPException(
+                code=status.HTTP_403_FORBIDDEN,
+                message="Access denied",
+                details=f"You don't have permission to access conversation {request.conversation_id}.",
+                help="Please ensure you have the correct permissions or contact the conversation owner.",
+            )
+
+        try:
+            request.history = conversation.to_chat_history()
+            logger.debug(
+                f"Retrieved conversation history for conversation_id: {request.conversation_id}, "
+                f"messages: {len(request.history)}, user_id: {self.user.id}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Unexpected error converting conversation history for {request.conversation_id}: {str(e)}",
+                exc_info=True,
+            )
+            raise ExtendedHTTPException(
+                code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                message="Failed to retrieve conversation history",
+                details=f"An error occurred while processing conversation history: {str(e)}",
+                help="Please try again or contact support if the issue persists.",
+            ) from e
+
+    @staticmethod
+    def _should_replace_request_history(history: list | str) -> bool:
+        """Return True when request history is plain chat and should be replaced by projected conversation history."""
+        if not isinstance(history, list):
+            logger.info("Replacing request history because it is not a list of model messages.")
+            return True
+
+        if not history:
+            logger.debug("Replacing request history because it is empty.")
+            return True
+
+        for item in history:
+            if isinstance(item, ToolMessage):
+                logger.debug("Keeping request history because it already contains ToolMessage entries.")
+                return False
+            if isinstance(item, AIMessage) and getattr(item, "tool_calls", None):
+                logger.debug("Keeping request history because it already contains AI tool calls.")
+                return False
+            if isinstance(item, BaseMessage):
+                continue
+
+        logger.info("Replacing request history because it only contains plain chat entries.")
+        return True
+
+    def _resolve_history_projection_mode(self, request: AssistantChatRequest) -> str:
+        """Select the safest replay mode for the active assistant/model."""
+        if BedrockOrchestratorService.is_bedrock_assistant(self.assistant):
+            logger.debug(
+                f"Selected conversation replay mode. AssistantId={self.assistant.id}, "
+                f"ConversationId={request.conversation_id}, Mode={PLAIN_CHAT_MODE}"
+            )
+            return PLAIN_CHAT_MODE
+
+        llm_model = request.llm_model or self.assistant.llm_model_type
+        if llm_model in llm_service.get_react_llms():
+            logger.debug(
+                f"Selected conversation replay mode. AssistantId={self.assistant.id}, "
+                f"ConversationId={request.conversation_id}, LLMModel={llm_model}, Mode={TEXT_LEDGER_MODE}"
+            )
+            return TEXT_LEDGER_MODE
+
+        logger.debug(
+            f"Selected conversation replay mode. AssistantId={self.assistant.id}, "
+            f"ConversationId={request.conversation_id}, LLMModel={llm_model}, Mode={NATIVE_TOOLS_MODE}"
+        )
+        return NATIVE_TOOLS_MODE
 
     def save_chat_history(self, data: ChatHistoryData) -> None:
         """Public method to save chat history"""
@@ -191,6 +305,21 @@ class AssistantRequestHandler(ABC):
 
     @staticmethod
     def _filter_thoughts(thoughts: List[Thought]):
+        if not AssistantRequestHandler._is_conversation_replay_v2_enabled():
+            return [
+                Thought(
+                    id=thought.get('id'),
+                    message=thought.get('message'),
+                    author_name=thought.get('author_name'),
+                    author_type=thought.get('author_type'),
+                    children=thought.get('children') if thought.get('children') else [],
+                    input_text=thought.get('input_text', ''),
+                    error=thought.get('error', False),
+                )
+                for thought in thoughts
+                if thought.get('message', '')
+            ]
+
         return [
             Thought(
                 id=thought.get('id'),
@@ -200,10 +329,25 @@ class AssistantRequestHandler(ABC):
                 children=thought.get('children') if thought.get('children') else [],
                 input_text=thought.get('input_text', ''),
                 error=thought.get('error', False),
+                metadata=thought.get('metadata') or {},
+                output_format=thought.get('output_format'),
+                in_progress=thought.get('in_progress', False),
             )
             for thought in thoughts
-            if thought.get('message', '')
+            if (
+                thought.get('message')
+                or thought.get('input_text')
+                or thought.get('error', False)
+                or (thought.get('metadata') or {}).get('replay_type') == TOOL_REPLAY_TYPE
+            )
         ]
+
+    @staticmethod
+    def _is_conversation_replay_v2_enabled() -> bool:
+        return DynamicConfigService.get_bool_value_safe(
+            AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY,
+            default=config.AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED,
+        )
 
 
 class StandardAssistantHandler(AssistantRequestHandler):
