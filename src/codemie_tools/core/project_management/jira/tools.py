@@ -45,7 +45,7 @@ MAX_IMAGES_PER_RESPONSE: int = 5
 SINGLE_ISSUE_PATTERN: str = r"/rest/api/\d+/issue/[A-Za-z]+-\d+$"
 
 
-class JiraMultimodalResponse:
+class JiraMultimodalResponse(BaseModel):
     """Container for Jira responses that include downloadable image attachments.
 
     Carries the textual API response alongside attachment metadata so that
@@ -53,9 +53,8 @@ class JiraMultimodalResponse:
     via a multimodal LLM, returning the analysis as text.
     """
 
-    def __init__(self, text: str, image_attachments: list[dict]) -> None:
-        self.text = text
-        self.image_attachments = image_attachments
+    text: str
+    image_attachments: list[dict]
 
     def __str__(self) -> str:
         return self.text

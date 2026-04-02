@@ -80,7 +80,7 @@ class TestJiraMultimodalResponse:
     def test_holds_attachments(self) -> None:
         atts = [{"filename": "x.png"}]
         resp = JiraMultimodalResponse(text="t", image_attachments=atts)
-        assert resp.image_attachments is atts
+        assert resp.image_attachments == atts
 
 
 class TestIsSingleIssueRequest:
@@ -310,7 +310,7 @@ class TestLimitOutputContent:
         result, token_count = tool._limit_output_content(output)
 
         assert isinstance(result, JiraMultimodalResponse)
-        assert result.image_attachments is atts
+        assert result.image_attachments == atts
         assert "short text" in result.text
 
     def test_passes_string_to_base_class(self, tool: GenericJiraIssueTool) -> None:
