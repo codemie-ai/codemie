@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Iterator
 from urllib.parse import unquote, urlparse
 
@@ -147,6 +148,7 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
         max_file_size_mb: int = 50,
         files_filter: str = "",
         request_uuid: str | None = None,
+        modified_since: datetime | None = None,
     ):
         """
         Initialize SharePoint loader.
@@ -193,6 +195,8 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
         self.files_filter = files_filter or ""
         self.request_uuid = request_uuid
+
+        self.modified_since = modified_since
 
         self._access_token: str | None = None
         self._site_id: str | None = None
@@ -400,6 +404,23 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
             "modified": page_data.get("lastModifiedDateTime"),
         }
 
+    def _process_page(self, site_id: str, page: dict) -> dict | None:
+        """Fetch details, extract content, and apply modified_since for a single page.
+
+        Returns a page dict to yield, or None if the page should be skipped.
+        """
+        if not self._should_process_page(page):
+            return None
+        page_data = self._fetch_page_details(site_id, page.get("id"), page)
+        content = self._extract_page_content(page_data)
+        if not content:
+            logger.warning(f"Page has no content: {page_data.get('title', '')} ({page_data.get('webUrl', '')})")
+            return None
+        if self._is_not_modified_since(page_data.get("lastModifiedDateTime")):
+            logger.debug(f"Skipping unmodified page: {page_data.get('title', '')}")
+            return None
+        return self._create_page_dict(page_data, content)
+
     def _load_site_pages(self) -> Iterator[dict]:
         """
         Load site pages from SharePoint.
@@ -420,19 +441,10 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
 
             for page in data.get("value", []):
                 pages_found += 1
-
-                if not self._should_process_page(page):
-                    continue
-
-                page_id = page.get("id")
-                page_data = self._fetch_page_details(site_id, page_id, page)
-                content = self._extract_page_content(page_data)
-
-                if content:
+                page_dict = self._process_page(site_id, page)
+                if page_dict:
                     pages_with_content += 1
-                    yield self._create_page_dict(page_data, content)
-                else:
-                    logger.warning(f"Page has no content: {page_data.get('title', '')} ({page_data.get('webUrl', '')})")
+                    yield page_dict
 
             url = data.get(self.ODATA_NEXT_LINK)
 
@@ -624,6 +636,25 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
             return f"{folder_in_drive}/{file_name}"
         return file_name
 
+    def _should_skip_by_files_filter(self, item: dict, file_name: str) -> bool:
+        """Return True if the file matches an exclude pattern or misses a required include pattern."""
+        if not self.files_filter.strip():
+            return False
+        include_spec, exclude_spec, has_include_patterns = _create_pathspec_from_filter(self.files_filter)
+        # Build two candidate paths so users can write the filter with or without the library name prefix.
+        full_path = self._get_file_relative_path(item)
+        in_lib_path = self._get_file_library_relative_path(item)
+        logger.debug(
+            f"files_filter match: full_path={full_path!r} in_lib_path={in_lib_path!r} filter={self.files_filter!r}"
+        )
+        if exclude_spec.match_file(full_path) or exclude_spec.match_file(in_lib_path):
+            logger.debug(f"Skipping file excluded by files_filter: {file_name}")
+            return True
+        if has_include_patterns and not (include_spec.match_file(full_path) or include_spec.match_file(in_lib_path)):
+            logger.debug(f"Skipping file not matching files_filter include patterns: {file_name}")
+            return True
+        return False
+
     def _should_skip_file(self, item: dict) -> tuple[bool, str | None]:
         """
         Check if file should be skipped.
@@ -631,6 +662,9 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
         Returns:
             (should_skip, skip_reason)
         """
+        if self._is_not_modified_since(item.get("lastModifiedDateTime")):
+            return True, "not_modified"
+
         file_size = item.get("size", 0)
         file_name = item.get("name", "")
         file_ext = "." + file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
@@ -646,26 +680,8 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
             return True, "extension"
 
         # Apply user-defined files filter (gitignore-style patterns)
-        if self.files_filter.strip():
-            include_spec, exclude_spec, has_include_patterns = _create_pathspec_from_filter(self.files_filter)
-            # Build two candidate paths:
-            # - full:    "Shared Documents/CodeMie Dev team/testing/file.xlsx"
-            # - in_lib:  "CodeMie Dev team/testing/file.xlsx"
-            # We match against both so users can write the filter either way
-            # (with or without the document library name as a prefix).
-            full_path = self._get_file_relative_path(item)
-            in_lib_path = self._get_file_library_relative_path(item)
-            logger.debug(
-                f"files_filter match: full_path={full_path!r} in_lib_path={in_lib_path!r} filter={self.files_filter!r}"
-            )
-            if exclude_spec.match_file(full_path) or exclude_spec.match_file(in_lib_path):
-                logger.debug(f"Skipping file excluded by files_filter: {file_name}")
-                return True, "files_filter"
-            if has_include_patterns and not (
-                include_spec.match_file(full_path) or include_spec.match_file(in_lib_path)
-            ):
-                logger.debug(f"Skipping file not matching files_filter include patterns: {file_name}")
-                return True, "files_filter"
+        if self._should_skip_by_files_filter(item, file_name):
+            return True, "files_filter"
 
         # Check path filter
         if self.path_filter and self.path_filter != "*":
@@ -855,6 +871,9 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
                 break
 
             for item in items_data.get("value", []):
+                if self._is_not_modified_since(item.get("lastModifiedDateTime")):
+                    logger.debug(f"Skipping unmodified list item: {item.get('id')}")
+                    continue
                 fields = item.get("fields", {})
                 if fields:
                     content = self._build_list_item_content(list_name, fields)
@@ -900,6 +919,23 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
             logger.info(f"Loading user-created list: {list_name}")
 
             yield from self._process_list_items(site_id, list_id, list_name)
+
+    def _is_not_modified_since(self, modified_str: str | None) -> bool:
+        """Return True when the item has NOT changed after self.modified_since.
+
+        An item without a modification timestamp is always considered changed
+        (safe default: include it).
+        """
+        if self.modified_since is None or not modified_str:
+            return False
+        try:
+            item_dt = datetime.fromisoformat(modified_str.rstrip("Z")).replace(tzinfo=timezone.utc)
+            cutoff = (
+                self.modified_since if self.modified_since.tzinfo else self.modified_since.replace(tzinfo=timezone.utc)
+            )
+            return item_dt <= cutoff
+        except (ValueError, TypeError):
+            return False
 
     def _matches_path_filter(self, url: str) -> bool:
         """

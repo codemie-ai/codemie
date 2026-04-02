@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from codemie.triggers.bindings.cron import Cron, CronTrigger, Job, invoke_assistant, invoke_workflow, reindex_code
 from codemie.triggers.bindings.utils import validate_datasource
+from codemie.triggers.actors.datasource import resume_stale_datasource  # noqa: F401 — imported for patch path resolution
 
 
 @pytest.fixture
@@ -264,3 +265,142 @@ def test_invalid_resource_type(cron_instance, mock_setting):
     ):
         result = cron_instance._Cron__valid_setting(mock_setting)
         assert result is not False
+
+
+# ---------------------------------------------------------------------------
+# Tests for the stale-indexing watchdog (__watch_stale_indexing / __run_resume)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cron_watchdog():
+    """Return a fresh Cron instance without starting the scheduler."""
+    return Cron()
+
+
+class TestWatchStaleIndexing:
+    """Tests for Cron.__watch_stale_indexing."""
+
+    def test_no_stale_jobs_does_nothing(self, cron_watchdog):
+        """When no stale jobs are found, no work is done."""
+        with patch("codemie.triggers.bindings.cron.IndexInfo.get_stale_in_progress", return_value=[]):
+            cron_watchdog._Cron__watch_stale_indexing()
+
+        assert len(cron_watchdog._resuming_ids) == 0
+
+    def test_already_resuming_id_is_skipped(self, cron_watchdog):
+        """An index already in _resuming_ids is skipped without a DB claim attempt."""
+        mock_index = MagicMock()
+        mock_index.id = "idx-already"
+        cron_watchdog._resuming_ids.add("idx-already")
+
+        with (
+            patch("codemie.triggers.bindings.cron.IndexInfo.get_stale_in_progress", return_value=[mock_index]),
+            patch("codemie.triggers.bindings.cron.IndexInfo.try_claim_for_resume") as mock_claim,
+        ):
+            cron_watchdog._Cron__watch_stale_indexing()
+
+        mock_claim.assert_not_called()
+        # id is still registered because it was pre-existing
+        assert "idx-already" in cron_watchdog._resuming_ids
+
+    def test_db_claim_failure_removes_id(self, cron_watchdog):
+        """When DB claim raises, the id is removed from _resuming_ids."""
+        mock_index = MagicMock()
+        mock_index.id = "idx-fail"
+
+        with (
+            patch("codemie.triggers.bindings.cron.IndexInfo.get_stale_in_progress", return_value=[mock_index]),
+            patch(
+                "codemie.triggers.bindings.cron.IndexInfo.try_claim_for_resume",
+                side_effect=Exception("DB error"),
+            ),
+        ):
+            cron_watchdog._Cron__watch_stale_indexing()
+
+        assert "idx-fail" not in cron_watchdog._resuming_ids
+
+    def test_claim_lost_removes_id(self, cron_watchdog):
+        """When another pod claims first (rowcount == 0), id is removed."""
+        mock_index = MagicMock()
+        mock_index.id = "idx-lost"
+
+        with (
+            patch("codemie.triggers.bindings.cron.IndexInfo.get_stale_in_progress", return_value=[mock_index]),
+            patch("codemie.triggers.bindings.cron.IndexInfo.try_claim_for_resume", return_value=False),
+        ):
+            cron_watchdog._Cron__watch_stale_indexing()
+
+        assert "idx-lost" not in cron_watchdog._resuming_ids
+
+    def test_fresh_index_vanished_removes_id(self, cron_watchdog):
+        """When IndexInfo disappears after claim, id is removed."""
+        mock_index = MagicMock()
+        mock_index.id = "idx-gone"
+
+        with (
+            patch("codemie.triggers.bindings.cron.IndexInfo.get_stale_in_progress", return_value=[mock_index]),
+            patch("codemie.triggers.bindings.cron.IndexInfo.try_claim_for_resume", return_value=True),
+            patch("codemie.triggers.bindings.cron.IndexInfo.find_by_id", return_value=None),
+        ):
+            cron_watchdog._Cron__watch_stale_indexing()
+
+        assert "idx-gone" not in cron_watchdog._resuming_ids
+
+    def test_successful_claim_submits_to_executor(self, cron_watchdog):
+        """A successfully claimed stale job is submitted to the thread-pool executor."""
+        mock_index = MagicMock()
+        mock_index.id = "idx-ok"
+        fresh_index = MagicMock()
+
+        with (
+            patch("codemie.triggers.bindings.cron.IndexInfo.get_stale_in_progress", return_value=[mock_index]),
+            patch("codemie.triggers.bindings.cron.IndexInfo.try_claim_for_resume", return_value=True),
+            patch("codemie.triggers.bindings.cron.IndexInfo.find_by_id", return_value=fresh_index),
+            patch.object(cron_watchdog._watchdog_executor, "submit") as mock_submit,
+        ):
+            cron_watchdog._Cron__watch_stale_indexing()
+
+        mock_submit.assert_called_once()
+        # The id is still in _resuming_ids (removed only after __run_resume finishes)
+        assert "idx-ok" in cron_watchdog._resuming_ids
+
+
+class TestRunResume:
+    """Tests for Cron.__run_resume."""
+
+    def test_removes_id_on_success(self, cron_watchdog):
+        """ID is removed from _resuming_ids after successful resume."""
+        index_info = MagicMock()
+        index_info.id = "idx-s1"
+        cron_watchdog._resuming_ids.add("idx-s1")
+
+        with patch("codemie.triggers.bindings.cron.resume_stale_datasource"):
+            cron_watchdog._Cron__run_resume(index_info)
+
+        assert "idx-s1" not in cron_watchdog._resuming_ids
+
+    def test_removes_id_even_on_exception(self, cron_watchdog):
+        """ID is removed from _resuming_ids even when resume_stale_datasource raises."""
+        index_info = MagicMock()
+        index_info.id = "idx-e1"
+        cron_watchdog._resuming_ids.add("idx-e1")
+
+        with patch(
+            "codemie.triggers.bindings.cron.resume_stale_datasource",
+            side_effect=Exception("resume failed"),
+        ):
+            cron_watchdog._Cron__run_resume(index_info)
+
+        assert "idx-e1" not in cron_watchdog._resuming_ids
+
+    def test_calls_resume_stale_datasource(self, cron_watchdog):
+        """Delegates to resume_stale_datasource with the index_info."""
+        index_info = MagicMock()
+        index_info.id = "idx-d1"
+        cron_watchdog._resuming_ids.add("idx-d1")
+
+        with patch("codemie.triggers.bindings.cron.resume_stale_datasource") as mock_resume:
+            cron_watchdog._Cron__run_resume(index_info)
+
+        mock_resume.assert_called_once_with(index_info)

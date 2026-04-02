@@ -551,3 +551,61 @@ def test_get_index_elasticsearch_stats_not_available(mock_find_by_id, mock_can, 
 
     assert response.status_code == 404
     assert "not available" in response.json()['error']['message'].lower()
+
+
+# ---------------------------------------------------------------------------
+# Tests for _parse_jwt_exp (JWT expiry extraction helper)
+# ---------------------------------------------------------------------------
+
+
+class TestParseJwtExp:
+    """Tests for the _parse_jwt_exp helper in index router."""
+
+    def test_valid_jwt_returns_exp(self):
+        """Returns exp claim from a real JWT payload."""
+        import base64
+        import json
+        from codemie.rest_api.routers.index import _parse_jwt_exp
+
+        header = base64.b64encode(b'{"alg":"RS256"}').decode()
+        payload = base64.b64encode(json.dumps({"exp": 9999999999}).encode()).decode()
+        token = f"{header}.{payload}.sig"
+
+        result = _parse_jwt_exp(token)
+
+        assert result == 9999999999
+
+    def test_jwt_without_exp_falls_back_to_now_plus_hour(self):
+        """Falls back to approx. current time + 3600 when exp is missing."""
+        import base64
+        import json
+        import time
+        from codemie.rest_api.routers.index import _parse_jwt_exp
+
+        header = base64.b64encode(b'{"alg":"RS256"}').decode()
+        payload = base64.b64encode(json.dumps({"sub": "user"}).encode()).decode()
+        token = f"{header}.{payload}.sig"
+
+        before = int(time.time()) + 3600
+        result = _parse_jwt_exp(token)
+        after = int(time.time()) + 3600
+
+        assert before <= result <= after + 5  # 5 second tolerance
+
+    def test_invalid_token_falls_back(self):
+        """Malformed token falls back to now + 3600."""
+        import time
+        from codemie.rest_api.routers.index import _parse_jwt_exp
+
+        result = _parse_jwt_exp("not-a-jwt")
+
+        assert result >= int(time.time()) + 3590  # within tolerance
+
+    def test_empty_token_falls_back(self):
+        """Empty token string falls back to now + 3600."""
+        import time
+        from codemie.rest_api.routers.index import _parse_jwt_exp
+
+        result = _parse_jwt_exp("")
+
+        assert result >= int(time.time()) + 3590

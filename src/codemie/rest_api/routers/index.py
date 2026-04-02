@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 import json
 import io
+import time
 from typing import List, Optional
 
 from elasticsearch.exceptions import NotFoundError
@@ -117,6 +119,21 @@ from codemie.service.index.index_encrypted_settings_service import (
     IndexEncryptedSettingsService,
     IndexEncryptedSettingsError,
 )
+
+
+def _parse_jwt_exp(token: str) -> int:
+    """Decode a JWT payload without signature verification and return the exp claim.
+
+    Falls back to one hour from now if the token cannot be decoded or has no exp claim.
+    """
+    try:
+        payload_b64 = token.split(".")[1]
+        # Add padding so base64 doesn't complain about incorrect lengths.
+        payload = json.loads(base64.b64decode(payload_b64 + "=="))
+        return int(payload["exp"])
+    except Exception:
+        return int(time.time()) + 3600
+
 
 # Error message constants
 CHECK_PERMISSIONS_MESSAGE = "Please check your user permissions or contact an administrator for assistance."
@@ -903,7 +920,11 @@ def index_knowledge_base_sharepoint(
                 details="access_token is required when auth_type is 'oauth_codemie' or 'oauth_custom'",
                 help=INVALID_INPUT_PARAMETERS_HELP,
             )
-        sharepoint_creds = SharePointCredentials(auth_type="oauth", access_token=request.access_token)
+        sharepoint_creds = SharePointCredentials(
+            auth_type="oauth",
+            access_token=request.access_token,
+            expires_at=_parse_jwt_exp(request.access_token),
+        )
     else:
         sharepoint_creds = SettingsService.get_sharepoint_creds(
             user_id=user.id,
@@ -1562,7 +1583,11 @@ def _get_sharepoint_creds_for_reindex(
                 details="access_token is required when auth_type is 'oauth_codemie' or 'oauth_custom'",
                 help=INVALID_INPUT_PARAMETERS_HELP,
             )
-        creds = SharePointCredentials(auth_type="oauth", access_token=request.access_token)
+        creds = SharePointCredentials(
+            auth_type="oauth",
+            access_token=request.access_token,
+            expires_at=_parse_jwt_exp(request.access_token),
+        )
     else:
         creds = SettingsService.get_sharepoint_creds(
             user_id=user.id,

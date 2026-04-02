@@ -671,3 +671,239 @@ class TestSharePointProcessorValidateCredsExtended:
                 path_filter="*",
                 credentials=sharepoint_credentials,
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests for _on_process_end (OAuth token cleanup)
+# ---------------------------------------------------------------------------
+
+
+class TestSharePointProcessorOnProcessEnd:
+    """Tests for SharePointDatasourceProcessor._on_process_end."""
+
+    def test_clears_token_for_oauth_codemie(self, sharepoint_processor):
+        """_on_process_end clears token & expires_at for oauth_codemie auth type."""
+        processor = sharepoint_processor
+        processor.index.sharepoint = MagicMock()
+        processor.index.sharepoint.auth_type = "oauth_codemie"
+        processor.index.sharepoint.access_token = "secret-token"
+        processor.index.sharepoint.expires_at = 9999999999
+        processor.index.update = MagicMock()
+
+        processor._on_process_end()
+
+        assert processor.index.sharepoint.access_token == ""
+        assert processor.index.sharepoint.expires_at == 0
+        processor.index.update.assert_called_once()
+
+    def test_clears_token_for_oauth_custom(self, sharepoint_processor):
+        """_on_process_end clears token & expires_at for oauth_custom auth type."""
+        processor = sharepoint_processor
+        processor.index.sharepoint = MagicMock()
+        processor.index.sharepoint.auth_type = "oauth_custom"
+        processor.index.sharepoint.access_token = "custom-token"
+        processor.index.sharepoint.expires_at = 1234567890
+        processor.index.update = MagicMock()
+
+        processor._on_process_end()
+
+        assert processor.index.sharepoint.access_token == ""
+        assert processor.index.sharepoint.expires_at == 0
+        processor.index.update.assert_called_once()
+
+    def test_no_op_for_integration_auth_type(self, sharepoint_processor):
+        """_on_process_end is a no-op for integration auth type."""
+        processor = sharepoint_processor
+        processor.index.sharepoint = MagicMock()
+        processor.index.sharepoint.auth_type = "integration"
+        processor.index.update = MagicMock()
+
+        processor._on_process_end()
+
+        processor.index.update.assert_not_called()
+
+    def test_no_op_when_index_is_none(self, sharepoint_processor):
+        """_on_process_end is safe when index is None."""
+        processor = sharepoint_processor
+        processor.index = None
+
+        processor._on_process_end()  # should not raise
+
+    def test_no_op_when_sharepoint_is_none(self, sharepoint_processor):
+        """_on_process_end is safe when index.sharepoint is None."""
+        processor = sharepoint_processor
+        processor.index.sharepoint = None
+        processor.index.update = MagicMock()
+
+        processor._on_process_end()
+
+        processor.index.update.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests for _cleanup_data_for_incremental_reindex
+# ---------------------------------------------------------------------------
+
+
+class TestSharePointProcessorCleanupIncremental:
+    """Tests for SharePointDatasourceProcessor._cleanup_data_for_incremental_reindex."""
+
+    def test_deletes_stale_chunks_for_given_sources(self, sharepoint_processor):
+        """Calls delete_by_query with the document sources."""
+        from langchain_core.documents import Document
+
+        processor = sharepoint_processor
+        processor.client = MagicMock()
+        docs = [
+            Document(page_content="c1", metadata={"source": "https://sp.com/page1"}),
+            Document(page_content="c2", metadata={"source": "https://sp.com/page2"}),
+        ]
+
+        processor._cleanup_data_for_incremental_reindex(docs)
+
+        processor.client.delete_by_query.assert_called_once()
+        call_kwargs = processor.client.delete_by_query.call_args[1]
+        assert "https://sp.com/page1" in call_kwargs["body"]["query"]["terms"]["metadata.source.keyword"]
+        assert "https://sp.com/page2" in call_kwargs["body"]["query"]["terms"]["metadata.source.keyword"]
+
+    def test_no_call_when_no_sources(self, sharepoint_processor):
+        """Returns early without DB call when docs have no source metadata."""
+        from langchain_core.documents import Document
+
+        processor = sharepoint_processor
+        processor.client = MagicMock()
+        docs = [Document(page_content="c1", metadata={})]
+
+        processor._cleanup_data_for_incremental_reindex(docs)
+
+        processor.client.delete_by_query.assert_not_called()
+
+    def test_no_call_when_empty_list(self, sharepoint_processor):
+        """Returns early without DB call when docs list is empty."""
+        processor = sharepoint_processor
+        processor.client = MagicMock()
+
+        processor._cleanup_data_for_incremental_reindex([])
+
+        processor.client.delete_by_query.assert_not_called()
+
+    def test_logs_error_on_es_exception(self, sharepoint_processor):
+        """Logs error but does not re-raise when delete_by_query fails."""
+        from langchain_core.documents import Document
+
+        processor = sharepoint_processor
+        processor.client = MagicMock()
+        processor.client.delete_by_query.side_effect = Exception("ES down")
+        docs = [Document(page_content="c", metadata={"source": "https://sp.com/doc"})]
+
+        # Should not raise
+        processor._cleanup_data_for_incremental_reindex(docs)
+
+        processor.client.delete_by_query.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tests for _init_loader — modified_since parameter
+# ---------------------------------------------------------------------------
+
+
+class TestSharePointProcessorInitLoaderModifiedSince:
+    """Tests for modified_since injection in _init_loader."""
+
+    @patch("codemie.datasource.sharepoint.sharepoint_datasource_processor.SharePointLoader")
+    def test_no_modified_since_when_not_incremental(self, mock_loader_class, sharepoint_processor):
+        """No modified_since when is_incremental_reindex is False."""
+        processor = sharepoint_processor
+        processor.is_incremental_reindex = False
+
+        processor._init_loader()
+
+        _, kwargs = mock_loader_class.call_args
+        assert kwargs.get("modified_since") is None
+
+    @patch("codemie.datasource.sharepoint.sharepoint_datasource_processor.SharePointLoader")
+    def test_uses_last_reindex_date_for_incremental(self, mock_loader_class, sharepoint_processor):
+        """Uses index.last_reindex_date when is_incremental_reindex is True."""
+        from datetime import datetime
+
+        processor = sharepoint_processor
+        processor.is_incremental_reindex = True
+        last_date = datetime(2024, 5, 1)
+        processor.index.last_reindex_date = last_date
+        processor.index.update_date = datetime(2024, 4, 1)
+
+        processor._init_loader()
+
+        _, kwargs = mock_loader_class.call_args
+        assert kwargs.get("modified_since") == last_date
+
+    @patch("codemie.datasource.sharepoint.sharepoint_datasource_processor.SharePointLoader")
+    def test_falls_back_to_update_date_when_no_last_reindex(self, mock_loader_class, sharepoint_processor):
+        """Falls back to index.update_date when last_reindex_date is None."""
+        from datetime import datetime
+
+        processor = sharepoint_processor
+        processor.is_incremental_reindex = True
+        processor.index.last_reindex_date = None
+        update_date = datetime(2024, 4, 1)
+        processor.index.update_date = update_date
+
+        processor._init_loader()
+
+        _, kwargs = mock_loader_class.call_args
+        assert kwargs.get("modified_since") == update_date
+
+
+# ---------------------------------------------------------------------------
+# Tests for _encrypt_oauth_token / _decrypt_oauth_token
+# ---------------------------------------------------------------------------
+
+
+class TestEncryptDecryptOauthToken:
+    """Tests for the module-level _encrypt_oauth_token and _decrypt_oauth_token helpers."""
+
+    def test_encrypt_empty_token_returns_empty(self):
+        """Encrypting an empty token returns empty string without calling service."""
+        from codemie.datasource.sharepoint.sharepoint_datasource_processor import _encrypt_oauth_token
+
+        with patch("codemie.datasource.sharepoint.sharepoint_datasource_processor.EncryptionFactory") as mock_factory:
+            result = _encrypt_oauth_token("")
+        assert result == ""
+        mock_factory.get_current_encryption_service.assert_not_called()
+
+    def test_encrypt_non_empty_token_calls_service(self):
+        """Encrypting a non-empty token delegates to EncryptionFactory."""
+        from codemie.datasource.sharepoint.sharepoint_datasource_processor import _encrypt_oauth_token
+
+        with patch("codemie.datasource.sharepoint.sharepoint_datasource_processor.EncryptionFactory") as mock_factory:
+            mock_service = MagicMock()
+            mock_service.encrypt.return_value = "encrypted-value"
+            mock_factory.get_current_encryption_service.return_value = mock_service
+
+            result = _encrypt_oauth_token("plain-token")
+
+        assert result == "encrypted-value"
+        mock_service.encrypt.assert_called_once_with("plain-token")
+
+    def test_decrypt_empty_token_returns_empty(self):
+        """Decrypting an empty token returns empty string without calling service."""
+        from codemie.datasource.sharepoint.sharepoint_datasource_processor import _decrypt_oauth_token
+
+        with patch("codemie.datasource.sharepoint.sharepoint_datasource_processor.EncryptionFactory") as mock_factory:
+            result = _decrypt_oauth_token("")
+        assert result == ""
+        mock_factory.get_current_encryption_service.assert_not_called()
+
+    def test_decrypt_non_empty_token_calls_service(self):
+        """Decrypting a non-empty token delegates to EncryptionFactory."""
+        from codemie.datasource.sharepoint.sharepoint_datasource_processor import _decrypt_oauth_token
+
+        with patch("codemie.datasource.sharepoint.sharepoint_datasource_processor.EncryptionFactory") as mock_factory:
+            mock_service = MagicMock()
+            mock_service.decrypt.return_value = "plain-token"
+            mock_factory.get_current_encryption_service.return_value = mock_service
+
+            result = _decrypt_oauth_token("encrypted-value")
+
+        assert result == "plain-token"
+        mock_service.decrypt.assert_called_once_with("encrypted-value")

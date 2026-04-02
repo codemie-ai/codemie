@@ -130,6 +130,8 @@ class StorageConfig(BaseModel):
     indexing_error_retry_wait_max_seconds: int
     indexing_threads_count: int
     processed_documents_threshold: int  # Max amount of processed documents to store in db
+    stale_indexing_threshold_seconds: int
+    stale_indexing_resume_batch_size: int
 
 
 class Config(BaseModel):

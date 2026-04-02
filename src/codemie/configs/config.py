@@ -234,6 +234,7 @@ class Config(BaseSettings):
     KUBERNETES_API_TOKEN: str = ""
 
     TRIGGER_ENGINE_ENABLED: bool = False
+    STALE_INDEXING_WATCHDOG_ENABLED: bool = True
     SCHEDULER_PROMPT_SIZE_LIMIT: int = 4000
 
     NATS_PLUGIN_KEY_CHECK_ENABLED: bool = False

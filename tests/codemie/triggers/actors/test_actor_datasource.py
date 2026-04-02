@@ -395,3 +395,394 @@ def test_reindex_google(
         project_name,
         resource_name,
     )
+
+
+# ---------------------------------------------------------------------------
+# Tests for resume_stale_datasource and its helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_index_info(index_type: str, index_id: str = "idx-1") -> MagicMock:
+    """Build a minimal mock IndexInfo for watchdog resume tests."""
+    mock_info = MagicMock(spec=IndexInfo)
+    mock_info.id = index_id
+    mock_info.index_type = index_type
+    mock_info.repo_name = "test-repo"
+    mock_info.project_name = "test-project"
+    mock_info.description = "desc"
+    mock_info.project_space_visible = False
+    mock_info.embeddings_model = "embed-model"
+    mock_info.setting_id = "setting-123"
+    mock_info.created_by = MagicMock(id="user-1")
+    mock_info.google_doc_link = None
+    mock_info.confluence = None
+    mock_info.jira = None
+    mock_info.sharepoint = None
+    mock_info.xray = None
+    return mock_info
+
+
+class TestResumeStaleDataSource:
+    """Tests for resume_stale_datasource dispatch function."""
+
+    def test_skips_unsupported_type(self, mock_logger):
+        """Unsupported index types are skipped with a warning."""
+        from codemie.triggers.actors.datasource import resume_stale_datasource
+
+        index_info = _make_index_info("knowledge_base_file")
+        resume_stale_datasource(index_info)
+
+        mock_logger.warning.assert_called()
+
+    def test_skips_when_created_by_missing(self, mock_logger):
+        """Missing created_by causes an error log and early return."""
+        from codemie.triggers.actors.datasource import resume_stale_datasource
+
+        index_info = _make_index_info("knowledge_base_jira")
+        index_info.created_by = None
+
+        resume_stale_datasource(index_info)
+
+        mock_logger.error.assert_called()
+
+    def test_skips_when_created_by_id_missing(self, mock_logger):
+        """Missing created_by.id causes an error log and early return."""
+        from codemie.triggers.actors.datasource import resume_stale_datasource
+
+        index_info = _make_index_info("knowledge_base_jira")
+        index_info.created_by = MagicMock(id=None)
+
+        resume_stale_datasource(index_info)
+
+        mock_logger.error.assert_called()
+
+    def test_warns_for_unrecognised_type(self, mock_logger):
+        """An unrecognised (but not explicitly unsupported) type logs a warning."""
+        from codemie.triggers.actors.datasource import resume_stale_datasource
+
+        index_info = _make_index_info("some_unknown_type")
+
+        resume_stale_datasource(index_info)
+
+        mock_logger.warning.assert_called()
+
+    def test_dispatches_to_jira_handler(self, mock_logger):
+        """Dispatches to _resume_jira for knowledge_base_jira type."""
+        import codemie.triggers.actors.datasource as ds_module
+        from codemie.triggers.actors.datasource import resume_stale_datasource
+
+        index_info = _make_index_info("knowledge_base_jira")
+        mock_handler = MagicMock()
+        original = ds_module._RESUME_DISPATCH.get("knowledge_base_jira")
+        try:
+            ds_module._RESUME_DISPATCH["knowledge_base_jira"] = mock_handler
+            resume_stale_datasource(index_info)
+        finally:
+            ds_module._RESUME_DISPATCH["knowledge_base_jira"] = original
+
+        mock_handler.assert_called_once()
+
+    def test_dispatches_to_confluence_handler(self, mock_logger):
+        """Dispatches to _resume_confluence for knowledge_base_confluence type."""
+        import codemie.triggers.actors.datasource as ds_module
+        from codemie.triggers.actors.datasource import resume_stale_datasource
+
+        index_info = _make_index_info("knowledge_base_confluence")
+        mock_handler = MagicMock()
+        original = ds_module._RESUME_DISPATCH.get("knowledge_base_confluence")
+        try:
+            ds_module._RESUME_DISPATCH["knowledge_base_confluence"] = mock_handler
+            resume_stale_datasource(index_info)
+        finally:
+            ds_module._RESUME_DISPATCH["knowledge_base_confluence"] = original
+
+        mock_handler.assert_called_once()
+
+    def test_dispatches_to_sharepoint_handler(self, mock_logger):
+        """Dispatches to _resume_sharepoint for knowledge_base_sharepoint type."""
+        import codemie.triggers.actors.datasource as ds_module
+        from codemie.triggers.actors.datasource import resume_stale_datasource
+
+        index_info = _make_index_info("knowledge_base_sharepoint")
+        mock_handler = MagicMock()
+        original = ds_module._RESUME_DISPATCH.get("knowledge_base_sharepoint")
+        try:
+            ds_module._RESUME_DISPATCH["knowledge_base_sharepoint"] = mock_handler
+            resume_stale_datasource(index_info)
+        finally:
+            ds_module._RESUME_DISPATCH["knowledge_base_sharepoint"] = original
+
+        mock_handler.assert_called_once()
+
+    def test_dispatches_to_google_doc_handler(self, mock_logger):
+        """Dispatches to _resume_google_doc for llm_routing_google type."""
+        import codemie.triggers.actors.datasource as ds_module
+        from codemie.triggers.actors.datasource import resume_stale_datasource
+
+        index_info = _make_index_info("llm_routing_google")
+        mock_handler = MagicMock()
+        original = ds_module._RESUME_DISPATCH.get("llm_routing_google")
+        try:
+            ds_module._RESUME_DISPATCH["llm_routing_google"] = mock_handler
+            resume_stale_datasource(index_info)
+        finally:
+            ds_module._RESUME_DISPATCH["llm_routing_google"] = original
+
+        mock_handler.assert_called_once()
+
+
+class TestResumeJira:
+    """Tests for _resume_jira helper."""
+
+    def test_logs_error_when_no_jira_creds(self, mock_logger):
+        """Logs error and returns early when jira credentials are not found."""
+        from codemie.triggers.actors.datasource import _resume_jira
+
+        index_info = _make_index_info("knowledge_base_jira")
+        index_info.jira = MagicMock(jql="project = X")
+        user = MagicMock(id="u1")
+
+        with patch(
+            "codemie.triggers.actors.datasource.SettingsService.get_jira_creds",
+            return_value=None,
+        ):
+            _resume_jira(index_info, user, "req-1")
+
+        mock_logger.error.assert_called()
+
+    def test_calls_resume_when_creds_found(self):
+        """Calls .resume() on processor when credentials are found."""
+        from codemie.triggers.actors.datasource import _resume_jira
+
+        index_info = _make_index_info("knowledge_base_jira")
+        index_info.jira = MagicMock(jql="project = X")
+        user = MagicMock(id="u1")
+
+        mock_processor = MagicMock()
+        with (
+            patch(
+                "codemie.triggers.actors.datasource.SettingsService.get_jira_creds",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "codemie.triggers.actors.datasource.JiraDatasourceProcessor",
+                return_value=mock_processor,
+            ),
+        ):
+            _resume_jira(index_info, user, "req-1")
+
+        mock_processor.resume.assert_called_once()
+
+
+class TestResumeConfluence:
+    """Tests for _resume_confluence helper."""
+
+    def test_logs_error_when_no_confluence_index_info(self, mock_logger):
+        """Logs error when confluence index info is missing."""
+        from codemie.triggers.actors.datasource import _resume_confluence
+
+        index_info = _make_index_info("knowledge_base_confluence")
+        index_info.confluence = None
+        user = MagicMock(id="u1")
+
+        _resume_confluence(index_info, user, "req-1")
+
+        mock_logger.error.assert_called()
+
+    def test_logs_error_when_no_confluence_creds(self, mock_logger):
+        """Logs error when confluence credentials are not found."""
+        from codemie.triggers.actors.datasource import _resume_confluence
+
+        index_info = _make_index_info("knowledge_base_confluence")
+        index_info.confluence = MagicMock()
+        user = MagicMock(id="u1")
+
+        with patch(
+            "codemie.triggers.actors.datasource.SettingsService.get_confluence_creds",
+            return_value=None,
+        ):
+            _resume_confluence(index_info, user, "req-1")
+
+        mock_logger.error.assert_called()
+
+    def test_calls_resume_when_creds_found(self):
+        """Calls .resume() on processor when credentials are found."""
+        from codemie.triggers.actors.datasource import _resume_confluence
+
+        index_info = _make_index_info("knowledge_base_confluence")
+        index_info.confluence = MagicMock()
+        user = MagicMock(id="u1")
+
+        mock_processor = MagicMock()
+        with (
+            patch(
+                "codemie.triggers.actors.datasource.SettingsService.get_confluence_creds",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "codemie.triggers.actors.datasource.ConfluenceDatasourceProcessor",
+                return_value=mock_processor,
+            ),
+            patch(
+                "codemie.triggers.actors.datasource.IndexKnowledgeBaseConfluenceConfig" ".from_confluence_index_info",
+                return_value=MagicMock(),
+            ),
+        ):
+            _resume_confluence(index_info, user, "req-1")
+
+        mock_processor.resume.assert_called_once()
+
+
+class TestResumeGoogleDoc:
+    """Tests for _resume_google_doc helper."""
+
+    def test_logs_error_when_no_google_doc_link(self, mock_logger):
+        """Logs error when google_doc_link is missing."""
+        from codemie.triggers.actors.datasource import _resume_google_doc
+
+        index_info = _make_index_info("llm_routing_google")
+        index_info.google_doc_link = None
+        user = MagicMock(id="u1")
+
+        _resume_google_doc(index_info, user, "req-1")
+
+        mock_logger.error.assert_called()
+
+    def test_calls_resume_when_link_present(self):
+        """Calls .resume() on processor when google_doc_link is present."""
+        from codemie.triggers.actors.datasource import _resume_google_doc
+
+        index_info = _make_index_info("llm_routing_google")
+        index_info.google_doc_link = "https://docs.google.com/doc/1"
+        user = MagicMock(id="u1")
+
+        mock_processor = MagicMock()
+        with patch(
+            "codemie.triggers.actors.datasource.GoogleDocDatasourceProcessor",
+            return_value=mock_processor,
+        ):
+            _resume_google_doc(index_info, user, "req-1")
+
+        mock_processor.resume.assert_called_once()
+
+
+class TestGetSharepointOauthCreds:
+    """Tests for _get_sharepoint_oauth_creds helper."""
+
+    def test_returns_none_when_token_missing(self, mock_logger):
+        """Returns None and logs warning when access_token is empty."""
+        from codemie.triggers.actors.datasource import _get_sharepoint_oauth_creds
+        import time
+
+        sp_index_info = MagicMock()
+        sp_index_info.access_token = ""
+        sp_index_info.expires_at = int(time.time()) + 3600
+        index_info = _make_index_info("knowledge_base_sharepoint")
+
+        result = _get_sharepoint_oauth_creds(sp_index_info, index_info)
+
+        assert result is None
+        mock_logger.warning.assert_called()
+
+    def test_returns_none_when_token_expired(self, mock_logger):
+        """Returns None and logs warning when token is expired."""
+        from codemie.triggers.actors.datasource import _get_sharepoint_oauth_creds
+
+        sp_index_info = MagicMock()
+        sp_index_info.access_token = "expired-token"
+        sp_index_info.expires_at = 1  # Unix epoch — definitely expired
+        index_info = _make_index_info("knowledge_base_sharepoint")
+
+        result = _get_sharepoint_oauth_creds(sp_index_info, index_info)
+
+        assert result is None
+        mock_logger.warning.assert_called()
+
+    def test_returns_creds_when_token_valid(self):
+        """Returns SharePointCredentials when token is present and not expired."""
+        import time
+        from codemie.triggers.actors.datasource import _get_sharepoint_oauth_creds
+
+        sp_index_info = MagicMock()
+        sp_index_info.access_token = "encrypted-tok"
+        sp_index_info.expires_at = int(time.time()) + 3600
+
+        index_info = _make_index_info("knowledge_base_sharepoint")
+
+        # _decrypt_oauth_token is imported lazily inside _get_sharepoint_oauth_creds
+        # so patch it at its definition location.
+        with patch(
+            "codemie.datasource.sharepoint.sharepoint_datasource_processor._decrypt_oauth_token",
+            return_value="plain-token",
+        ):
+            result = _get_sharepoint_oauth_creds(sp_index_info, index_info)
+
+        assert result is not None
+        assert result.access_token == "plain-token"
+
+
+class TestResumeSharepoint:
+    """Tests for _resume_sharepoint helper."""
+
+    def test_logs_error_when_no_sharepoint_index_info(self, mock_logger):
+        """Logs error when sharepoint config is missing on index."""
+        from codemie.triggers.actors.datasource import _resume_sharepoint
+
+        index_info = _make_index_info("knowledge_base_sharepoint")
+        index_info.sharepoint = None
+        user = MagicMock(id="u1")
+
+        _resume_sharepoint(index_info, user, "req-1")
+
+        mock_logger.error.assert_called()
+
+    def test_skips_when_oauth_creds_expired(self, mock_logger):
+        """Returns early without creating processor when OAuth token is expired."""
+        from codemie.triggers.actors.datasource import _resume_sharepoint
+
+        index_info = _make_index_info("knowledge_base_sharepoint")
+        sp_info = MagicMock()
+        sp_info.auth_type = "oauth_codemie"
+        sp_info.access_token = ""
+        sp_info.expires_at = 1
+        index_info.sharepoint = sp_info
+        user = MagicMock(id="u1")
+
+        with patch("codemie.triggers.actors.datasource.SharePointDatasourceProcessor") as mock_proc_class:
+            _resume_sharepoint(index_info, user, "req-1")
+
+        mock_proc_class.assert_not_called()
+
+    def test_calls_resume_for_integration_auth(self):
+        """Creates processor and calls .resume() for integration auth type."""
+        from codemie.triggers.actors.datasource import _resume_sharepoint
+
+        index_info = _make_index_info("knowledge_base_sharepoint")
+        sp_info = MagicMock()
+        sp_info.auth_type = "integration"
+        sp_info.site_url = "https://tenant.sharepoint.com/sites/test"
+        sp_info.path_filter = "*"
+        sp_info.include_pages = True
+        sp_info.include_documents = True
+        sp_info.include_lists = True
+        sp_info.max_file_size_mb = 50
+        sp_info.files_filter = ""
+        sp_info.oauth_client_id = None
+        sp_info.oauth_tenant_id = None
+        index_info.sharepoint = sp_info
+        user = MagicMock(id="u1")
+
+        mock_processor = MagicMock()
+        with (
+            patch(
+                "codemie.triggers.actors.datasource.SettingsService.get_sharepoint_creds",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "codemie.triggers.actors.datasource.SharePointDatasourceProcessor",
+                return_value=mock_processor,
+            ),
+        ):
+            _resume_sharepoint(index_info, user, "req-1")
+
+        mock_processor.resume.assert_called_once()

@@ -1529,3 +1529,282 @@ class TestSharePointLoaderOAuthAuthentication:
 
         assert loader._site_id == "test-site-id"
         assert mock_get.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests for _is_not_modified_since (new incremental-reindex filter)
+# ---------------------------------------------------------------------------
+
+
+class TestIsNotModifiedSince:
+    """Tests for SharePointLoader._is_not_modified_since."""
+
+    def test_no_cutoff_returns_false(self, sharepoint_loader):
+        """When modified_since is None every item is treated as changed."""
+        assert sharepoint_loader.modified_since is None
+        assert sharepoint_loader._is_not_modified_since("2024-01-01T00:00:00Z") is False
+
+    def test_no_modified_str_returns_false(self):
+        """An item without a modification timestamp is always considered changed."""
+        from datetime import datetime, timezone
+
+        loader = SharePointLoader(
+            site_url="https://tenant.sharepoint.com/sites/testsite",
+            path_filter="*",
+            auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
+            modified_since=datetime(2024, 6, 1, tzinfo=timezone.utc),
+        )
+        assert loader._is_not_modified_since(None) is False
+        assert loader._is_not_modified_since("") is False
+
+    def test_item_older_than_cutoff_returns_true(self):
+        """An item modified before (or at) the cutoff should be skipped."""
+        from datetime import datetime, timezone
+
+        cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        loader = SharePointLoader(
+            site_url="https://tenant.sharepoint.com/sites/testsite",
+            path_filter="*",
+            auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
+            modified_since=cutoff,
+        )
+        assert loader._is_not_modified_since("2024-05-31T00:00:00Z") is True
+
+    def test_item_exactly_at_cutoff_returns_true(self):
+        """An item modified at exactly the cutoff instant should be skipped."""
+        from datetime import datetime, timezone
+
+        cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        loader = SharePointLoader(
+            site_url="https://tenant.sharepoint.com/sites/testsite",
+            path_filter="*",
+            auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
+            modified_since=cutoff,
+        )
+        assert loader._is_not_modified_since("2024-06-01T00:00:00Z") is True
+
+    def test_item_newer_than_cutoff_returns_false(self):
+        """An item modified after the cutoff should be included."""
+        from datetime import datetime, timezone
+
+        cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        loader = SharePointLoader(
+            site_url="https://tenant.sharepoint.com/sites/testsite",
+            path_filter="*",
+            auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
+            modified_since=cutoff,
+        )
+        assert loader._is_not_modified_since("2024-06-02T00:00:00Z") is False
+
+    def test_invalid_date_string_returns_false(self):
+        """Invalid modification timestamp is treated as changed (safe default)."""
+        from datetime import datetime, timezone
+
+        cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        loader = SharePointLoader(
+            site_url="https://tenant.sharepoint.com/sites/testsite",
+            path_filter="*",
+            auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
+            modified_since=cutoff,
+        )
+        assert loader._is_not_modified_since("not-a-date") is False
+
+    def test_naive_cutoff_treated_as_utc(self):
+        """A naive (no tzinfo) modified_since is treated as UTC."""
+        from datetime import datetime
+
+        naive_cutoff = datetime(2024, 6, 1)
+        loader = SharePointLoader(
+            site_url="https://tenant.sharepoint.com/sites/testsite",
+            path_filter="*",
+            auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
+            modified_since=naive_cutoff,
+        )
+        assert loader._is_not_modified_since("2024-05-31T00:00:00Z") is True
+        assert loader._is_not_modified_since("2024-06-02T00:00:00Z") is False
+
+
+# ---------------------------------------------------------------------------
+# Tests for _should_skip_by_files_filter (new helper)
+# ---------------------------------------------------------------------------
+
+
+class TestShouldSkipByFilesFilter:
+    """Tests for SharePointLoader._should_skip_by_files_filter."""
+
+    def test_empty_filter_never_skips(self, sharepoint_loader):
+        """An empty files_filter means no items are skipped."""
+        sharepoint_loader.files_filter = ""
+        item = {"name": "file.py", "parentReference": {"path": "/drives/x/root:/Shared Documents/file.py"}}
+        assert sharepoint_loader._should_skip_by_files_filter(item, "file.py") is False
+
+    def test_whitespace_filter_never_skips(self, sharepoint_loader):
+        """A whitespace-only files_filter is treated the same as empty."""
+        sharepoint_loader.files_filter = "   "
+        item = {"name": "file.py", "parentReference": {"path": "/drives/x/root:/Shared Documents/file.py"}}
+        assert sharepoint_loader._should_skip_by_files_filter(item, "file.py") is False
+
+    def test_exclude_pattern_skips_matching_file(self, sharepoint_loader):
+        """A file matching an exclude pattern should be skipped."""
+        sharepoint_loader.files_filter = "!*.log"
+        item = {
+            "name": "error.log",
+            "parentReference": {"path": "/drives/x/root:/Shared Documents"},
+            "parentName": "Shared Documents",
+        }
+        with (
+            patch.object(sharepoint_loader, "_get_file_relative_path", return_value="Shared Documents/error.log"),
+            patch.object(sharepoint_loader, "_get_file_library_relative_path", return_value="error.log"),
+        ):
+            result = sharepoint_loader._should_skip_by_files_filter(item, "error.log")
+        assert result is True
+
+    def test_include_pattern_skips_non_matching_file(self, sharepoint_loader):
+        """A file that doesn't match the include pattern should be skipped."""
+        sharepoint_loader.files_filter = "*.py"
+        item = {
+            "name": "readme.txt",
+            "parentReference": {"path": "/drives/x/root:/Shared Documents"},
+            "parentName": "Shared Documents",
+        }
+        with (
+            patch.object(sharepoint_loader, "_get_file_relative_path", return_value="Shared Documents/readme.txt"),
+            patch.object(sharepoint_loader, "_get_file_library_relative_path", return_value="readme.txt"),
+        ):
+            result = sharepoint_loader._should_skip_by_files_filter(item, "readme.txt")
+        assert result is True
+
+    def test_include_pattern_passes_matching_file(self, sharepoint_loader):
+        """A file that matches the include pattern should not be skipped."""
+        sharepoint_loader.files_filter = "*.py"
+        item = {
+            "name": "main.py",
+            "parentReference": {"path": "/drives/x/root:/Shared Documents"},
+            "parentName": "Shared Documents",
+        }
+        with (
+            patch.object(sharepoint_loader, "_get_file_relative_path", return_value="Shared Documents/main.py"),
+            patch.object(sharepoint_loader, "_get_file_library_relative_path", return_value="main.py"),
+        ):
+            result = sharepoint_loader._should_skip_by_files_filter(item, "main.py")
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Tests for _should_skip_file — modified_since check added
+# ---------------------------------------------------------------------------
+
+
+class TestShouldSkipFileModifiedSince:
+    """Tests for the not_modified check added to _should_skip_file."""
+
+    def test_not_modified_returns_true_not_modified(self):
+        """_should_skip_file returns (True, 'not_modified') for unmodified items."""
+        from datetime import datetime, timezone
+
+        cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        loader = SharePointLoader(
+            site_url="https://tenant.sharepoint.com/sites/testsite",
+            path_filter="*",
+            auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
+            modified_since=cutoff,
+        )
+        item = {
+            "name": "old.docx",
+            "size": 1024,
+            "lastModifiedDateTime": "2024-05-01T00:00:00Z",
+        }
+        should_skip, reason = loader._should_skip_file(item)
+        assert should_skip is True
+        assert reason == "not_modified"
+
+    def test_modified_file_continues_to_normal_checks(self):
+        """A recently modified file should not be short-circuited by not_modified check."""
+        from datetime import datetime, timezone
+
+        cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        loader = SharePointLoader(
+            site_url="https://tenant.sharepoint.com/sites/testsite",
+            path_filter="*",
+            auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
+            modified_since=cutoff,
+        )
+        item = {
+            "name": "recent.docx",
+            "size": 1024,
+            "lastModifiedDateTime": "2024-07-01T00:00:00Z",
+        }
+        should_skip, reason = loader._should_skip_file(item)
+        # reason should NOT be "not_modified" even if the file happens to be skipped for other reasons
+        assert reason != "not_modified"
+
+
+# ---------------------------------------------------------------------------
+# Tests for _process_page (new helper that wraps page loading logic)
+# ---------------------------------------------------------------------------
+
+
+class TestProcessPage:
+    """Tests for SharePointLoader._process_page."""
+
+    def test_skips_when_should_not_process(self, sharepoint_loader):
+        """Returns None when _should_process_page returns False."""
+        page = {"id": "p1", "title": "Hidden"}
+        with patch.object(sharepoint_loader, "_should_process_page", return_value=False):
+            result = sharepoint_loader._process_page("site-id", page)
+        assert result is None
+
+    def test_skips_when_no_content(self, sharepoint_loader):
+        """Returns None when _extract_page_content returns empty string."""
+        page = {"id": "p1", "title": "Empty"}
+        page_data = {"title": "Empty", "webUrl": "http://test", "lastModifiedDateTime": "2099-01-01T00:00:00Z"}
+        with (
+            patch.object(sharepoint_loader, "_should_process_page", return_value=True),
+            patch.object(sharepoint_loader, "_fetch_page_details", return_value=page_data),
+            patch.object(sharepoint_loader, "_extract_page_content", return_value=""),
+        ):
+            result = sharepoint_loader._process_page("site-id", page)
+        assert result is None
+
+    def test_skips_unmodified_page(self):
+        """Returns None when the page has not changed since modified_since."""
+        from datetime import datetime, timezone
+
+        cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        loader = SharePointLoader(
+            site_url="https://tenant.sharepoint.com/sites/testsite",
+            path_filter="*",
+            auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
+            modified_since=cutoff,
+        )
+        page = {"id": "p1", "title": "Old Page"}
+        page_data = {
+            "title": "Old Page",
+            "webUrl": "http://test",
+            "lastModifiedDateTime": "2024-05-01T00:00:00Z",
+        }
+        with (
+            patch.object(loader, "_should_process_page", return_value=True),
+            patch.object(loader, "_fetch_page_details", return_value=page_data),
+            patch.object(loader, "_extract_page_content", return_value="some content"),
+        ):
+            result = loader._process_page("site-id", page)
+        assert result is None
+
+    def test_returns_page_dict_for_changed_page(self, sharepoint_loader):
+        """Returns a page dict when the page passes all filters."""
+        page = {"id": "p1", "title": "New Page"}
+        page_data = {
+            "title": "New Page",
+            "webUrl": "http://test",
+            "lastModifiedDateTime": "2099-01-01T00:00:00Z",
+        }
+        expected_dict = {"title": "New Page", "content": "some content"}
+        with (
+            patch.object(sharepoint_loader, "_should_process_page", return_value=True),
+            patch.object(sharepoint_loader, "_fetch_page_details", return_value=page_data),
+            patch.object(sharepoint_loader, "_extract_page_content", return_value="some content"),
+            patch.object(sharepoint_loader, "_create_page_dict", return_value=expected_dict),
+        ):
+            result = sharepoint_loader._process_page("site-id", page)
+        assert result == expected_dict

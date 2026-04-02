@@ -14,8 +14,14 @@
 
 """Datasources actors."""
 
+import time
+from uuid import uuid4
+
 from codemie.configs import logger
+from codemie.core.constants import CodeIndexType
 from codemie.core.models import GitRepo
+from codemie.rest_api.models.index import IndexInfo
+from codemie.rest_api.security.user import User
 from codemie.datasource.azure_devops_wiki.azure_devops_wiki_datasource_processor import (
     AzureDevOpsWikiDatasourceProcessor,
 )
@@ -29,6 +35,12 @@ from codemie.datasource.confluence_datasource_processor import (
 )
 from codemie.datasource.google_doc.google_doc_datasource_processor import GoogleDocDatasourceProcessor
 from codemie.datasource.jira.jira_datasource_processor import JiraDatasourceProcessor
+from codemie.datasource.sharepoint.sharepoint_datasource_processor import (
+    SharePointDatasourceProcessor,
+    SharePointProcessorConfig,
+)
+from codemie.rest_api.models.settings import SharePointCredentials
+from codemie.datasource.xray.xray_datasource_processor import XrayDatasourceProcessor
 from codemie.service.settings.settings import SettingsService
 from codemie.triggers.trigger_models import (
     AzureDevOpsWikiReindexTask,
@@ -430,3 +442,289 @@ def reindex_azure_devops_work_item(payload: AzureDevOpsWorkItemReindexTask):
         payload.project_name,
         payload.resource_name,
     )
+
+
+UNSUPPORTED_RESUME_TYPES = {"knowledge_base_file", "provider", "platform_marketplace_assistant"}
+
+
+def _resume_azure_devops(index_info: IndexInfo, user: User, request_uuid: str) -> None:
+    """Handle resume for Azure DevOps Wiki and Work Item datasources."""
+    azure_devops_creds = SettingsService.get_azure_devops_creds(
+        user_id=user.id,
+        project_name=index_info.project_name,
+    )
+    if not azure_devops_creds:
+        logger.error(
+            f"resume_stale_datasource: Azure DevOps credentials not found for "
+            f"project='{index_info.project_name}', index_id={index_info.id}"
+        )
+        return
+
+    if index_info.index_type == "knowledge_base_azure_devops_wiki":
+        azure_devops_index_info = index_info.azure_devops_wiki
+        if not azure_devops_index_info:
+            logger.error(f"resume_stale_datasource: Azure DevOps Wiki index info missing for index_id={index_info.id}")
+            return
+        processor = AzureDevOpsWikiDatasourceProcessor(
+            datasource_name=index_info.repo_name,
+            user=user,
+            project_name=index_info.project_name,
+            credentials=azure_devops_creds,
+            wiki_query=azure_devops_index_info.wiki_query,
+            wiki_name=azure_devops_index_info.wiki_name,
+            description=index_info.description or "",
+            project_space_visible=index_info.project_space_visible or False,
+            index_info=index_info,
+            request_uuid=request_uuid,
+            embedding_model=index_info.embeddings_model,
+        )
+    else:
+        work_item_index_info = index_info.azure_devops_work_item
+        if not work_item_index_info:
+            logger.error(
+                f"resume_stale_datasource: Azure DevOps Work Item index info missing for index_id={index_info.id}"
+            )
+            return
+        processor = AzureDevOpsWorkItemDatasourceProcessor(
+            datasource_name=index_info.repo_name,
+            user=user,
+            project_name=index_info.project_name,
+            credentials=azure_devops_creds,
+            wiql_query=work_item_index_info.wiql_query,
+            description=index_info.description or "",
+            project_space_visible=index_info.project_space_visible or False,
+            index_info=index_info,
+            request_uuid=request_uuid,
+            embedding_model=index_info.embeddings_model,
+        )
+    processor.resume()
+
+
+def _resume_xray(index_info: IndexInfo, user: User, request_uuid: str) -> None:
+    """Handle resume for Xray datasources."""
+    xray_creds = SettingsService.get_xray_creds(
+        user_id=user.id,
+        project_name=index_info.project_name,
+        setting_id=index_info.setting_id,
+    )
+    if not xray_creds:
+        logger.error(
+            f"resume_stale_datasource: Xray credentials not found for "
+            f"project='{index_info.project_name}', index_id={index_info.id}"
+        )
+        return
+    XrayDatasourceProcessor(
+        datasource_name=index_info.repo_name,
+        user=user,
+        project_name=index_info.project_name,
+        credentials=xray_creds,
+        jql=index_info.xray.jql if index_info.xray else "",
+        description=index_info.description or "",
+        project_space_visible=index_info.project_space_visible or False,
+        index_info=index_info,
+        request_uuid=request_uuid,
+        embedding_model=index_info.embeddings_model,
+    ).resume()
+
+
+def _get_sharepoint_oauth_creds(sp_index_info, index_info: IndexInfo) -> SharePointCredentials | None:
+    """Resolve OAuth credentials for a SharePoint index; return None if token is missing/expired."""
+    if not sp_index_info.access_token or sp_index_info.expires_at <= int(time.time()):
+        logger.warning(
+            f"resume_stale_datasource: SharePoint index_id={index_info.id} uses "
+            f"auth_type='{sp_index_info.auth_type}' but stored token is missing or expired, skipping"
+        )
+        return None
+    from codemie.datasource.sharepoint.sharepoint_datasource_processor import _decrypt_oauth_token
+
+    return SharePointCredentials(
+        auth_type="oauth",
+        access_token=_decrypt_oauth_token(sp_index_info.access_token),
+        expires_at=sp_index_info.expires_at,
+    )
+
+
+def _resume_sharepoint(index_info: IndexInfo, user: User, request_uuid: str) -> None:
+    """Handle resume for SharePoint datasources."""
+    sp_index_info = index_info.sharepoint
+    if not sp_index_info:
+        logger.error(f"resume_stale_datasource: SharePoint index info missing for index_id={index_info.id}")
+        return
+
+    if sp_index_info.auth_type in ("oauth_codemie", "oauth_custom"):
+        sharepoint_creds = _get_sharepoint_oauth_creds(sp_index_info, index_info)
+        if sharepoint_creds is None:
+            return
+    else:
+        try:
+            sharepoint_creds = SettingsService.get_sharepoint_creds(
+                user_id=user.id,
+                project_name=index_info.project_name,
+                setting_id=index_info.setting_id,
+            )
+        except ValueError:
+            logger.error(
+                f"resume_stale_datasource: SharePoint credentials not found for "
+                f"project='{index_info.project_name}', index_id={index_info.id}"
+            )
+            return
+    SharePointDatasourceProcessor(
+        datasource_name=index_info.repo_name,
+        user=user,
+        project_name=index_info.project_name,
+        credentials=sharepoint_creds,
+        sp_config=SharePointProcessorConfig(
+            site_url=sp_index_info.site_url,
+            path_filter=sp_index_info.path_filter or "*",
+            include_pages=sp_index_info.include_pages if sp_index_info.include_pages is not None else True,
+            include_documents=sp_index_info.include_documents if sp_index_info.include_documents is not None else True,
+            include_lists=sp_index_info.include_lists if sp_index_info.include_lists is not None else True,
+            max_file_size_mb=sp_index_info.max_file_size_mb or 50,
+            files_filter=sp_index_info.files_filter or "",
+            auth_type=sp_index_info.auth_type,
+            oauth_client_id=sp_index_info.oauth_client_id,
+            oauth_tenant_id=sp_index_info.oauth_tenant_id,
+            description=index_info.description or "",
+            project_space_visible=index_info.project_space_visible or False,
+        ),
+        setting_id=index_info.setting_id,
+        embedding_model=index_info.embeddings_model,
+        index_info=index_info,
+        request_uuid=request_uuid,
+    ).resume()
+
+
+def _resume_code(index_info: IndexInfo, user: User, request_uuid: str) -> None:
+    """Handle resume for code datasources."""
+    repo_id = GitRepo.identifier_from_fields(
+        app_id=index_info.project_name,
+        name=index_info.repo_name,
+        index_type=CodeIndexType(index_info.index_type),
+    )
+    app_repo = GitRepo.get_by_fields({"id": repo_id, "setting_id": index_info.setting_id})
+    if not app_repo:
+        logger.error(
+            f"resume_stale_datasource: GitRepo not found for "
+            f"project='{index_info.project_name}', repo='{index_info.repo_name}', "
+            f"setting_id={index_info.setting_id}"
+        )
+        return
+    CodeDatasourceProcessor.create_processor(
+        git_repo=app_repo,
+        user=user,
+        index=index_info,
+        request_uuid=request_uuid,
+    ).resume()
+
+
+def _resume_jira(index_info: IndexInfo, user: User, request_uuid: str) -> None:
+    """Handle resume for Jira datasources."""
+    jira_creds = SettingsService.get_jira_creds(
+        user_id=user.id,
+        project_name=index_info.project_name,
+        setting_id=index_info.setting_id,
+    )
+    if not jira_creds:
+        logger.error(
+            f"resume_stale_datasource: Jira credentials not found for "
+            f"project='{index_info.project_name}', index_id={index_info.id}"
+        )
+        return
+    JiraDatasourceProcessor(
+        datasource_name=index_info.repo_name,
+        user=user,
+        project_name=index_info.project_name,
+        credentials=jira_creds,
+        jql=index_info.jira.jql if index_info.jira else "",
+        description=index_info.description or "",
+        project_space_visible=index_info.project_space_visible or False,
+        index_info=index_info,
+        request_uuid=request_uuid,
+        embedding_model=index_info.embeddings_model,
+    ).resume()
+
+
+def _resume_confluence(index_info: IndexInfo, user: User, request_uuid: str) -> None:
+    """Handle resume for Confluence datasources."""
+    confluence_index_info = index_info.confluence
+    if not confluence_index_info:
+        logger.error(f"resume_stale_datasource: Confluence index info missing for index_id={index_info.id}")
+        return
+    confluence_creds = SettingsService.get_confluence_creds(
+        user_id=user.id,
+        project_name=index_info.project_name,
+        setting_id=index_info.setting_id,
+    )
+    if not confluence_creds:
+        logger.error(
+            f"resume_stale_datasource: Confluence credentials not found for "
+            f"project='{index_info.project_name}', index_id={index_info.id}"
+        )
+        return
+    ConfluenceDatasourceProcessor(
+        datasource_name=index_info.repo_name,
+        user=user,
+        project_name=index_info.project_name,
+        confluence=confluence_creds,
+        index_knowledge_base_config=IndexKnowledgeBaseConfluenceConfig.from_confluence_index_info(
+            confluence_index_info
+        ),
+        description=index_info.description or "",
+        project_space_visible=index_info.project_space_visible or False,
+        index=index_info,
+        request_uuid=request_uuid,
+        embedding_model=index_info.embeddings_model,
+    ).resume()
+
+
+def _resume_google_doc(index_info: IndexInfo, user: User, request_uuid: str) -> None:
+    """Handle resume for Google Doc datasources."""
+    if not index_info.google_doc_link:
+        logger.error(f"resume_stale_datasource: Google Doc link missing for index_id={index_info.id}")
+        return
+    GoogleDocDatasourceProcessor(
+        datasource_name=index_info.repo_name,
+        user=user,
+        project_name=index_info.project_name,
+        google_doc=index_info.google_doc_link,
+        description=index_info.description or "",
+        request_uuid=request_uuid,
+        index_info=index_info,
+        embedding_model=index_info.embeddings_model,
+    ).resume()
+
+
+_RESUME_DISPATCH: dict = {
+    "code": _resume_code,
+    "knowledge_base_jira": _resume_jira,
+    "knowledge_base_confluence": _resume_confluence,
+    "llm_routing_google": _resume_google_doc,
+    "knowledge_base_azure_devops_wiki": _resume_azure_devops,
+    "knowledge_base_azure_devops_work_item": _resume_azure_devops,
+    "knowledge_base_xray": _resume_xray,
+    "knowledge_base_sharepoint": _resume_sharepoint,
+}
+
+
+def resume_stale_datasource(index_info: IndexInfo) -> None:
+    """Resume a stuck in-progress datasource index job detected by the watchdog."""
+    index_type = index_info.index_type
+
+    if index_type in UNSUPPORTED_RESUME_TYPES:
+        logger.warning(
+            f"Skipping stale resume for unsupported index type '{index_type}' "
+            f"(index_id={index_info.id}, repo='{index_info.repo_name}')"
+        )
+        return
+
+    if not index_info.created_by or not index_info.created_by.id:
+        logger.error(f"resume_stale_datasource: created_by missing for index_id={index_info.id}, skipping")
+        return
+
+    handler = _RESUME_DISPATCH.get(index_type)
+    if handler:
+        handler(index_info, User(id=index_info.created_by.id), str(uuid4()))
+    else:
+        logger.warning(
+            f"resume_stale_datasource: unrecognised index type '{index_type}', skipping (index_id={index_info.id})"
+        )

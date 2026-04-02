@@ -196,6 +196,7 @@ class BaseDatasourceProcessor(ABC):
         except IndexDeletedException as ex:
             logger.error(f"Stopping, index was deleted for datasource {self.index.repo_name}", exc_info=True)
             self.client.indices.delete(index=self._index_name, ignore=[400, 404])  # Ensure embeddings index is deleted
+            self._on_process_end()  # Clear any sensitive state (e.g. OAuth tokens)
             # Call the on_error method of each callback
             for callback in self.callbacks:
                 callback.on_error(ex)
@@ -206,6 +207,7 @@ class BaseDatasourceProcessor(ABC):
             )
             self.client.indices.delete(index=self._index_name, ignore=[400, 404])
             self.index.set_error(str(ex))
+            self._on_process_end()
             # Call the on_error method of each callback
             for callback in self.callbacks:
                 callback.on_error(ex)
@@ -213,6 +215,7 @@ class BaseDatasourceProcessor(ABC):
         except Exception as ex:
             logger.error(f"Error occurred while indexing repo {self.index.repo_name}", exc_info=True)
             self.index.set_error(str(ex))
+            self._on_process_end()
             # Call the on_error method of each callback
             for callback in self.callbacks:
                 callback.on_error(ex)

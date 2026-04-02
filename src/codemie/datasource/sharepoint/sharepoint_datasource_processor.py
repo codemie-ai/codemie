@@ -39,7 +39,22 @@ from codemie.rest_api.models.guardrail import GuardrailAssignmentItem
 from codemie.rest_api.models.index import IndexInfo, SharePointIndexInfo
 from codemie.rest_api.models.settings import SharePointCredentials
 from codemie.rest_api.security.user import User
+from codemie.service.encryption.encryption_factory import EncryptionFactory
 from codemie.service.llm_service.llm_service import llm_service
+
+
+def _encrypt_oauth_token(token: str) -> str:
+    """Encrypt an OAuth bearer token before persisting to the database."""
+    if not token:
+        return ""
+    return EncryptionFactory.get_current_encryption_service().encrypt(token)
+
+
+def _decrypt_oauth_token(encrypted_token: str) -> str:
+    """Decrypt an OAuth bearer token retrieved from the database."""
+    if not encrypted_token:
+        return ""
+    return EncryptionFactory.get_current_encryption_service().decrypt(encrypted_token)
 
 
 @dataclass
@@ -150,6 +165,9 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
 
     def _init_loader(self):
         """Initialize the SharePoint loader."""
+        modified_since = None
+        if self.is_incremental_reindex and self.index:
+            modified_since = self.index.last_reindex_date or self.index.update_date
         return SharePointLoader(
             site_url=self.site_url,
             path_filter=self.path_filter,
@@ -169,7 +187,24 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
             max_file_size_mb=self.max_file_size_mb,
             files_filter=self.files_filter,
             request_uuid=self.request_uuid,
+            modified_since=modified_since,
         )
+
+    def _cleanup_data_for_incremental_reindex(self, docs_to_be_indexed: list[Document]) -> None:
+        """Delete existing index chunks for documents that have changed, so they get re-indexed cleanly."""
+        sources = [doc.metadata["source"] for doc in docs_to_be_indexed if doc.metadata.get("source")]
+        if not sources:
+            return
+        try:
+            self.client.delete_by_query(
+                index=self._index_name,
+                body={"query": {"terms": {"metadata.source.keyword": sources}}},
+                wait_for_completion=True,
+                refresh=True,
+            )
+            logger.info(f"Incremental reindex: removed stale chunks for {len(sources)} SharePoint sources")
+        except Exception as e:
+            logger.error(f"Incremental reindex: failed to delete stale chunks: {e}")
 
     def _init_index(self):
         """Initialize or retrieve the index configuration."""
@@ -193,6 +228,8 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
                     auth_type=self.auth_type,
                     oauth_client_id=self.oauth_client_id,
                     oauth_tenant_id=self.oauth_tenant_id,
+                    access_token=_encrypt_oauth_token(self.credentials.access_token or ""),
+                    expires_at=self.credentials.expires_at or 0,
                 ),
                 embeddings_model=self.embedding_model or llm_service.default_embedding_model,
                 setting_id=self.setting_id,
@@ -212,6 +249,8 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
                     auth_type=self.auth_type,
                     oauth_client_id=self.oauth_client_id,
                     oauth_tenant_id=self.oauth_tenant_id,
+                    access_token=_encrypt_oauth_token(self.credentials.access_token or ""),
+                    expires_at=self.credentials.expires_at or 0,
                 )
             else:
                 # Update existing SharePoint config
@@ -225,6 +264,8 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
                 self.index.sharepoint.auth_type = self.auth_type
                 self.index.sharepoint.oauth_client_id = self.oauth_client_id
                 self.index.sharepoint.oauth_tenant_id = self.oauth_tenant_id
+                self.index.sharepoint.access_token = _encrypt_oauth_token(self.credentials.access_token or "")
+                self.index.sharepoint.expires_at = self.credentials.expires_at or 0
 
         self._assign_and_sync_guardrails()
 
@@ -266,6 +307,17 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
             disallowed_special={},
             chunk_overlap=SHAREPOINT_CONFIG.chunk_overlap,
         )
+
+    def _on_process_end(self):
+        """Clear stored OAuth token after indexing completes to avoid persisting sensitive data."""
+        if (
+            self.index
+            and self.index.sharepoint
+            and self.index.sharepoint.auth_type in ("oauth_codemie", "oauth_custom")
+        ):
+            self.index.sharepoint.access_token = ""
+            self.index.sharepoint.expires_at = 0
+            self.index.update()
 
     @classmethod
     def validate_creds_and_loader(

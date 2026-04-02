@@ -145,8 +145,10 @@ loaders:
 storage:
   embeddings_max_docs_count: 20
   indexing_bulk_max_chunk_bytes: 104857600  # 100 MB
-  indexing_max_retries: 10
+  indexing_max_retries: 2  # Reduced from 10: worst-case retry duration = max_retries × max_wait = 2 × 120 = 240s < stale_indexing_threshold_seconds (300s)
   indexing_error_retry_wait_min_seconds: 10
-  indexing_error_retry_wait_max_seconds: 600
+  indexing_error_retry_wait_max_seconds: 120  # Reduced from 600 to keep per-retry wait bounded
   indexing_threads_count: 20
   processed_documents_threshold: 1000  # Max amount of processed documents to store in elastic
+  stale_indexing_threshold_seconds: 300
+  stale_indexing_resume_batch_size: 5

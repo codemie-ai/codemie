@@ -15,6 +15,8 @@
 """Module for triggers core service"""
 
 import platform
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Dict
 from croniter import croniter
@@ -32,6 +34,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.constants import FullDatasourceTypes
 from codemie.service.settings.base_settings import SearchFields
 from codemie.triggers.actors.assistant import invoke_assistant
+from codemie.datasource.datasources_config import STORAGE_CONFIG
 from codemie.triggers.actors.datasource import (
     reindex_azure_devops_wiki,
     reindex_azure_devops_work_item,
@@ -39,6 +42,7 @@ from codemie.triggers.actors.datasource import (
     reindex_confluence,
     reindex_google,
     reindex_jira,
+    resume_stale_datasource,
 )
 from codemie.triggers.actors.workflow import invoke_workflow
 from codemie.triggers.bindings.cache_manager import CacheManager
@@ -81,6 +85,9 @@ class Cron:
         self.scheduler = None
         self.jobs = {}
         self.cache = CacheManager(cache_ttl=300)
+        self._resuming_ids: set[str] = set()
+        self._resuming_lock = threading.Lock()
+        self._watchdog_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="stale-watchdog")
 
     async def start_async(self):
         """Start the trigger engine asynchronously"""
@@ -92,6 +99,8 @@ class Cron:
         self.scheduler.start()
         logger.info("Trigger Engine Cron binding started on %s", platform.uname().node)
         self.scheduler.add_job(self.__watch_settings, "interval", seconds=10)
+        if config.STALE_INDEXING_WATCHDOG_ENABLED:
+            self.scheduler.add_job(self.__watch_stale_indexing, "interval", seconds=60)
 
     def shutdown(self):
         """Shutdown the trigger engine and cleanup resources"""
@@ -111,6 +120,17 @@ class Cron:
 
         self.jobs.clear()
 
+        # Shutdown watchdog thread pool
+        with self._resuming_lock:
+            in_flight = set(self._resuming_ids)
+        if in_flight:
+            logger.warning(
+                "Stale indexing watchdog: shutting down with %d resume(s) still in flight: %s",
+                len(in_flight),
+                in_flight,
+            )
+        self._watchdog_executor.shutdown(wait=False)
+
         # Shutdown scheduler
         try:
             self.scheduler.shutdown(wait=False)
@@ -127,6 +147,65 @@ class Cron:
         user_settings = self.__get_settings()
         self.remove_jobs_for_deleted_settings(user_settings)
         self.__actualize_jobs(settings=user_settings)
+
+    def __watch_stale_indexing(self):
+        """Detect and resume datasource index jobs stuck in IN_PROGRESS."""
+        stale = IndexInfo.get_stale_in_progress(
+            STORAGE_CONFIG.stale_indexing_threshold_seconds,
+            limit=STORAGE_CONFIG.stale_indexing_resume_batch_size,
+        )
+        if stale:
+            logger.info(f"Stale indexing watchdog: detected {len(stale)} stuck job(s)")
+        for index_info in stale:
+            with self._resuming_lock:
+                if index_info.id in self._resuming_ids:
+                    logger.debug(f"Stale indexing watchdog: index_id={index_info.id} already resuming, skipping")
+                    continue
+                # Reserve the slot optimistically before the DB call so a second
+                # watchdog tick on this pod cannot submit the same job concurrently.
+                self._resuming_ids.add(index_info.id)
+
+            # Atomic DB-level claim — no lock needed; the UPDATE is atomic at DB level.
+            # Must run outside _resuming_lock to avoid blocking the scheduler thread
+            # on a remote DB round-trip while the lock is held.
+            try:
+                claimed = IndexInfo.try_claim_for_resume(index_info.id, STORAGE_CONFIG.stale_indexing_threshold_seconds)
+            except Exception as e:
+                logger.error(
+                    f"Stale indexing watchdog: DB claim failed for index_id={index_info.id}: {e}", exc_info=True
+                )
+                with self._resuming_lock:
+                    self._resuming_ids.discard(index_info.id)
+                continue
+
+            if not claimed:
+                logger.debug(
+                    f"Stale indexing watchdog: index_id={index_info.id} already claimed by another pod, skipping"
+                )
+                with self._resuming_lock:
+                    self._resuming_ids.discard(index_info.id)
+                continue
+
+            # Reload the record so __run_resume uses the post-claim update_date
+            # (which is the correct incremental reindex watermark), not the stale snapshot.
+            fresh_index_info = IndexInfo.find_by_id(index_info.id)
+            if not fresh_index_info:
+                logger.warning(f"Stale indexing watchdog: index_id={index_info.id} vanished after claim, skipping")
+                with self._resuming_lock:
+                    self._resuming_ids.discard(index_info.id)
+                continue
+
+            self._watchdog_executor.submit(self.__run_resume, fresh_index_info)
+
+    def __run_resume(self, index_info: IndexInfo) -> None:
+        """Run a stale resume in a thread pool worker, removing the in-flight marker on completion."""
+        try:
+            resume_stale_datasource(index_info)
+        except Exception as e:
+            logger.error(f"Stale indexing watchdog: failed to resume index_id={index_info.id}: {e}", exc_info=True)
+        finally:
+            with self._resuming_lock:
+                self._resuming_ids.discard(index_info.id)
 
     def remove_jobs_for_deleted_settings(self, settings):
         """Remove jobs for deleted settings"""

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Literal, Optional, List, ClassVar, Dict, Sequence
 from typing_extensions import Annotated
@@ -34,6 +34,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.constants import FullDatasourceTypes
 from codemie.service.llm_service.llm_service import llm_service
 from sqlmodel import Field as SQLField, Session, select, Column, and_, or_, Index, text as sqltext
+from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.mutable import MutableList
 from sqlalchemy.orm.exc import StaleDataError
@@ -162,6 +163,9 @@ class SharePointIndexInfo(BaseModel):
     auth_type: Literal["integration", "oauth_codemie", "oauth_custom"] = "integration"
     oauth_client_id: Optional[str] = None  # Azure app client ID for oauth_custom
     oauth_tenant_id: Optional[str] = None  # Azure AD tenant ID for single-tenant custom apps
+    # OAuth token fields — populated at indexing start for watchdog resume support
+    access_token: str = ""  # Stored only for oauth_codemie / oauth_custom auth types
+    expires_at: int = 0  # Unix timestamp; 0 means unknown / not set
 
     @field_validator("site_url")
     @classmethod
@@ -871,6 +875,59 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
             entry.user_abilities = Ability(user).list(entry)
 
         return entries
+
+    @classmethod
+    def get_stale_in_progress(cls, threshold_seconds: int, limit: int = 5) -> list["IndexInfo"]:
+        """Return IndexInfo records stuck in IN_PROGRESS for longer than threshold.
+
+        Excludes is_fetching=True records: a job actively fetching a large remote
+        dataset (Confluence export, large Jira query) may legitimately exceed
+        threshold_seconds without refreshing update_date — it is not stuck.
+        """
+        with Session(cls.get_engine()) as session:
+            cutoff = datetime.now() - timedelta(seconds=threshold_seconds)
+            statement = (
+                select(cls)
+                .where(cls.completed == False)  # noqa: E712
+                .where(cls.error == False)  # noqa: E712
+                .where(cls.is_fetching == False)  # noqa: E712
+                .where(or_(cls.update_date.is_(None), cls.update_date < cutoff))
+                .order_by(cls.update_date.asc())
+                .limit(limit)
+            )
+            return session.exec(statement).all()
+
+    @classmethod
+    def try_claim_for_resume(cls, index_id: str, threshold_seconds: int) -> bool:
+        """Atomically claim a stale IN_PROGRESS record for resume.
+
+        Uses a conditional UPDATE so only one caller (pod) wins when multiple
+        pods detect the same stale job simultaneously. Returns True if this
+        caller successfully claimed the record (rowcount == 1), False if another
+        caller already claimed or the record is no longer stale.
+
+        Sets update_date to one second past the staleness cutoff rather than
+        datetime.now() to avoid corrupting the incremental reindex watermark:
+        update_date is read back as last_reindex_date by incremental processors
+        (Jira, Confluence, etc.) to determine which documents to fetch.
+        """
+
+        cutoff = datetime.now() - timedelta(seconds=threshold_seconds)
+        # Stay just inside the stale window so the claim timestamp does not
+        # drift the incremental watermark far into the future.
+        claim_timestamp = cutoff + timedelta(seconds=1)
+        stmt = (
+            sa_update(cls)
+            .where(cls.id == index_id)
+            .where(cls.completed == False)  # noqa: E712
+            .where(cls.error == False)  # noqa: E712
+            .where(or_(cls.update_date.is_(None), cls.update_date < cutoff))
+            .values(update_date=claim_timestamp)
+        )
+        with Session(cls.get_engine()) as session:
+            result = session.execute(stmt)
+            session.commit()
+            return result.rowcount == 1
 
     @classmethod
     def filter_by_project_and_repo(cls, project_name: str, repo_name: str) -> Sequence["IndexInfo"]:
