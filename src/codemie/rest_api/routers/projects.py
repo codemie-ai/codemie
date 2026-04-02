@@ -212,20 +212,6 @@ class BulkAssignmentResponse(BaseModel):
     results: list[BulkAssignmentResultItem]
 
 
-class CsvImportRowResult(BaseModel):
-    """Per-row result from a CSV import validation."""
-
-    email: str
-    role: str
-    error: str | None
-
-
-class CsvImportValidationResponse(BaseModel):
-    """Response for CSV import dry-run validation."""
-
-    users: list[CsvImportRowResult]
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -542,38 +528,8 @@ def bulk_assign_users_to_project(
     )
 
 
-@router.post("/projects/{projectName}/import-users/validate", response_model=CsvImportValidationResponse)
-def validate_users_from_csv(
-    file: UploadFile,
-    project_name: str = Path(alias="projectName"),
-    authorized_project: Application = Depends(_authorize_project_access),
-):
-    """Dry-run validation of a CSV file for user import.
-
-    Validates each row (email format, role, system user existence) without
-    modifying any data. Returns per-row results with email, role, and error.
-    Structural errors (decode failure, missing columns, row count) still return 422.
-    """
-    from codemie.service.project.csv_import_service import MAX_CSV_BYTES, csv_import_service
-
-    _ensure_user_management_enabled()
-
-    content = file.file.read(MAX_CSV_BYTES + 1)
-    if len(content) > MAX_CSV_BYTES:
-        raise ExtendedHTTPException(
-            code=413,
-            message="File too large",
-            details=f"CSV file must not exceed {MAX_CSV_BYTES // (1024 * 1024)} MB",
-        )
-
-    with get_session() as session:
-        results = csv_import_service.validate_csv(session=session, content=content)
-
-    return CsvImportValidationResponse(users=[CsvImportRowResult(**r) for r in results])
-
-
 @router.post("/projects/{projectName}/import-users", response_model=BulkAssignmentResponse)
-def import_users_from_csv(
+def assign_users_from_csv(
     request: Request,
     file: UploadFile,
     project_name: str = Path(alias="projectName"),

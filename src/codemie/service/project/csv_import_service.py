@@ -34,18 +34,11 @@ COLUMNS = SimpleNamespace(EMAIL="email", ROLE="role")
 ERRORS = SimpleNamespace(
     DECODE_FAILED="CSV decoding failed",
     VALIDATION_FAILED="CSV validation failed",
-    INVALID_EMAIL="Invalid email address: '{}'",
-    INVALID_ROLE="Invalid role '{}'. Allowed values: {}",
-    DUPLICATE_EMAIL="Duplicate email: '{}' appears more than once",
-    USER_NOT_FOUND="User not found for email: '{}'",
-    MISSING_EMAIL_COLUMN="CSV must contain an '{}' column",
-    EMPTY_CSV="CSV file must contain at least one data row",
-    TOO_MANY_ROWS="CSV exceeds the maximum of {} rows (got {})",
-    DECODE_DETAILS="File must be UTF-8 encoded: {}",
+    USERS_NOT_FOUND="Some users could not be found",
 )
 
-ALLOWED_ROLES: frozenset[str] = frozenset({"project_admin", "user"})
-ROLE_TO_IS_ADMIN: dict[str, bool] = {"project_admin": True, "user": False}
+ALLOWED_ROLES: frozenset[str] = frozenset({"administrator", "user"})
+ROLE_TO_IS_ADMIN: dict[str, bool] = {"administrator": True, "user": False}
 DEFAULT_ROLE: str = "user"
 MAX_ROWS: int = 1000
 MAX_CSV_BYTES: int = 5 * 1024 * 1024  # 5 MB
@@ -53,15 +46,6 @@ MAX_CSV_BYTES: int = 5 * 1024 * 1024  # 5 MB
 
 class CsvImportService:
     """Parse a CSV file and bulk-assign users to a project."""
-
-    def validate_csv(self, session: Session, content: bytes) -> list[dict]:
-        """Validate CSV without importing. Returns per-row {email, role, error}.
-
-        Structural errors (decode failure, missing column, empty/oversized CSV) raise 422.
-        Row-level errors (bad email, bad role, user not found) are returned inline.
-        """
-        results = self._parse_and_validate(session, content)
-        return [{"email": r["email"], "role": r["role"], "error": r["error"]} for r in results]
 
     def assign_from_csv(
         self,
@@ -88,21 +72,8 @@ class CsvImportService:
         Raises:
             ExtendedHTTPException(422): On CSV parse errors or unresolvable emails
         """
-        results = self._parse_and_validate(session, content)
-
-        row_errors = [{"row": i + 1, "reason": r["error"]} for i, r in enumerate(results) if r["error"]]
-        if row_errors:
-            logger.warning(
-                f"csv_import_validation_failed: project={project_name}, "
-                f"error_count={len(row_errors)}, by={actor.id}"
-            )
-            raise ExtendedHTTPException(
-                code=422,
-                message=ERRORS.VALIDATION_FAILED,
-                details={"validation_errors": row_errors},
-            )
-
-        users = [{"user_id": r["user_id"], "is_project_admin": ROLE_TO_IS_ADMIN[r["role"]]} for r in results]
+        parsed_rows = self._parse(content)
+        users = self._resolve_emails(session, parsed_rows, project_name, actor)
         return project_assignment_service.bulk_assign_users_to_project(
             session=session,
             project=project,
@@ -112,68 +83,22 @@ class CsvImportService:
             action=action,
         )
 
-    def _parse_and_validate(self, session: Session, content: bytes) -> list[dict]:
-        """Core pipeline: decode → structural checks → per-row validation → DB email lookup.
+    # ------------------------------------------------------------------
+    # Private — parsing
+    # ------------------------------------------------------------------
 
-        Structural errors (decode failure, missing column, empty/oversized CSV) raise 422.
-        Row-level errors (bad email, bad role, user not found) are returned inline.
+    def _parse(self, content: bytes) -> list[dict]:
+        """Decode and validate CSV bytes, returning a list of validated row dicts.
 
-        Each result dict: {email, role, error (str | None), user_id (str | None)}
+        Each returned dict has the keys: ``email``, ``role``, ``is_project_admin``.
+        All row-level errors are collected before raising.
         """
         text = self._decode(content)
         reader = csv.DictReader(StringIO(text))
         self._validate_columns(reader)
         rows = list(reader)
         self._validate_row_count(rows)
-
-        results, valid_emails = self._build_row_results(rows)
-        if valid_emails:
-            self._resolve_db_users(session, results, valid_emails)
-        return results
-
-    def _build_row_results(self, rows: list) -> tuple[list[dict], list[str]]:
-        """Validate each row and return results list plus format-valid email list."""
-        results: list[dict] = []
-        valid_emails: list[str] = []
-        seen_emails: set[str] = set()
-
-        for row in rows:
-            email = (row.get(COLUMNS.EMAIL) or "").strip().lower()
-            role = (row.get(COLUMNS.ROLE) or "").strip() or DEFAULT_ROLE
-            errors = self._validate_row(email, role, seen_emails)
-            error = "; ".join(errors) if errors else None
-            results.append({"email": email, "role": role, "error": error, "user_id": None})
-            if not errors:
-                seen_emails.add(email)
-                valid_emails.append(email)
-
-        return results, valid_emails
-
-    @staticmethod
-    def _validate_row(email: str, role: str, seen_emails: set[str]) -> list[str]:
-        """Return a list of validation error strings for a single row."""
-        errors: list[str] = []
-
-        if role not in ALLOWED_ROLES:
-            errors.append(ERRORS.INVALID_ROLE.format(role, sorted(ALLOWED_ROLES)))
-
-        if not errors and email in seen_emails:
-            errors.append(ERRORS.DUPLICATE_EMAIL.format(email))
-
-        return errors
-
-    @staticmethod
-    def _resolve_db_users(session: Session, results: list[dict], valid_emails: list[str]) -> None:
-        """Single DB round-trip: populate user_id for valid rows or set not-found error."""
-        found = user_repository.get_by_emails(session, valid_emails)
-        for row in results:
-            if row["error"] is not None:
-                continue
-            db_user = found.get(row["email"])
-            if db_user:
-                row["user_id"] = db_user.id
-            else:
-                row["error"] = ERRORS.USER_NOT_FOUND.format(row["email"])
+        return self._validate_rows(rows)
 
     @staticmethod
     def _decode(content: bytes) -> str:
@@ -183,7 +108,7 @@ class CsvImportService:
             raise ExtendedHTTPException(
                 code=422,
                 message=ERRORS.DECODE_FAILED,
-                details=ERRORS.DECODE_DETAILS.format(exc),
+                details=f"File must be UTF-8 encoded: {exc}",
             )
 
     @staticmethod
@@ -192,7 +117,7 @@ class CsvImportService:
             raise ExtendedHTTPException(
                 code=422,
                 message=ERRORS.VALIDATION_FAILED,
-                details=ERRORS.MISSING_EMAIL_COLUMN.format(COLUMNS.EMAIL),
+                details=f"CSV must contain an '{COLUMNS.EMAIL}' column",
             )
 
     @staticmethod
@@ -201,13 +126,13 @@ class CsvImportService:
             raise ExtendedHTTPException(
                 code=422,
                 message=ERRORS.VALIDATION_FAILED,
-                details=ERRORS.EMPTY_CSV,
+                details="CSV file must contain at least one data row",
             )
         if len(rows) > MAX_ROWS:
             raise ExtendedHTTPException(
                 code=422,
                 message=ERRORS.VALIDATION_FAILED,
-                details=ERRORS.TOO_MANY_ROWS.format(MAX_ROWS, len(rows)),
+                details=f"CSV exceeds the maximum of {MAX_ROWS} rows (got {len(rows)})",
             )
 
     @staticmethod
