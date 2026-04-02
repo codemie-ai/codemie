@@ -60,15 +60,16 @@ class ProjectAssignmentService:
         raise ExtendedHTTPException(code=404, message="Project not found")
 
     @staticmethod
-    def _reject_if_creator(project: Application, user_ids: list[str], project_name: str) -> None:
+    def _reject_if_creator(session: Session, project: Application, user_ids: list[str], project_name: str) -> None:
         """Raise 400 if any of the given user_ids is the project creator."""
         if project.created_by in user_ids:
+            creator = user_repository.get_by_id(session, project.created_by)
+            creator_name = creator.username if creator else project.created_by
             raise ExtendedHTTPException(
                 code=400,
                 message="Cannot remove the project creator from the project",
                 details=(
-                    f"User '{project.created_by}' is the creator of project "
-                    f"'{project_name}' and cannot be unassigned"
+                    f"User '{creator_name}' is the creator of project " f"'{project_name}' and cannot be unassigned"
                 ),
                 help="The project creator must always remain a member of the project",
             )
@@ -383,7 +384,7 @@ class ProjectAssignmentService:
             ExtendedHTTPException: On validation failures
         """
         ProjectAssignmentService._reject_if_personal_project(project, actor, action)
-        ProjectAssignmentService._reject_if_creator(project, user_ids, project_name)
+        ProjectAssignmentService._reject_if_creator(session, project, user_ids, project_name)
 
         # Check for duplicate user_ids in request
         unique_ids = set(user_ids)
@@ -461,7 +462,7 @@ class ProjectAssignmentService:
             ExtendedHTTPException: On validation failures
         """
         ProjectAssignmentService._reject_if_personal_project(project, actor, action)
-        ProjectAssignmentService._reject_if_creator(project, [user_id], project_name)
+        ProjectAssignmentService._reject_if_creator(session, project, [user_id], project_name)
         ProjectAssignmentService._validate_user_id_format(user_id)
 
         # Validate target user exists

@@ -492,14 +492,14 @@ class TestApplyPlatformAdminProjectFilter:
         return query
 
     def test_adds_single_where_clause_with_two_conditions(self):
-        """Combined filter adds a single WHERE clause with ~is_admin and EXISTS conditions."""
+        """Combined filter adds a single WHERE clause with one EXISTS condition (project-scoped)."""
         query = self._make_mock_query()
 
         result = UserRepository._apply_platform_admin_project_filter(query, ["proj-a", "proj-b"])
 
         query.where.assert_called_once()
         args = query.where.call_args[0]
-        assert len(args) == 2  # ~is_admin + EXISTS(is_project_admin AND project_name IN ...)
+        assert len(args) == 1  # EXISTS(is_project_admin AND project_name IN ...)
         assert result is query
 
     def test_exists_subquery_differs_from_plain_platform_admin_filter(self):
@@ -513,7 +513,7 @@ class TestApplyPlatformAdminProjectFilter:
         args_combined = query_combined.where.call_args[0]
         args_plain = query_plain.where.call_args[0]
 
-        assert len(args_combined) == 2
-        assert len(args_plain) == 2
-        # Same NOT-super-admin condition but different EXISTS subquery
-        assert str(args_combined[1]) != str(args_plain[1])
+        assert len(args_combined) == 1  # project-scoped EXISTS only
+        assert len(args_plain) == 2  # ~is_admin + EXISTS without project scope
+        # The EXISTS subqueries differ: combined is project-scoped, plain is not
+        assert str(args_combined[0]) != str(args_plain[1])
