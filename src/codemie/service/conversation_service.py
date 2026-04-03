@@ -40,12 +40,12 @@ from codemie.rest_api.models.conversation import (
     ConversationListItem,
 )
 from codemie.rest_api.models.index import SortOrder
-from codemie.service.conversation.history_materializer import materialize_history
 from codemie.rest_api.models.conversation_folder import ConversationFolder
 from codemie.rest_api.models.feedback import FeedbackRequest, FeedbackDeleteRequest
 from codemie.rest_api.models.share.shared_conversation import SharedConversation
 from codemie.rest_api.models.standard import AuthorEnum
 from codemie.rest_api.security.user import User
+from codemie.service.conversation.history_materializer import materialize_workflow_conversation
 from codemie.service.llm_service.llm_service import LLMService
 from codemie.service.monitoring.conversation_monitoring_service import ConversationMonitoringService
 
@@ -1260,7 +1260,7 @@ class ConversationService:
         messages = [GeneratedMessage.model_validate(m) for m in raw_messages]
 
         initial_assistant_id = meta_row.initial_assistant_id
-        messages = materialize_history(messages, initial_assistant_id)
+        materialized = materialize_workflow_conversation(messages, initial_assistant_id)
 
         # Exclude synthetic aggregation columns before model instantiation.
         conv_kwargs = {
@@ -1269,8 +1269,10 @@ class ConversationService:
             if k not in ('total_count', 'very_first_msg_at', 'very_last_msg_at')
         }
 
+        conversation = Conversation(**conv_kwargs, history=materialized.history)
+
         return (
-            Conversation(**conv_kwargs, history=messages),
+            conversation,
             meta_row.total_count,
             meta_row.very_first_msg_at,
             meta_row.very_last_msg_at,

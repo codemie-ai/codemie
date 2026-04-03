@@ -231,3 +231,32 @@ class TestWorkflowExecution:
             mock_ability_instance.can.return_value = False
             result = WorkflowExecution.get_by_workflow_id('workflow_123', user=mock_user)
             assert len(result) == 0
+
+
+class TestWorkflowExecutionStateResponseStateId:
+    """Tests for state_id field on WorkflowExecutionStateResponse."""
+
+    def test_state_id_uses_db_value_when_set(self):
+        """When state_id is stored in DB (new records), it is returned as-is."""
+        from codemie.core.workflow_models.workflow_execution import WorkflowExecutionStateResponse
+
+        response = WorkflowExecutionStateResponse(
+            execution_id="exec-1",
+            name="assistant_2 1 of 5",
+            state_id="assistant_2",
+        )
+
+        assert response.state_id == "assistant_2"
+
+    def test_state_id_not_overridden_when_explicitly_provided(self):
+        """Explicitly provided state_id is never overridden by model_post_init."""
+        from codemie.core.workflow_models.workflow_execution import WorkflowExecutionStateResponse
+
+        response = WorkflowExecutionStateResponse(
+            execution_id="exec-1",
+            name="assistant_2 3 of 7",
+            state_id="assistant_2",
+        )
+
+        assert response.state_id == "assistant_2"
+        assert response.name == "assistant_2 3 of 7"

@@ -18,7 +18,7 @@ import json
 from typing import List, Optional
 
 from codemie_tools.base.models import Tool
-from fastapi import APIRouter, Depends, status, UploadFile, Response, Query
+from fastapi import APIRouter, Depends, Request, status, UploadFile, Response, Query
 from fastapi.encoders import jsonable_encoder
 from starlette.responses import StreamingResponse
 
@@ -35,6 +35,7 @@ from codemie.core.models import (
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.base import BaseModelWithSQLSupport
 from codemie.core.workflow_models import WorkflowConfig
+from codemie.core.workflow_models.workflow_execution import UpdateWorkflowExecutionOutputRequest
 from codemie.rest_api.models.conversation import (
     Conversation,
     AssistantDetails,
@@ -789,6 +790,165 @@ def _get_streaming_response(
         details=EXPORT_FORMAT_NOT_SUPPORTED_DETAILS,
         help=EXPORT_FORMAT_NOT_SUPPORTED_HELP,
     )
+
+
+@router.post(
+    "/conversations/{conversation_id}/resume",
+    summary="Resume an interrupted workflow conversation with streaming",
+)
+def resume_conversation(
+    conversation_id: str,
+    raw_request: Request,
+    user: User = Depends(authenticate),
+) -> StreamingResponse:
+    from codemie.core.dependecies import set_disable_prompt_cache
+    from codemie.core.dual_queue import DualQueue
+    from codemie.core.thought_queue import ThoughtQueue
+    from codemie.core.thread import ThreadedGenerator
+    from codemie.core.workflow_models import WorkflowExecutionStatusEnum
+    from codemie.rest_api.routers.utils import _handle_streaming_execution
+    from codemie.service.workflow_service import WorkflowService
+    from codemie.workflows.workflow import WorkflowExecutor
+
+    conversation = Conversation.find_by_id(conversation_id)
+
+    if not conversation:
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message=CONVERSATION_NOT_FOUND_MESSAGE,
+            details=f"The conversation with ID [{conversation_id}] could not be found in the system.",
+            help=CONVERSATION_NOT_FOUND_HELP,
+        )
+
+    if not Ability(user).can(Action.READ, conversation):
+        raise_access_denied("view")
+
+    if not conversation.is_workflow_conversation:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message="Not a workflow conversation",
+            details=f"Conversation [{conversation_id}] is not a workflow conversation and cannot be resumed.",
+            help="Only workflow conversations support resume.",
+        )
+
+    execution_id = next(
+        (m.execution_id for m in reversed(conversation.history or []) if m.workflow_execution_ref),
+        None,
+    )
+    if not execution_id:
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message="No workflow execution found",
+            details=f"No workflow execution reference found in conversation [{conversation_id}].",
+            help="The conversation must have at least one workflow execution.",
+        )
+
+    execution = WorkflowService.find_workflow_execution_by_id(execution_id)
+    if not execution:
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message="Workflow execution not found",
+            details=f"Workflow execution [{execution_id}] could not be found.",
+            help="The execution may have been deleted.",
+        )
+
+    if execution.overall_status != WorkflowExecutionStatusEnum.INTERRUPTED:
+        raise ExtendedHTTPException(
+            code=status.HTTP_409_CONFLICT,
+            message="Workflow execution is not interrupted",
+            details=f"Execution [{execution_id}] has status [{execution.overall_status}] and cannot be resumed.",
+            help="Only executions with status INTERRUPTED can be resumed.",
+        )
+
+    workflow_config = WorkflowService().get_workflow(execution.workflow_id)
+
+    set_disable_prompt_cache(True)
+
+    generator_queue = ThreadedGenerator(
+        request_uuid=execution_id,
+        user_id=user.id,
+        conversation_id=conversation_id,
+    )
+    thought_queue = ThoughtQueue()
+    thought_queue.set_context("user_id", user.id)
+    dual_queue = DualQueue(streaming_queue=generator_queue, persistence_queue=thought_queue)
+
+    workflow = WorkflowExecutor.create_executor(
+        workflow_config=workflow_config,
+        user_input="",
+        user=user,
+        resume_execution=True,
+        execution_id=execution_id,
+        thought_queue=dual_queue,
+    )
+
+    return _handle_streaming_execution(workflow, raw_request, generator_queue)
+
+
+@router.put(
+    "/conversations/{conversation_id}/messages/{history_index}/output",
+    response_model=BaseResponse,
+    summary="Edit the output of the last interrupted workflow state in a conversation",
+)
+def update_conversation_message_output(
+    conversation_id: str,
+    history_index: int,
+    body: UpdateWorkflowExecutionOutputRequest,
+    user: User = Depends(authenticate),
+) -> BaseResponse:
+    from codemie.core.workflow_models import WorkflowExecutionStatusEnum
+    from codemie.service.workflow_execution.workflow_update_output_service import WorkflowUpdateOutputService
+    from codemie.service.workflow_service import WorkflowService
+
+    conversation = Conversation.find_by_id(conversation_id)
+
+    if not conversation:
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message=CONVERSATION_NOT_FOUND_MESSAGE,
+            details=f"The conversation with ID [{conversation_id}] could not be found in the system.",
+            help=CONVERSATION_NOT_FOUND_HELP,
+        )
+
+    if not Ability(user).can(Action.READ, conversation):
+        raise_access_denied("view")
+
+    message = next(
+        (m for m in (conversation.history or []) if m.history_index == history_index and m.workflow_execution_ref),
+        None,
+    )
+    if not message or not message.execution_id:
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message="Workflow execution message not found",
+            details=f"No workflow execution reference at index [{history_index}] in conversation [{conversation_id}].",
+            help="Ensure the history index points to a workflow execution message.",
+        )
+
+    execution = WorkflowService.find_workflow_execution_by_id(message.execution_id)
+    if not execution:
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message="Workflow execution not found",
+            details=f"Workflow execution [{message.execution_id}] could not be found.",
+            help="The execution may have been deleted.",
+        )
+
+    if execution.overall_status != WorkflowExecutionStatusEnum.INTERRUPTED:
+        raise ExtendedHTTPException(
+            code=status.HTTP_409_CONFLICT,
+            message="Workflow execution is not interrupted",
+            details=f"Execution [{message.execution_id}] has status [{execution.overall_status}] and cannot be edited.",
+            help="Only executions with status INTERRUPTED support output editing.",
+        )
+
+    WorkflowUpdateOutputService.run(
+        execution_id=message.execution_id,
+        state_id=body.state_id,
+        new_output=body.output,
+    )
+
+    return BaseResponse(message="Conversation message output updated successfully")
 
 
 @router.post("/speech-recognition", response_model=BaseResponse, dependencies=[Depends(authenticate)])

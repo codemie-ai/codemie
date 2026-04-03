@@ -78,6 +78,7 @@ class AgentMessages(TypedDict):
     final_summary: Annotated[list, list.__add__]
     user_input: str
     previous_execution_state_id: Annotated[Optional[str], lambda left, right: right if right is not None else left]
+    previous_execution_state_name: Annotated[Optional[str], lambda left, right: right if right is not None else left]
 
 
 class SupervisorAgentMessages(AgentMessages):

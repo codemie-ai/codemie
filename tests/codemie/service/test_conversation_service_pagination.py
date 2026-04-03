@@ -19,6 +19,7 @@ Tests for ConversationService pagination methods.
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+from codemie.service.conversation.history_materializer import MaterializedConversation
 from codemie.service.conversation_service import ConversationService
 from codemie.rest_api.models.conversation import Conversation, ConversationListItem
 
@@ -163,7 +164,7 @@ class TestGetConversationHistorySlice:
         row._mapping = data
         return row
 
-    @patch("codemie.service.conversation_service.materialize_history")
+    @patch("codemie.service.conversation_service.materialize_workflow_conversation")
     @patch("codemie.service.conversation_service.get_session")
     def test_returns_history_slice(self, mock_get_session, mock_materialize):
         """Test that method returns paginated history and total count."""
@@ -181,7 +182,7 @@ class TestGetConversationHistorySlice:
 
         mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
-        mock_materialize.side_effect = lambda msgs, _: msgs
+        mock_materialize.side_effect = lambda msgs, _: MaterializedConversation(history=msgs)
 
         conversation, total, first_ts, last_ts = ConversationService.get_conversation_history_slice(
             conversation_id="conv-123", page=0, per_page=50
@@ -219,7 +220,7 @@ class TestGetConversationHistorySlice:
         assert first_ts is None
         assert last_ts is None
 
-    @patch("codemie.service.conversation_service.materialize_history")
+    @patch("codemie.service.conversation_service.materialize_workflow_conversation")
     @patch("codemie.service.conversation_service.get_session")
     def test_history_pagination_multiple_pages(self, mock_get_session, mock_materialize):
         """Test history pagination with 5 messages, 2 per page = 3 pages."""
@@ -229,7 +230,7 @@ class TestGetConversationHistorySlice:
         mock_session = MagicMock()
         mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
-        mock_materialize.side_effect = lambda msgs, _: msgs
+        mock_materialize.side_effect = lambda msgs, _: MaterializedConversation(history=msgs)
 
         # Meta row: total_count lives on the same row as conversation columns (single meta query).
         meta_row = self._get_mock_row()
@@ -288,7 +289,7 @@ class TestGetConversationHistorySlice:
         assert len(conv3.history) == 0
         assert total3 == 5
 
-    @patch("codemie.service.conversation_service.materialize_history")
+    @patch("codemie.service.conversation_service.materialize_workflow_conversation")
     @patch("codemie.service.conversation_service.get_session")
     def test_sql_query_uses_conversation_id(self, mock_get_session, mock_materialize):
         """
@@ -334,7 +335,7 @@ class TestGetConversationHistorySlice:
         assert "LIMIT :lim" in sql_statement
         assert "OFFSET :off" in sql_statement
 
-    @patch("codemie.service.conversation_service.materialize_history")
+    @patch("codemie.service.conversation_service.materialize_workflow_conversation")
     @patch("codemie.service.conversation_service.get_session")
     def test_row_extraction_logic(self, mock_get_session, mock_materialize):
         """
@@ -380,7 +381,7 @@ class TestGetConversationHistorySlice:
         mock_session.exec.side_effect = [mock_result_meta, mock_result_slice]
 
         # Passthrough for materialize
-        mock_materialize.side_effect = lambda msgs, _: msgs
+        mock_materialize.side_effect = lambda msgs, _: MaterializedConversation(history=msgs)
 
         conversation, total, first_ts, last_ts = ConversationService.get_conversation_history_slice("conv-123", 0, 10)
 
@@ -391,7 +392,7 @@ class TestGetConversationHistorySlice:
         assert first_ts is None
         assert last_ts is None
 
-    @patch("codemie.service.conversation_service.materialize_history")
+    @patch("codemie.service.conversation_service.materialize_workflow_conversation")
     @patch("codemie.service.conversation_service.get_session")
     def test_returns_sql_timestamp_bounds(self, mock_get_session, mock_materialize):
         """SQL MIN/MAX subquery values for very_first_msg_at/very_last_msg_at are forwarded."""
@@ -413,7 +414,7 @@ class TestGetConversationHistorySlice:
         mock_session.exec.side_effect = [mock_result_meta, mock_result_slice]
         mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
         mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
-        mock_materialize.side_effect = lambda msgs, _: msgs
+        mock_materialize.side_effect = lambda msgs, _: MaterializedConversation(history=msgs)
 
         conversation, total, first_ts, last_ts = ConversationService.get_conversation_history_slice(
             conversation_id="conv-123", page=0, per_page=50

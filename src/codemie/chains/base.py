@@ -47,6 +47,8 @@ class Thought(BaseModel):
     author_name: Optional[str] = None
     output_format: Optional[str] = ThoughtOutputFormat.TEXT
     error: Optional[bool] = False
+    interrupted: Optional[bool] = False
+    aborted: Optional[bool] = False
     children: List['Thought'] = Field(default_factory=list)
 
 

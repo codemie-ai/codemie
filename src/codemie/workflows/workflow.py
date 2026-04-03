@@ -72,6 +72,8 @@ from codemie.workflows.constants import (
     CONTEXT_STORE_VARIABLE,
     USER_INPUT,
     FIRST_STATE_IN_ITERATION,
+    PREVIOUS_EXECUTION_STATE_ID,
+    PREVIOUS_EXECUTION_STATE_NAME,
 )
 from codemie.workflows.checkpoint_saver import CheckpointSaver
 from codemie.workflows.models import AgentMessages
@@ -646,6 +648,8 @@ class WorkflowExecutor:
                     ITERATION_NODE_NUMBER_KEY: iter_number if iter_number else index + 1,
                     TOTAL_ITERATIONS_KEY: total_iterations,
                     FIRST_STATE_IN_ITERATION: iter_key not in state_schema,
+                    PREVIOUS_EXECUTION_STATE_ID: state_schema.get(PREVIOUS_EXECUTION_STATE_ID),
+                    PREVIOUS_EXECUTION_STATE_NAME: state_schema.get(PREVIOUS_EXECUTION_STATE_NAME),
                 },
             )
             for index, item in enumerate(items_to_process)
@@ -816,7 +820,7 @@ class WorkflowExecutor:
         try:
             self._run_workflow_execution(graph_config, chunks_collector)
         except InterruptedException as e:
-            self._handle_interrupt(str(e.message), chunks_collector)
+            self._handle_interrupt(str(e.message), e.interrupted_state, chunks_collector)
         except Exception as e:
             self._handle_task_exception(e, chunks_collector)
         finally:
@@ -902,7 +906,8 @@ class WorkflowExecutor:
         state = workflow.get_state(config=graph_config)
         if state.next:
             last_message = state.values['messages'][-1].content
-            raise InterruptedException(last_message)
+            interrupted_state = next((s for s in state.next if s in self._interrupt_before_states), state.next[0])
+            raise InterruptedException(last_message, interrupted_state)
 
     def stream(self):
         """Execute workflow in background mode with ThoughtConsumer for database persistence"""
@@ -931,6 +936,7 @@ class WorkflowExecutor:
             inputs = None  # None means langchain will use the last checkpoint
             self.workflow_execution_config = WorkflowService.find_workflow_execution_by_id(self.execution_id)
             self.workflow_execution_config.start_progress()
+            self.workflow_execution_service.resume_states()
         elif self.execution_id:
             # If the execution already present (normal flow from the frontend)
             # Store user_input as string directly
@@ -952,9 +958,9 @@ class WorkflowExecutor:
         """Returns array of states to wait for user confirmation"""
         return [state.id for state in self.workflow_config.states if state.interrupt_before]
 
-    def _handle_interrupt(self, message: str, chunks_collector: List[str]) -> None:
+    def _handle_interrupt(self, message: str, interrupted_state: str, chunks_collector: List[str]) -> None:
         """Handle when workflow was interrupted by user"""
-        self.workflow_execution_service.interrupt()
+        self.workflow_execution_service.interrupt(interrupted_state)
 
         chunks_collector.append(self.INTERRUPT_CONFIRMATION_MSG)
         chunks_collector.append(message)

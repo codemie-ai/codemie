@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,12 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING
 
-from fastapi import status
+from fastapi import Request, status
+from starlette.responses import StreamingResponse
 
-from codemie.configs import config
+from codemie.configs import config, logger
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.thread import ThreadedGenerator
+
+if TYPE_CHECKING:
+    from codemie.workflows.workflow import WorkflowExecutor
+
+NDJSON_MEDIA_TYPE = "application/x-ndjson"
 
 
 executor = ThreadPoolExecutor(max_workers=config.THREAD_POOL_MAX_WORKERS)
@@ -74,3 +84,87 @@ def remove_nulls(obj):
         return [remove_nulls(i) for i in obj if i is not None]
 
     return obj
+
+
+def _handle_streaming_execution(
+    workflow: "WorkflowExecutor", raw_request: Request, generator_queue: ThreadedGenerator
+) -> StreamingResponse:
+    """
+    Handle synchronous streaming workflow execution.
+
+    Args:
+        workflow: WorkflowExecutor already initialized with the generator_queue
+        raw_request: FastAPI request for disconnect handling
+        generator_queue: ThreadedGenerator that was passed during workflow creation
+
+    Returns:
+        StreamingResponse with NDJSON content
+    """
+    raw_request.state.on_disconnect(lambda: _handle_client_disconnect(generator_queue))
+
+    wrapped_stream = _serve_workflow_stream(workflow, generator_queue)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*",
+    }
+
+    return StreamingResponse(
+        content=wrapped_stream,
+        media_type=NDJSON_MEDIA_TYPE,
+        headers=headers,
+    )
+
+
+def _handle_client_disconnect(threaded_generator: ThreadedGenerator):
+    """Stop thread generator queue on client disconnect"""
+    if not threaded_generator.is_closed():
+        logger.debug("Workflow streaming client disconnected")
+        threaded_generator.close()
+
+
+def _serve_workflow_stream(workflow: "WorkflowExecutor", generator_queue: ThreadedGenerator):
+    """
+    Execute workflow in thread and yield streaming data.
+
+    The workflow is already initialized with the generator_queue, so no mutation is needed.
+
+    Args:
+        workflow: WorkflowExecutor with generator_queue already set
+        generator_queue: ThreadedGenerator to read messages from
+    """
+    from codemie.chains.base import StreamedGenerationResult
+    from time import time
+    from types import SimpleNamespace
+
+    execution_start = time()
+
+    thread = threading.Thread(target=workflow.stream_to_client)
+    thread.start()
+
+    try:
+        while True:
+            value = generator_queue.queue.get()
+            if value is not StopIteration:
+                generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
+
+                yield f"{value}\n"
+                generator_queue.queue.task_done()
+            else:
+                from codemie.service.workflow_service import WorkflowService
+
+                execution = WorkflowService.find_workflow_execution_by_id(workflow.execution_id)
+
+                if execution:
+                    final_message = StreamedGenerationResult(
+                        generated=generation_result.thought.message,
+                        time_elapsed=time() - execution_start,
+                        generated_chunk="",
+                        last=True,
+                    )
+                    yield f"{final_message.model_dump_json()}\n"
+
+                break
+    finally:
+        thread.join(timeout=1)

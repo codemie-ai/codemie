@@ -56,9 +56,10 @@ class TaskException(Exception):
 
 
 class InterruptedException(Exception):
-    def __init__(self, *args: object) -> None:
-        self.message = args[0]
-        super().__init__(*args)
+    def __init__(self, message: str, interrupted_state: str) -> None:
+        self.message = message
+        self.interrupted_state = interrupted_state
+        super().__init__(message)
 
 
 class LiteLLMException(Exception):

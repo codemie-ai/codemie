@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import json
-import threading
 from typing import Dict, Optional, List, Annotated
 
 from elasticsearch import NotFoundError
@@ -42,7 +41,10 @@ from codemie.core.workflow_models import (
 from codemie.core.utils import generate_zip, format_json_content, format_markdown_content
 from codemie.core.workflow_models.workflow_config import WorkflowConfigBase, WorkflowMode
 from codemie.rest_api.models.base import PaginatedListResponse
-from codemie.rest_api.routers.utils import raise_access_denied
+from codemie.rest_api.routers.utils import (
+    raise_access_denied,
+    _handle_streaming_execution,
+)
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.request_utils import extract_custom_headers
@@ -67,7 +69,6 @@ router = APIRouter(
 )
 
 WORKFLOW_STARTED_BG_MSG = "Workflow has been started"
-NDJSON_MEDIA_TYPE = "application/x-ndjson"
 
 
 def _validate_workflow_access(workflow_id: str, user: User):
@@ -837,99 +838,6 @@ def export_workflow_execution(
             "If you continue to experience issues, please contact our support team "
             "with the timestamp of your request and any error messages you received.",
         ) from e
-
-
-def _handle_streaming_execution(
-    workflow: WorkflowExecutor, raw_request: Request, generator_queue: ThreadedGenerator
-) -> StreamingResponse:
-    """
-    Handle synchronous streaming workflow execution.
-
-    Args:
-        workflow: WorkflowExecutor already initialized with the generator_queue
-        raw_request: FastAPI request for disconnect handling
-        generator_queue: ThreadedGenerator that was passed during workflow creation
-
-    Returns:
-        StreamingResponse with NDJSON content
-    """
-    # Handle client disconnect
-    raw_request.state.on_disconnect(lambda: _handle_client_disconnect(generator_queue))
-
-    # Serve streaming data
-    wrapped_stream = _serve_workflow_stream(workflow, generator_queue)
-
-    # Add CORS headers explicitly for streaming response (wildcard allowed without credentials)
-    headers = {
-        "Cache-Control": "no-cache",
-        "X-Accel-Buffering": "no",
-        "Access-Control-Allow-Origin": "*",
-    }
-
-    return StreamingResponse(
-        content=wrapped_stream,
-        media_type=NDJSON_MEDIA_TYPE,
-        headers=headers,
-    )
-
-
-def _handle_client_disconnect(threaded_generator: ThreadedGenerator):
-    """Stop thread generator queue on client disconnect"""
-    if not threaded_generator.is_closed():
-        logger.debug("Workflow streaming client disconnected")
-        threaded_generator.close()
-
-
-def _serve_workflow_stream(workflow: WorkflowExecutor, generator_queue: ThreadedGenerator):
-    """
-    Execute workflow in thread and yield streaming data.
-
-    The workflow is already initialized with the generator_queue, so no mutation is needed.
-
-    Args:
-        workflow: WorkflowExecutor with generator_queue already set
-        generator_queue: ThreadedGenerator to read messages from
-    """
-    from codemie.chains.base import StreamedGenerationResult
-    from time import time
-    from types import SimpleNamespace
-
-    execution_start = time()
-
-    # Run workflow in background thread
-    thread = threading.Thread(target=workflow.stream_to_client)
-    thread.start()
-
-    # Yield data from queue
-    try:
-        while True:
-            value = generator_queue.queue.get()
-            if value is not StopIteration:
-                # Parse the streamed generation result
-                generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
-
-                yield f"{value}\n"
-                generator_queue.queue.task_done()
-            else:
-                # Workflow execution finished - send final message with complete output
-                # Get the final workflow output from the execution
-                from codemie.service.workflow_service import WorkflowService
-
-                execution = WorkflowService.find_workflow_execution_by_id(workflow.execution_id)
-
-                # Send final message with the complete workflow output
-                if execution:
-                    final_message = StreamedGenerationResult(
-                        generated=generation_result.thought.message,
-                        time_elapsed=time() - execution_start,
-                        generated_chunk="",
-                        last=True,
-                    )
-                    yield f"{final_message.model_dump_json()}\n"
-
-                break
-    finally:
-        thread.join(timeout=1)
 
 
 def _validate_remote_entities_and_raise(entity: WorkflowConfigBase):

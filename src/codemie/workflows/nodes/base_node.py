@@ -44,6 +44,7 @@ from codemie.workflows.constants import (
     CLEAR_CONTEXT_STORE_KEEP_CURRENT,
     CONTEXT_STORE_KEEP_NEW_ONLY_FLAG,
     PREVIOUS_EXECUTION_STATE_ID,
+    PREVIOUS_EXECUTION_STATE_NAME,
 )
 from codemie.workflows.models import CONTEXT_STORE_DELETE_MARKER, CONTEXT_STORE_APPEND_MARKER
 from codemie.workflows.utils import (
@@ -167,9 +168,13 @@ class BaseNode(ABC, Generic[StateSchemaType]):
             return command
 
         task = self.get_task(state_schema, self.args, self.kwargs)
+        current_node_name = self.get_node_name(state_schema)
+
         execution_state_id = self.workflow_execution_service.start_state(
-            workflow_state_id=self.get_node_name(state_schema),
+            workflow_state_id=current_node_name,
             task=task,
+            preceding_state_id=state_schema.get(PREVIOUS_EXECUTION_STATE_NAME),
+            state_id=self.node_name,
         )
         raw_output = None
 
@@ -181,7 +186,7 @@ class BaseNode(ABC, Generic[StateSchemaType]):
             for callback in self.callbacks:
                 callback.on_node_start(
                     state_id=execution_state_id,
-                    node_name=self.get_node_name(state_schema),
+                    node_name=current_node_name,
                     task=task,
                     execution_context=execution_context,
                 )
@@ -219,7 +224,11 @@ class BaseNode(ABC, Generic[StateSchemaType]):
 
             # Serialize INPUT state (before node execution) with size limits
             # Exclude internal tracking fields from workflow_context
-            state_for_serialization = {k: v for k, v in state_schema.items() if k != PREVIOUS_EXECUTION_STATE_ID}
+            state_for_serialization = {
+                k: v
+                for k, v in state_schema.items()
+                if k not in (PREVIOUS_EXECUTION_STATE_ID, PREVIOUS_EXECUTION_STATE_NAME)
+            }
             serialized_state = serialize_state(state_for_serialization)
             checked_state = check_state_size(serialized_state, self.workflow_execution_service.workflow_execution_id)
 
@@ -229,13 +238,15 @@ class BaseNode(ABC, Generic[StateSchemaType]):
                 workflow_context=checked_state,
             )
 
-            # Store current execution state ID for next node in this track
+            # Store current execution state ID and name for next node in this track
             if isinstance(final_state, Command):
                 update = dict(final_state.update) if final_state.update else {}
                 update[PREVIOUS_EXECUTION_STATE_ID] = execution_state_id
+                update[PREVIOUS_EXECUTION_STATE_NAME] = self.node_name
                 final_state = Command(goto=final_state.goto, update=update)
             else:
                 final_state[PREVIOUS_EXECUTION_STATE_ID] = execution_state_id
+                final_state[PREVIOUS_EXECUTION_STATE_NAME] = self.node_name
 
             return final_state
         except ExecutionAbortedException:

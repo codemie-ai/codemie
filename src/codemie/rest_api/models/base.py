@@ -474,7 +474,9 @@ class BaseModelWithSQLSupport(CommonBaseModel):
             return session.exec(statement).first()
 
     @classmethod
-    def get_all_by_fields(cls, fields: Dict[str, Any]) -> List["BaseModelWithSQLSupport"]:
+    def get_all_by_fields(
+        cls, fields: Dict[str, Any], order_by: str | None = None, order_desc: bool = False
+    ) -> List["BaseModelWithSQLSupport"]:
         with Session(cls.get_engine()) as session:
             statement = select(cls)
             for key, value in fields.items():
@@ -485,6 +487,9 @@ class BaseModelWithSQLSupport(CommonBaseModel):
                     statement = statement.where(list_condition)
                 else:
                     statement = statement.where(cls.get_field_expression(key) == value)
+            if order_by:
+                col = cls.get_field_expression(order_by)
+                statement = statement.order_by(col.desc() if order_desc else col.asc())
             return session.exec(statement).all()
 
     @classmethod

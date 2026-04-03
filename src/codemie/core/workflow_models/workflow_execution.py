@@ -107,10 +107,12 @@ class WorkflowExecutionStateThought(BaseModelWithSQLSupport, table=True):
 class BaseWorkflowExecutionState(CommonBaseModel):
     execution_id: str = SQLField(index=True)
     name: str
+    state_id: Optional[str] = None
     task: Optional[str] = ""
     status: WorkflowExecutionStatusEnum = WorkflowExecutionStatusEnum.NOT_STARTED
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    preceding_state_id: Optional[str] = None
 
 
 class WorkflowExecutionState(BaseModelWithSQLSupport, BaseWorkflowExecutionState, table=True):

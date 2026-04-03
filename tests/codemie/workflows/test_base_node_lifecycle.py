@@ -1481,3 +1481,143 @@ def test_previous_execution_state_id_added_to_command_with_no_update(
     assert result.update is not None
     assert PREVIOUS_EXECUTION_STATE_ID in result.update
     assert result.update[PREVIOUS_EXECUTION_STATE_ID] == "state_123"
+
+
+# ---------------------------------------------------------------------------
+# preceding_state_id propagation
+# ---------------------------------------------------------------------------
+
+
+class TestPrecedingStateName:
+    """Tests that preceding_state_id is passed to start_state and propagated."""
+
+    def _make_node(self, mock_workflow_execution_service, mock_thought_queue, node_name="current_node"):
+        from codemie.workflows.constants import PREVIOUS_EXECUTION_STATE_NAME  # noqa: F401 (used by callers)
+
+        workflow_state = WorkflowState(
+            id=node_name,
+            task="Test",
+            assistant_id="assistant_1",
+            next=WorkflowNextState(state_id="next"),
+        )
+        node = MockNode(
+            callbacks=[],
+            workflow_execution_service=mock_workflow_execution_service,
+            thought_queue=mock_thought_queue,
+            node_name=node_name,
+            workflow_state=workflow_state,
+        )
+        node.mock_execute_result = "output"
+        return node
+
+    def test_passes_none_when_no_previous_state(self, mock_workflow_execution_service, mock_thought_queue):
+        """First node in workflow passes preceding_state_id=None to start_state."""
+        from codemie.workflows.constants import PREVIOUS_EXECUTION_STATE_NAME
+
+        node = self._make_node(mock_workflow_execution_service, mock_thought_queue)
+        state_schema = {MESSAGES_VARIABLE: [], CONTEXT_STORE_VARIABLE: {}}
+
+        node(state_schema)
+
+        mock_workflow_execution_service.start_state.assert_called_once_with(
+            workflow_state_id="current_node",
+            task="Test Task",
+            preceding_state_id=None,
+            state_id="current_node",
+        )
+        _ = PREVIOUS_EXECUTION_STATE_NAME  # referenced to confirm import
+
+    def test_passes_preceding_name_from_state_schema(self, mock_workflow_execution_service, mock_thought_queue):
+        """Node reads preceding_state_id from incoming state schema and passes it to start_state."""
+        from codemie.workflows.constants import PREVIOUS_EXECUTION_STATE_NAME
+
+        node = self._make_node(mock_workflow_execution_service, mock_thought_queue, node_name="node_b")
+        state_schema = {
+            MESSAGES_VARIABLE: [],
+            CONTEXT_STORE_VARIABLE: {},
+            PREVIOUS_EXECUTION_STATE_NAME: "node_a",
+        }
+
+        node(state_schema)
+
+        mock_workflow_execution_service.start_state.assert_called_once_with(
+            workflow_state_id="node_b",
+            task="Test Task",
+            preceding_state_id="node_a",
+            state_id="node_b",
+        )
+
+    def test_stores_current_node_name_in_final_state(self, mock_workflow_execution_service, mock_thought_queue):
+        """After execution, PREVIOUS_EXECUTION_STATE_NAME in output equals the current node name."""
+        from codemie.workflows.constants import PREVIOUS_EXECUTION_STATE_NAME
+
+        node = self._make_node(mock_workflow_execution_service, mock_thought_queue, node_name="node_a")
+        state_schema = {MESSAGES_VARIABLE: [], CONTEXT_STORE_VARIABLE: {}}
+
+        result = node(state_schema)
+
+        assert PREVIOUS_EXECUTION_STATE_NAME in result
+        assert result[PREVIOUS_EXECUTION_STATE_NAME] == "node_a"
+
+    def test_stores_current_node_name_in_command_update(self, mock_workflow_execution_service, mock_thought_queue):
+        """When finalize_and_update_state returns a Command, the name is injected into command.update."""
+        from unittest.mock import Mock
+        from langgraph.graph import END
+        from codemie.workflows.constants import PREVIOUS_EXECUTION_STATE_NAME
+
+        node = self._make_node(mock_workflow_execution_service, mock_thought_queue, node_name="node_a")
+        state_schema = {MESSAGES_VARIABLE: [], CONTEXT_STORE_VARIABLE: {}}
+        node.finalize_and_update_state = Mock(return_value=Command(goto=END))
+
+        result = node(state_schema)
+
+        assert isinstance(result, Command)
+        assert result.update[PREVIOUS_EXECUTION_STATE_NAME] == "node_a"
+
+
+class TestStateId:
+    """Tests that the raw node name (state_id) is passed to start_state, separate from the display name."""
+
+    def _make_node(self, mock_workflow_execution_service, mock_thought_queue, node_name):
+        workflow_state = WorkflowState(
+            id=node_name,
+            task="Test",
+            assistant_id="assistant_1",
+            next=WorkflowNextState(state_id="next"),
+        )
+        node = MockNode(
+            callbacks=[],
+            workflow_execution_service=mock_workflow_execution_service,
+            thought_queue=mock_thought_queue,
+            node_name=node_name,
+            workflow_state=workflow_state,
+        )
+        node.mock_execute_result = "output"
+        return node
+
+    def test_passes_raw_node_name_as_state_id(self, mock_workflow_execution_service, mock_thought_queue):
+        """start_state receives state_id equal to the node_name regardless of display name."""
+
+        node = self._make_node(mock_workflow_execution_service, mock_thought_queue, node_name="assistant_2")
+        state_schema = {MESSAGES_VARIABLE: [], CONTEXT_STORE_VARIABLE: {}}
+
+        node(state_schema)
+
+        _, kwargs = mock_workflow_execution_service.start_state.call_args
+        assert kwargs["state_id"] == "assistant_2"
+
+    def test_state_id_is_node_name_even_when_display_name_differs(
+        self, mock_workflow_execution_service, mock_thought_queue
+    ):
+        """state_id stays as the raw node_name even if workflow_state_id (display name) is different."""
+
+        node = self._make_node(mock_workflow_execution_service, mock_thought_queue, node_name="assistant_2")
+        # Simulate an override of get_node_name to return a computed display name
+        node.get_node_name = lambda _: "assistant_2 1 of 5"
+        state_schema = {MESSAGES_VARIABLE: [], CONTEXT_STORE_VARIABLE: {}}
+
+        node(state_schema)
+
+        _, kwargs = mock_workflow_execution_service.start_state.call_args
+        assert kwargs["workflow_state_id"] == "assistant_2 1 of 5"
+        assert kwargs["state_id"] == "assistant_2"

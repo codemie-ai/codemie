@@ -242,6 +242,20 @@ class WorkflowNextState(BaseModel):
         # Each iteration appends its output so context_store["output"] becomes a list
     """
 
+    def leads_to(self) -> set[str]:
+        targets: set[str] = set()
+        if self.state_id:
+            targets.add(self.state_id)
+        if self.state_ids:
+            targets.update(self.state_ids)
+        if self.condition:
+            targets.add(self.condition.then)
+            targets.add(self.condition.otherwise)
+        if self.switch:
+            targets.add(self.switch.default)
+            targets.update(c.state_id for c in self.switch.cases)
+        return targets
+
     @model_validator(mode='before')
     def handle_keep_history_backward_compatibility(cls, values: dict) -> dict:
         """Handle backward compatibility for deprecated keep_history field."""

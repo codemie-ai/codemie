@@ -29,6 +29,7 @@ from codemie.service.request_summary_manager import request_summary_manager
 from codemie.service.monitoring.workflow_monitoring_service import WorkflowMonitoringService
 
 REFRESH_WAIT_FOR = 'wait_for'
+EXECUTION_ID_KEYWORD = 'execution_id.keyword'
 
 
 class WorkflowExecutionService:
@@ -96,11 +97,9 @@ class WorkflowExecutionService:
             self.workflow_execution.tokens_usage = self._calculate_tokens_usage(self.workflow_execution_id)
             self.workflow_execution.update(refresh=True)
 
-            states = WorkflowExecutionState.get_all_by_fields(
-                fields={"execution_id.keyword": self.workflow_execution_id}
-            )
+            states = WorkflowExecutionState.get_all_by_fields(fields={EXECUTION_ID_KEYWORD: self.workflow_execution_id})
             for state in states:
-                if state.status == WorkflowExecutionStatusEnum.IN_PROGRESS:
+                if state.status in (WorkflowExecutionStatusEnum.IN_PROGRESS, WorkflowExecutionStatusEnum.INTERRUPTED):
                     state.status = WorkflowExecutionStatusEnum.ABORTED
                     state.save()
 
@@ -108,7 +107,7 @@ class WorkflowExecutionService:
             workflow_config=self.workflow_config, workflow_execution_config=self.workflow_execution, user=self.user
         )
 
-    def interrupt(self):
+    def interrupt(self, interrupted_state: str):
         with self.workflow_execution_lock:
             self._refresh_workflow_execution()
             if not self.workflow_execution:
@@ -126,6 +125,16 @@ class WorkflowExecutionService:
                 f"Overall status for Execution ID: {self.workflow_execution.execution_id} "
                 f"set to {WorkflowExecutionStatusEnum.INTERRUPTED}"
             )
+
+            if interrupted_state:
+                self._interrupt_predecessor_state(interrupted_state)
+
+    def resume_states(self):
+        states = WorkflowExecutionState.get_all_by_fields(fields={EXECUTION_ID_KEYWORD: self.workflow_execution_id})
+        for state in states:
+            if state.status == WorkflowExecutionStatusEnum.INTERRUPTED:
+                state.status = WorkflowExecutionStatusEnum.SUCCEEDED
+                state.save()
 
     def finish(self):
         with self.workflow_execution_lock:
@@ -163,15 +172,23 @@ class WorkflowExecutionService:
         )
         request_summary_manager.clear_summary(self.workflow_execution_id)
 
-    def start_state(self, workflow_state_id: str, task: Any) -> str:
+    def start_state(
+        self,
+        workflow_state_id: str,
+        task: Any,
+        preceding_state_id: Optional[str] = None,
+        state_id: Optional[str] = None,
+    ) -> str:
         with self.workflow_execution_lock:
             started_at = datetime.now()
             state = WorkflowExecutionState(
                 execution_id=self.workflow_execution_id,
                 name=workflow_state_id,
+                state_id=state_id or workflow_state_id,
                 task=str(task),
                 status=WorkflowExecutionStatusEnum.IN_PROGRESS,
                 started_at=started_at,
+                preceding_state_id=preceding_state_id,
             )
             state.save()
 
@@ -362,6 +379,15 @@ class WorkflowExecutionService:
             f"thoughts count: {len(thoughts)}"
         )
 
+    def _interrupt_predecessor_state(self, interrupted_state_id: str) -> None:
+        """Marks states that transition directly into the interrupted state as INTERRUPTED."""
+        predecessor_ids = {s.id for s in self.workflow_config.states if interrupted_state_id in s.next.leads_to()}
+        states = WorkflowExecutionState.get_all_by_fields(fields={EXECUTION_ID_KEYWORD: self.workflow_execution_id})
+        for state in states:
+            if state.name in predecessor_ids and state.status == WorkflowExecutionStatusEnum.SUCCEEDED:
+                state.status = WorkflowExecutionStatusEnum.INTERRUPTED
+                state.save()
+
     def _get_thoughts_from_states(self):
         """
         Retrieve thoughts from all workflow execution states.
@@ -374,9 +400,7 @@ class WorkflowExecutionService:
         thoughts = []
         try:
             # Get all states for this execution
-            states = WorkflowExecutionState.get_all_by_fields(
-                fields={"execution_id.keyword": self.workflow_execution_id}
-            )
+            states = WorkflowExecutionState.get_all_by_fields(fields={EXECUTION_ID_KEYWORD: self.workflow_execution_id})
 
             # Get thoughts for each state
             state_ids = [state.id for state in states]

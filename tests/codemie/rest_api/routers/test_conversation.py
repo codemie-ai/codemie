@@ -221,3 +221,163 @@ async def test_get_conversation_folder_list(mock_get_all_by_id, conversation_fol
     folder_ids = [folder["id"] for folder in data]
     assert len(folder_ids) == len(set(folder_ids)), "Folder ids mismatch"
     assert folder_ids[0] == conversation_folder.id
+
+
+# ---------------------------------------------------------------------------
+# Tests for resume_conversation endpoint
+# ---------------------------------------------------------------------------
+
+RESUME_URL = "/v1/conversations/{conv_id}/resume"
+
+
+def _interrupted_workflow_conversation() -> Conversation:
+    return Conversation(
+        id="conv-resume",
+        conversation_id="conv-resume",
+        name="Workflow Conv",
+        is_workflow_conversation=True,
+        initial_assistant_id="wf-1",
+        history=[
+            GeneratedMessage(role="User", message="hello", history_index=0),
+            GeneratedMessage(
+                role="Assistant",
+                message=None,
+                history_index=1,
+                workflow_execution_ref=True,
+                execution_id="exec-001",
+            ),
+        ],
+    )
+
+
+def _interrupted_execution():
+    from unittest.mock import MagicMock
+    from codemie.core.workflow_models import WorkflowExecutionStatusEnum
+
+    execution = MagicMock()
+    execution.overall_status = WorkflowExecutionStatusEnum.INTERRUPTED
+    execution.workflow_id = "wf-1"
+    return execution
+
+
+class TestResumeConversation:
+    @pytest.mark.asyncio
+    async def test_conversation_not_found_returns_404(self):
+        with patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=None):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+                response = await ac.post(RESUME_URL.format(conv_id="missing"))
+
+        assert response.status_code == 404
+        assert response.json()["error"]["message"] == "Conversation not found"
+
+    @pytest.mark.asyncio
+    async def test_not_workflow_conversation_returns_400(self):
+        plain = Conversation(id="conv-1", conversation_id="conv-1", name="Plain")
+        with (
+            patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=plain),
+            patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+                response = await ac.post(RESUME_URL.format(conv_id="conv-1"))
+
+        assert response.status_code == 400
+        assert response.json()["error"]["message"] == "Not a workflow conversation"
+
+    @pytest.mark.asyncio
+    async def test_no_execution_id_in_history_returns_404(self):
+        conv = Conversation(
+            id="conv-1",
+            conversation_id="conv-1",
+            name="Workflow conv",
+            is_workflow_conversation=True,
+            history=[GeneratedMessage(role="User", message="hi", history_index=0)],
+        )
+        with (
+            patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=conv),
+            patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+                response = await ac.post(RESUME_URL.format(conv_id="conv-1"))
+
+        assert response.status_code == 404
+        assert response.json()["error"]["message"] == "No workflow execution found"
+
+    @pytest.mark.asyncio
+    async def test_execution_not_found_returns_404(self):
+        conv = _interrupted_workflow_conversation()
+        with (
+            patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=conv),
+            patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
+            patch("codemie.service.workflow_service.WorkflowService.find_workflow_execution_by_id", return_value=None),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+                response = await ac.post(RESUME_URL.format(conv_id="conv-resume"))
+
+        assert response.status_code == 404
+        assert response.json()["error"]["message"] == "Workflow execution not found"
+
+    @pytest.mark.asyncio
+    async def test_execution_not_interrupted_returns_409(self):
+        from codemie.core.workflow_models import WorkflowExecutionStatusEnum
+        from unittest.mock import MagicMock
+
+        execution = MagicMock()
+        execution.overall_status = WorkflowExecutionStatusEnum.SUCCEEDED
+        conv = _interrupted_workflow_conversation()
+        with (
+            patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=conv),
+            patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
+            patch(
+                "codemie.service.workflow_service.WorkflowService.find_workflow_execution_by_id",
+                return_value=execution,
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+                response = await ac.post(RESUME_URL.format(conv_id="conv-resume"))
+
+        assert response.status_code == 409
+        assert response.json()["error"]["message"] == "Workflow execution is not interrupted"
+
+    @pytest.mark.asyncio
+    async def test_success_marks_interrupted_thoughts_as_completed(self):
+        from unittest.mock import MagicMock
+        from starlette.responses import Response
+
+        execution = _interrupted_execution()
+        conv = _interrupted_workflow_conversation()
+        mock_workflow = MagicMock()
+
+        with (
+            patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=conv),
+            patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
+            patch(
+                "codemie.service.workflow_service.WorkflowService.find_workflow_execution_by_id",
+                return_value=execution,
+            ),
+            patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=MagicMock()),
+            patch(
+                "codemie.workflows.workflow.WorkflowExecutor.create_executor", return_value=mock_workflow
+            ) as mock_create,
+            patch(
+                "codemie.rest_api.routers.utils._handle_streaming_execution",
+                return_value=Response(content="ok", status_code=200),
+            ),
+            patch("codemie.core.dependecies.set_disable_prompt_cache"),
+            patch("codemie.core.thread.ThreadedGenerator"),
+            patch("codemie.core.thought_queue.ThoughtQueue"),
+            patch("codemie.core.dual_queue.DualQueue"),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+                response = await ac.post(RESUME_URL.format(conv_id="conv-resume"))
+
+        assert response.status_code == 200
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs["resume_execution"] is True
+        assert call_kwargs["execution_id"] == "exec-001"

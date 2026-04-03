@@ -372,10 +372,11 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
         Raises:
             KeyError: If conversation not found
         """
-        from codemie.service.conversation.history_materializer import materialize_history
+        from codemie.service.conversation.history_materializer import materialize_workflow_conversation
 
         conversation = super().get_by_id(id_)
-        conversation.history = materialize_history(conversation.history, conversation.initial_assistant_id)
+        result = materialize_workflow_conversation(conversation.history, conversation.initial_assistant_id)
+        conversation.history = result.history
         return conversation
 
     @classmethod
@@ -391,11 +392,12 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
         Returns:
             Conversation with materialized history, or None if not found
         """
-        from codemie.service.conversation.history_materializer import materialize_history
+        from codemie.service.conversation.history_materializer import materialize_workflow_conversation
 
         conversation = super().find_by_id(id_)
         if conversation:
-            conversation.history = materialize_history(conversation.history, conversation.initial_assistant_id)
+            result = materialize_workflow_conversation(conversation.history, conversation.initial_assistant_id)
+            conversation.history = result.history
         return conversation
 
     @classmethod
