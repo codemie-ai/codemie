@@ -30,6 +30,7 @@ from codemie.configs import logger
 from codemie.core.models import GitRepo
 from codemie.datasource.datasources_config import CODE_CONFIG
 from codemie.datasource.loader.base_datasource_loader import BaseDatasourceLoader
+from codemie.datasource.loader.file_extraction_utils import extract_documents_from_bytes, is_binary_extractable
 from codemie.datasource.loader.git_auth_utils import get_github_app_token
 from codemie.rest_api.models.settings import Credentials
 
@@ -41,7 +42,6 @@ excluded_mime_types = [
     'application/x-rar-compressed',  # .rar
     'application/rtf',  # .rtf
     'application/octet-stream',  # .dll, .so, .lib, etc.
-    'application/pdf',  # .pdf
     'application/msword',  # .doc
     'application/x-iso9660-image',  # .iso
     'application/x-tar',  # .tar
@@ -159,13 +159,14 @@ class GitBatchLoader(GitLoader, BaseDatasourceLoader):
     UNIQUE_EXTENSIONS_KEY = 'unique_extensions'
 
     def __init__(self, *args, **kwargs):
-        # Extract auth_header before passing to parent
+        # Extract auth_header and request_uuid before passing to parent
         self.auth_header = kwargs.pop('auth_header', None)
+        self.request_uuid: str | None = kwargs.pop('request_uuid', None)
         super().__init__(*args, **kwargs)
         self.repo = None
 
     @classmethod
-    def create_loader(cls, repo: GitRepo, creds: Credentials):
+    def create_loader(cls, repo: GitRepo, creds: Credentials, request_uuid: str | None = None):
         repo_local_path = repo.get_repo_local_file_path()
         clone_url = _build_clone_url(creds, repo)
 
@@ -179,6 +180,7 @@ class GitBatchLoader(GitLoader, BaseDatasourceLoader):
             repo_path=repo_local_path,
             branch=repo.branch,
             auth_header=auth_header,
+            request_uuid=request_uuid,
             file_filter=lambda file_path: check_file_type(
                 file_name=file_path,
                 files_filter=repo.files_filter,
@@ -290,7 +292,7 @@ class GitBatchLoader(GitLoader, BaseDatasourceLoader):
         for item in self.repo.tree().traverse():
             if self._should_skip_item(item):
                 continue
-            yield self._process_file(item, os.path.join(self.repo_path, item.path))
+            yield from self._process_file(item, os.path.join(self.repo_path, item.path))
 
     def _should_skip_item(self, item: Any):
         if isinstance(item, Submodule):
@@ -328,38 +330,63 @@ class GitBatchLoader(GitLoader, BaseDatasourceLoader):
         :param item_path: Path to the file
         :return: True if the file is binary, False otherwise
         """
+        if is_binary_extractable(item_path):
+            return False  # always allow binary-extractable formats
         mime_type, _ = mimetypes.guess_type(item_path, strict=False)
         return mime_type in excluded_mime_types or (
             mime_type and mime_type.startswith(('image', 'video', 'audio', 'application/vnd', 'application/x-font'))
         )
 
-    def _process_file(self, item, file_path: str) -> Document | None:
+    def _process_file(self, item, file_path: str) -> list[Document]:
         """
-        Load file by file_path and decode its contents forming a Document instance
+        Load file by file_path and decode its contents forming Document instances.
+        Binary files (PDF, DOCX, XLSX, PPTX, MSG, images) are routed through
+        extract_documents_from_bytes(); text files use UTF-8 decoding.
         """
         rel_file_path = os.path.relpath(file_path, self.repo_path)
         try:
             with open(file_path, "rb") as f:
                 content = f.read()
-                file_type = os.path.splitext(item.name)[1]
-
-                text_content = self._decode_content(content, file_path)
-                if text_content is None:
-                    return None
-
-                metadata = {
-                    "source": rel_file_path,
-                    "file_path": rel_file_path,
-                    "file_name": item.name,
-                    "file_type": file_type,
-                }
-                return Document(page_content=text_content, metadata=metadata)
-        except FileNotFoundError:
+            if is_binary_extractable(item.name):
+                return self._process_binary_file(content, rel_file_path, item.name)
+            ext = os.path.splitext(item.name)[1].lower()
+            text_content = self._decode_content(content, file_path)
+            if text_content is None:
+                return []
+            metadata = {
+                "source": rel_file_path,
+                "file_path": rel_file_path,
+                "file_name": item.name,
+                "file_type": ext,
+            }
+            return [Document(page_content=text_content, metadata=metadata)]
+        except (FileNotFoundError, IsADirectoryError):
             logger.error(f"Error reading file {file_path}", exc_info=True)
-            return None
-        except IsADirectoryError:
-            logger.error(f"Error reading file {file_path}", exc_info=True)
-            return None
+            return []
+
+    def _process_binary_file(self, content: bytes, rel_file_path: str, file_name: str) -> list[Document]:
+        """
+        Extract documents from binary file bytes using extract_documents_from_bytes.
+        """
+        try:
+            documents = extract_documents_from_bytes(
+                file_bytes=content,
+                file_name=file_name,
+                request_uuid=self.request_uuid,
+            )
+            for doc in documents:
+                doc.metadata["source"] = rel_file_path
+                doc.metadata["file_path"] = rel_file_path
+                doc.metadata["file_name"] = file_name
+                doc.metadata["file_type"] = os.path.splitext(file_name)[1].lower()
+            logger.debug(f"Extracted {len(documents)} document(s) from binary file {rel_file_path}")
+            return documents
+        except Exception as e:
+            logger.warning(
+                f"Failed to extract binary file {rel_file_path} ({type(e).__name__}): {e}",
+                exc_info=True,
+            )
+            return []
 
     @classmethod
     def _decode_content(cls, content: bytes, file_path: str) -> str | None:

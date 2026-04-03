@@ -46,6 +46,8 @@ class TestIndexKnowledgeBaseFileTypes:
             'zip',
             'mp3',
             'jpg',
+            'jpeg',
+            'png',
         ]
 
 

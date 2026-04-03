@@ -91,23 +91,20 @@ class FilesDatasourceLoader(BaseDatasourceLoader):
         """
         for file_data in self.files_paths:
             file = self.file_repo.read_file(file_data.name, file_data.owner)
-            file_ext = file.name.split('.')[-1].lower()
-            yield self._lazy_load_documents(file, file_ext)
+            yield self._lazy_load_documents(file)
 
-    def _lazy_load_documents(self, file: FileObject, file_ext: str) -> List[Document]:
+    def _lazy_load_documents(self, file: FileObject) -> List[Document]:
         """
         Lazy load documents from the file based on the file extension.
 
         Args:
             file (FileObject): The file object.
-            file_ext (str): The file extension.
 
         Returns:
             List[Document]: A list of documents loaded from the file.
         """
         return extract_documents_from_bytes(
             file_bytes=file.bytes_content(),
-            file_ext=file_ext,
             file_name=file.name,
             request_uuid=self.request_uuid,
             csv_separator=self._csv_separator,

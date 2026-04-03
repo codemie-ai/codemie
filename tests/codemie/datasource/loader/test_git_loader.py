@@ -18,6 +18,7 @@ from unittest.mock import patch, mock_open, MagicMock, Mock
 
 import pytest
 from git import Blob, Submodule
+from langchain_core.documents import Document
 
 from codemie.core.constants import CodeIndexType
 from codemie.core.models import GitRepo
@@ -42,7 +43,7 @@ class TestGitBatchLoader(unittest.TestCase):
 
     def test_is_image(self):
         image_path = "example.jpg"
-        self.assertTrue(GitBatchLoader._is_unsupported_mime_type(image_path))
+        self.assertFalse(GitBatchLoader._is_unsupported_mime_type(image_path))
 
     def test_is_video(self):
         video_path = "example.mp4"
@@ -50,7 +51,7 @@ class TestGitBatchLoader(unittest.TestCase):
 
     def test_is_audio(self):
         audio_path = "example.mp3"
-        self.assertTrue(GitBatchLoader._is_unsupported_mime_type(audio_path))
+        self.assertFalse(GitBatchLoader._is_unsupported_mime_type(audio_path))
 
     def test_is_not_image_or_video(self):
         text_path = "example.txt"
@@ -68,12 +69,12 @@ class TestGitBatchLoader(unittest.TestCase):
         item.name = "example.txt"
         file_path = "/path/to/repo/example.txt"
 
-        document = loader._process_file(item, file_path)
+        documents = loader._process_file(item, file_path)
 
-        self.assertIsNotNone(document)
-        self.assertEqual(document.page_content, "decoded content")
-        self.assertEqual(document.metadata["file_name"], "example.txt")
-        self.assertEqual(document.metadata["file_path"], "example.txt")
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0].page_content, "decoded content")
+        self.assertEqual(documents[0].metadata["file_name"], "example.txt")
+        self.assertEqual(documents[0].metadata["file_path"], "example.txt")
 
     @patch("builtins.open", new_callable=mock_open)
     @patch.object(GitBatchLoader, '_decode_content', return_value=None)
@@ -82,9 +83,9 @@ class TestGitBatchLoader(unittest.TestCase):
         item.name = "example.txt"
         file_path = "/path/to/repo/example.txt"
 
-        document = self.loader._process_file(item, file_path)
+        documents = self.loader._process_file(item, file_path)
 
-        self.assertIsNone(document)
+        self.assertEqual(documents, [])
 
     @patch("builtins.open", side_effect=FileNotFoundError)
     def test_process_file_file_not_found(self, mock_open_file):
@@ -92,9 +93,9 @@ class TestGitBatchLoader(unittest.TestCase):
         item.name = "example.txt"
         file_path = "/path/to/repo/example.txt"
 
-        document = self.loader._process_file(item, file_path)
+        documents = self.loader._process_file(item, file_path)
 
-        self.assertIsNone(document)
+        self.assertEqual(documents, [])
 
     @patch("builtins.open", side_effect=IsADirectoryError)
     def test_process_file_is_a_directory_error(self, mock_open_file):
@@ -102,9 +103,9 @@ class TestGitBatchLoader(unittest.TestCase):
         item.name = "example.txt"
         file_path = "/path/to/repo/example.txt"
 
-        document = self.loader._process_file(item, file_path)
+        documents = self.loader._process_file(item, file_path)
 
-        self.assertIsNone(document)
+        self.assertEqual(documents, [])
 
     def test_build_clone_url_with_creds_and_at(self):
         creds = Credentials(token_name="username", token="password", url="url")
@@ -248,6 +249,142 @@ class TestGitBatchLoader(unittest.TestCase):
         mock_is_unsupported_mime_type.return_value = True
         self.assertTrue(self.loader._should_skip_item(item))
         mock_is_unsupported_mime_type.assert_called_once_with(item.path)
+
+    # --- _is_unsupported_mime_type: binary-extractable files are always allowed ---
+
+    def test_is_unsupported_mime_type_returns_false_for_pdf(self):
+        self.assertFalse(GitBatchLoader._is_unsupported_mime_type("document.pdf"))
+
+    def test_is_unsupported_mime_type_returns_false_for_docx(self):
+        self.assertFalse(GitBatchLoader._is_unsupported_mime_type("document.docx"))
+
+    def test_is_unsupported_mime_type_returns_false_for_jpg(self):
+        self.assertFalse(GitBatchLoader._is_unsupported_mime_type("photo.jpg"))
+
+    def test_is_unsupported_mime_type_returns_false_for_jpeg(self):
+        self.assertFalse(GitBatchLoader._is_unsupported_mime_type("photo.jpeg"))
+
+    def test_is_unsupported_mime_type_returns_false_for_png(self):
+        self.assertFalse(GitBatchLoader._is_unsupported_mime_type("screenshot.png"))
+
+    def test_is_unsupported_mime_type_returns_true_for_rtf(self):
+        # .exe/.dll MIME types vary by platform (application/x-msdownload on macOS,
+        # application/x-dosexec on Linux), so we test .rtf which is reliably
+        # application/rtf across all platforms. Note: .exe/.dll are blocked earlier
+        # by excluded_extensions and never reach this function in practice.
+        self.assertTrue(GitBatchLoader._is_unsupported_mime_type("document.rtf"))
+
+    def test_is_unsupported_mime_type_returns_true_for_tar(self):
+        # .tar → application/x-tar, reliably detected on all platforms
+        self.assertTrue(GitBatchLoader._is_unsupported_mime_type("archive.tar"))
+
+    def test_is_unsupported_mime_type_returns_true_for_rar(self):
+        self.assertTrue(GitBatchLoader._is_unsupported_mime_type("archive.rar"))
+
+    def test_is_unsupported_mime_type_returns_true_for_mp4(self):
+        self.assertTrue(GitBatchLoader._is_unsupported_mime_type("video.mp4"))
+
+    # --- _process_file: binary files are routed to _process_binary_file ---
+
+    @patch("builtins.open", new_callable=mock_open, read_data=b"%PDF binary content")
+    @patch.object(GitBatchLoader, '_process_binary_file')
+    def test_process_file_routes_pdf_to_process_binary_file(self, mock_binary, mock_open_file):
+        # Arrange
+        loader = GitBatchLoader(repo_path="/path/to/repo")
+        item = MagicMock()
+        item.name = "report.pdf"
+        file_path = "/path/to/repo/report.pdf"
+        expected_docs = [Document(page_content="extracted pdf text", metadata={})]
+        mock_binary.return_value = expected_docs
+
+        # Act
+        result = loader._process_file(item, file_path)
+
+        # Assert
+        mock_binary.assert_called_once_with(b"%PDF binary content", "report.pdf", "report.pdf")
+        self.assertEqual(result, expected_docs)
+
+    @patch("builtins.open", new_callable=mock_open, read_data=b"text content")
+    @patch.object(GitBatchLoader, '_decode_content', return_value="text content")
+    def test_process_file_returns_list_for_text_file(self, mock_decode, mock_open_file):
+        # Arrange
+        loader = GitBatchLoader(repo_path="/path/to/repo")
+        item = MagicMock()
+        item.name = "script.py"
+        file_path = "/path/to/repo/script.py"
+
+        # Act
+        result = loader._process_file(item, file_path)
+
+        # Assert — result is always a list
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].page_content, "text content")
+
+    # --- _process_binary_file: metadata is set correctly ---
+
+    @patch("codemie.datasource.loader.git_loader.extract_documents_from_bytes")
+    def test_process_binary_file_sets_correct_metadata_for_pdf(self, mock_extract):
+        # Arrange
+        loader = GitBatchLoader(repo_path="/path/to/repo")
+        raw_doc = Document(page_content="pdf page 1", metadata={"source": "/tmp/tmpXXX.pdf"})
+        mock_extract.return_value = [raw_doc]
+
+        # Act
+        result = loader._process_binary_file(b"%PDF-1.4", "docs/report.pdf", "report.pdf")
+
+        # Assert
+        self.assertEqual(len(result), 1)
+        doc = result[0]
+        self.assertEqual(doc.metadata["source"], "docs/report.pdf")
+        self.assertEqual(doc.metadata["file_path"], "docs/report.pdf")
+        self.assertEqual(doc.metadata["file_name"], "report.pdf")
+        self.assertEqual(doc.metadata["file_type"], ".pdf")
+
+    @patch("codemie.datasource.loader.git_loader.extract_documents_from_bytes")
+    def test_process_binary_file_sets_correct_metadata_for_png(self, mock_extract):
+        # Arrange
+        loader = GitBatchLoader(repo_path="/path/to/repo")
+        raw_doc = Document(page_content="image description", metadata={"source": "/tmp/tmpXXX.png"})
+        mock_extract.return_value = [raw_doc]
+
+        # Act
+        result = loader._process_binary_file(b"\x89PNG", "assets/screenshot.png", "screenshot.png")
+
+        # Assert
+        doc = result[0]
+        self.assertEqual(doc.metadata["source"], "assets/screenshot.png")
+        self.assertEqual(doc.metadata["file_path"], "assets/screenshot.png")
+        self.assertEqual(doc.metadata["file_name"], "screenshot.png")
+        self.assertEqual(doc.metadata["file_type"], ".png")
+
+    @patch("codemie.datasource.loader.git_loader.extract_documents_from_bytes")
+    def test_process_binary_file_returns_empty_list_when_extractor_returns_nothing(self, mock_extract):
+        # Arrange
+        loader = GitBatchLoader(repo_path="/path/to/repo")
+        mock_extract.return_value = []
+
+        # Act
+        result = loader._process_binary_file(b"bytes", "docs/empty.pdf", "empty.pdf")
+
+        # Assert
+        self.assertEqual(result, [])
+
+    @patch("codemie.datasource.loader.git_loader.extract_documents_from_bytes")
+    def test_process_binary_file_passes_file_name_to_extractor(self, mock_extract):
+        # Arrange
+        loader = GitBatchLoader(repo_path="/path/to/repo")
+        mock_extract.return_value = []
+
+        # Act
+        loader._process_binary_file(b"content", "sub/dir/doc.docx", "doc.docx")
+
+        # Assert
+        mock_extract.assert_called_once_with(
+            file_bytes=b"content",
+            file_name="doc.docx",
+            request_uuid=None,
+        )
 
 
 @pytest.fixture

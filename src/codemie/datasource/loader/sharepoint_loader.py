@@ -705,7 +705,7 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
         file_ext = "." + file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
 
         logger.debug(f"Processing file: {file_name}")
-        documents = self._download_and_extract_file(site_id, drive_id, item["id"], file_ext, file_name)
+        documents = self._download_and_extract_file(site_id, drive_id, item["id"], file_name)
 
         if documents:
             self._total_files_processed += 1
@@ -753,9 +753,7 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
 
             url = data.get(self.ODATA_NEXT_LINK)
 
-    def _download_and_extract_file(
-        self, site_id: str, drive_id: str, item_id: str, file_ext: str, file_name: str
-    ) -> list[Document]:
+    def _download_and_extract_file(self, site_id: str, drive_id: str, item_id: str, file_name: str) -> list[Document]:
         """
         Download file from SharePoint and extract documents using appropriate loader.
 
@@ -763,7 +761,6 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
             site_id: Site ID
             drive_id: Drive ID
             item_id: Item ID
-            file_ext: File extension (with dot)
             file_name: Original file name
 
         Returns:
@@ -781,19 +778,18 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
             file_bytes = response.content
 
             # Extract documents using file loaders
-            return self._extract_documents_from_bytes(file_bytes, file_ext, file_name)
+            return self._extract_documents_from_bytes(file_bytes, file_name)
 
         except Exception as e:
             logger.error(f"Failed to download/extract file {file_name}: {e}")
             return []
 
-    def _extract_documents_from_bytes(self, file_bytes: bytes, file_ext: str, file_name: str) -> list[Document]:
+    def _extract_documents_from_bytes(self, file_bytes: bytes, file_name: str) -> list[Document]:
         """
         Extract documents from file bytes using appropriate loader.
 
         Args:
             file_bytes: File content as bytes
-            file_ext: File extension (with dot, e.g., ".pdf")
             file_name: Original file name
 
         Returns:
@@ -801,7 +797,6 @@ class SharePointLoader(BaseLoader, BaseDatasourceLoader):
         """
         return extract_documents_from_bytes(
             file_bytes=file_bytes,
-            file_ext=file_ext.lstrip("."),
             file_name=file_name,
             request_uuid=self.request_uuid,
             csv_separator=",",

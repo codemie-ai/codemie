@@ -73,7 +73,6 @@ loaders:
       common:
         - .ico
         - .mng
-        - .pdf
         - .bpm
         - .exe
         - .dll
@@ -90,12 +89,13 @@ loaders:
         - .webm
         - .zip
         - .xls
-        - .xlsx
         - .lock
       docs_only:
         - .md
         - .toml
         - .json
+        - .pdf
+        - .xlsx
       code_only: []
 
   jira_loader:

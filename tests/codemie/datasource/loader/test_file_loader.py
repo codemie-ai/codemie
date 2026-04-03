@@ -80,7 +80,7 @@ def test_lazy_load_documents(sample_files_datasource_loader):
     sample_files_datasource_loader.file_repo.read_file = MagicMock(return_value=file)
     sample_files_datasource_loader.get_file_data = MagicMock(return_value=b"col1,col2\nval1,val2\n")
 
-    documents = sample_files_datasource_loader._lazy_load_documents(file, "csv")
+    documents = sample_files_datasource_loader._lazy_load_documents(file)
 
     assert len(documents) == 1
     assert isinstance(documents[0], Document)
@@ -101,7 +101,7 @@ def test_lazy_load_with_new_loaders(sample_files_datasource_loader, file_ext):
     documents = list(sample_files_datasource_loader.lazy_load())
 
     # Verify _lazy_load_documents was called with correct parameters
-    sample_files_datasource_loader._lazy_load_documents.assert_called_once_with(file, file_ext)
+    sample_files_datasource_loader._lazy_load_documents.assert_called_once_with(file)
     assert len(documents) == 1
     assert documents[0][0].page_content == "test"
 

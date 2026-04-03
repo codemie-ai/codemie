@@ -54,6 +54,8 @@ LOADERS: dict[str, type] = {
     IndexKnowledgeBaseFileTypes.ZIP.value: ZipLoader,
     IndexKnowledgeBaseFileTypes.AUDIO.value: AudioLoader,
     IndexKnowledgeBaseFileTypes.IMAGE.value: ImageLoader,
+    IndexKnowledgeBaseFileTypes.JPEG.value: ImageLoader,
+    IndexKnowledgeBaseFileTypes.PNG.value: ImageLoader,
 }
 
 DEFAULT_LOADER_KWARGS: dict[str, dict] = {
@@ -86,9 +88,17 @@ def _build_pdf_images_parser(request_uuid: str | None) -> BaseImageBlobParser:
     return TesseractBlobParser()
 
 
+def is_binary_extractable(file_path: str) -> bool:
+    """Return True if the file is handled by extract_documents_from_bytes.
+
+    Accepts a file name or path (e.g. 'report.pdf', '/tmp/image.PNG').
+    """
+    ext = os.path.splitext(file_path)[1].lower().lstrip('.')
+    return ext in LOADERS
+
+
 def extract_documents_from_bytes(
     file_bytes: bytes,
-    file_ext: str,
     file_name: str,
     request_uuid: str | None = None,
     csv_separator: str = ",",
@@ -98,14 +108,14 @@ def extract_documents_from_bytes(
 
     Args:
         file_bytes: Raw file content.
-        file_ext: File extension without leading dot (e.g. "pdf", "csv").
-        file_name: Original file name used for metadata rewrite.
+        file_name: Original file name used to determine loader and rewrite metadata.
         request_uuid: Optional request ID for LLM token-usage tracking.
         csv_separator: CSV column delimiter (default ",").
 
     Returns:
         List of LangChain Document objects.
     """
+    file_ext = os.path.splitext(file_name)[1].lower().lstrip('.')
     documents: list[Document] = []
     loader_class = LOADERS.get(file_ext, PlainTextLoader)
     loader_kwargs: dict = dict(DEFAULT_LOADER_KWARGS.get(file_ext, {}))

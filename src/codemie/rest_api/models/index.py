@@ -1407,6 +1407,8 @@ class IndexKnowledgeBaseFileTypes(Enum):
     ZIP = 'zip'
     AUDIO = 'mp3'
     IMAGE = 'jpg'
+    JPEG = 'jpeg'
+    PNG = 'png'
 
     @classmethod
     def values(cls):

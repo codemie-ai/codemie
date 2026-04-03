@@ -116,7 +116,7 @@ class CodeDatasourceProcessor(BaseDatasourceProcessor):
             repo_link=self.repo.link,
             setting_id=self.index.setting_id,
         )
-        return GitBatchLoader.create_loader(self.repo, creds)
+        return GitBatchLoader.create_loader(self.repo, creds, request_uuid=self.request_uuid)
 
     def _init_index(self):
         if not self.index:
