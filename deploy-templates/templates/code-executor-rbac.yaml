@@ -1,0 +1,35 @@
+{{- if .Values.features.tools.code_executor.rbac.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "codemie.fullname" . }}-code-executor
+  namespace: {{ .Values.features.tools.code_executor.rbac.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "codemie.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "codemie.fullname" . }}-code-executor
+  namespace: {{ .Values.features.tools.code_executor.rbac.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "codemie.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "codemie.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "codemie.fullname" . }}-code-executor
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

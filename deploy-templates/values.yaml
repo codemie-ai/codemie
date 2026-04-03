@@ -192,6 +192,16 @@ customEnv:
         name: codemie-nats-secrets
         key: CODEMIE_PASSWORD
 
+features:
+  tools:
+    code_executor:
+      # -- Create Role and RoleBinding to allow the service account to manage executor pods
+      rbac:
+        enabled: false
+        # -- Namespace where executor pods run (must match CODE_EXECUTOR_NAMESPACE env var)
+        # -- Specify name to use a separate namespace for scheduling code_executor pods. Empty means the same namespace as CodeMie
+        namespace: ""
+
 serviceAccount:
   # -- Specifies whether a service account should be created
   create: false
