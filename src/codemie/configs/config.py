@@ -45,8 +45,7 @@ class Config(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MAX_RETRIES: int = 2
 
-    DALLE_API_URL: str = ""
-    DALLE_API_KEY: str = ""
+    IMAGE_GENERATION_MODEL: str = "gemini-3.1-flash-image-preview"
 
     STT_API_URL: str = ""
     STT_API_KEY: str = ""

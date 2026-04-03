@@ -108,13 +108,29 @@ class ToolkitSettingService:
             "user_id": user.id,
         }
 
-        # Only add DALL-E config if it's properly configured
-        if config.DALLE_API_URL and config.DALLE_API_KEY:
-            configs["azure_dalle_config"] = {
-                "api_version": config.OPENAI_API_VERSION,
-                "azure_endpoint": config.DALLE_API_URL,
-                "api_key": config.DALLE_API_KEY,
-            }
+        from codemie_tools.data_management.file_system.generate_image_tool import (
+            ChatModelImageGenerator,
+            LiteLLMImageConfig,
+            LiteLLMImageGenerator,
+        )
+
+        image_generator = None
+        if config.LLM_PROXY_ENABLED and config.LITE_LLM_URL:
+            image_generator = LiteLLMImageGenerator(
+                LiteLLMImageConfig(
+                    api_base=config.LITE_LLM_URL,
+                    api_key=config.LITE_LLM_APP_KEY,
+                    api_version=config.OPENAI_API_VERSION,
+                    model_id=config.IMAGE_GENERATION_MODEL,
+                    timeout=float(config.LLM_PROXY_TIMEOUT),
+                )
+            )
+        elif config.IMAGE_GENERATION_MODEL:
+            from codemie.core.dependecies import get_llm_by_credentials_raw
+
+            image_generator = ChatModelImageGenerator(
+                model=get_llm_by_credentials_raw(llm_model=config.IMAGE_GENERATION_MODEL)
+            )
         if assistant.context:
             for context in assistant.context:
                 if context.context_type == ContextType.CODE:
@@ -135,6 +151,7 @@ class ToolkitSettingService:
             configs=configs,
             file_repository=FileRepositoryFactory.get_current_repository(),
             chat_model=chat_model,
+            image_generator=image_generator,
             input_files=input_files,
         ).get_tools()
 

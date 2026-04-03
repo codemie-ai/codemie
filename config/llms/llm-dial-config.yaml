@@ -266,6 +266,17 @@ llm_models:
       input_cost_per_token_batches: 0.000001
       output_cost_per_token_batches: 0.000006
 
+  - base_name: "gemini-3.1-flash-image-preview"
+    deployment_name: "gemini-3.1-flash-image-preview"
+    label: "Gemini 3.1 Flash Image Preview"
+    enabled: true
+    provider: "google_vertexai"
+    max_output_tokens: 32768
+    cost:
+      input: 0.0000005
+      output: 0.000003
+      output_cost_per_image_token: 0.00006
+
   - base_name: "deepseek-r1"
     deployment_name: "deepseek-r1"
     label: "DeepSeek R1"

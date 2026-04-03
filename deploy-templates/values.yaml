@@ -123,6 +123,9 @@ extraEnv:
         name: secret-dalle-api-key
         key: key
 
+  - name: IMAGE_GENERATION_MODEL
+    value: "gemini-3.1-flash-image-preview"
+
   - name: AZURE_SPEECH_REGION
     value: "westus2"
   - name: AZURE_SPEECH_SERVICE_KEY

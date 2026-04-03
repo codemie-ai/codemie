@@ -149,10 +149,9 @@ GENERATE_IMAGE_TOOL = ToolMetadata(
     description="""
     Generate image tool based on user description.
     Useful when user needs to generate an image from a description.
-    Uses DALL-E model to generate images.
     """,
     label="Generate image",
     user_description="""
-    Enables the AI assistant to create images based on textual descriptions. This tool utilizes the DALL-E model to generate visual content from text prompts
+    Enables the AI assistant to create images based on textual descriptions.
     """.strip(),
 )

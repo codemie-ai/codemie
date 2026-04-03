@@ -24,10 +24,7 @@ from codemie_tools.base.models import ToolKit, ToolSet, Tool
 from codemie_tools.data_management.code_executor.code_executor_tool import CodeExecutorTool
 from codemie_tools.data_management.code_executor.local_code_executor_tool import LocalCodeExecutorTool
 from codemie_tools.data_management.code_executor.tools_vars import CODE_EXECUTOR_TOOL, PYTHON_RUN_CODE_TOOL
-from codemie_tools.data_management.file_system.generate_image_tool import (
-    GenerateImageTool,
-    AzureDalleAIConfig,
-)
+from codemie_tools.data_management.file_system.generate_image_tool import GenerateImageTool
 from codemie_tools.data_management.file_system.tools import (
     ListDirectoryTool,
     ReadFileTool,
@@ -71,7 +68,7 @@ class FileSystemToolkit(BaseToolkit):
     activate_command: Optional[str] = ""
     user_id: Optional[str] = ""
     file_repository: Optional[Any] = None
-    azure_dalle_config: Optional[AzureDalleAIConfig] = None
+    image_generator: Optional[Any] = None
     chat_model: Optional[Any] = None
     code_isolation: bool = False
     input_files: Optional[List[Any]] = None
@@ -109,7 +106,11 @@ class FileSystemToolkit(BaseToolkit):
                 file_repository=self.file_repository,
                 user_id=self.user_id,
             ),
-            GenerateImageTool(azure_dalle_config=self.azure_dalle_config),
+            GenerateImageTool(
+                image_generator=self.image_generator,
+                file_repository=self.file_repository,
+                user_id=self.user_id or "",
+            ),
             CodeExecutorTool(
                 file_repository=self.file_repository,
                 user_id=self.user_id,
@@ -137,9 +138,9 @@ class FileSystemToolkit(BaseToolkit):
         configs: Dict[str, Any],
         file_repository: Optional[Any] = None,
         chat_model: Optional[BaseChatModel] = None,
+        image_generator: Optional[Any] = None,
         input_files: Optional[List[FileObject]] = None,
     ):
-        dalle_config = AzureDalleAIConfig(**configs["azure_dalle_config"]) if "azure_dalle_config" in configs else None
         root_directory = configs.get("root_directory", ".")
         activate_command = configs.get("activate_command", "")
         user_id = configs.get("user_id", "")
@@ -149,7 +150,7 @@ class FileSystemToolkit(BaseToolkit):
             activate_command=activate_command,
             file_repository=file_repository,
             user_id=user_id,
-            azure_dalle_config=dalle_config,
+            image_generator=image_generator,
             chat_model=chat_model,
             input_files=input_files,
         )
