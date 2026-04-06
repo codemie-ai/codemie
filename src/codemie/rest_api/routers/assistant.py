@@ -719,13 +719,14 @@ def update_assistant(
 
     repository = AssistantRepository()
 
-    # Preserve existing encrypted values for sensitive variables sent back as masked
-    if request.prompt_variables:
-        _restore_existing_encrypted_values(request, assistant)
-
-    # Encrypt sensitive prompt variable default values in the request before updating
+    # Encrypt new plain-text sensitive values first (masked "********" values are skipped).
     if request.prompt_variables:
         _encrypt_prompt_variables_in_request(request)
+
+    # Restore existing encrypted DB values for variables sent back as masked.
+    # Must run AFTER encryption to avoid double-encrypting already-encrypted values.
+    if request.prompt_variables:
+        _restore_existing_encrypted_values(request, assistant)
 
     try:
         # Check if assistant is published to marketplace before update
