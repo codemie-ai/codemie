@@ -538,6 +538,7 @@ class WorkflowExecutor:
                         self.callbacks,
                         self.workflow_execution_service,
                         self.thought_queue,
+                        node_name=state.id,
                         workflow_config=self.workflow_config,
                         custom_node=node,
                         workflow_state=state,
