@@ -519,13 +519,16 @@ def test_create_mermaid_diagram_raw_png(mocker, auth_headers):
     assert response.content == mock_png_content
 
 
-def test_get_sanitized_html_response_removes_script():
+def test_get_sanitized_html_response_forces_download():
     html = """
     <html><body><h1>Hello</h1><script>alert('XSS');</script></body></html>
     """
     resp = files.get_sanitized_html_response(html)
     assert isinstance(resp, Response)
     assert resp.media_type == "text/html"
+    assert resp.headers.get("content-disposition") == "attachment"
+    assert b"<h1>Hello</h1>" in resp.body
+    assert b"<script>" in resp.body
 
 
 def test_get_plain_text_response_bytes_and_str():
@@ -542,7 +545,9 @@ def test_check_and_sanitize_content_html():
     html = b"<html><body><h1>Hi</h1><script>alert('XSS');</script></body></html>"
     resp = files.check_and_sanitize_content(html)
     assert resp.media_type == "text/html"
-    assert b"<script>" not in resp.body
+    assert resp.headers.get("content-disposition") == "attachment"
+    assert b"<h1>Hi</h1>" in resp.body
+    assert b"<script>" in resp.body
 
 
 def test_check_and_sanitize_content_js():

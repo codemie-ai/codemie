@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import bleach
 import contextlib
 import hashlib
 
@@ -41,13 +40,11 @@ def get_sanitized_html_response(content) -> Response:
     if isinstance(content, bytes):
         content = content.decode("utf-8", errors="backslashreplace")
 
-    safe_html = bleach.clean(
-        content,
-        tags=bleach.sanitizer.ALLOWED_TAGS,
-        attributes=bleach.sanitizer.ALLOWED_ATTRIBUTES,
-        strip=True,
+    return Response(
+        content=content,
+        media_type="text/html",
+        headers={"Content-Disposition": "attachment"},
     )
-    return Response(content=safe_html, media_type="text/html")
 
 
 def get_plain_text_response(content) -> Response:
