@@ -31,7 +31,7 @@ class AWSConfig(CodeMieToolConfig):
     access_key_id: str = RequiredField(
         description="AWS Access Key ID for authentication",
         json_schema_extra={
-            "placeholder": "AKIAIOSFODNN7EXAMPLE",
+            "placeholder": "your-aws-access-key-id",
             "sensitive": True,
             "help": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html",
         },
@@ -40,7 +40,7 @@ class AWSConfig(CodeMieToolConfig):
     secret_access_key: str = RequiredField(
         description="AWS Secret Access Key for authentication",
         json_schema_extra={
-            "placeholder": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "placeholder": "your-aws-secret-access-key",
             "sensitive": True,
             "help": "https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html",
         },
