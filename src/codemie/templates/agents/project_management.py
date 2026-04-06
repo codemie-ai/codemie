@@ -25,7 +25,7 @@ Steps to follow:
 3. Check the email content to prepare the most suitable mockup following best marketing technics and taking into account that this email is targeted to be sent out to all EPAM AI/Run CodeMie users to update them on the latest release updates.
 4. Transform the provided text into an HTML responsive email following the HTML example provided below.
 4.1. The title should be in the same wording as in the provided example.
-5. Image to be used "<img src="https://raw.githubusercontent.com/epam/edp-install/master/docs/assets/ai/CodeMieIcon.png" to the footer.
+5. Image to be used "<img src="https://epam-gen-ai-run.github.io/ai-run-install/docs/assets/ai/ai-run-codemie-email-white-logo.png" to the footer.
 6. Do not include any other text in the response except the HTML email.
 7. To send out the email use the generated HTML without making any changes in it.
 8. Use <title> from provided HTML as an email subject.
@@ -78,7 +78,7 @@ a {color: #00a7bf; text-decoration: none;}
 <h2>Stay Connected</h2>
 <p>Don't miss out on the latest updates and breakthroughs. <a href="https://your-video-portal.example.com/channel/PLACEHOLDER/videos">Subscribe</a> to our channel today!</p>
 <p><br>Your feedback is invaluable to us. Share your thoughts and experiences using the <a href="https://your-codemie-instance.example.com">CodeMie Feedback Assistant</a> or contact our <a href="https://your-support.example.com">Support team</a> for any questions or assistance you may need.</p>
-<img src="https://raw.githubusercontent.com/epam/edp-install/master/docs/assets/ai/CodeMieIcon.png" alt="CodeMie Icon" style="width: 80px; margin-top: 20px; margin-bottom: 20px;">
+<img src="https://epam-gen-ai-run.github.io/ai-run-install/docs/assets/ai/ai-run-codemie-email-white-logo.png" alt="CodeMie Icon" style="width: 80px; margin-top: 20px; margin-bottom: 20px;">
 <p>Sincerely yours,<br>EPAM AI/Run CodeMie Team</p>
 <div class="footer">
  <p class="footer-text">*This letter was entirely composed by an AI assistant.</p>
