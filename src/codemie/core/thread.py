@@ -63,6 +63,8 @@ class ThreadedGenerator:
 
         if thought:
             thought_id = thought.get('id', '')
+            parent_id = thought.get('parent_id')
+            is_nested = parent_id is not None
             is_nested_to_latest = thought.get('parent_id') == UniqueThoughtParentIds.LATEST.value
             message = thought.get('message') or ''
             children = thought.get('children') or []
@@ -95,7 +97,9 @@ class ThreadedGenerator:
                 }
 
                 if is_nested_to_latest:
-                    self._nest_to_latest_thought(thought_object)
+                    self.thoughts.append(thought_object)
+                elif is_nested:
+                    self._nest_to_thought(parent_id, thought_object)
                 else:
                     self.thoughts.append(thought_object)
 
@@ -105,6 +109,26 @@ class ThreadedGenerator:
 
     def is_closed(self):
         return self.closed
+
+    def _nest_to_thought(self, parent_id, thought_object):
+        existing_thougt = next(filter(lambda th: th['id'] == parent_id, self.thoughts[::-1]), None)
+        if existing_thougt:
+            existing_child_thought = next(
+                (item for item in existing_thougt['children'] if item['id'] == thought_object['id']),
+                None,
+            )
+            if existing_child_thought:
+                existing_child_thought['message'] += thought_object['message']
+                existing_child_thought['children'] += thought_object['children']
+                existing_child_thought['error'] = thought_object.get('error', False)
+                existing_child_thought['metadata'] = {
+                    **existing_child_thought.get('metadata', {}),
+                    **thought_object.get('metadata', {}),
+                }
+                existing_child_thought['output_format'] = thought_object.get('output_format')
+                existing_child_thought['in_progress'] = thought_object.get('in_progress', False)
+            else:
+                existing_thougt['children'].append(thought_object)
 
     def _nest_to_latest_thought(self, thought_object):
         latest_thought = self.thoughts[-1] if self.thoughts else None

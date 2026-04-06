@@ -16,6 +16,8 @@ import json
 import re
 from time import time
 from typing import Any, List, Optional
+import uuid
+from uuid import UUID
 
 import langgraph_supervisor.supervisor
 from codemie_tools.base.file_object import FileObject
@@ -47,7 +49,6 @@ from codemie.configs.logger import logger, set_logging_info
 from codemie.core.constants import (
     ChatRole,
     BackgroundTaskStatus,
-    UniqueThoughtParentIds,
     REQUEST_ID,
     USER_ID,
     USER_NAME,
@@ -233,6 +234,7 @@ class LangGraphAgent:
         self.assistant = assistant
         self.override_global_checkpointer = override_global_checkpointer
         self.trace_context = trace_context  # Store for trace unification
+        self._current_llm_run_id: uuid.UUID | None = None  # tracks active LLM invocation
         self.history_compaction_pre_model_hook = (
             ConversationHistoryCompactionService.build_langgraph_pre_model_hook(
                 llm_model=llm_model,
@@ -261,6 +263,11 @@ class LangGraphAgent:
         self.agent_executor = self.init_agent()
 
         self._supervisor_state: Optional[str] = None
+        # Maps subagent name → (run_id, supervisor_author) of its pending handoff thought.
+        self._handoff_run_ids: dict[str, tuple[UUID, str | None]] = {}
+        # Handoffs announced by the supervisor LLM but not yet executing.
+        # Promoted to _handoff_run_ids (and thought emitted) on the subagent's first chunk.
+        self._pending_handoffs: dict[str, tuple[UUID, str | None]] = {}
 
     ###### Init logic ######
 
@@ -782,7 +789,8 @@ class LangGraphAgent:
         result = ""
         if chunk_type == "updates":
             target_field = "agent" if not self.subagents else "supervisor"
-            if target_field in value and self.is_valid_ai_message(message := value[target_field]["messages"][-1]):
+            node_state = value.get(target_field)
+            if isinstance(node_state, dict) and self.is_valid_ai_message(message := node_state["messages"][-1]):
                 result = extract_text_from_llm_output(message.content)
             elif response := value.get("generate_structured_response"):
                 result = response["structured_response"]
@@ -854,20 +862,29 @@ class LangGraphAgent:
 
         if self.is_valid_ai_message(message):
             token = extract_text_from_llm_output(message.content)
-            self._process_agent_streaming(token, chunks_collector)
+            self._process_agent_streaming(token, chunks_collector, message.id)
         elif self.is_finish_reason_stop(message):
             if metadata.get("langgraph_node") == "agent":
-                self._on_llm_end(response=message)
+                self._on_llm_end(response=message, run_id=message.id)
 
     def __parse_update_type(self, value):
         # Tool call request
         if "agent" in value and self.is_finish_reason_tool_calls(value["agent"]["messages"][-1]):
-            message = value["agent"]["messages"][-1]
             # Validate response wasn't truncated before executing tool
+            message = value["agent"]["messages"][-1]
             self._safe_check_for_truncation(message)
-            tool_name, tool_args = self._get_tool_call_args(message)
-            logger.debug(f"Calling Tool: {tool_name} with input {tool_args}")
-            self._on_tool_start(tool_name, tool_args)
+            if content := extract_text_from_llm_output(message.content):
+                self._on_llm_end(content, run_id=message.id)
+            for tool_call in message.tool_calls:
+                tool_name = tool_call["name"]
+                tool_args = str(unpack_json_strings(tool_call["args"]))
+                run_id = self._tool_call_id_to_uuid(tool_call.get("id", ""))
+                logger.debug(f"Calling Tool: {tool_name} with input {tool_args}")
+                self._on_tool_start(
+                    tool_name,
+                    tool_args,
+                    run_id=run_id,
+                )
         # Tools calling result
         elif "tools" in value:
             for action in value["tools"]["messages"]:
@@ -875,16 +892,15 @@ class LangGraphAgent:
                     logger.debug(f"Tool {action.name} call result: {action.content}")
                     self._parse_tool_message(action)
 
-    def __parse_supervisor_message_type(self, value, chunks_collector: list[str]):
+    def __parse_supervisor_message_type(self, value, chunks_collector: list[str], author: str | None = None):
         message, _ = value
-
         if self.is_valid_ai_message(message) and not message.response_metadata.get("__is_handoff_back"):
             token = extract_text_from_llm_output(message.content)
-            self._process_agent_streaming(token, chunks_collector)
+            self._process_agent_streaming(token, chunks_collector, message.id, author=author)
         elif self.is_finish_reason_stop(message):
-            self._on_llm_end(response=message)
+            self._on_llm_end(response=message, run_id=message.id, author=author)
 
-    def __parse_supervisor_update_type(self, value: dict):
+    def __parse_supervisor_update_type(self, value: dict, author: str | None = None):
         state_update = next((item for item in value.values() if isinstance(item, dict)), None)
         if state_update is None:
             return
@@ -894,32 +910,71 @@ class LangGraphAgent:
             return
         last_message = messages[-1]
 
-        # Tool calls parsing
         if isinstance(last_message, AIMessage) and self.is_finish_reason_tool_calls(last_message):
-            # Validate response wasn't truncated before executing tool
-            self._safe_check_for_truncation(last_message)
-            tool_name, tool_args = self._get_tool_call_args(last_message)
-            # Detect handoff event
-            if self._check_is_handoff_tool(tool_name):
-                if content := extract_text_from_llm_output(last_message.content):
-                    self._on_llm_end(content)
-                agent_name = self._extract_agent_name_from_tool(tool_name)
-                self._on_supervisor_handoff(f"{ToolNamePrefix.AGENT.value}_{agent_name}")
-                self.set_thread_context({}, UniqueThoughtParentIds.LATEST.value)
-            else:
-                # Regular tool calls
-                logger.debug(f"Calling Tool: {tool_name} with input {tool_args}")
-                self._on_tool_start(tool_name, tool_args)
+            self.__handle_supervisor_tool_calls(last_message, author=author)
         elif last_message.response_metadata.get("__is_handoff_back"):
-            logger.debug("Handoff back to supervisor")
-            subassistant_answer = extract_text_from_llm_output(messages[-3].content)
-            self._on_subassistant_back(subassistant_answer)
-            self.set_thread_context({}, None)
+            # The handoff_back update arrives under the supervisor namespace, so `author`
+            # is None at this point.  Fall back to the node name inside the value dict —
+            # LangGraph puts the subagent's node name as the key when it emits its final
+            # state update, so we can recover the agent identity from there.
+            node_name = list(value.keys())[0]
+            lookup_author = author or (node_name if node_name != "supervisor" else None)
+            self.__handle_supervisor_handoff_back(
+                messages, run_id=self._handoff_run_ids.get(lookup_author), author=lookup_author
+            )
         elif destination := last_message.response_metadata.get("__handoff_destination"):
             logger.debug(f"Transerring to {destination}")
         elif isinstance(last_message, ToolMessage):
             logger.debug(f"Tool {last_message.name} call result: {last_message.content}")
-            self._parse_tool_message(last_message)
+            self._parse_tool_message(last_message, author=author)
+
+    def __handle_supervisor_tool_calls(self, last_message: AIMessage, author: str | None = None) -> None:
+        """Handle tool calls from supervisor: validate, partition, and dispatch."""
+        self._safe_check_for_truncation(last_message)
+        if content := extract_text_from_llm_output(last_message.content):
+            self._on_llm_end(content, run_id=last_message.id, author=author)
+        # Partition: handoff tools are routed to subagents, regular tools are executed locally
+        handoff_calls = [tc for tc in last_message.tool_calls if self._check_is_handoff_tool(tc["name"])]
+        regular_calls = [tc for tc in last_message.tool_calls if not self._check_is_handoff_tool(tc["name"])]
+        if handoff_calls:
+            # Clear stale pending handoffs from the previous supervisor turn before
+            # registering the new batch — the supervisor may re-plan with different agents.
+            self._pending_handoffs.clear()
+            for tool_call in handoff_calls:
+                tool_name = tool_call["name"]
+                agent_name = self._extract_agent_name_from_tool(tool_name)
+                run_id = self._tool_call_id_to_uuid(tool_call.get("id", ""))
+                # Don't emit the thought yet — defer until the subagent's first chunk
+                # arrives so we never create empty dangling thoughts for agents that
+                # the supervisor re-plans away before they execute.
+                self._pending_handoffs[agent_name] = (run_id, author)
+        if regular_calls:
+            for tool_call in regular_calls:
+                tool_name = tool_call["name"]
+                tool_args = str(unpack_json_strings(tool_call["args"]))
+                run_id = self._tool_call_id_to_uuid(tool_call.get("id", ""))
+                logger.debug(f"Calling Tool: {tool_name} with input {tool_args}")
+                self._on_tool_start(tool_name, tool_args, run_id=run_id, author=author)
+
+    def __handle_supervisor_handoff_back(
+        self, messages: list, run_id: tuple[UUID, str | None] | None, author: str | None = None
+    ) -> None:
+        """Handle subassistant returning control to the supervisor."""
+        logger.debug("Handoff back to supervisor")
+        subassistant_answer = ""
+        for message in reversed(messages):
+            if message.response_metadata.get("__is_handoff_back"):
+                continue
+            if message.content:
+                subassistant_answer = extract_text_from_llm_output(str(message.content))
+                break
+        logger.debug(subassistant_answer)
+        if not run_id:
+            return
+        actual_run_id, supervisor_author = run_id
+        logger.debug(f"{subassistant_answer=}\n{supervisor_author=}")
+        self._on_subassistant_back(subassistant_answer, actual_run_id, supervisor_author)
+        self._handoff_run_ids.pop(author, None)
 
     def _process_chunk_for_agent(self, chunk, chunks_collector: list[str]):
         chunk_type, value = chunk
@@ -929,11 +984,20 @@ class LangGraphAgent:
             self.__parse_update_type(value)
 
     def _process_chunk_for_supervisor(self, chunk, chunks_collector: list[str]):
-        _, chunk_type, value = chunk
+        chunk_author, chunk_type, value = chunk
+        raw_author = self._get_node_name_from_metadata(chunk_author)
+        # Supervisor's own thoughts are top-level; only subagent node names carry an author.
+        author = None if raw_author == "supervisor" else raw_author
+        # First chunk from a subagent: promote its pending handoff → emit thought + wire storage.
+        if author and author in self._pending_handoffs:
+            run_id, supervisor_author = self._pending_handoffs.pop(author)
+            self._on_supervisor_handoff(f"{ToolNamePrefix.AGENT.value}_{author}", run_id, "", author=supervisor_author)
+            self.set_thread_context(context={}, parent_thought_id=str(run_id), author=author)
+            self._handoff_run_ids[author] = (run_id, supervisor_author)
         if chunk_type == "messages":
-            self.__parse_supervisor_message_type(value, chunks_collector)
+            self.__parse_supervisor_message_type(value, chunks_collector, author=author)
         elif chunk_type == "updates":
-            self.__parse_supervisor_update_type(value)
+            self.__parse_supervisor_update_type(value, author=author)
 
     def process_chunk(self, chunk, chunks_collector: List[str]):
         if self.subagents:
@@ -948,6 +1012,9 @@ class LangGraphAgent:
 
     def is_finish_reason_stop(self, message: AIMessage) -> bool:
         response_medatada = message.response_metadata
+        stop_reason = response_medatada.get("stop_reason") or response_medatada.get("finish_reason")
+        if stop_reason == "end_turn" or stop_reason == "stop":
+            return True
         if response_medatada:
             if LLMService.BASE_NAME_CLAUDE in self.llm_model:
                 stop_reason = response_medatada.get("stop_reason", response_medatada.get("stopReason"))
@@ -1081,90 +1148,106 @@ class LangGraphAgent:
             truncation_reason=truncation_indicator,
         )
 
-    def _parse_tool_message(self, action: ToolMessage):
+    def _parse_tool_message(self, action: ToolMessage, author: str | None = None):
+        run_id = self._tool_call_id_to_uuid(action.tool_call_id or "")
         if action.status == "error":
             # Tool errors are now automatically captured by ToolErrorCaptureCallback
             # via LangChain's on_tool_error callback method - no manual capture needed
 
             # Still notify other callbacks (for logging, UI streaming, etc.)
-            self._on_tool_error(action.content)
+            self._on_tool_error(action.content, run_id=run_id, author=author)
         else:
             if action.status != "success":
                 message = f"Unknown tool action status: {action.status}"
                 message += f"\nAssistant: {self.agent_name}, request_uuid: {self.request_uuid}"
                 message += "\nExpected 'success' or 'error'"
                 logger.warning(message)
-            self._on_tool_end(action.content)
+            self._on_tool_end(action.content, run_id=run_id, author=author)
 
-    def _process_agent_streaming(self, token, chunks_collector: list[str]):
-        self._on_llm_new_token(token)
+    def _process_agent_streaming(self, token, chunks_collector: list[str], run_id: str, author: str | None = None):
+        self._on_llm_new_token(token, run_id, author)
         LangGraphAgent.process_output(token, chunks_collector)
 
     ###### Callbacks ########
 
     def _on_llm_start(self):
+        self._current_llm_run_id = uuid.uuid4()
         for callback in self.callbacks:
             try:
-                callback.on_llm_start(None, None, run_id=None)
+                callback.on_llm_start(None, None, run_id=self._current_llm_run_id)
             except Exception as e:
                 logger.error(f"On LLM start callback {callback} error: {e}")
 
-    def _on_llm_new_token(self, token):
+    def _on_llm_new_token(self, token, run_id: str, author: str | None = None):
         for callback in self.callbacks:
             try:
-                callback.on_llm_new_token(token=token, run_id=None)
+                callback.on_llm_new_token(token=token, run_id=run_id, author=author)
             except Exception as e:
                 logger.error(f"On LLM new token callback {callback} error: {e}")
 
-    def _on_llm_end(self, response):
+    def _on_llm_end(self, response, run_id: str, author: str | None = None):
         for callback in self.callbacks:
             try:
-                callback.on_llm_end(response, run_id=None)
+                callback.on_llm_end(response, run_id=run_id, author=author)
             except Exception as e:
                 logger.error(f"On llm end callback {callback} error: {e}")
 
-    def _on_llm_error(self, error: BaseException):
+    def _on_llm_error(self, error: BaseException, run_id: str, author: str | None = None):
         for callback in self.callbacks:
             try:
-                callback.on_llm_error(error, run_id=None)
+                callback.on_llm_error(error, run_id=run_id, author=author)
             except Exception as e:
                 logger.error(f"On llm error callback {callback} error: {e}")
+        self._current_llm_run_id = None
 
-    def _on_tool_start(self, tool_name: str, input_str: str):
+    def _on_tool_start(self, tool_name: str, input_str: str, run_id: str | None = None, author: str | None = None):
         serialized = {"name": tool_name}
+        _run_id = run_id or uuid.uuid4()
         for callback in self.callbacks:
             try:
-                callback.on_tool_start(serialized, input_str, run_id=None)
+                callback.on_tool_start(serialized, input_str, run_id=_run_id, author=author)
             except Exception as e:
                 logger.error(f"On tool start callback {callback} error: {e}")
 
-    def _on_tool_end(self, output):
+    def _on_tool_end(
+        self,
+        output,
+        run_id: UUID,
+        author: str | None = None,
+    ):
         for callback in self.callbacks:
             try:
-                callback.on_tool_end(output, run_id=None)
+                callback.on_tool_end(output, run_id=run_id, author=author)
             except Exception as e:
                 logger.error(f"On tool end callback {callback} error: {e}")
 
-    def _on_supervisor_handoff(self, destination: str, input_str: str = ""):
+    def _on_supervisor_handoff(
+        self,
+        destination: str,
+        run_id: str,
+        input_str: str = "",
+        author: str | None = None,
+    ):
         serialized = {"name": destination}
         metadata = {OUTPUT_FORMAT: ThoughtOutputFormat.MARKDOWN.value}
         for callback in self.supervisor_callbacks:
             try:
-                callback.on_tool_start(serialized, input_str, run_id=None, metadata=metadata)
+                callback.on_tool_start(serialized, input_str, run_id=run_id, metadata=metadata, author=author)
             except Exception as e:
                 logger.error(f"On supervisor hanoff callback {callback} error: {e}")
 
-    def _on_subassistant_back(self, output):
+    def _on_subassistant_back(self, output, run_id: str | None = None, author: str | None = None):
         for callback in self.supervisor_callbacks:
             try:
-                callback.on_tool_end(output, run_id=None)
+                callback.on_tool_end(output, run_id=run_id, author=author)
             except Exception as e:
                 logger.error(f"On supervisor back {callback} error: {e}")
 
-    def _on_tool_error(self, output):
+    def _on_tool_error(self, output, run_id: UUID | None = None, author: str | None = None):
+        _run_id = run_id or uuid.uuid4()
         for callback in self.callbacks:
             try:
-                callback.on_tool_error(output, run_id=None)
+                callback.on_tool_error(output, run_id=_run_id, author=author)
             except Exception as e:
                 logger.error(f"On tool error callback {callback} error: {e}")
 
@@ -1201,6 +1284,21 @@ class LangGraphAgent:
         tool_name = tool_call["name"]
         unpacked_args = unpack_json_strings(tool_call["args"])
         return tool_name, str(unpacked_args)
+
+    @staticmethod
+    def _tool_call_id_to_uuid(tool_call_id: str) -> UUID:
+        """Convert a tool call ID (any string) to a deterministic UUID.
+
+        LLM providers use their own ID formats (e.g. "call_abc123" from OpenAI).
+        We convert them to UUID so they satisfy the run_id type expected by callbacks,
+        while keeping the mapping deterministic so start and end always get the same UUID.
+        """
+        if not tool_call_id:
+            return uuid.uuid4()
+        try:
+            return UUID(tool_call_id)
+        except ValueError:
+            return uuid.uuid5(uuid.NAMESPACE_URL, tool_call_id)
 
     @staticmethod
     def process_output(output, chunks_collector: List[str]):
@@ -1266,18 +1364,20 @@ class LangGraphAgent:
                 filtered_history.append(item)
         return filtered_history
 
-    def set_thread_context(self, context: dict, parent_thought_id: str | None):
+    def set_thread_context(self, context: dict, parent_thought_id: str | None, author: str | None = None):
         self.thread_context = context
-        for callback in self.callbacks:
+        for callback in [*self.callbacks, *self.supervisor_callbacks]:
             if isinstance(callback, AgentStreamingCallback):
-                callback.parent_id = parent_thought_id
-                callback.context = context
+                callback.set_context(context, parent_thought_id, author)
 
     def set_subagent_execution(self):
         for callback in self.callbacks:
-            if hasattr(callback, "_current_thought"):
-                callback.set_current_thought()
-                callback._current_thought.author_type = ThoughtAuthorType.Agent.value
+            if isinstance(callback, AgentStreamingCallback):
+                run_id = uuid.uuid4()
+                thought = callback.thoughts_storage.create_thought(
+                    run_id=run_id, tool_name=AgentStreamingCallback.GENERIC_TOOL_NAME
+                )
+                thought.author_type = ThoughtAuthorType.Agent.value
 
     @staticmethod
     def _serialize_messages_for_log(messages: list[Any]) -> str:

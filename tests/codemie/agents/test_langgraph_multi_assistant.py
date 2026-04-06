@@ -16,8 +16,10 @@
 This module tests the supervisor/subagent architecture and related features.
 """
 
+from uuid import uuid4
+
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
@@ -26,7 +28,6 @@ from langchain_core.callbacks import BaseCallbackHandler
 from codemie.agents.langgraph_agent import LangGraphAgent
 from codemie.core.models import AssistantChatRequest
 from codemie.chains.base import ThoughtOutputFormat
-from codemie.core.constants import ToolNamePrefix, UniqueThoughtParentIds
 from codemie.core.thread import ThreadedGenerator
 from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
 
@@ -286,25 +287,25 @@ class TestLangGraphMultiAssistant:
         supervisor_agent._process_chunk_for_agent.assert_not_called()
 
     def test_parse_supervisor_update_type_handoff(self, supervisor_agent):
-        """Test supervisor update parsing for handoff tools."""
+        """Test supervisor update parsing for handoff tools - deferred via _pending_handoffs."""
         ai_message = AIMessage(content="Handing off to analyst")
         ai_message.tool_calls = [{"name": "transfer_to_analyst", "args": {"task": "analyze data"}}]
 
         value = {"supervisor": {"messages": [ai_message]}}
+        agent_name = "analyst"
 
-        supervisor_agent.is_finish_reason_tool_calls = MagicMock(return_value=True)
-        supervisor_agent._get_tool_call_args = MagicMock(
-            return_value=("transfer_to_analyst", "{'task': 'analyze data'}")
-        )
         supervisor_agent._on_supervisor_handoff = MagicMock()
         supervisor_agent.set_thread_context = MagicMock()
 
-        supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value)
+        supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value, author=agent_name)
 
-        # Should detect handoff and call appropriate methods
-        expected_agent_name = f"{ToolNamePrefix.AGENT.value}_analyst"
-        supervisor_agent._on_supervisor_handoff.assert_called_once_with(expected_agent_name)
-        supervisor_agent.set_thread_context.assert_called_once_with({}, UniqueThoughtParentIds.LATEST.value)
+        # With deferred handoff logic, _on_supervisor_handoff is NOT called immediately;
+        # the pending handoff is stored in _pending_handoffs to be emitted on the subagent's first chunk.
+        supervisor_agent._on_supervisor_handoff.assert_not_called()
+        supervisor_agent.set_thread_context.assert_not_called()
+        assert agent_name in supervisor_agent._pending_handoffs
+        _, stored_author = supervisor_agent._pending_handoffs[agent_name]
+        assert stored_author == agent_name
 
     def test_parse_supervisor_update_type_regular_tool(self, supervisor_agent):
         """Test supervisor update parsing for regular tools."""
@@ -320,8 +321,11 @@ class TestLangGraphMultiAssistant:
 
         supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value)
 
-        # Should call regular tool start, not handoff
-        supervisor_agent._on_tool_start.assert_called_once_with("search_tool", "{'query': 'test'}")
+        # Should call regular tool start (with run_id), not handoff
+        supervisor_agent._on_tool_start.assert_called_once()
+        call_args = supervisor_agent._on_tool_start.call_args
+        assert call_args.args == ("search_tool", "{'query': 'test'}")
+        assert call_args.kwargs.get("run_id") is not None
         supervisor_agent._on_supervisor_handoff.assert_not_called()
 
     def test_parse_supervisor_update_type_tool_message(self, supervisor_agent):
@@ -334,7 +338,7 @@ class TestLangGraphMultiAssistant:
 
         supervisor_agent._LangGraphAgent__parse_supervisor_update_type(value)
 
-        supervisor_agent._parse_tool_message.assert_called_once_with(tool_message)
+        supervisor_agent._parse_tool_message.assert_called_once_with(tool_message, author=None)
 
     def test_on_supervisor_handoff_callback(self, supervisor_agent):
         """Test supervisor handoff callback execution."""
@@ -342,7 +346,8 @@ class TestLangGraphMultiAssistant:
         supervisor_agent.supervisor_callbacks = [mock_callback]
 
         destination = "agent_analyst"
-        supervisor_agent._on_supervisor_handoff(destination)
+        run_id = uuid4()
+        supervisor_agent._on_supervisor_handoff(destination, run_id)
 
         # Should call on_tool_start on supervisor callbacks
         mock_callback.on_tool_start.assert_called_once()
@@ -359,8 +364,9 @@ class TestLangGraphMultiAssistant:
         output = "Subassistant completed the task"
         supervisor_agent._on_subassistant_back(output)
 
-        # Should call on_tool_end on supervisor callbacks
-        mock_callback.on_tool_end.assert_called_once_with(output, run_id=None)
+        # Should call on_tool_end on supervisor callbacks (run_id is generated internally)
+        mock_callback.on_tool_end.assert_called_once()
+        assert mock_callback.on_tool_end.call_args[0][0] == output
 
     def test_supervisor_callback_error_handling(self, supervisor_agent):
         """Test error handling in supervisor callbacks."""
@@ -368,8 +374,9 @@ class TestLangGraphMultiAssistant:
         mock_callback.on_tool_start.side_effect = Exception("Callback error")
         supervisor_agent.supervisor_callbacks = [mock_callback]
 
+        run_id = uuid4()
         with patch("codemie.agents.langgraph_agent.logger") as mock_logger:
-            supervisor_agent._on_supervisor_handoff("agent_test")
+            supervisor_agent._on_supervisor_handoff("agent_test", run_id)
 
             # Should log the error
             mock_logger.error.assert_called_once()
@@ -422,7 +429,9 @@ class TestLangGraphMultiAssistant:
 
         supervisor_agent._LangGraphAgent__parse_supervisor_message_type(value, chunks_collector)
 
-        supervisor_agent._process_agent_streaming.assert_called_once_with("Processing request", chunks_collector)
+        supervisor_agent._process_agent_streaming.assert_called_once_with(
+            "Processing request", chunks_collector, ai_message.id, author=None
+        )
 
     def test_parse_supervisor_message_type_handoff_back_ignored(self, supervisor_agent):
         """Test that handoff back messages are ignored in message parsing."""
@@ -442,16 +451,18 @@ class TestLangGraphMultiAssistant:
 
     def test_set_subagent_execution(self, supervisor_agent):
         """Test setting subagent execution context."""
-        mock_callback = MagicMock()
-        mock_callback._current_thought = MagicMock()
-        mock_callback.set_current_thought = MagicMock()
+        mock_callback = MagicMock(spec=AgentStreamingCallback)
+        mock_thought = MagicMock()
+        mock_callback.thoughts_storage.create_thought.return_value = mock_thought
 
         supervisor_agent.callbacks = [mock_callback]
 
         supervisor_agent.set_subagent_execution()
 
-        mock_callback.set_current_thought.assert_called_once()
-        assert mock_callback._current_thought.author_type == "Agent"
+        mock_callback.thoughts_storage.create_thought.assert_called_once_with(
+            run_id=ANY, tool_name=AgentStreamingCallback.GENERIC_TOOL_NAME
+        )
+        assert mock_thought.author_type == "Agent"
 
     def test_supervisor_state_initialization(self, supervisor_agent):
         """Test that supervisor state is initialized."""

@@ -14,7 +14,7 @@
 
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
@@ -100,22 +100,22 @@ class TestLangGraphAgent:
         agent._on_tool_start = MagicMock()
         agent._on_tool_end = MagicMock()
         agent._on_tool_error = MagicMock()
-        agent._get_tool_call_args = MagicMock(return_value=("test_tool", "{'arg': 1}"))
+        agent._safe_check_for_truncation = MagicMock()
         agent.is_finish_reason_tool_calls = MagicMock(return_value=True)
         return agent
 
     def test_parse_update_type_agent_tool_call(self, agent_for_parse_update):
         # Simulate an agent update that triggers a tool call
         ai_message = AIMessage(
-            content="Tool call", additional_kwargs={"tool_calls": [{"name": "test_tool", "args": {"arg": 1}}]}
+            content="Tool call",
+            tool_calls=[{"name": "test_tool", "args": {"arg": 1}, "id": "call-123", "type": "tool_call"}],
         )
         value = {"agent": {"messages": [ai_message]}}
         # Call the private method
         agent_for_parse_update._LangGraphAgent__parse_update_type(value)
 
-        # Check that _on_tool_start was called with correct args
-        agent_for_parse_update._get_tool_call_args.assert_called_once_with(ai_message)
-        agent_for_parse_update._on_tool_start.assert_called_once_with("test_tool", "{'arg': 1}")
+        # _on_tool_start called with tool name, args, run_id, and tool_call_count
+        agent_for_parse_update._on_tool_start.assert_called_once_with("test_tool", "{'arg': 1}", run_id=ANY)
         # No error or end should be called
         agent_for_parse_update._on_tool_end.assert_not_called()
         agent_for_parse_update._on_tool_error.assert_not_called()
@@ -127,8 +127,8 @@ class TestLangGraphAgent:
         # Call the private method
         agent_for_parse_update._LangGraphAgent__parse_update_type(value)
 
-        # Should call _on_tool_end with the content
-        agent_for_parse_update._on_tool_end.assert_called_once_with("Result: success")
+        # Should call _on_tool_end with the content (run_id is added internally)
+        agent_for_parse_update._on_tool_end.assert_called_once_with("Result: success", run_id=ANY, author=None)
         agent_for_parse_update._on_tool_error.assert_not_called()
         agent_for_parse_update._on_tool_start.assert_not_called()
 
@@ -413,9 +413,9 @@ class TestLangGraphAgent:
         mock_callback = MagicMock(spec=BaseCallbackHandler)
         agent.callbacks = [mock_callback]
 
-        agent._on_llm_new_token("new token")
+        agent._on_llm_new_token("new token", run_id=None)
 
-        mock_callback.on_llm_new_token.assert_called_once_with(token="new token", run_id=None)
+        mock_callback.on_llm_new_token.assert_called_once_with(token="new token", run_id=None, author=None)
 
     @patch("codemie.agents.langgraph_agent.logger")
     def test_on_llm_new_token_with_error(self, mock_logger, agent):
@@ -424,7 +424,7 @@ class TestLangGraphAgent:
         mock_callback.on_llm_new_token.side_effect = Exception("Callback error")
         agent.callbacks = [mock_callback]
 
-        agent._on_llm_new_token("new token")
+        agent._on_llm_new_token("new token", run_id=None)
 
         mock_callback.on_llm_new_token.assert_called_once()
         mock_logger.error.assert_called_once()
@@ -544,8 +544,7 @@ class TestLangGraphAgent:
         agent.set_thread_context(context, parent_id)
 
         assert agent.thread_context == context
-        assert mock_callback.parent_id == parent_id
-        assert mock_callback.context == context
+        mock_callback.set_context.assert_called_once_with(context, parent_id, None)
 
     @patch("codemie.agents.langgraph_agent.FileObject")
     def test_task_property(self, mock_file_object, agent):
@@ -581,8 +580,9 @@ class TestLangGraphAgent:
         error_action = MagicMock(spec=ToolMessage)
         error_action.status = "error"
         error_action.content = "Tool failed"
+        error_action.tool_call_id = "call-error"
         agent._parse_tool_message(error_action)
-        agent._on_tool_error.assert_called_once_with("Tool failed")
+        agent._on_tool_error.assert_called_once_with("Tool failed", run_id=ANY, author=None)
         agent._on_tool_end.assert_not_called()
 
         # Case 2: Success status triggers _on_tool_end
@@ -591,8 +591,9 @@ class TestLangGraphAgent:
         success_action = MagicMock(spec=ToolMessage)
         success_action.status = "success"
         success_action.content = "Tool succeeded"
+        success_action.tool_call_id = "call-success"
         agent._parse_tool_message(success_action)
-        agent._on_tool_end.assert_called_once_with("Tool succeeded")
+        agent._on_tool_end.assert_called_once_with("Tool succeeded", run_id=ANY, author=None)
         agent._on_tool_error.assert_not_called()
 
     def test_parse_tool_message_unknown_status(self, monkeypatch, agent):
@@ -606,12 +607,13 @@ class TestLangGraphAgent:
         action = MagicMock(spec=ToolMessage)
         action.status = "pending"
         action.content = "Waiting..."
+        action.tool_call_id = "call-pending"
 
         with patch("codemie.agents.langgraph_agent.logger.warning") as mock_warning:
             agent._parse_tool_message(action)
             mock_warning.assert_called_once()
             assert "Unknown tool action status: pending" in mock_warning.call_args[0][0]
-            agent._on_tool_end.assert_called_once_with("Waiting...")
+            agent._on_tool_end.assert_called_once_with("Waiting...", run_id=ANY, author=None)
             agent._on_tool_error.assert_not_called()
 
     def test_invoke_with_a2a_output(self, agent):
