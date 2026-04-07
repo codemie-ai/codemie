@@ -132,6 +132,9 @@ class StorageConfig(BaseModel):
     processed_documents_threshold: int  # Max amount of processed documents to store in db
     stale_indexing_threshold_seconds: int
     stale_indexing_resume_batch_size: int
+    indexing_heartbeat_interval: int = Field(
+        default=10, ge=1
+    )  # Commit stats every N docs within a batch to keep update_date fresh
 
 
 class Config(BaseModel):

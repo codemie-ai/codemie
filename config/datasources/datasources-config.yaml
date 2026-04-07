@@ -152,3 +152,4 @@ storage:
   processed_documents_threshold: 1000  # Max amount of processed documents to store in elastic
   stale_indexing_threshold_seconds: 300
   stale_indexing_resume_batch_size: 5
+  indexing_heartbeat_interval: 10  # Commit stats every N completed docs within a batch to keep update_date fresh and prevent false stale detection

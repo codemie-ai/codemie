@@ -628,7 +628,7 @@ class BaseDatasourceProcessor(ABC):
                     executor.submit(self._process_document, self.datasource_name, document_source, chunks, store)
                 )
 
-            for future in as_completed(futures):
+            for completed_count, future in enumerate(as_completed(futures), start=1):
                 try:
                     result = future.result()
                     # Gathering stats to later push it to db
@@ -657,8 +657,23 @@ class BaseDatasourceProcessor(ABC):
                     logger.error(
                         f"IndexDatasource. ErrorProcessingBatch. Datasource={self.datasource_name}. Error={str(e)}"
                     )
-            executor.submit(self.index.commit_stats())
+                # Periodically commit stats mid-batch to refresh update_date and prevent
+                # the stale indexing watchdog from declaring an active job as stale.
+                self._try_heartbeat_commit(index, completed_count)
+            self._try_commit_stats(index)
         return split_documents_count
+
+    def _try_commit_stats(self, index: IndexInfo) -> None:
+        try:
+            index.commit_stats()
+        except IndexDeletedException:
+            raise
+        except Exception as e:
+            logger.error(f"IndexDatasource. CommitStatsFailed. Datasource={self.datasource_name}. Error={e}")
+
+    def _try_heartbeat_commit(self, index: IndexInfo, completed_count: int) -> None:
+        if completed_count % STORAGE_CONFIG.indexing_heartbeat_interval == 0:
+            self._try_commit_stats(index)
 
     def _apply_guardrails_for_dict(self, split_documents_dict: dict[str, list[Document]]):
         index, guardrails = self._validate_index_and_get_guardrails_for_index()
@@ -788,7 +803,9 @@ class BaseDatasourceProcessor(ABC):
             )
 
         return DatasourceBatchProcessingResult.new(
-            processed_documents_count=1, processed_chunks_count=len(chunks), processed_document=source
+            processed_documents_count=1,
+            processed_chunks_count=len(chunks_to_process),
+            processed_document=source,
         )
 
     @classmethod
