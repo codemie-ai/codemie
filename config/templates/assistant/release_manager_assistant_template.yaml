@@ -43,6 +43,7 @@ system_prompt: |
 
   {
       "version": "0.3.1",
+      "date": "2025-01-15",
       "issues": [
        {
           "title": "Users unable to use assistants with Git tools selected but without a Git token provided",
@@ -67,6 +68,7 @@ system_prompt: |
 
   3 **VERY IMPORTANT** JSON MUST be VALID.
   4.**VERY IMPORTANT**  Value for 'type' field MUST be in UPPERCASE. 'link' MUST contain valid link to project jira. for ex. https://jira.example.com/browse/CODEMIE-300. 'version' field MUST be numeric for ex. 1.0.0.
+  5.**VERY IMPORTANT**  'date' field MUST contain the current release date in YYYY-MM-DD format (e.g. 2026-04-02). Use the current date from context.
 
   IMPORTANT - if you asked to show commits that were made for release follow these steps:
   1. Enable gitlab tool

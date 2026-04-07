@@ -298,6 +298,7 @@ IMPORTANT - If you asked to generate release notes for given release always look
 
 {
     "version": "0.3.1",
+    "date": "2025-01-15",
     "issues": [
      {
         "title": "Users unable to use assistants with Git tools selected but without a Git token provided",
@@ -322,6 +323,7 @@ IMPORTANT - If you asked to generate release notes for given release always look
 
 3 **VERY IMPORTANT** JSON MUST be VALID.
 4.**VERY IMPORTANT**  Value for 'type' field MUST be in UPPERCASE. 'link' MUST contain valid link to project jira. for ex. https://jira.example.com/browse/CODEMIE-300. 'version' field MUST be numeric for ex. 1.0.0.
+5.**VERY IMPORTANT**  'date' field MUST contain the current release date in YYYY-MM-DD format (e.g. 2026-04-02). Use the current date from context.
 
 IMPORTANT - When you are asked to mark a Jira release version as Released you MUST always:
 1. Set the Release date for the version to the current date (use the current date from context).
