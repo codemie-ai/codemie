@@ -17,6 +17,10 @@ from typing import Any, Optional
 NOT_FOUND_MESSAGE = "Not Found"
 
 
+class ValidationException(ValueError):
+    """Raised when request or domain validation fails."""
+
+
 class ExtendedHTTPException(Exception):
     """
     A custom exception class that extends the built-in Exception class to provide more detailed HTTP error information.

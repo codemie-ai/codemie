@@ -122,11 +122,12 @@ class MetricsElasticRepository:
                 help=ANALYTICS_QUERY_HELP_MSG,
             ) from e
 
-    async def execute_aggregation_query(self, body: dict) -> dict:
+    async def execute_aggregation_query(self, body: dict, *, request_timeout: int | None = None) -> dict:
         """Execute aggregation query and return results.
 
         Args:
             body: Elasticsearch query body with aggregations
+            request_timeout: Per-request timeout in seconds (overrides client default)
 
         Returns:
             Raw Elasticsearch response dict with hits and aggregations
@@ -138,7 +139,10 @@ class MetricsElasticRepository:
             logger.debug(f"Executing aggregation query on index {self._index}, body={body}")
             start_time = time.time()
 
-            result = await self._client.search(index=self._index, body=body)
+            kwargs: dict = {"index": self._index, "body": body}
+            if request_timeout is not None:
+                kwargs["request_timeout"] = request_timeout
+            result = await self._client.search(**kwargs)
 
             execution_time = (time.time() - start_time) * 1000
             logger.info(f"Aggregation query completed in {execution_time:.2f}ms")

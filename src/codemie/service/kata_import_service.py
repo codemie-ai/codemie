@@ -22,6 +22,7 @@ import yaml
 from pydantic import BaseModel
 
 from codemie.configs import config, logger
+from codemie.core.exceptions import ValidationException
 from codemie.rest_api.models.ai_kata import (
     AIKata,
     KataLevel,
@@ -30,12 +31,6 @@ from codemie.rest_api.models.ai_kata import (
     get_valid_kata_tag_ids,
     get_valid_kata_role_ids,
 )
-
-
-class ValidationException(ValueError):
-    """Exception raised when kata validation fails during import."""
-
-    pass
 
 
 # Constants for kata file names

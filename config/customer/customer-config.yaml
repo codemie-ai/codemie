@@ -117,6 +117,12 @@ components:
       name: "AI Adoption Analytics"
       description: "AI Adoption Framework analytics for measuring and tracking AI maturity across dimensions"
       availableForExternal: false
+  - id: "aiChampionsLeaderboard"
+    settings:
+      enabled: true
+      name: "AI Champions Leaderboard"
+      description: "Leaderboard analytics showing user AI proficiency scores, tier rankings, and dimension breakdowns"
+      availableForExternal: false
   - id: "features:webSearch"
     settings:
       enabled: true

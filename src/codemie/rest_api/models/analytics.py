@@ -35,6 +35,7 @@ class ResponseMetadata(BaseModel):
     data_as_of: str = Field(..., description="Data freshness timestamp (ISO 8601)")
     filters_applied: dict[str, Any] = Field(..., description="Filters applied to query")
     execution_time_ms: float = Field(..., description="Query execution time in milliseconds")
+    snapshot: dict[str, Any] | None = Field(None, description="Leaderboard snapshot metadata when applicable")
 
 
 class PaginationMetadata(BaseModel):

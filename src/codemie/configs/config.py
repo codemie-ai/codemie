@@ -14,7 +14,7 @@
 
 import logging
 from pathlib import Path
-from typing import List, Literal
+from typing import Literal
 
 from dotenv import find_dotenv, load_dotenv
 from pydantic_settings import SettingsConfigDict, BaseSettings
@@ -86,7 +86,10 @@ class Config(BaseSettings):
     KATAS_MAX_FILE_SIZE: int = 1 * 1024 * 1024  # 1 MB per file
     KATAS_MAX_YAML_SIZE: int = 100 * 1024  # 100 KB for YAML
     KATAS_MAX_MARKDOWN_SIZE: int = 1000 * 1024  # 1000 KB for Markdown
-    KATAS_ALLOWED_EXTENSIONS: List[str] = [".yaml", ".yml", ".md"]  # Only these files are validated; images are ignored
+    KATAS_ALLOWED_EXTENSIONS: list[str] = [".yaml", ".yml", ".md"]  # Only these files are validated; images are ignored
+    LEADERBOARD_FRAMEWORK_METADATA_PATH: Path = (
+        Path(__file__).absolute().parents[3] / "config/leaderboard/framework_metadata.yaml"
+    )
     AUTHORIZED_APPS_CONFIG_DIR: Path = Path(__file__).absolute().parents[3] / "config/authorized_applications"
     INDEX_DUMPS_DIR: Path = Path(__file__).absolute().parents[3] / "config/index-dumps"
     ALEMBIC_MIGRATIONS_DIR: Path = Path(__file__).absolute().parents[2] / "external/alembic"
@@ -127,7 +130,7 @@ class Config(BaseSettings):
     # Analytics dashboard configuration
     ANALYTICS_DEFAULT_PAGE_SIZE: int = 20  # Default number of rows for analytics endpoints
 
-    INDEXES_PERMITTED_FOR_SEARCH: List[str] = [
+    INDEXES_PERMITTED_FOR_SEARCH: list[str] = [
         KZ_USERS_INDEX,
     ]
 
@@ -223,7 +226,7 @@ class Config(BaseSettings):
 
     # External user configuration
     EXTERNAL_USER_TYPE: str = "external"
-    EXTERNAL_USER_ALLOWED_PROJECTS: List[str] = ["codemie"]
+    EXTERNAL_USER_ALLOWED_PROJECTS: list[str] = ["codemie"]
 
     GOOGLE_SEARCH_API_KEY: str = ""
     GOOGLE_SEARCH_CSE_ID: str = ""
@@ -309,10 +312,10 @@ class Config(BaseSettings):
     AZURE_SPEECH_REGION: str = ""
     AZURE_SPEECH_SERVICE_KEY: str = ""
 
-    GITHUB_IDENTIFIERS: List[str] = ["github"]
-    GITLAB_IDENTIFIERS: List[str] = ["gitlab"]
-    BITBUCKET_IDENTIFIERS: List[str] = ["bitbucket"]
-    AZURE_DEVOPS_REPOS_IDENTIFIERS: List[str] = ["dev.azure.com"]
+    GITHUB_IDENTIFIERS: list[str] = ["github"]
+    GITLAB_IDENTIFIERS: list[str] = ["gitlab"]
+    BITBUCKET_IDENTIFIERS: list[str] = ["bitbucket"]
+    AZURE_DEVOPS_REPOS_IDENTIFIERS: list[str] = ["dev.azure.com"]
 
     A2A_AGENT_CARD_FETCH_TIMEOUT: float = 30.0
     A2A_AGENT_REQUEST_TIMEOUT: float = 30.0
@@ -356,7 +359,7 @@ class Config(BaseSettings):
     AMNA_AIRN_PRECREATE_WORKFLOWS: bool = False
     WORKERS: int = 1
     LANGFUSE_TRACES: bool = False
-    LANGFUSE_BLOCKED_INSTRUMENTATION_SCOPES: List[str] = ["elasticsearch-api"]
+    LANGFUSE_BLOCKED_INSTRUMENTATION_SCOPES: list[str] = ["elasticsearch-api"]
     CODEMIE_SUPPORT: str = "https://epa.ms/codemie-support"
     CODEMIE_SUPPORT_MSG: str = f"For assistance, please contact support at {CODEMIE_SUPPORT}"
 
@@ -364,13 +367,13 @@ class Config(BaseSettings):
     ENABLE_LANGGRAPH_AITOOLS_AGENT: bool = True
 
     # Dynamic tools configuration - tool name mappings
-    DYNAMIC_WEB_SEARCH_TOOLS: List[str] = [
+    DYNAMIC_WEB_SEARCH_TOOLS: list[str] = [
         "google_search_tool_json",  # Google Search
         "tavily_search_results_json",  # Tavily Search
         "web_scrapper",  # Web Scraper
     ]
 
-    DYNAMIC_CODE_INTERPRETER_TOOLS: List[str] = [
+    DYNAMIC_CODE_INTERPRETER_TOOLS: list[str] = [
         "python_repl_code_interpreter",  # Python REPL Code Interpreter
         "code_executor",  # Code Executor (with file upload support)
     ]
@@ -405,7 +408,7 @@ class Config(BaseSettings):
     # Based on official spec: https://litellm-api.up.railway.app/
     # Format: List of dicts with 'path' and 'methods' keys
     # Note: Can be overridden via environment variable as JSON string
-    LITE_LLM_PROXY_ENDPOINTS: List[dict] = [
+    LITE_LLM_PROXY_ENDPOINTS: list[dict] = [
         # Chat & Completions (OpenAI-compatible) - both /v1 and non-/v1 versions
         {"path": "/v1/chat/completions", "methods": ["POST"]},
         {"path": "/chat/completions", "methods": ["POST"]},
@@ -452,7 +455,7 @@ class Config(BaseSettings):
     LITELLM_PREMIUM_MODELS_BUDGET_NAME: str = ""
     # List of model name aliases for premium/costly model detection (partial match, case-insensitive).
     # A model is considered premium if its name contains any alias (e.g. ["opus", "claude-4"]).
-    LITELLM_PREMIUM_MODELS_ALIASES: List[str] = []
+    LITELLM_PREMIUM_MODELS_ALIASES: list[str] = []
     # Budget name for proxy spend attribution. When empty, proxy requests continue using the default budget.
     LITELLM_CLI_BUDGET_NAME: str = ""
     # Minimum supported CodeMie CLI version for proxy requests.
@@ -522,7 +525,14 @@ class Config(BaseSettings):
     CONVERSATION_ANALYSIS_BATCH_SIZE: int = 20  # Conversations per batch per pod
     CONVERSATION_ANALYSIS_MAX_RETRIES: int = 3  # Max retry attempts for failed analyses
     CONVERSATION_ANALYSIS_LLM_MODEL: str = "gemini-3-flash"
-    CONVERSATION_ANALYSIS_PROJECTS_FILTER: List[str] = ["demo", "codemie", "epm-cdme"]  # Project filter
+    CONVERSATION_ANALYSIS_PROJECTS_FILTER: list[str] = ["demo", "codemie", "epm-cdme"]  # Project filter
+
+    # Leaderboard Configuration
+    LEADERBOARD_ENABLED: bool = False  # Enables the leaderboard nightly computation job
+    LEADERBOARD_SCHEDULE: str = "0 2 * * *"  # Cron schedule (UTC) — 2 AM daily
+    LEADERBOARD_PERIOD_DAYS: int = 30  # Rolling period for scoring window
+    LEADERBOARD_KEEP_ROLLING_SNAPSHOTS: int = 30  # Number of rolling snapshots to retain
+    LEADERBOARD_KEEP_ADHOC_SNAPSHOTS: int = 10  # Number of non-final adhoc/manual snapshots to retain
 
     # LiteLLM Spend Collector Configuration
     LITELLM_SPEND_COLLECTOR_ENABLED: bool = False  # Enables the spend collector APScheduler job
@@ -534,7 +544,7 @@ class Config(BaseSettings):
     # Regex pattern applied to project names; matching projects are excluded (empty = no exclusion)
     LITELLM_SPEND_COLLECTOR_PROJECT_EXCLUDE_PATTERN: str = ""
     # Explicit list of project names to exclude; takes effect alongside the exclude pattern
-    LITELLM_SPEND_COLLECTOR_PROJECT_EXCLUDE_LIST: List[str] = []
+    LITELLM_SPEND_COLLECTOR_PROJECT_EXCLUDE_LIST: list[str] = []
 
     model_config = SettingsConfigDict(env_file=find_dotenv(".env", raise_error_if_not_found=False), extra="ignore")
 

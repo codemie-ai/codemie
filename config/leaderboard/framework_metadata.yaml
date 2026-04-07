@@ -1,0 +1,332 @@
+framework:
+  title: "AI Champions Leaderboard"
+  version: "2.0"
+  principles:
+    - title: "Capability Framework, Not Vanity Ranking"
+      text: "The score identifies people who use AI productively at meaningful depth, not people who generate the most activity."
+    - title: "Outcomes Over Raw Activity"
+      text: "High usage alone is not enough. The model rewards asset maturity, workflow outcomes, engineering throughput, reuse by others, and learning."
+    - title: "Explainable By Design"
+      text: "Every dimension is built from explicit signals, normalized scores, and visible weights so leadership can trace why a user ranked where they did."
+    - title: "Current Score Uses Implemented Signals Only"
+      text: "V2 includes six implemented dimensions. Strategic overlays remain visible as roadmap items and are not counted today."
+  calculation_steps:
+    - "Collect user-level evidence from PostgreSQL, Elasticsearch, and LiteLLM spend data."
+    - "Normalize each component to 0-1 using ratios, thresholds, percentile ranks, or deterministic heuristics."
+    - "Compute each dimension as the weighted sum of its components."
+    - "Compute total score as weighted sum of six dimensions, scaled to 0-100."
+    - "Assign tiers: Pioneer >= 80, Expert >= 65, Advanced >= 45, Practitioner >= 25, Newcomer < 25."
+  data_sources:
+    - title: "PostgreSQL"
+      text: "Primary system of record for assistants, workflows, executions, conversations, sharing, kata completion, datasources."
+    - title: "Elasticsearch"
+      text: "Enrichment layer for tool usage, MCP activity, lifecycle telemetry, CLI session metrics."
+    - title: "LiteLLM Spend"
+      text: "Authoritative spend data for CLI efficiency signal."
+  future_overlays:
+    - "Web Conversation Quality And Maturity"
+    - "CLI Conversation Quality And Intent"
+    - "Practical Project AI Experience"
+    - "CV And Skills Profile Alignment"
+
+tiers:
+  - name: "pioneer"
+    label: "Pioneer"
+    plural_label: "Pioneers"
+    level: 5
+    min_score: 80
+    color: "#fbbf24"
+    description: "Top AI practitioners demonstrating excellence across multiple dimensions."
+  - name: "expert"
+    label: "Expert"
+    plural_label: "Experts"
+    level: 4
+    min_score: 65
+    color: "#94a3b8"
+    description: "Strong AI users with broad capability and consistent high-quality usage."
+  - name: "advanced"
+    label: "Advanced"
+    plural_label: "Advanced"
+    level: 3
+    min_score: 45
+    color: "#f97316"
+    description: "Solid AI practitioners with good breadth across platform and CLI."
+  - name: "practitioner"
+    label: "Practitioner"
+    plural_label: "Practitioners"
+    level: 2
+    min_score: 25
+    color: "#818cf8"
+    description: "Growing AI users building capability across key dimensions."
+  - name: "newcomer"
+    label: "Newcomer"
+    plural_label: "Newcomers"
+    level: 1
+    min_score: 0
+    color: "#6b7280"
+    description: "Early-stage users beginning their AI journey."
+
+intents:
+  - id: "sdlc_unicorn"
+    label: "SDLC Unicorn"
+    emoji: "\U0001F984"
+    color: "#a855f7"
+    description: "Excels across CLI engineering, platform creation, workflow usage, and knowledge sharing — a true full-stack AI practitioner."
+  - id: "developer"
+    label: "Developer"
+    emoji: "\U0001F4BB"
+    color: "#ef4444"
+    description: "Primarily uses CLI and coding agents for real engineering work with strong delivery throughput."
+  - id: "workflow_architect"
+    label: "Workflow Architect"
+    emoji: "\U0001F9E9"
+    color: "#f59e0b"
+    description: "Creates sophisticated, original workflows with complex configurations and advanced patterns."
+  - id: "workflow_user"
+    label: "Workflow User"
+    emoji: "\U0001F504"
+    color: "#10b981"
+    description: "Actively executes workflows with high volume, success rate, and repeat usage patterns."
+  - id: "platform_builder"
+    label: "Platform Builder"
+    emoji: "\U0001F6E0\uFE0F"
+    color: "#06b6d4"
+    description: "Creates mature platform assets — assistants, skills, datasources — with depth and configuration quality."
+  - id: "ai_user"
+    label: "AI User"
+    emoji: "\U0001F91D"
+    color: "#6366f1"
+    description: "Consistently uses the platform for conversations, assistant consumption, and day-to-day AI-assisted work."
+  - id: "explorer"
+    label: "Explorer"
+    emoji: "\U0001F331"
+    color: "#6b7280"
+    description: "Early-stage or light user exploring the platform without strong specialization yet."
+  # Legacy intent IDs (mapped for backward compatibility with existing snapshots)
+  - id: "cli_focused"
+    label: "Developer"
+    emoji: "\U0001F4BB"
+    color: "#ef4444"
+    description: "CLI and coding agent focused engineer (legacy classification)."
+  - id: "platform_focused"
+    label: "AI User"
+    emoji: "\U0001F91D"
+    color: "#6366f1"
+    description: "Consistent platform consumer (legacy classification)."
+  - id: "hybrid"
+    label: "AI User"
+    emoji: "\U0001F91D"
+    color: "#6366f1"
+    description: "Hybrid platform and CLI user (legacy classification)."
+
+dimensions:
+  d1:
+    id: "d1"
+    label: "D1"
+    name: "Core Platform Usage"
+    weight: 0.20
+    color: "#6366f1"
+    icon: "chart"
+    description: "How broadly and consistently the user consumes core CodeMie platform capabilities, excluding CLI-synced activity and keeping workflow usage separate."
+    components:
+      active_days:
+        label: "Active Days"
+        weight: 0.20
+        what: "How consistently the user is active on working days in the selected period, using web/platform activity only."
+        calc: "Tiered normalization on active working days: reaching 1 day scores low, 3 days moderate, and 20+ days scores maximum. CLI-synced activity is excluded to isolate genuine platform engagement."
+        evidence: "Active working days (Mon-Fri) from PostgreSQL platform activity logs for the analysis period."
+      assistants_used:
+        label: "Assistants Used"
+        weight: 0.15
+        what: "Breadth of assistant consumption across the platform."
+        calc: "Tiered thresholds: using 1 assistant scores 0.25, 3 assistants scores 0.50, 5 scores 0.75, and 8 or more reaches 1.00."
+        evidence: "Distinct assistant IDs the user interacted with from PostgreSQL conversation records."
+      web_conversations:
+        label: "Web Conversations"
+        weight: 0.25
+        what: "How much non-CLI web conversation activity the user generated."
+        calc: "Percentile-ranked against the cohort using PostgreSQL conversation counts for the current period."
+        evidence: "Web conversation count from PostgreSQL, excluding CLI-synced conversations."
+      conversation_depth:
+        label: "Conversation Depth"
+        weight: 0.25
+        what: "How deep the user's average non-CLI conversations are."
+        calc: "Percentile-ranked against the cohort using average messages per conversation."
+        evidence: "Average messages per conversation computed from PostgreSQL conversation and message tables."
+      advanced_platform_usage:
+        label: "Advanced Platform Usage"
+        weight: 0.15
+        what: "Breadth of advanced platform capabilities used beyond simple chat."
+        calc: "Composite raw score: MCP server count times 1.5, plus datasource-type count, plus 1 bonus point if any skill usage exists, then clamped by dividing by 6.0."
+        evidence: "MCP server usage, datasource type breadth, and skill invocation flags from Elasticsearch telemetry."
+  d2:
+    id: "d2"
+    label: "D2"
+    name: "Core Platform Creation"
+    weight: 0.20
+    color: "#06b6d4"
+    icon: "tool"
+    description: "How well the user creates mature core platform assets such as assistants, skills, and datasources, independent of downstream peer reuse."
+    components:
+      asset_volume:
+        label: "Asset Volume"
+        weight: 0.22
+        what: "Overall volume of authored platform assets."
+        calc: "Tiered on cumulative assistants plus skills plus datasources created: 1 total scores 0.30, 3 scores 0.55, 6 scores 0.80, and 10+ reaches maximum."
+        evidence: "Total assistants, skills, and datasources ever created by this user (all-time cumulative count)."
+      assistant_maturity:
+        label: "Assistant Maturity"
+        weight: 0.40
+        what: "How mature the user's assistants are, not just how many were created."
+        calc: "Weighted blend of assistant features: tools 20%, MCPs 20%, skills 15%, nested assistants 10%, context 15%, smart tool selection 10%, prompt richness 10% using avg prompt length divided by 1500."
+        evidence: "Weighted maturity of assistant toolkits, MCPs, skills, context, orchestration, and prompt richness."
+      skill_maturity:
+        label: "Skill Maturity"
+        weight: 0.18
+        what: "Quality of authored skills, including practical depth and social validation."
+        calc: "Weighted blend of skills with toolkits at 35%, average skill content length divided by 2500 at 45%, and average likes per skill divided by 3 at 20%."
+        evidence: "Skill creation quality derived from toolkit linkage, content depth, and social feedback."
+      datasource_creation:
+        label: "Datasource Creation"
+        weight: 0.20
+        what: "Depth and usefulness of created datasources."
+        calc: "Weighted blend of datasources completed at 35%, datasource type breadth divided by 4 at 25%, and indexed document volume divided by 500 at 40%."
+        evidence: "Datasource completion status, type variety, and indexed document counts from PostgreSQL."
+  d3:
+    id: "d3"
+    label: "D3"
+    name: "Workflow Usage"
+    weight: 0.10
+    color: "#10b981"
+    icon: "refresh"
+    description: "How effectively the user leverages workflows in day-to-day execution through volume, success, and repeat usage."
+    components:
+      execution_volume:
+        label: "Execution Volume"
+        weight: 0.50
+        what: "How heavily the user runs workflows."
+        calc: "Percentile-ranked on workflow executions in the current analysis window. If executions are zero, the full dimension scores zero."
+        evidence: "Workflow execution count from PostgreSQL for the analysis period."
+      success_rate:
+        label: "Success Rate"
+        weight: 0.25
+        what: "Reliability of workflow runs."
+        calc: "Normalized as successful executions divided by total executions."
+        evidence: "Successful vs total execution counts from PostgreSQL."
+      repeat_usage:
+        label: "Repeat Usage"
+        weight: 0.25
+        what: "Whether workflows are used repeatedly versus tested once."
+        calc: "Repeat ratio computed as (executions minus distinct workflows executed) divided by distinct workflows executed, then clamped to 0-1."
+        evidence: "Execution count and distinct workflow count from PostgreSQL execution records."
+  d4:
+    id: "d4"
+    label: "D4"
+    name: "Workflow Creation"
+    weight: 0.10
+    color: "#f59e0b"
+    icon: "puzzle"
+    description: "How mature the user's authored workflows are, focusing on creation volume, structural complexity, sophistication, and originality."
+    components:
+      workflow_count:
+        label: "Workflow Count"
+        weight: 0.20
+        what: "Volume of authored workflows."
+        calc: "Tiered thresholds: 1 workflow scores 0.35, 2 scores 0.60, 4 scores 0.80, and 6+ reaches maximum."
+        evidence: "Total workflows created by this user from PostgreSQL."
+      workflow_complexity:
+        label: "Workflow Complexity"
+        weight: 0.30
+        what: "Structural depth of the user's workflows."
+        calc: "Weighted blend of average states divided by 8 at 35%, average tools divided by 4 at 20%, average assistants divided by 4 at 20%, average custom nodes divided by 3 at 10%, and YAML length divided by 5000 at 15%."
+        evidence: "Workflow structure analysis: state count, tool count, assistant count, custom nodes, and YAML configuration size."
+      workflow_sophistication:
+        label: "Workflow Sophistication"
+        weight: 0.25
+        what: "Use of advanced workflow patterns including summarization and long prompts."
+        calc: "Weighted blend of tool ratio at 25%, custom node ratio at 25%, summarization at 15%, prompt length richness at 20%, and MCP/context ratio at 15%."
+        evidence: "Advanced feature usage across all authored workflows from PostgreSQL workflow configuration data."
+      workflow_originality:
+        label: "Workflow Originality"
+        weight: 0.25
+        what: "Heuristic penalty for template-like or low-complexity workflows."
+        calc: "Starts at 1.0, then drops to 0.40 for very simple low-feature workflows, or 0.65 for modest low-complexity workflows."
+        evidence: "Heuristic analysis of workflow feature usage and structural complexity."
+  d5:
+    id: "d5"
+    label: "D5"
+    name: "CLI & Agentic Engineering"
+    weight: 0.30
+    color: "#ef4444"
+    icon: "terminal"
+    description: "How effectively the user applies CLI and coding agents for real engineering work, including a blended delivery-efficiency signal."
+    components:
+      cli_sessions:
+        label: "CLI Sessions"
+        weight: 0.18
+        what: "How often the user works through CLI and coding-agent sessions."
+        calc: "Percentile-ranked only among CLI-active users so non-CLI users at zero do not inflate the score."
+        evidence: "CLI session events (codemie_cli_session_total) from Elasticsearch for the analysis period."
+      repo_breadth:
+        label: "Repo Breadth"
+        weight: 0.14
+        what: "Breadth of engineering contexts touched through CLI."
+        calc: "Tiered on unique repositories touched: 1 scores 0.25, 2 scores 0.50, 3 scores 0.75, and 5+ reaches maximum."
+        evidence: "Distinct repository identifiers from CLI session metadata in Elasticsearch."
+      code_output:
+        label: "Code Output"
+        weight: 0.18
+        what: "Engineering throughput generated in CLI sessions."
+        calc: "Percentile-ranked on total lines added among CLI-active users."
+        evidence: "Total lines added from CLI session summaries in Elasticsearch."
+      files_changed:
+        label: "Files Changed"
+        weight: 0.10
+        what: "Breadth of changed code surface, not just line volume."
+        calc: "Percentile-ranked on modified file count among CLI-active users."
+        evidence: "Modified file count from CLI session records in Elasticsearch."
+      delivery_efficiency:
+        label: "Delivery Efficiency"
+        weight: 0.18
+        what: "Useful code output produced efficiently rather than expensively."
+        calc: "Blended 50/50 from token efficiency (lines divided by total tokens) and spend efficiency (lines divided by dollars), but only if at least 30 lines and 2 files were changed."
+        evidence: "Computed from lines added, token count, and spend data across CLI sessions."
+      tool_sophistication:
+        label: "Tool Sophistication"
+        weight: 0.22
+        what: "Use of advanced agentic capabilities in CLI sessions."
+        calc: "Composite of advanced tool ratio and MCP ratio: advanced Agent, Skill, and MCP-style calls contribute 75%, MCP share contributes 25%."
+        evidence: "Tool invocation breakdown from Elasticsearch CLI session telemetry."
+  d6:
+    id: "d6"
+    label: "D6"
+    name: "Impact & Knowledge"
+    weight: 0.10
+    color: "#8b5cf6"
+    icon: "lightbulb"
+    description: "How much the user helps others succeed with AI through assistant reuse, workflow reuse, knowledge sharing, and structured learning."
+    components:
+      assistant_reuse:
+        label: "Assistant Reuse"
+        weight: 0.30
+        what: "How many colleagues reused the user's assistants."
+        calc: "Percentile-ranked on distinct assistant adopters, but only if adoption is above zero."
+        evidence: "Distinct users who used this user's shared assistants from PostgreSQL."
+      workflow_reuse:
+        label: "Workflow Reuse"
+        weight: 0.25
+        what: "How many colleagues ran workflows created by the user."
+        calc: "Percentile-ranked on distinct external workflow users, but only if reuse is above zero."
+        evidence: "Distinct external users who executed this user's workflows from PostgreSQL."
+      knowledge_sharing:
+        label: "Knowledge Sharing"
+        weight: 0.30
+        what: "Whether the user actively shares knowledge and whether other people consume it."
+        calc: "Weighted blend of shared conversation count at 55% using tier thresholds (1, 3, 8, 15) and shared access percentile at 45%."
+        evidence: "Shared conversation counts and access metrics from PostgreSQL sharing records."
+      learning:
+        label: "Learning"
+        weight: 0.15
+        what: "Structured learning effort through AI katas."
+        calc: "Tiered thresholds: 1 completion scores 0.33, 3 scores 0.66, and 6+ reaches maximum."
+        evidence: "Kata completion records from PostgreSQL learning activity tables."

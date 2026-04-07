@@ -100,8 +100,7 @@ from external.deployment_scripts.preconfigured_assistants import manage_preconfi
 from external.deployment_scripts.preconfigured_skills import manage_preconfigured_skills
 from external.deployment_scripts.preconfigured_workflows import create_preconfigured_workflows
 from external.deployment_scripts.preconfigured_katas import import_preconfigured_katas
-from alembic.config import Config
-from alembic import command
+from codemie.clients.postgres import alembic_upgrade_postgres
 
 # Rate limiting imports (EPMCDME-10160)
 from slowapi.middleware import SlowAPIMiddleware
@@ -252,12 +251,6 @@ async def _initialize_plugin_service():
         return None
 
 
-def alembic_upgrade_postgres():
-    alembic_cfg = Config(config.ALEMBIC_INI_PATH)
-    alembic_cfg.set_main_option('script_location', str(config.ALEMBIC_MIGRATIONS_DIR))
-    command.upgrade(alembic_cfg, "head")
-
-
 def _initialize_enterprise_services(app: FastAPI) -> tuple:
     """Initialize Langfuse and LiteLLM enterprise services."""
     langfuse_service = initialize_langfuse_from_config()
@@ -350,6 +343,21 @@ def _setup_chargeback_scheduler(app: FastAPI):
     logger.info("Chargeback scheduler started successfully")
 
 
+def _setup_leaderboard_scheduler(app: FastAPI):
+    """Setup leaderboard computation scheduler if enabled."""
+    if not config.LEADERBOARD_ENABLED:
+        return
+
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from codemie.service.leaderboard.scheduler import LeaderboardScheduler
+
+    leaderboard_scheduler_instance = AsyncIOScheduler()
+    leaderboard_scheduler = LeaderboardScheduler(scheduler=leaderboard_scheduler_instance)
+    leaderboard_scheduler.start()
+    app.state.leaderboard_scheduler = leaderboard_scheduler
+    logger.info("Leaderboard scheduler started successfully")
+
+
 def _initialize_jwt_keys():
     """Auto-generate RSA keys for local auth if not present (EPMCDME-10160)"""
     if config.IDP_PROVIDER == "local" and config.ENABLE_USER_MANAGEMENT:
@@ -429,6 +437,11 @@ async def _shutdown_services(app: FastAPI, langfuse_service, litellm_service, ta
         chargeback_scheduler.stop()
         logger.info("Chargeback scheduler shutdown complete")
 
+    leaderboard_scheduler = getattr(app.state, 'leaderboard_scheduler', None)
+    if leaderboard_scheduler is not None:
+        leaderboard_scheduler.stop()
+        logger.info("Leaderboard scheduler shutdown complete")
+
     await close_llm_proxy_client()
     logger.info("LLM Proxy HTTP client closed")
 
@@ -482,6 +495,7 @@ async def lifespan(app: FastAPI):
 
     _setup_conversation_analysis_scheduler(app)
     _setup_chargeback_scheduler(app)
+    _setup_leaderboard_scheduler(app)
 
     yield
 

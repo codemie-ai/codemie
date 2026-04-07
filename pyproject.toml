@@ -263,6 +263,7 @@ allow-only = """
     ISC License (ISCL);\
     LGPL-3.0-only;\
     MIT;\
+    MIT AND PSF-2.0;\
     MIT License;\
     MIT License; Mozilla Public License 2.0 (MPL 2.0);\
     MIT-CMU;\

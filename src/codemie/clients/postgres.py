@@ -112,6 +112,16 @@ class PostgresClient:
             engine.sync_engine.dispose()
 
 
+def alembic_upgrade_postgres() -> None:
+    """Run Alembic migrations to head. Safe to call from any entrypoint."""
+    from alembic import command
+    from alembic.config import Config
+
+    alembic_cfg = Config(config.ALEMBIC_INI_PATH)
+    alembic_cfg.set_main_option("script_location", str(config.ALEMBIC_MIGRATIONS_DIR))
+    command.upgrade(alembic_cfg, "head")
+
+
 @contextmanager
 def get_session():
     """

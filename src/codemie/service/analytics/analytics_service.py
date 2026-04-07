@@ -30,6 +30,7 @@ from codemie.service.analytics.handlers.budget_handler import BudgetHandler
 from codemie.service.analytics.handlers.cli_handler import CLIHandler
 from codemie.service.analytics.handlers.embeddings_handler import EmbeddingsHandler
 from codemie.service.analytics.handlers.engagement_handler import EngagementHandler
+from codemie.service.analytics.handlers.leaderboard_handler import LeaderboardHandler
 from codemie.service.analytics.handlers.llm_handler import LLMHandler
 from codemie.service.analytics.handlers.mcp_handler import MCPHandler
 from codemie.service.analytics.handlers.project_handler import ProjectHandler
@@ -71,6 +72,7 @@ class AnalyticsService:
         self._llm_handler_instance: LLMHandler | None = None
         self._embeddings_handler_instance: EmbeddingsHandler | None = None
         self._engagement_handler_instance: EngagementHandler | None = None
+        self._leaderboard_handler_instance: LeaderboardHandler | None = None
 
     @property
     def _adoption_handler(self) -> AIAdoptionHandler:
@@ -169,6 +171,146 @@ class AnalyticsService:
         if self._engagement_handler_instance is None:
             self._engagement_handler_instance = EngagementHandler(self._user, self._repository)
         return self._engagement_handler_instance
+
+    @property
+    def _leaderboard_handler(self) -> LeaderboardHandler:
+        """Lazy-load leaderboard handler."""
+        if self._leaderboard_handler_instance is None:
+            self._leaderboard_handler_instance = LeaderboardHandler(self._user)
+        return self._leaderboard_handler_instance
+
+    # Leaderboard endpoints
+    async def get_leaderboard_summary(
+        self,
+        snapshot_id: str | None = None,
+        *,
+        view: str | None = None,
+        season_key: str | None = None,
+    ) -> dict:
+        return await self._leaderboard_handler.get_leaderboard_summary(snapshot_id, view=view, season_key=season_key)
+
+    async def get_leaderboard_entries(
+        self,
+        snapshot_id: str | None = None,
+        tier: str | None = None,
+        page: int = 0,
+        per_page: int = 20,
+        search: str | None = None,
+        intent: str | None = None,
+        sort_by: str | None = None,
+        sort_order: str = "asc",
+        *,
+        view: str | None = None,
+        season_key: str | None = None,
+    ) -> dict:
+        return await self._leaderboard_handler.get_leaderboard_entries(
+            snapshot_id, tier, page, per_page, search, intent, sort_by, sort_order, view=view, season_key=season_key
+        )
+
+    async def get_leaderboard_user_detail(
+        self,
+        user_id: str,
+        snapshot_id: str | None = None,
+        *,
+        view: str | None = None,
+        season_key: str | None = None,
+    ) -> dict:
+        return await self._leaderboard_handler.get_leaderboard_user_detail(
+            user_id,
+            snapshot_id,
+            view=view,
+            season_key=season_key,
+        )
+
+    async def get_leaderboard_tier_distribution(
+        self,
+        snapshot_id: str | None = None,
+        *,
+        view: str | None = None,
+        season_key: str | None = None,
+    ) -> dict:
+        return await self._leaderboard_handler.get_leaderboard_tier_distribution(
+            snapshot_id,
+            view=view,
+            season_key=season_key,
+        )
+
+    async def get_leaderboard_score_distribution(
+        self,
+        snapshot_id: str | None = None,
+        *,
+        view: str | None = None,
+        season_key: str | None = None,
+    ) -> dict:
+        return await self._leaderboard_handler.get_leaderboard_score_distribution(
+            snapshot_id,
+            view=view,
+            season_key=season_key,
+        )
+
+    async def get_leaderboard_dimension_breakdown(
+        self,
+        snapshot_id: str | None = None,
+        *,
+        view: str | None = None,
+        season_key: str | None = None,
+    ) -> dict:
+        return await self._leaderboard_handler.get_leaderboard_dimension_breakdown(
+            snapshot_id,
+            view=view,
+            season_key=season_key,
+        )
+
+    async def get_leaderboard_top_performers(
+        self,
+        snapshot_id: str | None = None,
+        limit: int = 3,
+        *,
+        view: str | None = None,
+        season_key: str | None = None,
+    ) -> dict:
+        return await self._leaderboard_handler.get_leaderboard_top_performers(
+            snapshot_id,
+            limit,
+            view=view,
+            season_key=season_key,
+        )
+
+    async def get_leaderboard_snapshots(
+        self,
+        page: int = 0,
+        per_page: int = 10,
+        *,
+        view: str | None = None,
+        status: str | None = None,
+        is_final: bool | None = None,
+    ) -> dict:
+        return await self._leaderboard_handler.get_leaderboard_snapshots(
+            page,
+            per_page,
+            view=view,
+            status=status,
+            is_final=is_final,
+        )
+
+    async def get_leaderboard_seasons(self, view: str, page: int = 0, per_page: int = 50) -> dict:
+        return await self._leaderboard_handler.get_leaderboard_seasons(view, page, per_page)
+
+    async def trigger_leaderboard_computation(
+        self,
+        period_days: int = 30,
+        *,
+        view: str = "current",
+        season_key: str | None = None,
+    ) -> dict:
+        return await self._leaderboard_handler.trigger_computation(
+            period_days=period_days,
+            view=view,
+            season_key=season_key,
+        )
+
+    async def get_leaderboard_framework(self) -> dict:
+        return self._leaderboard_handler.get_framework_metadata()
 
     # Summary endpoints
     async def get_summaries(
