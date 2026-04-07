@@ -11,15 +11,23 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import json
+import queue as queue_module
 from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import status
 
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.rest_api.routers.utils import raise_access_denied, raise_unprocessable_entity, raise_not_found
-from codemie.utils.datetime_utils import get_timestamp_bounds
 from codemie.rest_api.models.conversation import GeneratedMessage
+from codemie.rest_api.routers.utils import (
+    _serve_workflow_stream,
+    raise_access_denied,
+    raise_not_found,
+    raise_unprocessable_entity,
+)
+from codemie.utils.datetime_utils import get_timestamp_bounds
 
 
 def test_raise_access_denied():
@@ -146,3 +154,123 @@ def test_get_timestamp_bounds_dict_messages_no_dates():
         {"role": "Assistant", "message": "m2", "date": None},
     ]
     assert get_timestamp_bounds(history) == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# _serve_workflow_stream tests
+# ---------------------------------------------------------------------------
+
+
+def _make_thought_json(message: str) -> str:
+    """Build a minimal thought JSON line matching what the workflow puts on the queue."""
+    return json.dumps({"thought": {"id": "t1", "message": message, "author_type": "Agent"}})
+
+
+def _run_stream(workflow, generator_queue, producer_fn):
+    """
+    Helper: patches threading.Thread so that thread.start() runs producer_fn
+    synchronously (puts items on the queue before the generator loop runs),
+    then drains the generator and returns all yielded lines.
+    """
+    with patch("codemie.rest_api.routers.utils.threading.Thread") as mock_thread_cls:
+        mock_thread = MagicMock()
+        mock_thread_cls.return_value = mock_thread
+        mock_thread.start.side_effect = lambda: producer_fn()
+        return list(_serve_workflow_stream(workflow, generator_queue))
+
+
+class _FakeGeneratorQueue:
+    """Minimal stand-in for ThreadedGenerator — only exposes the queue attribute used by _serve_workflow_stream."""
+
+    def __init__(self):
+        self.queue = queue_module.Queue()
+
+    def close(self):
+        self.queue.put(StopIteration)
+
+
+@pytest.fixture
+def generator_queue():
+    return _FakeGeneratorQueue()
+
+
+@pytest.fixture
+def mock_workflow():
+    return MagicMock()
+
+
+def test_serve_workflow_stream_passes_through_ndjson_chunks(generator_queue, mock_workflow):
+    """Each thought message received from the queue is yielded as a raw NDJSON line."""
+    msg1 = _make_thought_json("Hello")
+    msg2 = _make_thought_json("World")
+
+    def _produce():
+        generator_queue.queue.put(msg1)
+        generator_queue.queue.put(msg2)
+        generator_queue.close()
+
+    lines = _run_stream(mock_workflow, generator_queue, _produce)
+
+    assert lines[0] == f"{msg1}\n"
+    assert lines[1] == f"{msg2}\n"
+
+
+def test_serve_workflow_stream_final_chunk_has_last_true(generator_queue, mock_workflow):
+    """The last yielded line always contains last=True."""
+
+    def _produce():
+        generator_queue.queue.put(_make_thought_json("some output"))
+        generator_queue.close()
+
+    lines = _run_stream(mock_workflow, generator_queue, _produce)
+
+    last_chunk = json.loads(lines[-1])
+    assert last_chunk["last"] is True
+
+
+def test_serve_workflow_stream_final_chunk_generated_matches_last_thought(generator_queue, mock_workflow):
+    """The final chunk's generated field contains the last thought's message text."""
+    expected_text = "The answer is 42"
+
+    def _produce():
+        generator_queue.queue.put(_make_thought_json("intermediate"))
+        generator_queue.queue.put(_make_thought_json(expected_text))
+        generator_queue.close()
+
+    lines = _run_stream(mock_workflow, generator_queue, _produce)
+
+    last_chunk = json.loads(lines[-1])
+    assert last_chunk["generated"] == expected_text
+
+
+def test_serve_workflow_stream_zero_thoughts_final_chunk_generated_empty(generator_queue, mock_workflow):
+    """When no thoughts are emitted before StopIteration (e.g. early failure),
+    last=True is still sent and generated is an empty string — no UnboundLocalError."""
+
+    def _produce():
+        generator_queue.close()  # StopIteration is the very first item
+
+    lines = _run_stream(mock_workflow, generator_queue, _produce)
+
+    assert len(lines) == 1
+    last_chunk = json.loads(lines[0])
+    assert last_chunk["last"] is True
+    assert last_chunk["generated"] == ""
+
+
+def test_serve_workflow_stream_starts_and_joins_thread(generator_queue, mock_workflow):
+    """Background thread is created with stream_to_client as target and joined with timeout=1."""
+
+    def _produce():
+        generator_queue.close()
+
+    with patch("codemie.rest_api.routers.utils.threading.Thread") as mock_thread_cls:
+        mock_thread = MagicMock()
+        mock_thread_cls.return_value = mock_thread
+        mock_thread.start.side_effect = lambda: _produce()
+
+        list(_serve_workflow_stream(mock_workflow, generator_queue))
+
+    mock_thread_cls.assert_called_once_with(target=mock_workflow.stream_to_client)
+    mock_thread.start.assert_called_once()
+    mock_thread.join.assert_called_once_with(timeout=1)

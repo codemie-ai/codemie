@@ -144,6 +144,7 @@ def _serve_workflow_stream(workflow: "WorkflowExecutor", generator_queue: Thread
     thread.start()
 
     try:
+        generation_result = None
         while True:
             value = generator_queue.queue.get()
             if value is not StopIteration:
@@ -152,18 +153,18 @@ def _serve_workflow_stream(workflow: "WorkflowExecutor", generator_queue: Thread
                 yield f"{value}\n"
                 generator_queue.queue.task_done()
             else:
-                from codemie.service.workflow_service import WorkflowService
-
-                execution = WorkflowService.find_workflow_execution_by_id(workflow.execution_id)
-
-                if execution:
-                    final_message = StreamedGenerationResult(
-                        generated=generation_result.thought.message,
-                        time_elapsed=time() - execution_start,
-                        generated_chunk="",
-                        last=True,
-                    )
-                    yield f"{final_message.model_dump_json()}\n"
+                # Always send the final chunk so clients can reliably detect stream completion.
+                # We intentionally avoid querying the DB here: when delete_on_completion=True,
+                # the execution record may already be deleted by _auto_delete_execution() which
+                # races with this consumer after thought_queue.close() signals StopIteration.
+                # The generated text comes from the local generation_result, not the DB.
+                final_message = StreamedGenerationResult(
+                    generated=generation_result.thought.message if generation_result else "",
+                    time_elapsed=time() - execution_start,
+                    generated_chunk="",
+                    last=True,
+                )
+                yield f"{final_message.model_dump_json()}\n"
 
                 break
     finally:
