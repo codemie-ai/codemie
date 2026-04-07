@@ -342,6 +342,7 @@ class ProviderDataSourceSchemas(BaseModel):
     """Defines the schema for creating and updating a datasource"""
 
     schema_id: str = Field(..., alias="id")
+    toolkit_id: str
     provider_name: str
     name: str
 

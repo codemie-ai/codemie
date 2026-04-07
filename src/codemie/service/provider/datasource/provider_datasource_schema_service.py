@@ -45,7 +45,8 @@ class ProviderDatasourceSchemaService:
         """Return the schemas for creating and updating provider datasources"""
         return [
             ProviderDataSourceSchemas(
-                id=toolkit.toolkit_id,
+                id=self.provider.id,
+                toolkit_id=toolkit.toolkit_id,
                 name=self._schema_name(toolkit),
                 provider_name=self.provider.name,
                 base_schema=self._toolkit_base_schema(toolkit),
@@ -66,7 +67,8 @@ class ProviderDatasourceSchemaService:
             raise ValueError(f"Toolkit {toolkit_id} does not have a datasource definition")
 
         return ProviderDataSourceSchemas(
-            id=toolkit.toolkit_id,
+            id=self.provider.id,
+            toolkit_id=toolkit.toolkit_id,
             name=self._schema_name(toolkit),
             provider_name=self.provider.name,
             base_schema=self._toolkit_base_schema(toolkit, include_autofilled),

@@ -54,6 +54,7 @@ def mock_provider_toolkit():
 @pytest.fixture
 def mock_provider(mock_provider_toolkit):
     provider = MagicMock(spec=ProviderBase)
+    provider.id = "provider-db-id"
     provider.name = "Mock Provider"
     provider.provided_toolkits = [mock_provider_toolkit]
     return provider
@@ -74,7 +75,8 @@ def test_schema_for_success(mock_provider, mock_user):
 
     result = instance.schema_for(toolkit_id="TestID", include_autofilled=False)
 
-    assert result.schema_id == 'TestID'
+    assert result.schema_id == 'provider-db-id'
+    assert result.toolkit_id == 'TestID'
     assert result.provider_name == 'Mock Provider'
     assert result.name == 'Mock Provider - TestToolkit'
     assert result.base_schema.parameters[0].name == 'test_param'

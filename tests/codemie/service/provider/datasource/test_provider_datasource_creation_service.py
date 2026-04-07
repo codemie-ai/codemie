@@ -46,6 +46,7 @@ def mock_user() -> MagicMock:
 def schema_mock():
     return ProviderDataSourceSchemas(
         id="toolidkit_id",
+        toolkit_id="toolkit_id",
         name="name",
         provider_name="provider_name",
         base_schema=ProviderDataSourceTypeSchema(

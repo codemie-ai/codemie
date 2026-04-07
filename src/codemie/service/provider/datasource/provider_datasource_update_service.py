@@ -16,6 +16,7 @@ from codemie.rest_api.security.user import User
 from codemie.rest_api.models.provider import ProviderBase
 from codemie.rest_api.models.index import IndexInfo
 
+from codemie.rest_api.utils.default_applications import ensure_application_exists
 from codemie.service.provider.datasource.provider_datasource_schema_service import ProviderDatasourceSchemaService
 from codemie.service.provider.util import encrypt_datasource_provider_fields
 
@@ -26,6 +27,7 @@ class ProviderDatasourceUpdateService(ProviderDatasourceBaseService):
     """Handles updating of provider datasource record"""
 
     UPDATED_MESSAGE_TEMPLATE = "Datasource {} has been updated"
+    NEW_PROJECT_NAME_FIELD = "new_project_name"
 
     def __init__(self, datasource: IndexInfo, provider: ProviderBase, values: dict, user: User):
         self.datasource = datasource
@@ -51,11 +53,15 @@ class ProviderDatasourceUpdateService(ProviderDatasourceBaseService):
         )
 
         try:
-            # Update datasource base fields
             for from_key in self.CODEMIE_FIELDS_MAPPING:
                 value = self.values.get(from_key)
                 target_key = self.CODEMIE_FIELDS_MAPPING[from_key]
                 setattr(self.datasource, target_key, value)
+
+            new_project_name = self.values.get(self.NEW_PROJECT_NAME_FIELD)
+            if new_project_name:
+                ensure_application_exists(new_project_name)
+                self.datasource.project_name = new_project_name
 
             encrypted_base_params = encrypt_datasource_provider_fields(base_params, schema=self.schema.base_schema)
             self.datasource.provider_fields.base_params = {
