@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 from codemie.core.workflow_models import WorkflowConfig, WorkflowState, WorkflowExecutionStatusEnum
 from codemie.core.workflow_models.workflow_models import WorkflowNextState
-from codemie.service.workflow_execution.workflow_execution_service import WorkflowExecutionService
+from codemie.service.workflow_execution.workflow_execution_service import WorkflowExecutionService, EXECUTION_ID_KEYWORD
 
 EXECUTION_ID = "exec-123"
 
@@ -56,9 +56,9 @@ def service(workflow_config):
         return svc
 
 
-def _make_state(name, status):
+def _make_state(state_id, status):
     s = MagicMock()
-    s.name = name
+    s.state_id = state_id
     s.status = status
     return s
 
@@ -93,6 +93,35 @@ class TestInterruptPredecessorState:
 
         assert state_a.status == WorkflowExecutionStatusEnum.IN_PROGRESS
         state_a.save.assert_not_called()
+
+    @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowExecutionState.get_all_by_fields")
+    def test_marks_only_last_iteration_in_loop(self, mock_get_states, service):
+        # Simulate 3 iterations of state_a; results returned newest-first (order_by update_date desc)
+        iter_3 = _make_state("state_a", WorkflowExecutionStatusEnum.SUCCEEDED)  # most recent
+        iter_2 = _make_state("state_a", WorkflowExecutionStatusEnum.SUCCEEDED)
+        iter_1 = _make_state("state_a", WorkflowExecutionStatusEnum.SUCCEEDED)
+        mock_get_states.return_value = [iter_3, iter_2, iter_1]
+
+        service._interrupt_predecessor_state("state_b")
+
+        assert iter_3.status == WorkflowExecutionStatusEnum.INTERRUPTED
+        iter_3.save.assert_called_once()
+        assert iter_2.status == WorkflowExecutionStatusEnum.SUCCEEDED
+        iter_2.save.assert_not_called()
+        assert iter_1.status == WorkflowExecutionStatusEnum.SUCCEEDED
+        iter_1.save.assert_not_called()
+
+    @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowExecutionState.get_all_by_fields")
+    def test_queries_with_order_by_update_date_desc(self, mock_get_states, service):
+        mock_get_states.return_value = []
+
+        service._interrupt_predecessor_state("state_b")
+
+        mock_get_states.assert_called_once_with(
+            fields={EXECUTION_ID_KEYWORD: service.workflow_execution_id},
+            order_by="update_date",
+            order_desc=True,
+        )
 
 
 class TestResumeStates:

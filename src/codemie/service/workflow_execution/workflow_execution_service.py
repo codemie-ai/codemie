@@ -382,11 +382,15 @@ class WorkflowExecutionService:
     def _interrupt_predecessor_state(self, interrupted_state_id: str) -> None:
         """Marks states that transition directly into the interrupted state as INTERRUPTED."""
         predecessor_ids = {s.id for s in self.workflow_config.states if interrupted_state_id in s.next.leads_to()}
-        states = WorkflowExecutionState.get_all_by_fields(fields={EXECUTION_ID_KEYWORD: self.workflow_execution_id})
+        states = WorkflowExecutionState.get_all_by_fields(
+            fields={EXECUTION_ID_KEYWORD: self.workflow_execution_id}, order_by="update_date", order_desc=True
+        )
+
         for state in states:
-            if state.name in predecessor_ids and state.status == WorkflowExecutionStatusEnum.SUCCEEDED:
+            if state.state_id in predecessor_ids and state.status == WorkflowExecutionStatusEnum.SUCCEEDED:
                 state.status = WorkflowExecutionStatusEnum.INTERRUPTED
                 state.save()
+                return
 
     def _get_thoughts_from_states(self):
         """
