@@ -137,6 +137,9 @@ class StreamedGenerationResult(BaseModel):
     tool_errors: Optional[list[dict]] = Field(
         default=None, description="Tool execution errors (formatted based on detail level)"
     )
+    error_details: Optional[dict] = Field(
+        default=None, description="Provide full information about the execution_error field."
+    )
 
 
 class BaseChain:

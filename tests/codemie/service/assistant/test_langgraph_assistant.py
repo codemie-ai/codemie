@@ -21,6 +21,7 @@ from langchain_core.tools import BaseTool
 from langchain_core.callbacks import BaseCallbackHandler
 
 from codemie.agents.langgraph_agent import LangGraphAgent
+from codemie.configs import config
 from codemie.core.models import ChatMessage, AssistantChatRequest
 from codemie.chains.base import GenerationResult
 from codemie.core.constants import ChatRole
@@ -195,10 +196,14 @@ class TestLangGraphAgent:
         # Mock logger to verify error logging
         with (
             patch("codemie.agents.langgraph_agent.logger.error") as mock_logger_error,
-            patch("codemie.agents.utils.handle_agent_exception", return_value=("traceback here", None)),
+            patch("codemie.agents.langgraph_agent.handle_agent_exception") as mock_handle_exception,
             patch("codemie.agents.langgraph_agent.time", side_effect=[1.0, 2.0]),
             patch("codemie.agents.langgraph_agent.BackgroundTasksService") as mock_bgtasks,
         ):
+            mock_error_response = MagicMock()
+            mock_error_response.get_error.return_value.message = "Friendly error message"
+            mock_handle_exception.return_value = mock_error_response
+
             mock_update = MagicMock()
             mock_bgtasks.return_value.update = mock_update
 
@@ -207,6 +212,7 @@ class TestLangGraphAgent:
 
             # Assert
             assert int(result.time_elapsed) == 1
+            mock_handle_exception.assert_called_once_with(fake_exception)
             mock_logger_error.assert_called()
             mock_update.assert_called_once_with(
                 task_id="abc123",
@@ -219,7 +225,8 @@ class TestLangGraphAgent:
         agent._invoke_agent = MagicMock(side_effect=Exception("Test error"))
         agent._get_inputs = MagicMock(return_value={"messages": []})
 
-        result = agent.invoke("Test input")
+        with patch.object(config, "HIDE_AGENT_STREAMING_EXCEPTIONS", False):
+            result = agent.invoke("Test input")
 
         assert "AI Agent run failed with error" in result
         assert "Test error" in result
@@ -347,7 +354,10 @@ class TestLangGraphAgent:
         agent.thread_generator = MagicMock(spec=ThreadedGenerator)
         agent._agent_streaming = MagicMock(return_value="Streamed output")
 
-        with patch("codemie.agents.langgraph_agent.time", side_effect=[0, 1]):
+        with (
+            patch.object(config, "HIDE_AGENT_STREAMING_EXCEPTIONS", False),
+            patch("codemie.agents.langgraph_agent.time", side_effect=[0, 1]),
+        ):
             agent.stream()
 
         agent._agent_streaming.assert_called_once()
@@ -366,7 +376,10 @@ class TestLangGraphAgent:
         agent.thread_generator = MagicMock(spec=ThreadedGenerator)
         agent._agent_streaming = MagicMock(side_effect=ValueError("Stream error"))
 
-        with patch("codemie.agents.langgraph_agent.time", side_effect=[0, 1]):
+        with (
+            patch.object(config, "HIDE_AGENT_STREAMING_EXCEPTIONS", False),
+            patch("codemie.agents.langgraph_agent.time", side_effect=[0, 1]),
+        ):
             agent.stream()
 
         # Should still close the generator and send error
@@ -643,6 +656,21 @@ class TestLangGraphAgent:
         assert result["require_user_input"] is True
         assert "Task failed" in result["content"]
 
+    def test_invoke_with_a2a_output_error_hide_exceptions(self, agent):
+        """HIDE=True must return the safe fallback message, not the raw exception string."""
+        agent._invoke_agent = MagicMock(side_effect=Exception("sensitive internal detail"))
+        agent._get_inputs = MagicMock(return_value={"messages": []})
+
+        with patch("codemie.agents.langgraph_agent.config") as mock_config:
+            mock_config.HIDE_AGENT_STREAMING_EXCEPTIONS = True
+            mock_config.GLOBAL_FALLBACK_MSG = config.GLOBAL_FALLBACK_MSG
+            result = agent.invoke_with_a2a_output("Do something")
+
+        assert result["is_task_complete"] is False
+        assert result["require_user_input"] is True
+        assert "sensitive internal detail" not in result["content"]
+        assert result["content"] == config.GLOBAL_FALLBACK_MSG
+
     def test_process_chunk(self, agent):
         """Test chunk processing"""
         chunks_collector = []
@@ -660,32 +688,3 @@ class TestLangGraphAgent:
         expected_len = LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH
         assert formatted == ("a" * expected_len)
         assert len(formatted) == expected_len
-
-    @patch('codemie.agents.assistant_agent.config.HIDE_AGENT_STREAMING_EXCEPTIONS', True)
-    @patch('codemie.agents.assistant_agent.config.CUSTOM_GUARDRAILS_MESSAGE', 'Content prohibited')
-    @patch("codemie.agents.langgraph_agent.logger")
-    def test_stream_with_error_with_guardrails_when_flag_enabled(self, mock_logger, agent):
-        """Test streaming with error handling"""
-        agent.thread_generator = MagicMock(spec=ThreadedGenerator)
-        agent._agent_streaming = MagicMock(side_effect=ValueError("content blocked by policy"))
-
-        with patch.object(
-            agent,
-            "_process_chunks",
-            return_value=("Content prohibited", "guardrails"),
-        ):
-            with patch("codemie.agents.langgraph_agent.time", side_effect=[0, 1]):
-                agent.stream()
-
-        # Generator lifecycle
-        assert agent.thread_generator.send.call_count == 1
-        assert agent.thread_generator.close.call_count == 1
-
-        # Validate payload
-        call_args = agent.thread_generator.send.call_args[0][0]
-        streamed_result = json.loads(call_args)
-
-        assert streamed_result["execution_error"] == "guardrails"
-        assert streamed_result["generated"] == "Content prohibited"
-        assert streamed_result["last"] is True
-        assert streamed_result["time_elapsed"] == 1

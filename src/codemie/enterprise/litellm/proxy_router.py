@@ -26,6 +26,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from packaging.version import InvalidVersion, Version
 from starlette.datastructures import Headers
 from starlette.responses import StreamingResponse
+from codemie.service.monitoring.base_monitoring_service import limit_string, send_log_metric
+from codemie.service.monitoring.metrics_constants import MetricsAttributes, LLM_ERROR_TOTAL_METRIC
+from codemie.configs.logger import logging_user_id, current_user_email, logging_conversation_id, logging_uuid
+from codemie.core.errors import ErrorResponse, ExceptionClassificationPipeline
 
 if TYPE_CHECKING:
     from codemie.rest_api.security.user import User
@@ -54,16 +58,11 @@ from codemie.core.constants import (
 )
 from codemie.core.dependecies import litellm_context
 from codemie.core.utils import calculate_token_cost
-from codemie.rest_api.security.authentication import authenticate
-from codemie.rest_api.security.authentication import BEARER_AUTHORIZATION_HEADER
+from codemie.rest_api.security.authentication import BEARER_AUTHORIZATION_HEADER, authenticate
 from codemie.rest_api.security.user import User
 from codemie.enterprise.litellm.dependencies import check_user_budget
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.monitoring.llm_proxy_monitoring_service import LLMProxyMonitoringService
-from codemie.core.errors import ErrorCode
-from codemie.core.litellm_error_constants import STATUS_TO_ERROR_CODE
-from codemie.service.monitoring.base_monitoring_service import send_log_metric
-from codemie.service.monitoring.metrics_constants import LLM_ERROR_TOTAL_METRIC, MetricsAttributes
 
 from .client import get_llm_proxy_client
 from .dependencies import (
@@ -432,44 +431,56 @@ async def _parse_usage_with_cost(response_content: bytes, llm_model: str, is_str
     )
 
 
-def _emit_proxy_llm_error_log(
-    response_status: int,
-    user: "User",
-    endpoint: str,
-    llm_model: str,
-    session_id: str | None = None,
-    request_id: str | None = None,
-) -> None:
-    """Emit a structured log entry for ELK alerting when the proxy gets an error.
+def handle_agent_exception(exc: Exception) -> ErrorResponse:
+    """Classify an agent exception and return a structured error response.
 
-    Uses the existing ``send_log_metric`` mechanism so ELK can filter/alert
-    on ``metric_name=codemie_llm_error_total`` + ``llm_error_code``.
+    Uses a chain-of-responsibility pipeline.
+    First classifier that recognizes the exception wins; fallback always returns Internal.
+
+    Args:
+        exc: The exception raised during agent execution (LiteLLM call, Agent call, etc.).
+
+    Returns:
+        ErrorResponse: Structured response suitable for API responses and client handling.
     """
-    error_code = STATUS_TO_ERROR_CODE.get(response_status, ErrorCode.LLM_UNKNOWN_ERROR).value
 
+    pipeline = ExceptionClassificationPipeline.get_pipeline()
+    error_response: ErrorResponse = pipeline.handle(exc)
+    emit_llm_error_log(error_response, exc)
+    return error_response
+
+
+def emit_llm_error_log(
+    error_response: ErrorResponse,
+    exc: Exception | None = None,
+) -> None:
+    """Emit a structured log entry for ELK alerting via ``send_log_metric``."""
+    error_code: str = error_response.get_error().error_code.value
+    error_message = str(error_response.get_error().details)
     try:
-        send_log_metric(
-            LLM_ERROR_TOTAL_METRIC,
-            {
-                MetricsAttributes.LLM_ERROR_CODE: error_code,
-                MetricsAttributes.ERROR: f"LLM proxy returned HTTP {response_status}",
-                MetricsAttributes.USER_ID: user.id if user else "-",
-                MetricsAttributes.USER_EMAIL: user.username if user else "-",
-                MetricsAttributes.LLM_MODEL: llm_model,
-                "status_code": response_status,
-                "endpoint": endpoint,
-                "session_id": session_id or "-",
-                "request_id": request_id or "-",
-            },
-        )
-    except Exception as e:
-        logger.warning(f"Failed to emit proxy LLM error metric: {e}")
-
-    logger.warning(
-        f"LLM proxy error: status={response_status}, error_code={error_code}, "
-        f"user={user.username}, endpoint={endpoint}, model={llm_model}, "
-        f"session={session_id}, request={request_id}"
-    )
+        attributes: dict[str, object] = {
+            MetricsAttributes.LLM_ERROR_CODE: error_code,
+            MetricsAttributes.ERROR: limit_string(error_message),
+            MetricsAttributes.USER_ID: logging_user_id.get("-"),
+            MetricsAttributes.USER_EMAIL: current_user_email.get("-"),
+            MetricsAttributes.CONVERSATION_ID: logging_conversation_id.get("-"),
+            MetricsAttributes.REQUEST_UUID: logging_uuid.get("-"),
+            MetricsAttributes.REQUEST_ID: logging_uuid.get("-"),
+            MetricsAttributes.SESSION_ID: logging_conversation_id.get("-"),
+        }
+        if exc is not None:
+            llm_model = getattr(exc, "model", None)
+            llm_provider = getattr(exc, "llm_provider", None)
+            status_code = getattr(exc, "status_code", None)
+            if llm_model:
+                attributes[MetricsAttributes.LLM_MODEL] = llm_model
+            if llm_provider:
+                attributes["llm_provider"] = llm_provider
+            if status_code is not None:
+                attributes["status_code"] = status_code
+        send_log_metric(LLM_ERROR_TOTAL_METRIC, attributes)
+    except Exception as log_exc:
+        logger.warning(f"Failed to emit LLM error log metric: {log_exc}")
 
 
 async def _streaming_response_with_usage_tracking(
@@ -848,17 +859,6 @@ async def _proxy_to_llm_proxy(
             end_time=end_time,
             request_body=request_body,
         )
-
-        # Emit structured LLM error log for non-successful responses (alertable in ELK)
-        if response_status >= 400:
-            _emit_proxy_llm_error_log(
-                response_status=response_status,
-                user=user,
-                endpoint=endpoint,
-                llm_model=llm_model,
-                session_id=session_id,
-                request_id=request_id,
-            )
 
     except httpx.RequestError as e:
         end_time = datetime.now()

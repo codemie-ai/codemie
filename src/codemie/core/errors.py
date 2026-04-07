@@ -20,97 +20,46 @@ to ensure errors from tools, agents, and LLM providers are properly captured and
 exposed to API clients without being absorbed by the model.
 """
 
+import ast
+import asyncio
+import re
+import traceback
+from abc import abstractmethod
 from datetime import datetime, timezone
-from enum import Enum
-from typing import Any, Optional
+from typing import Any, Optional, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, ValidationError
 
-
-class ErrorCategory(str, Enum):
-    """
-    High-level categorization of errors in the CodeMie system.
-
-    Separates errors by their source to enable proper handling and debugging.
-    """
-
-    AGENT = "agent"  # Agent-level errors (execution, callbacks, etc.)
-    TOOL = "tool"  # Tool execution errors (HTTP errors, timeouts, etc.)
-    LLM = "llm"  # LLM provider errors (rate limits, content policy, etc.)
-    VALIDATION = "validation"  # Input/output validation errors
-
-
-class ErrorDetailLevel(str, Enum):
-    """
-    Error verbosity level for API responses.
-
-    Controls how much detail is included in tool error responses:
-    - MINIMAL: Only error code and message (for production clients)
-    - STANDARD: Adds HTTP status and tool_call_id (default, for debugging)
-    - FULL: Includes all details including timestamp (for development)
-    """
-
-    MINIMAL = "minimal"
-    STANDARD = "standard"
-    FULL = "full"
+from codemie.configs import config, logger
+from codemie.core.error_constants import (
+    AGENT_ERROR_FRIENDLY_MESSAGES,
+    BUDGET_MESSAGE_KEY,
+    CURRENT_COST_KEY,
+    LITE_LLM_EXC_TYPE_TO_ERROR_CODE,
+    LITELLM_ERROR_FRIENDLY_MESSAGES,
+    LITELLM_ERROR_KEYWORDS,
+    LITELLM_ERROR_LOG_PATTERN,
+    LITELLM_EXCEPTION_NAME_PATTERN,
+    MAX_BUDGET_KEY,
+    ErrorCode,
+    ErrorDetailLevel,
+    ErrorCategory,
+    HTTP_STATUS_TO_ERROR_CODE,
+    ERROR_MESSAGE_PATTERNS,
+    GUARDRAILS_REASON,
+)
 
 
-class ErrorCode(str, Enum):
-    """
-    Specific error codes for detailed error classification.
-
-    These codes enable clients to programmatically handle different error scenarios
-    without parsing error messages.
-    """
-
-    # Agent errors - internal execution issues
-    AGENT_TIMEOUT = "agent_timeout"
-    AGENT_TOKEN_LIMIT = "agent_token_limit"
-    AGENT_BUDGET_EXCEEDED = "agent_budget_exceeded"
-    AGENT_CALLBACK_FAILURE = "agent_callback_failure"
-    AGENT_NETWORK_ERROR = "agent_network_error"
-    AGENT_CONFIGURATION_ERROR = "agent_configuration_error"
-    AGENT_INTERNAL_ERROR = "agent_internal_error"
-
-    # Tool errors - external service/integration errors
-    TOOL_AUTHENTICATION = "tool_authentication"  # 401 Unauthorized
-    TOOL_AUTHORIZATION = "tool_authorization"  # 403 Forbidden
-    TOOL_NOT_FOUND = "tool_not_found"  # 404 Not Found
-    TOOL_CONFLICT = "tool_conflict"  # 409 Conflict
-    TOOL_RATE_LIMITED = "tool_rate_limited"  # 429 Too Many Requests
-    TOOL_SERVER_ERROR = "tool_server_error"  # 5xx Server Error
-    TOOL_TIMEOUT = "tool_timeout"
-    TOOL_VALIDATION = "tool_validation"  # Invalid tool input
-    TOOL_NETWORK_ERROR = "tool_network_error"
-    TOOL_EXECUTION_FAILED = "tool_execution_failed"  # Generic tool failure
-
-    # LLM errors - provider-specific errors
-    LLM_CONTENT_POLICY = "llm_content_policy"
-    LLM_CONTEXT_LENGTH = "llm_context_length"
-    LLM_UNAVAILABLE = "llm_unavailable"
-    LLM_RATE_LIMITED = "llm_rate_limited"
-    LLM_INVALID_REQUEST = "llm_invalid_request"
-    LLM_SCHEMA_VALIDATION = "llm_schema_validation"
-
-    # LLM errors — extended for LiteLLM error classification
-    # Reference: https://docs.litellm.ai/docs/exception_mapping
-    LLM_BUDGET_EXCEEDED = "llm_budget_exceeded"  # BudgetExceededError
-    LLM_TPM_LIMIT = "llm_tpm_limit"  # 429 — tokens-per-minute
-    LLM_RPM_LIMIT = "llm_rpm_limit"  # 429 — requests-per-minute
-    LLM_INTERNAL_ERROR = "llm_internal_error"  # 500 — InternalServerError / APIError
-    LLM_AUTHENTICATION = "llm_authentication"  # 401 — AuthenticationError
-    LLM_PERMISSION_DENIED = "llm_permission_denied"  # 403 — PermissionDeniedError
-    LLM_TIMEOUT = "llm_timeout"  # 408 — Timeout
-    LLM_TRANSITIVE_ERROR = "llm_transitive_error"  # 502 — APIConnectionError / BadGateway
-    LLM_UNKNOWN_ERROR = "llm_unknown_error"  # Fallback for unrecognised LLM exceptions
-
-    # Validation errors - input/output validation
-    VALIDATION_INPUT = "validation_input"
-    VALIDATION_OUTPUT = "validation_output"
-    VALIDATION_SCHEMA = "validation_schema"
+# ---------------------------------------------------------------------------
+# Error models
+# ---------------------------------------------------------------------------
+class BaseError(BaseModel):
+    error_code: ErrorCode = Field(..., description="Classified error code")
+    message: str = Field(..., description="Human-readable error message")
+    details: Optional[dict[str, Any]] = Field(None, description="Additional error context")
 
 
-class ToolErrorDetails(BaseModel):
+class ToolErrorDetails(BaseError):
     """
     Structured details for a tool execution error.
 
@@ -129,10 +78,7 @@ class ToolErrorDetails(BaseModel):
 
     tool_name: str = Field(..., description="Name of the tool that encountered an error")
     tool_call_id: Optional[str] = Field(None, description="Unique identifier for the tool call")
-    error_code: ErrorCode = Field(..., description="Classified error code")
-    message: str = Field(..., description="Human-readable error message")
     http_status: Optional[int] = Field(None, description="HTTP status code if applicable")
-    details: Optional[dict[str, Any]] = Field(None, description="Additional error context")
     timestamp: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(),
         description="ISO 8601 timestamp",
@@ -183,12 +129,12 @@ class ToolErrorDetails(BaseModel):
             return self.to_full()
 
 
-class AgentErrorDetails(BaseModel):
+class AgentErrorDetails(BaseError):
     """
     Structured details for an agent-level error.
 
     Captures agent execution failures that are not related to specific tools,
-    such as token limits, budget constraints, or internal errors.
+    such as token limits, budget constraints, timeouts, callbacks, or network errors.
 
     Attributes:
         error_code: Classified error code for programmatic handling
@@ -197,9 +143,6 @@ class AgentErrorDetails(BaseModel):
         stacktrace: Full stacktrace for debugging (only in debug mode)
     """
 
-    error_code: ErrorCode = Field(..., description="Classified error code")
-    message: str = Field(..., description="Human-readable error message")
-    details: Optional[dict[str, Any]] = Field(None, description="Additional error context")
     stacktrace: Optional[str] = Field(None, description="Full stacktrace for debugging (only in debug/full error mode)")
 
     class Config:
@@ -209,6 +152,187 @@ class AgentErrorDetails(BaseModel):
                 "message": "Token limit exceeded: The configured max_output_tokens limit was reached",
                 "details": {"model": "gpt-4.1", "max_tokens": 4096, "truncation_reason": "max_tokens"},
                 "stacktrace": None,
+            }
+        }
+
+
+class GuardrailErrorModel(BaseModel):
+    """Guardrail error payload embedded as JSON in LiteLLM error message."""
+
+    error_type: str = Field(description="Guardrail error type.")
+    reason: str = Field(description="Human-readable explanation of why the guardrail triggered.")
+    guardrail: str = Field(description="Name of the guardrail that triggered the exception.")
+    stage: str = Field(description="Stage at which the guardrail was triggered.")
+    version: str = Field(description="Gateway version (from pyproject.toml) that produced this error payload.")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "error_type": "HATE_SPEECH",
+                "reason": GUARDRAILS_REASON,
+                "guardrail": "hate_speech",
+                "stage": "pre_call",
+                "version": "1.1.1",
+            }
+        }
+
+
+class LiteLLMErrorInner(BaseModel):
+    """Inner error object from LiteLLM error response."""
+
+    message: str | GuardrailErrorModel = Field(
+        description=(
+            "Original error message string or parsed guardrail payload "
+            "when message contains JSON with guardrail_error structure."
+        )
+    )
+    type_: str | None = Field(
+        alias="type",
+        default=None,
+        description="Provider-specific error type identifier from LiteLLM/OpenAI response.",
+    )
+
+    param: str | None = Field(
+        default=None, description="Name of the request parameter associated with this error, if any."
+    )
+    code: int = Field(description="Provider HTTP error code corresponding to this failure.")
+
+    @field_validator("type_", mode="before")
+    @classmethod
+    def normalize_type_none(cls, value: str | None) -> str | None:
+        """Treat literal string 'none' (case-insensitive) as None; proxy may send type as "None"."""
+        if isinstance(value, str) and value.strip().lower() == "none":
+            return None
+        return value
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def code_to_int(cls, value: str | int) -> int:
+        """Coerce code from string to int (e.g. JSON "401") or return as is."""
+        return int(value)
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def parse_guardrail_message(cls, value) -> Any:
+        """Pre-validate message: if it is a guardrail JSON payload, convert to GuardrailErrorModel."""
+        try:
+            return GuardrailErrorModel.model_validate_json(value)
+        except ValidationError:
+            return value
+
+    class Config:
+        json_schema_extra = {
+            "examples": [
+                {
+                    "message": "litellm.AuthenticationError: AzureException AuthenticationError - "
+                    "Unknown api key. No fallback model group found "
+                    "for original model_group=gpt-4o-2024-11-20.",
+                    "type": None,
+                    "param": None,
+                    "code": 401,
+                },
+                {
+                    "message": {
+                        "error_type": "HATE_SPEECH",
+                        "reason": GUARDRAILS_REASON,
+                        "guardrail": "hate_speech",
+                        "stage": "pre_call",
+                        "version": "1.1.1",
+                    },
+                    "type": None,
+                    "param": None,
+                    "code": 400,
+                },
+            ]
+        }
+
+
+class LiteLLMError(BaseError):
+    """LiteLLM error response extracted from string"""
+
+    error: LiteLLMErrorInner = Field(description="Structured LiteLLM error")
+
+    class Config:
+        json_schema_extra = {
+            "examples": [
+                {
+                    "error": {
+                        "message": "litellm.AuthenticationError: AzureException AuthenticationError - "
+                        "Unknown api key. No fallback model group found for original "
+                        "model_group=gpt-4o-2024-11-20.",
+                        "type": None,
+                        "param": None,
+                        "code": 401,
+                    },
+                    "error_code": "lite_llm_authentication_error",
+                    "message": "Authentication failed. Please check your API key.",
+                    "details": None,
+                },
+                {
+                    "error": {
+                        "message": {
+                            "error_type": "HATE_SPEECH",
+                            "reason": GUARDRAILS_REASON,
+                            "guardrail": "hate_speech",
+                            "stage": "pre_call",
+                            "version": "1.1.1",
+                        },
+                        "type": None,
+                        "param": None,
+                        "code": 400,
+                    },
+                    "error_code": "lite_llm_content_policy_violation_error",
+                    "message": "Content was blocked by the content policy.",
+                    "details": None,
+                },
+            ]
+        }
+
+
+class InternalError(BaseError):
+    """
+    Structured details for an internal (Codemie-level) error.
+
+    Used when the agent fails with an unclassified exception; captures
+    message, exception type, and stack trace for debugging.
+
+    Attributes:
+        message: Human-readable error message (e.g. "AI Agent run failed with error: ...")
+        error_code: Human-readable error code
+        details: Additional details
+    """
+
+    error_code: ErrorCode = Field(default=ErrorCode.PLATFORM_ERROR, description="Classified error code")
+
+    @classmethod
+    def from_exception(cls, exc: Exception | str) -> "InternalError":
+        """Build InternalError from an exception."""
+
+        message = str(exc)
+        traceback_msg = traceback.format_exc() if isinstance(exc, Exception) else message
+        exc_type = type(exc).__name__ if isinstance(exc, Exception) else config.GLOBAL_FALLBACK_MSG
+
+        return cls.model_validate(
+            {
+                "message": config.GLOBAL_FALLBACK_MSG,
+                "details": {
+                    "type": exc_type,
+                    "message": message,
+                    "traceback": traceback_msg,
+                },
+            }
+        )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "error_code": "platform_error",
+                "message": "AI Agent run failed with error: ValueError: invalid input",
+                "details": {
+                    "type": "ZeroDivisionError",
+                    "message": "division by zero",
+                    "traceback": "Traceback (most recent call last):\n  ...",
+                },
             }
         }
 
@@ -224,59 +348,463 @@ class ErrorResponse(BaseModel):
         category: High-level error category
         agent_error: Agent-level error details (if applicable)
         tool_errors: List of tool errors (multiple tools can fail)
+        lite_llm_error: LiteLLM-level error details (if applicable)
+        internal: Codemie-level error details (if applicable)
         is_recoverable: Whether the error can be retried or recovered from
     """
 
     category: ErrorCategory = Field(..., description="High-level error category")
     agent_error: Optional[AgentErrorDetails] = Field(None, description="Agent-level error details")
     tool_errors: Optional[list[ToolErrorDetails]] = Field(None, description="Tool error details")
+    lite_llm_error: Optional[LiteLLMError] = Field(None, description="LiteLLM-level error details")
+    internal: Optional[InternalError] = Field(None, description="Codemie-level error details")
     is_recoverable: bool = Field(False, description="Whether the error is recoverable")
+
+    __CATEGORY_TO_ERROR_ATTR = {
+        ErrorCategory.AGENT: "agent_error",
+        ErrorCategory.LITE_LLM: "lite_llm_error",
+        ErrorCategory.INTERNAL: "internal",
+    }
+
+    def get_error(self) -> AgentErrorDetails | LiteLLMError | InternalError | None:
+        """Return the error payload for this response. Supported categories: AGENT, LITE_LLM, INTERNAL.
+        For category TOOL use the tool_errors attribute directly."""
+        attr_name = self.__CATEGORY_TO_ERROR_ATTR[self.category]
+        return getattr(self, attr_name, None)
 
     class Config:
         json_schema_extra = {
-            "example": {
-                "category": "tool",
-                "agent_error": None,
-                "tool_errors": [
-                    {
-                        "tool_name": "jira_search",
-                        "tool_call_id": "call_abc123",
-                        "error_code": "tool_authentication",
-                        "message": "401 Unauthorized: Invalid credentials",
-                        "http_status": 401,
-                        "details": {"integration": "jira"},
-                        "timestamp": "2026-01-30T15:30:00Z",
-                    }
-                ],
-                "is_recoverable": True,
-            }
+            "examples": [
+                {
+                    "category": "lite_llm",
+                    "agent_error": None,
+                    "tool_errors": None,
+                    "lite_llm_error": {
+                        "error": {
+                            "message": "litellm.RateLimitError: rate limit exceeded",
+                            "type": None,
+                            "param": None,
+                            "code": 429,
+                        },
+                        "error_code": "lite_llm_rate_limit_error",
+                        "message": "The LLM service is temporarily overloaded due to rate limiting. "
+                        "Please wait a moment and try again.",
+                        "details": None,
+                    },
+                    "internal": None,
+                    "is_recoverable": False,
+                },
+                {
+                    "category": "tool",
+                    "agent_error": None,
+                    "tool_errors": [
+                        {
+                            "tool_name": "jira_search",
+                            "tool_call_id": "call_abc123",
+                            "error_code": "tool_authentication",
+                            "message": "401 Unauthorized: Invalid credentials",
+                            "http_status": 401,
+                            "details": {"integration": "jira"},
+                            "timestamp": "2026-01-30T15:30:00Z",
+                        }
+                    ],
+                    "lite_llm_error": None,
+                    "internal": None,
+                    "is_recoverable": True,
+                },
+            ]
         }
 
 
-# HTTP status code to error code mapping
-HTTP_STATUS_TO_ERROR_CODE: dict[int, ErrorCode] = {
-    # Client errors (4xx)
-    401: ErrorCode.TOOL_AUTHENTICATION,
-    403: ErrorCode.TOOL_AUTHORIZATION,
-    404: ErrorCode.TOOL_NOT_FOUND,
-    409: ErrorCode.TOOL_CONFLICT,
-    429: ErrorCode.TOOL_RATE_LIMITED,
-    # Server errors (5xx)
-    500: ErrorCode.TOOL_SERVER_ERROR,
-    501: ErrorCode.TOOL_SERVER_ERROR,
-    502: ErrorCode.TOOL_SERVER_ERROR,
-    503: ErrorCode.TOOL_SERVER_ERROR,
-    504: ErrorCode.TOOL_SERVER_ERROR,
-    505: ErrorCode.TOOL_SERVER_ERROR,
-    506: ErrorCode.TOOL_SERVER_ERROR,
-    507: ErrorCode.TOOL_SERVER_ERROR,
-    508: ErrorCode.TOOL_SERVER_ERROR,
-    509: ErrorCode.TOOL_SERVER_ERROR,
-    510: ErrorCode.TOOL_SERVER_ERROR,
-    511: ErrorCode.TOOL_SERVER_ERROR,
-}
+# ---------------------------------------------------------------------------
+# Exception classifier
+# ---------------------------------------------------------------------------
+class LiteLLMErrorClassifier:
+    """Classifies exceptions as LiteLLM errors when proxy is enabled
+    and the exception string matches the proxy format"""
+
+    def _try_message_litellm_prefix(self, inner_msg: str) -> ErrorCode | None:
+        """Extract exception name from 'litellm.ExceptionName' in message and map to code."""
+        if match := LITELLM_EXCEPTION_NAME_PATTERN.search(inner_msg):
+            # group(1) == exception class name after "litellm." (e.g. APIConnectionError, AuthenticationError)
+            return LITE_LLM_EXC_TYPE_TO_ERROR_CODE.get(match.group(1), ErrorCode.LLM_UNKNOWN_ERROR)
+
+    def _try_message_substring(self, inner_msg: str) -> ErrorCode | None:
+        """Match known exception names as substrings in message (longest first)."""
+        return next(
+            (
+                LITE_LLM_EXC_TYPE_TO_ERROR_CODE[k]
+                for k in sorted(
+                    LITE_LLM_EXC_TYPE_TO_ERROR_CODE.keys(),
+                    key=len,
+                    reverse=True,
+                )
+                if k in inner_msg
+            ),
+            ErrorCode.LLM_UNKNOWN_ERROR,
+        )
+
+    def _get_error_code(self, inner) -> ErrorCode | None:
+        error_code = None
+        if isinstance(inner.message, GuardrailErrorModel):
+            error_code = ErrorCode.LITE_LLM_CONTENT_POLICY_VIOLATION_ERROR
+        elif pre_error_code := LITE_LLM_EXC_TYPE_TO_ERROR_CODE.get(inner.type_, None):
+            error_code = pre_error_code
+        else:
+            inner_msg = inner.message if isinstance(inner.message, str) else ""
+            inner_msg_lower = inner_msg.lower()
+            for key, value in LITELLM_ERROR_KEYWORDS.items():
+                if any(kw in inner_msg_lower for kw in value):
+                    error_code = key
+                    break
+            if error_code is None:
+                error_code = self._try_message_litellm_prefix(inner_msg) or self._try_message_substring(inner_msg)
+        return error_code
+
+    def _extract_budget_from_exception(self, exc: Exception) -> dict[str, Any]:
+        """Extract budget info from exception attributes (BudgetExceededError)."""
+        details: dict[str, Any] = {}
+        if hasattr(exc, CURRENT_COST_KEY) and hasattr(exc, MAX_BUDGET_KEY):
+            current_cost = getattr(exc, CURRENT_COST_KEY, None)
+            max_budget = getattr(exc, MAX_BUDGET_KEY, None)
+            if current_cost is not None or max_budget is not None:
+                details[CURRENT_COST_KEY] = current_cost
+                details[MAX_BUDGET_KEY] = max_budget
+        return details
+
+    def _extract_budget_from_error_dict(self, error_dict: dict[str, Any]) -> dict[str, Any] | None:
+        """Extract budget info from parsed error body (error.message)."""
+        details: dict[str, Any] = {}
+        try:
+            error_inner = error_dict.get("error") or {}
+            if isinstance(error_inner, dict):
+                msg = error_inner.get("message", "")
+                if msg and ("budget" in str(msg).lower() or "exceeded" in str(msg).lower()):
+                    details[BUDGET_MESSAGE_KEY] = msg
+        except (KeyError, TypeError):
+            pass
+        return details
+
+    def _extract_budget_from_string(self, error_str: str) -> dict[str, Any]:
+        """Extract budget message from string representation using regex."""
+        details: dict[str, Any] = {}
+        if ("Budget has been exceeded" in error_str or "budget_exceeded" in error_str.lower()) and (
+            "{'error':" in error_str or '{"error":' in error_str
+        ):
+            match = re.search(r"'message': '([^']+)'", error_str)
+            if match:
+                details[BUDGET_MESSAGE_KEY] = match.group(1)
+                return details
+            match = re.search(r'"message": "([^"]+)"', error_str)
+            if match:
+                details[BUDGET_MESSAGE_KEY] = match.group(1)
+        return details
+
+    def _extract_schema_validation_context(self, inner_msg: str) -> dict[str, Any]:
+        """Extract schema validation context from error message."""
+        details: dict[str, Any] = {}
+        schema_keywords = ["schema", "response_format", "json_schema"]
+        msg_lower = inner_msg.lower()
+        if any(kw in msg_lower for kw in schema_keywords) and inner_msg.strip():
+            details["schema_validation_context"] = inner_msg.strip()
+        return details
+
+    def __get_add_info(self, exception, error_dict) -> dict[str, Any]:
+        """Get additional information from the exception or error dictionary."""
+        add_info = {}
+        if isinstance(exception, Exception):
+            add_info: dict[str, Any] | None = self._extract_budget_from_exception(exception)
+        if not add_info:
+            add_info: dict[str, Any] | None = self._extract_budget_from_error_dict(error_dict)
+        if not add_info:
+            add_info: dict[str, Any] | None = self._extract_budget_from_string(str(exception) if exception else "")
+
+        return add_info
+
+    def _enrich_details(self, result, error_code, inner, exception, error_dict) -> dict[str, Any]:
+        """Enrich details with parsed context (budget, schema validation)."""
+        inner_msg = inner.message if isinstance(inner.message, str) else ""
+        if error_code == ErrorCode.LITE_LLM_BUDGET_EXCEEDED_ERROR:
+            if add_info := self.__get_add_info(exception, error_dict):
+                result["details"].update(add_info)
+
+        elif error_code == ErrorCode.LITE_LLM_BAD_REQUEST_ERROR:
+            schema_ctx = self._extract_schema_validation_context(inner_msg)
+            if schema_ctx:
+                result["details"].update(schema_ctx)
+
+        return result
+
+    def _parse_exception(self, exception: Exception | str) -> Optional[dict[str, Any]]:
+        """
+        Extract and parse LiteLLM error dict from error log string.
+
+        The exception string must contain a fragment matching LITELLM_ERROR_LOG_PATTERN
+        (proxy-style JSON with \"error\": {\"message\", \"type\", \"param\", \"code\"}).
+
+        Returns:
+            Dict if error object is found and parsed successfully, None otherwise.
+        """
+        if isinstance(exception, Exception):
+            exception = str(exception)
+
+        if not (match := LITELLM_ERROR_LOG_PATTERN.search(exception)):
+            return None
+
+        try:
+            error_dict = ast.literal_eval(match.group(0))
+            inner = LiteLLMErrorInner.model_validate(error_dict["error"])
+        except Exception:
+            return None
+
+        error_code: ErrorCode | None = self._get_error_code(inner)
+        result = {
+            "error": inner,
+            "details": error_dict,
+            "error_code": error_code,
+            "message": LITELLM_ERROR_FRIENDLY_MESSAGES.get(
+                error_code,
+                LITELLM_ERROR_FRIENDLY_MESSAGES[ErrorCode.LLM_UNKNOWN_ERROR],
+            ),
+        }
+
+        result: dict[str, Any] = self._enrich_details(result, error_code, inner, exception, error_dict)
+
+        return result
+
+    def classify(self, exc: Exception | str) -> ErrorResponse | None:
+        """Return ErrorResponse with category LITE_LLM if the exception string matches the proxy format, else None."""
+        parsed: dict | None = self._parse_exception(exc)
+
+        if parsed:
+            return ErrorResponse.model_validate(
+                {
+                    "category": ErrorCategory.LITE_LLM,
+                    "lite_llm_error": LiteLLMError.model_validate(parsed),
+                }
+            )
 
 
+class AgentErrorClassifier:
+    """Classifies exceptions as agent-level errors (budget, timeout, token limit, callback, network, etc.)."""
+
+    def build_agent_error_dict(
+        self,
+        error_code: ErrorCode,
+        message: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build dict for AgentErrorDetails.model_validate; uses friendly message map if message not provided."""
+        msg = message or AGENT_ERROR_FRIENDLY_MESSAGES.get(
+            error_code,
+            config.AGENT_MSG_FALLBACK,
+        )
+        return {
+            "error_code": error_code,
+            "message": msg,
+            "details": details,
+            "stacktrace": traceback.format_exc(),
+        }
+
+    def get_agent_budget_message(self, details: dict[str, Any] | None) -> str | None:
+        """Extract budget message from parsed details dict."""
+        if details is None:
+            return None
+        return (details.get("error") or {}).get("message") or details.get("message")
+
+    def _try_budget_exceeded(self, exception: Exception | str, msg: str) -> Optional[dict[str, Any]]:
+        """
+        Check if the exception indicates agent budget exceeded.
+        Parses optional JSON-like details from the message and returns agent error dict on match.
+        """
+        if "budget_exceeded" not in msg:
+            return None
+        details = None
+        try:
+            if dict_match := re.search(r"\{.*\}", str(exception)):
+                details = ast.literal_eval(dict_match.group(0))
+        except (ValueError, SyntaxError, KeyError):
+            pass
+
+        budget_msg = self.get_agent_budget_message(details)
+        merged_details = dict(details) if isinstance(details, dict) else {}
+        if budget_msg:
+            merged_details[BUDGET_MESSAGE_KEY] = budget_msg
+        return self.build_agent_error_dict(ErrorCode.AGENT_BUDGET_EXCEEDED, message=None, details=merged_details)
+
+    def _try_timeout(self, exc_obj: Exception | None, msg: str) -> Optional[dict[str, Any]]:
+        """
+        Check if the exception is a timeout (TimeoutError, asyncio.TimeoutError, or message).
+        Returns agent error dict on match.
+        """
+        if exc_obj is not None:
+            if isinstance(exc_obj, TimeoutError):
+                return self.build_agent_error_dict(ErrorCode.AGENT_TIMEOUT)
+            try:
+                if isinstance(exc_obj, asyncio.TimeoutError):
+                    return self.build_agent_error_dict(ErrorCode.AGENT_TIMEOUT)
+            except Exception:
+                pass
+        if "timeout" in msg:
+            return self.build_agent_error_dict(ErrorCode.AGENT_TIMEOUT)
+        return None
+
+    def _try_token_limit(self, msg: str) -> Optional[dict[str, Any]]:
+        """
+        Check if the exception indicates token/output limit (max_output_tokens, truncation, etc.).
+        Returns agent error dict on match.
+        """
+        if not any(x in msg for x in ("max_output_tokens", "truncat", "token limit", "token limit exceeded")):
+            return None
+        return self.build_agent_error_dict(ErrorCode.AGENT_TOKEN_LIMIT)
+
+    def _try_callback_failure(self, msg: str) -> Optional[dict[str, Any]]:
+        """
+        Check if the exception indicates a callback error or failure.
+        Returns agent error dict on match.
+        """
+        if "callback" not in msg or ("error" not in msg and "failed" not in msg):
+            return None
+        return self.build_agent_error_dict(ErrorCode.AGENT_CALLBACK_FAILURE)
+
+    def _try_network_error(self, exc_obj: Exception | None, msg: str) -> Optional[dict[str, Any]]:
+        """
+        Check if the exception is a network/connection error (ConnectionError, OSError with errno, or message).
+        Returns agent error dict on match.
+        """
+        if exc_obj is not None:
+            if isinstance(exc_obj, ConnectionError):
+                return self.build_agent_error_dict(ErrorCode.AGENT_NETWORK_ERROR)
+            if isinstance(exc_obj, OSError) and getattr(exc_obj, "errno", None) is not None:
+                return self.build_agent_error_dict(ErrorCode.AGENT_NETWORK_ERROR)
+        if "connection" in msg or "network" in msg:
+            return self.build_agent_error_dict(ErrorCode.AGENT_NETWORK_ERROR)
+        return None
+
+    def _try_configuration_error(self, exc_obj: Exception | None, msg: str) -> Optional[dict[str, Any]]:
+        """
+        Check if the exception is a configuration/validation error (e.g. Pydantic ValidationError).
+        Returns agent error dict on match.
+        """
+        if exc_obj is not None and type(exc_obj).__name__ == "ValidationError":
+            return self.build_agent_error_dict(ErrorCode.AGENT_CONFIGURATION_ERROR)
+        if "configuration" in msg or "validation" in msg:
+            return self.build_agent_error_dict(ErrorCode.AGENT_CONFIGURATION_ERROR)
+        return None
+
+    def parse_exception(self, exception: Exception | str) -> Optional[dict[str, Any]]:
+        """
+        Parse an exception and return agent error dict if it is a known agent-level error.
+
+        Tries, in order: budget exceeded, timeout, token limit, callback failure,
+        network error, configuration error. First match wins.
+        """
+        exc_obj = exception if isinstance(exception, Exception) else None
+        msg = str(exception).lower() if exception else ""
+
+        result = self._try_budget_exceeded(exception, msg)
+        if result is not None:
+            return result
+        result = self._try_timeout(exc_obj, msg)
+        if result is not None:
+            return result
+        result = self._try_token_limit(msg)
+        if result is not None:
+            return result
+        result = self._try_callback_failure(msg)
+        if result is not None:
+            return result
+        result = self._try_network_error(exc_obj, msg)
+        if result is not None:
+            return result
+        result = self._try_configuration_error(exc_obj, msg)
+        if result is not None:
+            return result
+        return None
+
+    def classify(self, exc: Exception) -> Optional[ErrorResponse]:
+        """Return ErrorResponse with category AGENT if the
+        exception matches agent error patterns (budget, timeout,
+        token limit, callback, network, configuration), else None."""
+        parsed: dict | None = self.parse_exception(exc)
+        if parsed is None:
+            return None
+
+        agent_error = AgentErrorDetails.model_validate(parsed)
+        logger.error(f"Agent error [{agent_error.error_code.value}]: {agent_error.message or str(exc)}")
+        return ErrorResponse.model_validate(
+            {
+                "category": ErrorCategory.AGENT,
+                "agent_error": agent_error,
+            }
+        )
+
+
+class InternalErrorClassifier:
+    """Fallback: treats any exception as internal (platform) error. Never returns None."""
+
+    def classify(self, exc: Exception | str) -> ErrorResponse:
+        """Return ErrorResponse with category INTERNAL;
+        wraps any exception as InternalError (fallback when no other classifier matches)."""
+        internal_error = InternalError.from_exception(exc)
+        logger.error(
+            f"AI Agent failed with error: {(internal_error.details or {}).get('traceback', '')}",
+            exc_info=True,
+        )
+        return ErrorResponse.model_validate(
+            {
+                "category": ErrorCategory.INTERNAL,
+                "internal": internal_error,
+            }
+        )
+
+
+# ---------------------------------------------------------------------------
+# Exception classification pipeline
+# ---------------------------------------------------------------------------
+@runtime_checkable
+class ExceptionClassifier(Protocol):
+    """Protocol for exception classifiers in the pipeline. First non-None result wins."""
+
+    @abstractmethod
+    def classify(self, exc: Exception | str) -> ErrorResponse | None:
+        """Return ErrorResponse if this classifier recognizes the exception, else None."""
+        ...
+
+
+class ExceptionClassificationPipeline:
+    """Runs a chain of exception classifiers; first non-None result is returned. Last is fallback."""
+
+    def __init__(self, classifiers: list[ExceptionClassifier]) -> None:
+        if not classifiers:
+            raise ValueError("Pipeline must have at least one classifier (fallback).")
+        self._classifiers = classifiers
+
+    def handle(self, exc: Exception | str) -> ErrorResponse:
+        """Run classifiers in order; return first non-None result. Last classifier must not return None."""
+        for classifier in self._classifiers:
+            if response := classifier.classify(exc):
+                return response
+        raise RuntimeError("Fallback classifier must always return an ErrorResponse.")
+
+    @classmethod
+    def get_pipeline(cls) -> "ExceptionClassificationPipeline":
+        """Build the default chain: LiteLLM (if activated) -> Agent -> Internal (fallback)."""
+        from codemie.enterprise import HAS_LITELLM  # import here to avoid circular import
+
+        pipeline = []
+        if HAS_LITELLM and config.LLM_PROXY_ENABLED and config.LLM_PROXY_MODE == "lite_llm":
+            pipeline.append(LiteLLMErrorClassifier())
+
+        pipeline.append(AgentErrorClassifier())
+        pipeline.append(InternalErrorClassifier())
+
+        return cls(pipeline)
+
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
 def _classify_by_http_status(status_code: int) -> ErrorCode:
     """
     Classify error based on HTTP status code only.
@@ -301,16 +829,6 @@ def _classify_by_http_status(status_code: int) -> ErrorCode:
 
     # Default for unknown status codes
     return ErrorCode.TOOL_EXECUTION_FAILED
-
-
-# Error message keywords to error code mapping
-ERROR_MESSAGE_PATTERNS: dict[str, ErrorCode] = {
-    "timeout": ErrorCode.TOOL_TIMEOUT,
-    "network": ErrorCode.TOOL_NETWORK_ERROR,
-    "connection": ErrorCode.TOOL_NETWORK_ERROR,
-    "validation": ErrorCode.TOOL_VALIDATION,
-    "invalid": ErrorCode.TOOL_VALIDATION,
-}
 
 
 def _classify_by_message(error_message: str) -> ErrorCode:

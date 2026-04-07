@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. (“EPAM”)test_proxy
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,7 +36,6 @@ from codemie.core.constants import (
 from codemie.enterprise.litellm.proxy_router import (
     _build_premium_budget_error_body,
     _check_cli_version,
-    _emit_proxy_llm_error_log,
     _extract_request_info,
     _get_integration_api_key,
     _handle_error_response,
@@ -908,84 +907,6 @@ class TestRegisterProxyEndpoints:
 
                     # Should have attempted registration
                     mock_router.add_api_route.assert_called_once()
-
-
-class TestEmitProxyLlmErrorLog:
-    """Tests for _emit_proxy_llm_error_log."""
-
-    @pytest.fixture
-    def mock_user(self):
-        user = MagicMock()
-        user.id = "user-42"
-        user.username = "test_user"
-        return user
-
-    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
-    def test_429_maps_to_rate_limit_with_full_context(self, mock_send, mock_user):
-        _emit_proxy_llm_error_log(
-            response_status=429,
-            user=mock_user,
-            endpoint="/v1/chat",
-            llm_model="gpt-4",
-            session_id="sess-1",
-            request_id="req-1",
-        )
-
-        mock_send.assert_called_once()
-        attrs = mock_send.call_args[0][1]
-        assert attrs["llm_error_code"] == "llm_rate_limited"
-        assert attrs["llm_model"] == "gpt-4"
-        assert attrs["user_email"] == "test_user"
-        assert attrs["status_code"] == 429
-        assert attrs["endpoint"] == "/v1/chat"
-        assert attrs["session_id"] == "sess-1"
-        assert attrs["request_id"] == "req-1"
-
-    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
-    def test_500_maps_to_internal_error(self, mock_send, mock_user):
-        _emit_proxy_llm_error_log(response_status=500, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
-
-        attrs = mock_send.call_args[0][1]
-        assert attrs["llm_error_code"] == "llm_internal_error"
-
-    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
-    def test_502_maps_to_transitive_error(self, mock_send, mock_user):
-        _emit_proxy_llm_error_log(response_status=502, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
-
-        attrs = mock_send.call_args[0][1]
-        assert attrs["llm_error_code"] == "llm_transitive_error"
-
-    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
-    def test_503_maps_to_unavailable(self, mock_send, mock_user):
-        _emit_proxy_llm_error_log(response_status=503, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
-
-        attrs = mock_send.call_args[0][1]
-        assert attrs["llm_error_code"] == "llm_unavailable"
-
-    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
-    def test_unknown_status_maps_to_unknown(self, mock_send, mock_user):
-        _emit_proxy_llm_error_log(response_status=418, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
-
-        attrs = mock_send.call_args[0][1]
-        assert attrs["llm_error_code"] == "llm_unknown_error"
-
-    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
-    def test_metric_name_is_correct(self, mock_send, mock_user):
-        _emit_proxy_llm_error_log(response_status=500, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
-
-        assert mock_send.call_args[0][0] == "codemie_llm_error_total"
-
-    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
-    def test_includes_user_id(self, mock_send, mock_user):
-        _emit_proxy_llm_error_log(response_status=500, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
-
-        attrs = mock_send.call_args[0][1]
-        assert attrs["user_id"] == "user-42"
-
-    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric", side_effect=RuntimeError("fail"))
-    def test_swallows_send_exceptions(self, mock_send, mock_user):
-        # Should not raise
-        _emit_proxy_llm_error_log(response_status=500, user=mock_user, endpoint="/v1/chat", llm_model="gpt-4")
 
 
 class TestBuildPremiumBudgetErrorBody:

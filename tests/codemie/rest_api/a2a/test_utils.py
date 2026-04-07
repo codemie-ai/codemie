@@ -210,7 +210,7 @@ class TestA2AUtils(unittest.TestCase):
         ):
             result = tool_to_agent_skill(tool)
             self.assertEqual(result.description, "A description")
-        self.assertEqual(result.examples, None)
+        self.assertIsNone(result.examples)
 
     def test_tools_from_toolkits_to_agent_skills(self):
         """Test converting tools from toolkits to agent skills."""

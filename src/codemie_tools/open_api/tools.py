@@ -23,7 +23,7 @@ from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.utils import parse_to_dict
 from codemie_tools.open_api.models import OpenApiConfig
 from codemie_tools.open_api.tools_vars import OPEN_API_TOOL, OPEN_API_SPEC_TOOL
-from src.codemie.configs import config
+from codemie.configs import config
 
 
 def _get_auth_header_value(config) -> str:

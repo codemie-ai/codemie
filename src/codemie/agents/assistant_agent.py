@@ -33,7 +33,6 @@ from langchain_core.prompts import (
 )
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
 
 from codemie.agents.agent_log_utils import (
     serialize_messages_for_log,
@@ -45,9 +44,8 @@ from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCall
 from codemie.agents.callbacks.monitoring_callback import MonitoringCallback
 from codemie.agents.callbacks.tool_error_capture_callback import ToolErrorCaptureCallback
 from codemie.agents.structured_tool_agent import create_structured_tool_calling_agent
+from codemie.agents.tools.agent import AbstractAgent
 from codemie.agents.utils import (
-    ExecutionErrorEnum,
-    handle_agent_exception,
     render_text_description_and_args,
     validate_json_schema,
     get_run_config,
@@ -135,7 +133,7 @@ def get_react_json_prompt_template(system_prompt):
     return ChatPromptTemplate.from_messages(messages)
 
 
-class AIToolsAgent:
+class AIToolsAgent(AbstractAgent):
     @staticmethod
     def _is_conversation_replay_v2_enabled() -> bool:
         return DynamicConfigService.get_bool_value_safe(
@@ -183,7 +181,7 @@ class AIToolsAgent:
         self.handle_tool_error = handle_tool_error
         self.throw_truncated_error = throw_truncated_error
         self.callbacks = callbacks
-        self.thread_context = None
+        self.thread_context: dict | None = None
         self.output_schema = self._preprocess_output_schema(output_schema) if output_schema else None
         self.assistant = assistant
         self.trace_context = trace_context  # Store for trace unification
@@ -452,8 +450,7 @@ class AIToolsAgent:
             )
             output = response.get("output", "")
             logger.debug(
-                f"Bedrock response received. Agent={self.agent_name}, "
-                f"Output={self._truncate_log_content(str(output))}"
+                f"Bedrock response received. Agent={self.agent_name}, Output={self._truncate_log_content(str(output))}"
             )
             response = GenerationResult(
                 generated=output,
@@ -611,49 +608,13 @@ class AIToolsAgent:
                     context=self.thread_context,
                 ).model_dump_json()
             )
-        except Exception as e:
-            user_message, llm_error_code = handle_agent_exception(e)
-            chunks_collector.append(user_message)
-
-            time_elapsed = time() - execution_start
-            generated, execution_error = self._process_chunks(chunks_collector, config, llm_error_code)
-
-            self.thread_generator.send(
-                StreamedGenerationResult(
-                    generated=generated,
-                    generated_chunk="",
-                    last=True,
-                    time_elapsed=time_elapsed,
-                    debug={},
-                    context=self.thread_context,
-                    execution_error=execution_error,
-                ).model_dump_json()
+        except Exception as exception:
+            self.send_error_response(
+                self.thread_generator, self.thread_context, exception, execution_start, chunks_collector
             )
 
         finally:
             self.thread_generator.close()
-
-    def _process_chunks(
-        self,
-        chunks_collector: List[str],
-        config: BaseSettings,
-        llm_error_code: str | None = None,
-    ) -> tuple[str, str | None]:
-        """Build final generated text and determine ``execution_error``.
-
-        When *llm_error_code* is provided it takes precedence: the friendly
-        LLM message (already in chunks) is safe for the end-user, so we
-        always join chunks and propagate the specific error code.
-        """
-        if llm_error_code:
-            return "".join(chunks_collector), llm_error_code
-
-        if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
-            if any("guardrail" in chunk.lower() for chunk in chunks_collector):
-                return config.CUSTOM_GUARDRAILS_MESSAGE, ExecutionErrorEnum.GUARDRAILS.value
-            return config.CUSTOM_STACKTRACE_MESSAGE, ExecutionErrorEnum.STACKTRACE.value
-
-        return "".join(chunks_collector), None
 
     def _agent_streaming(self, chunks_collector: List[str]):
         if self.assistant and BedrockOrchestratorService.is_bedrock_assistant(self.assistant):

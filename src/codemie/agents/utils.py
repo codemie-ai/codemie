@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from enum import Enum
 import hashlib
 import json
 import re
@@ -24,33 +23,64 @@ from contextlib import contextmanager
 from typing import Dict, Type, List, Any, Optional
 
 from pydantic import BaseModel
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.tools import ToolException
 
 from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs import logger, config
-from codemie.configs.logger import logging_user_id, logging_uuid, logging_conversation_id, current_user_email
 from codemie.core.constants import METADATA_CHUNK_NUM, METADATA_FILE_NAME, METADATA_FILE_PATH, METADATA_SOURCE
+from codemie.core.errors import LiteLLMErrorClassifier
 from codemie.enterprise.langfuse import (
     get_langfuse_callback_handler,
+    get_langfuse_client_or_none,
     is_langfuse_enabled,
     build_agent_metadata_with_workflow_context,
 )
 from codemie.core.dependecies import get_indexed_repo
-from codemie.core.errors import ErrorCode
-from codemie.core.litellm_error_classifier import classify_litellm_exception, is_litellm_exception
 from codemie.core.models import CodeFields, AssistantChatRequest
-from codemie.service.monitoring.base_monitoring_service import send_log_metric, limit_string
-from codemie.service.monitoring.metrics_constants import LLM_ERROR_TOTAL_METRIC, MetricsAttributes
-import traceback
+
 
 OPEN_AI_TOOL_NAME_LIMIT = 64
 
 thread_local = threading.local()
 
 
-class ExecutionErrorEnum(Enum):
-    GUARDRAILS = "guardrails"
-    STACKTRACE = "stacktrace"
+class LangfuseLiteLLMErrorOutputCallback(BaseCallbackHandler):
+    """Backfills Langfuse Output on failed LiteLLM calls:
+    classifies the exception with and updates Output"""
+
+    def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+        error_response = LiteLLMErrorClassifier().classify(error)
+        if error_response is None:
+            return
+        payload = error_response.get_error()
+        if payload is None:
+            return
+        text = (payload.message or "").strip()
+        if not text:
+            return
+
+        try:
+            client = get_langfuse_client_or_none()
+            if client is None:
+                return
+            # Generation span: user-facing message (nested LLM observation).
+            update_generation = getattr(client, "update_current_generation", None)
+            if callable(update_generation):
+                update_generation(output=text)
+
+            set_trace_io = getattr(client, "set_current_trace_io", None)
+            if callable(set_trace_io):
+                set_trace_io(output=text)
+            else:
+                update_trace = getattr(client, "update_current_trace", None)
+                if callable(update_trace):
+                    update_trace(output=text)
+        except Exception as e:
+            logger.warning(f"Failed to set Langfuse output for LiteLLM error: {e}")
+
+
+error_output_callback = LangfuseLiteLLMErrorOutputCallback()
 
 
 class ThreadSafeStdout:
@@ -320,7 +350,7 @@ def get_run_config(
 
     # Return the complete run config
     return {
-        "callbacks": [langfuse_callback_handler],
+        "callbacks": [langfuse_callback_handler, error_output_callback],
         "run_name": agent_name,
         "metadata": metadata,
     }
@@ -387,102 +417,6 @@ def _collect_langfuse_tags(
             tags.extend(metadata_tags)
 
     return tags
-
-
-def handle_agent_exception(e: Exception) -> tuple[str, str | None]:
-    """Classify the exception and return a user-friendly message with an error code.
-
-    Returns:
-        Tuple of (user_message, execution_error_code).
-        ``execution_error_code`` is an ``ErrorCode`` value (str) or ``None``
-        when the error is not LLM-specific.
-    """
-    error_message = str(e)
-
-    # --- LiteLLM / LLM errors ---
-    if is_litellm_exception(e):
-        error_code, friendly_message = classify_litellm_exception(e)
-
-        logger.error(f"LiteLLM error [{error_code.value}]: {error_message}")
-        _emit_llm_error_log(error_code.value, error_message, exc=e)
-
-        user_msg = config.CODEMIE_SUPPORT_MSG if config.HIDE_AGENT_STREAMING_EXCEPTIONS else friendly_message
-        return user_msg, error_code.value
-
-    # --- Legacy budget_exceeded handling (non-LiteLLM path) ---
-    if "budget_exceeded" in error_message.lower():
-        budget_message = _extract_budget_message(error_message)
-        if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
-            user_msg = config.CODEMIE_SUPPORT_MSG
-        else:
-            user_msg = budget_message or "Budget limit has been reached."
-
-        log_msg = budget_message or error_message
-        logger.error(f"Budget exceeded: {log_msg}")
-
-        error_code_value = ErrorCode.LLM_BUDGET_EXCEEDED.value
-        _emit_llm_error_log(error_code_value, log_msg, exc=e)
-
-        return user_msg, error_code_value
-
-    # --- General errors ---
-    stacktrace = traceback.format_exc()
-    exception_type = type(e).__name__
-    logger.error(f"AI Agent failed with error: {stacktrace}", exc_info=True)
-    return f"AI Agent run failed with error: {exception_type}: {error_message}", None
-
-
-def _extract_budget_message(error_message: str) -> str | None:
-    """Try to extract a human-readable budget message from an error string."""
-    try:
-        import ast
-
-        dict_match = re.search(r"\{.*\}", error_message)
-        if dict_match:
-            dict_str = dict_match.group()
-            error_data = ast.literal_eval(dict_str)
-            if "error" in error_data and "message" in error_data["error"]:
-                return error_data["error"]["message"]
-            if "message" in error_data:
-                return error_data["message"]
-    except (ValueError, SyntaxError, KeyError):
-        pass
-    return None
-
-
-def _emit_llm_error_log(
-    error_code: str,
-    error_message: str,
-    exc: Exception | None = None,
-) -> None:
-    """Emit a structured log entry for ELK alerting via the existing ``send_log_metric``.
-
-    Includes request context from ``contextvars`` (set by ``set_logging_info``)
-    and exception attributes (``model``, ``llm_provider``, ``status_code``)
-    for traceability and correlation with ``conversation_assistant_usage``.
-    """
-    try:
-        attributes: dict[str, object] = {
-            MetricsAttributes.LLM_ERROR_CODE: error_code,
-            MetricsAttributes.ERROR: limit_string(error_message),
-            MetricsAttributes.USER_ID: logging_user_id.get("-"),
-            MetricsAttributes.USER_EMAIL: current_user_email.get("-"),
-            MetricsAttributes.CONVERSATION_ID: logging_conversation_id.get("-"),
-            "request_uuid": logging_uuid.get("-"),
-        }
-        if exc is not None:
-            llm_model = getattr(exc, "model", None)
-            llm_provider = getattr(exc, "llm_provider", None)
-            status_code = getattr(exc, "status_code", None)
-            if llm_model:
-                attributes[MetricsAttributes.LLM_MODEL] = llm_model
-            if llm_provider:
-                attributes["llm_provider"] = llm_provider
-            if status_code is not None:
-                attributes["status_code"] = status_code
-        send_log_metric(LLM_ERROR_TOTAL_METRIC, attributes)
-    except Exception as log_exc:
-        logger.warning(f"Failed to emit LLM error log metric: {log_exc}")
 
 
 @contextmanager

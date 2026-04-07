@@ -20,6 +20,10 @@ import uuid
 from uuid import UUID
 
 import langgraph_supervisor.supervisor
+
+from codemie.agents.tools.agent import AbstractAgent
+from codemie.core.errors import ErrorResponse
+from codemie.enterprise.litellm.proxy_router import handle_agent_exception
 from codemie_tools.base.file_object import FileObject
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage
@@ -27,7 +31,6 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph_supervisor import create_supervisor, create_handoff_tool
 from pydantic import BaseModel
-from pydantic_settings import BaseSettings
 
 from codemie.agents.agent_log_utils import (
     serialize_messages_for_log,
@@ -40,8 +43,8 @@ from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCall
 from codemie.agents.callbacks.monitoring_callback import MonitoringCallback
 from codemie.agents.callbacks.tool_error_capture_callback import ToolErrorCaptureCallback
 from codemie.agents.smart_react_agent import create_smart_react_agent
-from codemie.agents.utils import ExecutionErrorEnum, suppress_stdout
-from codemie.agents.utils import validate_json_schema, get_run_config, handle_agent_exception
+from codemie.agents.utils import suppress_stdout
+from codemie.agents.utils import validate_json_schema, get_run_config
 from codemie.chains.base import StreamedGenerationResult, GenerationResult, ThoughtAuthorType, ThoughtOutputFormat
 from codemie.chains.pure_chat_chain import PureChatChain
 from codemie.configs import config
@@ -163,7 +166,7 @@ def _compose_pre_model_hooks(*hooks) -> Any | None:
     return composed_pre_model_hook
 
 
-class LangGraphAgent:
+class LangGraphAgent(AbstractAgent):
     # When this agent is run as part of a workflow (instead of natively within LangGraph),
     # LangGraph overrides the max_concurrency of all subgraphs.
     # This is problematic because the agent's execution
@@ -419,8 +422,10 @@ class LangGraphAgent:
             output = self._invoke_agent(inputs).generated
             return output
         except Exception as e:
-            user_message, _ = handle_agent_exception(e)
-            return user_message
+            error_response: ErrorResponse = handle_agent_exception(e)
+            if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
+                return error_response.get_error().message
+            return self.extended_error(error_response, e)
 
     def invoke_task(self, workflow_input: str = "", history=None, args=None) -> TaskResult:
         """
@@ -443,8 +448,10 @@ class LangGraphAgent:
 
             return TaskResult.from_agent_response(agent_response)
         except Exception as e:
-            user_message, _ = handle_agent_exception(e)
-            return TaskResult.failed_result(user_message, original_exc=e)
+            error_response: ErrorResponse = handle_agent_exception(e)
+            if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
+                return TaskResult.failed_result(error_response.get_error().message, original_exc=e)
+            return TaskResult.failed_result(self.extended_error(error_response, e), original_exc=e)
 
     def generate(self, background_task_id: str = "") -> GenerationResult:
         """
@@ -482,7 +489,11 @@ class LangGraphAgent:
             )
         except Exception as e:
             time_elapsed = time() - start_time
-            user_message, _ = handle_agent_exception(e)
+            error_response: ErrorResponse = handle_agent_exception(e)
+            if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
+                user_message = error_response.get_error().message
+            else:
+                user_message = self.extended_error(error_response, e)
 
             if background_task_id:
                 BackgroundTasksService().update(
@@ -523,7 +534,6 @@ class LangGraphAgent:
             time_elapsed = time() - execution_start
 
             result = json.dumps(result) if isinstance(result, (dict, BaseModel)) else result
-
             self.thread_generator.send(
                 StreamedGenerationResult(
                     generated=result,
@@ -534,23 +544,11 @@ class LangGraphAgent:
                     context=self.thread_context,
                 ).model_dump_json()
             )
-        except Exception as e:
-            time_elapsed = time() - execution_start
-            user_message, llm_error_code = handle_agent_exception(e)
-            chunks_collector.append(user_message)
-            generated, execution_error = self._process_chunks(chunks_collector, config, llm_error_code)
-
-            self.thread_generator.send(
-                StreamedGenerationResult(
-                    generated=generated,
-                    generated_chunk="",
-                    last=True,
-                    time_elapsed=time_elapsed,
-                    debug={},
-                    context=self.thread_context,
-                    execution_error=execution_error,
-                ).model_dump_json()
+        except Exception as exception:
+            self.send_error_response(
+                self.thread_generator, self.thread_context, exception, execution_start, chunks_collector
             )
+
         finally:
             self.thread_generator.close()
 
@@ -560,8 +558,12 @@ class LangGraphAgent:
             response = self._invoke_agent(inputs).generated
             return {"is_task_complete": True, "require_user_input": False, "content": response}
         except Exception as e:
-            user_message, _ = handle_agent_exception(e)
-            return {"is_task_complete": False, "require_user_input": True, "content": user_message}
+            error_response: ErrorResponse = handle_agent_exception(e)
+            if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
+                content = error_response.get_error().message
+            else:
+                content = self.extended_error(error_response, e)
+            return {"is_task_complete": False, "require_user_input": True, "content": content}
 
     ###### Core method ######
 
@@ -671,29 +673,6 @@ class LangGraphAgent:
             logger.warning(message)
 
     ###### Helpers ######
-
-    def _process_chunks(
-        self,
-        chunks_collector: List[str],
-        config: BaseSettings,
-        llm_error_code: str | None = None,
-    ) -> tuple[str, str | None]:
-        """Build final generated text and determine ``execution_error``.
-
-        When *llm_error_code* is provided it takes precedence: the friendly
-        LLM message (already in chunks) is safe for the end-user, so we
-        always join chunks and propagate the specific error code.
-        """
-        if llm_error_code:
-            return "".join(chunks_collector), llm_error_code
-
-        if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
-            if any("guardrail" in chunk.lower() for chunk in chunks_collector):
-                return config.CUSTOM_GUARDRAILS_MESSAGE, ExecutionErrorEnum.GUARDRAILS.value
-            return config.CUSTOM_STACKTRACE_MESSAGE, ExecutionErrorEnum.STACKTRACE.value
-
-        return "".join(chunks_collector), None
-
     def _invoke_agent(self, inputs) -> GenerationResult:
         logger.debug(f"Invoking task. Agent={self.agent_name}. Inputs={self._serialize_inputs_for_log(inputs)}")
         set_llm_context(self.assistant, None, self.user)
@@ -716,7 +695,11 @@ class LangGraphAgent:
             )
             return response
         except Exception as e:
-            user_message, _ = handle_agent_exception(e)
+            error_response: ErrorResponse = handle_agent_exception(e)
+            if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
+                user_message = error_response.get_error().message
+            else:
+                user_message = self.extended_error(error_response, e)
             return GenerationResult(
                 generated=user_message,
                 time_elapsed=None,

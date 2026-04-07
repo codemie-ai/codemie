@@ -548,9 +548,61 @@ class Config(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=find_dotenv(".env", raise_error_if_not_found=False), extra="ignore")
 
+    GLOBAL_FALLBACK_MSG: str = "External Service Exception"
+    # ===========================================
+    # LiteLLM custom error responses to user
+    # ===========================================
+    LITELLM_MSG_BUDGET_EXCEEDED: str = (
+        "Your LLM usage budget has been exceeded. Please contact your administrator to increase the limit."
+    )
+    LITELLM_MSG_RATE_LIMITED: str = (
+        "The LLM service is temporarily overloaded due to rate limiting. Please wait a moment and try again."
+    )
+    LITELLM_MSG_TPM_LIMIT: str = (
+        "The tokens-per-minute limit for the LLM has been reached. Please wait a moment and try again."
+    )
+    LITELLM_MSG_RPM_LIMIT: str = (
+        "The requests-per-minute limit for the LLM has been reached. Please wait a moment and try again."
+    )
+    LITELLM_MSG_UNAVAILABLE: str = (
+        "The LLM service is currently unavailable. Please try again later or contact support."
+    )
+    LITELLM_MSG_INTERNAL_ERROR: str = (
+        "An internal error occurred in the LLM service. Please try again later or contact support."
+    )
+    LITELLM_MSG_CONTEXT_LENGTH: str = (
+        "The input is too long for the selected model's context window. Please reduce the input size and try again."
+    )
+    LITELLM_MSG_CONTENT_POLICY: str = (
+        "The request was rejected due to the LLM provider's content policy. Please modify your input and try again."
+    )
+    LITELLM_MSG_AUTHENTICATION: str = "LLM authentication failed. Please verify your credentials or contact support."
+    LITELLM_MSG_PERMISSION_DENIED: str = (
+        "Access to the LLM model was denied. Please check your permissions or contact support."
+    )
+    LITELLM_MSG_TIMEOUT: str = "The LLM request timed out. Please try again."
+    LITELLM_MSG_TRANSITIVE_ERROR: str = (
+        "A transient connectivity error occurred with the LLM service. Please try again."
+    )
+    LITELLM_MSG_INVALID_REQUEST: str = (
+        "The LLM request was invalid or could not be processed. Please check your input and try again."
+    )
+    LITELLM_MSG_UNKNOWN_ERROR: str = "An unexpected LLM error occurred. Please try again or contact support."
+    # ===========================================
+    # Agent custom error responses to user
+    # ===========================================
+    AGENT_MSG_TIMEOUT: str = "The agent request timed out. Please try again."
+    AGENT_MSG_TOKEN_LIMIT: str = (
+        "The configured output token limit was reached. Please try a shorter conversation or reduce context."
+    )
+    AGENT_MSG_BUDGET_EXCEEDED: str = "Budget limit has been reached. Please contact your administrator."
+    AGENT_MSG_CALLBACK_FAILURE: str = "An agent callback failed. Please try again or contact support."
+    AGENT_MSG_NETWORK_ERROR: str = "A network error occurred during agent execution. Please try again."
+    AGENT_MSG_CONFIGURATION_ERROR: str = "Agent configuration is invalid. Please contact support."
+    AGENT_MSG_INTERNAL_ERROR: str = "An internal agent error occurred. Please try again or contact support."
+    AGENT_MSG_FALLBACK: str = "An agent error occurred. Please try again or contact support."
+
     # MDDA-AIAD feature flags
-    CUSTOM_STACKTRACE_MESSAGE: str = "External Service Exception"
-    CUSTOM_GUARDRAILS_MESSAGE: str = "Content Blocked Exception"
     HIDE_AGENT_STREAMING_EXCEPTIONS: bool = False
 
     # HHTP requests configuration

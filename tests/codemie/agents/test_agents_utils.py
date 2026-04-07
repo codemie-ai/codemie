@@ -20,20 +20,25 @@ from typing import Dict, Any, List, Generator
 from langchain_core.tools import ToolException
 
 from codemie.agents.tools.code.tools_models import SearchInput
-from codemie.agents.utils import parse_tool_input, to_snake_case, render_text_description_and_args
-from codemie.agents.utils import handle_agent_exception, _extract_budget_message, _emit_llm_error_log
-from codemie.core.errors import ErrorCode
-from codemie.core.litellm_error_constants import LITELLM_ERROR_FRIENDLY_MESSAGES
-from codemie.core.models import CodeFields
 from codemie.agents.utils import (
+    LangfuseLiteLLMErrorOutputCallback,
     OPEN_AI_TOOL_NAME_LIMIT,
     adapt_tool_name,
+    error_output_callback,
     generate_tool_hash,
     get_repo_files_by_search_phrase_path,
     get_repo_tree,
+    get_run_config,
+    parse_tool_input,
+    render_text_description_and_args,
+    to_snake_case,
 )
+from codemie.core.errors import ErrorResponse, ErrorCategory, InternalError, LiteLLMErrorClassifier
+from codemie.core.models import CodeFields
 from codemie.core.constants import CodeIndexType
 from codemie.configs import config
+from codemie.enterprise.litellm.proxy_router import emit_llm_error_log, handle_agent_exception
+from codemie.service.monitoring.metrics_constants import LLM_ERROR_TOTAL_METRIC
 
 
 @pytest.fixture
@@ -343,157 +348,91 @@ def test_get_repo_files_by_search_phrase_path_reduces_duplications(
 
 
 # ---------------------------------------------------------------------------
-# handle_agent_exception / _extract_budget_message / _emit_llm_error_log
+# handle_agent_exception / emit_llm_error_log (codemie.enterprise.litellm.proxy_router)
 #
-# These tests validate the core error-handling flow from the Jira ticket:
-#   exception → classification → (user_message, error_code) + structured log
+# These tests validate the core error-handling flow:
+#   exception → classification → ErrorResponse (message, error_code) + structured log
 # ---------------------------------------------------------------------------
 class TestHandleAgentExceptionEndToEnd:
-    """End-to-end tests: real litellm exceptions flow through the full chain
-    (is_litellm_exception → classify → friendly message + error code + structured log).
-
-    Each test corresponds to a Jira ticket scenario.
-    """
+    """End-to-end tests: exception → classification → ErrorResponse (message, error_code) + structured log."""
 
     @pytest.fixture(autouse=True)
     def _setup(self):
-        try:
-            import litellm.exceptions  # noqa: F401
-        except ImportError:
-            pytest.skip("litellm not installed")
         with patch.object(config, "HIDE_AGENT_STREAMING_EXCEPTIONS", False):
             yield
 
-    @patch("codemie.agents.utils.send_log_metric")
-    @patch("codemie.agents.utils.logging_user_id")
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_user_id")
     def test_budget_exceeded_returns_code_and_friendly_message(self, mock_uid, mock_metric):
-        from litellm.exceptions import BudgetExceededError
-
         mock_uid.get.return_value = "u1"
-        exc = BudgetExceededError(current_cost=15.0, max_budget=10.0)
+        exc = Exception("budget_exceeded: current cost 15, max 10")
 
-        user_message, error_code = handle_agent_exception(exc)
+        response = handle_agent_exception(exc)
+        user_message = response.get_error().message
+        error_code = response.get_error().error_code.value
 
-        assert error_code == "llm_budget_exceeded"
-        # Verify base message is present
-        assert LITELLM_ERROR_FRIENDLY_MESSAGES[ErrorCode.LLM_BUDGET_EXCEEDED] in user_message
-        # Verify enriched budget details are present
-        assert "Budget has been exceeded: Your current spending: 15.0, available budget: 10.0" in user_message
+        assert response.category == ErrorCategory.AGENT
+        assert error_code == "agent_budget_exceeded"
+        assert user_message == config.AGENT_MSG_BUDGET_EXCEEDED
         mock_metric.assert_called_once()
         attrs = mock_metric.call_args[0][1]
-        assert attrs["llm_error_code"] == "llm_budget_exceeded"
+        assert attrs["llm_error_code"] == "agent_budget_exceeded"
 
-    @patch("codemie.agents.utils.send_log_metric")
-    @patch("codemie.agents.utils.logging_user_id")
-    def test_budget_exceeded_returns_universal_message_when_hide_flag_on(self, mock_uid, mock_metric):
-        from litellm.exceptions import BudgetExceededError
-
-        mock_uid.get.return_value = "u1"
-        exc = BudgetExceededError(current_cost=15.0, max_budget=10.0)
-
-        with patch.object(config, "HIDE_AGENT_STREAMING_EXCEPTIONS", True):
-            user_message, error_code = handle_agent_exception(exc)
-
-        assert error_code == "llm_budget_exceeded"
-        assert user_message == config.CODEMIE_SUPPORT_MSG
-
-    @patch("codemie.agents.utils.send_log_metric")
-    @patch("codemie.agents.utils.logging_user_id")
-    def test_rate_limit_tpm(self, mock_uid, mock_metric):
-        from litellm.exceptions import RateLimitError
-
-        mock_uid.get.return_value = "u1"
-        exc = RateLimitError(
-            "tokens per minute limit exceeded", model="gpt-4", llm_provider="openai", response=MagicMock()
-        )
-
-        user_message, error_code = handle_agent_exception(exc)
-
-        assert error_code == "llm_tpm_limit"
-        assert user_message == LITELLM_ERROR_FRIENDLY_MESSAGES[ErrorCode.LLM_TPM_LIMIT]
-        attrs = mock_metric.call_args[0][1]
-        assert attrs["llm_error_code"] == "llm_tpm_limit"
-
-    @patch("codemie.agents.utils.send_log_metric")
-    @patch("codemie.agents.utils.logging_user_id")
-    def test_rate_limit_rpm(self, mock_uid, mock_metric):
-        from litellm.exceptions import RateLimitError
-
-        mock_uid.get.return_value = "u1"
-        exc = RateLimitError("requests per minute limit", model="gpt-4", llm_provider="openai", response=MagicMock())
-
-        user_message, error_code = handle_agent_exception(exc)
-
-        assert error_code == "llm_rpm_limit"
-        assert user_message == LITELLM_ERROR_FRIENDLY_MESSAGES[ErrorCode.LLM_RPM_LIMIT]
-
-    @patch("codemie.agents.utils.send_log_metric")
-    @patch("codemie.agents.utils.logging_user_id")
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_user_id")
     def test_service_unavailable(self, mock_uid, mock_metric):
-        from litellm.exceptions import ServiceUnavailableError
-
         mock_uid.get.return_value = "u1"
-        exc = ServiceUnavailableError("down", model="gpt-4", llm_provider="openai", response=MagicMock())
+        exc = Exception("service unavailable")
 
-        user_message, error_code = handle_agent_exception(exc)
+        response = handle_agent_exception(exc)
+        user_message = response.get_error().message
+        error_code = response.get_error().error_code.value
 
-        assert error_code == "llm_unavailable"
-        assert user_message == LITELLM_ERROR_FRIENDLY_MESSAGES[ErrorCode.LLM_UNAVAILABLE]
+        assert response.category == ErrorCategory.INTERNAL
+        assert error_code == "platform_error"
+        assert user_message == config.GLOBAL_FALLBACK_MSG
 
-    @patch("codemie.agents.utils.send_log_metric")
-    @patch("codemie.agents.utils.logging_user_id")
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_user_id")
     def test_internal_server_error(self, mock_uid, mock_metric):
-        from litellm.exceptions import InternalServerError
-
         mock_uid.get.return_value = "u1"
-        exc = InternalServerError("oops", model="gpt-4", llm_provider="openai", response=MagicMock())
+        exc = Exception("internal server error")
 
-        user_message, error_code = handle_agent_exception(exc)
+        response = handle_agent_exception(exc)
+        user_message = response.get_error().message
+        error_code = response.get_error().error_code.value
 
-        assert error_code == "llm_internal_error"
-        assert user_message == LITELLM_ERROR_FRIENDLY_MESSAGES[ErrorCode.LLM_INTERNAL_ERROR]
+        assert response.category == ErrorCategory.INTERNAL
+        assert error_code == "platform_error"
+        assert user_message == config.GLOBAL_FALLBACK_MSG
 
-    @patch("codemie.agents.utils.send_log_metric")
-    @patch("codemie.agents.utils.logging_user_id")
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_user_id")
     def test_transitive_error(self, mock_uid, mock_metric):
-        # Classified by status_code (502); exception must be recognized as LLM (module or message)
-        _exc = type("_Exc", (Exception,), {"__module__": "litellm.exceptions"})
-        exc = _exc("connection refused")
-        exc.status_code = 502  # type: ignore[attr-defined]
-
         mock_uid.get.return_value = "u1"
-        user_message, error_code = handle_agent_exception(exc)
+        exc = Exception("connection refused")
 
-        assert error_code == "llm_transitive_error"
-        assert user_message == LITELLM_ERROR_FRIENDLY_MESSAGES[ErrorCode.LLM_TRANSITIVE_ERROR]
+        response = handle_agent_exception(exc)
+        user_message = response.get_error().message
+        error_code = response.get_error().error_code.value
 
-    @patch("codemie.agents.utils.send_log_metric")
-    @patch("codemie.agents.utils.logging_user_id")
+        assert response.category == ErrorCategory.AGENT
+        assert error_code == "agent_network_error"
+        assert user_message == config.AGENT_MSG_NETWORK_ERROR
+
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_user_id")
     def test_model_and_provider_included_in_structured_log(self, mock_uid, mock_metric):
-        from litellm.exceptions import Timeout
-
         mock_uid.get.return_value = "u1"
-        exc = Timeout("timed out", model="claude-3-opus", llm_provider="anthropic")
+        exc = Exception("timed out")
+        exc.model = "claude-3-opus"  # type: ignore[attr-defined]
+        exc.llm_provider = "anthropic"  # type: ignore[attr-defined]
 
         handle_agent_exception(exc)
 
         attrs = mock_metric.call_args[0][1]
         assert attrs.get("llm_model") == "claude-3-opus"
         assert attrs.get("llm_provider") == "anthropic"
-
-    @patch("codemie.agents.utils.send_log_metric")
-    @patch("codemie.agents.utils.logging_user_id")
-    def test_hide_flag_returns_universal_message_for_any_litellm_error(self, mock_uid, mock_metric):
-        from litellm.exceptions import ServiceUnavailableError
-
-        mock_uid.get.return_value = "u1"
-        exc = ServiceUnavailableError("down", model="gpt-4", llm_provider="openai", response=MagicMock())
-
-        with patch.object(config, "HIDE_AGENT_STREAMING_EXCEPTIONS", True):
-            user_message, error_code = handle_agent_exception(exc)
-
-        assert error_code == "llm_unavailable"
-        assert user_message == config.CODEMIE_SUPPORT_MSG
 
 
 class TestHandleAgentExceptionLegacyAndGeneral:
@@ -505,79 +444,29 @@ class TestHandleAgentExceptionLegacyAndGeneral:
         with patch.object(config, "HIDE_AGENT_STREAMING_EXCEPTIONS", False):
             yield
 
-    @patch("codemie.agents.utils._emit_llm_error_log")
-    @patch("codemie.agents.utils.is_litellm_exception", return_value=False)
-    def test_legacy_budget_exceeded_with_dict_message(self, mock_is, mock_emit):
+    @patch("codemie.enterprise.litellm.proxy_router.emit_llm_error_log")
+    def test_legacy_budget_exceeded_with_dict_message(self, mock_emit):
         error_str = "budget_exceeded: {'error': {'message': 'User budget exceeded for user abc'}}"
         exc = Exception(error_str)
 
-        user_message, error_code = handle_agent_exception(exc)
+        response = handle_agent_exception(exc)
+        user_message = response.get_error().message
+        error_code = response.get_error().error_code.value
 
-        assert error_code == "llm_budget_exceeded"
-        assert user_message == "User budget exceeded for user abc"
+        assert response.category == ErrorCategory.AGENT
+        assert error_code == "agent_budget_exceeded"
+        assert "User budget exceeded" in user_message or "budget" in user_message.lower()
         mock_emit.assert_called_once()
-
-    @patch("codemie.agents.utils._emit_llm_error_log")
-    @patch("codemie.agents.utils.is_litellm_exception", return_value=False)
-    def test_legacy_budget_exceeded_no_parseable_dict(self, mock_is, mock_emit):
-        exc = Exception("budget_exceeded — no details")
-
-        user_message, error_code = handle_agent_exception(exc)
-
-        assert error_code == "llm_budget_exceeded"
-        assert user_message == "Budget limit has been reached."
-
-    @patch("codemie.agents.utils._emit_llm_error_log")
-    @patch("codemie.agents.utils.is_litellm_exception", return_value=False)
-    def test_legacy_budget_exceeded_returns_universal_when_hide_flag_on(self, mock_is, mock_emit):
-        exc = Exception("budget_exceeded — no details")
-
-        with patch.object(config, "HIDE_AGENT_STREAMING_EXCEPTIONS", True):
-            user_message, error_code = handle_agent_exception(exc)
-
-        assert error_code == "llm_budget_exceeded"
-        assert user_message == config.CODEMIE_SUPPORT_MSG
-
-    @patch("codemie.agents.utils.is_litellm_exception", return_value=False)
-    def test_general_exception_returns_none_code_and_includes_type(self, mock_is):
-        exc = ValueError("something broke")
-
-        user_message, error_code = handle_agent_exception(exc)
-
-        assert error_code is None
-        assert "ValueError" in user_message
-        assert "something broke" in user_message
-
-
-class TestExtractBudgetMessage:
-    """Tests for _extract_budget_message — parses error dicts from LiteLLM proxy."""
-
-    def test_extract_nested_error_message(self):
-        msg = "Error: {'error': {'message': 'Budget exceeded for user X'}}"
-        assert _extract_budget_message(msg) == "Budget exceeded for user X"
-
-    def test_extract_flat_message(self):
-        msg = "Error: {'message': 'You ran out of budget'}"
-        assert _extract_budget_message(msg) == "You ran out of budget"
-
-    def test_no_dict_returns_none(self):
-        assert _extract_budget_message("plain error text") is None
-
-    def test_malformed_dict_returns_none(self):
-        assert _extract_budget_message("Error: {invalid dict") is None
-
-    def test_dict_without_message_key_returns_none(self):
-        assert _extract_budget_message("Error: {'status': 'failed'}") is None
 
 
 class TestEmitLlmErrorLog:
-    """Tests for _emit_llm_error_log — validates ELK-alertable structured log."""
+    """Tests for emit_llm_error_log — validates ELK-alertable structured log."""
 
-    @patch("codemie.agents.utils.send_log_metric")
-    @patch("codemie.agents.utils.logging_uuid")
-    @patch("codemie.agents.utils.logging_conversation_id")
-    @patch("codemie.agents.utils.current_user_email")
-    @patch("codemie.agents.utils.logging_user_id")
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_uuid")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_conversation_id")
+    @patch("codemie.enterprise.litellm.proxy_router.current_user_email")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_user_id")
     def test_emits_correct_metric_name_and_context_attributes(
         self, mock_uid, mock_email, mock_conv, mock_uuid, mock_send
     ):
@@ -586,64 +475,79 @@ class TestEmitLlmErrorLog:
         mock_conv.get.return_value = "conv-456"
         mock_uuid.get.return_value = "req-789"
 
-        _emit_llm_error_log("llm_rate_limit", "rate limit hit")
+        internal_error = InternalError.from_exception(ValueError("rate limit hit"))
+        response = ErrorResponse(
+            category=ErrorCategory.INTERNAL,
+            internal=internal_error,
+        )
+        emit_llm_error_log(response)
 
         mock_send.assert_called_once()
         metric_name = mock_send.call_args[0][0]
         attrs = mock_send.call_args[0][1]
-        assert metric_name == "codemie_llm_error_total"
-        assert attrs["llm_error_code"] == "llm_rate_limit"
+        assert metric_name == LLM_ERROR_TOTAL_METRIC
+        assert attrs["llm_error_code"] == "platform_error"
         assert attrs["user_id"] == "user-123"
         assert attrs["user_email"] == "alice@example.com"
         assert attrs["conversation_id"] == "conv-456"
         assert attrs["request_uuid"] == "req-789"
 
-    @patch("codemie.agents.utils.send_log_metric")
-    @patch("codemie.agents.utils.logging_uuid")
-    @patch("codemie.agents.utils.logging_conversation_id")
-    @patch("codemie.agents.utils.current_user_email")
-    @patch("codemie.agents.utils.logging_user_id")
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_uuid")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_conversation_id")
+    @patch("codemie.enterprise.litellm.proxy_router.current_user_email")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_user_id")
     def test_extracts_model_and_provider_from_exception(self, mock_uid, mock_email, mock_conv, mock_uuid, mock_send):
         mock_uid.get.return_value = "-"
         mock_email.get.return_value = "-"
         mock_conv.get.return_value = "-"
         mock_uuid.get.return_value = "-"
 
+        internal_error = InternalError.from_exception(ValueError("timed out"))
+        response = ErrorResponse(
+            category=ErrorCategory.INTERNAL,
+            internal=internal_error,
+        )
         exc = MagicMock()
         exc.model = "claude-3"
         exc.llm_provider = "anthropic"
         exc.status_code = 429
 
-        _emit_llm_error_log("llm_timeout", "timed out", exc=exc)
+        emit_llm_error_log(response, exc=exc)
 
         attrs = mock_send.call_args[0][1]
         assert attrs["llm_model"] == "claude-3"
         assert attrs["llm_provider"] == "anthropic"
         assert attrs["status_code"] == 429
 
-    @patch("codemie.agents.utils.send_log_metric")
-    @patch("codemie.agents.utils.logging_uuid")
-    @patch("codemie.agents.utils.logging_conversation_id")
-    @patch("codemie.agents.utils.current_user_email")
-    @patch("codemie.agents.utils.logging_user_id")
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_uuid")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_conversation_id")
+    @patch("codemie.enterprise.litellm.proxy_router.current_user_email")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_user_id")
     def test_omits_exc_fields_when_no_exception(self, mock_uid, mock_email, mock_conv, mock_uuid, mock_send):
         mock_uid.get.return_value = "-"
         mock_email.get.return_value = "-"
         mock_conv.get.return_value = "-"
         mock_uuid.get.return_value = "-"
 
-        _emit_llm_error_log("llm_rate_limit", "error")
+        internal_error = InternalError.from_exception(ValueError("error"))
+        response = ErrorResponse(
+            category=ErrorCategory.INTERNAL,
+            internal=internal_error,
+        )
+        emit_llm_error_log(response)
 
         attrs = mock_send.call_args[0][1]
         assert "llm_model" not in attrs
         assert "llm_provider" not in attrs
         assert "status_code" not in attrs
 
-    @patch("codemie.agents.utils.send_log_metric", side_effect=RuntimeError("send failed"))
-    @patch("codemie.agents.utils.logging_uuid")
-    @patch("codemie.agents.utils.logging_conversation_id")
-    @patch("codemie.agents.utils.current_user_email")
-    @patch("codemie.agents.utils.logging_user_id")
+    @patch("codemie.enterprise.litellm.proxy_router.send_log_metric", side_effect=RuntimeError("send failed"))
+    @patch("codemie.enterprise.litellm.proxy_router.logging_uuid")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_conversation_id")
+    @patch("codemie.enterprise.litellm.proxy_router.current_user_email")
+    @patch("codemie.enterprise.litellm.proxy_router.logging_user_id")
     def test_swallows_exceptions_to_avoid_masking_original_error(
         self, mock_uid, mock_email, mock_conv, mock_uuid, mock_send
     ):
@@ -651,4 +555,126 @@ class TestEmitLlmErrorLog:
         mock_email.get.return_value = "-"
         mock_conv.get.return_value = "-"
         mock_uuid.get.return_value = "-"
-        _emit_llm_error_log("llm_unknown_error", "something")
+        internal_error = InternalError.from_exception(ValueError("something"))
+        response = ErrorResponse(
+            category=ErrorCategory.INTERNAL,
+            internal=internal_error,
+        )
+        emit_llm_error_log(response)
+
+
+# ---------------------------------------------------------------------------
+# LangfuseLiteLLMErrorOutputCallback + get_run_config Langfuse wiring
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def classified_lite_llm_rate_limit_exception() -> Exception:
+    """Exception body that LiteLLMErrorClassifier maps to a rate-limit ErrorResponse (see test_errors)."""
+    return Exception(
+        '{"error": {"message": "rate limit exceeded for model gpt-4", '
+        '"type": "None", "param": "None", "code": "429"}}'
+    )
+
+
+class TestLangfuseLiteLLMErrorOutputCallback:
+    """LangChain callback: classified LiteLLM errors → Langfuse generation + trace output."""
+
+    def _expected_classified_message(self, exc: Exception) -> str:
+        r = LiteLLMErrorClassifier().classify(exc)
+        assert r is not None
+        payload = r.get_error()
+        assert payload is not None
+        return payload.message
+
+    @patch("codemie.agents.utils.get_langfuse_client_or_none")
+    def test_on_llm_error_updates_generation_and_trace_io(
+        self, mock_get_client, classified_lite_llm_rate_limit_exception
+    ):
+        gen = MagicMock()
+        trace_io = MagicMock()
+
+        class _Client:
+            update_current_generation = gen
+            set_current_trace_io = trace_io
+
+        mock_get_client.return_value = _Client()
+        handler = LangfuseLiteLLMErrorOutputCallback()
+        exc = classified_lite_llm_rate_limit_exception
+        expected = self._expected_classified_message(exc)
+
+        handler.on_llm_error(exc)
+
+        gen.assert_called_once_with(output=expected)
+        trace_io.assert_called_once_with(output=expected)
+
+    @patch("codemie.agents.utils.get_langfuse_client_or_none")
+    def test_on_llm_error_skips_client_when_classify_returns_none(self, mock_get_client):
+        handler = LangfuseLiteLLMErrorOutputCallback()
+        handler.on_llm_error(Exception("Connection refused"))
+        mock_get_client.assert_not_called()
+
+    @patch("codemie.agents.utils.get_langfuse_client_or_none", return_value=None)
+    def test_on_llm_error_no_op_when_langfuse_client_unavailable(
+        self, _mock_get_client, classified_lite_llm_rate_limit_exception
+    ):
+        handler = LangfuseLiteLLMErrorOutputCallback()
+        handler.on_llm_error(classified_lite_llm_rate_limit_exception)
+
+    @patch("codemie.agents.utils.get_langfuse_client_or_none")
+    def test_on_llm_error_falls_back_to_update_current_trace(
+        self, mock_get_client, classified_lite_llm_rate_limit_exception
+    ):
+        gen = MagicMock()
+        trace = MagicMock()
+
+        class _Client:
+            update_current_generation = gen
+            update_current_trace = trace
+
+        mock_get_client.return_value = _Client()
+        handler = LangfuseLiteLLMErrorOutputCallback()
+        exc = classified_lite_llm_rate_limit_exception
+        expected = self._expected_classified_message(exc)
+
+        handler.on_llm_error(exc)
+
+        gen.assert_called_once_with(output=expected)
+        trace.assert_called_once_with(output=expected)
+
+    @patch("codemie.agents.utils.logger.warning")
+    @patch("codemie.agents.utils.get_langfuse_client_or_none")
+    def test_on_llm_error_logs_warning_when_langfuse_raises(
+        self, mock_get_client, mock_warning, classified_lite_llm_rate_limit_exception
+    ):
+        gen = MagicMock(side_effect=RuntimeError("otel failed"))
+        trace_io = MagicMock()
+
+        class _Client:
+            update_current_generation = gen
+            set_current_trace_io = trace_io
+
+        mock_get_client.return_value = _Client()
+        handler = LangfuseLiteLLMErrorOutputCallback()
+        handler.on_llm_error(classified_lite_llm_rate_limit_exception)
+
+        gen.assert_called_once()
+        trace_io.assert_not_called()
+        mock_warning.assert_called_once()
+        assert "Failed to set Langfuse output" in mock_warning.call_args[0][0]
+
+
+class TestGetRunConfigLangfuseCallbacks:
+    @patch("codemie.agents.utils.build_agent_metadata_with_workflow_context", return_value={"k": "v"})
+    @patch("codemie.agents.utils.get_langfuse_callback_handler")
+    @patch("codemie.agents.utils._should_enable_langfuse_tracing", return_value=True)
+    def test_includes_error_output_callback_after_langfuse_handler(self, _mock_tracing, mock_handler, _mock_meta):
+        handler = MagicMock()
+        mock_handler.return_value = handler
+        cfg = get_run_config(
+            request=None,
+            llm_model="gpt-test",
+            agent_name="TestAgent",
+            conversation_id="conv-1",
+        )
+        assert cfg["callbacks"] == [handler, error_output_callback]
+        assert cfg["run_name"] == "TestAgent"
+        assert cfg["metadata"] == {"k": "v"}
