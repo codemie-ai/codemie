@@ -101,6 +101,7 @@ class WorkflowTool(BaseModel):
     trace: bool = False
     mcp_server: Optional[MCPServerDetails] = None
     resolve_dynamic_values_in_response: bool = False
+    input_key: Optional[str] = None
 
 
 class CustomWorkflowNode(BaseModel):

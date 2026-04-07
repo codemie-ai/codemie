@@ -90,6 +90,7 @@ def mock_tool_config():
     tool_config.mcp_server = None
     tool_config.tool_result_json_pointer = None
     tool_config.resolve_dynamic_values_in_response = False
+    tool_config.input_key = None
     return tool_config
 
 
@@ -940,3 +941,166 @@ def test_tc_tnc_014_regular_tool_node_enforces_tokens_size_limit(
     mock_tool.apply_tokens_limit.assert_called_once_with(large_output)
     # Assert — truncated output is what the caller receives
     assert result == truncated_output
+
+
+def test_tc_tnc_013_input_key_resolves_args_from_sub_namespace(
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_user,
+    mock_workflow_config,
+    mock_tool_config,
+):
+    """
+    TC_TNC_013: input_key maps tool args from context_store sub-namespace
+
+    When input_key is set, args are resolved from context_store[input_key]
+    rather than root context_store, enabling namespace isolation and native
+    passing of complex dict values without Jinja2 stringification.
+    """
+    # Arrange
+    mock_tool_config.input_key = "tool1_args"
+
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {
+            "tool1_args": {
+                "arg1": {"nested": "object"},
+                "arg2": {"another": "object"},
+            },
+            "arg1": "root_value_should_not_be_used",
+        },
+        MESSAGES_VARIABLE: [],
+    }
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    # Act
+    result = node._get_tool_args(
+        tool_args={"arg1": None, "arg2": None},
+        state_schema=state_schema,
+    )
+
+    # Assert — values come from sub-namespace, not root; native dicts preserved
+    assert result["arg1"] == {"nested": "object"}
+    assert result["arg2"] == {"another": "object"}
+    assert isinstance(result["arg1"], dict)
+
+
+def test_tc_tnc_014_input_key_with_nested_dot_path(
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_user,
+    mock_workflow_config,
+    mock_tool_config,
+):
+    """
+    TC_TNC_014: input_key with dot-notation path into nested context_store object
+
+    Supports paths like "api_response.tool_input" to reach a nested namespace.
+    """
+    # Arrange
+    mock_tool_config.input_key = "api_response.tool_input"
+
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {
+            "api_response": {
+                "tool_input": {
+                    "contact": {"email": "a@b.com", "phone": "123"},
+                }
+            }
+        },
+        MESSAGES_VARIABLE: [],
+    }
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    # Act
+    result = node._get_tool_args(
+        tool_args={"contact": None},
+        state_schema=state_schema,
+    )
+
+    # Assert — deeply nested namespace resolved natively
+    assert result["contact"] == {"email": "a@b.com", "phone": "123"}
+    assert isinstance(result["contact"], dict)
+
+
+@patch("codemie.workflows.nodes.tool_node.process_values")
+def test_tc_tnc_015_no_input_key_uses_root_context_store(
+    mock_process_values,
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_user,
+    mock_workflow_config,
+    mock_tool_config,
+):
+    """
+    TC_TNC_015: When input_key is not set, args resolve from root context_store (backward compat)
+
+    Verifies that the existing behavior is unchanged when input_key is absent.
+    """
+    # Arrange
+    mock_tool_config.input_key = None
+    mock_process_values.return_value = {"arg1": "resolved"}
+
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {"arg1": "root_value", "other": "data"},
+        MESSAGES_VARIABLE: [],
+    }
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    # Act
+    node._get_tool_args(tool_args={"arg1": None}, state_schema=state_schema)
+
+    # Assert — process_values called with full root context_store
+    call_context = mock_process_values.call_args[0][1]
+    assert "arg1" in call_context
+    assert "other" in call_context

@@ -117,6 +117,7 @@ $defs:
       tool_args: {type: object}
       integration_alias: {type: string}
       trace: {type: boolean}
+      input_key: {type: string}
 
   CustomNode:
     type: object

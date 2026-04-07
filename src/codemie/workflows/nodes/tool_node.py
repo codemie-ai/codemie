@@ -33,6 +33,7 @@ from codemie.service.tools import ToolkitService
 from codemie.workflows.utils import get_context_store_from_state_schema
 from codemie.workflows.utils.json_utils import UnwrappingJsonPointerEvaluator
 from codemie.service.mcp.toolkit_service import MCPToolkitService
+from codemie.workflows.utils.transform_node_utils import extract_with_array_indices
 
 TOOL_NOT_FOUND_ERROR = "Tool *{tool_id}* not found.\n"
 INVALID_SIGNATURE_ERROR = "Tool method arguments are not correct. Expected: {args_desc}"
@@ -353,8 +354,10 @@ class ToolNode(BaseNode[AgentMessages]):
     def _get_tool_args(self, tool_args: dict, state_schema: Type[StateSchemaType]) -> dict:
         """Extract and process tool arguments from workflow state and input messages.
 
-        This method extracts input messages from the state schema and processes
-        the tool arguments by applying dynamic value resolution and template rendering.
+        When input_key is configured on the tool, arguments are resolved from the
+        sub-namespace at context_store[input_key] instead of the root context_store.
+        This enables namespace isolation for multiple tools and native passing of
+        complex dict/list values without Jinja2 stringification.
 
         Args:
             tool_args: Dictionary of tool arguments to process
@@ -363,16 +366,20 @@ class ToolNode(BaseNode[AgentMessages]):
         Returns:
             dict: Processed tool arguments with resolved values
         """
-        dynamic_vals_context = {}
-        dynamic_vals_context.update(get_context_store_from_state_schema(state_schema))
+        context_store = get_context_store_from_state_schema(state_schema)
+
+        if self._tool_config.input_key:
+            namespace = extract_with_array_indices(context_store, self._tool_config.input_key)
+            dynamic_vals_context = namespace if isinstance(namespace, dict) else {}
+        else:
+            dynamic_vals_context = dict(context_store)
+
         if state_schema.get(FIRST_STATE_IN_ITERATION):
             task = state_schema.get(TASK_KEY)
             if isinstance(task, dict):
                 dynamic_vals_context.update(task)
 
-        processed_args = process_values(tool_args, dynamic_vals_context)
-
-        return processed_args
+        return process_values(tool_args, dynamic_vals_context)
 
     def post_process_output(self, state_schema: Type[StateSchemaType], task, output) -> str:
         """Post-process the tool execution output into string format.
