@@ -135,6 +135,38 @@ class PodDiscoveryService:
             logger.debug(f"Pod {pod_name} does not exist or cannot be accessed: {e}")
             return False
 
+    def list_all_executor_pods(self) -> List[tuple]:
+        """
+        List all executor pods with their status for capacity enforcement and diagnostics.
+
+        Returns:
+            List of (pod_name, status) tuples. Status is the pod phase or a more
+            specific container waiting reason (e.g. ImagePullBackOff, ErrImagePull).
+        """
+        try:
+            pods = self.k8s_client.list_namespaced_pod(
+                namespace=self.namespace,
+                label_selector="app=codemie-executor",
+            )
+            return self._extract_pod_statuses(pods.items)
+        except Exception as e:
+            if self._is_connection_error(str(e)):
+                logger.debug(
+                    f"Kubernetes client connection pool corrupted ({type(e).__name__}), will retry with fresh client"
+                )
+                self.client_manager.recreate_client()
+                try:
+                    pods = self.k8s_client.list_namespaced_pod(
+                        namespace=self.namespace,
+                        label_selector="app=codemie-executor",
+                    )
+                    return self._extract_pod_statuses(pods.items)
+                except Exception as retry_error:
+                    logger.warning(f"Retry after client recreation also failed: {retry_error}")
+                    return []
+            logger.warning(f"Failed to list executor pods: {e}")
+            return []
+
     def wait_for_available_pods(self, max_retries: int = 20, retry_delay: float = 0.5) -> List[str]:
         """
         Poll for available Running pods with retry logic.
@@ -160,6 +192,23 @@ class PodDiscoveryService:
                 logger.debug(f"No running pods found after {max_retries} attempts")
 
         return []
+
+    def _extract_pod_statuses(self, pod_items) -> List[tuple]:
+        """
+        Extract (pod_name, status) from a list of pod objects.
+        Status is the phase, or a container waiting reason if more specific.
+        """
+        result = []
+        for pod in pod_items:
+            phase = pod.status.phase if pod.status else "Unknown"
+            status = phase
+            if phase != "Running" and pod.status and pod.status.container_statuses:
+                for cs in pod.status.container_statuses:
+                    if cs.state and cs.state.waiting and cs.state.waiting.reason:
+                        status = cs.state.waiting.reason
+                        break
+            result.append((pod.metadata.name, status))
+        return result
 
     def _filter_ready_pods(self, pods) -> List[str]:
         """

@@ -167,11 +167,12 @@ class TestSandboxSessionManager(unittest.TestCase):
 
         # At max capacity (3 pods), should reuse existing pod
         available_pods = ["existing-pod-1", "existing-pod-2", "existing-pod-3"]
+        all_pods = [(p, "Running") for p in available_pods]
         with patch.object(manager._pod_discovery, 'list_available_pods', return_value=available_pods):
-            # Use the new method name
-            pod_name = manager._get_available_pod_name_or_wait()
+            with patch.object(manager._pod_discovery, 'list_all_executor_pods', return_value=all_pods):
+                pod_name = manager._get_available_pod_name_or_wait()
 
-            assert pod_name in available_pods, "Should randomly select one of the existing pods when at capacity"
+                assert pod_name in available_pods, "Should randomly select one of the existing pods when at capacity"
 
     def test_get_available_pod_name_create_new(self):
         """Test that None is returned when no pods exist and we can create new."""
@@ -190,14 +191,14 @@ class TestSandboxSessionManager(unittest.TestCase):
 
         # All 3 pods running (max capacity)
         existing_pods = ["test-executor-1", "test-executor-2", "test-executor-3"]
+        all_pods = [(p, "Running") for p in existing_pods]
         with patch.object(manager._pod_discovery, 'list_available_pods', return_value=existing_pods):
-            # Try to get 4th pod
-            with patch.object(manager._config, 'max_pod_pool_size', 3):
-                # Use the new method name
-                pod_name = manager._get_available_pod_name_or_wait()
+            with patch.object(manager._pod_discovery, 'list_all_executor_pods', return_value=all_pods):
+                with patch.object(manager._config, 'max_pod_pool_size', 3):
+                    pod_name = manager._get_available_pod_name_or_wait()
 
-                # Should randomly select one of the existing pods instead of creating new one
-                assert pod_name in existing_pods
+                    # Should randomly select one of the existing pods instead of creating new one
+                    assert pod_name in existing_pods
 
     def test_get_available_pod_name_respects_max_limit(self):
         """Test that new pod is not created beyond max limit."""
@@ -205,14 +206,15 @@ class TestSandboxSessionManager(unittest.TestCase):
 
         # 3 pods already running (at max)
         existing_pods = ["pod-1", "pod-2", "pod-3"]
+        all_pods = [(p, "Running") for p in existing_pods]
 
         with patch.object(manager._pod_discovery, 'list_available_pods', return_value=existing_pods):
-            with patch.object(manager._config, 'max_pod_pool_size', 3):
-                # Use the new method name
-                pod_name = manager._get_available_pod_name_or_wait()
+            with patch.object(manager._pod_discovery, 'list_all_executor_pods', return_value=all_pods):
+                with patch.object(manager._config, 'max_pod_pool_size', 3):
+                    pod_name = manager._get_available_pod_name_or_wait()
 
-                # Should return existing pod, not None (since pods are available)
-                assert pod_name in existing_pods
+                    # Should return existing pod, not None (since pods are available)
+                    assert pod_name in existing_pods
 
     def test_get_or_create_lock(self):
         """Test dynamic lock creation."""

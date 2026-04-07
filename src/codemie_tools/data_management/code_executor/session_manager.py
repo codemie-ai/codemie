@@ -286,24 +286,32 @@ class SandboxSessionManager:
         Select an available pod or wait if at capacity.
 
         Strategy:
-        1. Count total pods (running + being created)
+        1. Count ALL pods (running + non-running + being created) for capacity enforcement
         2. If under capacity, return None to signal new pod creation
         3. If at capacity with running pods, randomly select one for reuse
-        4. If at capacity without running pods, wait for pods to become available
+        4. If at capacity without running pods, wait then raise with per-pod status in logs
 
         Returns:
             str: Available pod name for reuse
             None: Needs new pod creation (only when under capacity)
+
+        Raises:
+            ToolException: When at capacity but no pods reached Running state
         """
         running_pods = self._pod_discovery.list_available_pods()
-        total_pods = len(running_pods) + len(self._pods_being_created)
+        all_pods = self._pod_discovery.list_all_executor_pods()
+        # Use max() to avoid double-counting: when session.open() blocks waiting for a pod
+        # to reach Running state, the pod is already visible in K8s (counted in all_pods)
+        # AND its temp ID is still in _pods_being_created. Adding them would overcount.
+        total_pods = max(len(all_pods), len(self._pods_being_created))
 
         # Under capacity: create new pod
         if total_pods < self._config.max_pod_pool_size:
             logger.debug(
                 f"Scaling up: Will create new pod "
-                f"(running: {len(running_pods)}, creating: {len(self._pods_being_created)}, "
-                f"total: {total_pods}, max: {self._config.max_pod_pool_size})"
+                f"(in_cluster: {len(all_pods)}, running: {len(running_pods)}, "
+                f"in_flight: {len(self._pods_being_created)}, "
+                f"effective_total: {total_pods}, max: {self._config.max_pod_pool_size})"
             )
             return None
 
@@ -314,16 +322,21 @@ class SandboxSessionManager:
             return pod_name
 
         # At capacity without running pods: wait
-        logger.debug(f"At capacity: Waiting for {len(self._pods_being_created)} pod(s) to start")
+        logger.warning(
+            f"At capacity ({total_pods}/{self._config.max_pod_pool_size} pod(s)) but none are Running "
+            f"in namespace '{self._config.namespace}'. Waiting..."
+        )
         available_pods = self._pod_discovery.wait_for_available_pods()
 
-        if not available_pods:
-            logger.warning(f"No pods available after waiting (max: {self._config.max_pod_pool_size})")
-            return None
+        if available_pods:
+            pod_name = random.choice(available_pods)  # NOSONAR
+            logger.debug(f"Using pod: {pod_name} (from {len(available_pods)} available after waiting)")
+            return pod_name
 
-        pod_name = random.choice(available_pods)  # NOSONAR
-        logger.debug(f"Using pod: {pod_name} (from {len(available_pods)} available after waiting)")
-        return pod_name
+        # Still no running pods — log details for operators, keep user message clean
+        for pod_name, status in all_pods:
+            logger.error(f"Code executor pod not ready: {pod_name} [{status}]")
+        raise ToolException("Code execution is currently unavailable: executor pods are not ready. ")
 
     def _create_new_pod_session(
         self, workdir: str, pod_manifest: dict, security_policy: SecurityPolicy
