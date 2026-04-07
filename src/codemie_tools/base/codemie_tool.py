@@ -182,17 +182,6 @@ class CodeMieTool(BaseTool):
 
         return truncated_output, token_count
 
-    def apply_tokens_limit(self, output: Any) -> Any:
-        """Apply the configured tokens_size_limit to tool output.
-
-        Public entry point for callers that invoke ``execute()`` directly instead of
-        going through ``_run()``, such as workflow Tool Nodes.  Delegates to
-        ``_limit_output_content`` and returns only the (possibly truncated) output,
-        discarding the token count.
-        """
-        result, _ = self._limit_output_content(output)
-        return result
-
     def _post_process_output_content(self, output: Any, *args, **kwargs) -> Any:
         """Convert tool output to a string suitable for LLM consumption.
 

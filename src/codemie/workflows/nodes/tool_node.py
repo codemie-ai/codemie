@@ -274,9 +274,6 @@ class ToolNode(BaseNode[AgentMessages]):
 
             # Execute tool with passed parameters
             result = tool.execute(**tool_input)
-            # Enforce tokens_size_limit — mirrors CodeMieTool._run() behavior bypassed by direct execute() call
-            if hasattr(tool, "apply_tokens_limit"):
-                result = tool.apply_tokens_limit(result)
 
             logger.debug(f"Tool node execution result: {result}")
             return result
