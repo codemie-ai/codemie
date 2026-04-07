@@ -811,21 +811,13 @@ class UserManagementService:
             )
 
         # Rule 3: user_type is conditional - editable by super admin in local mode only (Story 8)
-        if user_type is not None:
-            if config.IDP_PROVIDER != "local":
-                raise ExtendedHTTPException(
-                    code=400,
-                    message="User type cannot be changed in IDP mode",
-                    details=f"User type is managed by identity provider ({config.IDP_PROVIDER}). "
-                    "Only local auth mode allows user type changes.",
-                )
-            if not actor_is_admin:
-                raise ExtendedHTTPException(
-                    code=403,
-                    message="Insufficient permissions to change user type",
-                    details="Only super admins can modify user_type field",
-                    help="Contact a super admin to request user type changes",
-                )
+        if user_type is not None and not actor_is_admin:
+            raise ExtendedHTTPException(
+                code=403,
+                message="Insufficient permissions to change user type",
+                details="Only super admins can modify user_type field",
+                help="Contact a super admin to request user type changes",
+            )
 
     @staticmethod
     def _validate_user_type(user_type: Optional[str]) -> Optional[str]:

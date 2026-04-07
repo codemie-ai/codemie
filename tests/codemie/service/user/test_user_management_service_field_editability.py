@@ -267,24 +267,6 @@ def test_user_type_update_local_mode_success(mock_get_session, mock_repo, local_
     assert "user_type" in mock_repo.update.call_args[1]
 
 
-@patch("codemie.service.user.user_management_service.config.IDP_PROVIDER", "keycloak")
-@patch("codemie.clients.postgres.get_session")
-def test_user_type_update_idp_mode_blocked(mock_get_session):
-    """AC-9: user_type update blocked in IDP mode"""
-    # Arrange
-    mock_session = MagicMock()
-    mock_get_session.return_value.__enter__.return_value = mock_session
-
-    # Act & Assert
-    with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.update_user_fields(user_id="user-idp-1", actor_user_id="admin-1", user_type="regular")
-
-    # Verify exception
-    assert exc_info.value.code == 400
-    assert "User type cannot be changed in IDP mode" in exc_info.value.message
-    assert "keycloak" in exc_info.value.details
-
-
 # ===========================================
 # AC-10: user_type validation
 # ===========================================
