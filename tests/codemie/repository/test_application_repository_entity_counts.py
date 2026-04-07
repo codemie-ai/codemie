@@ -69,19 +69,10 @@ class TestGetProjectEntityCountsBulk:
         }
 
     def test_assistants_counted_correctly(self):
-        """Assistants count is populated from the first GROUP BY query."""
+        """Assistants count is populated from the UNION ALL query."""
         mock_session = MagicMock()
-        # Exec is called 5 times (one per entity type).
-        # The order is: assistants, workflows, skills, index_info/datasources, settings/integrations.
-        # Return assistants=4 on first call; empty for the rest.
-        call_results = [
-            MagicMock(all=MagicMock(return_value=[("my-proj", 4)])),  # assistants
-            MagicMock(all=MagicMock(return_value=[])),  # workflows
-            MagicMock(all=MagicMock(return_value=[])),  # skills
-            MagicMock(all=MagicMock(return_value=[])),  # datasources
-            MagicMock(all=MagicMock(return_value=[])),  # integrations
-        ]
-        mock_session.exec.side_effect = call_results
+        # A single UNION ALL query returns 3-tuples: (proj, entity_type, cnt).
+        mock_session.exec.return_value.all.return_value = [("my-proj", "assistants", 4)]
 
         result = application_repository.get_project_entity_counts_bulk(mock_session, ["my-proj"])
 
@@ -89,16 +80,9 @@ class TestGetProjectEntityCountsBulk:
         assert result["my-proj"]["workflows_count"] == 0
 
     def test_workflows_counted_correctly(self):
-        """Workflows count is populated from the second GROUP BY query."""
+        """Workflows count is populated from the UNION ALL query."""
         mock_session = MagicMock()
-        call_results = [
-            MagicMock(all=MagicMock(return_value=[])),  # assistants
-            MagicMock(all=MagicMock(return_value=[("my-proj", 7)])),  # workflows
-            MagicMock(all=MagicMock(return_value=[])),  # skills
-            MagicMock(all=MagicMock(return_value=[])),  # datasources
-            MagicMock(all=MagicMock(return_value=[])),  # integrations
-        ]
-        mock_session.exec.side_effect = call_results
+        mock_session.exec.return_value.all.return_value = [("my-proj", "workflows", 7)]
 
         result = application_repository.get_project_entity_counts_bulk(mock_session, ["my-proj"])
 
@@ -106,48 +90,27 @@ class TestGetProjectEntityCountsBulk:
         assert result["my-proj"]["assistants_count"] == 0
 
     def test_skills_counted_correctly(self):
-        """Skills count is populated from the third GROUP BY query."""
+        """Skills count is populated from the UNION ALL query."""
         mock_session = MagicMock()
-        call_results = [
-            MagicMock(all=MagicMock(return_value=[])),  # assistants
-            MagicMock(all=MagicMock(return_value=[])),  # workflows
-            MagicMock(all=MagicMock(return_value=[("my-proj", 3)])),  # skills
-            MagicMock(all=MagicMock(return_value=[])),  # datasources
-            MagicMock(all=MagicMock(return_value=[])),  # integrations
-        ]
-        mock_session.exec.side_effect = call_results
+        mock_session.exec.return_value.all.return_value = [("my-proj", "skills", 3)]
 
         result = application_repository.get_project_entity_counts_bulk(mock_session, ["my-proj"])
 
         assert result["my-proj"]["skills_count"] == 3
 
     def test_datasources_counted_correctly(self):
-        """Datasources count is populated from the fourth GROUP BY query."""
+        """Datasources count is populated from the UNION ALL query."""
         mock_session = MagicMock()
-        call_results = [
-            MagicMock(all=MagicMock(return_value=[])),  # assistants
-            MagicMock(all=MagicMock(return_value=[])),  # workflows
-            MagicMock(all=MagicMock(return_value=[])),  # skills
-            MagicMock(all=MagicMock(return_value=[("my-proj", 10)])),  # datasources
-            MagicMock(all=MagicMock(return_value=[])),  # integrations
-        ]
-        mock_session.exec.side_effect = call_results
+        mock_session.exec.return_value.all.return_value = [("my-proj", "datasources", 10)]
 
         result = application_repository.get_project_entity_counts_bulk(mock_session, ["my-proj"])
 
         assert result["my-proj"]["datasources_count"] == 10
 
     def test_integrations_counted_correctly(self):
-        """Integrations count is populated from the fifth GROUP BY query."""
+        """Integrations count is populated from the UNION ALL query."""
         mock_session = MagicMock()
-        call_results = [
-            MagicMock(all=MagicMock(return_value=[])),  # assistants
-            MagicMock(all=MagicMock(return_value=[])),  # workflows
-            MagicMock(all=MagicMock(return_value=[])),  # skills
-            MagicMock(all=MagicMock(return_value=[])),  # datasources
-            MagicMock(all=MagicMock(return_value=[("my-proj", 2)])),  # integrations
-        ]
-        mock_session.exec.side_effect = call_results
+        mock_session.exec.return_value.all.return_value = [("my-proj", "integrations", 2)]
 
         result = application_repository.get_project_entity_counts_bulk(mock_session, ["my-proj"])
 
@@ -156,14 +119,10 @@ class TestGetProjectEntityCountsBulk:
     def test_multiple_projects_returned_correctly(self):
         """Multiple projects each get their own counters in the result dict."""
         mock_session = MagicMock()
-        call_results = [
-            MagicMock(all=MagicMock(return_value=[("proj-a", 2), ("proj-b", 1)])),  # assistants
-            MagicMock(all=MagicMock(return_value=[])),  # workflows
-            MagicMock(all=MagicMock(return_value=[])),  # skills
-            MagicMock(all=MagicMock(return_value=[])),  # datasources
-            MagicMock(all=MagicMock(return_value=[])),  # integrations
+        mock_session.exec.return_value.all.return_value = [
+            ("proj-a", "assistants", 2),
+            ("proj-b", "assistants", 1),
         ]
-        mock_session.exec.side_effect = call_results
 
         result = application_repository.get_project_entity_counts_bulk(mock_session, ["proj-a", "proj-b"])
 
@@ -175,29 +134,25 @@ class TestGetProjectEntityCountsBulk:
     def test_unknown_project_in_db_result_is_ignored(self):
         """Counts for a project not in the input list are not added to the result."""
         mock_session = MagicMock()
-        call_results = [
-            # DB returns a row for "unknown-proj" which wasn't requested
-            MagicMock(all=MagicMock(return_value=[("my-proj", 1), ("unknown-proj", 99)])),
-            MagicMock(all=MagicMock(return_value=[])),
-            MagicMock(all=MagicMock(return_value=[])),
-            MagicMock(all=MagicMock(return_value=[])),
-            MagicMock(all=MagicMock(return_value=[])),
+        # DB returns a row for "unknown-proj" which wasn't requested
+        mock_session.exec.return_value.all.return_value = [
+            ("my-proj", "assistants", 1),
+            ("unknown-proj", "assistants", 99),
         ]
-        mock_session.exec.side_effect = call_results
 
         result = application_repository.get_project_entity_counts_bulk(mock_session, ["my-proj"])
 
         assert "unknown-proj" not in result
         assert result["my-proj"]["assistants_count"] == 1
 
-    def test_runs_five_queries(self):
-        """Exactly 5 GROUP BY queries are executed (one per entity type)."""
+    def test_runs_one_query(self):
+        """Exactly 1 UNION ALL query is executed (covering all entity types)."""
         mock_session = MagicMock()
         mock_session.exec.return_value.all.return_value = []
 
         application_repository.get_project_entity_counts_bulk(mock_session, ["proj"])
 
-        assert mock_session.exec.call_count == 5
+        assert mock_session.exec.call_count == 1
 
 
 # ---------------------------------------------------------------------------

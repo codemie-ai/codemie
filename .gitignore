@@ -51,3 +51,4 @@ bmad/*
 /.github/agents/
 /.gitleaksignore
 /.claude/skills/bmad*
+/.agents/skills/bmad*

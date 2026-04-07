@@ -273,6 +273,27 @@ class TestGetMCPTools:
             data = response.json()
             assert data[0]["toolkit"] == "MCP"
 
+    def test_get_mcp_tools_broker_auth_required(self, mock_auth_header, mock_authenticate, mock_mcp_server_config):
+        """Test endpoint returns 401 with x-user-mcp-auth-location when broker auth is needed."""
+        from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
+
+        with patch(
+            "codemie.service.tools.mcp_tools_info_service.MCPToolsInfoService.get_mcp_toolkit_info"
+        ) as mock_get_info:
+            mock_get_info.side_effect = BrokerAuthRequiredException(
+                message="Broker token exchange failed with HTTP 502",
+                auth_location="https://auth.example.com/login",
+                details="HTTP 502",
+            )
+
+            response = client.post("/v1/assistants/mcp_tools", json=mock_mcp_server_config, headers=mock_auth_header)
+
+        assert response.status_code == 401
+        assert response.headers.get("x-user-mcp-auth-location") == "https://auth.example.com/login"
+        data = response.json()
+        assert "Broker token exchange failed" in data["error"]["message"]
+        assert data["error"]["login_url"] == "https://auth.example.com/login"
+
     def test_get_mcp_tools_unexpected_error_handling(self, mock_auth_header, mock_authenticate, mock_mcp_server_config):
         """Test endpoint handles unexpected errors with 500 status."""
         with patch(

@@ -55,6 +55,8 @@ class ProjectVisibilityService:
         page: int = 0,
         per_page: int = 20,
         include_counters: bool = True,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ) -> tuple[list[dict], int]:
         """List projects visible to user with pagination and member counts.
 
@@ -73,6 +75,8 @@ class ProjectVisibilityService:
             search=search,
             page=page,
             per_page=per_page,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
 
         if not projects:

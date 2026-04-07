@@ -218,7 +218,15 @@ class TestProjectsVisibilityEndpoints:
             1,
         )
 
-        result = list_projects(search="shared", page=0, per_page=20, include_counters=True, user=regular_user)
+        result = list_projects(
+            search="shared",
+            page=0,
+            per_page=20,
+            include_counters=True,
+            sort_by=None,
+            sort_order="asc",
+            user=regular_user,
+        )
 
         assert isinstance(result, PaginatedProjectListResponse)
         assert len(result.data) == 1
@@ -236,6 +244,8 @@ class TestProjectsVisibilityEndpoints:
             page=0,
             per_page=20,
             include_counters=True,
+            sort_by=None,
+            sort_order="asc",
         )
 
     @patch("codemie.rest_api.routers.projects.config")
@@ -419,7 +429,15 @@ class TestProjectsVisibilityEndpoints:
             2,
         )
 
-        result = list_projects(search=None, page=0, per_page=20, include_counters=True, user=super_admin_user)
+        result = list_projects(
+            search=None,
+            page=0,
+            per_page=20,
+            include_counters=True,
+            sort_by=None,
+            sort_order="asc",
+            user=super_admin_user,
+        )
 
         assert len(result.data) == 2
         assert result.data[0].project_type == "personal"
@@ -432,6 +450,8 @@ class TestProjectsVisibilityEndpoints:
             page=0,
             per_page=20,
             include_counters=True,
+            sort_by=None,
+            sort_order="asc",
         )
 
     @patch("codemie.rest_api.routers.projects.config")

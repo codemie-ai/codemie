@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Optional
 from uuid import UUID
 
+from sqlalchemy import literal, union_all
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import BooleanClauseList
@@ -287,6 +288,11 @@ class ApplicationRepository:
 
         return list(session.exec(statement).all())
 
+    _SORT_COLUMN_MAP: dict = {
+        "name": Application.name,
+        "created_at": Application.date,
+    }
+
     def list_visible_projects_paginated(
         self,
         session: Session,
@@ -295,6 +301,8 @@ class ApplicationRepository:
         search: Optional[str] = None,
         page: int = 0,
         per_page: int = 20,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ) -> tuple[list[Application], int]:
         """List projects visible to a user with pagination.
 
@@ -303,8 +311,9 @@ class ApplicationRepository:
         Code Review R4: Count query uses filter-only path (no ORDER BY at all).
         Code Review R2: Ordering separated from count query for performance.
         Code Review R1: Deterministic ordering applied for stable pagination:
-        - Search results: exact match first, then fuzzy matches (via _apply_search)
-        - Stable secondary: date desc (newest first), name asc (alphabetical tiebreaker)
+        - Search results: exact match first, then fuzzy matches (via _apply_search); sort_by ignored.
+        - Explicit sort: sort_by/sort_order applied when no search is active.
+        - Default: date desc (newest first), name asc (alphabetical tiebreaker).
 
         Args:
             session: Database session
@@ -313,6 +322,8 @@ class ApplicationRepository:
             search: Optional search query (substring match on name)
             page: Page number (0-indexed)
             per_page: Items per page
+            sort_by: Column to sort by — 'name' or 'created_at'; ignored when search is active
+            sort_order: Sort direction — 'asc' or 'desc' (default 'asc')
 
         Returns:
             Tuple of (projects, total_count) where total_count reflects filtered results
@@ -342,11 +353,16 @@ class ApplicationRepository:
             data_statement = data_statement.where(visibility_condition)
 
         if search:
+            # Relevance ordering takes precedence over caller-provided sort when search is active
             data_statement = data_statement.order_by(
                 case((Application.name == search, 1), else_=2),
                 Application.date.desc(),
                 Application.name.asc(),
             )
+        elif sort_by and sort_by in self._SORT_COLUMN_MAP:
+            col = self._SORT_COLUMN_MAP[sort_by]
+            order_expr = col.desc() if sort_order == "desc" else col.asc()
+            data_statement = data_statement.order_by(order_expr, Application.name.asc())
         else:
             data_statement = data_statement.order_by(Application.date.desc(), Application.name.asc())
 
@@ -514,8 +530,8 @@ class ApplicationRepository:
     def get_project_entity_counts_bulk(self, session: Session, project_names: list[str]) -> dict[str, dict]:
         """Bulk-count assistants, workflows, integrations, datasources, and skills per project.
 
-        Runs one GROUP BY query per entity type (5 total) and merges results into a single dict.
-        Lazy imports are used to avoid circular-import risk at module load time.
+        Runs a single UNION ALL query across all entity types instead of 5 sequential queries,
+        reducing DB round-trips from 5 to 1. Lazy imports are used to avoid circular-import risk.
 
         Args:
             session: Database session
@@ -545,43 +561,56 @@ class ApplicationRepository:
             for name in project_names
         }
 
-        for proj, cnt in session.exec(
-            select(Assistant.project, func.count(Assistant.id))
+        assistants_q = (
+            select(
+                Assistant.project.label("proj"),
+                literal("assistants").label("entity_type"),
+                func.count(Assistant.id).label("cnt"),
+            )
             .where(Assistant.project.in_(project_names))
             .group_by(Assistant.project)
-        ).all():
-            if proj in result:
-                result[proj]["assistants_count"] = int(cnt)
-
-        for proj, cnt in session.exec(
-            select(WorkflowConfig.project, func.count(WorkflowConfig.id))
+        )
+        workflows_q = (
+            select(
+                WorkflowConfig.project.label("proj"),
+                literal("workflows").label("entity_type"),
+                func.count(WorkflowConfig.id).label("cnt"),
+            )
             .where(WorkflowConfig.project.in_(project_names))
             .group_by(WorkflowConfig.project)
-        ).all():
-            if proj in result:
-                result[proj]["workflows_count"] = int(cnt)
-
-        for proj, cnt in session.exec(
-            select(Skill.project, func.count(Skill.id)).where(Skill.project.in_(project_names)).group_by(Skill.project)
-        ).all():
-            if proj in result:
-                result[proj]["skills_count"] = int(cnt)
-
-        for proj, cnt in session.exec(
-            select(IndexInfo.project_name, func.count(IndexInfo.id))
+        )
+        skills_q = (
+            select(
+                Skill.project.label("proj"),
+                literal("skills").label("entity_type"),
+                func.count(Skill.id).label("cnt"),
+            )
+            .where(Skill.project.in_(project_names))
+            .group_by(Skill.project)
+        )
+        datasources_q = (
+            select(
+                IndexInfo.project_name.label("proj"),
+                literal("datasources").label("entity_type"),
+                func.count(IndexInfo.id).label("cnt"),
+            )
             .where(IndexInfo.project_name.in_(project_names))
             .group_by(IndexInfo.project_name)
-        ).all():
-            if proj in result:
-                result[proj]["datasources_count"] = int(cnt)
-
-        for proj, cnt in session.exec(
-            select(Settings.project_name, func.count(Settings.id))
+        )
+        integrations_q = (
+            select(
+                Settings.project_name.label("proj"),
+                literal("integrations").label("entity_type"),
+                func.count(Settings.id).label("cnt"),
+            )
             .where(Settings.project_name.in_(project_names))
             .group_by(Settings.project_name)
-        ).all():
+        )
+
+        combined = union_all(assistants_q, workflows_q, skills_q, datasources_q, integrations_q)
+        for proj, entity_type, cnt in session.exec(combined).all():  # type: ignore[call-overload]
             if proj in result:
-                result[proj]["integrations_count"] = int(cnt)
+                result[proj][f"{entity_type}_count"] = int(cnt)
 
         return result
 

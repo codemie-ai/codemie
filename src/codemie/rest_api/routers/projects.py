@@ -276,6 +276,10 @@ def list_projects(
         True,
         description="Include per-project resource counters (assistants, workflows, integrations, datasources, skills)",
     ),
+    sort_by: Optional[Literal["name", "created_at"]] = Query(
+        None, description="Sort field; ignored when search is active (relevance ordering takes precedence)"
+    ),
+    sort_order: Literal["asc", "desc"] = Query("asc", description="Sort direction"),
     user: User = Depends(authenticate),
 ):
     """List projects visible to current user with pagination and search.
@@ -299,6 +303,8 @@ def list_projects(
             page=page,
             per_page=per_page,
             include_counters=include_counters,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
 
         return PaginatedProjectListResponse(
