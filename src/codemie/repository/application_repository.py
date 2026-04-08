@@ -352,17 +352,17 @@ class ApplicationRepository:
             visibility_condition = self._build_visibility_condition(user_id)
             data_statement = data_statement.where(visibility_condition)
 
-        if search:
+        if sort_by and sort_by in self._SORT_COLUMN_MAP:
+            col = self._SORT_COLUMN_MAP[sort_by]
+            order_expr = col.desc() if sort_order == "desc" else col.asc()
+            data_statement = data_statement.order_by(order_expr, Application.name.asc())
+        elif search:
             # Relevance ordering takes precedence over caller-provided sort when search is active
             data_statement = data_statement.order_by(
                 case((Application.name == search, 1), else_=2),
                 Application.date.desc(),
                 Application.name.asc(),
             )
-        elif sort_by and sort_by in self._SORT_COLUMN_MAP:
-            col = self._SORT_COLUMN_MAP[sort_by]
-            order_expr = col.desc() if sort_order == "desc" else col.asc()
-            data_statement = data_statement.order_by(order_expr, Application.name.asc())
         else:
             data_statement = data_statement.order_by(Application.date.desc(), Application.name.asc())
 
