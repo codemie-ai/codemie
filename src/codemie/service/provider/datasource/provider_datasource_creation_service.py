@@ -101,7 +101,7 @@ class ProviderDatasourceCreationService(ProviderDatasourceBaseService):
             index_type=PROVIDER_INDEX_TYPE,
             project_name=self.values.get("project_name"),
             description=self.values.get("description"),
-            project_space_visible=self.values.get("projectSpaceVisible"),
+            project_space_visible=self.values.get("project_space_visible"),
             current_state=0,
             complete_state=0,
             completed=False,

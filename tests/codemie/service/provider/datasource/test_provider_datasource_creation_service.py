@@ -30,7 +30,7 @@ def values():
         "name": "name",
         "project_name": "project_name",
         "description": "description",
-        "projectSpaceVisible": True,
+        "project_space_visible": True,
     }
 
 
@@ -101,7 +101,7 @@ def mock_instance(mock_schema, mock_user):
             "name": "name",
             "project_name": "project_name",
             "description": "description",
-            "projectSpaceVisible": True,
+            "project_space_visible": True,
             "arg1": "arg1",
             "arg2": "arg2",
         },
