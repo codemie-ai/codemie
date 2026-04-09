@@ -99,7 +99,7 @@ def get_elasticsearch(index_name, embeddings_model: str = llm_service.default_em
     embeddings = get_embeddings_model(embeddings_model)
 
     return ElasticsearchStore(
-        es_connection=elastic_client,
+        client=elastic_client,
         index_name=index_name,
         embedding=embeddings,
     )
