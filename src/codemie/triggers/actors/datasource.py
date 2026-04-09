@@ -697,6 +697,8 @@ def _resume_google_doc(index_info: IndexInfo, user: User, request_uuid: str) -> 
 
 _RESUME_DISPATCH: dict = {
     "code": _resume_code,
+    "summary": _resume_code,
+    "chunk-summary": _resume_code,
     "knowledge_base_jira": _resume_jira,
     "knowledge_base_confluence": _resume_confluence,
     "llm_routing_google": _resume_google_doc,

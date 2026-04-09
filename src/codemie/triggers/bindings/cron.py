@@ -473,7 +473,7 @@ class Cron:
         # Build payload based on index type
         index_type_str = index_type.value if isinstance(index_type, CodeIndexType) else index_type
 
-        if index_type_str == "code":
+        if index_type_str in (CodeIndexType.CODE, CodeIndexType.SUMMARY, CodeIndexType.CHUNK_SUMMARY):
             # Get repo_id from the Git repository
             repo_id = GitRepo.identifier_from_fields(
                 app_id=project_name, name=resource_name, index_type=CodeIndexType(index_type_str)
