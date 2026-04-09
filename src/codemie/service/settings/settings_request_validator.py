@@ -12,12 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from fastapi import status
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.settings import SettingRequest
 from codemie.service.settings.scheduler_settings_service import _validate_minimum_hourly_frequency
 from croniter import croniter
+
+if TYPE_CHECKING:
+    from codemie.rest_api.models.index import IndexInfo
 
 CRON_EXPRESSION_HELP_MESSAGE = (
     "Please provide a valid cron expression that runs at most once per hour. "
@@ -27,6 +34,18 @@ LITELLM_API_KEY_HELP_MESSAGE = "Please provide a valid, non-empty API key for Li
 GIT_AUTH_HELP_MESSAGE = (
     "Please specify authentication method using 'auth_type' field: "
     "'pat' for Personal Access Token or 'github_app' for GitHub App authentication."
+)
+
+UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES: frozenset[str] = frozenset(
+    [
+        "knowledge_base_file",  # user-visible name: "file"
+        "knowledge_base_sharepoint",  # user-visible name: "sharepoint"
+    ]
+)
+UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES_HELP_MESSAGE = (
+    "The following datasource types do not support triggering by schedule: "
+    "file, sharepoint. "
+    "Please select a datasource of a supported type (e.g., git/code, summary, chunk-summary, confluence, jira)."
 )
 
 
@@ -150,7 +169,7 @@ def validate_git_request(request: SettingRequest):
         )
 
 
-def validate_scheduler_request(request: SettingRequest):
+def validate_scheduler_request(request: SettingRequest) -> None:
     """
     Validate the incoming scheduler setting request
     """
@@ -158,11 +177,37 @@ def validate_scheduler_request(request: SettingRequest):
     resource_type = validate_resource_type(request)
     resource_id = validate_resource_id(request)
 
-    # Validate that the resource belongs to the project
-    validate_resource_ownership(resource_type, resource_id, request.project_name)
+    # Validate that the resource belongs to the project; returns datasource for type checking
+    datasource = validate_resource_ownership(resource_type, resource_id, request.project_name)
+
+    # Validate datasource type is supported for scheduler triggering
+    if resource_type == "datasource" and datasource is not None:
+        validate_datasource_type_for_scheduler(datasource)
 
     # Extract and validate cron expression (schedule)
     validate_cron_expression(request)
+
+
+def validate_datasource_type_for_scheduler(datasource: IndexInfo) -> None:
+    """
+    Validate that a datasource type supports triggering by schedule.
+
+    Args:
+        datasource: The already-fetched IndexInfo object to validate
+
+    Raises:
+        ExtendedHTTPException: If the datasource type does not support scheduler triggering
+    """
+    if datasource.index_type in UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES:
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Datasource type does not support triggering by schedule",
+            details=(
+                f"The datasource with ID '{datasource.id}' has type '{datasource.index_type}', "
+                "which does not support schedule-based triggering."
+            ),
+            help=UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES_HELP_MESSAGE,
+        )
 
 
 def validate_resource_type(request: SettingRequest) -> str:
@@ -246,7 +291,7 @@ def validate_resource_id(request: SettingRequest) -> str:
     return resource_id_cred[0].value
 
 
-def validate_resource_ownership(resource_type: str, resource_id: str, project_name: str) -> None:
+def validate_resource_ownership(resource_type: str, resource_id: str, project_name: str) -> IndexInfo | None:
     """
     Validate that the resource belongs to the specified project.
 
@@ -255,11 +300,14 @@ def validate_resource_ownership(resource_type: str, resource_id: str, project_na
         resource_id: The ID of the resource
         project_name: The name of the project
 
+    Returns:
+        IndexInfo if resource_type is "datasource", None otherwise
+
     Raises:
         ExtendedHTTPException: If the resource doesn't belong to the project or validation fails
     """
     if resource_type == "datasource":
-        validate_datasource_ownership(resource_id, project_name)
+        return validate_datasource_ownership(resource_id, project_name)
     elif resource_type == "workflow":
         validate_workflow_ownership(resource_id, project_name)
     elif resource_type == "assistant":
@@ -271,6 +319,7 @@ def validate_resource_ownership(resource_type: str, resource_id: str, project_na
             details=f"The resource type '{resource_type}' is not recognized.",
             help="Please provide a valid resource type (e.g., 'datasource', 'workflow', 'assistant').",
         )
+    return None
 
 
 def raise_validation_error(e: Exception) -> None:
@@ -283,18 +332,20 @@ def raise_validation_error(e: Exception) -> None:
     ) from e
 
 
-def validate_datasource_ownership(resource_id: str, project_name: str) -> None:
-    """Validate that a datasource belongs to the specified project."""
+def validate_datasource_ownership(resource_id: str, project_name: str) -> IndexInfo:
+    """Validate that a datasource belongs to the specified project. Returns the datasource."""
     try:
-        from codemie.service.index.index_service import IndexStatusService
+        from codemie.rest_api.models.index import IndexInfo
 
-        if not IndexStatusService.belongs_to_project(resource_id, project_name):
+        datasource = IndexInfo.find_by_id(resource_id)
+        if not datasource or datasource.project_name != project_name:
             raise ExtendedHTTPException(
                 code=status.HTTP_404_NOT_FOUND,
                 message="Datasource not found",
                 details=f"The datasource with ID '{resource_id}' could not be found in '{project_name}' project.",
                 help="Please ensure the datasource belongs to the specified project.",
             )
+        return datasource
     except ExtendedHTTPException:
         raise
     except Exception as e:
