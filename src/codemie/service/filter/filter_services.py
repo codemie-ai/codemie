@@ -47,7 +47,7 @@ class IndexInfoFilter(BaseFilterData):
             "filter_compose_func": fltr_func.compose_term_filter,
         },
         "status": {
-            "field_name": [SearchFields.COMPLETED.value, SearchFields.ERROR.value],
+            "field_name": [SearchFields.COMPLETED.value, SearchFields.ERROR.value, SearchFields.IS_QUEUED.value],
             "filter_compose_func": fltr_func.compose_status_filter,
         },
     }

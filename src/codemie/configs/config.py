@@ -127,6 +127,9 @@ class Config(BaseSettings):
     WORKFLOW_MAX_CONCURRENCY: int = 5
     WORKFLOW_DEFAULT_CONCURRENCY: int = 2
 
+    DATASOURCE_CONCURRENCY_LIMIT_ENABLED: bool = False
+    MAX_CONCURRENT_DATASOURCE_INDEXING: int = 5
+
     # Analytics dashboard configuration
     ANALYTICS_DEFAULT_PAGE_SIZE: int = 20  # Default number of rows for analytics endpoints
 

@@ -27,7 +27,8 @@ def compose_combined_date_range_filter(query, model_class, field_name, filter_va
 
 
 def compose_status_filter(query, model_class, field_name, filter_value):
-    completed, error = field_name
+    completed, error, *rest = field_name
+    is_queued = rest[0] if rest else None
     if filter_value == IndexInfoStatus.COMPLETED:
         return compose_term_filter(query, model_class, completed, True)
     elif filter_value == IndexInfoStatus.FAILED:
@@ -36,6 +37,10 @@ def compose_status_filter(query, model_class, field_name, filter_value):
     elif filter_value == IndexInfoStatus.IN_PROGRESS:
         query = compose_term_filter(query, model_class, completed, False)
         return compose_term_filter(query, model_class, error, False)
+    elif filter_value == IndexInfoStatus.QUEUED:
+        if is_queued is None:
+            raise ValueError("QUEUED status filter requires is_queued field to be configured in FILTER_CONFIG")
+        return compose_term_filter(query, model_class, is_queued, True)
     else:
         raise ValueError(f"Invalid status: {filter_value}")
 

@@ -69,6 +69,7 @@ class IndexInfoStatus(str, Enum):
     COMPLETED = "completed"
     IN_PROGRESS = "in_progress"
     FAILED = "failed"
+    QUEUED = "queued"
 
 
 class IndexInfoType(str, Enum):
@@ -196,6 +197,7 @@ class IndexListItem(BaseModel):
     error: bool = False
     completed: bool = False
     is_fetching: Optional[bool] = False
+    is_queued: bool = False
 
     user_abilities: Optional[List[Action]] = []
 
@@ -276,6 +278,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         default=None, sa_column=Column(PydanticType(SharePointIndexInfo))
     )
     is_fetching: Optional[bool] = False
+    is_queued: bool = SQLField(default=False)
     setting_id: Optional[str] = None
     tokens_usage: Optional[TokensUsage] = SQLField(default=None, sa_column=Column(PydanticType(TokensUsage)))
     processing_info: Optional[Dict] = SQLField(default_factory=dict, sa_column=Column(JSONB))
@@ -423,6 +426,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         self.completed = False
         self.error = False
         self.is_fetching = is_fetching
+        self.is_queued = False
 
         if is_incremental and complete_state:
             self.current_state = self.complete_state
@@ -520,6 +524,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
             self.current_state = self.complete_state
         self.completed = True
         self.is_fetching = False
+        self.is_queued = False
         self.error = False
         self.update()
 
@@ -527,6 +532,18 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         self.error = True
         self.text = message
         self.is_fetching = False
+        self.is_queued = False
+        self.update()
+
+    def set_queued(self):
+        self.is_queued = True
+        self.completed = False
+        self.error = False
+        self.is_fetching = False
+        self.update()
+
+    def clear_queued(self):
+        self.is_queued = False
         self.update()
 
     def generate_otp(self):
@@ -804,6 +821,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
                 error=index.error,
                 completed=index.completed,
                 is_fetching=index.is_fetching,
+                is_queued=index.is_queued,
                 user_abilities=index.user_abilities,
                 jira=index.jira,
                 xray=index.xray,

@@ -32,9 +32,11 @@ class SearchFields(str, Enum):
     ERROR = "error"
     DATE = "date"
     CATEGORIES = "categories"
+    IS_QUEUED = "is_queued"
 
 
 class IndexInfoStatus(str, Enum):
     COMPLETED = "completed"
     IN_PROGRESS = "in_progress"
     FAILED = "failed"
+    QUEUED = "queued"

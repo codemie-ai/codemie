@@ -18,6 +18,7 @@ import time
 from uuid import uuid4
 
 from codemie.configs import logger
+from codemie.datasource.datasource_concurrency_manager import datasource_concurrency_manager
 from codemie.core.constants import CodeIndexType
 from codemie.core.models import GitRepo
 from codemie.rest_api.models.index import IndexInfo
@@ -99,7 +100,7 @@ def reindex_code(payload: CodeReindexTask):
         request_uuid=payload.resource_id,
     )
 
-    processor.reprocess()
+    datasource_concurrency_manager.run(processor.reprocess, processor.index)
 
     logger.info(
         REINDEX_SUCCESS_MSG,
@@ -157,7 +158,7 @@ def reindex_jira(payload: JiraReindexTask):
         embedding_model=payload.index_info.embeddings_model,
     )
 
-    processor.incremental_reindex()
+    datasource_concurrency_manager.run(processor.incremental_reindex, processor.index)
 
     logger.info(
         REINDEX_SUCCESS_MSG,
@@ -233,7 +234,7 @@ def reindex_confluence(payload: ConfluenceReindexTask):
         embedding_model=payload.index_info.embeddings_model,
     )
 
-    processor.reprocess()
+    datasource_concurrency_manager.run(processor.reprocess, processor.index)
 
     logger.info(
         REINDEX_SUCCESS_MSG,
@@ -288,7 +289,7 @@ def reindex_google(payload: GoogleReindexTask):
         embedding_model=payload.index_info.embeddings_model,
     )
 
-    datasource_processor.reprocess()
+    datasource_concurrency_manager.run(datasource_processor.reprocess, datasource_processor.index)
 
     logger.info(
         REINDEX_SUCCESS_MSG,
@@ -362,7 +363,7 @@ def reindex_azure_devops_wiki(payload: AzureDevOpsWikiReindexTask):
         embedding_model=payload.index_info.embeddings_model,
     )
 
-    processor.reprocess()
+    datasource_concurrency_manager.run(processor.reprocess, processor.index)
 
     logger.info(
         REINDEX_SUCCESS_MSG,
@@ -433,7 +434,7 @@ def reindex_azure_devops_work_item(payload: AzureDevOpsWorkItemReindexTask):
         embedding_model=payload.index_info.embeddings_model,
     )
 
-    processor.reprocess()
+    datasource_concurrency_manager.run(processor.reprocess, processor.index)
 
     logger.info(
         REINDEX_SUCCESS_MSG,

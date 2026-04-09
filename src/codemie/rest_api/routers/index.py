@@ -105,7 +105,6 @@ from codemie.rest_api.routers.utils import (
     raise_forbidden,
     raise_unprocessable_entity,
     raise_not_found,
-    run_in_thread_pool,
 )
 from codemie.service.index.index_service import IndexStatusService
 from codemie.service.index.datasource_health_check_service import IndexHealthCheckService
@@ -783,7 +782,7 @@ def index_knowledge_base_confluence(
             help=INVALID_INPUT_PARAMETERS_HELP,
         ) from e
 
-    background_tasks.add_task(datasource_processor.process)
+    datasource_processor.schedule(background_tasks)
     return BaseResponse(message=f"Indexing of datasource {request.name} has been started in the background")
 
 
@@ -824,7 +823,7 @@ def index_knowledge_base_jira(
             help=INVALID_INPUT_PARAMETERS_HELP,
         ) from e
 
-    background_tasks.add_task(datasource_processor.process)
+    datasource_processor.schedule(background_tasks)
     return BaseResponse(message=f"Indexing of datasource {request.name} has been started in the background")
 
 
@@ -865,7 +864,7 @@ def index_knowledge_base_xray(
             help=INVALID_INPUT_PARAMETERS_HELP,
         ) from e
 
-    background_tasks.add_task(datasource_processor.process)
+    datasource_processor.schedule(background_tasks)
     return BaseResponse(message=f"Indexing of datasource {request.name} has been started in the background")
 
 
@@ -897,7 +896,7 @@ def index_knowledge_base_azure_devops_wiki(
         cron_expression=request.cron_expression,
     )
 
-    background_tasks.add_task(datasource_processor.process)
+    datasource_processor.schedule(background_tasks)
     return BaseResponse(message=f"Indexing of datasource {request.name} has been started in the background")
 
 
@@ -975,7 +974,7 @@ def index_knowledge_base_sharepoint(
         cron_expression=request.cron_expression,
     )
 
-    background_tasks.add_task(datasource_processor.process)
+    datasource_processor.schedule(background_tasks)
     return BaseResponse(message=f"Indexing of datasource {request.name} has been started in the background")
 
 
@@ -1012,7 +1011,7 @@ def index_knowledge_base_google_doc(
         cron_expression=request.cron_expression,
     )
 
-    background_tasks.add_task(datasource_processor.process)
+    datasource_processor.schedule(background_tasks)
     return BaseResponse(message=f"Indexing of datasource {request.name} has been started in the background")
 
 
@@ -1044,7 +1043,7 @@ def reindex_knowledge_base_google(
         index_info=index_info,
     )
 
-    background_tasks.add_task(datasource_processor.reprocess)
+    datasource_processor.schedule(background_tasks, datasource_processor.reprocess)
     return BaseResponse(message=f"Indexing of datasource {index_info.repo_name} has been started in the background")
 
 
@@ -1105,7 +1104,7 @@ def update_knowledge_base_google(
             cron_expression=request.cron_expression if cron_expression_provided else None,
         )
 
-        background_tasks.add_task(datasource_processor.reprocess)
+        datasource_processor.schedule(background_tasks, datasource_processor.reprocess)
         return BaseResponse(message=f"Indexing of datasource {index_info.repo_name} has been started in the background")
 
     else:
@@ -1211,11 +1210,11 @@ def update_knowledge_base_confluence(
     )
     if resume_indexing:
         logger.info(f"Resuming datasource indexing. Name={request.name}")
-        background_tasks.add_task(datasource_processor.resume)
+        datasource_processor.schedule(background_tasks, datasource_processor.resume)
         return BaseResponse(message=f"Indexing of datasource {request.name} has been resumed in the background")
     else:
         logger.info(f"Reindexing datasource. Name={request.name}")
-        background_tasks.add_task(datasource_processor.reprocess)
+        datasource_processor.schedule(background_tasks, datasource_processor.reprocess)
         return BaseResponse(message=f"Indexing of datasource {request.name} has been started in the background")
 
 
@@ -1291,11 +1290,11 @@ def update_knowledge_base_jira(
     msg = f"of datasource {request.name} has been started in the background"
     if incremental_reindex:
         logger.info(f"Incremental reindexing of datasource. Name={request.name}")
-        background_tasks.add_task(datasource_processor.incremental_reindex)
+        datasource_processor.schedule(background_tasks, datasource_processor.incremental_reindex)
         return BaseResponse(message=f"Incremental indexing {msg}")
     else:
         logger.info(f"Reindexing datasource. Name={request.name}")
-        background_tasks.add_task(datasource_processor.reprocess)
+        datasource_processor.schedule(background_tasks, datasource_processor.reprocess)
         return BaseResponse(message=f"Indexing {msg}")
 
 
@@ -1371,11 +1370,11 @@ def update_knowledge_base_xray(
     msg = f"of datasource {request.name} has been started in the background"
     if incremental_reindex:
         logger.info(f"Incremental reindexing of datasource. Name={request.name}")
-        background_tasks.add_task(datasource_processor.incremental_reindex)
+        datasource_processor.schedule(background_tasks, datasource_processor.incremental_reindex)
         return BaseResponse(message=f"Incremental indexing {msg}")
     else:
         logger.info(f"Reindexing datasource. Name={request.name}")
-        background_tasks.add_task(datasource_processor.reprocess)
+        datasource_processor.schedule(background_tasks, datasource_processor.reprocess)
         return BaseResponse(message=f"Indexing {msg}")
 
 
@@ -1451,11 +1450,11 @@ def update_knowledge_base_azure_devops_wiki(
     msg = f"of datasource {request.name} has been started in the background"
     if incremental_reindex:
         logger.info(f"Incremental reindexing of datasource. Name={request.name}")
-        background_tasks.add_task(datasource_processor.incremental_reindex)
+        datasource_processor.schedule(background_tasks, datasource_processor.incremental_reindex)
         return BaseResponse(message=f"Incremental indexing {msg}")
     else:
         logger.info(f"Reindexing datasource. Name={request.name}")
-        background_tasks.add_task(datasource_processor.reprocess)
+        datasource_processor.schedule(background_tasks, datasource_processor.reprocess)
         return BaseResponse(message=f"Indexing {msg}")
 
 
@@ -1486,7 +1485,7 @@ def index_knowledge_base_azure_devops_work_item(
         cron_expression=request.cron_expression,
     )
 
-    background_tasks.add_task(datasource_processor.process)
+    datasource_processor.schedule(background_tasks)
     return BaseResponse(message=f"Indexing of datasource {request.name} has been started in the background")
 
 
@@ -1559,11 +1558,11 @@ def update_knowledge_base_azure_devops_work_item(
     msg = f"of datasource {request.name} has been started in the background"
     if incremental_reindex:
         logger.info(f"Incremental reindexing of datasource. Name={request.name}")
-        background_tasks.add_task(datasource_processor.incremental_reindex)
+        datasource_processor.schedule(background_tasks, datasource_processor.incremental_reindex)
         return BaseResponse(message=f"Incremental indexing {msg}")
     else:
         logger.info(f"Reindexing datasource. Name={request.name}")
-        background_tasks.add_task(datasource_processor.reprocess)
+        datasource_processor.schedule(background_tasks, datasource_processor.reprocess)
         return BaseResponse(message=f"Indexing {msg}")
 
 
@@ -1721,7 +1720,7 @@ def update_knowledge_base_sharepoint(
     )
 
     logger.info(f"Reindexing SharePoint datasource. Name={request.name}")
-    background_tasks.add_task(datasource_processor.reprocess)
+    datasource_processor.schedule(background_tasks, datasource_processor.reprocess)
     return BaseResponse(message=f"Indexing of datasource {request.name} has been started in the background")
 
 
@@ -1778,7 +1777,7 @@ def index_knowledge_base_files(
         guardrail_assignments=parsed_guardrail_assignments,
     )
 
-    background_tasks.add_task(run_in_thread_pool, file_data_source_processor.process)
+    file_data_source_processor.schedule(background_tasks)
     return BaseResponse(message=file_data_source_processor.started_message)
 
 

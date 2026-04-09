@@ -103,6 +103,19 @@ class BaseDatasourceProcessor(ABC):
         # Default processing batch size if not overridden by subclasses
         return self.DEFAULT_PROCESSING_BATCH_SIZE
 
+    def schedule(self, background_tasks, func=None) -> None:
+        """Schedule processing with per-instance concurrency control.
+
+        Args:
+            background_tasks: FastAPI BackgroundTasks instance.
+            func: The method to run (defaults to self.process). Use this to schedule
+                  reprocess/resume/incremental_reindex through the same concurrency gate.
+        """
+        from codemie.datasource.datasource_concurrency_manager import datasource_concurrency_manager
+
+        target = func if func is not None else self.process
+        background_tasks.add_task(datasource_concurrency_manager.run, target, self.index)
+
     def process(self):
         """
         Processes the data source by initializing the necessary components, starting the fetching process,

@@ -128,36 +128,44 @@ class CodeDatasourceProcessor(BaseDatasourceProcessor):
         self._assign_and_sync_guardrails()
 
 
+def _run_in_subprocess(process_func, git_repo_name) -> None:
+    acquired = process_semaphore.acquire(blocking=False)
+    if not acquired:
+        logger.info(
+            f"Max concurrent multiprocessing processes reached ({CODE_CONFIG.max_subprocesses}).\n"
+            f"Running synchronously for CodeDatasource {git_repo_name}"
+        )
+        process_func()
+        return
+
+    try:
+        timeout = CODE_CONFIG.processing_timeout if CODE_CONFIG.processing_timeout != -1 else None
+        with contextlib.suppress(RuntimeError):
+            multiprocessing.set_start_method('fork', force=True)
+        p = multiprocessing.Process(target=process_func)
+        logger.info(f"Started background processing in multiprocessing for CodeDatasource {git_repo_name}")
+        p.start()
+        p.join(timeout)
+        if p.is_alive():
+            logger.info(f"CodeDatasource {git_repo_name} processing exceeded timeout of {timeout} seconds.")
+            p.terminate()
+    finally:
+        process_semaphore.release()
+
+
 def run_in_background(process_func, git_repo_name, background_tasks):
-    def task():
+    from codemie.datasource.datasource_concurrency_manager import datasource_concurrency_manager
+
+    def do_work():
         if CODE_CONFIG.enable_multiprocessing:
-            acquired = process_semaphore.acquire(blocking=False)
-            if acquired:
-                try:
-                    timeout = CODE_CONFIG.processing_timeout if CODE_CONFIG.processing_timeout != -1 else None
-                    with contextlib.suppress(RuntimeError):
-                        multiprocessing.set_start_method('fork', force=True)
-
-                    p = multiprocessing.Process(target=process_func)
-                    message = f"Started background processing in multiprocessing for CodeDatasource {git_repo_name}"
-                    logger.info(message)
-
-                    p.start()
-                    p.join(timeout)
-
-                    if p.is_alive():
-                        message = f"CodeDatasource {git_repo_name} processing exceeded timeout of {timeout} seconds."
-                        logger.info(message)
-                        p.terminate()
-                finally:
-                    process_semaphore.release()
-            else:
-                message = f"Max concurrent multiprocessing processes reached ({CODE_CONFIG.max_subprocesses}).\n"
-                message += f"Running synchronously for CodeDatasource {git_repo_name}"
-                logger.info(message)
-                process_func()
+            _run_in_subprocess(process_func, git_repo_name)
         else:
             process_func()
+
+    def task():
+        # index_info=None: code processors create IndexInfo lazily, so queued DB status
+        # is not surfaced for this type; throttling still applies.
+        datasource_concurrency_manager.run(do_work)
 
     background_tasks.add_task(task)
 
