@@ -23,10 +23,10 @@ from typing import Callable
 from langchain_core.agents import AgentAction
 from langchain_core.prompts.chat import ChatPromptTemplate
 from langchain_core.runnables import Runnable, RunnablePassthrough
-from langchain.agents.output_parsers.tools import ToolsAgentOutputParser
+from langchain_classic.agents.output_parsers.tools import ToolsAgentOutputParser
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.outputs import ChatGeneration
-from langchain.agents.format_scratchpad.tools import (
+from langchain_classic.agents.format_scratchpad.tools import (
     format_to_tool_messages,
 )
 from langchain_core.messages import (

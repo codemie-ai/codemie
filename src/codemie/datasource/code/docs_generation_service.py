@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Any
 
 from github import InputGitTreeElement
-from langchain.chains.llm import LLMChain
+from langchain_classic.chains.llm import LLMChain
 from langchain_core.documents import Document
 
 from codemie_tools.base.utils import get_encoding

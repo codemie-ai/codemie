@@ -15,7 +15,7 @@
 import pytest
 from unittest.mock import Mock, patch
 
-from langchain.agents import AgentExecutor
+from langchain_classic.agents import AgentExecutor
 
 from codemie.agents.assistant_agent import AIToolsAgent
 from codemie.chains.pure_chat_chain import PureChatChain

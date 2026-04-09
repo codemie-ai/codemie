@@ -19,9 +19,9 @@ from typing import Any, List, Optional, Sequence, Tuple
 
 import jinja2
 from deprecated import deprecated
-from langchain.agents import AgentExecutor, create_tool_calling_agent, create_json_chat_agent
-from langchain.agents.format_scratchpad.tools import _create_tool_message
-from langchain.agents.output_parsers.tools import ToolAgentAction
+from langchain_classic.agents import AgentExecutor, create_tool_calling_agent, create_json_chat_agent
+from langchain_classic.agents.format_scratchpad.tools import _create_tool_message
+from langchain_classic.agents.output_parsers.tools import ToolAgentAction
 from langchain_core.agents import AgentAction
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage

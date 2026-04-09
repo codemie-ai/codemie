@@ -14,7 +14,7 @@
 
 from typing import Callable, Optional
 
-from langchain.chains.llm import LLMChain
+from langchain_classic.chains.llm import LLMChain
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 

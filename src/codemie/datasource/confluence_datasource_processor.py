@@ -16,7 +16,7 @@ from typing import List, Optional
 
 from atlassian.errors import ApiValueError
 from codemie_tools.core.project_management.confluence.models import ConfluenceConfig
-from langchain.text_splitter import MarkdownHeaderTextSplitter
+from langchain_text_splitters import MarkdownHeaderTextSplitter
 from langchain_community.document_loaders.confluence import ContentFormat
 from langchain_core.documents import Document
 from pydantic import BaseModel
