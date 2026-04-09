@@ -109,6 +109,19 @@ class GetPageByIdInput(BaseModel):
     )
 
 
+class DeletePageByPathInput(BaseModel):
+    wiki_identified: str = Field(description=WIKI_IDENTIFIER_DESCRIPTION)
+    page_name: str = Field(
+        description="Wiki page path. For URLs, extract the '/{page_id}/{page-slug}' portion. "
+        "Example: from URL '...wikis/MyWiki.wiki/123/My-Page', use '/123/My-Page'"
+    )
+
+
+class DeletePageByIdInput(BaseModel):
+    wiki_identified: str = Field(description=WIKI_IDENTIFIER_DESCRIPTION)
+    page_id: int = Field(description="Wiki page ID")
+
+
 class ModifyPageInput(BaseModel):
     wiki_identified: str = Field(description=WIKI_IDENTIFIER_DESCRIPTION)
     page_name: str = Field(

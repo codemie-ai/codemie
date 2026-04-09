@@ -44,6 +44,8 @@ from codemie_tools.azure_devops.wiki.models import (
     GetWikiInput,
     GetPageByPathInput,
     GetPageByIdInput,
+    DeletePageByPathInput,
+    DeletePageByIdInput,
     ModifyPageInput,
     CreatePageInput,
     RenamePageInput,
@@ -1141,7 +1143,7 @@ class DeletePageByPathTool(BaseAzureDevOpsWikiTool):
 
     name: str = DELETE_PAGE_BY_PATH_TOOL.name
     description: str = DELETE_PAGE_BY_PATH_TOOL.description
-    args_schema: Type[BaseModel] = GetPageByPathInput
+    args_schema: Type[BaseModel] = DeletePageByPathInput
 
     def execute(self, wiki_identified: str, page_name: str):
         """Delete ADO wiki page by path."""
@@ -1169,7 +1171,7 @@ class DeletePageByIdTool(BaseAzureDevOpsWikiTool):
 
     name: str = DELETE_PAGE_BY_ID_TOOL.name
     description: str = DELETE_PAGE_BY_ID_TOOL.description
-    args_schema: Type[BaseModel] = GetPageByIdInput
+    args_schema: Type[BaseModel] = DeletePageByIdInput
 
     def execute(self, wiki_identified: str, page_id: int):
         """Delete ADO wiki page by ID."""
