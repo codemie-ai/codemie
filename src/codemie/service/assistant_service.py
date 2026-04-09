@@ -657,6 +657,9 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             else cls.get_system_prompt(assistant, user_id=user.id, current_user=user.full_name)
         )
 
+        if getattr(assistant, "skill_ids", None):
+            system_prompt = f"{system_prompt}{cls._skills_suffix}"
+
         output_schema = None
         if workflow_state and workflow_state.output_schema:
             schema = str(workflow_state.output_schema)

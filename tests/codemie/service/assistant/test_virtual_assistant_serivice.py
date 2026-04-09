@@ -83,6 +83,32 @@ def test_create(assistant):
     VirtualAssistantService.delete(assistant_id=assistant.id)
 
 
+def test_create_with_skill_ids(mock_toolkit):
+    skill_ids = ["skill-1", "skill-2"]
+    assistant = VirtualAssistantService.create(
+        toolkits=[mock_toolkit],
+        project="Test",
+        execution_id="test_execution",
+        skill_ids=skill_ids,
+    )
+
+    assert assistant.skill_ids == skill_ids
+
+    VirtualAssistantService.delete(assistant_id=assistant.id)
+
+
+def test_create_without_skill_ids_defaults_to_empty(mock_toolkit):
+    assistant = VirtualAssistantService.create(
+        toolkits=[mock_toolkit],
+        project="Test",
+        execution_id="test_execution",
+    )
+
+    assert assistant.skill_ids == []
+
+    VirtualAssistantService.delete(assistant_id=assistant.id)
+
+
 def test_get(assistant):
     result = VirtualAssistantService.get(assistant_id=assistant.id)
     assert result == assistant

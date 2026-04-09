@@ -54,6 +54,7 @@ class VirtualAssistantService:
             execution_id=execution_id,
             datasource_ids=config.datasource_ids,
             mcp_servers=config.mcp_servers,
+            skill_ids=config.skill_ids,
         )
 
     @classmethod
@@ -89,6 +90,7 @@ class VirtualAssistantService:
         execution_id: Optional[str] = None,
         datasource_ids: Optional[List[str]] = None,
         mcp_servers: Optional[List[MCPServerDetails]] = None,
+        skill_ids: Optional[List[str]] = None,
     ) -> VirtualAssistant:
         """Create assistant instance and save in memory"""
         uuid = uuid4()
@@ -114,6 +116,7 @@ class VirtualAssistantService:
             execution_id=execution_id,
             context=context,
             mcp_servers=mcp_servers or [],
+            skill_ids=skill_ids or [],
         )
 
         # Set version to 1 for virtual assistants (they don't have versioning)

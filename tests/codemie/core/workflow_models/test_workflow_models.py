@@ -27,6 +27,7 @@ from codemie.core.workflow_models.constants import (
 from codemie.core.workflow_models.workflow_models import (
     InvalidCredentialsError,
     TruncatedOutputError,
+    WorkflowAssistant,
     WorkflowNextState,
     WorkflowRetryPolicy,
     WorkflowState,
@@ -180,6 +181,39 @@ def test_custom_retry_on_retry_true_http_exceptions(status_code, exception_insta
     result = WorkflowRetryPolicy.custom_retry_on(exception_instance)
 
     assert result == expected_retry_decision
+
+
+class TestWorkflowAssistant:
+    """Tests for WorkflowAssistant model skill_ids field."""
+
+    def test_skill_ids_defaults_to_empty_list(self):
+        """Test that skill_ids defaults to an empty list when not provided."""
+        assistant = WorkflowAssistant(id="asst1")
+
+        assert assistant.skill_ids == []
+
+    def test_skill_ids_can_be_set(self):
+        """Test that skill_ids can be set with a list of skill IDs."""
+        skill_ids = ["skill-abc123", "skill-def456"]
+        assistant = WorkflowAssistant(id="asst1", skill_ids=skill_ids)
+
+        assert assistant.skill_ids == skill_ids
+
+    def test_skill_ids_serialization(self):
+        """Test that skill_ids is included in model serialization."""
+        skill_ids = ["skill-abc123"]
+        assistant = WorkflowAssistant(id="asst1", skill_ids=skill_ids)
+
+        data = assistant.model_dump()
+        assert "skill_ids" in data
+        assert data["skill_ids"] == skill_ids
+
+    def test_skill_ids_deserialization_missing_uses_default(self):
+        """Test that skill_ids defaults when missing from deserialized data."""
+        data = {"id": "asst1"}
+        assistant = WorkflowAssistant(**data)
+
+        assert assistant.skill_ids == []
 
 
 class TestWorkflowTool:

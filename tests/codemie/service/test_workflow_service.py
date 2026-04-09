@@ -149,6 +149,60 @@ def test_get_workflow(mock_get_by_id, workflow_service, workflow_config):
 
 
 @patch('codemie.core.workflow_models.WorkflowConfig.get_by_id')
+def test_get_workflow_parses_skill_ids_from_yaml(mock_get_by_id, workflow_service):
+    """get_workflow should populate assistants from yaml_config so skill_ids are included in the response."""
+    import yaml
+
+    yaml_with_skills = yaml.dump(
+        {
+            "assistants": [{"id": "assistant_1", "model": "gpt-4.1", "skill_ids": ["skill-abc123"]}],
+            "states": [],
+        }
+    )
+    wf = WorkflowConfig(
+        id="workflow_with_skills",
+        name="Workflow With Skills",
+        description="Test",
+        yaml_config=yaml_with_skills,
+    )
+    mock_get_by_id.return_value = wf
+
+    result = workflow_service.get_workflow(wf.id)
+
+    assert len(result.assistants) == 1
+    assert result.assistants[0].skill_ids == ["skill-abc123"]
+
+
+@patch('codemie.core.workflow_models.WorkflowConfig.get_by_id')
+def test_get_workflow_parses_null_skill_ids_from_yaml(mock_get_by_id, workflow_service):
+    """get_workflow should handle null skill_ids in YAML (skill_ids: with no value) by defaulting to []."""
+    import yaml
+
+    # Simulate YAML where skill_ids: has no value (null) — this is what happens
+    # when frontend saves a workflow assistant config that had skill_ids: []
+    # and js-yaml or the user edits the raw YAML leaving skill_ids: blank
+    yaml_with_null_skills = yaml.dump(
+        {
+            "assistants": [{"id": "assistant_1", "model": "gpt-4.1", "skill_ids": None}],
+            "states": [],
+        }
+    )
+    wf = WorkflowConfig(
+        id="workflow_null_skills",
+        name="Workflow Null Skills",
+        description="Test",
+        yaml_config=yaml_with_null_skills,
+    )
+    mock_get_by_id.return_value = wf
+
+    result = workflow_service.get_workflow(wf.id)
+
+    assert len(result.assistants) == 1
+    # null skill_ids must be coerced to empty list, not left as None
+    assert result.assistants[0].skill_ids == []
+
+
+@patch('codemie.core.workflow_models.WorkflowConfig.get_by_id')
 def test_get_workflow_invalid_id(mock_get_by_id, workflow_service):
     mock_get_by_id.side_effect = Exception("Workflow not found")
     with pytest.raises(Exception, match="Workflow not found"):

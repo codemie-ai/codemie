@@ -109,3 +109,58 @@ class TestWorkflowConfig:
 
         workflow_config.max_concurrency = config.WORKFLOW_MAX_CONCURRENCY + 1
         assert workflow_config.get_max_concurrency() == config.WORKFLOW_MAX_CONCURRENCY
+
+
+class TestParseExecutionConfigSkillIds:
+    """Tests that parse_execution_config correctly handles skill_ids from YAML,
+    including the edge case where YAML has 'skill_ids:' with no value (null)."""
+
+    def test_parse_execution_config_null_skill_ids_coerced_to_empty_list(self):
+        """YAML with 'skill_ids:' (null value) must produce skill_ids=[] not None."""
+        import yaml
+
+        yaml_config = yaml.dump(
+            {
+                "assistants": [{"id": "a1", "model": "gpt-4.1", "skill_ids": None}],
+                "states": [],
+            }
+        )
+        wf = WorkflowConfig(id="wf1", name="WF", description="", yaml_config=yaml_config)
+        wf.parse_execution_config()
+
+        assert len(wf.assistants) == 1
+        assert (
+            wf.assistants[0].skill_ids == []
+        ), "skill_ids must be [] not None when YAML has 'skill_ids:' with no value"
+
+    def test_parse_execution_config_populated_skill_ids_preserved(self):
+        """YAML with actual skill IDs must populate skill_ids correctly."""
+        import yaml
+
+        yaml_config = yaml.dump(
+            {
+                "assistants": [{"id": "a1", "model": "gpt-4.1", "skill_ids": ["skill-abc"]}],
+                "states": [],
+            }
+        )
+        wf = WorkflowConfig(id="wf2", name="WF", description="", yaml_config=yaml_config)
+        wf.parse_execution_config()
+
+        assert len(wf.assistants) == 1
+        assert wf.assistants[0].skill_ids == ["skill-abc"]
+
+    def test_parse_execution_config_missing_skill_ids_defaults_to_empty_list(self):
+        """YAML assistant without skill_ids field must default to []."""
+        import yaml
+
+        yaml_config = yaml.dump(
+            {
+                "assistants": [{"id": "a1", "model": "gpt-4.1"}],
+                "states": [],
+            }
+        )
+        wf = WorkflowConfig(id="wf3", name="WF", description="", yaml_config=yaml_config)
+        wf.parse_execution_config()
+
+        assert len(wf.assistants) == 1
+        assert wf.assistants[0].skill_ids == []

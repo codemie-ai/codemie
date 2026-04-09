@@ -59,6 +59,7 @@ class WorkflowAssistant(BaseModel):
     datasource_ids: Optional[list[str]] = Field(default_factory=list)
     exclude_extra_context_tools: bool = False
     mcp_servers: list[MCPServerDetails] = Field(default_factory=list)
+    skill_ids: Optional[list[str]] = Field(default_factory=list)
 
     @model_validator(mode='after')
     def validate_mcp_servers(cls, values: WorkflowAssistant) -> WorkflowAssistant:

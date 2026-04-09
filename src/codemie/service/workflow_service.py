@@ -64,6 +64,9 @@ class WorkflowService:
             workflow = WorkflowConfig.get_by_id(workflow_id)
             if user:
                 workflow.user_abilities = Ability(user).list(workflow)
+            # Ensure assistants (and other actors) are populated from yaml_config so that
+            # skill_ids and other fields added after the last DB save are always reflected.
+            workflow.parse_execution_config()
             return workflow
         except Exception as e:
             logger.error(f"Failed to get workflow: {e}")

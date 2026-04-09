@@ -565,6 +565,7 @@ class TestPrepareWorkflowSystemPrompt:
         workflow_assistant = WorkflowAssistant(assistant_id='asst-123', system_prompt='Custom workflow prompt')
 
         assistant = Mock(spec=Assistant)
+        assistant.skill_ids = []
         user = Mock(spec=User)
 
         # Act
@@ -593,6 +594,7 @@ class TestPrepareWorkflowSystemPrompt:
         workflow_assistant = WorkflowAssistant(assistant_id='asst-123', system_prompt=None)
 
         assistant = Mock(spec=Assistant)
+        assistant.skill_ids = []
         user = Mock(spec=User)
         user.id = 'user-123'
         user.full_name = 'Test User'
@@ -610,6 +612,37 @@ class TestPrepareWorkflowSystemPrompt:
         assert result_prompt == 'Assistant system prompt'
         assert result_schema is None
 
+    @patch('codemie.service.assistant_service.AssistantService.get_system_prompt')
+    def test_prepare_workflow_system_prompt_appends_skills_suffix_when_skill_ids_present(
+        self,
+        mock_get_system_prompt,
+    ):
+        """Test that skills suffix is appended to system prompt when assistant has skill_ids."""
+        # Arrange
+        mock_get_system_prompt.return_value = 'Base prompt'
+
+        workflow_assistant = WorkflowAssistant(assistant_id='asst-123', system_prompt=None)
+
+        assistant = Mock(spec=Assistant)
+        assistant.skill_ids = ['skill-1', 'skill-2']
+        user = Mock(spec=User)
+        user.id = 'user-123'
+        user.full_name = 'Test User'
+
+        # Act
+        result_prompt, result_schema = AssistantService._prepare_workflow_system_prompt(
+            workflow_assistant=workflow_assistant,
+            assistant=assistant,
+            user=user,
+            workflow_state=None,
+            mcp_server_args_preprocessor=None,
+        )
+
+        # Assert
+        assert 'Base prompt' in result_prompt
+        assert 'skill' in result_prompt
+        assert result_schema is None
+
     @patch('codemie.service.assistant_service.AssistantService.load_and_validate_schema')
     @patch('codemie.service.assistant_service.AssistantService.get_system_prompt')
     def test_prepare_workflow_system_prompt_with_output_schema(
@@ -625,6 +658,7 @@ class TestPrepareWorkflowSystemPrompt:
         workflow_assistant = WorkflowAssistant(assistant_id='asst-123', system_prompt=None)
 
         assistant = Mock(spec=Assistant)
+        assistant.skill_ids = []
         user = Mock(spec=User)
         user.id = 'user-123'
         user.full_name = 'Test User'
