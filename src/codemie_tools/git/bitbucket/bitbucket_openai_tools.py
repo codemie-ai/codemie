@@ -102,7 +102,7 @@ class ListBranchesTool(CodeMieTool):
     It will return the name of each branch. No input parameters are required."""
     args_schema: Optional[Type[BaseModel]] = ListBranchesToolInput
 
-    def execute(self, *args):
+    def execute(self, query: str = "", **kwargs):
         validate_bitbucket(self.repo_wrapper, self.credentials)
         branches = [branch.name for branch in self.repo_wrapper.branches.each()]
         if branches:

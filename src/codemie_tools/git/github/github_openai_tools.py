@@ -85,7 +85,7 @@ class ListBranchesTool(CodeMieTool):
     It will return the name of each branch. No input parameters are required."""
     args_schema: Optional[Type[BaseModel]] = ListBranchesToolInput
 
-    def execute(self, *args):
+    def execute(self, query: str = "", **kwargs):
         validate_github_wrapper(self.api_wrapper, self.credentials)
         return self.api_wrapper.list_branches_in_repo()
 

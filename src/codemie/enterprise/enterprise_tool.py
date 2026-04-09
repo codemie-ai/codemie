@@ -254,6 +254,10 @@ def wrap_enterprise_tool(enterprise_tool: EnterpriseTool) -> CodeMieTool:
                 # This is required because enterprise tools (e.g., MCP via plugin) serialize to JSON
                 sanitized_kwargs = {key: _sanitize_tool_input(value) for key, value in kwargs.items()}
 
+                # Filter out None values for optional parameters — MCP servers reject null values
+                # for fields that expect a specific type (e.g., int). None means "not provided".
+                sanitized_kwargs = {key: value for key, value in sanitized_kwargs.items() if value is not None}
+
                 logger.debug(
                     f"kwargs types (after sanitization): {[(k, type(v).__name__) for k, v in sanitized_kwargs.items()]}"
                 )
@@ -317,6 +321,10 @@ def wrap_enterprise_tool(enterprise_tool: EnterpriseTool) -> CodeMieTool:
 
                 # Sanitize kwargs: convert Pydantic models to dicts for JSON serialization
                 sanitized_kwargs = {key: _sanitize_tool_input(value) for key, value in kwargs.items()}
+
+                # Filter out None values for optional parameters — MCP servers reject null values
+                # for fields that expect a specific type (e.g., int). None means "not provided".
+                sanitized_kwargs = {key: value for key, value in sanitized_kwargs.items() if value is not None}
 
                 logger.debug(
                     f"async kwargs types (after sanitization): {[(k, type(v).__name__) for k, v in sanitized_kwargs.items()]}"
