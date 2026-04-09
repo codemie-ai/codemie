@@ -354,3 +354,43 @@ class AddWikiCommentByPathInput(BaseModel):
         "When provided, the new comment will be added as a reply to the specified parent comment. "
         "Leave empty for top-level comments.",
     )
+
+
+class GetAttachmentContentInput(BaseModel):
+    """Input model for retrieving the content of a wiki page attachment.
+
+    Supports two identification strategies:
+    1. Direct URL: provide attachment_url obtained from get_wiki_page_by_id/path actions.
+    2. Discovery: provide wiki_identified + (page_id or page_name) + attachment_name
+       to locate the attachment URL from the page markdown.
+
+    At least one of attachment_url OR (page_id / page_name + attachment_name) must be provided.
+    """
+
+    wiki_identified: str = Field(description=WIKI_IDENTIFIER_DESCRIPTION)
+    attachment_url: Optional[str] = Field(
+        default=None,
+        description="Direct URL to the attachment as returned by get_wiki_page_by_id or "
+        "get_wiki_page_by_path actions (e.g. a URL containing '/_apis/wit/attachments/' "
+        "or '/.attachments/'). When provided, the attachment is downloaded directly "
+        "without fetching the wiki page.",
+    )
+    page_id: Optional[int] = Field(
+        default=None,
+        description="Wiki page ID. Used together with attachment_name to discover the "
+        "attachment URL from the page markdown. Ignored when attachment_url is provided.",
+    )
+    page_name: Optional[str] = Field(
+        default=None,
+        description="Wiki page path. For URLs, extract the '/{page_id}/{page-slug}' portion. "
+        "Example: from URL '...wikis/MyWiki.wiki/123/My-Page', use '/123/My-Page'. "
+        "Used together with attachment_name to discover the attachment URL. "
+        "Ignored when attachment_url is provided.",
+    )
+    attachment_name: Optional[str] = Field(
+        default=None,
+        description="Name of the specific attachment file to retrieve "
+        "(e.g. 'architecture.pdf', 'screenshot.png'). "
+        "Required when using page_id or page_name for discovery. "
+        "Case-insensitive matching is applied.",
+    )

@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest.mock import Mock, patch
+import base64
+from unittest.mock import Mock, MagicMock, patch
 
 from azure.devops.v7_0.wiki.models import WikiV2, WikiPage, WikiPageResponse
 from langchain_core.tools import ToolException
@@ -37,6 +38,7 @@ from codemie_tools.azure_devops.wiki.tools import (
     GetPageStatsByPathTool,
     AddWikiCommentByIdTool,
     AddWikiCommentByPathTool,
+    GetWikiAttachmentContentTool,
 )
 
 
@@ -2139,3 +2141,218 @@ class TestAddWikiCommentByPathTool:
             )
 
         assert "Could not find page with path" in str(exc_info.value) or "Failed to add comment" in str(exc_info.value)
+
+
+class TestGetWikiAttachmentContentTool:
+    """Tests for GetWikiAttachmentContentTool."""
+
+    @staticmethod
+    def _make_tool(**overrides):
+        config = AzureDevOpsWikiConfig(
+            organization_url="https://dev.azure.com/org", project="test-project", token="fake-token"
+        )
+        return GetWikiAttachmentContentTool(config=config, **overrides)
+
+    def test_build_base64_response_small_file(self):
+        """Files within _MAX_BASE64_BYTES are returned as base64."""
+        tool = self._make_tool()
+        data = b"small content"
+        result = tool._build_base64_response(data, "some note")
+
+        assert result["content_type"] == "base64"
+        assert result["content"] == base64.b64encode(data).decode("utf-8")
+        assert result["note"] == "some note"
+
+    def test_build_base64_response_large_file(self):
+        """Files exceeding _MAX_BASE64_BYTES return metadata_only."""
+        tool = self._make_tool()
+        data = b"x" * (tool._MAX_BASE64_BYTES + 1)
+        result = tool._build_base64_response(data, "original note")
+
+        assert result["content_type"] == "metadata_only"
+        assert result["content"] is None
+        assert "too large" in result["note"]
+
+    def test_extract_pdf_metadata_returns_page_count_and_details(self):
+        """Should include total page count and per-page details."""
+        tool = self._make_tool()
+        mock_page = MagicMock()
+        mock_page.width = 612.0
+        mock_page.height = 792.0
+        mock_page.images = [{"x0": 0}]
+
+        with patch("pdfplumber.open") as mock_open:
+            mock_pdf = MagicMock()
+            mock_pdf.pages = [mock_page, mock_page]
+            mock_pdf.metadata = {"Author": "Test Author"}
+            mock_open.return_value.__enter__.return_value = mock_pdf
+
+            result = tool._extract_pdf_metadata(b"fake-pdf")
+
+        assert "Total pages: 2" in result
+        assert "Page 1: 612.0x792.0 pt, 1 embedded image(s)" in result
+        assert "Author: Test Author" in result
+
+    def test_extract_pdf_metadata_handles_corrupt_pdf(self):
+        """Should not raise on corrupted PDF, returns error note instead."""
+        tool = self._make_tool()
+
+        with patch("pdfplumber.open", side_effect=Exception("corrupt PDF")):
+            result = tool._extract_pdf_metadata(b"bad-data")
+
+        assert "metadata extraction failed" in result
+
+    @patch(
+        "codemie_tools.azure_devops.wiki.tools.PdfProcessor.extract_text_as_markdown",
+        return_value="# Hello\nSome text",
+    )
+    def test_process_content_pdf_with_selectable_text(self, mock_extract):
+        """PDF with selectable text returns text content directly."""
+        tool = self._make_tool()
+        result = tool._process_content("report.pdf", b"fake-pdf-bytes")
+
+        assert result["content_type"] == "text"
+        assert "Hello" in result["content"]
+
+    @patch(
+        "codemie_tools.azure_devops.wiki.tools.PdfProcessor.extract_text_as_markdown",
+        return_value="",
+    )
+    def test_process_content_image_only_pdf_no_chat_model_returns_metadata(self, mock_extract):
+        """Image-only PDF without chat_model returns structural metadata."""
+        tool = self._make_tool()
+
+        with patch.object(tool, "_extract_pdf_metadata", return_value="Total pages: 3\nPage 1: 612.0x792.0 pt"):
+            result = tool._process_content("images.pdf", b"x" * 300_000)
+
+        assert result["content_type"] == "text"
+        assert "Total pages: 3" in result["content"]
+
+    @patch(
+        "codemie_tools.azure_devops.wiki.tools.PdfProcessor.extract_text_as_markdown",
+        return_value="",
+    )
+    def test_process_content_image_pdf_with_chat_model_uses_ocr(self, mock_extract):
+        """Image-only PDF with chat_model attempts OCR via page rendering."""
+        tool = self._make_tool(chat_model=Mock())
+
+        with patch.object(tool, "_pdf_ocr_via_page_rendering", return_value="OCR text") as mock_ocr:
+            result = tool._process_content("scan.pdf", b"fake-pdf")
+
+        mock_ocr.assert_called_once()
+        assert result["content_type"] == "text"
+        assert "OCR text" in result["content"]
+
+    @patch(
+        "codemie_tools.azure_devops.wiki.tools.PdfProcessor.extract_text_as_markdown",
+        side_effect=Exception("parse error"),
+    )
+    def test_process_content_pdf_extraction_error_returns_metadata(self, mock_extract):
+        """When PDF extraction raises, still returns metadata."""
+        tool = self._make_tool()
+
+        with patch.object(tool, "_extract_pdf_metadata", return_value="Total pages: 1"):
+            result = tool._process_content("broken.pdf", b"bad-pdf")
+
+        assert result["content_type"] == "text"
+        assert "parse error" in result["content"]
+        assert "Total pages: 1" in result["content"]
+
+    def test_process_content_text_file(self):
+        """Text files are decoded and returned as text."""
+        tool = self._make_tool()
+        result = tool._process_content("readme.md", b"Hello, world!")
+
+        assert result["content_type"] == "text"
+        assert result["content"] == "Hello, world!"
+
+    def test_process_content_unknown_large_returns_metadata_only(self):
+        """Large unknown files return metadata_only."""
+        tool = self._make_tool()
+        data = b"x" * (tool._MAX_BASE64_BYTES + 1)
+        result = tool._process_content("large.bin", data)
+
+        assert result["content_type"] == "metadata_only"
+        assert result["content"] is None
+
+    def test_execute_with_direct_url(self):
+        """Execute with attachment_url downloads and processes the file."""
+        tool = self._make_tool()
+
+        with patch.object(tool, "_download_attachment", return_value=b"hello world"):
+            result = tool.execute(
+                wiki_identified="Wiki.wiki",
+                attachment_url="https://dev.azure.com/org/proj/_apis/wit/attachments/abc?fileName=notes.txt",
+            )
+
+        assert result["filename"] == "notes.txt"
+        assert result["content_type"] == "text"
+        assert result["content"] == "hello world"
+        assert result["size_bytes"] == 11
+
+    def test_execute_with_wiki_attachment_path(self):
+        """Execute dispatches /.attachments/ paths to git items API."""
+        tool = self._make_tool()
+
+        with patch.object(tool, "_resolve_attachment_url", return_value=("report.md", "/.attachments/report.md")):
+            with patch.object(tool, "_download_wiki_attachment_path", return_value=b"# Report\n") as mock_dl:
+                result = tool.execute(wiki_identified="Wiki.wiki", page_id=123, attachment_name="report.md")
+
+        mock_dl.assert_called_once_with("Wiki.wiki", "/.attachments/report.md", "report.md")
+        assert result["content_type"] == "text"
+
+    def test_execute_missing_url_and_name_raises(self):
+        """Should raise when neither attachment_url nor attachment_name is provided."""
+        tool = self._make_tool()
+
+        with pytest.raises(ToolException, match="attachment_url.*attachment_name"):
+            tool.execute(wiki_identified="Wiki.wiki")
+
+    def test_execute_name_without_page_raises(self):
+        """Should raise when attachment_name is given without page_id or page_name."""
+        tool = self._make_tool()
+
+        with pytest.raises(ToolException, match="page_id.*page_name"):
+            tool.execute(wiki_identified="Wiki.wiki", attachment_name="file.pdf")
+
+    def test_execute_download_failure_raises_tool_exception(self):
+        """A download failure should be wrapped in ToolException."""
+        tool = self._make_tool()
+
+        with patch.object(tool, "_download_attachment", side_effect=Exception("Network timeout")):
+            with pytest.raises(ToolException, match="Failed to retrieve attachment content"):
+                tool.execute(wiki_identified="Wiki.wiki", attachment_url="https://example.com/att/file.bin")
+
+    def test_resolve_attachment_url_by_page_id(self):
+        """Resolves attachment URL using page_id."""
+        tool = self._make_tool()
+
+        mock_client = Mock()
+        mock_page = WikiPageResponse(
+            page=WikiPage(id=42, path="/Test", content="See [report.pdf](/.attachments/report.pdf)")
+        )
+        mock_client.get_page_by_id.return_value = mock_page
+        tool._client = mock_client
+
+        filename, url = tool._resolve_attachment_url(
+            wiki_identified="Wiki.wiki", page_id=42, page_name=None, attachment_name="report.pdf"
+        )
+
+        assert filename == "report.pdf"
+        assert url == "/.attachments/report.pdf"
+
+    def test_resolve_attachment_url_not_found_raises(self):
+        """Raises ToolException when attachment name doesn't match."""
+        tool = self._make_tool()
+
+        mock_client = Mock()
+        mock_page = WikiPageResponse(
+            page=WikiPage(id=42, path="/Test", content="See [other.pdf](/.attachments/other.pdf)")
+        )
+        mock_client.get_page_by_id.return_value = mock_page
+        tool._client = mock_client
+
+        with pytest.raises(ToolException, match="not found on the page"):
+            tool._resolve_attachment_url(
+                wiki_identified="Wiki.wiki", page_id=42, page_name=None, attachment_name="missing.pdf"
+            )

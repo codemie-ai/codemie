@@ -278,7 +278,7 @@ class PdfProcessor:
             return markdown
         finally:
             if should_close:
-                pdf_document.close()
+                pdf_obj.close()
 
     @staticmethod
     def _table_to_markdown(table):

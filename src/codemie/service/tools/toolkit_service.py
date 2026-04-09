@@ -416,6 +416,8 @@ class ToolkitService:
                 tools_config=request.tools_config if request else None,
                 file_objects=file_objects,
                 is_admin=user.is_admin,
+                llm_model=llm_model,
+                request_uuid=request_uuid,
             )
         )
         logger.debug(f"Initialized core tools for assistant `{assistant.name}`. Total tools: {len(tools)}")
@@ -473,6 +475,8 @@ class ToolkitService:
         tools_config: Optional[List[ToolConfig]],
         file_objects=None,
         is_admin: bool = False,
+        llm_model: Optional[str] = None,
+        request_uuid: Optional[str] = None,
     ) -> list[BaseTool]:
         tools = []
         for assistant_toolkit in assistant_toolkits:
@@ -486,6 +490,8 @@ class ToolkitService:
                 tools_config,
                 file_objects,
                 is_admin,
+                llm_model=llm_model,
+                request_uuid=request_uuid,
             )
             tools.extend(toolkit_tools)
         return tools
@@ -501,6 +507,8 @@ class ToolkitService:
         tools_config: Optional[List[ToolConfig]],
         file_objects=None,
         is_admin: bool = False,
+        llm_model: Optional[str] = None,
+        request_uuid: Optional[str] = None,
     ) -> list[BaseTool]:
         """Process tools from a single toolkit and initialize them.
 
@@ -525,6 +533,8 @@ class ToolkitService:
                 tools_config,
                 file_objects,
                 is_admin,
+                llm_model=llm_model,
+                request_uuid=request_uuid,
             )
             if tool:
                 toolkit_tools.append(tool)
@@ -541,6 +551,8 @@ class ToolkitService:
         tools_config: Optional[List[ToolConfig]],
         file_objects=None,
         is_admin: bool = False,
+        llm_model: Optional[str] = None,
+        request_uuid: Optional[str] = None,
     ) -> Optional[BaseTool]:
         """Initialize a single tool if its configuration is available.
 
@@ -556,6 +568,8 @@ class ToolkitService:
             tools_config: Optional list of tool configurations from request
             file_objects: Optional file objects for FileConfigMixin tools
             is_admin: Whether this is an admin request
+            llm_model: Optional LLM model name for tools that support chat_model injection
+            request_uuid: Optional request UUID for LLM tracking
 
         Returns:
             Initialized tool instance or None if initialization failed
@@ -608,6 +622,23 @@ class ToolkitService:
         if isinstance(stored_config, FileConfigMixin) and file_objects:
             stored_config.input_files = file_objects
             logger.debug("Adding input files: %s", len(file_objects))
+
+        # Pass chat_model at construction time for tools that declare it.
+        # Use a multimodal LLM (needed for image/OCR), falling back to the main model.
+        tool_fields = getattr(tool_definition.tool_class, 'model_fields', {})
+        if llm_model and 'chat_model' in tool_fields:
+            try:
+                effective_llm = llm_model
+                multimodal_llms = llm_service.get_multimodal_llms()
+                if multimodal_llms:
+                    effective_llm = multimodal_llms[0]
+                chat_model_instance = get_llm_by_credentials(
+                    llm_model=effective_llm, streaming=False, request_id=request_uuid
+                )
+                logger.debug(f"Injecting chat_model (model={effective_llm}) into '{assistant_tool.name}'")
+                return tool_definition.tool_class(config=stored_config, chat_model=chat_model_instance)
+            except Exception as e:
+                logger.debug(f"Failed to inject chat_model into '{assistant_tool.name}': {e}")
 
         return tool_definition.tool_class(config=stored_config)
 

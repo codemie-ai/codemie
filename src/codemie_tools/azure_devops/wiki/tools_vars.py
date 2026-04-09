@@ -970,6 +970,90 @@ ADD_WIKI_COMMENT_BY_ID_TOOL = ToolMetadata(
     config_class=AzureDevOpsWikiConfig,
 )
 
+GET_WIKI_ATTACHMENT_CONTENT_TOOL = ToolMetadata(
+    name="get_wiki_attachment_content",
+    description="""
+        Retrieve and parse the content of a wiki page attachment in Azure DevOps.
+        Returns parsed text or structured content depending on the file type, along with attachment metadata.
+
+        Use this tool to read the actual content of files attached to wiki pages — not just their metadata.
+        Suitable for downstream tasks such as search, summarization, analysis, or archival.
+
+        Identification (provide ONE of the following):
+        1. Direct URL (RECOMMENDED when available):
+           - attachment_url: URL returned by get_wiki_page_by_id or get_wiki_page_by_path
+             (contains '/_apis/wit/attachments/' or '/.attachments/')
+        2. Discovery via page + attachment name:
+           - wiki_identified + page_id + attachment_name, OR
+           - wiki_identified + page_name + attachment_name
+
+        Arguments:
+        - wiki_identified (str): Wiki ID or wiki name. Example: "MyWiki.wiki". Regularly, ".wiki" is essential.
+        - attachment_url (str, optional): Direct URL to the attachment. Takes priority when provided.
+        - page_id (int, optional): Wiki page ID. Used with attachment_name for discovery.
+        - page_name (str, optional): Wiki page path (e.g. "/10330/This-is-sub-page"). Used with attachment_name.
+        - attachment_name (str, optional): Filename of the attachment to retrieve (e.g. "report.pdf").
+          Case-insensitive. Required when using page_id or page_name.
+
+        File-Type Handling:
+        - Text files (txt, md, json, xml, csv, yaml, etc.): decoded text content is returned.
+        - PDF: extracted text (and optionally image text via OCR when LLM is available).
+        - Images (png, jpg, gif, bmp, webp, etc.): image description/text via LLM vision when available;
+          otherwise base64-encoded content with a note.
+        - DOCX (Word): extracted text content from the document.
+        - PPTX (PowerPoint): extracted text from all slides.
+        - Other/unknown types: base64-encoded content with metadata note.
+
+        Return Format:
+        Returns dict with:
+        - 'filename': Name of the attachment
+        - 'mime_type': Detected MIME type
+        - 'size_bytes': Size of the file in bytes
+        - 'content_type': How content is represented ('text', 'base64', 'image_description', or 'metadata_only')
+        - 'content': The parsed content (text, base64 string, image description, or null for metadata_only)
+        - 'note': Optional message explaining limitations or processing applied
+
+        Note: For large binary files (>50 KB) that cannot be parsed to text, the tool returns
+        content_type='metadata_only' with content=null instead of a base64 blob that would be truncated.
+
+        Examples:
+        - Retrieve PDF attachment via URL:
+          wiki_identified: "CodeMie.wiki"
+          attachment_url: "https://dev.azure.com/Org/Proj/_apis/wit/attachments/abc-123?fileName=report.pdf"
+          Result: {"filename": "report.pdf", "mime_type": "application/pdf", "content_type": "text",
+                   "content": "## Page 1\\n\\nThis is the extracted PDF text...", "size_bytes": 45120, "note": null}
+
+        - Retrieve image via page ID + name:
+          wiki_identified: "CodeMie.wiki"
+          page_id: 10330
+          attachment_name: "architecture.png"
+          Result: {"filename": "architecture.png", "mime_type": "image/png", "content_type": "image_description",
+                   "content": "The image shows a microservices architecture diagram...", "size_bytes": 98304, "note": null}
+
+        - Retrieve text file via page path:
+          wiki_identified: "MyWiki.wiki"
+          page_name: "/10/Documentation"
+          attachment_name: "config.yaml"
+          Result: {"filename": "config.yaml", "mime_type": "text/yaml", "content_type": "text",
+                   "content": "service:\\n  port: 8080\\n  ...", "size_bytes": 1024, "note": null}
+        """,
+    label="Get Wiki Attachment Content",
+    user_description="""
+        Retrieves and parses the actual content of a file attached to a wiki page — not just its metadata.
+        Supports text extraction from PDFs, Word documents, PowerPoint presentations, images (via AI vision),
+        and plain text files (txt, json, xml, csv, md, yaml, etc.).
+
+        The attachment can be identified by a direct URL (from get_wiki_page_by_id/path) or by specifying
+        the wiki page and attachment filename.
+
+        Before using it, you need to provide:
+        1. Azure DevOps organization URL
+        2. Project name
+        3. Personal Access Token with Wiki read permissions
+        """.strip(),
+    config_class=AzureDevOpsWikiConfig,
+)
+
 ADD_WIKI_COMMENT_BY_PATH_TOOL = ToolMetadata(
     name="add_wiki_comment_by_path",
     description="""

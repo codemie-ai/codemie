@@ -12,14 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import mimetypes
 import os
 import re
 import base64
 import uuid
 import httpx
 import traceback
-from typing import Type, Optional, Dict, Tuple, List
-from urllib.parse import quote
+from typing import Any, Type, Optional, Dict, Tuple, List
+from urllib.parse import parse_qs, quote, urlparse
 
 from azure.devops.connection import Connection
 from azure.devops.exceptions import AzureDevOpsServiceError
@@ -51,6 +52,7 @@ from codemie_tools.azure_devops.wiki.models import (
     GetPageCommentsByIdInput,
     GetPageCommentsByPathInput,
     AddAttachmentInput,
+    GetAttachmentContentInput,
     GetPageStatsByIdInput,
     GetPageStatsByPathInput,
     ListWikisInput,
@@ -72,6 +74,7 @@ from codemie_tools.azure_devops.wiki.tools_vars import (
     GET_WIKI_PAGE_COMMENTS_BY_ID_TOOL,
     GET_WIKI_PAGE_COMMENTS_BY_PATH_TOOL,
     ADD_ATTACHMENT_TOOL,
+    GET_WIKI_ATTACHMENT_CONTENT_TOOL,
     GET_PAGE_STATS_BY_ID_TOOL,
     GET_PAGE_STATS_BY_PATH_TOOL,
     LIST_WIKIS_TOOL,
@@ -80,8 +83,15 @@ from codemie_tools.azure_devops.wiki.tools_vars import (
     ADD_WIKI_COMMENT_BY_PATH_TOOL,
 )
 from codemie_tools.base.codemie_tool import CodeMieTool, logger
+from codemie_tools.base.file_object import MimeType
 from codemie_tools.base.file_tool_mixin import FileToolMixin
 from codemie_tools.azure_devops.attachment_mixin import AzureDevOpsAttachmentMixin
+from codemie_tools.file_analysis.pdf.processor import PdfProcessor
+from codemie_tools.file_analysis.pptx.processor import PptxProcessor
+from codemie_tools.file_analysis.docx.processor import DocxProcessor
+from codemie_tools.file_analysis.docx.models import QueryType as DocxQueryType
+from codemie_tools.file_analysis.xlsx.processor import XlsxProcessor
+from codemie_tools.utils.image_processor import ImageProcessor
 
 # Ensure Azure DevOps cache directory is set
 if not os.environ.get("AZURE_DEVOPS_CACHE_DIR", None):
@@ -296,9 +306,12 @@ class BaseAzureDevOpsWikiTool(CodeMieTool, AzureDevOpsAttachmentMixin):
         matches = re.findall(markdown_link_pattern, content)
 
         for filename, url in matches:
-            # Check if URL looks like an Azure DevOps attachment URL
-            # Attachment URLs typically contain: /_apis/wit/attachments/ or similar
-            if "/_apis/wit/attachments/" in url or "/attachments/" in url:
+            # Check if URL looks like an Azure DevOps attachment URL.
+            # Two patterns:
+            # 1. Work-item attachment API: /_apis/wit/attachments/
+            # 2. Wiki attachment relative path: /.attachments/ (note the leading dot —
+            #    this does NOT contain the substring "/attachments/", so it needs its own check)
+            if "/_apis/wit/attachments/" in url or "/.attachments/" in url or "/attachments/" in url:
                 attachments.append((filename, url))
                 logger.debug(f"Found attachment: {filename} -> {url}")
 
@@ -399,6 +412,57 @@ class BaseAzureDevOpsWikiTool(CodeMieTool, AzureDevOpsAttachmentMixin):
             error_msg = f"Failed to upload wiki attachment '{filename}': {str(e)}"
             logger.error(error_msg)
             raise ToolException(error_msg)
+
+    def _get_wiki_repository_id(self, wiki_identified: str) -> str:
+        """
+        Return the git repository ID backing the specified wiki.
+
+        For project wikis the repository_id field on WikiV2 holds the ID of the
+        dedicated git repository where wiki content (including /.attachments/) lives.
+
+        Args:
+            wiki_identified: Wiki ID or wiki name
+
+        Returns:
+            Repository ID (UUID string)
+
+        Raises:
+            ToolException: If the repository ID cannot be determined
+        """
+        wiki = self._client.get_wiki(project=self.config.project, wiki_identifier=wiki_identified)
+        repo_id = getattr(wiki, "repository_id", None)
+        if not repo_id:
+            raise ToolException(
+                f"Cannot determine the git repository ID for wiki '{wiki_identified}'. "
+                "Ensure the wiki exists and the PAT has Wiki read permissions."
+            )
+        return repo_id
+
+    def _download_wiki_attachment_path(self, wiki_identified: str, attachment_path: str, filename: str) -> bytes:
+        """
+        Download a wiki attachment stored at a relative '/.attachments/' path.
+
+        Wiki attachments (uploaded via the Wiki Attachments API) are stored in the
+        wiki's backing git repository.  The wiki attachments PUT endpoint does NOT
+        support GET (returns 405).  Instead we use the Git Items API:
+            GET /_apis/git/repositories/{repoId}/items?path={path}&download=true
+
+        Args:
+            wiki_identified: Wiki ID or wiki name
+            attachment_path: Relative path e.g. '/.attachments/report.pdf'
+            filename: Filename used for logging
+
+        Returns:
+            Raw bytes of the attachment
+        """
+        repo_id = self._get_wiki_repository_id(wiki_identified)
+        download_url = (
+            f"{self.config.organization_url}/{self.config.project}"
+            f"/_apis/git/repositories/{repo_id}/items"
+            f"?path={quote(attachment_path)}&download=true&api-version=7.1"
+        )
+        logger.info(f"Downloading wiki attachment '{filename}' via git items API (repo: {repo_id})")
+        return self._download_attachment(download_url, filename)
 
     def _generate_unique_filename(self, original_filename: str) -> str:
         """
@@ -1992,6 +2056,433 @@ class AddWikiAttachmentTool(BaseAzureDevOpsWikiTool, FileToolMixin):
         except Exception as e:
             error_msg = f"Unable to add attachments to wiki page: {str(e)}"
             logger.error(error_msg)
+            raise ToolException(error_msg)
+
+
+class GetWikiAttachmentContentTool(BaseAzureDevOpsWikiTool):
+    """Tool to retrieve and parse the content of a wiki page attachment in Azure DevOps."""
+
+    name: str = GET_WIKI_ATTACHMENT_CONTENT_TOOL.name
+    description: str = GET_WIKI_ATTACHMENT_CONTENT_TOOL.description
+    args_schema: Type[BaseModel] = GetAttachmentContentInput
+
+    # Optional chat model for image description / PDF OCR (set via metadata or directly)
+    chat_model: Any = None
+
+    # Maximum raw file size (bytes) for which base64 content is returned.
+    # Files exceeding this threshold get a metadata-only response so the LLM
+    # is not flooded with a huge base64 blob that would be truncated anyway.
+    _MAX_BASE64_BYTES: int = 50_000
+
+    # TEXT MIME-TYPE PREFIX
+    _TEXT_PREFIX: str = "text/"
+
+    # Known text-based extensions that may not have a text/* mime type
+    _TEXT_EXTENSIONS: frozenset = frozenset(
+        {
+            ".txt",
+            ".md",
+            ".markdown",
+            ".json",
+            ".xml",
+            ".csv",
+            ".yaml",
+            ".yml",
+            ".toml",
+            ".ini",
+            ".cfg",
+            ".conf",
+            ".log",
+            ".html",
+            ".htm",
+            ".rst",
+            ".properties",
+            ".env",
+        }
+    )
+
+    def _build_base64_response(self, content_bytes: bytes, note: str) -> Dict[str, Any]:
+        """Return base64 content if the file is small enough, otherwise metadata-only.
+
+        Large binary blobs encoded as base64 exceed the tool output token limit
+        and get truncated, producing a useless partial string that the LLM
+        cannot decode.  For files larger than ``_MAX_BASE64_BYTES`` we return
+        a ``metadata_only`` content type with an actionable note instead.
+        """
+        if len(content_bytes) <= self._MAX_BASE64_BYTES:
+            return {
+                "content_type": "base64",
+                "content": base64.b64encode(content_bytes).decode("utf-8"),
+                "note": note,
+            }
+
+        size_kb = len(content_bytes) / 1024
+        return {
+            "content_type": "metadata_only",
+            "content": None,
+            "note": (
+                f"{note} "
+                f"The file is too large ({size_kb:.1f} KB) to return as base64 without being "
+                f"truncated. Only metadata is provided."
+            ),
+        }
+
+    def _detect_mime_type(self, filename: str) -> str:
+        """Detect MIME type from filename using the stdlib mimetypes module."""
+        mime_type, _ = mimetypes.guess_type(filename)
+        return mime_type or "application/octet-stream"
+
+    def _is_text_based(self, mime_type: str, filename: str) -> bool:
+        """Return True if the file should be decoded as plain text."""
+        if mime_type.startswith(self._TEXT_PREFIX):
+            return True
+        ext = os.path.splitext(filename)[1].lower()
+        return ext in self._TEXT_EXTENSIONS
+
+    def _resolve_attachment_url(
+        self,
+        wiki_identified: str,
+        page_id: Optional[int],
+        page_name: Optional[str],
+        attachment_name: str,
+    ) -> Tuple[str, str]:
+        """
+        Discover the attachment URL from the page markdown by matching attachment_name.
+
+        Returns:
+            Tuple of (resolved_filename, attachment_url)
+
+        Raises:
+            ToolException: If the attachment is not found on the page.
+        """
+        # Resolve page content
+        if page_id is not None:
+            page = self._client.get_page_by_id(
+                project=self.config.project,
+                wiki_identifier=wiki_identified,
+                id=page_id,
+                include_content=True,
+            )
+            content = page.page.content
+        else:
+            resolved_path = page_name
+            extracted_id = self._extract_page_id_from_path(page_name)
+            if extracted_id is not None:
+                resolved_path = self._get_full_path_from_id(wiki_identified, extracted_id)
+            page = self._client.get_page(
+                project=self.config.project,
+                wiki_identifier=wiki_identified,
+                path=resolved_path,
+                include_content=True,
+            )
+            content = page.page.content
+
+        attachment_urls = self._parse_attachment_urls(content)
+        if not attachment_urls:
+            raise ToolException(
+                "No attachments found on the wiki page. "
+                "Use get_wiki_page_by_id or get_wiki_page_by_path with include_attachments=True "
+                "to verify the page has attachments."
+            )
+
+        attachment_name_lower = attachment_name.lower()
+        for filename, url in attachment_urls:
+            if filename.lower() == attachment_name_lower:
+                # Return the raw path/URL as found in the markdown.
+                # Callers are responsible for dispatching to the correct download method
+                # based on whether the URL is a relative /.attachments/ path or an absolute URL.
+                return filename, url
+
+        available = ", ".join(f"'{fn}'" for fn, _ in attachment_urls)
+        raise ToolException(
+            f"Attachment '{attachment_name}' not found on the page. " f"Available attachments: {available}"
+        )
+
+    def _pdf_ocr_via_page_rendering(self, content_bytes: bytes) -> str:
+        """
+        Render each PDF page as a raster image and run OCR via ImageProcessor.
+
+        This handles image-based PDFs where pdfplumber finds no selectable text and
+        page.images may also be empty (e.g. PDFs built from scanned images or rendered slides).
+        Each page is rendered at 150 DPI, converted to PNG bytes, and sent to the LLM vision model.
+        """
+        import io
+        import pdfplumber
+
+        image_proc = ImageProcessor(chat_model=self.chat_model)
+        results = []
+
+        with pdfplumber.open(io.BytesIO(content_bytes)) as pdf:
+            for page_num, page in enumerate(pdf.pages, start=1):
+                try:
+                    page_image = page.to_image(resolution=150)
+                    img_bytes_io = io.BytesIO()
+                    page_image.original.save(img_bytes_io, format="PNG")
+                    image_bytes = img_bytes_io.getvalue()
+
+                    page_text = image_proc.extract_text_from_image_bytes(image_bytes)
+                    if page_text.strip():
+                        results.append(f"--- Page {page_num} ---\n{page_text}")
+                except Exception as e:
+                    logger.warning(f"Failed to OCR page {page_num}: {e}")
+
+        return "\n\n".join(results)
+
+    @staticmethod
+    def _extract_pdf_metadata(content_bytes: bytes) -> str:
+        """Extract structural metadata from a PDF when text extraction yields nothing.
+
+        Returns a human-readable summary containing page count, page dimensions,
+        image counts per page, and any document-level metadata.  This is useful
+        for image-only PDFs where no chat model is available for OCR.
+        """
+        import io
+        import pdfplumber
+
+        parts: list[str] = []
+        try:
+            with pdfplumber.open(io.BytesIO(content_bytes)) as pdf:
+                total_pages = len(pdf.pages)
+                parts.append(f"Total pages: {total_pages}")
+
+                # Document-level metadata (author, title, creator, …)
+                if pdf.metadata:
+                    meta_lines = []
+                    for key, value in pdf.metadata.items():
+                        if value:
+                            meta_lines.append(f"  {key}: {value}")
+                    if meta_lines:
+                        parts.append("Document metadata:")
+                        parts.extend(meta_lines)
+
+                # Per-page summary (dimensions + image count)
+                page_summaries: list[str] = []
+                for idx, page in enumerate(pdf.pages, start=1):
+                    width = round(page.width, 1)
+                    height = round(page.height, 1)
+                    img_count = len(page.images) if page.images else 0
+                    page_summaries.append(f"  Page {idx}: {width}x{height} pt, {img_count} embedded image(s)")
+                if page_summaries:
+                    parts.append("Page details:")
+                    parts.extend(page_summaries)
+        except Exception as e:
+            logger.warning(f"Failed to extract PDF metadata: {e}")
+            parts.append(f"(metadata extraction failed: {e})")
+
+        return "\n".join(parts)
+
+    def _process_pdf_content(self, filename: str, content_bytes: bytes) -> Dict[str, Any]:
+        """Extract text from a PDF, falling back to OCR then structural metadata."""
+        try:
+            text = PdfProcessor.extract_text_as_markdown(content_bytes)
+            if not text.strip() and self.chat_model:
+                logger.info(f"No selectable text in '{filename}', falling back to per-page OCR")
+                text = self._pdf_ocr_via_page_rendering(content_bytes)
+            if text.strip():
+                return {"content_type": "text", "content": text, "note": None}
+
+            # No text could be extracted — return structural metadata instead
+            # of a huge base64 blob that would be truncated.
+            metadata_text = self._extract_pdf_metadata(content_bytes)
+            no_ocr_note = (
+                "PDF appears to contain only images with no selectable text. "
+                "A chat model with vision capabilities is required for OCR. "
+                "Below is the structural metadata that could be extracted."
+            )
+            return {
+                "content_type": "text",
+                "content": f"{no_ocr_note}\n\n{metadata_text}",
+                "note": no_ocr_note,
+            }
+        except Exception as e:
+            logger.warning(f"PDF text extraction failed for '{filename}': {e}")
+            # Still try to get metadata even on extraction errors
+            try:
+                metadata_text = self._extract_pdf_metadata(content_bytes)
+                return {
+                    "content_type": "text",
+                    "content": (f"PDF text extraction failed: {e}. " f"Structural metadata:\n\n{metadata_text}"),
+                    "note": f"PDF text extraction failed: {e}.",
+                }
+            except Exception:
+                return self._build_base64_response(
+                    content_bytes,
+                    f"PDF text extraction failed: {e}.",
+                )
+
+    def _process_content(self, filename: str, content_bytes: bytes) -> Dict[str, Any]:
+        """
+        Parse attachment bytes according to their file type.
+
+        Returns a dict with keys: content_type, content, note.
+        """
+        mime_type = self._detect_mime_type(filename)
+        mime = MimeType(mime_type)
+
+        # --- Text-based files ---
+        if self._is_text_based(mime_type, filename):
+            try:
+                text = content_bytes.decode("utf-8", errors="replace")
+                return {"content_type": "text", "content": text, "note": None}
+            except Exception as e:
+                logger.warning(f"Failed to decode text file '{filename}': {e}")
+                return self._build_base64_response(
+                    content_bytes,
+                    f"Text decoding failed: {e}. Returned as base64.",
+                )
+
+        # --- PDF ---
+        if mime.is_pdf:
+            return self._process_pdf_content(filename, content_bytes)
+
+        # --- Images ---
+        if mime.is_image:
+            if self.chat_model:
+                try:
+                    processor = ImageProcessor(chat_model=self.chat_model)
+                    description = processor.extract_text_from_image_bytes(content_bytes)
+                    return {
+                        "content_type": "image_description",
+                        "content": description or "(No text detected in image)",
+                        "note": None,
+                    }
+                except Exception as e:
+                    logger.warning(f"Image description failed for '{filename}': {e}")
+
+            # No LLM or failed — return base64 (if small enough)
+            return self._build_base64_response(
+                content_bytes,
+                "Image content cannot be described without a chat model. "
+                "Provide a chat model via the tool's chat_model field to enable AI-based image description.",
+            )
+
+        # --- DOCX ---
+        if mime.is_docx:
+            try:
+                processor = DocxProcessor(ocr_enabled=False, chat_model=self.chat_model)
+                doc_content = processor.read_document_from_bytes(
+                    content=content_bytes,
+                    file_name=filename,
+                    query=DocxQueryType.TEXT,
+                )
+                return {"content_type": "text", "content": doc_content.text, "note": None}
+            except Exception as e:
+                logger.warning(f"DOCX text extraction failed for '{filename}': {e}")
+                return self._build_base64_response(
+                    content_bytes,
+                    f"DOCX extraction failed: {e}.",
+                )
+
+        # --- PPTX ---
+        if mime.is_pptx:
+            try:
+                processor = PptxProcessor(chat_model=self.chat_model)
+                pptx_document = PptxProcessor.open_pptx_document(content_bytes)
+                text = processor.extract_text_as_markdown(pptx_document)
+                return {"content_type": "text", "content": text, "note": None}
+            except Exception as e:
+                logger.warning(f"PPTX text extraction failed for '{filename}': {e}")
+                return self._build_base64_response(
+                    content_bytes,
+                    f"PPTX extraction failed: {e}.",
+                )
+
+        # --- Excel (XLS / XLSX) ---
+        if mime.is_excel:
+            try:
+                processor = XlsxProcessor()
+                sheets = processor.load(content_bytes)
+                text = processor.convert(sheets)
+                return {"content_type": "text", "content": text, "note": None}
+            except Exception as e:
+                logger.warning(f"Excel text extraction failed for '{filename}': {e}")
+                return self._build_base64_response(
+                    content_bytes,
+                    f"Excel extraction failed: {e}.",
+                )
+
+        # --- Unknown / binary ---
+        return self._build_base64_response(
+            content_bytes,
+            f"File type '{mime_type}' cannot be parsed to text.",
+        )
+
+    def execute(
+        self,
+        wiki_identified: str,
+        attachment_url: Optional[str] = None,
+        page_id: Optional[int] = None,
+        page_name: Optional[str] = None,
+        attachment_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Retrieve and parse the content of a wiki page attachment.
+
+        Args:
+            wiki_identified: Wiki ID or wiki name
+            attachment_url: Direct URL to the attachment (takes priority when provided)
+            page_id: Wiki page ID for attachment discovery
+            page_name: Wiki page path for attachment discovery
+            attachment_name: Name of the specific attachment to retrieve
+
+        Returns:
+            Dict with filename, mime_type, size_bytes, content_type, content, note
+        """
+        # --- Validate inputs ---
+        if not attachment_url and not attachment_name:
+            raise ToolException(
+                "Provide either 'attachment_url' (direct URL) or 'attachment_name' "
+                "together with 'page_id' or 'page_name' for discovery."
+            )
+        if not attachment_url and not page_id and not page_name:
+            raise ToolException("When using attachment_name for discovery, also provide 'page_id' or 'page_name'.")
+
+        try:
+            # --- Resolve filename + path/URL ---
+            if attachment_url:
+                # Derive filename from URL query param or last path segment
+                parsed_url = urlparse(attachment_url)
+                qs_filename = parse_qs(parsed_url.query).get("fileName", [None])[0]
+                filename = attachment_name or qs_filename or parsed_url.path.split("/")[-1] or "attachment"
+                resolved_path_or_url = attachment_url
+                logger.info(f"Using direct attachment URL for '{filename}'")
+            else:
+                logger.info(f"Discovering attachment '{attachment_name}' from page")
+                filename, resolved_path_or_url = self._resolve_attachment_url(
+                    wiki_identified=wiki_identified,
+                    page_id=page_id,
+                    page_name=page_name,
+                    attachment_name=attachment_name,
+                )
+
+            # --- Download raw bytes ---
+            # Wiki attachments uploaded via AddWikiAttachmentTool are stored in the wiki's
+            # git repository and referenced as relative paths (/.attachments/filename).
+            # The Wiki Attachments API endpoint only supports PUT (returns 405 on GET),
+            # so we must use the Git Items API for these paths.
+            if resolved_path_or_url.startswith("/.attachments/"):
+                content_bytes = self._download_wiki_attachment_path(wiki_identified, resolved_path_or_url, filename)
+            else:
+                content_bytes = self._download_attachment(resolved_path_or_url, filename)
+
+            # --- Detect type & process ---
+            mime_type = self._detect_mime_type(filename)
+            processed = self._process_content(filename, content_bytes)
+
+            return {
+                "filename": filename,
+                "mime_type": mime_type,
+                "size_bytes": len(content_bytes),
+                "content_type": processed["content_type"],
+                "content": processed["content"],
+                "note": processed["note"],
+            }
+
+        except ToolException:
+            raise
+        except Exception as e:
+            error_msg = f"Failed to retrieve attachment content: {str(e)}"
+            logger.error(f"{error_msg}. Stacktrace: {traceback.format_exc()}")
             raise ToolException(error_msg)
 
 

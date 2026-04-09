@@ -181,3 +181,26 @@ def test_process_pdf_no_auto_close_for_objects(pdf_processor):
     # Verify close was NOT called (caller is responsible)
     mock_pdf.close.assert_not_called()
     assert "Test" in result
+
+
+def test_extract_text_as_markdown_closes_pdf_obj_not_bytes():
+    """Regression: extract_text_as_markdown must close the opened pdf_obj, not the
+    original bytes parameter.  Previously it called pdf_document.close() which
+    raised 'bytes' object has no attribute 'close'."""
+    mock_page = Mock()
+    mock_page.extract_text.return_value = "Page text"
+    mock_page.extract_tables.return_value = []
+
+    mock_pdf_obj = Mock(spec=pdfplumber.PDF)
+    mock_pdf_obj.pages = [mock_page]
+    mock_pdf_obj.close = Mock()
+
+    raw_bytes = b"fake-pdf-content"
+
+    with patch("pdfplumber.open", return_value=mock_pdf_obj):
+        result = PdfProcessor.extract_text_as_markdown(raw_bytes)
+
+    # Should succeed without AttributeError
+    assert "Page text" in result
+    # The opened pdf object must be closed — not the raw bytes
+    mock_pdf_obj.close.assert_called_once()
