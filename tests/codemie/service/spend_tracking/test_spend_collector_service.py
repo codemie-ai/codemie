@@ -27,9 +27,12 @@ from uuid import uuid4
 import pytest
 
 from codemie.repository.application_repository import ApplicationRepository
-from codemie.repository.project_cost_tracking_repository import ProjectCostTrackingRepository
-from codemie.service.chargeback.spend_collector_service import InvalidSpendSnapshotError, LiteLLMSpendCollectorService
-from codemie.service.chargeback.spend_models import ProjectCostTracking
+from codemie.repository.project_spend_tracking_repository import ProjectSpendTrackingRepository
+from codemie.service.spend_tracking.spend_collector_service import (
+    InvalidSpendSnapshotError,
+    LiteLLMSpendCollectorService,
+)
+from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +43,7 @@ from codemie.service.chargeback.spend_models import ProjectCostTracking
 def _make_service() -> LiteLLMSpendCollectorService:
     return LiteLLMSpendCollectorService(
         app_repository=MagicMock(spec=ApplicationRepository),
-        tracking_repository=MagicMock(spec=ProjectCostTrackingRepository),
+        tracking_repository=MagicMock(spec=ProjectSpendTrackingRepository),
     )
 
 
@@ -54,11 +57,12 @@ def _prev_row(
     budget_period_spend: Decimal | None = None,
     budget_reset_at: datetime | None = None,
     spend_date: datetime | None = None,
-) -> ProjectCostTracking:
-    return ProjectCostTracking(
+) -> ProjectSpendTracking:
+    return ProjectSpendTracking(
         id=uuid4(),
         project_name="foo-bar",
         key_hash=key_hash,
+        spend_subject_type="key",
         spend_date=spend_date or datetime(2026, 3, 16, 0, 0, tzinfo=timezone.utc),
         daily_spend=budget_period_spend if budget_period_spend is not None else cumulative,
         cumulative_spend=cumulative,
@@ -68,91 +72,47 @@ def _prev_row(
 
 
 # ---------------------------------------------------------------------------
-# TestFilterProjectNames — pure logic, no I/O
+# TestNormalizeProjectName — pure logic, no I/O
 # ---------------------------------------------------------------------------
 
 
-class TestFilterProjectNames:
-    """Tests for _filter_project_names: configurable include/exclude logic."""
+class TestNormalizeProjectName:
+    """Tests for _normalize_project_name: project name extraction from user_id + budget_id."""
 
-    def _filter(
-        self,
-        names: list[str],
-        include_pattern: str = "",
-        exclude_pattern: str = "",
-        exclude_list: list[str] | None = None,
-    ) -> list[str]:
-        with patch("codemie.service.chargeback.spend_collector_service.config") as mock_cfg:
-            mock_cfg.LITELLM_SPEND_COLLECTOR_PROJECT_INCLUDE_PATTERN = include_pattern
-            mock_cfg.LITELLM_SPEND_COLLECTOR_PROJECT_EXCLUDE_PATTERN = exclude_pattern
-            mock_cfg.LITELLM_SPEND_COLLECTOR_PROJECT_EXCLUDE_LIST = exclude_list or []
-            return LiteLLMSpendCollectorService._filter_project_names(names)
+    def test_default_budget_id_returns_user_id_unchanged(self):
+        """budget_id='default' → project_name equals user_id as-is."""
+        result = LiteLLMSpendCollectorService._normalize_project_name("alice@example.com", "default")
+        assert result == "alice@example.com"
 
-    def test_empty_include_pattern_passes_all(self):
-        """Empty include pattern → no filtering; all names are kept."""
-        names = ["foo-bar", "UPPERCASE", "has-123", "any"]
-        result = self._filter(names, include_pattern="")
-        assert result == names
+    def test_non_default_budget_id_strips_underscore_suffix(self):
+        """user_id ending with '_<budget_id>' → prefix becomes project_name."""
+        result = LiteLLMSpendCollectorService._normalize_project_name("alice@example.com_codemie_cli", "codemie_cli")
+        assert result == "alice@example.com"
 
-    def test_include_pattern_keeps_only_matching(self):
-        """Only names matching the include regex are kept."""
-        names = ["foo-bar", "UPPERCASE", "has-123", "alpha-beta"]
-        result = self._filter(names, include_pattern=r"^[a-z]+-[a-z]+$")
-        assert result == ["foo-bar", "alpha-beta"]
+    def test_user_id_without_matching_suffix_returned_unchanged(self):
+        """user_id that doesn't end with '_<budget_id>' is returned as-is."""
+        result = LiteLLMSpendCollectorService._normalize_project_name("alice@example.com", "codemie_cli")
+        assert result == "alice@example.com"
 
-    def test_exclude_pattern_removes_matching(self):
-        """Names matching the exclude regex are removed."""
-        names = ["foo-bar", "foo-internal", "bar-baz"]
-        result = self._filter(names, exclude_pattern=r"^foo-.*$")
-        assert result == ["bar-baz"]
+    def test_multi_word_budget_id_stripped_correctly(self):
+        """Multi-underscore budget_id with matching trailing suffix is stripped correctly."""
+        result = LiteLLMSpendCollectorService._normalize_project_name("user@org.com_premium_models", "premium_models")
+        assert result == "user@org.com"
 
-    def test_exclude_list_removes_exact_names(self):
-        """Names in the exclude list are removed regardless of patterns."""
-        names = ["foo-bar", "baz-qux", "skip-me"]
-        result = self._filter(names, exclude_list=["skip-me", "baz-qux"])
-        assert result == ["foo-bar"]
+    def test_suffix_only_stripped_from_end(self):
+        """budget_id appearing in the middle of user_id is NOT stripped."""
+        result = LiteLLMSpendCollectorService._normalize_project_name("alice_codemie_cli_extra", "codemie_cli")
+        assert result == "alice_codemie_cli_extra"
 
-    def test_include_and_exclude_pattern_combined(self):
-        """Include pattern applied first, then exclude pattern on the result."""
-        names = ["foo-bar", "foo-internal", "bar-baz", "UPPERCASE"]
-        result = self._filter(
-            names,
-            include_pattern=r"^[a-z]+-[a-z]+$",
-            exclude_pattern=r"^foo-.*$",
-        )
-        assert result == ["bar-baz"]
+    def test_user_id_equals_budget_id_suffix_alone(self):
+        """user_id that is exactly '_<budget_id>' returns empty string (edge case)."""
+        result = LiteLLMSpendCollectorService._normalize_project_name("_mybudget", "mybudget")
+        assert result == ""
 
-    def test_exclude_list_applied_after_include_pattern(self):
-        """Include pattern keeps candidates; exclude list then removes specific names."""
-        names = ["foo-bar", "bar-baz", "skip-me", "UPPERCASE"]
-        result = self._filter(
-            names,
-            include_pattern=r"^[a-z]+-[a-z]+$",
-            exclude_list=["skip-me"],
-        )
-        assert result == ["foo-bar", "bar-baz"]
-
-    def test_all_filters_combined(self):
-        """Include pattern + exclude pattern + exclude list all applied together."""
-        names = ["foo-bar", "foo-internal", "bar-baz", "bar-skip", "UPPERCASE"]
-        result = self._filter(
-            names,
-            include_pattern=r"^[a-z]+-[a-z]+$",
-            exclude_pattern=r"^foo-.*$",
-            exclude_list=["bar-skip"],
-        )
-        assert result == ["bar-baz"]
-
-    def test_empty_names_list(self):
-        """Empty input → empty output regardless of filters."""
-        result = self._filter([], include_pattern=r"^[a-z]+-[a-z]+$", exclude_list=["x"])
-        assert result == []
-
-    def test_default_include_pattern_matches_two_word_lowercase(self):
-        """Default ^[a-z]+-[a-z]+$ matches exactly two lowercase words separated by a hyphen."""
-        names = ["foo-bar", "alpha-beta", "has-123", "three-word-app", "UPPER", "foo-bar-baz"]
-        result = self._filter(names, include_pattern=r"^[a-z]+-[a-z]+$")
-        assert result == ["foo-bar", "alpha-beta"]
+    def test_plain_email_default_budget(self):
+        """Standard email address with 'default' budget_id is unchanged."""
+        result = LiteLLMSpendCollectorService._normalize_project_name("user@example.com", "default")
+        assert result == "user@example.com"
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +249,7 @@ class TestComputeDelta:
         prev = _prev_row("abc123", cumulative=Decimal("10.00"), budget_period_spend=Decimal("9.00"))
         current = Decimal("0.75")
 
-        with patch("codemie.service.chargeback.spend_collector_service.logger") as mock_logger:
+        with patch("codemie.service.spend_tracking.spend_collector_service.logger") as mock_logger:
             result = service._compute_spend_snapshot(
                 current_budget_period_spend=current,
                 current_budget_reset_at=None,
@@ -469,7 +429,8 @@ class TestCollect:
             return_value=[_make_app("foo-bar"), _make_app("baz-qux")]
         )
         service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
-        service._tracking_repository.insert_entries = AsyncMock()
+        service._tracking_repository.insert_key_entries = AsyncMock()
+        service._tracking_repository.insert_budget_entries = AsyncMock()
 
         # _build_credential_result returns good_cred for good_setting, bad_cred for bad_setting
         def build_cred(setting, fields, cred_class):
@@ -478,24 +439,28 @@ class TestCollect:
             return bad_cred
 
         with (
-            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
-            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch("codemie.service.spend_tracking.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.spend_tracking.spend_collector_service.SettingsService._decrypt_credentials"),
             patch(
-                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                "codemie.service.spend_tracking.spend_collector_service.SettingsService._build_credential_result",
                 side_effect=build_cred,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
             ) as mock_to_thread,
             patch(
-                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
                 return_value=async_session_ctx(),
             ),
         ):
             mock_settings.get_by_project_names.return_value = [good_setting, bad_setting]
 
             # good_key returns valid data; bad_key returns None (API error / 404)
-            async def spending_side_effect(fn, keys):
+            # Budget path (no extra args) also returns None
+            async def spending_side_effect(fn, *args):
+                if not args:
+                    return None  # budget path
+                keys = args[0]
                 assert len(keys) == 1
                 if keys[0] == good_key:
                     return _spending_payload(2.5)
@@ -507,7 +472,7 @@ class TestCollect:
 
         # Only good_key should produce a row
         assert count == 1
-        inserted_rows = service._tracking_repository.insert_entries.call_args[0][1]
+        inserted_rows = service._tracking_repository.insert_key_entries.call_args[0][1]
         assert len(inserted_rows) == 1
         assert inserted_rows[0].key_hash == good_hash
         assert inserted_rows[0].project_name == "foo-bar"
@@ -543,21 +508,24 @@ class TestCollect:
             budget_reset_at=datetime(2026, 3, 18, 0, 0, tzinfo=timezone.utc),
         )
         service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={key_hash: prev_row})
-        service._tracking_repository.insert_entries = AsyncMock()
+        service._tracking_repository.insert_key_entries = AsyncMock()
+        service._tracking_repository.insert_budget_entries = AsyncMock()
+
+        spending = _spending_payload(current_spend, "2026-03-18T00:00:00+00:00")
 
         with (
-            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
-            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch("codemie.service.spend_tracking.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.spend_tracking.spend_collector_service.SettingsService._decrypt_credentials"),
             patch(
-                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                "codemie.service.spend_tracking.spend_collector_service.SettingsService._build_credential_result",
                 return_value=cred,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
-                return_value=_spending_payload(current_spend, "2026-03-18T00:00:00+00:00"),
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: spending if a else None,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
                 return_value=async_session_ctx(),
             ),
         ):
@@ -565,7 +533,7 @@ class TestCollect:
             count = await service.collect(target_date=date(2026, 3, 17))
 
         assert count == 1
-        rows = service._tracking_repository.insert_entries.call_args[0][1]
+        rows = service._tracking_repository.insert_key_entries.call_args[0][1]
         assert rows[0].daily_spend == Decimal("2.50")
         assert rows[0].cumulative_spend == Decimal("12.50")
         assert rows[0].budget_period_spend == Decimal("5.50")
@@ -591,21 +559,24 @@ class TestCollect:
         service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[_make_app("alpha-beta")])
         # No prior rows
         service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
-        service._tracking_repository.insert_entries = AsyncMock()
+        service._tracking_repository.insert_key_entries = AsyncMock()
+        service._tracking_repository.insert_budget_entries = AsyncMock()
+
+        spending = _spending_payload(7.0, "2026-03-18T00:00:00+00:00")
 
         with (
-            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
-            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch("codemie.service.spend_tracking.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.spend_tracking.spend_collector_service.SettingsService._decrypt_credentials"),
             patch(
-                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                "codemie.service.spend_tracking.spend_collector_service.SettingsService._build_credential_result",
                 return_value=cred,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
-                return_value=_spending_payload(7.0, "2026-03-18T00:00:00+00:00"),
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: spending if a else None,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
                 return_value=async_session_ctx(),
             ),
         ):
@@ -613,7 +584,7 @@ class TestCollect:
             count = await service.collect(target_date=date(2026, 3, 17))
 
         assert count == 1
-        rows = service._tracking_repository.insert_entries.call_args[0][1]
+        rows = service._tracking_repository.insert_key_entries.call_args[0][1]
         assert rows[0].daily_spend == Decimal("7.0")
         assert rows[0].cumulative_spend == Decimal("7.0")
         assert rows[0].budget_period_spend == Decimal("7.0")
@@ -644,21 +615,24 @@ class TestCollect:
             budget_reset_at=datetime(2026, 3, 18, 0, 0, tzinfo=timezone.utc),
         )
         service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={key_hash: prev_row})
-        service._tracking_repository.insert_entries = AsyncMock()
+        service._tracking_repository.insert_key_entries = AsyncMock()
+        service._tracking_repository.insert_budget_entries = AsyncMock()
+
+        spending = _spending_payload(3.0, "2026-03-18T00:00:00+00:00")
 
         with (
-            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
-            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch("codemie.service.spend_tracking.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.spend_tracking.spend_collector_service.SettingsService._decrypt_credentials"),
             patch(
-                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                "codemie.service.spend_tracking.spend_collector_service.SettingsService._build_credential_result",
                 return_value=cred,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
-                return_value=_spending_payload(3.0, "2026-03-18T00:00:00+00:00"),
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: spending if a else None,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
                 return_value=async_session_ctx(),
             ),
         ):
@@ -666,7 +640,7 @@ class TestCollect:
             count = await service.collect(target_date=date(2026, 3, 17))
 
         assert count == 0
-        service._tracking_repository.insert_entries.assert_called_once_with(mock_session, [])
+        service._tracking_repository.insert_key_entries.assert_called_once_with(mock_session, [])
 
     @pytest.mark.asyncio
     async def test_collect_skips_first_snapshot_when_spend_is_zero(
@@ -687,21 +661,24 @@ class TestCollect:
 
         service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[_make_app("zero-bootstrap")])
         service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
-        service._tracking_repository.insert_entries = AsyncMock()
+        service._tracking_repository.insert_key_entries = AsyncMock()
+        service._tracking_repository.insert_budget_entries = AsyncMock()
+
+        spending = _spending_payload(0.0, "2026-03-18T00:00:00+00:00")
 
         with (
-            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
-            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch("codemie.service.spend_tracking.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.spend_tracking.spend_collector_service.SettingsService._decrypt_credentials"),
             patch(
-                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                "codemie.service.spend_tracking.spend_collector_service.SettingsService._build_credential_result",
                 return_value=cred,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
-                return_value=_spending_payload(0.0, "2026-03-18T00:00:00+00:00"),
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: spending if a else None,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
                 return_value=async_session_ctx(),
             ),
         ):
@@ -709,7 +686,7 @@ class TestCollect:
             count = await service.collect(target_date=date(2026, 3, 17))
 
         assert count == 0
-        service._tracking_repository.insert_entries.assert_called_once_with(mock_session, [])
+        service._tracking_repository.insert_key_entries.assert_called_once_with(mock_session, [])
 
     @pytest.mark.asyncio
     async def test_collect_after_budget_reset_uses_current_budget_period_spend(
@@ -738,21 +715,24 @@ class TestCollect:
             spend_date=datetime(2026, 3, 16, 23, 55, tzinfo=timezone.utc),
         )
         service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={key_hash: prev_row})
-        service._tracking_repository.insert_entries = AsyncMock()
+        service._tracking_repository.insert_key_entries = AsyncMock()
+        service._tracking_repository.insert_budget_entries = AsyncMock()
+
+        spending = _spending_payload(0.75, "2026-03-18T00:00:00+00:00")
 
         with (
-            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
-            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch("codemie.service.spend_tracking.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.spend_tracking.spend_collector_service.SettingsService._decrypt_credentials"),
             patch(
-                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                "codemie.service.spend_tracking.spend_collector_service.SettingsService._build_credential_result",
                 return_value=cred,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
-                return_value=_spending_payload(0.75, "2026-03-18T00:00:00+00:00"),
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: spending if a else None,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
                 return_value=async_session_ctx(),
             ),
         ):
@@ -760,7 +740,7 @@ class TestCollect:
             count = await service.collect(target_date=datetime(2026, 3, 17, 0, 5, tzinfo=timezone.utc))
 
         assert count == 1
-        rows = service._tracking_repository.insert_entries.call_args[0][1]
+        rows = service._tracking_repository.insert_key_entries.call_args[0][1]
         assert rows[0].daily_spend == Decimal("0.75")
         assert rows[0].cumulative_spend == Decimal("10.75")
         assert rows[0].budget_period_spend == Decimal("0.75")
@@ -786,21 +766,24 @@ class TestCollect:
 
         service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[_make_app("boundary-app")])
         service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
-        service._tracking_repository.insert_entries = AsyncMock()
+        service._tracking_repository.insert_key_entries = AsyncMock()
+        service._tracking_repository.insert_budget_entries = AsyncMock()
+
+        spending = _spending_payload(1.0, "2026-03-18T00:00:00+00:00")
 
         with (
-            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
-            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch("codemie.service.spend_tracking.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.spend_tracking.spend_collector_service.SettingsService._decrypt_credentials"),
             patch(
-                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                "codemie.service.spend_tracking.spend_collector_service.SettingsService._build_credential_result",
                 return_value=cred,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
-                return_value=_spending_payload(1.0, "2026-03-18T00:00:00+00:00"),
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: spending if a else None,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
                 return_value=async_session_ctx(),
             ),
         ):
@@ -832,26 +815,29 @@ class TestCollect:
 
         service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[_make_app("raw-shape")])
         service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
-        service._tracking_repository.insert_entries = AsyncMock()
+        service._tracking_repository.insert_key_entries = AsyncMock()
+        service._tracking_repository.insert_budget_entries = AsyncMock()
+
+        key_info = _raw_litellm_key_info_payload(
+            spend=0.0024948,
+            budget_reset_at="2026-03-24T00:00:00+00:00",
+            max_budget=1.0,
+            budget_duration="24h",
+        )
 
         with (
-            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
-            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch("codemie.service.spend_tracking.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.spend_tracking.spend_collector_service.SettingsService._decrypt_credentials"),
             patch(
-                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                "codemie.service.spend_tracking.spend_collector_service.SettingsService._build_credential_result",
                 return_value=cred,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
-                return_value=_raw_litellm_key_info_payload(
-                    spend=0.0024948,
-                    budget_reset_at="2026-03-24T00:00:00+00:00",
-                    max_budget=1.0,
-                    budget_duration="24h",
-                ),
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: key_info if a else None,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
                 return_value=async_session_ctx(),
             ),
         ):
@@ -859,7 +845,7 @@ class TestCollect:
             count = await service.collect(target_date=date(2026, 3, 23))
 
         assert count == 1
-        rows = service._tracking_repository.insert_entries.call_args[0][1]
+        rows = service._tracking_repository.insert_key_entries.call_args[0][1]
         assert rows[0].daily_spend == Decimal("0.0024948")
         assert rows[0].cumulative_spend == Decimal("0.0024948")
         assert rows[0].budget_period_spend == Decimal("0.0024948")
@@ -891,21 +877,24 @@ class TestCollect:
 
         service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[_make_app("epm-edec")])
         service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={key_hash: prev_row})
-        service._tracking_repository.insert_entries = AsyncMock()
+        service._tracking_repository.insert_key_entries = AsyncMock()
+        service._tracking_repository.insert_budget_entries = AsyncMock()
+
+        spending = _spending_payload(5.0)
 
         with (
-            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
-            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch("codemie.service.spend_tracking.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.spend_tracking.spend_collector_service.SettingsService._decrypt_credentials"),
             patch(
-                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                "codemie.service.spend_tracking.spend_collector_service.SettingsService._build_credential_result",
                 return_value=cred,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
-                return_value=_spending_payload(5.0),
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: spending if a else None,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
                 return_value=async_session_ctx(),
             ),
             patch.object(
@@ -913,38 +902,47 @@ class TestCollect:
                 "_compute_spend_snapshot",
                 side_effect=InvalidSpendSnapshotError("cumulative spend decreased: computed=9 < prev=10"),
             ),
-            patch("codemie.service.chargeback.spend_collector_service.logger") as mock_logger,
+            patch("codemie.service.spend_tracking.spend_collector_service.logger") as mock_logger,
         ):
             mock_settings.get_by_project_names.return_value = [setting]
             count = await service.collect(target_date=date(2026, 3, 23))
 
         assert count == 0
-        service._tracking_repository.insert_entries.assert_called_once_with(mock_session, [])
+        service._tracking_repository.insert_key_entries.assert_called_once_with(mock_session, [])
         mock_logger.warning.assert_any_call(
             "Skipping invalid spend snapshot for project 'epm-edec': cumulative spend decreased: computed=9 < prev=10"
         )
 
     @pytest.mark.asyncio
-    async def test_collect_no_matching_projects(
+    async def test_collect_no_litellm_settings_returns_zero(
         self,
         mock_session,
         async_session_ctx,
     ):
-        """No projects matching naming pattern → returns 0 with no DB writes."""
+        """No LiteLLM settings found for any project → returns 0 with no key rows."""
         service = _make_service()
         service._app_repository.aget_all_non_deleted = AsyncMock(
-            return_value=[_make_app("UPPERCASE"), _make_app("has-123"), _make_app("three-word-app")]
+            return_value=[_make_app("foo-bar"), _make_app("bar-baz")]
         )
-        service._tracking_repository.insert_entries = AsyncMock()
+        service._tracking_repository.insert_key_entries = AsyncMock()
+        service._tracking_repository.insert_budget_entries = AsyncMock()
 
-        with patch(
-            "codemie.service.chargeback.spend_collector_service.get_async_session",
-            return_value=async_session_ctx(),
+        with (
+            patch("codemie.service.spend_tracking.spend_collector_service.Settings") as mock_settings,
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: None,
+            ),
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
+                return_value=async_session_ctx(),
+            ),
         ):
+            mock_settings.get_by_project_names.return_value = []
             count = await service.collect(target_date=date(2026, 3, 17))
 
         assert count == 0
-        service._tracking_repository.insert_entries.assert_not_called()
+        service._tracking_repository.insert_key_entries.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_collect_persists_cost_center_fields(
@@ -968,32 +966,35 @@ class TestCollect:
 
         service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[app])
         service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
-        service._tracking_repository.insert_entries = AsyncMock()
+        service._tracking_repository.insert_key_entries = AsyncMock()
+        service._tracking_repository.insert_budget_entries = AsyncMock()
+
+        spending = [{"total_spend": 1.25}]
 
         with (
-            patch("codemie.service.chargeback.spend_collector_service.Settings") as mock_settings,
-            patch("codemie.service.chargeback.spend_collector_service.SettingsService._decrypt_credentials"),
+            patch("codemie.service.spend_tracking.spend_collector_service.Settings") as mock_settings,
+            patch("codemie.service.spend_tracking.spend_collector_service.SettingsService._decrypt_credentials"),
             patch(
-                "codemie.service.chargeback.spend_collector_service.SettingsService._build_credential_result",
+                "codemie.service.spend_tracking.spend_collector_service.SettingsService._build_credential_result",
                 return_value=cred,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.asyncio.to_thread",
-                return_value=[{"total_spend": 1.25}],
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: spending if a else None,
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.get_async_session",
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
                 return_value=async_session_ctx(),
             ),
             patch(
-                "codemie.service.chargeback.spend_collector_service.cost_center_repository.aget_by_ids",
+                "codemie.service.spend_tracking.spend_collector_service.cost_center_repository.aget_by_ids",
                 new=AsyncMock(return_value={cost_center_id: SimpleNamespace(id=cost_center_id, name="epm-cdme")}),
             ),
         ):
             mock_settings.get_by_project_names.return_value = [setting]
             await service.collect(target_date=date(2026, 3, 17))
 
-        inserted_rows = service._tracking_repository.insert_entries.call_args[0][1]
+        inserted_rows = service._tracking_repository.insert_key_entries.call_args[0][1]
         assert inserted_rows[0].cost_center_id == cost_center_id
         assert inserted_rows[0].cost_center_name == "epm-cdme"
 
@@ -1004,41 +1005,41 @@ class TestCollect:
 
 
 class TestSchedulerJobRegistration:
-    """Tests for ChargebackScheduler job registration."""
+    """Tests for SpendTrackingScheduler job registration."""
 
     def test_spend_collector_disabled_skips_job_registration(self):
         """LITELLM_SPEND_COLLECTOR_ENABLED=False → spend collector job is not added."""
-        from codemie.service.chargeback.scheduler import ChargebackScheduler
+        from codemie.service.spend_tracking.scheduler import SpendTrackingScheduler
 
         mock_scheduler = MagicMock()
         mock_scheduler.running = False
 
-        with patch("codemie.service.chargeback.scheduler.config") as mock_config:
+        with patch("codemie.service.spend_tracking.scheduler.config") as mock_config:
             mock_config.LITELLM_SPEND_COLLECTOR_ENABLED = False
             mock_config.LITELLM_SPEND_COLLECTOR_SCHEDULE = "30 0 * * *"
 
-            scheduler = ChargebackScheduler(scheduler=mock_scheduler)
+            scheduler = SpendTrackingScheduler(scheduler=mock_scheduler)
             scheduler.start()
 
         mock_scheduler.add_job.assert_not_called()
 
     def test_spend_collector_enabled_registers_job(self):
         """LITELLM_SPEND_COLLECTOR_ENABLED=True → spend collector job is registered."""
-        from codemie.service.chargeback.scheduler import ChargebackScheduler
+        from codemie.service.spend_tracking.scheduler import SpendTrackingScheduler
 
         mock_scheduler = MagicMock()
         mock_scheduler.running = False
 
         with (
-            patch("codemie.service.chargeback.scheduler.config") as mock_config,
-            patch("codemie.service.chargeback.scheduler.ApplicationRepository"),
-            patch("codemie.service.chargeback.scheduler.ProjectCostTrackingRepository"),
-            patch("codemie.service.chargeback.scheduler.LiteLLMSpendCollectorService"),
+            patch("codemie.service.spend_tracking.scheduler.config") as mock_config,
+            patch("codemie.service.spend_tracking.scheduler.ApplicationRepository"),
+            patch("codemie.service.spend_tracking.scheduler.ProjectSpendTrackingRepository"),
+            patch("codemie.service.spend_tracking.scheduler.LiteLLMSpendCollectorService"),
         ):
             mock_config.LITELLM_SPEND_COLLECTOR_ENABLED = True
             mock_config.LITELLM_SPEND_COLLECTOR_SCHEDULE = "30 0 * * *"
 
-            scheduler = ChargebackScheduler(scheduler=mock_scheduler)
+            scheduler = SpendTrackingScheduler(scheduler=mock_scheduler)
             scheduler.start()
 
         mock_scheduler.add_job.assert_called_once()
@@ -1048,22 +1049,22 @@ class TestSchedulerJobRegistration:
 
     def test_invalid_cron_expression_skips_registration(self):
         """Invalid LITELLM_SPEND_COLLECTOR_SCHEDULE → job is not registered, error is logged."""
-        from codemie.service.chargeback.scheduler import ChargebackScheduler
+        from codemie.service.spend_tracking.scheduler import SpendTrackingScheduler
 
         mock_scheduler = MagicMock()
         mock_scheduler.running = False
 
         with (
-            patch("codemie.service.chargeback.scheduler.config") as mock_config,
-            patch("codemie.service.chargeback.scheduler.logger") as mock_logger,
-            patch("codemie.service.chargeback.scheduler.ApplicationRepository"),
-            patch("codemie.service.chargeback.scheduler.ProjectCostTrackingRepository"),
-            patch("codemie.service.chargeback.scheduler.LiteLLMSpendCollectorService"),
+            patch("codemie.service.spend_tracking.scheduler.config") as mock_config,
+            patch("codemie.service.spend_tracking.scheduler.logger") as mock_logger,
+            patch("codemie.service.spend_tracking.scheduler.ApplicationRepository"),
+            patch("codemie.service.spend_tracking.scheduler.ProjectSpendTrackingRepository"),
+            patch("codemie.service.spend_tracking.scheduler.LiteLLMSpendCollectorService"),
         ):
             mock_config.LITELLM_SPEND_COLLECTOR_ENABLED = True
             mock_config.LITELLM_SPEND_COLLECTOR_SCHEDULE = "not a valid cron"
 
-            scheduler = ChargebackScheduler(scheduler=mock_scheduler)
+            scheduler = SpendTrackingScheduler(scheduler=mock_scheduler)
             scheduler.start()
 
         mock_scheduler.add_job.assert_not_called()

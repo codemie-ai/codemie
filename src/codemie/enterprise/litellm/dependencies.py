@@ -549,6 +549,35 @@ def get_key_spending_info(key_aliases: list[str], include_details: bool = True):
         return []
 
 
+def get_customer_list_spending(on_raise: bool = False):
+    """Get all customer budget entries from LiteLLM /customer/list.
+
+    Used by the budget-based spend collector to derive personal-project spending rows.
+    One entry is returned per budget bucket per customer.
+
+    Args:
+        on_raise: If True, raises exceptions on errors. If False, returns None on errors.
+
+    Returns:
+        List of CustomerBudgetEntry objects, or None if service not enabled or error occurred.
+
+    Raises:
+        Exception: If a backend error occurs while fetching data (only when on_raise=True)
+    """
+    litellm = get_litellm_service_or_none()
+    if litellm is None:
+        logger.debug(_LITELLM_NOT_AVAILABLE_MSG)
+        return None
+
+    try:
+        return litellm.get_customer_list()
+    except Exception as e:
+        logger.error(f"Error getting customer list spending: {e}")
+        if on_raise:
+            raise
+        return None
+
+
 def get_all_keys_spending(api_keys: list[str], on_raise: bool = False) -> list[dict] | None:
     """
     Get spending info for multiple virtual keys.

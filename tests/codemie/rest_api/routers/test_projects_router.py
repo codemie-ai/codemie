@@ -16,7 +16,7 @@
 
 from datetime import datetime, UTC
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -192,7 +192,8 @@ class TestProjectsVisibilityEndpoints:
     @patch("codemie.rest_api.routers.projects.config")
     @patch("codemie.rest_api.routers.projects.get_session")
     @patch("codemie.rest_api.routers.projects.project_visibility_service")
-    def test_list_projects_uses_visibility_filtered_search(
+    @pytest.mark.anyio
+    async def test_list_projects_uses_visibility_filtered_search(
         self,
         mock_visibility_service,
         mock_get_session,
@@ -218,11 +219,12 @@ class TestProjectsVisibilityEndpoints:
             1,
         )
 
-        result = list_projects(
+        result = await list_projects(
             search="shared",
             page=0,
             per_page=20,
             include_counters=True,
+            include_spending=False,
             sort_by=None,
             sort_order="asc",
             user=regular_user,
@@ -251,7 +253,8 @@ class TestProjectsVisibilityEndpoints:
     @patch("codemie.rest_api.routers.projects.config")
     @patch("codemie.rest_api.routers.projects.get_session")
     @patch("codemie.rest_api.routers.projects.project_visibility_service")
-    def test_get_project_detail_includes_created_at_and_members(
+    @pytest.mark.anyio
+    async def test_get_project_detail_includes_created_at_and_members(
         self,
         mock_visibility_service,
         mock_get_session,
@@ -284,9 +287,10 @@ class TestProjectsVisibilityEndpoints:
             ],
         }
 
-        result = get_project_detail(
+        result = await get_project_detail(
             request=MagicMock(method="GET", url=SimpleNamespace(path="/v1/projects/shared-proj")),
             project_name="shared-proj",
+            include_spending=False,
             user=regular_user,
         )
 
@@ -301,7 +305,8 @@ class TestProjectsVisibilityEndpoints:
     @patch("codemie.rest_api.routers.projects.config")
     @patch("codemie.rest_api.routers.projects.get_session")
     @patch("codemie.rest_api.routers.projects.project_visibility_service")
-    def test_get_project_detail_returns_404_when_invisible(
+    @pytest.mark.anyio
+    async def test_get_project_detail_returns_404_when_invisible(
         self,
         mock_visibility_service,
         mock_get_session,
@@ -316,9 +321,10 @@ class TestProjectsVisibilityEndpoints:
         )
 
         with pytest.raises(ExtendedHTTPException) as exc_info:
-            get_project_detail(
+            await get_project_detail(
                 request=MagicMock(method="GET", url=SimpleNamespace(path="/v1/projects/hidden-proj")),
                 project_name="hidden-proj",
+                include_spending=False,
                 user=regular_user,
             )
 
@@ -335,7 +341,8 @@ class TestProjectsVisibilityEndpoints:
     @patch("codemie.rest_api.routers.projects.config")
     @patch("codemie.rest_api.routers.projects.get_session")
     @patch("codemie.rest_api.routers.projects.project_visibility_service")
-    def test_list_projects_pagination_first_page(
+    @pytest.mark.anyio
+    async def test_list_projects_pagination_first_page(
         self,
         mock_visibility_service,
         mock_get_session,
@@ -361,7 +368,7 @@ class TestProjectsVisibilityEndpoints:
             100,
         )
 
-        result = list_projects(search=None, page=0, per_page=10, user=regular_user)
+        result = await list_projects(search=None, page=0, per_page=10, include_spending=False, user=regular_user)
 
         assert result.pagination.page == 0
         assert result.pagination.per_page == 10
@@ -371,7 +378,8 @@ class TestProjectsVisibilityEndpoints:
     @patch("codemie.rest_api.routers.projects.config")
     @patch("codemie.rest_api.routers.projects.get_session")
     @patch("codemie.rest_api.routers.projects.project_visibility_service")
-    def test_list_projects_empty_results(
+    @pytest.mark.anyio
+    async def test_list_projects_empty_results(
         self,
         mock_visibility_service,
         mock_get_session,
@@ -384,7 +392,9 @@ class TestProjectsVisibilityEndpoints:
         mock_get_session.return_value.__enter__.return_value = mock_session
         mock_visibility_service.list_visible_projects_paginated.return_value = ([], 0)
 
-        result = list_projects(search="nonexistent", page=0, per_page=20, user=regular_user)
+        result = await list_projects(
+            search="nonexistent", page=0, per_page=20, include_spending=False, user=regular_user
+        )
 
         assert isinstance(result, PaginatedProjectListResponse)
         assert len(result.data) == 0
@@ -394,7 +404,8 @@ class TestProjectsVisibilityEndpoints:
     @patch("codemie.rest_api.routers.projects.config")
     @patch("codemie.rest_api.routers.projects.get_session")
     @patch("codemie.rest_api.routers.projects.project_visibility_service")
-    def test_list_projects_super_admin_sees_all(
+    @pytest.mark.anyio
+    async def test_list_projects_super_admin_sees_all(
         self,
         mock_visibility_service,
         mock_get_session,
@@ -429,11 +440,12 @@ class TestProjectsVisibilityEndpoints:
             2,
         )
 
-        result = list_projects(
+        result = await list_projects(
             search=None,
             page=0,
             per_page=20,
             include_counters=True,
+            include_spending=False,
             sort_by=None,
             sort_order="asc",
             user=super_admin_user,
@@ -457,7 +469,8 @@ class TestProjectsVisibilityEndpoints:
     @patch("codemie.rest_api.routers.projects.config")
     @patch("codemie.rest_api.routers.projects.get_session")
     @patch("codemie.rest_api.routers.projects.project_visibility_service")
-    def test_project_detail_includes_all_required_fields(
+    @pytest.mark.anyio
+    async def test_project_detail_includes_all_required_fields(
         self,
         mock_visibility_service,
         mock_get_session,
@@ -482,9 +495,10 @@ class TestProjectsVisibilityEndpoints:
             ],
         }
 
-        result = get_project_detail(
+        result = await get_project_detail(
             request=MagicMock(method="GET", url=SimpleNamespace(path="/v1/projects/analytics-dashboard")),
             project_name="analytics-dashboard",
+            include_spending=False,
             user=regular_user,
         )
 
@@ -1555,3 +1569,251 @@ class TestValidateUsersFromCsvEndpoint:
 
         # Assert — file.read was called with MAX_CSV_BYTES+1 sentinel value
         mock_upload.file.read.assert_called_once_with(MAX_CSV_BYTES + 1)
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared by personal-project spending tests
+# ---------------------------------------------------------------------------
+
+
+def _make_budget_spend_row(
+    project_name: str,
+    budget_id: str = 'default',
+    budget_period_spend: float = 3.50,
+    cumulative_spend: float = 12.75,
+    soft_budget: float | None = 50.0,
+    budget_reset_at: datetime | None = None,
+) -> MagicMock:
+    """Return a mock ProjectSpendTracking row with spend_subject_type='budget'."""
+    row = MagicMock()
+    row.project_name = project_name
+    row.budget_id = budget_id
+    row.spend_subject_type = 'budget'
+    row.budget_period_spend = budget_period_spend
+    row.cumulative_spend = cumulative_spend
+    row.soft_budget = soft_budget
+    row.max_budget = None
+    row.budget_duration = 'monthly'
+    row.budget_reset_at = budget_reset_at
+    row.spend_date = datetime(2026, 4, 10, 12, 0, 0, tzinfo=UTC)
+    return row
+
+
+def _make_personal_project_detail(owner_id: str = 'user1@example.com') -> dict:
+    """Return a mock project_detail dict for a personal project."""
+    return {
+        'name': owner_id,
+        'description': None,
+        'project_type': 'personal',
+        'created_by': owner_id,
+        'created_at': datetime(2026, 1, 1, tzinfo=UTC),
+        'user_count': 1,
+        'admin_count': 0,
+        'cost_center_id': None,
+        'cost_center_name': None,
+        'members': [{'user_id': owner_id, 'is_project_admin': False, 'date': datetime(2026, 1, 1, tzinfo=UTC)}],
+    }
+
+
+class TestPersonalProjectSpending:
+    """Personal project owners can see their own spending summary and widget."""
+
+    @patch('codemie.rest_api.routers.projects.config')
+    @patch('codemie.rest_api.routers.projects.get_async_session')
+    @patch('codemie.rest_api.routers.projects.get_session')
+    @patch('codemie.rest_api.routers.projects.project_visibility_service')
+    @patch('codemie.rest_api.routers.projects._spend_repo')
+    @pytest.mark.anyio
+    async def test_personal_project_owner_sees_spending_in_list(
+        self,
+        mock_spend_repo,
+        mock_visibility_service,
+        mock_get_session,
+        mock_async_session,
+        mock_config,
+        regular_user,
+    ):
+        """Personal project appears in manageable_names even without is_project_admin."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+
+        personal_name = regular_user.id
+        mock_visibility_service.list_visible_projects_paginated.return_value = (
+            [
+                {
+                    'name': personal_name,
+                    'description': None,
+                    'project_type': 'personal',
+                    'created_by': personal_name,
+                    'created_at': datetime(2026, 1, 1, tzinfo=UTC),
+                    'user_count': 1,
+                    'admin_count': 0,
+                    'counters': None,
+                    'cost_center_id': None,
+                    'cost_center_name': None,
+                }
+            ],
+            1,
+        )
+
+        budget_row = _make_budget_spend_row(project_name=personal_name)
+        mock_async_session.return_value = AsyncMock()
+        mock_spend_repo.get_latest_spending_by_project = AsyncMock(
+            side_effect=lambda session, names, spend_subject_type=None: (
+                [] if spend_subject_type == 'key' else [budget_row]
+            )
+        )
+
+        result = await list_projects(
+            search=None,
+            page=0,
+            per_page=20,
+            include_counters=False,
+            include_spending=True,
+            sort_by=None,
+            sort_order='asc',
+            user=regular_user,
+        )
+
+        assert len(result.data) == 1
+        item = result.data[0]
+        assert item.project_type == 'personal'
+        assert item.spending is not None
+        assert item.spending.current_spending == pytest.approx(3.50)
+        assert item.spending.budget_limit == pytest.approx(50.0)
+
+    @patch('codemie.rest_api.routers.projects.config')
+    @patch('codemie.rest_api.routers.projects.get_async_session')
+    @patch('codemie.rest_api.routers.projects.get_session')
+    @patch('codemie.rest_api.routers.projects.project_visibility_service')
+    @patch('codemie.rest_api.routers.projects._spend_repo')
+    @pytest.mark.anyio
+    async def test_personal_project_detail_returns_cumulative_and_period_spend(
+        self,
+        mock_spend_repo,
+        mock_visibility_service,
+        mock_get_session,
+        mock_async_session,
+        mock_config,
+        regular_user,
+    ):
+        """Personal project owner can fetch detail with cumulative_spend and current_spending."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+
+        personal_name = regular_user.id
+        mock_visibility_service.get_visible_project_with_members.return_value = _make_personal_project_detail(
+            owner_id=personal_name
+        )
+
+        budget_row = _make_budget_spend_row(
+            project_name=personal_name,
+            budget_id='default',
+            budget_period_spend=3.50,
+            cumulative_spend=12.75,
+            soft_budget=50.0,
+        )
+        mock_async_session.return_value = AsyncMock()
+        mock_spend_repo.get_latest_key_spending_for_project = AsyncMock(return_value=None)
+        mock_spend_repo.get_latest_budget_rows_for_project = AsyncMock(return_value=[budget_row])
+
+        result = await get_project_detail(
+            request=MagicMock(method='GET', url=SimpleNamespace(path=f'/v1/projects/{personal_name}')),
+            project_name=personal_name,
+            include_spending=True,
+            spending_rows_limit=50,
+            user=regular_user,
+        )
+
+        assert result.project_type == 'personal'
+        assert result.spending is not None
+        assert result.spending.current_spending == pytest.approx(3.50)
+        assert result.spending.cumulative_spend == pytest.approx(12.75)
+        assert result.spending.budget_limit == pytest.approx(50.0)
+
+    @patch('codemie.rest_api.routers.projects.config')
+    @patch('codemie.rest_api.routers.projects.get_async_session')
+    @patch('codemie.rest_api.routers.projects.get_session')
+    @patch('codemie.rest_api.routers.projects.project_visibility_service')
+    @patch('codemie.rest_api.routers.projects._spend_repo')
+    @pytest.mark.anyio
+    async def test_personal_project_detail_returns_spending_widget_with_budget_rows(
+        self,
+        mock_spend_repo,
+        mock_visibility_service,
+        mock_get_session,
+        mock_async_session,
+        mock_config,
+        regular_user,
+    ):
+        """spending_widget includes a row per budget_id for personal project."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+
+        personal_name = regular_user.id
+        mock_visibility_service.get_visible_project_with_members.return_value = _make_personal_project_detail(
+            owner_id=personal_name
+        )
+
+        rows = [
+            _make_budget_spend_row(
+                personal_name, budget_id='default', budget_period_spend=3.50, cumulative_spend=12.75
+            ),
+            _make_budget_spend_row(
+                personal_name, budget_id='premium', budget_period_spend=1.20, cumulative_spend=4.80, soft_budget=20.0
+            ),
+        ]
+        mock_async_session.return_value = AsyncMock()
+        mock_spend_repo.get_latest_key_spending_for_project = AsyncMock(return_value=None)
+        mock_spend_repo.get_latest_budget_rows_for_project = AsyncMock(return_value=rows)
+
+        result = await get_project_detail(
+            request=MagicMock(method='GET', url=SimpleNamespace(path=f'/v1/projects/{personal_name}')),
+            project_name=personal_name,
+            include_spending=True,
+            spending_rows_limit=50,
+            user=regular_user,
+        )
+
+        assert result.spending_widget is not None
+        widget_rows = result.spending_widget.data.rows
+        assert len(widget_rows) == 2
+        budget_ids = {r.budget_id for r in widget_rows}
+        assert budget_ids == {'default', 'premium'}
+        total_period = sum(r.current_spending for r in widget_rows)
+        assert total_period == pytest.approx(4.70)
+
+    @patch('codemie.rest_api.routers.projects.config')
+    @patch('codemie.rest_api.routers.projects.get_session')
+    @patch('codemie.rest_api.routers.projects.project_visibility_service')
+    @pytest.mark.anyio
+    async def test_personal_project_detail_no_spending_when_include_spending_false(
+        self,
+        mock_visibility_service,
+        mock_get_session,
+        mock_config,
+        regular_user,
+    ):
+        """When include_spending=False, spending and spending_widget remain None."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+
+        personal_name = regular_user.id
+        mock_visibility_service.get_visible_project_with_members.return_value = _make_personal_project_detail(
+            owner_id=personal_name
+        )
+
+        result = await get_project_detail(
+            request=MagicMock(method='GET', url=SimpleNamespace(path=f'/v1/projects/{personal_name}')),
+            project_name=personal_name,
+            include_spending=False,
+            spending_rows_limit=50,
+            user=regular_user,
+        )
+
+        assert result.spending is None
+        assert result.spending_widget is None

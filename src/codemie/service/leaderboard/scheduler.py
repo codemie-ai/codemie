@@ -14,7 +14,7 @@
 
 """APScheduler-based leaderboard computation scheduler.
 
-Follows the ChargebackScheduler pattern with LeaderLockContext
+Follows the SpendTrackingScheduler pattern with LeaderLockContext
 for multi-pod safety.
 """
 

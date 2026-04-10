@@ -526,6 +526,21 @@ def _get_key_spending_columns() -> list[dict]:
     ]
 
 
+def _build_spending_row(label: str, spending: dict) -> dict[str, Any]:
+    """Build a single spending table row from a spending dict."""
+    current = spending.get("total_spend", 0.0)
+    limit = spending.get("max_budget")
+    reset_at = spending.get("budget_reset_at") or None
+    return {
+        "project_name": label,
+        "current_spending": round(current, 2),
+        "budget_reset_at": reset_at,
+        "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
+        "budget_limit": round(limit, 2) if limit is not None else None,
+        "total": round(current / limit * 100, 2) if limit and limit > 0 else 0.0,
+    }
+
+
 def _build_key_spending_tabular_data(
     user_identifier: str,
     user_personal_spending: dict | None,
@@ -553,79 +568,19 @@ def _build_key_spending_tabular_data(
     Returns:
         Tuple of (columns, rows)
     """
-    columns = _get_key_spending_columns()
-    all_rows = []
+    budget_sources = [
+        (user_identifier, user_personal_spending),
+        (f"{user_identifier} (premium)", user_premium_spending),
+        (f"{user_identifier} (cli)", user_proxy_spending),
+    ]
 
-    # Add user personal spending as first row (if available)
-    if user_personal_spending:
-        current_spend = user_personal_spending.get("total_spend", 0.0)
-        budget_limit = user_personal_spending.get("max_budget")
-        reset_at = user_personal_spending.get("budget_reset_at")
+    rows = [_build_spending_row(label, data) for label, data in budget_sources if data]
 
-        all_rows.append(
-            {
-                "project_name": user_identifier,
-                "current_spending": round(current_spend, 2),
-                "budget_reset_at": reset_at if reset_at else None,
-                "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
-                "budget_limit": round(budget_limit, 2) if budget_limit is not None else None,
-                "total": (round((current_spend / budget_limit * 100), 2) if budget_limit and budget_limit > 0 else 0.0),
-            }
-        )
-
-    if user_premium_spending:
-        current_spend = user_premium_spending.get("total_spend", 0.0)
-        budget_limit = user_premium_spending.get("max_budget")
-        reset_at = user_premium_spending.get("budget_reset_at")
-
-        all_rows.append(
-            {
-                "project_name": f"{user_identifier} (premium)",
-                "current_spending": round(current_spend, 2),
-                "budget_reset_at": reset_at if reset_at else None,
-                "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
-                "budget_limit": round(budget_limit, 2) if budget_limit is not None else None,
-                "total": (round((current_spend / budget_limit * 100), 2) if budget_limit and budget_limit > 0 else 0.0),
-            }
-        )
-
-    if user_proxy_spending:
-        current_spend = user_proxy_spending.get("total_spend", 0.0)
-        budget_limit = user_proxy_spending.get("max_budget")
-        reset_at = user_proxy_spending.get("budget_reset_at")
-
-        all_rows.append(
-            {
-                "project_name": f"{user_identifier} (cli)",
-                "current_spending": round(current_spend, 2),
-                "budget_reset_at": reset_at if reset_at else None,
-                "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
-                "budget_limit": round(budget_limit, 2) if budget_limit is not None else None,
-                "total": (round((current_spend / budget_limit * 100), 2) if budget_limit and budget_limit > 0 else 0.0),
-            }
-        )
-
-    # Add individual key rows
     for key_data in user_keys_spending:
-        current = key_data.get("total_spend", 0.0)
-        limit = key_data.get("max_budget")
-        reset_at = key_data.get("budget_reset_at")
+        label = key_data.get("project_name") or key_data.get("key_alias", "Unknown Key")
+        rows.append(_build_spending_row(label, key_data))
 
-        # Get project name from enriched data, fallback to key_alias if not found
-        project_name = key_data.get("project_name") or key_data.get("key_alias", "Unknown Key")
-
-        all_rows.append(
-            {
-                "project_name": project_name,
-                "current_spending": round(current, 2),
-                "budget_reset_at": reset_at if reset_at else None,
-                "time_until_reset": _calculate_time_until_reset(reset_at) if reset_at else None,
-                "budget_limit": round(limit, 2) if limit is not None else None,
-                "total": round((current / limit * 100), 2) if limit and limit > 0 else 0.0,
-            }
-        )
-
-    return columns, all_rows
+    return _get_key_spending_columns(), rows
 
 
 def _create_response(data: dict, model_class) -> JSONResponse:

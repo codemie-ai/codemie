@@ -18,17 +18,17 @@ from apscheduler.triggers.cron import CronTrigger
 
 from codemie.configs import config, logger
 from codemie.repository.application_repository import ApplicationRepository
-from codemie.repository.project_cost_tracking_repository import ProjectCostTrackingRepository
-from codemie.service.chargeback.spend_collector_service import LiteLLMSpendCollectorService
+from codemie.repository.project_spend_tracking_repository import ProjectSpendTrackingRepository
+from codemie.service.spend_tracking.spend_collector_service import LiteLLMSpendCollectorService
 from codemie.service.conversation_analysis.leader_lock import LeaderLockContext
 
-# Distinct advisory lock ID for the chargeback job — must differ from
+# Distinct advisory lock ID for the spend tracking job — must differ from
 # LeaderLockContext.ADVISORY_LOCK_ID (987654321) used by ConversationAnalysisService.
-_CHARGEBACK_LOCK_ID = 987654322
+_SPEND_TRACKING_LOCK_ID = 987654322
 
 
-class ChargebackScheduler:
-    """Scheduler for chargeback-related background jobs.
+class SpendTrackingScheduler:
+    """Scheduler for spend-tracking background jobs.
 
     Registers the LiteLLM spend collector job when
     LITELLM_SPEND_COLLECTOR_ENABLED is True. Uses the same LeaderLockContext
@@ -43,7 +43,7 @@ class ChargebackScheduler:
         """
         self.scheduler = scheduler
 
-        tracking_repository = ProjectCostTrackingRepository()
+        tracking_repository = ProjectSpendTrackingRepository()
         self._spend_collector_service = LiteLLMSpendCollectorService(
             app_repository=ApplicationRepository(),
             tracking_repository=tracking_repository,
@@ -95,7 +95,7 @@ class ChargebackScheduler:
         multiple replicas are deployed. Catches and logs all exceptions to
         prevent APScheduler from suppressing them silently.
         """
-        with LeaderLockContext(lock_id=_CHARGEBACK_LOCK_ID) as lock:
+        with LeaderLockContext(lock_id=_SPEND_TRACKING_LOCK_ID) as lock:
             if not lock.acquired:
                 logger.info("LiteLLM spend collector: not the leader, skipping")
                 return
@@ -110,4 +110,4 @@ class ChargebackScheduler:
         """Stop the scheduler gracefully."""
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
-            logger.info("ChargebackScheduler stopped")
+            logger.info("SpendTrackingScheduler stopped")

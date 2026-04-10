@@ -321,8 +321,8 @@ def _setup_conversation_analysis_scheduler(app: FastAPI):
     logger.info("Conversation analysis scheduler started successfully")
 
 
-def _setup_chargeback_scheduler(app: FastAPI):
-    """Setup chargeback spend collector scheduler if enabled."""
+def _setup_spend_tracking_scheduler(app: FastAPI):
+    """Setup spend tracking collector scheduler if enabled."""
     if not config.LITELLM_SPEND_COLLECTOR_ENABLED:
         return
 
@@ -334,13 +334,13 @@ def _setup_chargeback_scheduler(app: FastAPI):
         return
 
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
-    from codemie.service.chargeback.scheduler import ChargebackScheduler
+    from codemie.service.spend_tracking.scheduler import SpendTrackingScheduler
 
-    chargeback_scheduler_instance = AsyncIOScheduler()
-    chargeback_scheduler = ChargebackScheduler(scheduler=chargeback_scheduler_instance)
-    chargeback_scheduler.start()
-    app.state.chargeback_scheduler = chargeback_scheduler
-    logger.info("Chargeback scheduler started successfully")
+    spend_tracking_scheduler_instance = AsyncIOScheduler()
+    spend_tracking_scheduler = SpendTrackingScheduler(scheduler=spend_tracking_scheduler_instance)
+    spend_tracking_scheduler.start()
+    app.state.spend_tracking_scheduler = spend_tracking_scheduler
+    logger.info("Spend tracking scheduler started successfully")
 
 
 def _setup_leaderboard_scheduler(app: FastAPI):
@@ -432,10 +432,10 @@ async def _shutdown_services(app: FastAPI, langfuse_service, litellm_service, ta
         conversation_analysis_scheduler.stop()
         logger.info("Conversation analysis scheduler shutdown complete")
 
-    chargeback_scheduler = getattr(app.state, 'chargeback_scheduler', None)
-    if chargeback_scheduler is not None:
-        chargeback_scheduler.stop()
-        logger.info("Chargeback scheduler shutdown complete")
+    spend_tracking_scheduler = getattr(app.state, 'spend_tracking_scheduler', None)
+    if spend_tracking_scheduler is not None:
+        spend_tracking_scheduler.stop()
+        logger.info("Spend tracking scheduler shutdown complete")
 
     leaderboard_scheduler = getattr(app.state, 'leaderboard_scheduler', None)
     if leaderboard_scheduler is not None:
@@ -494,7 +494,7 @@ async def lifespan(app: FastAPI):
         _setup_memory_profiling_scheduler()
 
     _setup_conversation_analysis_scheduler(app)
-    _setup_chargeback_scheduler(app)
+    _setup_spend_tracking_scheduler(app)
     _setup_leaderboard_scheduler(app)
 
     yield

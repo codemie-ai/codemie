@@ -4,7 +4,7 @@ Revision ID: f1e2d3c4b5a6
 Revises: a1f2b3c4d5e6
 Create Date: 2026-03-17 00:00:00.000000
 
-Create project_cost_tracking table for LiteLLM chargeback spend collection.
+Create project_cost_tracking table for LiteLLM spend tracking collection.
 Stores one row per API key per day with budget-reset-aware daily_spend delta
 and idempotency enforced via UNIQUE (key_hash, spend_date).
 """

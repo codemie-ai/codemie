@@ -114,7 +114,7 @@ class LeaderboardSettings:
 
 
 # Advisory lock ID for leaderboard scheduler — must differ from other lock IDs
-# ConversationAnalysis: 987654321, Chargeback: 987654322
+# ConversationAnalysis: 987654321, SpendTracking: 987654322
 LEADERBOARD_LOCK_ID = 987654323
 
 # Singleton settings instance

@@ -543,12 +543,6 @@ class Config(BaseSettings):
     LITELLM_SPEND_COLLECTOR_SCHEDULE: str = (
         "0 23 * * *"  # Cron schedule (UTC) for the spend collector — nightly at 11 PM
     )
-    # Regex pattern applied to project names; only matching projects are collected (empty = collect all)
-    LITELLM_SPEND_COLLECTOR_PROJECT_INCLUDE_PATTERN: str = "^[a-z]+-[a-z]+$"
-    # Regex pattern applied to project names; matching projects are excluded (empty = no exclusion)
-    LITELLM_SPEND_COLLECTOR_PROJECT_EXCLUDE_PATTERN: str = ""
-    # Explicit list of project names to exclude; takes effect alongside the exclude pattern
-    LITELLM_SPEND_COLLECTOR_PROJECT_EXCLUDE_LIST: list[str] = []
 
     model_config = SettingsConfigDict(env_file=find_dotenv(".env", raise_error_if_not_found=False), extra="ignore")
 

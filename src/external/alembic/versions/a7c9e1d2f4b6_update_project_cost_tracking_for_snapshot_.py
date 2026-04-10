@@ -1,4 +1,4 @@
-"""update_project_cost_tracking_for_snapshot_chargeback
+"""update_project_cost_tracking_for_snapshot_spend_tracking
 
 Revision ID: a7c9e1d2f4b6
 Revises: c9b887e959ba
