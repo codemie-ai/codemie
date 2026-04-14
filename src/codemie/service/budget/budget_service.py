@@ -303,11 +303,18 @@ class BudgetService:
         Config is the source of truth — existing budgets are overwritten to match config values.
         LiteLLM and DB are kept in sync for each predefined budget.
         """
-        from codemie.enterprise.litellm import create_budget_in_litellm, update_budget_in_litellm
+        from codemie.enterprise.litellm import (
+            create_budget_in_litellm,
+            list_budgets_from_litellm,
+            update_budget_in_litellm,
+        )
 
         if not budget_config.predefined_budgets:
             logger.info("No predefined budgets configured, skipping startup budget initialization")
             return
+
+        litellm_budgets = await asyncio.to_thread(list_budgets_from_litellm)
+        litellm_budget_ids: set[str] = {b.budget_id for b in litellm_budgets} if litellm_budgets is not None else set()
 
         for bc in budget_config.predefined_budgets:
             existing = await budget_repository.get_by_id(session, bc.budget_id)
@@ -323,15 +330,6 @@ class BudgetService:
                     created_by="system",
                 )
                 await budget_repository.insert(session, budget)
-                result = await asyncio.to_thread(
-                    create_budget_in_litellm,
-                    bc.budget_id,
-                    bc.max_budget,
-                    bc.soft_budget,
-                    bc.budget_duration,
-                )
-                if result is None:
-                    logger.error(f"Failed to create predefined budget '{bc.budget_id}' in LiteLLM")
             else:
                 fields = {
                     "name": bc.name,
@@ -342,6 +340,8 @@ class BudgetService:
                     "budget_category": bc.budget_category,
                 }
                 await budget_repository.update(session, bc.budget_id, fields)
+
+            if bc.budget_id in litellm_budget_ids:
                 result = await asyncio.to_thread(
                     update_budget_in_litellm,
                     bc.budget_id,
@@ -351,6 +351,16 @@ class BudgetService:
                 )
                 if result is None:
                     logger.error(f"Failed to update predefined budget '{bc.budget_id}' in LiteLLM")
+            else:
+                result = await asyncio.to_thread(
+                    create_budget_in_litellm,
+                    bc.budget_id,
+                    bc.max_budget,
+                    bc.soft_budget,
+                    bc.budget_duration,
+                )
+                if result is None:
+                    logger.error(f"Failed to create predefined budget '{bc.budget_id}' in LiteLLM")
 
             await session.commit()
             logger.info(f"Predefined budget ensured: '{bc.budget_id}' (category={bc.budget_category})")
