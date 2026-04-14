@@ -102,6 +102,7 @@ langchain-core = "1.2.26"
 langchain-experimental = "0.4.1"
 langchain-google-community = "3.0.5"
 langchain-openai = "1.1.12"
+litellm = "1.83.0"
 markdownify = "^1.2.0"
 markitdown = {extras = ["all"], version = "^0.1.2"}
 matplotlib = "3.10.8"

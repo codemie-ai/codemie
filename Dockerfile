@@ -19,7 +19,7 @@ FROM python:${PYTHON_VERSION}-slim AS builder
 
 # Set environment variables
 ENV PYTHONPATH=/app/src \
-    POETRY_VERSION=2.3.2 \
+    POETRY_VERSION=2.3.3 \
     POETRY_HOME="/opt/poetry" \
     POETRY_VIRTUALENVS_CREATE=false \
     VIRTUAL_ENV="/venv"
