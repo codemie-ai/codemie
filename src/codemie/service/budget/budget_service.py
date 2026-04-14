@@ -309,16 +309,21 @@ class BudgetService:
             update_budget_in_litellm,
         )
 
-        if not budget_config.predefined_budgets:
+        configured_ids = [bc.budget_id for bc in budget_config.predefined_budgets]
+        if not configured_ids:
             logger.info("No predefined budgets configured, skipping startup budget initialization")
             return
 
+        logger.info(f"Starting predefined budget initialization: {configured_ids}")
+
         litellm_budgets = await asyncio.to_thread(list_budgets_from_litellm)
-        litellm_budget_ids: set[str] = {b.budget_id for b in litellm_budgets} if litellm_budgets is not None else set()
+        litellm_budget_ids: set[str] = {b.budget_id for b in (litellm_budgets or [])}
+        logger.info(f"Budgets found in LiteLLM: {sorted(litellm_budget_ids)}")
 
         for bc in budget_config.predefined_budgets:
             existing = await budget_repository.get_by_id(session, bc.budget_id)
             if existing is None:
+                logger.info(f"Budget '{bc.budget_id}' not found in DB — creating")
                 budget = Budget(
                     budget_id=bc.budget_id,
                     name=bc.name,
@@ -331,6 +336,7 @@ class BudgetService:
                 )
                 await budget_repository.insert(session, budget)
             else:
+                logger.info(f"Budget '{bc.budget_id}' already exists in DB — updating to match config")
                 fields = {
                     "name": bc.name,
                     "description": bc.description,
@@ -342,6 +348,7 @@ class BudgetService:
                 await budget_repository.update(session, bc.budget_id, fields)
 
             if bc.budget_id in litellm_budget_ids:
+                logger.info(f"Budget '{bc.budget_id}' found in LiteLLM — updating")
                 result = await asyncio.to_thread(
                     update_budget_in_litellm,
                     bc.budget_id,
@@ -352,6 +359,7 @@ class BudgetService:
                 if result is None:
                     logger.error(f"Failed to update predefined budget '{bc.budget_id}' in LiteLLM")
             else:
+                logger.info(f"Budget '{bc.budget_id}' not found in LiteLLM — creating")
                 result = await asyncio.to_thread(
                     create_budget_in_litellm,
                     bc.budget_id,
@@ -363,14 +371,20 @@ class BudgetService:
                     logger.error(f"Failed to create predefined budget '{bc.budget_id}' in LiteLLM")
 
             await session.commit()
-            logger.info(f"Predefined budget ensured: '{bc.budget_id}' (category={bc.budget_category})")
+            logger.info(
+                f"Predefined budget '{bc.budget_id}' synced "
+                f"(category={bc.budget_category}, max={bc.max_budget}, "
+                f"soft={bc.soft_budget}, duration={bc.budget_duration})"
+            )
+
+        logger.info(f"Predefined budget initialization complete: {len(configured_ids)} budget(s) processed")
 
     async def sync_budgets_from_litellm(
         self,
         session: AsyncSession,
         actor_id: str,
     ) -> BudgetSyncResult:
-        """Pull all budgets from LiteLLM, compare with DB, upsert differences."""
+        """Pull all budgets from LiteLLM, compare with DB, upsert differences and delete orphans."""
         from codemie.enterprise.litellm import list_budgets_from_litellm
         from codemie.rest_api.routers.budget_router import BudgetSyncResult
 
@@ -378,11 +392,13 @@ class BudgetService:
         if litellm_budgets is None:
             raise ExtendedHTTPException(code=502, message="LiteLLM proxy unreachable during sync")
 
-        created = updated = unchanged = 0
+        created = updated = unchanged = deleted = 0
 
+        litellm_ids: set[str] = set()
         for lb in litellm_budgets:
             if lb.budget_id is None:
                 continue
+            litellm_ids.add(lb.budget_id)
 
             fields = {
                 "soft_budget": lb.soft_budget or 0.0,
@@ -403,6 +419,12 @@ class BudgetService:
             else:
                 unchanged += 1
 
+        db_budgets = await budget_repository.get_all_keyed_by_id(session)
+        for budget_id in set(db_budgets) - litellm_ids:
+            logger.info(f"sync_budgets: deleting orphan budget {budget_id!r} absent from LiteLLM")
+            await budget_repository.delete(session, budget_id)
+            deleted += 1
+
         await session.commit()
 
         all_budgets, _ = await budget_repository.list_paginated(session, page=0, per_page=10000)
@@ -410,6 +432,7 @@ class BudgetService:
             created=created,
             updated=updated,
             unchanged=unchanged,
+            deleted=deleted,
             total_in_litellm=len(litellm_budgets),
             budgets=all_budgets,
         )
@@ -759,12 +782,12 @@ class BudgetService:
             success = await asyncio.to_thread(reset_customer_spending_in_litellm, litellm_user_id, budget_id)
             if not success:
                 logger.warning(
-                    f"Failed to reset budget spending for user {user_id!r} " f"category {category.value!r} in LiteLLM"
+                    f"Failed to reset budget spending for user {user_id!r} category {category.value!r} in LiteLLM"
                 )
 
         reset_scope = [c.value for c in target_categories]
         logger.info(
-            f"Budget spending reset for user '{user_id}' " f"(categories={reset_scope}) by '{actor_name or actor_id}'"
+            f"Budget spending reset for user '{user_id}' (categories={reset_scope}) by '{actor_name or actor_id}'"
         )
 
 

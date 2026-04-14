@@ -106,6 +106,7 @@ class BudgetSyncResult(BaseModel):
     created: int
     updated: int
     unchanged: int
+    deleted: int
     total_in_litellm: int
     budgets: list[BudgetResponse]
 
@@ -177,6 +178,7 @@ async def sync_budgets(
             created=result.created,
             updated=result.updated,
             unchanged=result.unchanged,
+            deleted=result.deleted,
             total_in_litellm=result.total_in_litellm,
             budgets=[_build_budget_response(b) for b in result.budgets],
         )
