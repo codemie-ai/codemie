@@ -23,11 +23,13 @@ Covers all acceptance criteria:
 
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from codemie.configs.config import config
+from codemie.configs.budget_config import budget_config
+from codemie.configs.config import PredefinedBudgetConfig, config
 
 
 # ---------------------------------------------------------------------------
@@ -63,16 +65,62 @@ def clear_premium_caches():
 # ---------------------------------------------------------------------------
 
 
+@contextlib.contextmanager
 def _patch_budget_name(value: str):
-    return patch.object(config, "LITELLM_PREMIUM_MODELS_BUDGET_NAME", value)
+    """Enable/disable premium models feature via budget config.
+
+    Reads predefined_budgets at __enter__ time so nested patches compose correctly.
+    value non-empty → adds a premium_models budget with that budget_id.
+    value empty → removes all premium_models budgets.
+    """
+    current = list(budget_config.predefined_budgets)
+    filtered = [b for b in current if b.budget_category != "premium_models"]
+    if value:
+        new_budget = PredefinedBudgetConfig(
+            budget_id=value,
+            name="Premium",
+            description=None,
+            soft_budget=0.0,
+            max_budget=0.0,
+            budget_duration="30d",
+            budget_category="premium_models",
+        )
+        new_list = filtered + [new_budget]
+    else:
+        new_list = filtered
+    with patch.object(budget_config, "predefined_budgets", new_list):
+        yield
 
 
 def _patch_aliases(value: list[str]):
     return patch.object(config, "LITELLM_PREMIUM_MODELS_ALIASES", value)
 
 
+@contextlib.contextmanager
 def _patch_cli_budget_name(value: str):
-    return patch.object(config, "LITELLM_CLI_BUDGET_NAME", value)
+    """Enable/disable CLI proxy budget feature via budget config.
+
+    Reads predefined_budgets at __enter__ time so nested patches compose correctly.
+    value non-empty → adds a cli budget with that budget_id.
+    value empty → removes all cli budgets.
+    """
+    current = list(budget_config.predefined_budgets)
+    filtered = [b for b in current if b.budget_category != "cli"]
+    if value:
+        new_budget = PredefinedBudgetConfig(
+            budget_id=value,
+            name="CLI",
+            description=None,
+            soft_budget=0.0,
+            max_budget=0.0,
+            budget_duration="30d",
+            budget_category="cli",
+        )
+        new_list = filtered + [new_budget]
+    else:
+        new_list = filtered
+    with patch.object(budget_config, "predefined_budgets", new_list):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -160,14 +208,15 @@ class TestGetPremiumUsername:
             from codemie.enterprise.litellm.dependencies import get_premium_username
 
             result = get_premium_username("user@example.com", "claude-opus-4")
-            assert result == "user@example.com_premium_models"
+            assert result == "user@example.com_codemie_premium_models"
 
-    def test_derived_username_uses_configured_budget_name(self):
+    def test_derived_username_uses_category_suffix_not_budget_id(self):
+        """Username suffix is always _codemie_{category} regardless of the configured budget_id."""
         with _patch_budget_name("costly_budget"), _patch_aliases(["opus"]):
             from codemie.enterprise.litellm.dependencies import get_premium_username
 
             result = get_premium_username("john@corp.com", "claude-opus-4-20250514")
-            assert result == "john@corp.com_costly_budget"
+            assert result == "john@corp.com_codemie_premium_models"
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +245,7 @@ class TestGetPremiumCustomerSpending:
                 result = get_premium_customer_spending("user@example.com")
 
                 assert result == spending_data
-                mock_get_spending.assert_called_once_with("user@example.com_premium_models", on_raise=False)
+                mock_get_spending.assert_called_once_with("user@example.com_codemie_premium_models", on_raise=False)
 
     def test_returns_none_when_derived_customer_not_found(self):
         with _patch_budget_name("premium_models"), _patch_aliases(["opus"]):
@@ -244,7 +293,7 @@ class TestProxyBudgetHelpers:
         with _patch_cli_budget_name("cli_budget"):
             from codemie.enterprise.litellm.dependencies import get_proxy_username
 
-            assert get_proxy_username("user@example.com") == "user@example.com_cli_budget"
+            assert get_proxy_username("user@example.com") == "user@example.com_codemie_cli"
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +339,7 @@ class TestProxyPremiumUsernameInjection:
                         request_info=request_info,
                     )
 
-        assert captured_usernames == ["alice@example.com_premium_models"]
+        assert captured_usernames == ["alice@example.com_codemie_premium_models"]
 
     @pytest.mark.asyncio
     async def test_injects_base_username_for_non_premium_model(self):
@@ -361,7 +410,7 @@ class TestProxyPremiumUsernameInjection:
                         request_info=request_info,
                     )
 
-        assert captured_usernames == ["alice@example.com_cli_budget"]
+        assert captured_usernames == ["alice@example.com_codemie_cli"]
 
     @pytest.mark.asyncio
     async def test_premium_budget_takes_precedence_over_proxy_budget(self):
@@ -395,7 +444,7 @@ class TestProxyPremiumUsernameInjection:
                         request_info=request_info,
                     )
 
-        assert captured_usernames == ["alice@example.com_premium_models"]
+        assert captured_usernames == ["alice@example.com_codemie_premium_models"]
 
     @pytest.mark.asyncio
     async def test_injects_base_username_when_config_disabled(self):

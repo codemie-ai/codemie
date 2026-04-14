@@ -155,11 +155,8 @@ class ProjectSpendTrackingRepository:
                         "daily_spend": row.daily_spend,
                         "cumulative_spend": row.cumulative_spend,
                         "budget_period_spend": row.budget_period_spend,
-                        "budget_reset_at": row.budget_reset_at,
                         "budget_id": row.budget_id,
-                        "soft_budget": row.soft_budget,
-                        "max_budget": row.max_budget,
-                        "budget_duration": row.budget_duration,
+                        "budget_category": row.budget_category,
                         "spend_subject_type": "key",
                     }
                     for row in rows
@@ -172,11 +169,8 @@ class ProjectSpendTrackingRepository:
                     "daily_spend": insert(ProjectSpendTracking).excluded.daily_spend,
                     "cumulative_spend": insert(ProjectSpendTracking).excluded.cumulative_spend,
                     "budget_period_spend": insert(ProjectSpendTracking).excluded.budget_period_spend,
-                    "budget_reset_at": insert(ProjectSpendTracking).excluded.budget_reset_at,
                     "budget_id": insert(ProjectSpendTracking).excluded.budget_id,
-                    "soft_budget": insert(ProjectSpendTracking).excluded.soft_budget,
-                    "max_budget": insert(ProjectSpendTracking).excluded.max_budget,
-                    "budget_duration": insert(ProjectSpendTracking).excluded.budget_duration,
+                    "budget_category": insert(ProjectSpendTracking).excluded.budget_category,
                 },
             )
         )
@@ -215,11 +209,8 @@ class ProjectSpendTrackingRepository:
                         "daily_spend": row.daily_spend,
                         "cumulative_spend": row.cumulative_spend,
                         "budget_period_spend": row.budget_period_spend,
-                        "budget_reset_at": row.budget_reset_at,
                         "budget_id": row.budget_id,
-                        "soft_budget": row.soft_budget,
-                        "max_budget": row.max_budget,
-                        "budget_duration": row.budget_duration,
+                        "budget_category": row.budget_category,
                         "spend_subject_type": "budget",
                     }
                     for row in rows
@@ -232,10 +223,7 @@ class ProjectSpendTrackingRepository:
                     "daily_spend": insert(ProjectSpendTracking).excluded.daily_spend,
                     "cumulative_spend": insert(ProjectSpendTracking).excluded.cumulative_spend,
                     "budget_period_spend": insert(ProjectSpendTracking).excluded.budget_period_spend,
-                    "budget_reset_at": insert(ProjectSpendTracking).excluded.budget_reset_at,
-                    "soft_budget": insert(ProjectSpendTracking).excluded.soft_budget,
-                    "max_budget": insert(ProjectSpendTracking).excluded.max_budget,
-                    "budget_duration": insert(ProjectSpendTracking).excluded.budget_duration,
+                    "budget_category": insert(ProjectSpendTracking).excluded.budget_category,
                 },
             )
         )

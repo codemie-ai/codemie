@@ -29,10 +29,12 @@ from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
 from codemie.repository.application_repository import application_repository
+from codemie.repository.budget_repository import budget_repository
 from codemie.repository.cost_center_repository import cost_center_repository
 from codemie.repository.project_spend_tracking_repository import ProjectSpendTrackingRepository
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.budget.budget_models import Budget
 from codemie.service.project.project_service import project_service
 from codemie.service.project.project_visibility_service import project_visibility_service
 
@@ -373,22 +375,42 @@ def _format_time_until_reset(budget_reset_at: datetime | None) -> str | None:
     return f"{hours} hour{'s' if hours != 1 else ''}"
 
 
+def _parse_budget_reset_at(value: str | None) -> datetime | None:
+    """Parse an ISO 8601 budget_reset_at string from the budgets table to datetime."""
+    if not value:
+        return None
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _budget_info(budgets_by_id: dict[str, Budget], budget_id: str | None) -> tuple[float | None, datetime | None]:
+    """Return (max_budget, budget_reset_at) for a given budget_id, or (None, None)."""
+    if budget_id is None:
+        return None, None
+    budget = budgets_by_id.get(budget_id)
+    if budget is None:
+        return None, None
+    return budget.max_budget, _parse_budget_reset_at(budget.budget_reset_at)
+
+
 def _build_widget_rows(
     budget_rows: list,
     project_name: str,
+    budgets_by_id: dict[str, Budget] | None = None,
 ) -> list[SpendingWidgetRow]:
     """Build spending widget rows from budget-based tracking rows."""
+    if budgets_by_id is None:
+        budgets_by_id = {}
     rows = []
     for row in budget_rows:
-        budget_limit = float(row.soft_budget) if row.soft_budget is not None else None
+        budget_limit, budget_reset_at = _budget_info(budgets_by_id, row.budget_id)
         current = float(row.budget_period_spend)
         total_pct = round((current / budget_limit * 100) if budget_limit else 0.0, 2)
         rows.append(
             SpendingWidgetRow(
                 budget_id=row.budget_id if row.budget_id else "Default",
                 current_spending=current,
-                budget_reset_at=row.budget_reset_at,
-                time_until_reset=_format_time_until_reset(row.budget_reset_at),
+                budget_reset_at=budget_reset_at,
+                time_until_reset=_format_time_until_reset(budget_reset_at),
                 budget_limit=budget_limit,
                 total=total_pct,
             )
@@ -396,16 +418,18 @@ def _build_widget_rows(
     return rows
 
 
-def _key_row_to_widget(row) -> SpendingWidgetRow:
+def _key_row_to_widget(row, budgets_by_id: dict[str, Budget] | None = None) -> SpendingWidgetRow:
     """Build a spending widget row from a key-based tracking row."""
-    budget_limit = float(row.soft_budget) if row.soft_budget is not None else None
+    if budgets_by_id is None:
+        budgets_by_id = {}
+    budget_limit, budget_reset_at = _budget_info(budgets_by_id, row.budget_id)
     current = float(row.budget_period_spend)
     total_pct = round((current / budget_limit * 100) if budget_limit else 0.0, 2)
     return SpendingWidgetRow(
         budget_id="Key",
         current_spending=current,
-        budget_reset_at=row.budget_reset_at,
-        time_until_reset=_format_time_until_reset(row.budget_reset_at),
+        budget_reset_at=budget_reset_at,
+        time_until_reset=_format_time_until_reset(budget_reset_at),
         budget_limit=budget_limit,
         total=total_pct,
     )
@@ -503,6 +527,7 @@ async def list_projects(
                 budget_rows = await _spend_repo.get_latest_spending_by_project(
                     async_session, manageable_names, spend_subject_type="budget"
                 )
+                budgets_map = await budget_repository.get_all_keyed_by_id(async_session)
             # For key rows: keep only the single latest row per project (mirrors detail endpoint).
             # get_latest_spending_by_project may return multiple rows per project when a project
             # has multiple key_hashes, so we deduplicate by taking max spend_date.
@@ -531,9 +556,9 @@ async def list_projects(
                         float(r.budget_period_spend) for r in b_rows
                     )
                     meta_row = key_row if key_row is not None else (b_rows[0] if b_rows else None)
-                    budget_limit = (
-                        float(meta_row.soft_budget) if meta_row and meta_row.soft_budget is not None else None
-                    )
+                    meta_budget_id = meta_row.budget_id if meta_row else None
+                    meta_budget = budgets_map.get(meta_budget_id) if meta_budget_id else None
+                    budget_limit = float(meta_budget.max_budget) if meta_budget is not None else None
                     total_pct = (current / budget_limit * 100) if budget_limit else 0.0
                     item.spending = ProjectSpendingSummary(
                         current_spending=round(current, 2),
@@ -608,6 +633,7 @@ async def get_project_detail(
             budget_rows = await _spend_repo.get_latest_budget_rows_for_project(
                 async_session, project_name, rows_limit=spending_rows_limit
             )
+            budgets_map = await budget_repository.get_all_keyed_by_id(async_session)
 
         if key_row is not None or budget_rows:
             # Aggregate spend across all types (key + all budget rows) to match widget total
@@ -618,20 +644,23 @@ async def get_project_detail(
                 float(r.cumulative_spend) for r in budget_rows
             )
             meta_row = key_row if key_row is not None else budget_rows[0]
-            budget_limit = float(meta_row.soft_budget) if meta_row.soft_budget is not None else None
+            meta_budget_id = meta_row.budget_id if meta_row else None
+            meta_budget = budgets_map.get(meta_budget_id) if meta_budget_id else None
+            budget_limit = float(meta_budget.max_budget) if meta_budget is not None else None
+            budget_reset_at = _parse_budget_reset_at(meta_budget.budget_reset_at) if meta_budget else None
             total_pct = (current / budget_limit * 100) if budget_limit else 0.0
             response.spending = ProjectSpendingDetail(
                 current_spending=round(current, 2),
                 cumulative_spend=round(cumulative, 2),
-                budget_reset_at=meta_row.budget_reset_at,
-                time_until_reset=_format_time_until_reset(meta_row.budget_reset_at),
+                budget_reset_at=budget_reset_at,
+                time_until_reset=_format_time_until_reset(budget_reset_at),
                 budget_limit=round(budget_limit, 2) if budget_limit is not None else None,
                 total=round(total_pct, 2),
             )
 
-        widget_rows = _build_widget_rows(budget_rows, project_name)
+        widget_rows = _build_widget_rows(budget_rows, project_name, budgets_by_id=budgets_map)
         if key_row is not None:
-            widget_rows.append(_key_row_to_widget(key_row))
+            widget_rows.append(_key_row_to_widget(key_row, budgets_by_id=budgets_map))
         if widget_rows:
             response.spending_widget = ProjectSpendingWidget(
                 data=SpendingWidgetData(columns=_WIDGET_COLUMNS, rows=widget_rows)

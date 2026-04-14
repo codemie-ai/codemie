@@ -61,11 +61,14 @@ from codemie.core.utils import calculate_token_cost
 from codemie.rest_api.security.authentication import BEARER_AUTHORIZATION_HEADER, authenticate
 from codemie.rest_api.security.user import User
 from codemie.enterprise.litellm.dependencies import check_user_budget
+from codemie.service.budget.budget_service import budget_service
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.monitoring.llm_proxy_monitoring_service import LLMProxyMonitoringService
 
 from .client import get_llm_proxy_client
+from .budget_categories import BudgetCategory
 from .dependencies import (
+    get_category_budget_id,
     get_premium_username,
     get_proxy_username,
     is_litellm_enabled,
@@ -292,13 +295,23 @@ async def _create_body_stream_with_optional_injection(
     else:
         llm_model = request_info.get(LLM_MODEL, "unknown")
         username = get_premium_username(user.username, llm_model)
-        budget_id = config.LITELLM_PREMIUM_MODELS_BUDGET_NAME if username else None
-
-        if username is None:
+        if username is not None:
+            category = BudgetCategory.PREMIUM_MODELS
+        else:
             username = get_proxy_username(user.username)
-            budget_id = config.LITELLM_CLI_BUDGET_NAME if username else None
+            if username is not None:
+                category = BudgetCategory.CLI
+            else:
+                category = BudgetCategory.PLATFORM
+                username = user.username
 
-        username = username or user.username
+        tracking_budget_id = get_category_budget_id(category)
+        budget_id = tracking_budget_id if category != BudgetCategory.PLATFORM else None
+        await budget_service.track_proxy_budget_assignment_for_request(
+            user_id=user.id,
+            category=category,
+            budget_id=tracking_budget_id,
+        )
 
         if budget_id:
             logger.debug(
@@ -664,13 +677,13 @@ def _build_premium_budget_error_body(body_bytes: bytes) -> bytes | None:
       1. The response body is valid JSON with ``error.type == "budget_exceeded"``.
       2. The error message contains ``_{budget_name} over budget`` — i.e. the LiteLLM
          ``end_user`` was the derived premium identity ``{email}_{budget_name}``.
-      3. The premium models budget feature is enabled (``LITELLM_PREMIUM_MODELS_BUDGET_NAME``
-         is non-empty).
+      3. The premium models budget feature is enabled (a ``premium_models`` budget
+         is configured in ``predefined budgets``).
 
     Returns ``None`` when any condition is not met (caller should pass the original bytes
     through unchanged).
     """
-    budget_name = config.LITELLM_PREMIUM_MODELS_BUDGET_NAME
+    budget_name = get_category_budget_id(BudgetCategory.PREMIUM_MODELS) or ""
     if not budget_name:
         return None
 

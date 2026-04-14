@@ -22,7 +22,8 @@ from .dependencies import (
     set_global_litellm_service,
     get_litellm_service_or_none,
     require_litellm_enabled,
-    ensure_litellm_default_budget,
+    ensure_predefined_budgets,
+    get_category_budget_id,
     check_user_budget,
     get_customer_spending,
     get_key_spending_info,
@@ -65,6 +66,16 @@ from .llm_factory import (
 # Proxy Router (from proxy_router.py)
 from .proxy_router import proxy_router, register_proxy_endpoints
 
+# Budget helpers (from budget_helpers.py)
+from .budget_helpers import (
+    create_budget_in_litellm,
+    get_budget_reset_at,
+    list_budgets_from_litellm,
+    reset_customer_spending_in_litellm,
+    update_budget_in_litellm,
+    update_customer_budget_in_litellm,
+)
+
 __all__ = [
     # Service management
     "is_litellm_enabled",
@@ -74,7 +85,8 @@ __all__ = [
     "get_litellm_service_or_none",
     "require_litellm_enabled",
     # Business logic
-    "ensure_litellm_default_budget",
+    "ensure_predefined_budgets",
+    "get_category_budget_id",
     "check_user_budget",
     "get_customer_spending",
     "get_key_spending_info",
@@ -104,4 +116,11 @@ __all__ = [
     # Proxy Router
     "proxy_router",
     "register_proxy_endpoints",
+    # Budget helpers
+    "create_budget_in_litellm",
+    "get_budget_reset_at",
+    "list_budgets_from_litellm",
+    "reset_customer_spending_in_litellm",
+    "update_budget_in_litellm",
+    "update_customer_budget_in_litellm",
 ]

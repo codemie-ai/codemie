@@ -17,7 +17,25 @@ from pathlib import Path
 from typing import Literal
 
 from dotenv import find_dotenv, load_dotenv
+from pydantic import BaseModel
 from pydantic_settings import SettingsConfigDict, BaseSettings
+
+
+class PredefinedBudgetConfig(BaseModel):
+    """Full definition of a budget that is managed via configuration.
+
+    Predefined budgets are force-created/updated at startup and cannot be
+    modified through the API or UI — configuration is the source of truth.
+    """
+
+    budget_id: str
+    name: str
+    description: str | None = None
+    soft_budget: float = 0.0
+    max_budget: float
+    budget_duration: str = "30d"
+    budget_category: str  # "platform" | "cli" | "premium_models"
+
 
 ENV_LOCAL = "local"
 
@@ -78,6 +96,7 @@ class Config(BaseSettings):
     WORKFLOW_TEMPLATES_DIR: Path = Path(__file__).absolute().parents[3] / "config/templates/workflow"
     SKILL_TEMPLATES_DIR: Path = Path(__file__).absolute().parents[3] / "config/templates/skill"
     CUSTOMER_CONFIG_DIR: Path = Path(__file__).absolute().parents[3] / "config/customer"
+    BUDGETS_CONFIG_DIR: Path = Path(__file__).absolute().parents[3] / "config/budgets"
     ASSISTANT_CATEGORIES_CONFIG_DIR: Path = Path(__file__).absolute().parents[3] / "config/categories"
     KATA_TAGS_CONFIG_PATH: Path = Path(__file__).absolute().parents[3] / "config/categories/kata-tags.yaml"
     KATA_ROLES_CONFIG_PATH: Path = Path(__file__).absolute().parents[3] / "config/categories/kata-roles.yaml"
@@ -447,21 +466,10 @@ class Config(BaseSettings):
         {"path": "/v1beta/models/{model_name}:generateContent", "methods": ["POST"]},
         {"path": "/v1beta/models/{model_name}:streamGenerateContent", "methods": ["POST"]},
     ]
-    # LiteLLM Budget
-    DEFAULT_SOFT_BUDGET_LIMIT: float = 200
-    DEFAULT_HARD_BUDGET_LIMIT: float = 300
-    DEFAULT_BUDGET_DURATION: str = "30d"
-    DEFAULT_BUDGET_ID: str = "default"
-
-    # LiteLLM Premium Models Budget Tracking
-    # When LITELLM_PREMIUM_MODELS_BUDGET_NAME is empty, the entire premium-budget logic is skipped.
-    # Budget name for costly/premium model spend attribution (e.g. "premium_models").
-    LITELLM_PREMIUM_MODELS_BUDGET_NAME: str = ""
     # List of model name aliases for premium/costly model detection (partial match, case-insensitive).
     # A model is considered premium if its name contains any alias (e.g. ["opus", "claude-4"]).
+    # Only active when a budget with budget_category="premium_models" is in budgets config.
     LITELLM_PREMIUM_MODELS_ALIASES: list[str] = []
-    # Budget name for proxy spend attribution. When empty, proxy requests continue using the default budget.
-    LITELLM_CLI_BUDGET_NAME: str = ""
     # Minimum supported CodeMie CLI version for proxy requests.
     CODEMIE_MIN_CLI_VERSION: str = "0.0.47"
 

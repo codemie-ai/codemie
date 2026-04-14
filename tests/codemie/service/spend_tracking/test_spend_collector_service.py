@@ -95,8 +95,10 @@ class TestNormalizeProjectName:
         assert result == "alice@example.com"
 
     def test_multi_word_budget_id_stripped_correctly(self):
-        """Multi-underscore budget_id with matching trailing suffix is stripped correctly."""
-        result = LiteLLMSpendCollectorService._normalize_project_name("user@org.com_premium_models", "premium_models")
+        """Multi-underscore category suffix is stripped correctly."""
+        result = LiteLLMSpendCollectorService._normalize_project_name(
+            "user@org.com_codemie_premium_models", "premium_models"
+        )
         assert result == "user@org.com"
 
     def test_suffix_only_stripped_from_end(self):
@@ -105,8 +107,8 @@ class TestNormalizeProjectName:
         assert result == "alice_codemie_cli_extra"
 
     def test_user_id_equals_budget_id_suffix_alone(self):
-        """user_id that is exactly '_<budget_id>' returns empty string (edge case)."""
-        result = LiteLLMSpendCollectorService._normalize_project_name("_mybudget", "mybudget")
+        """user_id that is exactly the category suffix returns empty string (edge case)."""
+        result = LiteLLMSpendCollectorService._normalize_project_name("_codemie_cli", "cli")
         assert result == ""
 
     def test_plain_email_default_budget(self):
@@ -130,7 +132,6 @@ class TestComputeDelta:
 
         result = service._compute_spend_snapshot(
             current_budget_period_spend=current,
-            current_budget_reset_at=datetime(2026, 3, 17, 0, 0, tzinfo=timezone.utc),
             prev_row=None,
             snapshot_at=datetime(2026, 3, 16, 12, 0, tzinfo=timezone.utc),
         )
@@ -143,7 +144,6 @@ class TestComputeDelta:
 
         result = service._compute_spend_snapshot(
             current_budget_period_spend=Decimal("0"),
-            current_budget_reset_at=datetime(2026, 3, 17, 0, 0, tzinfo=timezone.utc),
             prev_row=None,
             snapshot_at=datetime(2026, 3, 16, 12, 0, tzinfo=timezone.utc),
         )
@@ -163,7 +163,6 @@ class TestComputeDelta:
 
         result = service._compute_spend_snapshot(
             current_budget_period_spend=current,
-            current_budget_reset_at=datetime(2026, 3, 18, 0, 0, tzinfo=timezone.utc),
             prev_row=prev,
             snapshot_at=datetime(2026, 3, 17, 12, 0, tzinfo=timezone.utc),
         )
@@ -183,7 +182,6 @@ class TestComputeDelta:
 
         result = service._compute_spend_snapshot(
             current_budget_period_spend=current,
-            current_budget_reset_at=datetime(2026, 3, 18, 0, 0, tzinfo=timezone.utc),
             prev_row=prev,
             snapshot_at=datetime(2026, 3, 17, 12, 0, tzinfo=timezone.utc),
         )
@@ -203,7 +201,6 @@ class TestComputeDelta:
 
         result = service._compute_spend_snapshot(
             current_budget_period_spend=current,
-            current_budget_reset_at=datetime(2026, 3, 18, 0, 0, tzinfo=timezone.utc),
             prev_row=prev,
             snapshot_at=datetime(2026, 3, 17, 0, 5, tzinfo=timezone.utc),
         )
@@ -222,7 +219,6 @@ class TestComputeDelta:
 
         result = service._compute_spend_snapshot(
             current_budget_period_spend=Decimal("0.50"),
-            current_budget_reset_at=datetime(2026, 3, 17, 0, 0, tzinfo=timezone.utc),
             prev_row=prev,
             snapshot_at=datetime(2026, 3, 17, 0, 1, tzinfo=timezone.utc),
         )
@@ -236,7 +232,6 @@ class TestComputeDelta:
 
         result = service._compute_spend_snapshot(
             current_budget_period_spend=Decimal("3.25"),
-            current_budget_reset_at=None,
             prev_row=prev,
             snapshot_at=datetime(2026, 3, 17, 12, 0, tzinfo=timezone.utc),
         )
@@ -252,7 +247,6 @@ class TestComputeDelta:
         with patch("codemie.service.spend_tracking.spend_collector_service.logger") as mock_logger:
             result = service._compute_spend_snapshot(
                 current_budget_period_spend=current,
-                current_budget_reset_at=None,
                 prev_row=prev,
                 snapshot_at=datetime(2026, 3, 17, 12, 0, tzinfo=timezone.utc),
             )
@@ -269,7 +263,6 @@ class TestComputeDelta:
 
         result = service._compute_spend_snapshot(
             current_budget_period_spend=Decimal("0.05236874999999999"),
-            current_budget_reset_at=None,
             prev_row=prev,
             snapshot_at=datetime(2026, 3, 23, 17, 30, tzinfo=timezone.utc),
         )
@@ -295,7 +288,6 @@ class TestComputeDelta:
             with pytest.raises(InvalidSpendSnapshotError, match="cumulative spend decreased"):
                 service._compute_spend_snapshot(
                     current_budget_period_spend=Decimal("6.000000000"),
-                    current_budget_reset_at=None,
                     prev_row=prev,
                     snapshot_at=datetime(2026, 3, 23, 18, 0, tzinfo=timezone.utc),
                 )
@@ -310,14 +302,6 @@ class TestComputeDelta:
         )[0]
 
         assert LiteLLMSpendCollectorService._extract_budget_period_spend(payload) == Decimal("0.0024948")
-        assert LiteLLMSpendCollectorService._extract_budget_reset_at(payload) == datetime(
-            2026,
-            3,
-            24,
-            0,
-            0,
-            tzinfo=timezone.utc,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +380,12 @@ def _raw_litellm_key_info_payload(
 
 class TestCollect:
     """Tests for LiteLLMSpendCollectorService.collect()."""
+
+    @pytest.fixture(autouse=True)
+    def mock_budget_repo(self):
+        with patch("codemie.service.spend_tracking.spend_collector_service.budget_repository") as mock_repo:
+            mock_repo.get_all_keyed_by_id = AsyncMock(return_value={})
+            yield mock_repo
 
     @pytest.mark.asyncio
     async def test_key_with_api_error_is_skipped_without_blocking_others(
@@ -849,7 +839,6 @@ class TestCollect:
         assert rows[0].daily_spend == Decimal("0.0024948")
         assert rows[0].cumulative_spend == Decimal("0.0024948")
         assert rows[0].budget_period_spend == Decimal("0.0024948")
-        assert rows[0].budget_reset_at == datetime(2026, 3, 24, 0, 0, tzinfo=timezone.utc)
 
     @pytest.mark.asyncio
     async def test_collect_skips_invalid_snapshot_when_cumulative_would_decrease(
@@ -997,6 +986,272 @@ class TestCollect:
         inserted_rows = service._tracking_repository.insert_key_entries.call_args[0][1]
         assert inserted_rows[0].cost_center_id == cost_center_id
         assert inserted_rows[0].cost_center_name == "epm-cdme"
+
+
+# ---------------------------------------------------------------------------
+# TestCollectBudgetBased — /customer/list spend path
+# ---------------------------------------------------------------------------
+
+
+def _make_budget(
+    budget_id: str,
+    budget_category: str,
+    budget_duration: str = "30d",
+    budget_reset_at: str | None = None,
+) -> object:
+    """Build a minimal Budget-like object for tests (avoids DB-required fields)."""
+    budget = SimpleNamespace(
+        budget_id=budget_id,
+        budget_category=budget_category,
+        budget_duration=budget_duration,
+        budget_reset_at=budget_reset_at,
+        max_budget=10.0,
+        soft_budget=0.0,
+    )
+    return budget
+
+
+def _make_customer_entry(user_id: str, budget_id: str, spend: Decimal) -> object:
+    return SimpleNamespace(user_id=user_id, budget_id=budget_id, spend=spend)
+
+
+def _budget_only_service(
+    get_latest_prev: dict | None = None,
+) -> LiteLLMSpendCollectorService:
+    """Service with mocked repositories preset for budget-path-only tests."""
+    service = _make_service()
+    service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[])
+    service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
+    service._tracking_repository.get_latest_before_by_project_budget_ids = AsyncMock(return_value=get_latest_prev or {})
+    service._tracking_repository.insert_key_entries = AsyncMock()
+    service._tracking_repository.insert_budget_entries = AsyncMock()
+    return service
+
+
+class TestCollectBudgetBased:
+    """Tests for _collect_budget_based: /customer/list scanning with DB budget meta."""
+
+    @pytest.fixture(autouse=True)
+    def mock_budget_repo(self):
+        with patch("codemie.service.spend_tracking.spend_collector_service.budget_repository") as mock_repo:
+            mock_repo.get_all_keyed_by_id = AsyncMock(return_value={})
+            yield mock_repo
+
+    @pytest.mark.asyncio
+    async def test_first_run_bootstrap_seeds_daily_and_cumulative(
+        self, mock_session, async_session_ctx, mock_budget_repo
+    ):
+        """First run (no prior row): current spend seeds both daily and cumulative.
+        budget_category is taken from the DB Budget row, not derived.
+        """
+        service = _budget_only_service()
+        mock_budget_repo.get_all_keyed_by_id = AsyncMock(return_value={"cli": _make_budget("cli", "cli")})
+
+        customer_entries = [_make_customer_entry("alice@example.com_codemie_cli", "cli", Decimal("5.0"))]
+
+        with (
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: None if a else customer_entries,
+            ),
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
+                side_effect=lambda: async_session_ctx(),
+            ),
+        ):
+            count = await service.collect(target_date=date(2026, 3, 17))
+
+        assert count == 1
+        rows = service._tracking_repository.insert_budget_entries.call_args[0][1]
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.project_name == "alice@example.com"
+        assert row.budget_id == "cli"
+        assert row.budget_category == "cli"
+        assert row.spend_subject_type == "budget"
+        assert row.daily_spend == Decimal("5.0")
+        assert row.cumulative_spend == Decimal("5.0")
+        assert row.budget_period_spend == Decimal("5.0")
+        assert row.key_hash is None
+
+    @pytest.mark.asyncio
+    async def test_delta_computed_against_prev_budget_row(self, mock_session, async_session_ctx, mock_budget_repo):
+        """Normal delta: lifetime cumulative grows by the period-spend difference."""
+        prev = _prev_row("unused", cumulative=Decimal("10.00"), budget_period_spend=Decimal("3.00"))
+        service = _budget_only_service(get_latest_prev={("alice@example.com", "cli"): prev})
+        mock_budget_repo.get_all_keyed_by_id = AsyncMock(return_value={"cli": _make_budget("cli", "cli")})
+
+        customer_entries = [_make_customer_entry("alice@example.com_codemie_cli", "cli", Decimal("5.50"))]
+
+        with (
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: None if a else customer_entries,
+            ),
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
+                side_effect=lambda: async_session_ctx(),
+            ),
+        ):
+            count = await service.collect(target_date=date(2026, 3, 17))
+
+        assert count == 1
+        row = service._tracking_repository.insert_budget_entries.call_args[0][1][0]
+        assert row.daily_spend == Decimal("2.50")
+        assert row.cumulative_spend == Decimal("12.50")
+        assert row.budget_period_spend == Decimal("5.50")
+
+    @pytest.mark.asyncio
+    async def test_zero_delta_budget_row_not_persisted(self, mock_session, async_session_ctx, mock_budget_repo):
+        """Unchanged spend (zero delta) produces no row."""
+        prev = _prev_row("unused", cumulative=Decimal("10.00"), budget_period_spend=Decimal("3.00"))
+        service = _budget_only_service(get_latest_prev={("alice@example.com", "cli"): prev})
+        mock_budget_repo.get_all_keyed_by_id = AsyncMock(return_value={"cli": _make_budget("cli", "cli")})
+
+        customer_entries = [_make_customer_entry("alice@example.com_codemie_cli", "cli", Decimal("3.00"))]
+
+        with (
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: None if a else customer_entries,
+            ),
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
+                side_effect=lambda: async_session_ctx(),
+            ),
+        ):
+            count = await service.collect(target_date=date(2026, 3, 17))
+
+        assert count == 0
+        service._tracking_repository.insert_budget_entries.assert_called_once_with(mock_session, [])
+
+    @pytest.mark.asyncio
+    async def test_budget_category_derived_from_user_id_when_budget_not_in_db(self, mock_session, async_session_ctx):
+        """When budget_id is absent from DB, budget_category falls back to derive_category_from_user_id."""
+        service = _budget_only_service()
+
+        customer_entries = [
+            _make_customer_entry("bob@example.com_codemie_premium_models", "unknown_budget", Decimal("2.0"))
+        ]
+
+        with (
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: None if a else customer_entries,
+            ),
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
+                side_effect=lambda: async_session_ctx(),
+            ),
+        ):
+            count = await service.collect(target_date=date(2026, 3, 17))
+
+        assert count == 1
+        row = service._tracking_repository.insert_budget_entries.call_args[0][1][0]
+        assert row.budget_category == "premium_models"
+        assert row.project_name == "bob@example.com"
+
+    @pytest.mark.asyncio
+    async def test_reset_detected_via_db_budget_meta(self, mock_session, async_session_ctx, mock_budget_repo):
+        """Budget reset is detected using budget_reset_at + budget_duration from DB.
+        After reset, current period spend becomes the daily delta.
+        """
+        prev = _prev_row(
+            "unused",
+            cumulative=Decimal("10.00"),
+            budget_period_spend=Decimal("9.00"),
+            spend_date=datetime(2026, 3, 16, 23, 55, tzinfo=timezone.utc),
+        )
+        service = _budget_only_service(get_latest_prev={("alice@example.com", "cli"): prev})
+        mock_budget_repo.get_all_keyed_by_id = AsyncMock(
+            return_value={
+                "cli": _make_budget(
+                    "cli",
+                    "cli",
+                    budget_duration="1d",
+                    budget_reset_at="2026-03-18T00:00:00+00:00",
+                )
+            }
+        )
+
+        customer_entries = [_make_customer_entry("alice@example.com_codemie_cli", "cli", Decimal("0.75"))]
+        snapshot_at = datetime(2026, 3, 17, 0, 5, tzinfo=timezone.utc)
+
+        with (
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: None if a else customer_entries,
+            ),
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
+                side_effect=lambda: async_session_ctx(),
+            ),
+        ):
+            count = await service.collect(target_date=snapshot_at)
+
+        assert count == 1
+        row = service._tracking_repository.insert_budget_entries.call_args[0][1][0]
+        # Reset detected: daily = current period spend (not diff from prev)
+        assert row.daily_spend == Decimal("0.75")
+        assert row.cumulative_spend == Decimal("10.75")
+
+    @pytest.mark.asyncio
+    async def test_multiple_customers_produce_independent_rows(self, mock_session, async_session_ctx, mock_budget_repo):
+        """Multiple customer entries → independent budget rows with correct project names."""
+        service = _budget_only_service()
+        mock_budget_repo.get_all_keyed_by_id = AsyncMock(
+            return_value={
+                "cli": _make_budget("cli", "cli"),
+                "pm": _make_budget("pm", "premium_models"),
+            }
+        )
+
+        customer_entries = [
+            _make_customer_entry("alice@example.com_codemie_cli", "cli", Decimal("3.0")),
+            _make_customer_entry("bob@example.com_codemie_premium_models", "pm", Decimal("7.5")),
+        ]
+
+        with (
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: None if a else customer_entries,
+            ),
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
+                side_effect=lambda: async_session_ctx(),
+            ),
+        ):
+            count = await service.collect(target_date=date(2026, 3, 17))
+
+        assert count == 2
+        rows = service._tracking_repository.insert_budget_entries.call_args[0][1]
+        rows_by_project = {r.project_name: r for r in rows}
+        assert "alice@example.com" in rows_by_project
+        assert "bob@example.com" in rows_by_project
+        assert rows_by_project["alice@example.com"].budget_id == "cli"
+        assert rows_by_project["alice@example.com"].budget_category == "cli"
+        assert rows_by_project["bob@example.com"].budget_id == "pm"
+        assert rows_by_project["bob@example.com"].budget_category == "premium_models"
+
+    @pytest.mark.asyncio
+    async def test_no_customer_entries_skips_budget_path(self, mock_session, async_session_ctx):
+        """None from get_customer_list_spending → budget path skipped, 0 rows."""
+        service = _budget_only_service()
+
+        with (
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.asyncio.to_thread",
+                side_effect=lambda fn, *a: None,
+            ),
+            patch(
+                "codemie.service.spend_tracking.spend_collector_service.get_async_session",
+                side_effect=lambda: async_session_ctx(),
+            ),
+        ):
+            count = await service.collect(target_date=date(2026, 3, 17))
+
+        assert count == 0
+        service._tracking_repository.insert_budget_entries.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

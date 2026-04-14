@@ -39,15 +39,15 @@ class TestGetUserConversationsPaginated:
         row.conversation_id = conv_id
         row.conversation_name = name
         row.first_message = ""
-        row.folder = kwargs.get("folder", None)
+        row.folder = kwargs.get("folder")
         row.assistant_ids = kwargs.get("assistant_ids", ["a1"])
         row.initial_assistant_id = kwargs.get("initial_assistant_id", "a1")
         row.pinned = kwargs.get("pinned", False)
         row.update_date = kwargs.get("update_date", datetime(2025, 1, 15))
         row.date = kwargs.get("date", datetime(2025, 1, 10))
         row.is_workflow_conversation = kwargs.get("is_workflow_conversation", False)
-        row.very_first_msg_at = kwargs.get("very_first_msg_at", None)
-        row.very_last_msg_at = kwargs.get("very_last_msg_at", None)
+        row.very_first_msg_at = kwargs.get("very_first_msg_at")
+        row.very_last_msg_at = kwargs.get("very_last_msg_at")
         return row
 
     @patch("codemie.service.conversation_service.get_session")

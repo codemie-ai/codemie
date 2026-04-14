@@ -16,18 +16,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from datetime import date, datetime, time, timezone
-from decimal import Decimal, ROUND_HALF_UP
-from uuid import UUID
-from uuid import uuid4
+import re
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal
+from uuid import UUID, uuid4
 
 from codemie.clients.postgres import get_async_session
 from codemie.configs import logger
+from codemie.enterprise.litellm.budget_categories import derive_category_from_user_id
 from codemie.enterprise.litellm.dependencies import get_all_keys_spending, get_customer_list_spending
 from codemie.repository.application_repository import ApplicationRepository
+from codemie.repository.budget_repository import budget_repository
 from codemie.repository.cost_center_repository import cost_center_repository
 from codemie.repository.project_spend_tracking_repository import ProjectSpendTrackingRepository
 from codemie.rest_api.models.settings import CredentialTypes, LiteLLMCredentials, Settings
+from codemie.service.budget.budget_models import Budget
 from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 from codemie.service.settings.settings import SettingsService
 
@@ -125,10 +128,20 @@ class LiteLLMSpendCollectorService:
             )
             logger.debug(f"Loaded {len(prev_rows)} prior key baseline rows for delta calculation")
 
+            budgets_map = await budget_repository.get_all_keyed_by_id(session)
+            logger.debug(f"Loaded {len(budgets_map)} budget(s) for reset detection")
+
             rows_to_insert: list[ProjectSpendTracking] = []
             for api_key, (project_name, key_hash) in key_details.items():
                 row = await self._build_key_spend_row(
-                    api_key, project_name, key_hash, apps_by_name, cost_center_map, prev_rows, target_snapshot_at
+                    api_key,
+                    project_name,
+                    key_hash,
+                    apps_by_name,
+                    cost_center_map,
+                    prev_rows,
+                    target_snapshot_at,
+                    budgets_map,
                 )
                 if row is not None:
                     rows_to_insert.append(row)
@@ -169,6 +182,7 @@ class LiteLLMSpendCollectorService:
         cost_center_map: dict,
         prev_rows: dict[str, ProjectSpendTracking],
         target_snapshot_at: datetime,
+        budgets_map: dict[str, Budget] | None = None,
     ) -> ProjectSpendTracking | None:
         """Fetch LiteLLM spend for one API key and build a tracking row, or return None to skip.
 
@@ -180,6 +194,7 @@ class LiteLLMSpendCollectorService:
             cost_center_map: Cost center objects indexed by ID.
             prev_rows: Most recent stored rows per key_hash, for delta calculation.
             target_snapshot_at: Snapshot timestamp.
+            budgets_map: All budget rows keyed by budget_id, for reset detection.
 
         Returns:
             A ProjectSpendTracking row ready for insertion, or None if the entry should be skipped.
@@ -199,15 +214,16 @@ class LiteLLMSpendCollectorService:
 
         spending_payload = spending_result[0]
         current_budget_period_spend = self._extract_budget_period_spend(spending_payload)
-        current_budget_reset_at = self._extract_budget_reset_at(spending_payload)
+        budget_id = spending_payload.get("budget_id")
+        budget = budgets_map.get(budget_id) if (budgets_map and budget_id) else None
         prev_row = prev_rows.get(key_hash)
 
         try:
             daily_spend, cumulative_spend = self._compute_spend_snapshot(
                 current_budget_period_spend=current_budget_period_spend,
-                current_budget_reset_at=current_budget_reset_at,
                 prev_row=prev_row,
                 snapshot_at=target_snapshot_at,
+                budget=budget,
             )
         except InvalidSpendSnapshotError as exc:
             logger.warning(f"Skipping invalid spend snapshot for project {project_name!r}: {exc}")
@@ -218,7 +234,7 @@ class LiteLLMSpendCollectorService:
             f"budget_period_spend={current_budget_period_spend}, "
             f"lifetime_cumulative={cumulative_spend}, "
             f"prev_budget_period={prev_row.budget_period_spend if prev_row else 'n/a'}, "
-            f"daily_delta={daily_spend}, budget_reset_at={current_budget_reset_at}"
+            f"daily_delta={daily_spend}"
         )
 
         if daily_spend == Decimal("0"):
@@ -235,11 +251,8 @@ class LiteLLMSpendCollectorService:
             daily_spend=daily_spend,
             cumulative_spend=cumulative_spend,
             budget_period_spend=current_budget_period_spend,
-            budget_reset_at=current_budget_reset_at,
             budget_id=spending_payload.get("budget_id"),
-            soft_budget=self._extract_optional_decimal(spending_payload, "soft_budget"),
-            max_budget=self._extract_optional_decimal(spending_payload, "max_budget"),
-            budget_duration=spending_payload.get("budget_duration"),
+            budget_category=budget.budget_category if budget else None,
             spend_subject_type="key",
         )
 
@@ -275,19 +288,22 @@ class LiteLLMSpendCollectorService:
             )
             logger.debug(f"Loaded {len(prev_rows)} prior budget baseline rows for delta calculation")
 
+            budgets_map = await budget_repository.get_all_keyed_by_id(session)
+            logger.debug(f"Loaded {len(budgets_map)} budget(s) for reset detection")
+
             rows_to_insert: list[ProjectSpendTracking] = []
             for entry in customer_entries:
                 project_name = self._normalize_project_name(entry.user_id, entry.budget_id)
                 current_budget_period_spend = self._quantize_spend(Decimal(str(entry.spend)))
-                current_budget_reset_at = entry.budget_reset_at
+                budget = budgets_map.get(entry.budget_id)
                 prev_row = prev_rows.get((project_name, entry.budget_id))
 
                 try:
                     daily_spend, cumulative_spend = self._compute_spend_snapshot(
                         current_budget_period_spend=current_budget_period_spend,
-                        current_budget_reset_at=current_budget_reset_at,
                         prev_row=prev_row,
                         snapshot_at=target_snapshot_at,
+                        budget=budget,
                     )
                 except InvalidSpendSnapshotError as exc:
                     logger.warning(
@@ -299,7 +315,7 @@ class LiteLLMSpendCollectorService:
                 logger.debug(
                     f"Budget project '{project_name}' budget_id={entry.budget_id!r}: "
                     f"budget_period_spend={current_budget_period_spend}, "
-                    f"daily_delta={daily_spend}, budget_reset_at={current_budget_reset_at}"
+                    f"daily_delta={daily_spend}"
                 )
 
                 if daily_spend == Decimal("0"):
@@ -320,11 +336,10 @@ class LiteLLMSpendCollectorService:
                         daily_spend=daily_spend,
                         cumulative_spend=cumulative_spend,
                         budget_period_spend=current_budget_period_spend,
-                        budget_reset_at=current_budget_reset_at,
                         budget_id=entry.budget_id,
-                        soft_budget=Decimal(str(entry.soft_budget)) if entry.soft_budget is not None else None,
-                        max_budget=Decimal(str(entry.max_budget)) if entry.max_budget is not None else None,
-                        budget_duration=entry.budget_duration,
+                        budget_category=budget.budget_category
+                        if budget
+                        else derive_category_from_user_id(entry.user_id).value,
                         spend_subject_type="budget",
                     )
                 )
@@ -337,37 +352,40 @@ class LiteLLMSpendCollectorService:
 
     @staticmethod
     def _normalize_project_name(user_id: str, budget_id: str) -> str:
-        """Derive canonical project_name from LiteLLM customer user_id and budget_id.
+        """Derive canonical project_name (email) from LiteLLM customer user_id.
 
-        Rules:
-        - If budget_id is 'default', project_name is user_id as-is.
-        - Otherwise, strip the '_<budget_id>' suffix from user_id if present.
+        Uses the stable ``_codemie_{category.value}`` suffixes defined by
+        ``build_user_id()`` — independent of the operator-configurable budget_id.
 
         Examples:
-            'alice@example.com', 'default' -> 'alice@example.com'
-            'alice@example.com_codemie_cli', 'codemie_cli' -> 'alice@example.com'
+            'alice@example.com', 'default'         -> 'alice@example.com'
+            'alice@example.com_codemie_cli', *any* -> 'alice@example.com'
+            'alice@example.com_codemie_premium_models', *any* -> 'alice@example.com'
         """
-        if budget_id == "default":
-            return user_id
-        suffix = f"_{budget_id}"
-        if user_id.endswith(suffix):
-            return user_id[: -len(suffix)]
+        from codemie.enterprise.litellm.budget_categories import BudgetCategory
+
+        for category in BudgetCategory:
+            if category == BudgetCategory.PLATFORM:
+                continue
+            suffix = f"_codemie_{category.value}"
+            if user_id.endswith(suffix):
+                return user_id[: -len(suffix)]
         return user_id
 
     def _compute_spend_snapshot(
         self,
         current_budget_period_spend: Decimal,
-        current_budget_reset_at: datetime | None,
         prev_row: ProjectSpendTracking | None,
         snapshot_at: datetime,
+        budget: Budget | None = None,
     ) -> tuple[Decimal, Decimal]:
         """Compute budget-reset-aware delta and lifetime cumulative spend.
 
         Args:
             current_budget_period_spend: LiteLLM spend for the current budget window.
-            current_budget_reset_at: Timestamp of the next budget reset, if provided.
             prev_row: Most recent stored row for this subject before the current snapshot.
             snapshot_at: Current snapshot timestamp.
+            budget: Budget row from the budgets table, used for explicit reset detection.
 
         Returns:
             Tuple of ``(daily_spend, cumulative_spend)``.
@@ -382,17 +400,19 @@ class LiteLLMSpendCollectorService:
 
         prev_budget_period_spend = self._quantize_spend(prev_row.budget_period_spend)
         prev_cumulative_spend = self._quantize_spend(prev_row.cumulative_spend)
-        reset_happened = self._did_budget_reset(prev_row, current_budget_reset_at, snapshot_at)
 
-        if reset_happened:
+        if self._did_budget_reset(prev_row, budget, snapshot_at):
+            logger.debug(
+                f"Budget reset detected for project {prev_row.project_name!r} via budget table; "
+                f"using current period spend as daily delta"
+            )
             daily_spend = current_budget_period_spend
         elif current_budget_period_spend >= prev_budget_period_spend:
             daily_spend = current_budget_period_spend - prev_budget_period_spend
         else:
             logger.warning(
-                f"Budget-period spend decreased without reset metadata change for project "
-                f"{prev_row.project_name!r}: current={current_budget_period_spend} "
-                f"< prev={prev_budget_period_spend}; treating as reset"
+                f"Budget-period spend decreased for project {prev_row.project_name!r}: "
+                f"current={current_budget_period_spend} < prev={prev_budget_period_spend}; treating as reset"
             )
             daily_spend = current_budget_period_spend
 
@@ -406,23 +426,74 @@ class LiteLLMSpendCollectorService:
         return daily_spend, cumulative_spend
 
     @staticmethod
+    def _parse_budget_duration_to_delta(duration: str | None) -> timedelta | None:
+        """Convert a LiteLLM budget_duration string to a timedelta.
+
+        Handles named durations (daily, weekly, monthly, yearly) and
+        numeric-day patterns like ``7d`` or ``30d``.
+
+        Args:
+            duration: Budget duration string, e.g. ``"30d"``, ``"monthly"``.
+
+        Returns:
+            Corresponding timedelta, or None if the string is unrecognised.
+        """
+        if not duration:
+            return None
+        duration = duration.strip().lower()
+        _named: dict[str, timedelta] = {
+            "daily": timedelta(days=1),
+            "weekly": timedelta(weeks=1),
+            "monthly": timedelta(days=30),
+            "yearly": timedelta(days=365),
+        }
+        if duration in _named:
+            return _named[duration]
+        m = re.match(r"^(\d+)d$", duration)
+        if m:
+            return timedelta(days=int(m.group(1)))
+        return None
+
+    @staticmethod
     def _did_budget_reset(
         prev_row: ProjectSpendTracking,
-        current_budget_reset_at: datetime | None,
+        budget: Budget | None,
         snapshot_at: datetime,
     ) -> bool:
-        """Return True when the previous budget window ended before this snapshot."""
-        prev_budget_reset_at = prev_row.budget_reset_at
-        if prev_budget_reset_at is None:
+        """Return True if a budget period reset occurred between prev_row and snapshot_at.
+
+        Uses ``budget.budget_reset_at`` (next scheduled reset, from LiteLLM) and
+        ``budget.budget_duration`` to compute the most-recent past reset instant
+        (``last_reset = next_reset - duration``).  A reset is detected when that
+        instant falls strictly after the previous snapshot and at or before now.
+
+        Args:
+            prev_row: Most recently stored tracking row for this subject.
+            budget: Budget record from the budgets table, or None.
+            snapshot_at: Current snapshot timestamp.
+
+        Returns:
+            True if a budget reset occurred in the window (prev_row.spend_date, snapshot_at].
+        """
+        if budget is None or not budget.budget_reset_at or not budget.budget_duration:
             return False
 
-        if snapshot_at < prev_budget_reset_at:
+        next_reset = LiteLLMSpendCollectorService._parse_optional_datetime(budget.budget_reset_at)
+        if next_reset is None:
             return False
 
-        if current_budget_reset_at is None:
-            return True
+        duration_delta = LiteLLMSpendCollectorService._parse_budget_duration_to_delta(budget.budget_duration)
+        if duration_delta is None:
+            return False
 
-        return current_budget_reset_at != prev_budget_reset_at
+        last_reset = next_reset - duration_delta
+
+        prev_spend_date = prev_row.spend_date
+        if prev_spend_date.tzinfo is None:
+            prev_spend_date = prev_spend_date.replace(tzinfo=timezone.utc)
+        snap = snapshot_at if snapshot_at.tzinfo is not None else snapshot_at.replace(tzinfo=timezone.utc)
+
+        return prev_spend_date < last_reset <= snap
 
     @staticmethod
     def _extract_budget_period_spend(spending_payload: dict) -> Decimal:
@@ -432,15 +503,6 @@ class LiteLLMSpendCollectorService:
 
         info = spending_payload.get("info") or {}
         return Decimal(str(info.get("spend", 0)))
-
-    @classmethod
-    def _extract_budget_reset_at(cls, spending_payload: dict) -> datetime | None:
-        """Extract budget reset timestamp from normalized or raw LiteLLM payloads."""
-        if "budget_reset_at" in spending_payload:
-            return cls._parse_optional_datetime(spending_payload.get("budget_reset_at"))
-
-        info = spending_payload.get("info") or {}
-        return cls._parse_optional_datetime(info.get("budget_reset_at"))
 
     @staticmethod
     def _extract_optional_decimal(payload: dict, key: str) -> Decimal | None:

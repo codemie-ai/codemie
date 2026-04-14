@@ -60,20 +60,8 @@ class ProjectSpendTracking(SQLModel, table=True):
         sa_column=Column(Numeric(18, 9), nullable=False),
         default=Decimal("0"),
     )
-    budget_reset_at: Optional[datetime] = Field(
-        sa_column=Column(TIMESTAMP(timezone=True), nullable=True),
-        default=None,
-    )
     budget_id: Optional[str] = Field(default=None, nullable=True)
-    soft_budget: Optional[Decimal] = Field(
-        sa_column=Column(Numeric(18, 9), nullable=True),
-        default=None,
-    )
-    max_budget: Optional[Decimal] = Field(
-        sa_column=Column(Numeric(18, 9), nullable=True),
-        default=None,
-    )
-    budget_duration: Optional[str] = Field(default=None, nullable=True)
+    budget_category: Optional[str] = Field(default=None, nullable=True)
     spend_subject_type: Optional[str] = Field(default=None, nullable=True)
     # Server default NOW(); nullable in Python so insert dict can omit it and let DB fill it
     created_at: Optional[datetime] = Field(

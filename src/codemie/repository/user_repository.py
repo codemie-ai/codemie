@@ -195,6 +195,33 @@ class UserRepository:
                 projects_map[user_row.id].append(project_row)
         return projects_map
 
+    def fetch_budget_assignments_map(self, session: Session, user_ids: list[str]) -> dict[str, list[tuple]]:
+        """Bulk-load budget assignments with budget details for a set of user IDs.
+
+        Returns a dict mapping user_id to a list of (UserBudgetAssignment, Budget | None) tuples.
+        Budget details are resolved via a LEFT JOIN on the budgets table, mirroring the same
+        budget lookup pattern used in the projects list endpoint.
+        """
+        from codemie.service.budget.budget_models import Budget, UserBudgetAssignment
+
+        if not user_ids:
+            return {}
+
+        rows = session.exec(
+            select(UserDB, UserBudgetAssignment, Budget)
+            .outerjoin(UserBudgetAssignment, UserDB.id == UserBudgetAssignment.user_id)
+            .outerjoin(Budget, UserBudgetAssignment.budget_id == Budget.budget_id)
+            .where(UserDB.id.in_(user_ids))  # type: ignore[attr-defined]
+        ).all()
+
+        assignments_map: dict[str, list[tuple]] = {}
+        for user_row, assignment_row, budget_row in rows:
+            if user_row.id not in assignments_map:
+                assignments_map[user_row.id] = []
+            if assignment_row:
+                assignments_map[user_row.id].append((assignment_row, budget_row))
+        return assignments_map
+
     def count_active_superadmins(self, session: Session) -> int:
         """Count active SuperAdmin users
 
@@ -455,6 +482,19 @@ class UserRepository:
                 .exists()
             )
             query = query.where(project_exists)
+
+        if filters.budgets:
+            from codemie.service.budget.budget_models import UserBudgetAssignment
+
+            budget_exists = (
+                select(UserBudgetAssignment.user_id)
+                .where(
+                    UserBudgetAssignment.user_id == UserDB.id,
+                    UserBudgetAssignment.budget_id.in_(filters.budgets),  # type: ignore[attr-defined]
+                )
+                .exists()
+            )
+            query = query.where(budget_exists)
 
         return query
 

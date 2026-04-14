@@ -364,9 +364,11 @@ class TestCreateBodyStreamWithOptionalInjection:
         request_info = {"llm_model": "claude-opus-4", "session_id": "session-123", "request_id": "request-456"}
 
         with patch("codemie.enterprise.litellm.proxy_router.get_premium_username") as mock_get_premium_username:
-            mock_get_premium_username.return_value = "user@example.com_premium_models"
-            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
-                mock_config.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
+            mock_get_premium_username.return_value = "user@example.com_codemie_premium_models"
+            with patch(
+                "codemie.enterprise.litellm.proxy_router.get_category_budget_id",
+                return_value="premium_models",
+            ):
                 with patch("codemie.enterprise.litellm.proxy_router.check_user_budget") as mock_check_user_budget:
                     with patch(
                         "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes"
@@ -382,11 +384,11 @@ class TestCreateBodyStreamWithOptionalInjection:
 
         assert result == "stream"
         mock_check_user_budget.assert_called_once_with(
-            user_id="user@example.com_premium_models",
+            user_id="user@example.com_codemie_premium_models",
             budget_id="premium_models",
         )
         mock_inject.assert_called_once_with(
-            body_bytes=b"{}", user_id="user@example.com_premium_models", request_info=request_info
+            body_bytes=b"{}", user_id="user@example.com_codemie_premium_models", request_info=request_info
         )
 
     @pytest.mark.asyncio
@@ -431,9 +433,11 @@ class TestCreateBodyStreamWithOptionalInjection:
 
         with patch("codemie.enterprise.litellm.proxy_router.get_premium_username", return_value=None):
             with patch("codemie.enterprise.litellm.proxy_router.get_proxy_username") as mock_get_proxy_username:
-                mock_get_proxy_username.return_value = "user@example.com_cli_budget"
-                with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
-                    mock_config.LITELLM_CLI_BUDGET_NAME = "cli_budget"
+                mock_get_proxy_username.return_value = "user@example.com_codemie_cli"
+                with patch(
+                    "codemie.enterprise.litellm.proxy_router.get_category_budget_id",
+                    return_value="cli_budget",
+                ):
                     with patch("codemie.enterprise.litellm.proxy_router.check_user_budget") as mock_check_user_budget:
                         with patch(
                             "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes"
@@ -449,11 +453,11 @@ class TestCreateBodyStreamWithOptionalInjection:
 
         assert result == "stream"
         mock_check_user_budget.assert_called_once_with(
-            user_id="user@example.com_cli_budget",
+            user_id="user@example.com_codemie_cli",
             budget_id="cli_budget",
         )
         mock_inject.assert_called_once_with(
-            body_bytes=b"{}", user_id="user@example.com_cli_budget", request_info=request_info
+            body_bytes=b"{}", user_id="user@example.com_codemie_cli", request_info=request_info
         )
 
 
@@ -970,11 +974,14 @@ class TestBuildPremiumBudgetErrorBody:
         assert result is None
 
     def test_returns_friendly_message_for_premium_budget_exceeded(self):
-        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
-            mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
-            mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["opus", "claude-opus-4"]
+        with patch(
+            "codemie.enterprise.litellm.proxy_router.get_category_budget_id",
+            return_value="premium_models",
+        ):
+            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+                mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["opus", "claude-opus-4"]
 
-            result = _build_premium_budget_error_body(self._BUDGET_EXCEEDED_BODY)
+                result = _build_premium_budget_error_body(self._BUDGET_EXCEEDED_BODY)
 
         assert result is not None
         data = json.loads(result)
@@ -989,11 +996,14 @@ class TestBuildPremiumBudgetErrorBody:
         assert "https://docs.codemie.ai/user-guide/codemie-cli/" in msg
 
     def test_friendly_message_lists_all_premium_aliases(self):
-        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
-            mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
-            mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["model-a", "model-b", "model-c"]
+        with patch(
+            "codemie.enterprise.litellm.proxy_router.get_category_budget_id",
+            return_value="premium_models",
+        ):
+            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+                mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["model-a", "model-b", "model-c"]
 
-            result = _build_premium_budget_error_body(self._BUDGET_EXCEEDED_BODY)
+                result = _build_premium_budget_error_body(self._BUDGET_EXCEEDED_BODY)
 
         data = json.loads(result)
         msg = data["error"]["message"]
@@ -1002,11 +1012,14 @@ class TestBuildPremiumBudgetErrorBody:
         assert "model-c" in msg
 
     def test_friendly_message_when_aliases_empty(self):
-        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
-            mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
-            mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = []
+        with patch(
+            "codemie.enterprise.litellm.proxy_router.get_category_budget_id",
+            return_value="premium_models",
+        ):
+            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+                mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = []
 
-            result = _build_premium_budget_error_body(self._BUDGET_EXCEEDED_BODY)
+                result = _build_premium_budget_error_body(self._BUDGET_EXCEEDED_BODY)
 
         data = json.loads(result)
         assert "premium models" in data["error"]["message"]
@@ -1059,11 +1072,14 @@ class TestHandleErrorResponse:
         mock_response.aclose = AsyncMock()
 
         with patch("codemie.enterprise.litellm.proxy_router.is_premium_models_enabled", return_value=True):
-            with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
-                mock_cfg.LITELLM_PREMIUM_MODELS_BUDGET_NAME = "premium_models"
-                mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["claude-opus-4", "opus"]
+            with patch(
+                "codemie.enterprise.litellm.proxy_router.get_category_budget_id",
+                return_value="premium_models",
+            ):
+                with patch("codemie.enterprise.litellm.proxy_router.config") as mock_cfg:
+                    mock_cfg.LITELLM_PREMIUM_MODELS_ALIASES = ["claude-opus-4", "opus"]
 
-                result = await _handle_error_response(mock_response, {})
+                    result = await _handle_error_response(mock_response, {})
 
         assert result.status_code == 400
         data = json.loads(result.body)

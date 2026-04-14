@@ -240,6 +240,17 @@ class CodeMieUserDetail(BaseModel):
     deleted_at: Optional[datetime]
 
 
+class UserBudgetAssignmentInfo(BaseModel):
+    """Budget assignment summary for user list view."""
+
+    category: str
+    budget_id: str
+    budget_name: Optional[str] = None
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    budget_reset_at: Optional[str] = None
+
+
 class AdminUserListItem(BaseModel):
     """Subset of user fields for list view"""
 
@@ -253,6 +264,7 @@ class AdminUserListItem(BaseModel):
     auth_source: str
     last_login_at: Optional[datetime]
     projects: list[ProjectInfo] = Field(default_factory=list)
+    budget_assignments: list[UserBudgetAssignmentInfo] = Field(default_factory=list)
     date: Optional[datetime]  # Creation timestamp (from CommonBaseModel)
 
 
@@ -300,6 +312,7 @@ class UserListFilters(BaseModel):
     """Parsed filters for GET /users list endpoint."""
 
     projects: Optional[list[str]] = None
+    budgets: Optional[list[str]] = None
     user_type: Optional[str] = None
     is_active: Optional[bool] = None
     platform_role: Optional[PlatformRole] = None

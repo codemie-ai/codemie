@@ -1,0 +1,8 @@
+predefined_budgets:
+  - budget_id: default
+    name: Default Budget
+    description: Default platform budget for new LiteLLM customers.
+    soft_budget: 50.0
+    max_budget: 100.0
+    budget_duration: 30d
+    budget_category: platform

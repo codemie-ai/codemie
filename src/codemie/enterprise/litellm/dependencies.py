@@ -17,12 +17,14 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING, Optional
 
+from codemie.configs.budget_config import budget_config
 from codemie.configs import logger
 from codemie.enterprise.loader import HAS_LITELLM
 from codemie.enterprise.litellm.models import UserKeysSpending
 
 if TYPE_CHECKING:
     from codemie_enterprise.litellm import LiteLLMService
+    from codemie.enterprise.litellm.budget_categories import BudgetCategory
 
 # Constants
 _LITELLM_NOT_AVAILABLE_MSG = "LiteLLM not available"
@@ -89,6 +91,7 @@ def initialize_litellm_from_config() -> Optional["LiteLLMService"]:
         from codemie.enterprise import LiteLLMConfig, LiteLLMService
 
         # Create config from core settings
+        platform = next((b for b in budget_config.predefined_budgets if b.budget_category == "platform"), None)
         litellm_config = LiteLLMConfig(
             url=config.LITE_LLM_URL,
             master_key=config.LITE_LLM_MASTER_KEY,
@@ -100,10 +103,10 @@ def initialize_litellm_from_config() -> Optional["LiteLLMService"]:
             max_retries=config.LITELLM_MAX_RETRIES if hasattr(config, "LITELLM_MAX_RETRIES") else 3,
             customer_cache_ttl=config.LITELLM_CUSTOMER_CACHE_TTL,
             models_cache_ttl=config.LITELLM_MODELS_CACHE_TTL,
-            default_budget_id=config.DEFAULT_BUDGET_ID,
-            default_hard_budget_limit=config.DEFAULT_HARD_BUDGET_LIMIT,
-            default_soft_budget_limit=config.DEFAULT_SOFT_BUDGET_LIMIT,
-            default_budget_duration=config.DEFAULT_BUDGET_DURATION,
+            default_budget_id=platform.budget_id if platform else "",
+            default_hard_budget_limit=platform.max_budget if platform else 0.0,
+            default_soft_budget_limit=platform.soft_budget if platform else 0.0,
+            default_budget_duration=platform.budget_duration if platform else "30d",
         )
 
         # Create service
@@ -227,43 +230,30 @@ def require_litellm_enabled() -> None:
 # This avoids code duplication and ensures single source of truth.
 
 
-def ensure_litellm_default_budget():
+async def ensure_predefined_budgets() -> None:
+    """Force-create/update all predefined budgets at application startup.
+
+    Delegates to BudgetService.ensure_predefined_budgets() which keeps both DB
+    and LiteLLM in sync. Config is the source of truth — existing values are
+    overwritten to match the configured definitions.
+
+    Called once during application startup (in main.py lifespan) when
+    LLM_PROXY_BUDGET_CHECK_ENABLED is True.
     """
-    Ensure default budget exists in LiteLLM at application startup.
-
-    This function wraps the enterprise service call with error handling and metrics.
-    Called once during application startup (in main.py lifespan).
-
-    Raises:
-        LiteLLMBudgetException: If budget creation/verification fails
-
-    Usage:
-        # In main.py lifespan function:
-        if is_litellm_enabled():
-            ensure_litellm_default_budget()
-    """
-    from codemie.configs import logger
-    from codemie.core.exceptions import LiteLLMBudgetException
-    from codemie.service.monitoring.base_monitoring_service import send_log_metric
-    from codemie.service.monitoring.metrics_constants import LITE_LLM_CREATE_BUDGET
-
-    litellm = get_litellm_service_or_none()
-    if litellm is None:
-        logger.warning("LiteLLM service not available, skipping budget initialization")
+    if not is_litellm_enabled():
+        logger.info("LiteLLM not available or disabled, skipping predefined budget initialization")
         return
 
-    try:
-        budget = litellm.ensure_default_budget()
-        send_log_metric(LITE_LLM_CREATE_BUDGET, attributes={"budget_id": budget.budget_id})
-        logger.info(f"✓ LiteLLM default budget ensured: {budget.budget_id}")
+    from codemie.clients.postgres import get_async_session
+    from codemie.service.budget.budget_service import budget_service
 
+    try:
+        async with get_async_session() as session:
+            await budget_service.ensure_predefined_budgets(session)
+        logger.info("✓ Predefined budgets initialized")
     except Exception as e:
-        logger.error(f"✗ Failed to ensure default budget: {e}")
-        raise LiteLLMBudgetException(
-            message="Failed to initialize default LiteLLM budget",
-            details=str(e),
-            original_exc=e,
-        )
+        logger.error(f"✗ Failed to initialize predefined budgets: {e}")
+        raise
 
 
 def check_user_budget(user_id: str, budget_id: str | None = None):
@@ -376,25 +366,37 @@ def check_user_budget(user_id: str, budget_id: str | None = None):
         return None
 
 
+def get_category_budget_id(category: "BudgetCategory") -> str | None:
+    """Return the configured LiteLLM budget_id for a category, or None if not configured.
+
+    Looks up the predefined budgets list for a budget matching the given category.
+    Returns None if no budget with that category is configured.
+    """
+    for b in budget_config.predefined_budgets:
+        if b.budget_category == category.value:
+            return b.budget_id
+    return None
+
+
 @lru_cache(maxsize=1)
 def is_premium_models_enabled() -> bool:
-    """Return True when the premium models budget feature is active (budget name configured).
+    """Return True when a premium_models budget is configured in predefined budgets.
 
-    Result is cached for the process lifetime — the config value is set at startup and
-    does not change while the application is running.  Call
-    ``is_premium_models_enabled.cache_clear()`` in tests that patch the config value.
+    Result is cached for the process lifetime — config is set at startup and does not
+    change while the application is running. Call
+    ``is_premium_models_enabled.cache_clear()`` in tests that modify predefined budgets.
     """
-    from codemie.configs import config
+    from codemie.enterprise.litellm.budget_categories import BudgetCategory
 
-    return bool(config.LITELLM_PREMIUM_MODELS_BUDGET_NAME)
+    return get_category_budget_id(BudgetCategory.PREMIUM_MODELS) is not None
 
 
 @lru_cache(maxsize=1)
 def is_proxy_budget_enabled() -> bool:
-    """Return True when the proxy budget feature is active (budget name configured)."""
-    from codemie.configs import config
+    """Return True when a cli budget is configured in predefined budgets."""
+    from codemie.enterprise.litellm.budget_categories import BudgetCategory
 
-    return bool(config.LITELLM_CLI_BUDGET_NAME)
+    return get_category_budget_id(BudgetCategory.CLI) is not None
 
 
 @lru_cache(maxsize=256)
@@ -423,49 +425,52 @@ def is_premium_model(model: str) -> bool:
 def get_premium_username(user_email: str, model: str) -> str | None:
     """Derive the LiteLLM username for premium budget attribution.
 
-    Returns ``{user_email}_{budget_name}`` when the feature is enabled and *model*
-    is a premium model; otherwise returns ``None`` (caller keeps the standard username).
+    Returns the stable category-based user_id (``{user_email}_codemie_premium_models``)
+    when the feature is enabled and *model* is a premium model; otherwise ``None``.
+    The username uses a fixed category suffix, independent of the configured budget_id.
     """
-    from codemie.configs import config
+    from codemie.enterprise.litellm.budget_categories import BudgetCategory, build_user_id
 
-    if not is_premium_models_enabled():
+    if not is_premium_models_enabled() or not is_premium_model(model):
         return None
 
-    if not is_premium_model(model):
-        return None
-
-    return f"{user_email}_{config.LITELLM_PREMIUM_MODELS_BUDGET_NAME}"
+    return build_user_id(user_email, BudgetCategory.PREMIUM_MODELS)
 
 
 def get_proxy_username(user_email: str) -> str | None:
-    """Derive the LiteLLM username for proxy budget attribution."""
-    from codemie.configs import config
+    """Derive the LiteLLM username for proxy budget attribution.
+
+    Returns the stable category-based user_id (``{user_email}_codemie_cli``)
+    when the cli budget feature is enabled; otherwise ``None``.
+    """
+    from codemie.enterprise.litellm.budget_categories import BudgetCategory, build_user_id
 
     if not is_proxy_budget_enabled():
         return None
 
-    return f"{user_email}_{config.LITELLM_CLI_BUDGET_NAME}"
+    return build_user_id(user_email, BudgetCategory.CLI)
 
 
 def get_premium_customer_spending(user_email: str, on_raise: bool = False) -> dict | None:
-    """Get spending for the derived premium budget identity ``{user_email}_{budget_name}``.
+    """Get spending for the derived premium budget identity ``{user_email}_{budget_id}``.
 
-    Returns ``None`` when the premium models budget feature is disabled (budget name not
-    configured) or when the underlying LiteLLM service is unavailable.
+    Returns ``None`` when no premium_models budget is configured in predefined budgets
+    or when the underlying LiteLLM service is unavailable.
 
     Args:
         user_email: The authenticated user's email / LiteLLM username.
         on_raise: When True, re-raises backend errors instead of returning None.
     """
     from codemie.configs import logger
+    from codemie.enterprise.litellm.budget_categories import BudgetCategory
 
     if not is_premium_models_enabled():
-        logger.debug("Premium models budget name not configured, skipping premium spending lookup")
+        logger.debug("Premium models budget not configured, skipping premium spending lookup")
         return None
 
-    from codemie.configs import config
+    from codemie.enterprise.litellm.budget_categories import build_user_id
 
-    derived_id = f"{user_email}_{config.LITELLM_PREMIUM_MODELS_BUDGET_NAME}"
+    derived_id = build_user_id(user_email, BudgetCategory.PREMIUM_MODELS)
     logger.debug(f"Fetching premium customer spending for derived id: {derived_id}")
     return get_customer_spending(derived_id, on_raise=on_raise)
 

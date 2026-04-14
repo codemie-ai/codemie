@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,34 +15,40 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from codemie.clients.postgres import get_async_session
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.enterprise.litellm import require_litellm_enabled
+from codemie.enterprise.litellm.budget_categories import BudgetCategory
+from codemie.repository.budget_repository import budget_repository
 from codemie.rest_api.models.user_management import (
-    UserCreateRequest,
-    UserUpdateRequest,
-    UserListFilters,
-    CodeMieUserDetail,
-    AdminUserProject,
     AdminUserKnowledgeBase,
-    ProjectAccessRequest,
-    ProjectAccessUpdateRequest,
+    AdminUserProject,
+    CodeMieUserDetail,
     KnowledgeBaseAccessRequest,
     PaginatedUserListResponse,
+    ProjectAccessRequest,
+    ProjectAccessUpdateRequest,
+    UserCreateRequest,
+    UserListFilters,
+    UserUpdateRequest,
 )
 from codemie.rest_api.security.authentication import (
-    authenticate,
     admin_access_only,
+    authenticate,
     project_admin_or_super_admin_user_detail_access,
 )
 from codemie.rest_api.security.user import User
-from codemie.service.user.user_management_service import user_management_service
+from codemie.service.budget.budget_service import budget_service
 from codemie.service.user.password_management_service import password_management_service
 from codemie.service.user.user_access_service import user_access_service
+from codemie.service.user.user_management_service import user_management_service
 
 
 _USER_MGMT_NOT_ENABLED = "User management not enabled"
@@ -64,6 +70,45 @@ class AdminPasswordChangeRequest(BaseModel):
     """Request body for admin password change"""
 
     new_password: str
+
+
+class UserBudgetAssignRequest(BaseModel):
+    """Request body for setting per-category budget assignments on a user.
+
+    Pass null as the budget_id value to clear a category assignment.
+    """
+
+    assignments: dict[BudgetCategory, Optional[str]]
+
+
+class UserBudgetAssignmentResponse(BaseModel):
+    """A single per-category budget assignment for a user."""
+
+    category: BudgetCategory
+    budget_id: str
+    assigned_at: datetime
+    assigned_by: str
+
+
+class UserBudgetResetRequest(BaseModel):
+    """Request body for resetting user budget spending.
+
+    Pass specific categories to reset only those; omit or pass an empty list
+    to reset all active budget categories for the user.
+    """
+
+    categories: list[BudgetCategory] = Field(default_factory=list)
+
+
+class BulkUserBudgetSetRequest(BaseModel):
+    """Request body for bulk-setting budget assignments on multiple users.
+
+    Mirrors UserBudgetAssignRequest but for N users at once.
+    Pass null as the budget_id value to clear a category assignment.
+    """
+
+    user_ids: list[str]
+    assignments: dict[BudgetCategory, Optional[str]]
 
 
 # ===========================================
@@ -346,3 +391,117 @@ def remove_knowledge_base_access(
         raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
 
     return user_access_service.revoke_kb_access(user_id=user_id, kb_name=kb_name, actor_user_id=user.id)
+
+
+# ===========================================
+# Budget Assignment Management
+# ===========================================
+
+
+@router.put("/budgets/bulk", status_code=204)
+async def bulk_set_user_budgets(
+    data: BulkUserBudgetSetRequest,
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_access_only),
+):
+    """Bulk-set budget assignments for multiple users.
+
+    SuperAdmin only. Requires LiteLLM to be enabled.
+    Mirrors PUT /{user_id}/budgets but applies the same assignment map to all
+    supplied user IDs. Pass null to clear a category assignment.
+    """
+    if not config.ENABLE_USER_MANAGEMENT:
+        raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
+    require_litellm_enabled()
+    async with get_async_session() as session:
+        await budget_service.bulk_set_user_budgets(
+            session=session,
+            user_ids=data.user_ids,
+            assignments=data.assignments,
+            actor_id=user.id,
+        )
+        await session.commit()
+
+
+@router.get("/{user_id}/budgets", response_model=list[UserBudgetAssignmentResponse])
+async def get_user_budgets(
+    user_id: str,
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_access_only),
+):
+    """Get per-category budget assignments for a user.
+
+    SuperAdmin only. Requires LiteLLM to be enabled.
+    Returns an empty list if no assignments exist.
+    """
+    if not config.ENABLE_USER_MANAGEMENT:
+        raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
+    require_litellm_enabled()
+    async with get_async_session() as session:
+        rows = await budget_repository.get_user_category_assignments(session, user_id)
+        return [
+            UserBudgetAssignmentResponse(
+                category=BudgetCategory(row.category),
+                budget_id=row.budget_id,
+                assigned_at=row.assigned_at,
+                assigned_by=row.assigned_by,
+            )
+            for row in rows
+        ]
+
+
+@router.post("/{user_id}/budgets/reset", status_code=204)
+async def reset_user_budget_spending(
+    user_id: str,
+    data: UserBudgetResetRequest,
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_access_only),
+):
+    """Reset budget spending for a user by recreating their LiteLLM customer records.
+
+    SuperAdmin only. Requires LiteLLM to be enabled.
+    Deletes and recreates the user's LiteLLM customer entries, resetting the spend
+    counter to zero and unblocking them.
+
+    Pass specific categories in the request body to reset only those; omit the field
+    or send an empty list to reset all active budget categories for the user.
+    """
+    if not config.ENABLE_USER_MANAGEMENT:
+        raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
+    require_litellm_enabled()
+    async with get_async_session() as session:
+        await budget_service.reset_user_budget_spending(
+            session=session,
+            user_id=user_id,
+            actor_id=user.id,
+            actor_name=user.username,
+            categories=data.categories or None,
+        )
+
+
+@router.put("/{user_id}/budgets", status_code=204)
+async def set_user_budgets(
+    user_id: str,
+    data: UserBudgetAssignRequest,
+    user: User = Depends(authenticate),
+    _: None = Depends(admin_access_only),
+):
+    """Set per-category budget assignments for a user.
+
+    SuperAdmin only. Requires LiteLLM to be enabled.
+
+    Pass a budget_id to assign that budget for the category.
+    Pass null to clear an existing assignment for the category.
+    Categories not present in the request are left unchanged.
+    """
+    if not config.ENABLE_USER_MANAGEMENT:
+        raise ExtendedHTTPException(code=400, message=_USER_MGMT_NOT_ENABLED)
+    require_litellm_enabled()
+    async with get_async_session() as session:
+        await budget_service.assign_budget_to_user(
+            session=session,
+            user_id=user_id,
+            assignments=data.assignments,
+            actor_id=user.id,
+        )
+        await session.commit()

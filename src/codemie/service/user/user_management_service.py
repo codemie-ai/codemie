@@ -35,14 +35,15 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.user_repository import user_repository
 from codemie.service.user.authentication_service import invalidate_user_from_cache
 from codemie.rest_api.models.user_management import (
-    UserDB,
-    UserListFilters,
-    CodeMieUserDetail,
     AdminUserListItem,
+    CodeMieUserDetail,
     PaginatedUserListResponse,
     PaginationInfo,
-    ProjectInfo,
     PlatformRole,
+    ProjectInfo,
+    UserBudgetAssignmentInfo,
+    UserDB,
+    UserListFilters,
 )
 
 
@@ -293,7 +294,9 @@ class UserManagementService:
                 data=[], pagination=PaginationInfo(total=total, page=page, per_page=per_page)
             )
 
-        projects_map = user_repository.fetch_projects_map(session, [u.id for u in users])
+        user_ids = [u.id for u in users]
+        projects_map = user_repository.fetch_projects_map(session, user_ids)
+        budget_assignments_map = user_repository.fetch_budget_assignments_map(session, user_ids)
 
         # Story 10 Code Review R2: Filter pre-fetched projects_map instead of re-querying per user
         # This prevents per-user query amplification while applying visibility rules
@@ -315,6 +318,17 @@ class UserManagementService:
                 projects=[
                     ProjectInfo(name=up.project_name, is_project_admin=up.is_project_admin)
                     for up in filtered_projects_map.get(u.id, [])
+                ],
+                budget_assignments=[
+                    UserBudgetAssignmentInfo(
+                        category=a.category,
+                        budget_id=a.budget_id,
+                        budget_name=b.name if b else None,
+                        max_budget=b.max_budget if b else None,
+                        budget_duration=b.budget_duration if b else None,
+                        budget_reset_at=b.budget_reset_at if b else None,
+                    )
+                    for a, b in budget_assignments_map.get(u.id, [])
                 ],
                 date=u.date,
             )

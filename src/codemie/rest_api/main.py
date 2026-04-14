@@ -30,11 +30,11 @@ from codemie.enterprise.langfuse import (
     set_global_langfuse_service,
 )
 from codemie.enterprise.litellm import (
-    initialize_litellm_from_config,
-    set_global_litellm_service,
-    ensure_litellm_default_budget,
     close_llm_proxy_client,
+    ensure_predefined_budgets,
+    initialize_litellm_from_config,
     is_litellm_enabled,
+    set_global_litellm_service,
 )
 from codemie.enterprise.plugin import (
     initialize_plugin_from_config,
@@ -45,6 +45,7 @@ from codemie.configs.logger import set_logging_info, logger
 from codemie.core.constants import APP_DESCRIPTION
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
+from codemie.rest_api.routers import budget_router
 from codemie.rest_api.routers import (
     guardrail,
     index,
@@ -269,7 +270,6 @@ def _setup_litellm_features():
     if is_litellm_enabled():
         _initialize_litellm_models()
         if config.LLM_PROXY_BUDGET_CHECK_ENABLED:
-            ensure_litellm_default_budget()
             _setup_litellm_cache_cleanup_scheduler()
 
 
@@ -466,6 +466,8 @@ async def lifespan(app: FastAPI):
 
     # Setup LiteLLM features
     _setup_litellm_features()
+    if is_litellm_enabled() and config.LLM_PROXY_BUDGET_CHECK_ENABLED:
+        await ensure_predefined_budgets()
 
     # Initialize database and default data
     _initialize_database_and_defaults()
@@ -598,6 +600,7 @@ app.include_router(user_kata_progress.router)
 app.include_router(ai_kata.router)
 app.include_router(skill.router)
 app.include_router(dynamic_config.router)
+app.include_router(budget_router.router)
 app.include_router(sharepoint_oauth.router)
 
 # User management routers (EPMCDME-10160)

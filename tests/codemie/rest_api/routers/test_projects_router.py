@@ -1581,7 +1581,8 @@ def _make_budget_spend_row(
     budget_id: str = 'default',
     budget_period_spend: float = 3.50,
     cumulative_spend: float = 12.75,
-    soft_budget: float | None = 50.0,
+    max_budget: float | None = 50.0,
+    soft_budget: float | None = None,
     budget_reset_at: datetime | None = None,
 ) -> MagicMock:
     """Return a mock ProjectSpendTracking row with spend_subject_type='budget'."""
@@ -1591,8 +1592,8 @@ def _make_budget_spend_row(
     row.spend_subject_type = 'budget'
     row.budget_period_spend = budget_period_spend
     row.cumulative_spend = cumulative_spend
+    row.max_budget = max_budget
     row.soft_budget = soft_budget
-    row.max_budget = None
     row.budget_duration = 'monthly'
     row.budget_reset_at = budget_reset_at
     row.spend_date = datetime(2026, 4, 10, 12, 0, 0, tzinfo=UTC)
@@ -1619,6 +1620,7 @@ class TestPersonalProjectSpending:
     """Personal project owners can see their own spending summary and widget."""
 
     @patch('codemie.rest_api.routers.projects.config')
+    @patch('codemie.rest_api.routers.projects.budget_repository')
     @patch('codemie.rest_api.routers.projects.get_async_session')
     @patch('codemie.rest_api.routers.projects.get_session')
     @patch('codemie.rest_api.routers.projects.project_visibility_service')
@@ -1630,6 +1632,7 @@ class TestPersonalProjectSpending:
         mock_visibility_service,
         mock_get_session,
         mock_async_session,
+        mock_budget_repository,
         mock_config,
         regular_user,
     ):
@@ -1664,6 +1667,9 @@ class TestPersonalProjectSpending:
                 [] if spend_subject_type == 'key' else [budget_row]
             )
         )
+        mock_budget_obj = MagicMock()
+        mock_budget_obj.max_budget = 50.0
+        mock_budget_repository.get_all_keyed_by_id = AsyncMock(return_value={'default': mock_budget_obj})
 
         result = await list_projects(
             search=None,
@@ -1684,6 +1690,7 @@ class TestPersonalProjectSpending:
         assert item.spending.budget_limit == pytest.approx(50.0)
 
     @patch('codemie.rest_api.routers.projects.config')
+    @patch('codemie.rest_api.routers.projects.budget_repository')
     @patch('codemie.rest_api.routers.projects.get_async_session')
     @patch('codemie.rest_api.routers.projects.get_session')
     @patch('codemie.rest_api.routers.projects.project_visibility_service')
@@ -1695,6 +1702,7 @@ class TestPersonalProjectSpending:
         mock_visibility_service,
         mock_get_session,
         mock_async_session,
+        mock_budget_repository,
         mock_config,
         regular_user,
     ):
@@ -1713,11 +1721,15 @@ class TestPersonalProjectSpending:
             budget_id='default',
             budget_period_spend=3.50,
             cumulative_spend=12.75,
-            soft_budget=50.0,
+            max_budget=50.0,
         )
         mock_async_session.return_value = AsyncMock()
         mock_spend_repo.get_latest_key_spending_for_project = AsyncMock(return_value=None)
         mock_spend_repo.get_latest_budget_rows_for_project = AsyncMock(return_value=[budget_row])
+        mock_default_budget = MagicMock()
+        mock_default_budget.max_budget = 50.0
+        mock_default_budget.budget_reset_at = None
+        mock_budget_repository.get_all_keyed_by_id = AsyncMock(return_value={'default': mock_default_budget})
 
         result = await get_project_detail(
             request=MagicMock(method='GET', url=SimpleNamespace(path=f'/v1/projects/{personal_name}')),
@@ -1734,6 +1746,7 @@ class TestPersonalProjectSpending:
         assert result.spending.budget_limit == pytest.approx(50.0)
 
     @patch('codemie.rest_api.routers.projects.config')
+    @patch('codemie.rest_api.routers.projects.budget_repository')
     @patch('codemie.rest_api.routers.projects.get_async_session')
     @patch('codemie.rest_api.routers.projects.get_session')
     @patch('codemie.rest_api.routers.projects.project_visibility_service')
@@ -1745,6 +1758,7 @@ class TestPersonalProjectSpending:
         mock_visibility_service,
         mock_get_session,
         mock_async_session,
+        mock_budget_repository,
         mock_config,
         regular_user,
     ):
@@ -1763,12 +1777,13 @@ class TestPersonalProjectSpending:
                 personal_name, budget_id='default', budget_period_spend=3.50, cumulative_spend=12.75
             ),
             _make_budget_spend_row(
-                personal_name, budget_id='premium', budget_period_spend=1.20, cumulative_spend=4.80, soft_budget=20.0
+                personal_name, budget_id='premium', budget_period_spend=1.20, cumulative_spend=4.80, max_budget=20.0
             ),
         ]
         mock_async_session.return_value = AsyncMock()
         mock_spend_repo.get_latest_key_spending_for_project = AsyncMock(return_value=None)
         mock_spend_repo.get_latest_budget_rows_for_project = AsyncMock(return_value=rows)
+        mock_budget_repository.get_all_keyed_by_id = AsyncMock(return_value={})
 
         result = await get_project_detail(
             request=MagicMock(method='GET', url=SimpleNamespace(path=f'/v1/projects/{personal_name}')),
