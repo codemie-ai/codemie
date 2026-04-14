@@ -188,6 +188,19 @@ def _should_wrap_llm_client(llm_model_details: LLMModel, llm: Any) -> bool:
     return not (hasattr(llm, 'model_name') and llm.model_name)
 
 
+def _resolve_user_email(user_email: str | None) -> str | None:
+    # Context variable may be "unknown"/"−"/empty when tools create LLMs at toolkit init
+    # (before agent sets logging context). Fall back to request.state.user for correct
+    # LiteLLM budget attribution. Safe because all user contexts point to same user.
+    if not user_email or user_email in ("-", "unknown"):
+        from codemie.rest_api.security.user_context import get_current_user
+
+        current_user = get_current_user()
+        if current_user:
+            return current_user.username or current_user.id
+    return user_email
+
+
 def get_llm_by_credentials(
     llm_model: str = llm_service.default_llm_model,
     temperature: Optional[float] = None,
@@ -200,7 +213,7 @@ def get_llm_by_credentials(
     llm_model_details = llm_service.get_model_details(llm_model)
 
     context = litellm_context.get(None)
-    user_email = current_user_email.get()
+    user_email = _resolve_user_email(current_user_email.get())
 
     litellm_llm = get_litellm_chat_model(
         llm_model_details=llm_model_details,
