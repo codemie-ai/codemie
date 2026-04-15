@@ -26,7 +26,6 @@ A Helm chart for AI/Run API
 | customEnv | list | `[]` | List of custom extra environment variables to be used by the AI/Run API Use this to add or override environment variables |
 | dsPool.argoRollout.enabled | bool | `false` | Enable Argo Rollouts instead of standard Kubernetes Deployment for ds-pool |
 | dsPool.argoRollout.scaleDownDelaySeconds | int | `120` | The time to wait before scaling down the old replica set |
-| dsPool.customEnv | list | `[]` | Additional custom env vars merged after customEnv |
 | dsPool.enabled | bool | `false` | Enable a separate deployment/rollout for ds-pool processing |
 | dsPool.extraEnv | list | `[]` | Additional env vars merged after extraEnv + customEnv (e.g. DATASOURCE_WORKER_ONLY=true) |
 | dsPool.ingress.annotations | object | `{"nginx.ingress.kubernetes.io/auth-response-headers":"X-Auth-Request-Access-Token,Authorization","nginx.ingress.kubernetes.io/auth-signin":"https://$host/oauth2/start?rd=$escaped_request_uri","nginx.ingress.kubernetes.io/auth-url":"http://oauth2-proxy.oauth2-proxy.svc.cluster.local:80/oauth2/auth","nginx.ingress.kubernetes.io/proxy-body-size":"900m","nginx.ingress.kubernetes.io/proxy-read-timeout":"600","nginx.ingress.kubernetes.io/rewrite-target":"/v1/index/$1"}` | Additional ingress annotations |

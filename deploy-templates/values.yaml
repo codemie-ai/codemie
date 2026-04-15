@@ -309,10 +309,6 @@ dsPool:
   # @default -- `[]`
   extraEnv: []
 
-  # -- Additional custom env vars merged after customEnv
-  # @default -- `[]`
-  customEnv: []
-
   # -- Resource limits and requests for ds-pool pods
   resources:
     limits:

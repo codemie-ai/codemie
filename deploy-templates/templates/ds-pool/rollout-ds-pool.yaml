@@ -72,9 +72,6 @@ spec:
             {{- with .Values.dsPool.extraEnv }}
               {{- toYaml . | nindent 12 }}
             {{- end }}
-            {{- with .Values.dsPool.customEnv }}
-              {{- toYaml . | nindent 12 }}
-            {{- end }}
           volumeMounts:
             {{- with .Values.extraVolumeMounts }}
             {{- tpl . $ | nindent 12 }}
