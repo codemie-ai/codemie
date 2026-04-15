@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, Optional
 
 from langchain_core.documents import Document
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
 
 from codemie.chains.kb_sources_selector_chain import KBSourcesSelectorChain
@@ -57,6 +60,9 @@ class SearchAndRerankKB(SearchAndRerankBase):
         llm_model: The LLM model to use for source selection.
         top_k: Number of top results to return.
         request_id: Unique identifier for the request.
+        routing_config: Optional RunnableConfig used when invoking the LLM routing chain.
+            Pass a config with thought-emitting callbacks filtered out to prevent spurious
+            thought events from the internal LLM routing step.
     """
 
     query: str
@@ -64,6 +70,7 @@ class SearchAndRerankKB(SearchAndRerankBase):
     llm_model: str
     top_k: int
     request_id: str
+    routing_config: RunnableConfig | None = field(default=None)
 
     # Class constants
     DEFAULT_SEARCH_SIZE: ClassVar[int] = 100
@@ -97,7 +104,7 @@ class SearchAndRerankKB(SearchAndRerankBase):
         """
         return 'source', 'source', 'chunk_num'
 
-    def execute(self, routing_field_name: Optional[str] = None) -> list[Document]:
+    def execute(self, routing_field_name: Optional[str] = None) -> tuple[list[Document], list[str]]:
         """
         Execute the search and rerank process.
 
@@ -121,7 +128,7 @@ class SearchAndRerankKB(SearchAndRerankBase):
         search_results.extend(self._text_search(doc_paths))
 
         # Use reciprocal rank fusion to rerank results
-        return self._rrf_fusion(search_results, doc_paths)
+        return self._rrf_fusion(search_results, doc_paths), doc_paths
 
     @observe(name="rrf_fusion")
     def _rrf_fusion(self, search_results: list[tuple[Document, Any, Any]], doc_paths: list[str]) -> list[Document]:
@@ -252,7 +259,7 @@ class SearchAndRerankKB(SearchAndRerankBase):
 
         try:
             # Get the appropriate LLM model
-            llm = get_llm_by_credentials(llm_model=self.llm_model, request_id=self.request_id)
+            llm = get_llm_by_credentials(llm_model=self.llm_model, request_id=self.request_id, streaming=False)
 
             # Create the search chain with structured output
             search_chain = KB_SOURCES_SELECTOR_PROMPT | llm.with_structured_output(LLMSourcesRouting)

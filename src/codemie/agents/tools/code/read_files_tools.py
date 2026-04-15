@@ -41,7 +41,7 @@ class FileResult(TypedDict):
 
 
 def build_chain(llm_model: str, request_id: str):
-    llm = get_llm_by_credentials(llm_model=llm_model, request_id=request_id)
+    llm = get_llm_by_credentials(llm_model=llm_model, request_id=request_id, streaming=False)
     summary_chain = CODE_SUMMARY_PROMPT | llm | StrOutputParser()
     return summary_chain
 

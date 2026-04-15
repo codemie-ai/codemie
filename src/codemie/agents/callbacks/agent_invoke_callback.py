@@ -19,6 +19,11 @@ from langchain_core.agents import AgentAction, AgentFinish
 from langchain_core.callbacks import StreamingStdOutCallbackHandler
 from langchain_core.outputs import LLMResult
 
+from codemie.agents.callbacks.utils.name_resolver import (
+    NameResolver,
+    NoOpNameResolver,
+    resolve_tool_display_name,
+)
 from codemie.agents.callbacks.callback_utils import (
     _build_tool_metadata,
     _summarize_tool_output,
@@ -45,15 +50,16 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
 
     GENERIC_TOOL_NAME = "CodeMie Thoughts"
 
-    def __init__(self):
+    def __init__(self, name_resolver: NameResolver | None = None):
         super().__init__()
+        self.name_resolver = name_resolver or NoOpNameResolver()
         self.parent_id: Optional[str] = None
         self._current_thought: Optional[Thought] = None
         self.thoughts: List[Dict[str, Any]] = []
 
     @property
     def current_thought(self):
-        return self._current_thought or None
+        return self._current_thought
 
     def thought_processing(self, thought: Optional[Thought]) -> None:
         """
@@ -99,10 +105,12 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
 
             self.thought_processing(self.current_thought)
 
-        tool_name = tool_name.replace('_', ' ').title()
+        # Resolve display name (handles handoff tool name mapping)
+        display_name = resolve_tool_display_name(tool_name, self.name_resolver)
+
         self._current_thought = Thought(
             id=str(uuid.uuid4()),
-            author_name=tool_name,
+            author_name=display_name,
             parent_id=self.parent_id,
             author_type=ThoughtAuthorType.Tool.value,
             output_format=output_format,
@@ -213,7 +221,6 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
         self._debug(f"On Text: {text}")
 
     def _debug(self, msg: str) -> None:
-        """Debug with logging info"""
         logger.debug(msg)
 
     def _escape_message(self, message: str) -> str:

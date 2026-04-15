@@ -65,6 +65,9 @@ METADATA_SOURCE = "metadata.source"
 # MCP image storage
 MCP_IMAGES_SUBDIR = "mcp_images"
 
+# Supervisor handoff tool prefix for LangGraph agents
+SUPERVISOR_HANDOFF_TOOL_PREFIX = "transfer_to"
+
 
 ModelTypes = LLMService(llm_config).create_model_types_enum()
 

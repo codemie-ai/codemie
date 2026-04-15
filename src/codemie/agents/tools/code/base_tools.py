@@ -72,7 +72,7 @@ class SearchCodeRepoBaseToolMixin(CodeRepoBaseToolMixin):
         llm_model: str,
         keywords_list: Optional[List[str]] = None,
         limit_docs_count: Optional[int] = None,
-    ) -> List[Document]:
+    ) -> tuple[List[Document], list[str]]:
         """
         Filters documents by relevance for a given query, ensuring each batch of
         documents does not exceed 70,000 tokens.
@@ -91,7 +91,7 @@ class SearchCodeRepoBaseToolMixin(CodeRepoBaseToolMixin):
             )
             if limit_docs_count:
                 logger.debug(f"Filtering documents limited to count: {limit_docs_count}")
-            llm = get_llm_by_credentials(llm_model=llm_model, request_id=request_id)
+            llm = get_llm_by_credentials(llm_model=llm_model, request_id=request_id, streaming=False)
             filter_chain = CODE_FILTER_RELEVANCE_PROMPT | llm.with_structured_output(FilteredDocuments)
             logger.debug(
                 f"Initial documents: "
@@ -102,6 +102,7 @@ class SearchCodeRepoBaseToolMixin(CodeRepoBaseToolMixin):
                 documents, max_tokens=self.max_tokens_per_batch, calculate_tokens_count=calculate_tokens_count
             )
             final_filtered_documents = []
+            all_routing_sources: list[str] = []
             for batch in batches:
                 logger.debug(
                     f"Initial count: {len(batch)}, "
@@ -109,7 +110,7 @@ class SearchCodeRepoBaseToolMixin(CodeRepoBaseToolMixin):
                         '\n'.join([f"{doc.metadata['source']}_{doc.metadata.get('chunk_num', '')}" for doc in batch])
                     }"
                 )
-                filtered_documents = self._filter_batch_by_relevance(
+                filtered_documents, batch_sources = self._filter_batch_by_relevance(
                     batch, query, filter_chain, keywords_list, limit_docs_count
                 )
                 logger.debug(
@@ -119,13 +120,14 @@ class SearchCodeRepoBaseToolMixin(CodeRepoBaseToolMixin):
                     }"
                 )
                 final_filtered_documents.extend(filtered_documents)
+                all_routing_sources.extend(batch_sources)
 
             logger.debug(f"Filtered sources size: {len(final_filtered_documents)}, docs: {final_filtered_documents}")
 
-            return final_filtered_documents
+            return final_filtered_documents, all_routing_sources
         except Exception as e:
             logger.error(f"Error filtering documents by relevance: {str(e)}")
-            return documents
+            return documents, []
 
     def _filter_and_format_documents(self, documents: List[Document], calculate_tokens_count: Callable) -> str:
         """
@@ -183,7 +185,7 @@ class SearchCodeRepoBaseToolMixin(CodeRepoBaseToolMixin):
         filter_chain,
         keywords_list: list[str] | None,
         limit_docs_count: int | None,
-    ) -> List[Document]:
+    ) -> tuple[List[Document], list[str]]:
         """
         Filters a batch of documents by relevance using the filter chain.
 
@@ -193,7 +195,7 @@ class SearchCodeRepoBaseToolMixin(CodeRepoBaseToolMixin):
             filter_chain: The filter chain to be used for filtering.
 
         Returns:
-            List[Document]: A list of documents filtered by relevance.
+            tuple[List[Document], list[str]]: Filtered documents and the routing sources selected by the LLM.
         """
         documents_str = "\n".join(
             [
@@ -219,4 +221,4 @@ class SearchCodeRepoBaseToolMixin(CodeRepoBaseToolMixin):
             if f"{doc.metadata['source']}_{doc.metadata.get('chunk_num', '')}" in filtered_sources.sources
         ]
 
-        return filtered_documents
+        return filtered_documents, filtered_sources.sources

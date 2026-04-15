@@ -168,7 +168,9 @@ class TestSearchAndRerankKB:
         result = kb_instance._get_llm_sources(self.routing_field_name)
 
         # Verify get_llm_by_credentials was called once with correct parameters
-        get_llm_mock.assert_called_once_with(llm_model=kb_instance.llm_model, request_id=kb_instance.request_id)
+        get_llm_mock.assert_called_once_with(
+            llm_model=kb_instance.llm_model, request_id=kb_instance.request_id, streaming=False
+        )
 
         # Additional assertions
         assert result == ["source1.py"]
@@ -260,9 +262,10 @@ class TestSearchAndRerankKB:
         expected_result = [Document(page_content="final result", metadata={"source": "final_source"})]
         rrf_mock.return_value.execute.return_value = expected_result
 
-        result = kb_instance.execute()
+        docs, doc_paths = kb_instance.execute()
 
-        assert result == expected_result
+        assert docs == expected_result
+        assert doc_paths == ['test_source']
 
         # The actual implementation combines the knn and text results together
         # Based on the error message, we need to adjust our expected arguments to match reality
@@ -306,10 +309,11 @@ class TestSearchAndRerankKB:
         rrf_mock.return_value.execute.return_value = expected_results
 
         # Call execute with the custom routing field
-        result = kb_instance.execute(routing_field_name=custom_routing_field)
+        docs, doc_paths = kb_instance.execute(routing_field_name=custom_routing_field)
 
         # Verify the results
-        assert result == expected_results
+        assert docs == expected_results
+        assert doc_paths == ['doc1.py', 'doc2.py']
 
         # Assert all methods were called with correct parameters
         knn_search_mock.assert_called_once()
@@ -342,10 +346,11 @@ class TestSearchAndRerankKB:
         rrf_mock.return_value.execute.return_value = []  # Empty results from RRF
 
         # Call execute
-        result = kb_instance.execute()
+        docs, doc_paths = kb_instance.execute()
 
         # Verify empty result
-        assert result == []
+        assert docs == []
+        assert doc_paths == []
 
         # Verify RRF was called with empty lists
         rrf_mock.assert_called_once_with(
@@ -406,11 +411,12 @@ class TestSearchAndRerankKB:
         rrf_mock.return_value.execute.return_value = top_k_results
 
         # Call execute
-        result = kb_instance.execute()
+        docs, doc_paths = kb_instance.execute()
 
         # Verify results
-        assert result == top_k_results
-        assert len(result) == kb_instance.top_k
+        assert docs == top_k_results
+        assert len(docs) == kb_instance.top_k
+        assert doc_paths == source_paths
 
         # Verify RRF was called with all documents
         rrf_mock.assert_called_once()
@@ -597,7 +603,9 @@ class TestSearchAndRerankKB:
         assert result == expected_sources
 
         # Verify LLM was called with correct parameters
-        get_llm_mock.assert_called_once_with(llm_model=kb_instance.llm_model, request_id=kb_instance.request_id)
+        get_llm_mock.assert_called_once_with(
+            llm_model=kb_instance.llm_model, request_id=kb_instance.request_id, streaming=False
+        )
 
         # Verify structured output was configured correctly
         llm_mock.with_structured_output.assert_called_once_with(LLMSourcesRouting)

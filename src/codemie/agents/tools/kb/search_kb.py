@@ -20,6 +20,8 @@ from langchain_core.documents import Document
 from codemie_tools.base.constants import SOURCE_DOCUMENT_KEY, SOURCE_FIELD_KEY, FILE_CONTENT_FIELD_KEY
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.models import ToolMetadata
+from codemie.agents.callbacks.agent_invoke_callback import AgentInvokeCallback
+from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
 from codemie.agents.utils import adapt_tool_name
 from codemie.configs import logger
 from codemie.core.constants import REQUEST_ID
@@ -30,6 +32,8 @@ from codemie.service.search_and_rerank import SearchAndRerankKB
 from codemie.service.search_and_rerank.marketplace import SearchAndRerankMarketplace
 from codemie.service.constants import FullDatasourceTypes
 from codemie.templates.knowledge_base_prompt import LLM_ROUTING_KB_PROMPT
+
+_SUPPRESSED_CALLBACK_TYPES = AgentStreamingCallback | AgentInvokeCallback
 
 
 SEARCH_KB_TOOL = ToolMetadata(
@@ -120,6 +124,8 @@ class SearchKBTool(CodeMieTool):
 
     def format_response(self, documents: List[Document]):
         try:
+            if isinstance(documents, tuple):
+                return str(documents[1]) + "\n" + "\n".join(self.format_document(doc) for doc in documents[0])
             return "\n".join(self.format_document(doc) for doc in documents)
         except Exception as e:
             logger.error(f"Error while formatting response: {e}")
@@ -127,7 +133,7 @@ class SearchKBTool(CodeMieTool):
 
     def process_llm_routing_index(self, query: str, kb_index):
         request_id = self.metadata.get(REQUEST_ID)
-        llm = get_llm_by_credentials(llm_model=self.llm_model, request_id=request_id)
+        llm = get_llm_by_credentials(llm_model=self.llm_model, request_id=request_id, streaming=False)
         processor = GoogleDocDatasourceProcessor(
             datasource_name=kb_index.repo_name,
             project_name=kb_index.project_name,
@@ -142,7 +148,7 @@ class SearchKBTool(CodeMieTool):
         selected_docs = processor.get_documents_by_checksum(selected_sections.sections)
         documents = list(selected_docs.values())
 
-        final_response = "\n".join(
+        docs_content = "\n".join(
             [
                 f"\n{SOURCE_DOCUMENT_KEY}\n"
                 f"{SOURCE_FIELD_KEY}{doc['title']}\n"
@@ -151,7 +157,7 @@ class SearchKBTool(CodeMieTool):
             ]
         )
 
-        return final_response
+        return str(selected_sections.sections) + "\n" + docs_content
 
     def process_knowledge_base_bedrock_index(self, query: str, kb_index: IndexInfo):
         # Import here to avoid circular imports

@@ -18,6 +18,7 @@ from time import time
 from typing import Any, List, Optional
 import uuid
 from uuid import UUID
+import hashlib
 
 import langgraph_supervisor.supervisor
 
@@ -60,7 +61,7 @@ from codemie.core.constants import (
     ASSISTANT_ID,
     PROJECT,
     OUTPUT_FORMAT,
-    ToolNamePrefix,
+    SUPERVISOR_HANDOFF_TOOL_PREFIX,
 )
 from codemie.core.dependecies import get_llm_by_credentials
 from codemie.core.models import ChatMessage, AssistantChatRequest
@@ -172,7 +173,7 @@ class LangGraphAgent(AbstractAgent):
     # This is problematic because the agent's execution
     # should remain independent when instance methods are used.
     MAX_CONCURRENCY = 10000
-    SUPERVISOR_HANDOFF_TOOL_PREFIX = "transfer_to"
+    SUPERVISOR_HANDOFF_TOOL_PREFIX = SUPERVISOR_HANDOFF_TOOL_PREFIX
     # Maximum allowed length for assistant (agent) name after normalization
     ASSISTANT_NAME_MAX_LENGTH = 64
 
@@ -236,8 +237,9 @@ class LangGraphAgent(AbstractAgent):
         self.output_schema = self._preprocess_output_schema(output_schema) if output_schema else None
         self.assistant = assistant
         self.override_global_checkpointer = override_global_checkpointer
-        self.trace_context = trace_context  # Store for trace unification
+        self.trace_context = trace_context
         self._current_llm_run_id: uuid.UUID | None = None  # tracks active LLM invocation
+        self._sub_assistant_name_mapping: dict[str, str] = {}
         self.history_compaction_pre_model_hook = (
             ConversationHistoryCompactionService.build_langgraph_pre_model_hook(
                 llm_model=llm_model,
@@ -255,7 +257,6 @@ class LangGraphAgent(AbstractAgent):
         self.tool_selection_limit = tool_selection_limit or config.TOOL_SELECTION_LIMIT
 
         set_logging_info(uuid=request_uuid, user_id=user.id, user_email=user.username)
-        self.agent_name = agent_name
         self.verbose = verbose
         self.is_react = is_react
         self.stream_steps = stream_steps
@@ -281,10 +282,7 @@ class LangGraphAgent(AbstractAgent):
         # Don't pre-bind tools when using smart tool selection (tools are bound inside create_react_agent)
         # For multi agents, tools binding happens inside create_supervisor
         should_prebind_tools = (
-            self.tools
-            and parallel_tool_calling
-            and not self.subagents
-            and not self.smart_tool_selection_enabled  # NEW: Don't pre-bind for smart tool selection
+            self.tools and parallel_tool_calling and not self.subagents and not self.smart_tool_selection_enabled
         )
 
         if should_prebind_tools:
@@ -359,42 +357,54 @@ class LangGraphAgent(AbstractAgent):
                 continue
 
             # Normalize agent name using existing method
-            normalized_name = self.format_assistant_name(agent_name)
+            # This normalized name MUST match the subagent's internal name in the graph
+            normalized_agent_name = self.format_assistant_name(agent_name)
+
+            # Truncate ONLY for the tool name to fit within 64 char limit
+            # The agent_name parameter must use normalized (not truncated) to match the actual subagent
+            normalized_handoff_tool_name = f"{self.SUPERVISOR_HANDOFF_TOOL_PREFIX}_{normalized_agent_name}"[
+                : self.ASSISTANT_NAME_MAX_LENGTH
+            ]
+            normalized_handoff_agent_name = normalized_handoff_tool_name[len(self.SUPERVISOR_HANDOFF_TOOL_PREFIX) + 1 :]
+
+            # Store mapping from truncated tool name to original name for UI display
+            # Callbacks receive the tool name (which may be truncated), so we need this mapping
+            self._sub_assistant_name_mapping[normalized_handoff_agent_name] = agent_name
 
             # Create handoff tool with description
             # Add "Sub-assistant" prefix if description exists, otherwise use default message
             final_description = f"Sub-assistant: {description}" if description else f'Hand off task to {agent_name}'
             handoff_tool = create_handoff_tool(
-                agent_name=normalized_name,
-                name=f"{self.SUPERVISOR_HANDOFF_TOOL_PREFIX}_{normalized_name}",
+                agent_name=normalized_handoff_agent_name,  # Use normalized name to match subagent's internal name
+                name=normalized_handoff_tool_name,  # Truncate only the tool name
                 description=final_description,
             )
-
             handoff_tools.append(handoff_tool)
             logger.debug(f"Created handoff tool for {agent_name}: {description}")
 
         return handoff_tools
 
+    def create_handoff_tool_name(self, agent_name: str) -> str:
+        return f"{self.SUPERVISOR_HANDOFF_TOOL_PREFIX}_{agent_name}"
+
     def configure_callbacks(self) -> List[BaseCallbackHandler]:
-        # Initialize and prepare callbacks
         callbacks = list(self.callbacks or [])
-        agent_streaming_callback = AgentStreamingCallback(self.thread_generator)
+        agent_streaming_callback = AgentStreamingCallback(self.thread_generator, name_resolver=self)
         default_callbacks = [
             MonitoringCallback(),
             self.tool_error_callback,
-            *([agent_streaming_callback] if self.stream_steps and self.thread_generator else [AgentInvokeCallback()]),
+            *(
+                [agent_streaming_callback]
+                if self.stream_steps and self.thread_generator
+                else [AgentInvokeCallback(name_resolver=self)]
+            ),
         ]
 
         if self.stream_steps and self.thread_generator:
-            self.supervisor_callbacks.append(AgentStreamingCallback(self.thread_generator))
-        # Add unique default callbacks
+            # For supervisor callbacks, use a separate instance so it has access to the supervisor's name mapping.
+            supervisor_callback = AgentStreamingCallback(self.thread_generator, name_resolver=self)
+            self.supervisor_callbacks.append(supervisor_callback)
         callbacks.extend(callback for callback in default_callbacks if self._is_unique_callback(callbacks, callback))
-        logger.debug(
-            f"Configured LangGraph callbacks. Agent={self.agent_name}, "
-            f"Callbacks={[callback.__class__.__name__ for callback in callbacks]}, "
-            f"SupervisorCallbacks={[callback.__class__.__name__ for callback in self.supervisor_callbacks]}"
-        )
-
         return callbacks
 
     def _initialize_llm(self):
@@ -726,7 +736,7 @@ class LangGraphAgent(AbstractAgent):
             username=self.user.username if self.user and self.user.username else None,
             additional_tags=tags,
             assistant_version=assistant_version,
-            trace_context=self.trace_context,  # Pass trace context for workflow unification
+            trace_context=self.trace_context,
         )
 
         # Add LangGraph specific configuration
@@ -906,7 +916,7 @@ class LangGraphAgent(AbstractAgent):
                 messages, run_id=self._handoff_run_ids.get(lookup_author), author=lookup_author
             )
         elif destination := last_message.response_metadata.get("__handoff_destination"):
-            logger.debug(f"Transerring to {destination}")
+            logger.debug(f"Transferring to {destination}")
         elif isinstance(last_message, ToolMessage):
             logger.debug(f"Tool {last_message.name} call result: {last_message.content}")
             self._parse_tool_message(last_message, author=author)
@@ -973,8 +983,11 @@ class LangGraphAgent(AbstractAgent):
         author = None if raw_author == "supervisor" else raw_author
         # First chunk from a subagent: promote its pending handoff → emit thought + wire storage.
         if author and author in self._pending_handoffs:
+            logger.debug(chunk)
             run_id, supervisor_author = self._pending_handoffs.pop(author)
-            self._on_supervisor_handoff(f"{ToolNamePrefix.AGENT.value}_{author}", run_id, "", author=supervisor_author)
+            self._on_supervisor_handoff(
+                f"{self.SUPERVISOR_HANDOFF_TOOL_PREFIX}_{author}", run_id, "", author=supervisor_author
+            )
             self.set_thread_context(context={}, parent_thought_id=str(run_id), author=author)
             self._handoff_run_ids[author] = (run_id, supervisor_author)
         if chunk_type == "messages":
@@ -1294,10 +1307,7 @@ class LangGraphAgent(AbstractAgent):
         name = re.sub(r'[\s<|\\/>]', '_', name)
         # Remove any character that's not alphanumeric or underscore
         name = re.sub(r'\W', '', name).lower()
-
-        name = name.replace(" ", "_")
-        # Truncate name to a maximum defined by class constant
-        return name[: LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH]
+        return LangGraphAgent.truncate_sub_assistant_handoff_tool_name(name)
 
     @classmethod
     def _check_is_handoff_tool(cls, tool_name: str) -> bool:
@@ -1395,3 +1405,60 @@ class LangGraphAgent(AbstractAgent):
 
         file_names = [FileObject.from_encoded_url(name).name for name in self.request.file_names]
         return f"{self.request.text}{"\n Attached files: " + ", ".join(file_names)}"
+
+    @staticmethod
+    def truncate_sub_assistant_handoff_tool_name(name: str) -> str:
+        """
+        Truncate assistant name to ensure it fits within the handoff tool name length constraint.
+
+        The handoff tool name format is: "transfer_to_{assistant_name}"
+        This entire string must be <= 64 characters (LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH).
+
+        When truncation is needed, adds a hash suffix for uniqueness to prevent collisions.
+
+        Args:
+            name: The original assistant name (already normalized)
+
+        Returns:
+            The processed name - either the original or truncated with hash for uniqueness
+        """
+        # Calculate max allowed length for the assistant name
+        # handoff_tool_name = "transfer_to_" + name must be <= 64 chars
+        prefix_length = len(LangGraphAgent.SUPERVISOR_HANDOFF_TOOL_PREFIX) + 1  # +1 for underscore
+        max_name_length = LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH - prefix_length
+
+        # If name fits, return it as is
+        if len(name) <= max_name_length:
+            return name
+
+        # Name needs truncation - generate hash for uniqueness to avoid collisions
+        hash_name = hashlib.sha256(name.encode()).hexdigest()
+
+        # Calculate remaining length for original name part
+        hash_length = 10  # Use a fixed portion of the hash for consistency
+        remaining_length = max_name_length - hash_length - 1  # -1 for underscore separator
+
+        if remaining_length > 0:
+            # Keep part of the original name and add hash portion for uniqueness
+            # Use last characters of hash for better distribution
+            truncated_name = name[:remaining_length] + "_" + hash_name[-hash_length:]
+        else:
+            # Not enough space for original name, use hash only (last characters)
+            truncated_name = hash_name[-max_name_length:]
+
+        return truncated_name
+
+    def get_original_sub_assistant_name(self, truncated_name: str) -> str:
+        """
+        Retrieve the original sub-assistant name from a truncated name.
+
+        This is used by callbacks to display the full original name in thoughts,
+        while the truncated name is used internally for tool name constraints.
+
+        Args:
+            truncated_name: The truncated name (without "transfer_to_" prefix)
+
+        Returns:
+            The original assistant name if a mapping exists, otherwise the truncated name
+        """
+        return self._sub_assistant_name_mapping.get(truncated_name, truncated_name)

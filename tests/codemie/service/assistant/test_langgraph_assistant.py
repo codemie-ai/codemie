@@ -474,7 +474,7 @@ class TestLangGraphAgent:
         ]
 
         # Check if the setup is correct
-        # The structure of the input with image should include the image content correctly formated
+        # The structure of the input with image should include the image content correctly formatted
         message = HumanMessage(content=expected_content)
         expected_inputs = {"messages": [message]}
 
@@ -682,9 +682,9 @@ class TestLangGraphAgent:
         agent._process_chunk_for_agent.assert_called_once_with(chunk, chunks_collector)
 
     def test_format_assistant_name_truncates_max_length_constant(self):
-        """Ensure assistant name is truncated to the class-defined max length and normalized."""
+        """Ensure assistant name is truncated to max name length (accounting for handoff prefix)."""
         long_name = "A" * 100
         formatted = LangGraphAgent.format_assistant_name(long_name)
-        expected_len = LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH
-        assert formatted == ("a" * expected_len)
+        prefix_length = len(LangGraphAgent.SUPERVISOR_HANDOFF_TOOL_PREFIX) + 1
+        expected_len = LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH - prefix_length
         assert len(formatted) == expected_len

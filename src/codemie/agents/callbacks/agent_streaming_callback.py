@@ -20,19 +20,23 @@ from langchain_core.agents import AgentAction, AgentFinish
 from langchain_core.callbacks import StreamingStdOutCallbackHandler
 from langchain_core.outputs import LLMResult
 
+from codemie.agents.callbacks.utils.name_resolver import (
+    NameResolver,
+    NoOpNameResolver,
+    resolve_tool_display_name,
+)
 from codemie.agents.callbacks.callback_utils import (
     _build_tool_metadata,
     _summarize_tool_output,
     _truncate_for_log,
 )
 from codemie.chains.base import StreamedGenerationResult, Thought, ThoughtOutputFormat, ThoughtAuthorType
-from codemie.core.constants import ToolNamePrefix
+from codemie.core.constants import OUTPUT_FORMAT, ToolNamePrefix
 from codemie.configs import logger
 from codemie.configs.logger import set_logging_info
 from codemie.core.thread import ThreadedGenerator
 from codemie.core.utils import extract_text_from_llm_output
 from codemie.core.thought_queue import ThoughtQueue
-from codemie.core.constants import OUTPUT_FORMAT
 from codemie.service.mcp.models import MCPToolInvocationResponse
 from codemie.service.conversation.history_projection_service import (
     TOOL_STATUS_COMPLETED,
@@ -96,9 +100,10 @@ class ThoughtInMemoryStorage(dict[str, Thought]):
 class AgentStreamingCallback(StreamingStdOutCallbackHandler):
     GENERIC_TOOL_NAME = "CodeMie Thoughts"
 
-    def __init__(self, gen: ThoughtQueue | ThreadedGenerator):
+    def __init__(self, gen: ThoughtQueue | ThreadedGenerator, name_resolver: NameResolver | None = None):
         super().__init__()
         self.gen = gen
+        self.name_resolver: NameResolver = name_resolver or NoOpNameResolver()
         self.parent_id = None
         self.context = None
         # Per-author storage: None key is the default (no author).
@@ -192,9 +197,11 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
     ) -> None:
         storage = self._get_storage(author)
         output_format = kwargs.get('metadata', {}).get(OUTPUT_FORMAT)
+        tool_name = serialized['name']
+        tool_display_name = resolve_tool_display_name(tool_name, self.name_resolver)
         thought = storage.create_thought(
             run_id=run_id,
-            tool_name=serialized['name'],
+            tool_name=tool_display_name,
             input_text=input_str,
             output_format=output_format,
             by_run_id=True,
@@ -265,8 +272,6 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
             f"Streaming callback tool error. Tool={getattr(thought, 'author_name', None)}, "
             f"Error={_truncate_for_log(str(error))}, ReplayMetadata={getattr(thought, 'metadata', None)}"
         )
-        if thought is None:
-            return
         self._send_thought(thought, execution_error)
         storage.delete_thought(run_id)
 

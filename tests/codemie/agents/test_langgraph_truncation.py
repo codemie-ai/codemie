@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for token truncation detection in LangGraphAgent."""
+"""Unit tests for token truncation detection and name truncation in LangGraphAgent."""
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -299,10 +299,12 @@ class TestStaticMethods:
         assert result == "test_agent_name_"
 
     def test_format_assistant_name_truncates_long_names(self):
-        """Test format_assistant_name truncates to max length."""
+        """Test format_assistant_name truncates to max name length (accounting for handoff prefix)."""
         long_name = "a" * 100
         result = LangGraphAgent.format_assistant_name(long_name)
-        assert len(result) == LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH
+        prefix_length = len(LangGraphAgent.SUPERVISOR_HANDOFF_TOOL_PREFIX) + 1
+        max_name_length = LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH - prefix_length
+        assert len(result) == max_name_length
 
     def test_check_is_handoff_tool_true(self):
         """Test _check_is_handoff_tool identifies handoff tools."""
@@ -328,3 +330,190 @@ class TestStaticMethods:
         assert len(result) == 2
         assert result[0].content == "Hello"
         assert result[1].content == "World"
+
+
+class TestSubAssistantNameTruncation:
+    """Test suite for sub-assistant name truncation functionality."""
+
+    def test_truncate_short_name_unchanged(self):
+        """Test that short names that fit within the limit are not truncated."""
+        name = "code_agent"
+
+        result = LangGraphAgent.truncate_sub_assistant_handoff_tool_name(name)
+
+        assert result == name, "Short names should not be truncated"
+
+    def test_truncate_name_at_exact_limit(self):
+        """Test name exactly at the maximum allowed length (after accounting for prefix)."""
+        # Max tool name is 64 chars: "transfer_to_" = 12 chars, so max name length = 52 chars
+        prefix_length = len(LangGraphAgent.SUPERVISOR_HANDOFF_TOOL_PREFIX) + 1  # +1 for underscore
+        max_name_length = LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH - prefix_length
+        name = "a" * max_name_length  # Exactly 52 characters
+
+        result = LangGraphAgent.truncate_sub_assistant_handoff_tool_name(name)
+
+        assert result == name, "Name at exact limit should not be truncated"
+        assert len(result) == max_name_length
+
+    def test_truncate_long_name_with_hash_suffix(self):
+        """Test that long names are truncated and have hash suffix for uniqueness."""
+        long_name = (
+            "very_long_assistant_name_that_exceeds_the_maximum_allowed_length_for_handoff_tools_and_needs_truncation"
+        )
+
+        result = LangGraphAgent.truncate_sub_assistant_handoff_tool_name(long_name)
+
+        # Result should be shorter than input
+        assert len(result) < len(long_name), "Long names should be truncated"
+
+        # Result should fit within the constraint
+        prefix_length = len(LangGraphAgent.SUPERVISOR_HANDOFF_TOOL_PREFIX) + 1
+        max_name_length = LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH - prefix_length
+        assert len(result) <= max_name_length, "Truncated name should fit within max length"
+
+        # Result should contain an underscore separator for the hash
+        assert "_" in result, "Truncated name should have hash separator"
+
+    def test_truncate_preserves_uniqueness_with_hash(self):
+        """Test that different long names produce different truncated results due to hash."""
+        name1 = "very_long_assistant_name_that_needs_truncation_variant_one_with_unique_ending"
+        name2 = "very_long_assistant_name_that_needs_truncation_variant_two_with_different_ending"
+
+        result1 = LangGraphAgent.truncate_sub_assistant_handoff_tool_name(name1)
+        result2 = LangGraphAgent.truncate_sub_assistant_handoff_tool_name(name2)
+
+        # Different input names should produce different truncated names
+        assert result1 != result2, "Different long names should have different truncated results"
+
+        # Both should be within the limit
+        prefix_length = len(LangGraphAgent.SUPERVISOR_HANDOFF_TOOL_PREFIX) + 1
+        max_name_length = LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH - prefix_length
+        assert len(result1) <= max_name_length
+        assert len(result2) <= max_name_length
+
+    def test_truncate_consistent_for_same_input(self):
+        """Test that truncation is deterministic - same input produces same output."""
+        long_name = "extremely_long_assistant_name_that_definitely_exceeds_limits"
+
+        result1 = LangGraphAgent.truncate_sub_assistant_handoff_tool_name(long_name)
+        result2 = LangGraphAgent.truncate_sub_assistant_handoff_tool_name(long_name)
+
+        assert result1 == result2, "Truncation should be deterministic"
+
+    def test_truncate_empty_string(self):
+        """Test truncation of empty string."""
+        result = LangGraphAgent.truncate_sub_assistant_handoff_tool_name("")
+
+        assert result == "", "Empty string should remain empty"
+
+    def test_truncate_single_character(self):
+        """Test truncation of single character name."""
+        result = LangGraphAgent.truncate_sub_assistant_handoff_tool_name("a")
+
+        assert result == "a", "Single character should not be truncated"
+
+    def test_truncate_name_just_over_limit(self):
+        """Test name that is just 1 character over the limit."""
+        prefix_length = len(LangGraphAgent.SUPERVISOR_HANDOFF_TOOL_PREFIX) + 1
+        max_name_length = LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH - prefix_length
+        name = "a" * (max_name_length + 1)  # 1 char over limit
+
+        result = LangGraphAgent.truncate_sub_assistant_handoff_tool_name(name)
+
+        # Should be truncated with hash
+        assert len(result) <= max_name_length, "Name over limit should be truncated"
+        assert len(result) < len(name), "Result should be shorter than input"
+
+    def test_truncate_preserves_readable_prefix(self):
+        """Test that truncation keeps some of the original name for readability."""
+        long_name = "data_analysis_expert_with_advanced_statistical_modeling_capabilities_and_machine_learning"
+
+        result = LangGraphAgent.truncate_sub_assistant_handoff_tool_name(long_name)
+
+        # Result should start with part of the original name
+        # Check that at least some characters from the beginning are preserved
+        assert result.startswith("data_analysis"), "Truncated name should preserve readable prefix"
+
+    def test_truncate_unicode_characters(self):
+        """Test truncation with unicode characters in name."""
+        name = "assistant_with_emojis_and_special_chars" * 3  # Make it long
+
+        result = LangGraphAgent.truncate_sub_assistant_handoff_tool_name(name)
+
+        # Should handle unicode and truncate properly
+        prefix_length = len(LangGraphAgent.SUPERVISOR_HANDOFF_TOOL_PREFIX) + 1
+        max_name_length = LangGraphAgent.ASSISTANT_NAME_MAX_LENGTH - prefix_length
+        assert len(result) <= max_name_length, "Unicode names should be truncated correctly"
+
+
+class TestSubAssistantNameMapping:
+    """Test suite for sub-assistant name mapping and resolution."""
+
+    def test_get_original_name_with_mapping(self):
+        """Test retrieving original name when mapping exists."""
+        agent = create_mock_agent()
+        agent._sub_assistant_name_mapping = {"data_analysis_exp_abc123": "Data Analysis Expert"}
+
+        result = agent.get_original_sub_assistant_name("data_analysis_exp_abc123")
+
+        assert result == "Data Analysis Expert", "Should return original name from mapping"
+
+    def test_get_original_name_without_mapping(self):
+        """Test retrieving name when no mapping exists (returns truncated name)."""
+        agent = create_mock_agent()
+        agent._sub_assistant_name_mapping = {}
+
+        result = agent.get_original_sub_assistant_name("unknown_assistant")
+
+        assert result == "unknown_assistant", "Should return truncated name when no mapping exists"
+
+    def test_get_original_name_empty_mapping(self):
+        """Test behavior with empty mapping dictionary."""
+        agent = create_mock_agent()
+        agent._sub_assistant_name_mapping = {}
+
+        result = agent.get_original_sub_assistant_name("test_agent")
+
+        assert result == "test_agent", "Should return input when mapping is empty"
+
+    def test_get_original_name_multiple_mappings(self):
+        """Test that correct name is retrieved when multiple mappings exist."""
+        agent = create_mock_agent()
+        agent._sub_assistant_name_mapping = {
+            "code_reviewer_abc123": "Code Review Expert",
+            "data_analyst_def456": "Data Analysis Specialist",
+            "doc_writer_ghi789": "Documentation Writer",
+        }
+
+        result = agent.get_original_sub_assistant_name("data_analyst_def456")
+
+        assert result == "Data Analysis Specialist", "Should return correct name from multiple mappings"
+
+    def test_get_original_name_case_sensitive(self):
+        """Test that name lookup is case-sensitive."""
+        agent = create_mock_agent()
+        agent._sub_assistant_name_mapping = {"code_agent": "Code Agent"}
+
+        result = agent.get_original_sub_assistant_name("Code_Agent")
+
+        # Should not find the mapping (case mismatch), returns input
+        assert result == "Code_Agent", "Name lookup should be case-sensitive"
+
+    def test_mapping_integration_with_truncation(self):
+        """Test end-to-end: truncate name and verify mapping could work."""
+        # This tests the expected flow:
+        # 1. Original long name gets truncated
+        # 2. Mapping stores truncated -> original
+        # 3. Retrieval uses truncated to get original
+
+        agent = create_mock_agent()
+        original_name = "very_long_sub_assistant_name_that_needs_truncation_for_tool_constraints"
+        truncated_name = LangGraphAgent.truncate_sub_assistant_handoff_tool_name(original_name)
+
+        # Simulate the mapping that would be created
+        agent._sub_assistant_name_mapping = {truncated_name: original_name}
+
+        # Verify retrieval works
+        result = agent.get_original_sub_assistant_name(truncated_name)
+
+        assert result == original_name, "Should retrieve original name after truncation mapping"

@@ -91,7 +91,7 @@ class GetRepoFileTreeToolV2(CodeMieTool, CodeRepoBaseToolMixin):
             task = f"Initial user input: {self.user_input}, \n Rephrased query: {query}"
             llm_model = self.metadata.get("llm_model", llm_service.default_llm_model)
             request_id = self.metadata.get(REQUEST_ID, "")
-            llm = get_llm_by_credentials(llm_model=llm_model, request_id=request_id)
+            llm = get_llm_by_credentials(llm_model=llm_model, request_id=request_id, streaming=False)
             filter_chain = REPO_TREE_FILTER_RELEVANCE_PROMPT | llm.with_structured_output(FilteredDocuments)
             batches = self._create_batches(
                 sources, max_tokens=self.max_tokens_per_batch, calculate_tokens_count=self.calculate_tokens_count
@@ -132,12 +132,17 @@ class SearchCodeRepoTool(CodeMieTool, SearchCodeRepoBaseToolMixin):
         if self.with_filtering:
             request_id = self.metadata.get(REQUEST_ID, "")
             llm_model = self.metadata.get("llm_model", llm_service.default_llm_model)
-            search_results = self._filter_documents_by_relevance(
+            search_results, routing_sources = self._filter_documents_by_relevance(
                 query,
                 search_results,
                 request_id=request_id,
                 llm_model=llm_model,
                 calculate_tokens_count=self.calculate_tokens_count,
+            )
+            return (
+                str(routing_sources)
+                + "\n"
+                + self._filter_and_format_documents(search_results, calculate_tokens_count=self.calculate_tokens_count)
             )
         return self._filter_and_format_documents(search_results, calculate_tokens_count=self.calculate_tokens_count)
 
@@ -169,7 +174,7 @@ class SearchCodeRepoByPathsTool(CodeMieTool, SearchCodeRepoBaseToolMixin):
 
         request_id = self.metadata.get(REQUEST_ID, "")
         llm_model = self.metadata.get("llm_model", llm_service.default_llm_model)
-        documents = self._filter_documents_by_relevance(
+        documents, routing_sources = self._filter_documents_by_relevance(
             query,
             search_results,
             self.calculate_tokens_count,
@@ -178,4 +183,8 @@ class SearchCodeRepoByPathsTool(CodeMieTool, SearchCodeRepoBaseToolMixin):
             keywords_list,
             limit_docs_count,
         )
-        return self._filter_and_format_documents(documents, calculate_tokens_count=self.calculate_tokens_count)
+        return (
+            str(routing_sources)
+            + "\n"
+            + self._filter_and_format_documents(documents, calculate_tokens_count=self.calculate_tokens_count)
+        )
