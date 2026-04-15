@@ -40,8 +40,9 @@ from codemie.rest_api.models.user_management import (
     UserUpdateRequest,
 )
 from codemie.rest_api.security.authentication import (
-    admin_access_only,
     authenticate,
+    admin_access_only,
+    maintainer_access_only,
     project_admin_or_admin_user_detail_access,
 )
 from codemie.rest_api.security.user import User
@@ -404,7 +405,7 @@ def remove_knowledge_base_access(
 async def bulk_set_user_budgets(
     data: BulkUserBudgetSetRequest,
     user: User = Depends(authenticate),
-    _: None = Depends(admin_access_only),
+    _: None = Depends(maintainer_access_only),
 ):
     """Bulk-set budget assignments for multiple users.
 
@@ -429,7 +430,7 @@ async def bulk_set_user_budgets(
 async def get_user_budgets(
     user_id: str,
     user: User = Depends(authenticate),
-    _: None = Depends(admin_access_only),
+    _: None = Depends(maintainer_access_only),
 ):
     """Get per-category budget assignments for a user.
 
@@ -457,7 +458,7 @@ async def reset_user_budget_spending(
     user_id: str,
     data: UserBudgetResetRequest,
     user: User = Depends(authenticate),
-    _: None = Depends(admin_access_only),
+    _: None = Depends(maintainer_access_only),
 ):
     """Reset budget spending for a user by recreating their LiteLLM customer records.
 
@@ -486,7 +487,7 @@ async def set_user_budgets(
     user_id: str,
     data: UserBudgetAssignRequest,
     user: User = Depends(authenticate),
-    _: None = Depends(admin_access_only),
+    _: None = Depends(maintainer_access_only),
 ):
     """Set per-category budget assignments for a user.
 

@@ -24,7 +24,7 @@ from codemie.clients.postgres import get_async_session
 from codemie.configs.budget_config import budget_config
 from codemie.enterprise.litellm import require_litellm_enabled
 from codemie.enterprise.litellm.budget_categories import BudgetCategory
-from codemie.rest_api.security.authentication import admin_access_only, authenticate
+from codemie.rest_api.security.authentication import authenticate, maintainer_access_only
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_service import budget_service
 
@@ -131,7 +131,7 @@ class BudgetAssignmentBackfillResult(BaseModel):
 async def create_budget(
     payload: BudgetCreateRequest,
     user: User = Depends(authenticate),
-    _: None = Depends(admin_access_only),
+    _: None = Depends(maintainer_access_only),
 ):
     """Create a new budget (DB + LiteLLM sync). Super admin only."""
     require_litellm_enabled()
@@ -148,7 +148,7 @@ async def list_budgets(
     per_page: int = Query(20, ge=1, le=100),
     category: Optional[BudgetCategory] = Query(None, description="Filter by budget_category"),
     user: User = Depends(authenticate),
-    _: None = Depends(admin_access_only),
+    _: None = Depends(maintainer_access_only),
 ):
     """Paginated list of budgets with optional category filter. Super admin only."""
     require_litellm_enabled()
@@ -168,7 +168,7 @@ async def list_budgets(
 @router.post("/sync", response_model=BudgetSyncResult)
 async def sync_budgets(
     user: User = Depends(authenticate),
-    _: None = Depends(admin_access_only),
+    _: None = Depends(maintainer_access_only),
 ):
     """Pull all budgets from LiteLLM and upsert into DB. Super admin only."""
     require_litellm_enabled()
@@ -187,7 +187,7 @@ async def sync_budgets(
 @router.post("/assignments/backfill", response_model=BudgetAssignmentBackfillResult)
 async def backfill_user_budget_assignments(
     user: User = Depends(authenticate),
-    _: None = Depends(admin_access_only),
+    _: None = Depends(maintainer_access_only),
 ):
     """Backfill user budget assignments from existing LiteLLM customers. Super admin only."""
     require_litellm_enabled()
@@ -199,7 +199,7 @@ async def backfill_user_budget_assignments(
 async def get_budget(
     budgetId: str,  # noqa: N803
     user: User = Depends(authenticate),
-    _: None = Depends(admin_access_only),
+    _: None = Depends(maintainer_access_only),
 ):
     """Get budget detail. Super admin only."""
     require_litellm_enabled()
@@ -213,7 +213,7 @@ async def update_budget(
     budgetId: str,  # noqa: N803
     payload: BudgetUpdateRequest,
     user: User = Depends(authenticate),
-    _: None = Depends(admin_access_only),
+    _: None = Depends(maintainer_access_only),
 ):
     """Update budget (LiteLLM delete+recreate). Super admin only."""
     require_litellm_enabled()
