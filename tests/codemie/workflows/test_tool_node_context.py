@@ -91,6 +91,7 @@ def mock_tool_config():
     tool_config.tool_result_json_pointer = None
     tool_config.resolve_dynamic_values_in_response = False
     tool_config.input_key = None
+    tool_config.tokens_size_limit = None
     return tool_config
 
 
@@ -291,6 +292,7 @@ def test_tc_tnc_004_tool_with_mcp_server(
     mock_mcp_tool.name = "test_tool"
     mock_mcp_tool.args_schema = {"properties": {"arg1": {"type": "string"}}}
     mock_mcp_tool.execute = Mock(return_value="MCP tool result")
+    mock_mcp_tool.apply_tokens_limit = Mock(return_value="MCP tool result")
 
     mock_mcp_toolkit_service.get_mcp_server_tools = Mock(return_value=[mock_mcp_tool])
 
@@ -347,6 +349,7 @@ def test_tc_tnc_005_tool_argument_validation(
     mock_tool = Mock()
     mock_tool.args_schema = ToolArgsModel
     mock_tool.execute = Mock(return_value="success")
+    mock_tool.apply_tokens_limit = Mock(return_value="success")
 
     state_schema = {
         CONTEXT_STORE_VARIABLE: {},
@@ -402,6 +405,7 @@ def test_tc_tnc_006_tool_with_missing_arguments(
     mock_tool = Mock()
     mock_tool.args_schema = ToolArgsModel
     mock_tool.execute = Mock(return_value="success")
+    mock_tool.apply_tokens_limit = Mock(return_value="success")
 
     state_schema = {
         CONTEXT_STORE_VARIABLE: {},
@@ -577,6 +581,7 @@ def test_tc_tnc_009_tool_virtual_assistant_cleanup(
     mock_tool = Mock()
     mock_tool.args_schema = {}
     mock_tool.execute = Mock(return_value="tool result")
+    mock_tool.apply_tokens_limit = Mock(return_value="tool result")
     mock_tools_service.find_tool_from_config = Mock(return_value=mock_tool)
 
     mock_toolkit_service.get_toolkit_methods = Mock(return_value=[])
@@ -647,6 +652,7 @@ def test_tc_tnc_011_file_name_builds_file_objects_and_passes_to_find_tool(
     mock_tool = Mock()
     mock_tool.args_schema = {}
     mock_tool.execute.return_value = "result"
+    mock_tool.apply_tokens_limit = Mock(return_value="result")
     mock_tools_service.find_tool_from_config.return_value = mock_tool
     mock_toolkit_service.get_toolkit_methods.return_value = []
 
@@ -712,6 +718,7 @@ def test_tc_tnc_012_no_file_name_passes_none_file_objects_to_find_tool(
     mock_tool = Mock()
     mock_tool.args_schema = {}
     mock_tool.execute.return_value = "result"
+    mock_tool.apply_tokens_limit = Mock(return_value="result")
     mock_tools_service.find_tool_from_config.return_value = mock_tool
     mock_toolkit_service.get_toolkit_methods.return_value = []
 
@@ -796,3 +803,376 @@ def test_tc_tnc_010_tool_output_post_processing_pydantic(
     parsed = json.loads(result)
     assert parsed["status"] == "success"
     assert parsed["data"]["key"] == "value"
+
+
+@patch("codemie.workflows.nodes.tool_node.MCPToolkitService")
+@patch("codemie.workflows.nodes.tool_node.config")
+def test_tc_tnc_013_mcp_tool_node_enforces_tokens_size_limit(
+    mock_config,
+    mock_mcp_toolkit_service,
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_user,
+    mock_workflow_config,
+    mock_tool_config,
+):
+    """
+    TC_TNC_013: MCP Tool Node Enforces Tokens Size Limit
+
+    Verify that apply_tokens_limit is called after tool.execute() in ToolNode,
+    and that the truncated output is returned when the tool output exceeds the limit.
+    """
+    # Arrange
+    mock_config.MCP_CONNECT_ENABLED = True
+
+    mcp_server = Mock(spec=MCPServerDetails)
+    mcp_server.name = "test_mcp"
+    mcp_server.enabled = True
+    mcp_server.config = Mock()
+    mcp_server.config.single_usage = False
+
+    mock_tool_config.mcp_server = mcp_server
+
+    large_output = "x" * 10000
+    truncated_output = "Tool output is truncated. Ratio limit/used_tokens: 0.5. Tool output: " + "x" * 100
+
+    mock_mcp_tool = Mock()
+    mock_mcp_tool.name = "test_tool"
+    mock_mcp_tool.args_schema = {"properties": {"arg1": {"type": "string"}}}
+    mock_mcp_tool.execute = Mock(return_value=large_output)
+    mock_mcp_tool.apply_tokens_limit = Mock(return_value=truncated_output)
+
+    mock_mcp_toolkit_service.get_mcp_server_tools = Mock(return_value=[mock_mcp_tool])
+
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {},
+        MESSAGES_VARIABLE: [],
+    }
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute MCP tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+        tool_args={"arg1": "test"},
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    # Act
+    result = node._execute_mcp_tool(state_schema)
+
+    # Assert — apply_tokens_limit was called with the raw execute() result
+    mock_mcp_tool.apply_tokens_limit.assert_called_once_with(large_output)
+    # Assert — truncated output is what the caller receives
+    assert result == truncated_output
+
+
+@patch("codemie.workflows.nodes.tool_node.VirtualAssistantService")
+@patch("codemie.workflows.nodes.tool_node.ToolkitService")
+@patch("codemie.workflows.nodes.tool_node.ToolsService")
+def test_tc_tnc_014_regular_tool_node_no_limit_when_not_configured(
+    mock_tools_service,
+    mock_toolkit_service,
+    mock_virtual_assistant_service,
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_user,
+    mock_workflow_config,
+):
+    """
+    TC_TNC_014: Regular Tool Node Does Not Apply Token Limit When Not Configured
+
+    Verify that apply_tokens_limit is NOT called for regular (non-MCP) tools when
+    WorkflowTool.tokens_size_limit is None (the default). The raw tool output
+    must be returned unmodified.
+    """
+    # Arrange
+    mock_assistant = Mock()
+    mock_assistant.id = "assistant_temp_123"
+    mock_virtual_assistant_service.create_from_tool_config = Mock(return_value=mock_assistant)
+
+    large_output = "y" * 10000
+
+    mock_tool = Mock()
+    mock_tool.args_schema = {}
+    mock_tool.execute = Mock(return_value=large_output)
+    mock_tool.apply_tokens_limit = Mock()
+    mock_tools_service.find_tool_from_config = Mock(return_value=mock_tool)
+    mock_toolkit_service.get_toolkit_methods = Mock(return_value=[])
+
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {},
+        MESSAGES_VARIABLE: [],
+    }
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    with patch("codemie.workflows.nodes.tool_node.process_values", return_value={}):
+        # Act
+        result = node._execute_regular_tool(state_schema)
+
+    # Assert — apply_tokens_limit must NOT be called when tokens_size_limit is None
+    mock_tool.apply_tokens_limit.assert_not_called()
+    # Assert — raw output is returned unmodified
+    assert result == large_output
+
+
+@patch("codemie.workflows.nodes.tool_node.VirtualAssistantService")
+@patch("codemie.workflows.nodes.tool_node.ToolkitService")
+@patch("codemie.workflows.nodes.tool_node.ToolsService")
+def test_tc_tnc_015_regular_tool_node_applies_limit_when_configured(
+    mock_tools_service,
+    mock_toolkit_service,
+    mock_virtual_assistant_service,
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_user,
+    mock_workflow_config,
+    mock_tool_config,
+):
+    """
+    TC_TNC_015: Regular Tool Node Applies Token Limit When Explicitly Configured
+
+    Verify that apply_tokens_limit is called with the configured tokens_size_limit
+    when WorkflowTool.tokens_size_limit is set, and that the truncated output is
+    returned to the caller.
+    """
+    # Arrange
+    mock_tool_config.tokens_size_limit = 5000
+
+    mock_assistant = Mock()
+    mock_assistant.id = "assistant_temp_123"
+    mock_virtual_assistant_service.create_from_tool_config = Mock(return_value=mock_assistant)
+
+    large_output = "z" * 10000
+    truncated_output = "Tool output is truncated. Ratio limit/used_tokens: 0.5. Tool output: " + "z" * 100
+
+    mock_tool = Mock()
+    mock_tool.args_schema = {}
+    mock_tool.execute = Mock(return_value=large_output)
+    mock_tool.apply_tokens_limit = Mock(return_value=truncated_output)
+    mock_tools_service.find_tool_from_config = Mock(return_value=mock_tool)
+    mock_toolkit_service.get_toolkit_methods = Mock(return_value=[])
+
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {},
+        MESSAGES_VARIABLE: [],
+    }
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    with patch("codemie.workflows.nodes.tool_node.process_values", return_value={}):
+        # Act
+        result = node._execute_regular_tool(state_schema)
+
+    # Assert — tool.tokens_size_limit was overridden with the configured value
+    assert mock_tool.tokens_size_limit == 5000
+    # Assert — apply_tokens_limit was called with the raw execute() result
+    mock_tool.apply_tokens_limit.assert_called_once_with(large_output)
+    # Assert — truncated output is returned
+    assert result == truncated_output
+
+
+def test_tc_tnc_013_input_key_resolves_args_from_sub_namespace(
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_user,
+    mock_workflow_config,
+    mock_tool_config,
+):
+    """
+    TC_TNC_013: input_key maps tool args from context_store sub-namespace
+
+    When input_key is set, args are resolved from context_store[input_key]
+    rather than root context_store, enabling namespace isolation and native
+    passing of complex dict values without Jinja2 stringification.
+    """
+    # Arrange
+    mock_tool_config.input_key = "tool1_args"
+
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {
+            "tool1_args": {
+                "arg1": {"nested": "object"},
+                "arg2": {"another": "object"},
+            },
+            "arg1": "root_value_should_not_be_used",
+        },
+        MESSAGES_VARIABLE: [],
+    }
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    # Act
+    result = node._get_tool_args(
+        tool_args={"arg1": None, "arg2": None},
+        state_schema=state_schema,
+    )
+
+    # Assert — values come from sub-namespace, not root; native dicts preserved
+    assert result["arg1"] == {"nested": "object"}
+    assert result["arg2"] == {"another": "object"}
+    assert isinstance(result["arg1"], dict)
+
+
+def test_tc_tnc_014_input_key_with_nested_dot_path(
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_user,
+    mock_workflow_config,
+    mock_tool_config,
+):
+    """
+    TC_TNC_014: input_key with dot-notation path into nested context_store object
+
+    Supports paths like "api_response.tool_input" to reach a nested namespace.
+    """
+    # Arrange
+    mock_tool_config.input_key = "api_response.tool_input"
+
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {
+            "api_response": {
+                "tool_input": {
+                    "contact": {"email": "a@b.com", "phone": "123"},
+                }
+            }
+        },
+        MESSAGES_VARIABLE: [],
+    }
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    # Act
+    result = node._get_tool_args(
+        tool_args={"contact": None},
+        state_schema=state_schema,
+    )
+
+    # Assert — deeply nested namespace resolved natively
+    assert result["contact"] == {"email": "a@b.com", "phone": "123"}
+    assert isinstance(result["contact"], dict)
+
+
+@patch("codemie.workflows.nodes.tool_node.process_values")
+def test_tc_tnc_015_no_input_key_uses_root_context_store(
+    mock_process_values,
+    mock_workflow_execution_service,
+    mock_thought_queue,
+    mock_callbacks,
+    mock_user,
+    mock_workflow_config,
+    mock_tool_config,
+):
+    """
+    TC_TNC_015: When input_key is not set, args resolve from root context_store (backward compat)
+
+    Verifies that the existing behavior is unchanged when input_key is absent.
+    """
+    # Arrange
+    mock_tool_config.input_key = None
+    mock_process_values.return_value = {"arg1": "resolved"}
+
+    state_schema = {
+        CONTEXT_STORE_VARIABLE: {"arg1": "root_value", "other": "data"},
+        MESSAGES_VARIABLE: [],
+    }
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    # Act
+    node._get_tool_args(tool_args={"arg1": None}, state_schema=state_schema)
+
+    # Assert — process_values called with full root context_store
+    call_context = mock_process_values.call_args[0][1]
+    assert "arg1" in call_context
+    assert "other" in call_context

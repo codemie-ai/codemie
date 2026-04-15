@@ -21,6 +21,7 @@ from typing import Any, Optional, Union
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import ToolException
 
+from codemie.configs import config
 from codemie_tools.base.errors import TruncatedOutputError
 from codemie_tools.base.models import ToolOutputFormat
 from codemie_tools.base.utils import get_encoding, sanitize_string, humanize_error
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 class CodeMieTool(BaseTool):
     base_name: Optional[str] = None
     handle_tool_error: bool = True
-    tokens_size_limit: int = 30_000
+    tokens_size_limit: int = config.TOOL_TOKENS_SIZE_LIMIT
     throw_truncated_error: bool = False
     truncate_message: str = "Tool output is truncated."
     base_llm_model_name: str = "gpt-4.1-mini"

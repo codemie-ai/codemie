@@ -159,6 +159,10 @@ class ToolNode(BaseNode[AgentMessages]):
 
             # Execute the tool with the same logic as regular tools
             tool_result = self._execute_tool_with_args(tool, state_schema)
+            # Enforce MCP token limit before content extraction so MCPTool._limit_output_content
+            # can handle MCPToolInvocationResponse objects directly
+            if hasattr(tool, "apply_tokens_limit"):
+                tool_result = tool.apply_tokens_limit(tool_result)
             return (
                 "\n".join(str(item) for item in tool_result.content)
                 if isinstance(tool_result, MCPToolInvocationResponse)
@@ -217,7 +221,12 @@ class ToolNode(BaseNode[AgentMessages]):
             tool.input_files = file_objects
 
         try:
-            return self._execute_tool_with_args(tool, state_schema)
+            result = self._execute_tool_with_args(tool, state_schema)
+            # Apply output token limit only when explicitly configured for this tool node
+            if self._tool_config.tokens_size_limit is not None and hasattr(tool, "apply_tokens_limit"):
+                tool.tokens_size_limit = self._tool_config.tokens_size_limit
+                result = tool.apply_tokens_limit(result)
+            return result
         finally:
             VirtualAssistantService.delete(assistant.id)
 

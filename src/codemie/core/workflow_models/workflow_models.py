@@ -103,6 +103,7 @@ class WorkflowTool(BaseModel):
     mcp_server: Optional[MCPServerDetails] = None
     resolve_dynamic_values_in_response: bool = False
     input_key: Optional[str] = None
+    tokens_size_limit: Optional[int] = None
 
 
 class CustomWorkflowNode(BaseModel):

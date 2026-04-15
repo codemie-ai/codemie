@@ -353,6 +353,7 @@ class Config(BaseSettings):
     MCP_CONNECT_URL: str = "http://localhost:3000"
     MCP_CONNECT_BUCKETS_COUNT: int = 10
     MCP_TOOL_TOKENS_SIZE_LIMIT: int = 30000
+    TOOL_TOKENS_SIZE_LIMIT: int = 30000
 
     # CLI metrics data quality cutoff
     CLI_METRICS_CUTOFF_DATE: str = "2026-02-07"
