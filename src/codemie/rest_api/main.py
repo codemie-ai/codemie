@@ -456,6 +456,9 @@ async def _shutdown_services(app: FastAPI, langfuse_service, litellm_service, ta
 async def lifespan(app: FastAPI):
     logger.info(f"Starting CodeMie application. Config={config.to_safe_dict()}")
 
+    # Initialize database and default data
+    _initialize_database_and_defaults()
+
     # Register enterprise IDP providers (MUST be before first auth request)
     from codemie.enterprise.idp import register_enterprise_idps
 
@@ -468,9 +471,6 @@ async def lifespan(app: FastAPI):
     _setup_litellm_features()
     if is_litellm_enabled() and config.LLM_PROXY_BUDGET_CHECK_ENABLED:
         await ensure_predefined_budgets()
-
-    # Initialize database and default data
-    _initialize_database_and_defaults()
 
     # Initialize JWT keys and SuperAdmin for user management (EPMCDME-10160)
     _initialize_jwt_keys()
