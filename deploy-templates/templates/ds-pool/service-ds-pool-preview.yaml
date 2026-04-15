@@ -1,0 +1,21 @@
+{{- if and .Values.dsPool.enabled .Values.dsPool.argoRollout.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "codemie.ds-pool.fullname" . }}-preview
+  labels:
+    {{- include "codemie.labels" . | nindent 4 }}
+  {{- with .Values.dsPool.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.dsPool.service.type }}
+  ports:
+    - port: {{ .Values.dsPool.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "codemie.ds-pool.selectorLabels" . | nindent 4 }}
+{{- end }}

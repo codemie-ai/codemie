@@ -291,6 +291,77 @@ ingressCallbacksIndex:
   # -- The path to AI/Run API for Callbacks Index
   path: "/code-assistant-api/v1/callbacks/index/(.*)"
 
+## Dedicated ds-pool processing workload
+dsPool:
+  # -- Enable a separate deployment/rollout for ds-pool processing
+  enabled: false
+  # -- Number of ds-pool pods to run
+  replicaCount: 1
+
+  ## Use Argo Rollouts for the ds-pool workload
+  argoRollout:
+    # -- Enable Argo Rollouts instead of standard Kubernetes Deployment for ds-pool
+    enabled: false
+    # -- The time to wait before scaling down the old replica set
+    scaleDownDelaySeconds: 120
+
+  # -- Additional env vars merged after extraEnv + customEnv (e.g. DATASOURCE_WORKER_ONLY=true)
+  # @default -- `[]`
+  extraEnv: []
+
+  # -- Additional custom env vars merged after customEnv
+  # @default -- `[]`
+  customEnv: []
+
+  # -- Resource limits and requests for ds-pool pods
+  resources:
+    limits:
+      cpu: 2
+      memory: 2048Mi
+    requests:
+      cpu: 100m
+      memory: 1024Mi
+
+  service:
+    # -- ds-pool service type
+    type: ClusterIP
+    # -- ds-pool service port
+    port: 8080
+    # -- ds-pool service annotations
+    annotations: {}
+
+  ingress:
+    # -- Enable ingress for the ds-pool workload
+    enabled: false
+    # -- Additional ingress annotations
+    annotations:
+      nginx.ingress.kubernetes.io/auth-response-headers: X-Auth-Request-Access-Token,Authorization
+      nginx.ingress.kubernetes.io/auth-signin: https://$host/oauth2/start?rd=$escaped_request_uri
+      nginx.ingress.kubernetes.io/auth-url: http://oauth2-proxy.oauth2-proxy.svc.cluster.local:80/oauth2/auth
+      nginx.ingress.kubernetes.io/rewrite-target: /v1/index/$1
+      nginx.ingress.kubernetes.io/proxy-body-size: 900m
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    # -- Ingress path type
+    pathType: ImplementationSpecific
+    # -- Path routed to the ds-pool service (all /v1/index/* endpoints)
+    path: "/code-assistant-api/v1/index/(.*)"
+
+  ingressApp:
+    # -- Enable ingress for application index endpoints
+    enabled: false
+    # -- Additional ingress annotations
+    annotations:
+      nginx.ingress.kubernetes.io/auth-response-headers: X-Auth-Request-Access-Token,Authorization
+      nginx.ingress.kubernetes.io/auth-signin: https://$host/oauth2/start?rd=$escaped_request_uri
+      nginx.ingress.kubernetes.io/auth-url: http://oauth2-proxy.oauth2-proxy.svc.cluster.local:80/oauth2/auth
+      nginx.ingress.kubernetes.io/rewrite-target: /v1/application/$1/index$2
+      nginx.ingress.kubernetes.io/proxy-body-size: 900m
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    # -- Ingress path type
+    pathType: ImplementationSpecific
+    # -- Path routed to the ds-pool service (/v1/application/*/index* endpoints)
+    path: "/code-assistant-api/v1/application/(.*)/index(.*)"
+
 ## Probes for the AI/Run API
 # Ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
 #
