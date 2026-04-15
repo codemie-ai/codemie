@@ -18,7 +18,7 @@ Tests verify:
 - Basic CRUD: get_by_id, get_by_email, get_by_username, get_active_by_id
 - Create and update operations with timestamp handling
 - Soft delete functionality
-- Helper methods: count_active_superadmins, update_last_login
+- Helper methods: count_active_admins, update_last_login
 - Existence checks: exists_by_email, exists_by_username, get_existing_user_ids
 - Async variants: aget_by_id, aget_by_email, aget_active_by_id, acreate, aupdate, aupdate_last_login
 """
@@ -401,32 +401,32 @@ class TestUserRepositorySoftDelete:
         db_session.add.assert_not_called()
 
 
-class TestUserRepositoryCountActiveSuperadmins:
-    """Test count_active_superadmins method."""
+class TestUserRepositoryCountActiveAdmins:
+    """Test count_active_admins method."""
 
-    def test_count_active_superadmins(self, user_repository, db_session, mocker):
-        """Test count_active_superadmins returns correct count."""
+    def test_count_active_admins(self, user_repository, db_session, mocker):
+        """Test count_active_admins returns correct count."""
         # Arrange
         mock_result = mocker.MagicMock()
         mock_result.one.return_value = 3
         db_session.exec.return_value = mock_result
 
         # Act
-        count = user_repository.count_active_superadmins(db_session)
+        count = user_repository.count_active_admins(db_session)
 
         # Assert
         assert count == 3
         db_session.exec.assert_called_once()
 
-    def test_count_active_superadmins_zero(self, user_repository, db_session, mocker):
-        """Test count_active_superadmins returns 0 when none exist."""
+    def test_count_active_admins_zero(self, user_repository, db_session, mocker):
+        """Test count_active_admins returns 0 when none exist."""
         # Arrange
         mock_result = mocker.MagicMock()
         mock_result.one.return_value = 0
         db_session.exec.return_value = mock_result
 
         # Act
-        count = user_repository.count_active_superadmins(db_session)
+        count = user_repository.count_active_admins(db_session)
 
         # Assert
         assert count == 0

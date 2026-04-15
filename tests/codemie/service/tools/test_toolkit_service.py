@@ -55,6 +55,8 @@ class TestToolkitService:
         user.id = "test-user-id"
         user.name = "Test User"
         user.is_admin = False
+        user.is_maintainer = False
+        user.is_admin_or_maintainer = False
         return user
 
     @pytest.fixture
@@ -1473,6 +1475,8 @@ class TestMergeSkillToolkits:
         mock_user = Mock(spec=User)
         mock_user.id = "test-user-id"
         mock_user.is_admin = False
+        mock_user.is_maintainer = False
+        mock_user.is_admin_or_maintainer = False
         mock_user.roles = []
 
         with patch.object(ToolkitService, "_merge_skill_toolkits", return_value=[mock_merged_toolkit]) as mock_merge:
@@ -1506,6 +1510,8 @@ class TestMergeSkillToolkits:
         mock_user = Mock(spec=User)
         mock_user.id = "test-user-id"
         mock_user.is_admin = False
+        mock_user.is_maintainer = False
+        mock_user.is_admin_or_maintainer = False
         mock_user.roles = []
 
         with patch.object(ToolkitService, "_merge_skill_toolkits", return_value=[merged_toolkit]):

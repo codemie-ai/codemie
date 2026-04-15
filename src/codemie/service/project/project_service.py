@@ -161,7 +161,7 @@ class ProjectService:
             if not project or project.deleted_at is not None:
                 raise ExtendedHTTPException(code=404, message=cls.ERRORS.PROJECT_NOT_FOUND)
 
-            if not user.is_admin and not user_project_repository.is_admin(session, user.id, project_name):
+            if not user.is_admin_or_maintainer and not user_project_repository.is_admin(session, user.id, project_name):
                 raise ExtendedHTTPException(code=403, message=cls.ERRORS.ACCESS_DENIED)
 
             validated_name: str | None = None

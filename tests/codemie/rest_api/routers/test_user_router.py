@@ -93,6 +93,7 @@ async def test_get_user_basic(mock_authenticate, mock_user):
     # Note: name in response comes from User.full_name which returns username when available
     assert data["name"] == "testuser"
     assert data["email"] == "test@example.com"
+    assert data["is_maintainer"] is False
     # Note: In local ENV, both is_admin and is_admin can be True (dev override)
     # Just verify they're boolean values
     assert isinstance(data["is_admin"], bool)

@@ -19,7 +19,7 @@ Tests verify:
 - fetch_projects_map: N+1 prevention (single JOIN query for all users)
 - count_users / query_users: Pagination correctness
 - _apply_filters: user_type, platform_role, projects, search filters
-- _apply_platform_role_filter: SUPER_ADMIN, PLATFORM_ADMIN, USER branches
+- _apply_platform_role_filter: ADMIN, PLATFORM_ADMIN, USER branches
 """
 
 import pytest
@@ -297,18 +297,18 @@ class TestApplyPlatformRoleFilter:
         query.where.return_value = query
         return query
 
-    def test_super_admin_filters_by_is_admin_column(self):
-        """SUPER_ADMIN branch: WHERE is_admin = true."""
+    def test_admin_filters_by_is_admin_column(self):
+        """ADMIN branch: WHERE is_admin = true."""
         query = self._make_mock_query()
 
-        result = UserRepository._apply_platform_role_filter(query, PlatformRole.SUPER_ADMIN)
+        result = UserRepository._apply_platform_role_filter(query, PlatformRole.ADMIN)
 
         # Should call query.where with UserDB.is_admin
         query.where.assert_called_once()
         assert result is query
 
-    def test_platform_admin_filters_not_super_admin_and_has_project_admin(self):
-        """PLATFORM_ADMIN branch: WHERE NOT super_admin AND EXISTS project_admin membership."""
+    def test_platform_admin_filters_not_admin_and_has_project_admin(self):
+        """PLATFORM_ADMIN branch: WHERE NOT admin AND EXISTS project admin membership."""
         query = self._make_mock_query()
 
         result = UserRepository._apply_platform_role_filter(query, PlatformRole.PLATFORM_ADMIN)
@@ -316,11 +316,11 @@ class TestApplyPlatformRoleFilter:
         # Should call query.where with ~is_admin + EXISTS condition
         query.where.assert_called_once()
         args = query.where.call_args[0]
-        assert len(args) == 2  # Two conditions: ~super_admin, EXISTS
+        assert len(args) == 2  # Two conditions: ~admin, EXISTS
         assert result is query
 
-    def test_user_filters_not_super_admin_and_no_project_admin(self):
-        """USER branch: WHERE NOT super_admin AND NOT EXISTS project_admin membership."""
+    def test_user_filters_not_admin_and_no_project_admin(self):
+        """USER branch: WHERE NOT admin AND NOT EXISTS project admin membership."""
         query = self._make_mock_query()
 
         result = UserRepository._apply_platform_role_filter(query, PlatformRole.USER)
@@ -328,7 +328,7 @@ class TestApplyPlatformRoleFilter:
         # Should call query.where with ~is_admin + ~EXISTS condition
         query.where.assert_called_once()
         args = query.where.call_args[0]
-        assert len(args) == 2  # Two conditions: ~super_admin, ~EXISTS
+        assert len(args) == 2  # Two conditions: ~admin, ~EXISTS
         assert result is query
 
     def test_platform_admin_and_user_receive_different_where_clauses(self):
@@ -410,11 +410,9 @@ class TestApplyFilters:
         mock_role_filter.return_value = MagicMock()
         query = self._make_mock_query()
 
-        UserRepository._apply_filters(
-            query, search=None, filters=UserListFilters(platform_role=PlatformRole.SUPER_ADMIN)
-        )
+        UserRepository._apply_filters(query, search=None, filters=UserListFilters(platform_role=PlatformRole.ADMIN))
 
-        mock_role_filter.assert_called_once_with(query, PlatformRole.SUPER_ADMIN)
+        mock_role_filter.assert_called_once_with(query, PlatformRole.ADMIN)
 
     def test_multiple_filters_chain_where_calls(self):
         """Multiple filters each add a WHERE clause (chained), plus base deleted_at filter."""

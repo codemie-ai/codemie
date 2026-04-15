@@ -170,7 +170,7 @@ class Config(BaseSettings):
     USER_PROJECT_LIMIT: int = 3  # Max number of shared projects per user (enforced when ENABLE_USER_MANAGEMENT=True)
     COST_CENTER_NAME_PATTERN: str = r"^[a-z0-9]+-[a-z0-9]+$"
     # ===========================================
-    # SuperAdmin Bootstrap
+    # Admin Bootstrap
     # ===========================================
     SUPERADMIN_EMAIL: str = ""  # Auto-create SuperAdmin if set and none exists
     SUPERADMIN_PASSWORD: str = ""

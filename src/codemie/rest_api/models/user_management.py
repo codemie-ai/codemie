@@ -48,10 +48,11 @@ class UserDB(BaseModelWithSQLSupport, table=True):
     user_type: str = SQLField(default="regular")  # 'regular' | 'external'
     is_active: bool = SQLField(default=True, index=True)
     is_admin: bool = SQLField(default=False, index=True)
+    is_maintainer: bool = SQLField(default=False)
     auth_source: str = SQLField(default="local")  # 'local' | 'keycloak' | 'oidc'
     email_verified: bool = SQLField(default=False)
     last_login_at: Optional[datetime] = SQLField(default=None)
-    project_limit: Optional[int] = SQLField(default=None)  # Max shared projects; NULL = unlimited (super admins)
+    project_limit: Optional[int] = SQLField(default=None)  # Max shared projects; NULL = unlimited (admins)
     # Using date/update_date inherited from CommonBaseModel (no created_at/updated_at)
     deleted_at: Optional[datetime] = SQLField(default=None, index=True)
 
@@ -164,6 +165,7 @@ class UserCreateRequest(BaseModel):
     password: str = Field(min_length=config.PASSWORD_MIN_LENGTH)
     name: Optional[str] = None
     is_admin: bool = False
+    is_maintainer: bool = False
 
 
 class UserUpdateRequest(BaseModel):
@@ -171,7 +173,7 @@ class UserUpdateRequest(BaseModel):
 
     Note: email is str (not EmailStr) because IDP users may have
     non-email identifiers as their email field.
-    project_limit: None for unlimited (super admins), integers for limits (Story 6)
+    project_limit: None for unlimited (admins), integers for limits (Story 6)
 
     Field Editability (Story 8):
     - username: Immutable - cannot be changed (will be rejected if provided)
@@ -190,8 +192,9 @@ class UserUpdateRequest(BaseModel):
     username: Optional[str] = None  # Story 8: Immutable - always rejected if provided
     user_type: Optional[str] = None  # Story 8: 'regular' or 'external'; local mode only
     is_admin: Optional[bool] = None
+    is_maintainer: Optional[bool] = None
     is_active: Optional[bool] = None  # See Task 18 for deactivation semantics
-    project_limit: Optional[int] = None  # Max shared projects; NULL = unlimited (super admins only)
+    project_limit: Optional[int] = None  # Max shared projects; NULL = unlimited (admins only)
     project_limit_provided: bool = Field(default=False, exclude=True)
 
     @model_validator(mode="before")
@@ -229,6 +232,7 @@ class CodeMieUserDetail(BaseModel):
     user_type: str
     is_active: bool
     is_admin: bool
+    is_maintainer: bool = False
     auth_source: str
     email_verified: bool
     last_login_at: Optional[datetime]
@@ -261,6 +265,7 @@ class AdminUserListItem(BaseModel):
     user_type: str
     is_active: bool
     is_admin: bool
+    is_maintainer: bool = False
     auth_source: str
     last_login_at: Optional[datetime]
     projects: list[ProjectInfo] = Field(default_factory=list)
@@ -305,7 +310,7 @@ class KnowledgeBaseAccessRequest(BaseModel):
 class PlatformRole(StrEnum):
     USER = "user"
     PLATFORM_ADMIN = "platform_admin"
-    SUPER_ADMIN = "super_admin"
+    ADMIN = "admin"
 
 
 class UserListFilters(BaseModel):

@@ -76,6 +76,7 @@ def super_admin_user():
         auth_source="local",
         is_active=True,
         is_admin=True,
+        is_maintainer=True,
         email_verified=True,
         project_limit=None,  # NULL for super admins
         date=datetime.now(UTC),
@@ -99,7 +100,22 @@ def test_promotion_auto_sets_project_limit_null(
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = regular_user
+    actor_user = UserDB(
+        id="super-admin-1",
+        username="admin1",
+        email="admin1@example.com",
+        name="Admin One",
+        password_hash="hashed",
+        auth_source="local",
+        is_active=True,
+        is_admin=True,
+        is_maintainer=True,
+        email_verified=True,
+        project_limit=None,
+        date=datetime.now(UTC),
+        update_date=datetime.now(UTC),
+    )
+    mock_repo.get_by_id.side_effect = [actor_user, regular_user, actor_user]
     mock_repo.update.return_value = regular_user
 
     promoted_user = UserDB(
@@ -126,6 +142,7 @@ def test_promotion_auto_sets_project_limit_null(
         user_type="regular",
         is_active=True,
         is_admin=True,
+        is_maintainer=promoted_user.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -169,7 +186,7 @@ def test_demotion_auto_sets_project_limit_3(
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
     # Need 2+ admins to allow demotion
-    mock_repo.count_active_superadmins.return_value = 2
+    mock_repo.count_active_admins.return_value = 2
     mock_repo.get_by_id.return_value = super_admin_user
     mock_repo.update.return_value = super_admin_user
 
@@ -197,6 +214,7 @@ def test_demotion_auto_sets_project_limit_3(
         user_type="regular",
         is_active=True,
         is_admin=False,
+        is_maintainer=demoted_user.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -238,7 +256,22 @@ def test_atomic_transaction_role_and_limit(mock_get_session, mock_repo, mock_get
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = regular_user
+    actor_user = UserDB(
+        id="super-admin-1",
+        username="admin1",
+        email="admin1@example.com",
+        name="Admin One",
+        password_hash="hashed",
+        auth_source="local",
+        is_active=True,
+        is_admin=True,
+        is_maintainer=True,
+        email_verified=True,
+        project_limit=None,
+        date=datetime.now(UTC),
+        update_date=datetime.now(UTC),
+    )
+    mock_repo.get_by_id.side_effect = [actor_user, regular_user, actor_user]
     mock_repo.update.return_value = regular_user
 
     mock_result = CodeMieUserDetail(
@@ -250,6 +283,7 @@ def test_atomic_transaction_role_and_limit(mock_get_session, mock_repo, mock_get
         user_type="regular",
         is_active=True,
         is_admin=True,
+        is_maintainer=regular_user.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -263,7 +297,7 @@ def test_atomic_transaction_role_and_limit(mock_get_session, mock_repo, mock_get
     mock_get_relationships.return_value = mock_result
 
     # Act
-    UserManagementService.update_user_fields(user_id="regular-1", actor_user_id="admin-1", is_admin=True)
+    UserManagementService.update_user_fields(user_id="regular-1", actor_user_id="super-admin-1", is_admin=True)
 
     # Assert - both fields updated in single call
     assert mock_repo.update.call_count == 1
@@ -383,6 +417,7 @@ def test_super_admin_set_another_user_limit(mock_get_session, mock_repo, mock_ge
         user_type="regular",
         is_active=True,
         is_admin=False,
+        is_maintainer=updated_user.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -430,6 +465,7 @@ def test_various_valid_project_limits(mock_get_session, mock_repo, mock_get_rela
         user_type="regular",
         is_active=True,
         is_admin=False,
+        is_maintainer=regular_user.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -465,7 +501,22 @@ def test_super_admin_gets_null_via_auto_management(mock_get_session, mock_repo, 
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = regular_user
+    actor_user = UserDB(
+        id="super-admin-1",
+        username="admin1",
+        email="admin1@example.com",
+        name="Admin One",
+        password_hash="hashed",
+        auth_source="local",
+        is_active=True,
+        is_admin=True,
+        is_maintainer=True,
+        email_verified=True,
+        project_limit=None,
+        date=datetime.now(UTC),
+        update_date=datetime.now(UTC),
+    )
+    mock_repo.get_by_id.side_effect = [actor_user, regular_user, actor_user]
     mock_repo.update.return_value = regular_user
 
     mock_result = CodeMieUserDetail(
@@ -477,6 +528,7 @@ def test_super_admin_gets_null_via_auto_management(mock_get_session, mock_repo, 
         user_type="regular",
         is_active=True,
         is_admin=True,
+        is_maintainer=regular_user.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -490,7 +542,7 @@ def test_super_admin_gets_null_via_auto_management(mock_get_session, mock_repo, 
     mock_get_relationships.return_value = mock_result
 
     # Act
-    result = UserManagementService.update_user_fields(user_id="regular-1", actor_user_id="admin-1", is_admin=True)
+    result = UserManagementService.update_user_fields(user_id="regular-1", actor_user_id="super-admin-1", is_admin=True)
 
     # Assert
     assert result.is_admin is True
@@ -522,6 +574,7 @@ def test_idempotent_promotion(mock_get_session, mock_repo, mock_get_relationship
         user_type="regular",
         is_active=True,
         is_admin=True,
+        is_maintainer=super_admin_user.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -574,6 +627,7 @@ def test_project_limit_in_response(mock_get_session, mock_repo, mock_get_relatio
         user_type="regular",
         is_active=True,
         is_admin=False,
+        is_maintainer=regular_user.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -690,7 +744,22 @@ def test_super_admin_promotion_enforces_null_limit_invariant(
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = regular_user
+    actor_user = UserDB(
+        id="super-admin-1",
+        username="admin1",
+        email="admin1@example.com",
+        name="Admin One",
+        password_hash="hashed",
+        auth_source="local",
+        is_active=True,
+        is_admin=True,
+        is_maintainer=True,
+        email_verified=True,
+        project_limit=None,
+        date=datetime.now(UTC),
+        update_date=datetime.now(UTC),
+    )
+    mock_repo.get_by_id.side_effect = [actor_user, regular_user, actor_user]
     mock_repo.update.return_value = regular_user
 
     mock_result = CodeMieUserDetail(
@@ -702,6 +771,7 @@ def test_super_admin_promotion_enforces_null_limit_invariant(
         user_type="regular",
         is_active=True,
         is_admin=True,
+        is_maintainer=regular_user.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -716,7 +786,7 @@ def test_super_admin_promotion_enforces_null_limit_invariant(
 
     # Act - promote to super admin AND provide explicit project_limit (should be ignored)
     result = UserManagementService.update_user_fields(
-        user_id="regular-1", actor_user_id="admin-1", is_admin=True, project_limit=5
+        user_id="regular-1", actor_user_id="super-admin-1", is_admin=True, project_limit=5
     )
 
     # Assert - INVARIANT enforced: super admin MUST have NULL limit
@@ -741,11 +811,26 @@ def test_user_not_found_returns_404(mock_get_session, mock_repo):
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = None  # User not found
+    actor_user = UserDB(
+        id="super-admin-1",
+        username="admin1",
+        email="admin1@example.com",
+        name="Admin One",
+        password_hash="hashed",
+        auth_source="local",
+        is_active=True,
+        is_admin=True,
+        is_maintainer=True,
+        email_verified=True,
+        project_limit=None,
+        date=datetime.now(UTC),
+        update_date=datetime.now(UTC),
+    )
+    mock_repo.get_by_id.side_effect = [actor_user, None, None]
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.update_user_fields(user_id="nonexistent", actor_user_id="admin", project_limit=5)
+        UserManagementService.update_user_fields(user_id="nonexistent", actor_user_id="super-admin-1", is_admin=True)
 
     assert exc_info.value.code == 404
     assert "User not found" in exc_info.value.message
@@ -773,6 +858,7 @@ def test_explicit_project_limit_allowed_for_non_promotion(
         user_type="regular",
         is_active=True,
         is_admin=False,
+        is_maintainer=regular_user.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -804,7 +890,38 @@ def test_no_auto_management_when_role_unchanged(mock_get_session, mock_repo, moc
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = regular_user  # is_admin=False
+    actor_user = UserDB(
+        id="super-admin-1",
+        username="admin1",
+        email="admin1@example.com",
+        name="Admin One",
+        password_hash="hashed",
+        auth_source="local",
+        is_active=True,
+        is_admin=True,
+        is_maintainer=True,
+        email_verified=True,
+        project_limit=None,
+        date=datetime.now(UTC),
+        update_date=datetime.now(UTC),
+    )
+    target_admin = UserDB(
+        id="regular-1",
+        username="user1",
+        email="user1@example.com",
+        name="User One",
+        password_hash="hashed",
+        auth_source="local",
+        is_active=True,
+        is_admin=True,
+        is_maintainer=False,
+        email_verified=True,
+        project_limit=None,
+        date=regular_user.date,
+        update_date=regular_user.update_date,
+    )
+    mock_repo.get_by_id.side_effect = [actor_user, target_admin, actor_user]
+    mock_repo.count_active_admins.return_value = 2
     mock_repo.update.return_value = regular_user
 
     mock_result = CodeMieUserDetail(
@@ -815,12 +932,12 @@ def test_no_auto_management_when_role_unchanged(mock_get_session, mock_repo, moc
         picture=None,
         user_type="regular",
         is_active=True,
-        is_admin=False,  # Unchanged
+        is_admin=False,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
         projects=[],
-        project_limit=3,  # Unchanged
+        project_limit=3,
         knowledge_bases=[],
         date=regular_user.date,
         update_date=regular_user.update_date,
@@ -828,12 +945,13 @@ def test_no_auto_management_when_role_unchanged(mock_get_session, mock_repo, moc
     )
     mock_get_relationships.return_value = mock_result
 
-    # Act - set is_admin to same value (no change)
-    result = UserManagementService.update_user_fields(user_id="regular-1", actor_user_id="admin-1", is_admin=False)
+    # Act - demote from admin while maintainer actor performs the role change
+    result = UserManagementService.update_user_fields(
+        user_id="regular-1", actor_user_id="super-admin-1", is_admin=False
+    )
 
-    # Assert - no auto-management triggered
+    # Assert - demotion applies project-limit auto-management
     assert result.is_admin is False
-    assert result.project_limit == 3  # Unchanged
-    # Verify project_limit not in updates (no auto-management)
+    assert result.project_limit == 3
     update_call = mock_repo.update.call_args
-    assert "project_limit" not in update_call[1]
+    assert update_call[1]["project_limit"] == 3

@@ -397,13 +397,17 @@ class TestProjectServiceUpdateProject:
     def _make_super_admin(self) -> MagicMock:
         user = MagicMock()
         user.is_admin = True
+        user.is_maintainer = False
         user.id = "admin-1"
+        user.is_admin_or_maintainer = True
         return user
 
     def _make_regular_user(self) -> MagicMock:
         user = MagicMock()
         user.is_admin = False
+        user.is_maintainer = False
         user.id = "user-1"
+        user.is_admin_or_maintainer = False
         return user
 
     @patch("codemie.service.project.project_service.user_project_repository")

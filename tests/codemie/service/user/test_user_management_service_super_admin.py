@@ -54,6 +54,7 @@ def super_admin_user():
         auth_source="local",
         is_active=True,
         is_admin=True,
+        is_maintainer=True,
         email_verified=True,
         date=datetime.now(UTC),
         update_date=datetime.now(UTC),
@@ -72,6 +73,7 @@ def regular_user():
         auth_source="local",
         is_active=True,
         is_admin=False,
+        is_maintainer=False,
         email_verified=True,
         date=datetime.now(UTC),
         update_date=datetime.now(UTC),
@@ -103,7 +105,7 @@ def test_self_revocation_blocked(mock_get_session, mock_repo, mock_logger, super
 
     # Verify exception
     assert exc_info.value.code == 403
-    assert "Cannot revoke own super admin status" in exc_info.value.message
+    assert "Cannot revoke own admin status" in exc_info.value.message
 
     # Verify logging
     mock_logger.warning.assert_called_once()
@@ -126,8 +128,8 @@ def test_last_admin_status_revocation_blocked(mock_get_session, mock_repo, mock_
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = super_admin_user
-    mock_repo.count_active_superadmins.return_value = 1  # Last admin
+    mock_repo.get_by_id.side_effect = [super_admin_user, super_admin_user]
+    mock_repo.count_active_admins.return_value = 1  # Last admin
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -139,12 +141,12 @@ def test_last_admin_status_revocation_blocked(mock_get_session, mock_repo, mock_
 
     # Verify exception
     assert exc_info.value.code == 403
-    assert "Cannot revoke last super admin" in exc_info.value.message
+    assert "Cannot revoke last admin" in exc_info.value.message
 
     # Verify logging
     mock_logger.warning.assert_called_once()
     log_call = mock_logger.warning.call_args[0][0]
-    assert "blocked_last_super_admin_revocation" in log_call
+    assert "blocked_last_admin_revocation" in log_call
 
 
 # ===========================================
@@ -161,7 +163,7 @@ def test_last_admin_deactivation_blocked(mock_get_session, mock_repo, mock_logge
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
     mock_repo.get_by_id.return_value = super_admin_user
-    mock_repo.count_active_superadmins.return_value = 1  # Last admin
+    mock_repo.count_active_admins.return_value = 1  # Last admin
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -169,12 +171,12 @@ def test_last_admin_deactivation_blocked(mock_get_session, mock_repo, mock_logge
 
     # Verify exception
     assert exc_info.value.code == 403
-    assert "Cannot deactivate last super admin" in exc_info.value.message
+    assert "Cannot deactivate last admin" in exc_info.value.message
 
     # Verify logging
     mock_logger.warning.assert_called_once()
     log_call = mock_logger.warning.call_args[0][0]
-    assert "blocked_last_super_admin_deactivation" in log_call
+    assert "blocked_last_admin_deactivation" in log_call
 
 
 # ===========================================
@@ -194,6 +196,7 @@ def test_symmetric_revocation_with_two_admins(mock_get_session, mock_repo, mock_
         email="admin2@example.com",
         name="Admin Two",
         is_admin=True,
+        is_maintainer=True,
         is_active=True,
         auth_source="local",
         date=datetime.now(UTC),
@@ -202,8 +205,8 @@ def test_symmetric_revocation_with_two_admins(mock_get_session, mock_repo, mock_
 
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = admin_b
-    mock_repo.count_active_superadmins.return_value = 2  # 2 admins
+    mock_repo.get_by_id.side_effect = [super_admin_user, admin_b, super_admin_user]
+    mock_repo.count_active_admins.return_value = 2  # 2 admins
     mock_repo.update.return_value = admin_b
 
     mock_result = CodeMieUserDetail(
@@ -215,6 +218,7 @@ def test_symmetric_revocation_with_two_admins(mock_get_session, mock_repo, mock_
         user_type="regular",
         is_active=True,
         is_admin=False,  # Revoked
+        is_maintainer=admin_b.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -236,7 +240,7 @@ def test_symmetric_revocation_with_two_admins(mock_get_session, mock_repo, mock_
 
     # Assert
     assert result.is_admin is False
-    mock_repo.count_active_superadmins.assert_called_once_with(mock_session)
+    mock_repo.count_active_admins.assert_called_once_with(mock_session)
 
 
 # ===========================================
@@ -252,8 +256,8 @@ def test_revocation_succeeds_with_three_admins(mock_get_session, mock_repo, mock
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = super_admin_user
-    mock_repo.count_active_superadmins.return_value = 3  # 3+ admins
+    mock_repo.get_by_id.side_effect = [super_admin_user, super_admin_user, super_admin_user]
+    mock_repo.count_active_admins.return_value = 3  # 3+ admins
     mock_repo.update.return_value = super_admin_user
 
     mock_result = CodeMieUserDetail(
@@ -265,6 +269,7 @@ def test_revocation_succeeds_with_three_admins(mock_get_session, mock_repo, mock
         user_type="regular",
         is_active=True,
         is_admin=False,
+        is_maintainer=super_admin_user.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -284,7 +289,7 @@ def test_revocation_succeeds_with_three_admins(mock_get_session, mock_repo, mock
 
     # Assert
     assert result.is_admin is False
-    mock_repo.count_active_superadmins.assert_called_once_with(mock_session)
+    mock_repo.count_active_admins.assert_called_once_with(mock_session)
 
 
 # ===========================================
@@ -300,11 +305,26 @@ def test_promotion_to_super_admin_unrestricted(mock_get_session, mock_repo, mock
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = regular_user
+    actor_user = UserDB(
+        id="super-admin-1",
+        username="admin1",
+        email="admin1@example.com",
+        name="Admin One",
+        password_hash="hashed",
+        auth_source="local",
+        is_active=True,
+        is_admin=True,
+        is_maintainer=True,
+        email_verified=True,
+        date=datetime.now(UTC),
+        update_date=datetime.now(UTC),
+    )
+    mock_repo.get_by_id.side_effect = [actor_user, regular_user, actor_user]
     mock_repo.update.return_value = regular_user
 
     promoted_user = regular_user
     promoted_user.is_admin = True
+    promoted_user.is_maintainer = True
 
     mock_result = CodeMieUserDetail(
         id=promoted_user.id,
@@ -315,6 +335,7 @@ def test_promotion_to_super_admin_unrestricted(mock_get_session, mock_repo, mock
         user_type="regular",
         is_active=True,
         is_admin=True,  # Promoted
+        is_maintainer=True,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -331,13 +352,14 @@ def test_promotion_to_super_admin_unrestricted(mock_get_session, mock_repo, mock
     result = UserManagementService.update_user_fields(
         user_id="regular-1",
         actor_user_id="super-admin-1",
-        is_admin=True,  # Promote to admin
+        is_admin=True,
+        is_maintainer=True,
     )
 
     # Assert
     assert result.is_admin is True
-    # count_active_superadmins should NOT be called for promotion
-    mock_repo.count_active_superadmins.assert_not_called()
+    # count_active_admins should NOT be called for promotion
+    mock_repo.count_active_admins.assert_not_called()
 
 
 # ===========================================
@@ -355,7 +377,7 @@ def test_self_revocation_blocked_even_with_multiple_admins(mock_get_session, moc
     mock_get_session.return_value.__enter__.return_value = mock_session
     mock_repo.get_by_id.return_value = super_admin_user
     # Even with 5 admins, self-revocation is blocked
-    mock_repo.count_active_superadmins.return_value = 5
+    mock_repo.count_active_admins.return_value = 5
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -367,10 +389,10 @@ def test_self_revocation_blocked_even_with_multiple_admins(mock_get_session, moc
 
     # Verify exception
     assert exc_info.value.code == 403
-    assert "Cannot revoke own super admin status" in exc_info.value.message
+    assert "Cannot revoke own admin status" in exc_info.value.message
 
-    # count_active_superadmins should NOT be called (self-revocation checked first)
-    mock_repo.count_active_superadmins.assert_not_called()
+    # count_active_admins should NOT be called (self-revocation checked first)
+    mock_repo.count_active_admins.assert_not_called()
 
 
 # ===========================================
@@ -413,7 +435,7 @@ def test_protection_applies_to_deactivation_endpoint(mock_get_session, mock_repo
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
     mock_repo.get_by_id.return_value = super_admin_user
-    mock_repo.count_active_superadmins.return_value = 1
+    mock_repo.count_active_admins.return_value = 1
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -429,14 +451,26 @@ def test_protection_applies_to_update_endpoint(mock_get_session, mock_repo, supe
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = super_admin_user
-    mock_repo.count_active_superadmins.return_value = 1
+    non_maintainer_admin = UserDB(
+        id="other-admin",
+        username="admin2",
+        email="admin2@example.com",
+        name="Admin Two",
+        is_admin=True,
+        is_maintainer=False,
+        is_active=True,
+        auth_source="local",
+        date=datetime.now(UTC),
+        update_date=datetime.now(UTC),
+    )
+    mock_repo.get_by_id.return_value = non_maintainer_admin
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
         UserManagementService.update_user_fields(user_id="super-admin-1", actor_user_id="other-admin", is_admin=False)
 
     assert exc_info.value.code == 403
+    assert "Only maintainers can modify admin or maintainer roles" in exc_info.value.details
 
 
 # ===========================================
@@ -452,7 +486,21 @@ def test_regular_user_to_false_is_noop(mock_get_session, mock_repo, mock_get_rel
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = regular_user
+    actor_user = UserDB(
+        id="super-admin-1",
+        username="admin1",
+        email="admin1@example.com",
+        name="Admin One",
+        password_hash="hashed",
+        auth_source="local",
+        is_active=True,
+        is_admin=True,
+        is_maintainer=True,
+        email_verified=True,
+        date=datetime.now(UTC),
+        update_date=datetime.now(UTC),
+    )
+    mock_repo.get_by_id.side_effect = [actor_user, regular_user, actor_user]
     mock_repo.update.return_value = regular_user
 
     mock_result = CodeMieUserDetail(
@@ -464,6 +512,7 @@ def test_regular_user_to_false_is_noop(mock_get_session, mock_repo, mock_get_rel
         user_type="regular",
         is_active=True,
         is_admin=False,  # Remains false
+        is_maintainer=regular_user.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -477,13 +526,15 @@ def test_regular_user_to_false_is_noop(mock_get_session, mock_repo, mock_get_rel
     mock_get_relationships.return_value = mock_result
 
     # Act - setting is_admin=false on a regular user
-    result = UserManagementService.update_user_fields(user_id="regular-1", actor_user_id="admin-1", is_admin=False)
+    result = UserManagementService.update_user_fields(
+        user_id="regular-1", actor_user_id="super-admin-1", is_admin=False
+    )
 
     # Assert
     assert result.is_admin is False
     # Protection logic should NOT be triggered since user is NOT currently a super admin
-    # count_active_superadmins is only called when revoking EXISTING super admin status
-    mock_repo.count_active_superadmins.assert_not_called()
+    # count_active_admins is only called when revoking EXISTING admin status
+    mock_repo.count_active_admins.assert_not_called()
 
 
 @patch("codemie.service.user.user_management_service.user_repository")
@@ -493,11 +544,25 @@ def test_user_not_found_returns_404(mock_get_session, mock_repo):
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = None  # User not found
+    actor = UserDB(
+        id="super-admin-1",
+        username="admin1",
+        email="admin1@example.com",
+        name="Admin One",
+        password_hash="hashed",
+        auth_source="local",
+        is_active=True,
+        is_admin=True,
+        is_maintainer=True,
+        email_verified=True,
+        date=datetime.now(UTC),
+        update_date=datetime.now(UTC),
+    )
+    mock_repo.get_by_id.side_effect = [actor, None]
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.update_user_fields(user_id="nonexistent", actor_user_id="admin", is_admin=False)
+        UserManagementService.update_user_fields(user_id="nonexistent", actor_user_id="super-admin-1", is_admin=False)
 
     assert exc_info.value.code == 404
     assert "User not found" in exc_info.value.message
@@ -527,6 +592,7 @@ def test_other_fields_can_be_updated_without_triggering_protection(
         user_type="regular",
         is_active=True,
         is_admin=True,  # Unchanged
+        is_maintainer=super_admin_user.is_maintainer,
         auth_source="local",
         email_verified=True,
         last_login_at=None,
@@ -548,4 +614,4 @@ def test_other_fields_can_be_updated_without_triggering_protection(
     assert result.name == "New Name"
     assert result.email == "newemail@example.com"
     # Protection not triggered
-    mock_repo.count_active_superadmins.assert_not_called()
+    mock_repo.count_active_admins.assert_not_called()

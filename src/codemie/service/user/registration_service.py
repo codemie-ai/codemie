@@ -211,6 +211,7 @@ class RegistrationService:
                     user_type=user.user_type,
                     is_active=user.is_active,
                     is_admin=user.is_admin,
+                    is_maintainer=user.is_maintainer,
                     auth_source=user.auth_source,
                     email_verified=True,
                     last_login_at=user.last_login_at,

@@ -77,6 +77,7 @@ def _get_user_response(user: User) -> UserResponse:
         username=user.username,
         email=user.email,
         is_admin=user.is_admin,
+        is_maintainer=user.is_maintainer,
         picture=user.picture,
         projects=projects,
         project_limit=user.project_limit,

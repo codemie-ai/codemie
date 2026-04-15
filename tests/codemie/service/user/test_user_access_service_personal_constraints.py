@@ -56,7 +56,7 @@ class TestPersonalProjectAssignmentBlocking:
                 user_id="user-123",
                 project_name="alice@example.com",
                 is_project_admin=False,
-                actor=MagicMock(id="admin-456", is_admin=False),
+                actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
             )
 
         # Assert: 404 (not 403) to hide project existence
@@ -92,7 +92,7 @@ class TestPersonalProjectAssignmentBlocking:
                 user_id="user-123",
                 project_name="alice@example.com",
                 is_project_admin=True,
-                actor=MagicMock(id="admin-456", is_admin=False),
+                actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
             )
 
         # Assert: 404 (not 403) to hide project existence
@@ -127,7 +127,7 @@ class TestPersonalProjectAssignmentBlocking:
             UserAccessService.revoke_project_access(
                 user_id="user-123",
                 project_name="alice@example.com",
-                actor=MagicMock(id="admin-456", is_admin=False),
+                actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
             )
 
         # Assert: 404 (not 403) to hide project existence
@@ -163,7 +163,7 @@ class TestPersonalProjectAssignmentBlocking:
             user_id="user-123",
             project_name="shared-project",
             is_project_admin=False,
-            actor=MagicMock(id="admin-456", is_admin=False),
+            actor=MagicMock(id="admin-456", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False),
         )
 
         # Assert: Success
@@ -191,7 +191,9 @@ class TestPersonalProjectAssignmentBlocking:
                 user_id="user-123",
                 project_name="alice@example.com",
                 is_project_admin=False,
-                actor=MagicMock(id="super-admin-789", is_admin=False),  # Non-super-admin actor
+                actor=MagicMock(
+                    id="super-admin-789", is_admin=False, is_maintainer=False, is_admin_or_maintainer=False
+                ),
             )
 
         # Assert: Still 404 (no special treatment for super admin)

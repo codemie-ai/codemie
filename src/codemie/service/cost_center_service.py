@@ -52,13 +52,13 @@ class CostCenterService:
         return description
 
     @classmethod
-    def ensure_super_admin(cls, user: User) -> None:
-        if not user.is_admin:
+    def ensure_admin(cls, user: User) -> None:
+        if not user.is_admin_or_maintainer:
             raise ExtendedHTTPException(code=403, message="Access denied")
 
     @classmethod
     def create(cls, session: Session, *, user: User, name: str, description: str | None) -> CostCenter:
-        cls.ensure_super_admin(user)
+        cls.ensure_admin(user)
         validated_name = cls.validate_name(name)
         validated_description = cls.validate_description(description)
 
@@ -78,12 +78,12 @@ class CostCenterService:
 
     @classmethod
     def list_paginated(cls, session: Session, *, user: User, search: str | None, page: int, per_page: int):
-        cls.ensure_super_admin(user)
+        cls.ensure_admin(user)
         return cost_center_repository.list_paginated(session, search=search, page=page, per_page=per_page)
 
     @classmethod
     def get_or_404(cls, session: Session, *, user: User, cost_center_id: UUID) -> CostCenter:
-        cls.ensure_super_admin(user)
+        cls.ensure_admin(user)
         cost_center = cost_center_repository.get_active_by_id(session, cost_center_id)
         if not cost_center:
             raise ExtendedHTTPException(code=404, message="Cost center not found")

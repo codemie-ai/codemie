@@ -36,6 +36,8 @@ def mock_user():
     user.id = "test_user_id"
     user.roles = []
     user.is_admin = False
+    user.is_maintainer = False
+    user.is_admin_or_maintainer = False
     return user
 
 

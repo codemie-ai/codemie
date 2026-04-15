@@ -15,11 +15,11 @@
 """Unit tests for list_users platform_role filter access control.
 
 Tests cover:
-- is_project_admin=True → no restriction on platform_role=SUPER_ADMIN filter
-- is_project_admin=False, platform_role=SUPER_ADMIN, no filters.projects → raises 403
-- is_project_admin=False, platform_role=SUPER_ADMIN, has filters.projects, user NOT a member → raises 403
-- is_project_admin=False, platform_role=SUPER_ADMIN, has filters.projects, user IS a member → allowed
-- is_project_admin=False, platform_role != SUPER_ADMIN → no restriction, proceeds normally
+- is_project_admin=True → no restriction on platform_role=ADMIN filter
+- is_project_admin=False, platform_role=ADMIN, no filters.projects → raises 403
+- is_project_admin=False, platform_role=ADMIN, has filters.projects, user NOT a member → raises 403
+- is_project_admin=False, platform_role=ADMIN, has filters.projects, user IS a member → allowed
+- is_project_admin=False, platform_role != ADMIN → no restriction, proceeds normally
 - Normal pagination flow works correctly
 """
 
@@ -44,10 +44,10 @@ def mock_session():
 
 @patch("codemie.repository.user_project_repository.user_project_repository")
 @patch("codemie.service.user.user_management_service.user_repository")
-def test_project_admin_can_filter_by_super_admin_role(mock_user_repo, mock_user_project_repo, mock_session):
-    """is_project_admin=True caller can use platform_role=super_admin filter without restriction."""
+def test_project_admin_can_filter_by_admin_role(mock_user_repo, mock_user_project_repo, mock_session):
+    """is_project_admin=True caller can use platform_role=admin filter without restriction."""
     # Arrange
-    filters = UserListFilters(platform_role=PlatformRole.SUPER_ADMIN)
+    filters = UserListFilters(platform_role=PlatformRole.ADMIN)
     mock_user_repo.count_users.return_value = 0
     mock_user_repo.query_users.return_value = []
 
@@ -67,14 +67,14 @@ def test_project_admin_can_filter_by_super_admin_role(mock_user_repo, mock_user_
 
 
 # ===========================================
-# is_project_admin=False + SUPER_ADMIN + no projects → 403
+# is_project_admin=False + ADMIN + no projects → 403
 # ===========================================
 
 
-def test_non_admin_cannot_filter_by_super_admin_role_without_projects(mock_session):
-    """is_project_admin=False with platform_role=SUPER_ADMIN and no projects filter raises 403."""
+def test_non_admin_cannot_filter_by_admin_role_without_projects(mock_session):
+    """is_project_admin=False with platform_role=ADMIN and no projects filter raises 403."""
     # Arrange
-    filters = UserListFilters(platform_role=PlatformRole.SUPER_ADMIN)
+    filters = UserListFilters(platform_role=PlatformRole.ADMIN)
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -86,16 +86,16 @@ def test_non_admin_cannot_filter_by_super_admin_role_without_projects(mock_sessi
         )
 
     assert exc_info.value.code == 403
-    assert "super_admin" in exc_info.value.message.lower()
+    assert "admin role" in exc_info.value.message.lower()
 
 
-def test_non_admin_cannot_filter_by_super_admin_role_with_none_filters(mock_session):
-    """is_project_admin=False with default (None) filters and platform_role=SUPER_ADMIN raises 403.
+def test_non_admin_cannot_filter_by_admin_role_with_none_filters(mock_session):
+    """is_project_admin=False with default (None) filters and platform_role=ADMIN raises 403.
 
     Resolved filters default to UserListFilters() which has no projects, so the guard fires.
     """
-    # Arrange - explicit filters object with SUPER_ADMIN but no projects
-    filters = UserListFilters(platform_role=PlatformRole.SUPER_ADMIN, projects=None)
+    # Arrange - explicit filters object with ADMIN but no projects
+    filters = UserListFilters(platform_role=PlatformRole.ADMIN, projects=None)
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -109,10 +109,10 @@ def test_non_admin_cannot_filter_by_super_admin_role_with_none_filters(mock_sess
     assert exc_info.value.code == 403
 
 
-def test_non_admin_cannot_filter_by_super_admin_role_with_empty_projects_list(mock_session):
-    """is_project_admin=False with platform_role=SUPER_ADMIN and empty projects list raises 403."""
+def test_non_admin_cannot_filter_by_admin_role_with_empty_projects_list(mock_session):
+    """is_project_admin=False with platform_role=ADMIN and empty projects list raises 403."""
     # Arrange
-    filters = UserListFilters(platform_role=PlatformRole.SUPER_ADMIN, projects=[])
+    filters = UserListFilters(platform_role=PlatformRole.ADMIN, projects=[])
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -124,19 +124,19 @@ def test_non_admin_cannot_filter_by_super_admin_role_with_empty_projects_list(mo
         )
 
     assert exc_info.value.code == 403
-    assert "super_admin" in exc_info.value.message.lower()
+    assert "admin role" in exc_info.value.message.lower()
 
 
 # ===========================================
-# is_project_admin=False + SUPER_ADMIN + projects present + user NOT a member → 403
+# is_project_admin=False + ADMIN + projects present + user NOT a member → 403
 # ===========================================
 
 
 @patch("codemie.repository.user_project_repository.user_project_repository")
-def test_non_admin_super_admin_filter_user_not_member_of_any_project_raises_403(mock_user_project_repo, mock_session):
-    """is_project_admin=False, SUPER_ADMIN filter, has projects, but user is member of none → 403."""
+def test_non_admin_admin_filter_user_not_member_of_any_project_raises_403(mock_user_project_repo, mock_session):
+    """is_project_admin=False, ADMIN filter, has projects, but user is member of none → 403."""
     # Arrange
-    filters = UserListFilters(platform_role=PlatformRole.SUPER_ADMIN, projects=["project-x", "project-y"])
+    filters = UserListFilters(platform_role=PlatformRole.ADMIN, projects=["project-x", "project-y"])
     # User belongs to completely different projects
     mock_user_project_repo.get_project_names_for_user.return_value = {"project-a", "project-b"}
 
@@ -150,15 +150,15 @@ def test_non_admin_super_admin_filter_user_not_member_of_any_project_raises_403(
         )
 
     assert exc_info.value.code == 403
-    assert "super_admin" in exc_info.value.message.lower()
+    assert "admin role" in exc_info.value.message.lower()
     mock_user_project_repo.get_project_names_for_user.assert_called_once_with(mock_session, "regular-user-1")
 
 
 @patch("codemie.repository.user_project_repository.user_project_repository")
-def test_non_admin_super_admin_filter_user_belongs_to_no_projects_raises_403(mock_user_project_repo, mock_session):
-    """is_project_admin=False, SUPER_ADMIN filter, has projects, user has no project memberships → 403."""
+def test_non_admin_admin_filter_user_belongs_to_no_projects_raises_403(mock_user_project_repo, mock_session):
+    """is_project_admin=False, ADMIN filter, has projects, user has no project memberships → 403."""
     # Arrange
-    filters = UserListFilters(platform_role=PlatformRole.SUPER_ADMIN, projects=["project-x"])
+    filters = UserListFilters(platform_role=PlatformRole.ADMIN, projects=["project-x"])
     mock_user_project_repo.get_project_names_for_user.return_value = set()
 
     # Act & Assert
@@ -174,18 +174,18 @@ def test_non_admin_super_admin_filter_user_belongs_to_no_projects_raises_403(moc
 
 
 # ===========================================
-# is_project_admin=False + SUPER_ADMIN + projects present + user IS a member → allowed
+# is_project_admin=False + ADMIN + projects present + user IS a member → allowed
 # ===========================================
 
 
 @patch("codemie.repository.user_project_repository.user_project_repository")
 @patch("codemie.service.user.user_management_service.user_repository")
-def test_non_admin_super_admin_filter_user_member_of_one_project_is_allowed(
+def test_non_admin_admin_filter_user_member_of_one_project_is_allowed(
     mock_user_repo, mock_user_project_repo, mock_session
 ):
-    """is_project_admin=False, SUPER_ADMIN filter, user is member of at least one listed project → allowed."""
+    """is_project_admin=False, ADMIN filter, user is member of at least one listed project → allowed."""
     # Arrange
-    filters = UserListFilters(platform_role=PlatformRole.SUPER_ADMIN, projects=["project-x", "project-y"])
+    filters = UserListFilters(platform_role=PlatformRole.ADMIN, projects=["project-x", "project-y"])
     # User is a member of project-x (one of the filtered projects)
     mock_user_project_repo.get_project_names_for_user.return_value = {"project-x", "project-z"}
     mock_user_repo.count_users.return_value = 0
@@ -207,12 +207,12 @@ def test_non_admin_super_admin_filter_user_member_of_one_project_is_allowed(
 
 @patch("codemie.repository.user_project_repository.user_project_repository")
 @patch("codemie.service.user.user_management_service.user_repository")
-def test_non_admin_super_admin_filter_user_member_of_all_projects_is_allowed(
+def test_non_admin_admin_filter_user_member_of_all_projects_is_allowed(
     mock_user_repo, mock_user_project_repo, mock_session
 ):
-    """is_project_admin=False, SUPER_ADMIN filter, user is member of all listed projects → allowed."""
+    """is_project_admin=False, ADMIN filter, user is member of all listed projects → allowed."""
     # Arrange
-    filters = UserListFilters(platform_role=PlatformRole.SUPER_ADMIN, projects=["project-a", "project-b"])
+    filters = UserListFilters(platform_role=PlatformRole.ADMIN, projects=["project-a", "project-b"])
     mock_user_project_repo.get_project_names_for_user.return_value = {"project-a", "project-b", "project-c"}
     mock_user_repo.count_users.return_value = 0
     mock_user_repo.query_users.return_value = []

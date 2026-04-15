@@ -222,14 +222,14 @@ class UserRepository:
                 assignments_map[user_row.id].append((assignment_row, budget_row))
         return assignments_map
 
-    def count_active_superadmins(self, session: Session) -> int:
-        """Count active SuperAdmin users
+    def count_active_admins(self, session: Session) -> int:
+        """Count active admin users
 
         Args:
             session: Database session
 
         Returns:
-            Number of active SuperAdmins
+            Number of active admins
         """
         statement = select(func.count(UserDB.id)).where(UserDB.is_admin, UserDB.is_active, UserDB.deleted_at.is_(None))
         return session.exec(statement).one()
@@ -503,11 +503,11 @@ class UserRepository:
         """Return query with a WHERE clause matching the given platform role.
 
         Roles are mutually exclusive:
-        - SUPER_ADMIN     → is_admin = true
-        - PLATFORM_ADMIN  → NOT super admin AND has at least one project-admin membership
-        - USER            → NOT super admin AND no project-admin membership
+        - ADMIN           → is_admin = true
+        - PLATFORM_ADMIN  → NOT admin AND has at least one project-admin membership
+        - USER            → NOT admin AND no project-admin membership
         """
-        if role == PlatformRole.SUPER_ADMIN:
+        if role == PlatformRole.ADMIN:
             return query.where(UserDB.is_admin)
 
         is_project_admin = (

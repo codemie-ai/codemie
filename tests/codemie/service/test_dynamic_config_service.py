@@ -576,7 +576,7 @@ def test_delete_not_admin(mock_config, mock_regular_user):
         DynamicConfigService.delete("MAX_RETRIES", mock_regular_user)
 
     assert exc_info.value.code == 403
-    assert "Super-admin privileges required" in exc_info.value.details
+    assert "Admin privileges required to manage dynamic configuration" in exc_info.value.details
 
 
 # ===========================================

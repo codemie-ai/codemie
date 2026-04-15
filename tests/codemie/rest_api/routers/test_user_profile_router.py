@@ -45,6 +45,7 @@ def regular_user() -> User:
         email="testuser@example.com",
         name="Test User",
         is_admin=False,
+        is_maintainer=True,
         project_names=["demo"],
         admin_project_names=[],
         knowledge_bases=["kb-1"],
@@ -131,6 +132,7 @@ class TestUpdateProfileSuccess:
         # is_admin comes from user.is_admin property (may be True in local/dev)
         assert result.is_admin == regular_user.is_admin
         assert result.user_type == "local"
+        assert result.is_maintainer is True
         assert result.knowledge_bases == ["kb-1"]
         assert len(result.projects) == 2
         assert result.projects[0].name == "demo"
@@ -598,6 +600,7 @@ class TestUpdateProfileResponseStructure:
             username="admin",
             email="admin@example.com",
             is_admin=True,
+            is_maintainer=False,
             project_names=["demo"],
             admin_project_names=["demo"],
             knowledge_bases=[],
@@ -624,6 +627,7 @@ class TestUpdateProfileResponseStructure:
 
         # Assert: is_admin comes from authenticated user context
         assert result.is_admin is True
+        assert result.is_maintainer is False
         assert result.user_id == "admin-1"
 
     @patch("codemie.repository.user_project_repository.user_project_repository")

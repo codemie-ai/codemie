@@ -75,6 +75,21 @@ def admin_user():
 
 
 @pytest.fixture
+def maintainer_user():
+    """Mock maintainer user for maintainer-only endpoints."""
+    return User(
+        id="maintainer-123",
+        email="maintainer@example.com",
+        username="maintainer",
+        name="Maintainer User",
+        is_admin=True,
+        is_maintainer=True,
+        project_names=["demo"],
+        admin_project_names=[],
+    )
+
+
+@pytest.fixture
 def regular_user():
     """Mock regular user for testing access control."""
     return User(
@@ -100,6 +115,7 @@ def mock_user_detail():
         user_type="regular",
         is_active=True,
         is_admin=False,
+        is_maintainer=False,
         auth_source="local",
         email_verified=False,
         last_login_at=None,
@@ -143,6 +159,7 @@ class TestCreateUser:
             password="SecurePass123!",
             name="New User",
             is_admin=False,
+            is_maintainer=False,
         )
 
         mock_service.create_local_user_with_flow.return_value = mock_user_detail
@@ -158,6 +175,7 @@ class TestCreateUser:
             password="SecurePass123!",
             name="New User",
             is_admin=False,
+            is_maintainer=False,
             actor_user_id="admin-123",
         )
 
@@ -230,6 +248,7 @@ class TestUpdateUser:
             name="Updated Name",
             picture="https://example.com/pic.jpg",
             is_active=True,
+            is_maintainer=False,
         )
 
         updated_user = mock_user_detail.model_copy()
@@ -250,6 +269,7 @@ class TestUpdateUser:
             username=None,
             user_type=None,
             is_admin=None,
+            is_maintainer=False,
             is_active=True,
             project_limit=None,
             project_limit_provided=False,
@@ -674,6 +694,7 @@ class TestListUsers:
                     user_type="regular",
                     is_active=True,
                     is_admin=False,
+                    is_maintainer=False,
                     auth_source="local",
                     last_login_at=None,
                     projects=[],

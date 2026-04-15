@@ -42,7 +42,7 @@ from codemie.rest_api.models.user_management import (
 from codemie.rest_api.security.authentication import (
     admin_access_only,
     authenticate,
-    project_admin_or_super_admin_user_detail_access,
+    project_admin_or_admin_user_detail_access,
 )
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_service import budget_service
@@ -126,7 +126,7 @@ def list_users(
         description=(
             "Stringified JSON filter object. Supported keys: "
             "projects (list[str]), user_type (str), is_active (bool), "
-            "platform_role ('user' | 'platform_admin' | 'super_admin')"
+            "platform_role ('user' | 'platform_admin' | 'admin')"
         ),
     ),
     user: User = Depends(authenticate),
@@ -153,7 +153,7 @@ def list_users(
 
     return user_management_service.list_users_with_flow(
         requesting_user_id=user.id,
-        is_project_admin=user.is_admin,
+        is_project_admin=user.is_applications_admin,
         page=page,
         per_page=per_page,
         search=search,
@@ -165,7 +165,7 @@ def list_users(
 def get_user(
     user_id: str,
     user: User = Depends(authenticate),
-    _: None = Depends(project_admin_or_super_admin_user_detail_access),
+    _: None = Depends(project_admin_or_admin_user_detail_access),
 ):
     """Get user details by ID
 
@@ -179,8 +179,8 @@ def get_user(
 
     # Story 18: Pass is_project_admin flag to service for response filtering
     # Use is_admin explicitly to match service expectations
-    is_project_admin = user.is_applications_admin and not user.is_admin
-    return user_management_service.get_user_detail(user_id, user.id, user.is_admin, is_project_admin)
+    is_project_admin = user.is_applications_admin and not user.is_admin_or_maintainer
+    return user_management_service.get_user_detail(user_id, user.id, user.is_admin_or_maintainer, is_project_admin)
 
 
 @router.post("", response_model=CodeMieUserDetail)
@@ -202,6 +202,7 @@ def create_user(data: UserCreateRequest, user: User = Depends(authenticate), _: 
         password=data.password,
         name=data.name,
         is_admin=data.is_admin,
+        is_maintainer=data.is_maintainer,
         actor_user_id=user.id,
     )
 
@@ -234,6 +235,7 @@ def update_user(
         username=data.username,
         user_type=data.user_type,
         is_admin=data.is_admin,
+        is_maintainer=data.is_maintainer,
         is_active=data.is_active,
         project_limit=data.project_limit,
         project_limit_provided=data.project_limit_provided,

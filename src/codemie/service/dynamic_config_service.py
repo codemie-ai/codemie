@@ -122,22 +122,22 @@ class DynamicConfigService:
             )
 
     @classmethod
-    def _validate_super_admin(cls, user: User) -> None:
+    def _validate_admin(cls, user: User) -> None:
         """
-        Validate that user is super-admin.
+        Validate that user is admin.
 
         Args:
             user: User to validate
 
         Raises:
-            ExtendedHTTPException: 403 if not super-admin
+            ExtendedHTTPException: 403 if not admin
         """
-        if not user.is_admin:
-            logger.warning(f"Non-super-admin user attempted config operation: {user.id=}")
+        if not user.is_admin_or_maintainer:
+            logger.warning(f"Non-admin user attempted config operation: {user.id=}")
             raise ExtendedHTTPException(
                 code=403,
                 message="Forbidden",
-                details="Super-admin privileges required to manage dynamic configuration",
+                details="Admin privileges required to manage dynamic configuration",
             )
 
     @classmethod
@@ -296,14 +296,14 @@ class DynamicConfigService:
             value: Value to store (converted to string)
             value_type: Type enum (STRING, INT, FLOAT, BOOL)
             description: Optional description
-            user: Super-admin user (for updated_by tracking)
+            user: Admin user (for updated_by tracking)
 
         Returns:
             Created/updated DynamicConfig instance
 
         Raises:
             ExtendedHTTPException: 400 for validation errors
-                                   403 if user not super-admin
+                                   403 if user not admin
         """
         value_str = cls._prepare_set(key, value, value_type)
 
@@ -426,13 +426,13 @@ class DynamicConfigService:
 
         Args:
             key: Config key
-            user: Super-admin user
+            user: Admin user
 
         Raises:
             ExtendedHTTPException: 404 if key not found
-                                   403 if user not super-admin
+                                   403 if user not admin
         """
-        cls._validate_super_admin(user)
+        cls._validate_admin(user)
 
         logger.info(f"Deleting config: {key=}, {user.id=}")
 

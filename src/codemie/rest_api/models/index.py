@@ -791,7 +791,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
     def get_all_for_user(cls, user: User, project_name: str) -> list[IndexListItem]:
         result = (
             IndexInfo.get_all_by_fields({"error": False, "project_name": project_name})
-            if user.is_admin
+            if user.is_admin_or_maintainer
             else cls.filter_for_user(user=user, project_name=project_name)
         )
 

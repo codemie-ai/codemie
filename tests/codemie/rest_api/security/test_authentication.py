@@ -19,9 +19,10 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.authentication import (
     authenticate,
     admin_access_only,
+    maintainer_access_only,
     application_access_check,
     kb_access_check,
-    project_admin_or_super_admin_user_detail_access,
+    project_admin_or_admin_user_detail_access,
 )
 from codemie.rest_api.security.user import User
 from codemie.rest_api.security.idp.local import LocalIdp
@@ -65,12 +66,58 @@ async def test_admin_access_only_success(mocker):
 @pytest.mark.anyio
 @patch.object(config, 'ENV', 'dev')
 @patch.object(config, 'ENABLE_USER_MANAGEMENT', True)
+async def test_admin_access_only_allows_maintainer(mocker):
+    request = mocker.MagicMock()
+    request.state.user = User(id='1', username='test', roles=[], is_admin=False, is_maintainer=True)
+
+    result = await admin_access_only(request)
+    assert result is None
+
+
+@pytest.mark.anyio
+@patch.object(config, 'ENV', 'dev')
+@patch.object(config, 'ENABLE_USER_MANAGEMENT', True)
 async def test_admin_access_only_failure(mocker):
     request = mocker.MagicMock()
     request.state.user = User(id='1', username='test', roles=[], is_admin=False)
 
     with pytest.raises(ExtendedHTTPException):
         await admin_access_only(request)
+
+
+@pytest.mark.anyio
+@patch.object(config, 'ENV', 'dev')
+@patch.object(config, 'ENABLE_USER_MANAGEMENT', True)
+async def test_maintainer_access_only_failure_for_regular_admin(mocker):
+    request = mocker.MagicMock()
+    request.state.user = User(id='1', username='test', roles=[], is_admin=True, is_maintainer=False)
+
+    with pytest.raises(ExtendedHTTPException):
+        await maintainer_access_only(request)
+
+
+@pytest.mark.anyio
+@patch.object(config, 'ENV', 'dev')
+@patch.object(config, 'ENABLE_USER_MANAGEMENT', True)
+async def test_maintainer_access_only_success(mocker):
+    request = mocker.MagicMock()
+    request.state.user = User(id='1', username='test', roles=[], is_admin=True, is_maintainer=True)
+
+    result = await maintainer_access_only(request)
+    assert result is None
+
+
+@pytest.mark.anyio
+@patch.object(config, 'ENV', 'dev')
+@patch.object(config, 'ENABLE_USER_MANAGEMENT', True)
+async def test_user_detail_access_maintainer():
+    request = MagicMock()
+    request.state.user = User(id="maintainer-1", username="maintainer", is_admin=False, is_maintainer=True, roles=[])
+    request.path_params = {"user_id": "target-user-123"}
+
+    result = await project_admin_or_admin_user_detail_access(request)
+
+    assert result is None
 
 
 def test_application_access_check_success(mocker):
@@ -112,15 +159,15 @@ def test_kb_access_check_failure(mocker):
 @pytest.mark.anyio
 @patch.object(config, 'ENV', 'dev')
 @patch.object(config, 'ENABLE_USER_MANAGEMENT', True)
-async def test_user_detail_access_super_admin():
-    """Test that super admins can access any user detail endpoint (Story 18)"""
+async def test_user_detail_access_admin():
+    """Test that admins can access any user detail endpoint (Story 18)"""
     # Arrange
     request = MagicMock()
     request.state.user = User(id="admin-1", username="admin", is_admin=True, roles=["admin"])
     request.path_params = {"user_id": "target-user-123"}
 
     # Act
-    result = await project_admin_or_super_admin_user_detail_access(request)
+    result = await project_admin_or_admin_user_detail_access(request)
 
     # Assert
     assert result is None
@@ -158,7 +205,7 @@ async def test_user_detail_access_project_admin_can_view(
     mock_user_project_repo.can_project_admin_view_user.return_value = True
 
     # Act
-    result = await project_admin_or_super_admin_user_detail_access(request)
+    result = await project_admin_or_admin_user_detail_access(request)
 
     # Assert
     assert result is None
@@ -201,7 +248,7 @@ async def test_user_detail_access_project_admin_cannot_view(
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        await project_admin_or_super_admin_user_detail_access(request)
+        await project_admin_or_admin_user_detail_access(request)
 
     assert exc_info.value.code == 403
     assert "User not found in your projects" in exc_info.value.message
@@ -226,7 +273,7 @@ async def test_user_detail_access_regular_user_denied():
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        await project_admin_or_super_admin_user_detail_access(request)
+        await project_admin_or_admin_user_detail_access(request)
 
     assert exc_info.value.code == 403
     assert "Access denied" in exc_info.value.message
@@ -250,7 +297,7 @@ async def test_user_detail_access_project_admin_missing_user_id():
 
     # Act & Assert
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        await project_admin_or_super_admin_user_detail_access(request)
+        await project_admin_or_admin_user_detail_access(request)
 
     assert exc_info.value.code == 403
     assert "Access denied" in exc_info.value.message
@@ -284,7 +331,7 @@ async def test_user_detail_access_project_admin_user_not_exists(
     mock_user_repo.get_by_id.return_value = None
 
     # Act
-    result = await project_admin_or_super_admin_user_detail_access(request)
+    result = await project_admin_or_admin_user_detail_access(request)
 
     # Assert - should return None to let service layer handle 404
     assert result is None

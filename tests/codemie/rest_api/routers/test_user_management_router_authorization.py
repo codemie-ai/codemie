@@ -247,7 +247,7 @@ class TestOtherEndpointsRemainSuperAdminOnly:
             await admin_access_only(mock_request)
 
         assert exc_info.value.code == 403
-        assert "administrator privileges" in exc_info.value.details
+        assert "administrator or maintainer privileges" in exc_info.value.details
 
     @pytest.mark.asyncio
     @patch("codemie.rest_api.security.user.config")
@@ -314,7 +314,7 @@ class TestBackwardCompatibility:
             if path == "/v1/admin/users" and "GET" in methods:
                 continue
             if path == "/v1/admin/users/{user_id}" and "GET" in methods:
-                continue  # Story 18: user detail endpoint uses project_admin_or_super_admin_user_detail_access
+                continue  # Story 18: user detail endpoint uses project_admin_or_admin_user_detail_access
 
             # Check if this is a super-admin-only endpoint
             for expected_path, expected_methods in super_admin_only_endpoints.items():

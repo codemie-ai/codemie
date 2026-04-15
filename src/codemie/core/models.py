@@ -367,10 +367,10 @@ class Application(BaseModelWithSQLSupport, Owned, table=True):
         return self.created_by is not None and self.created_by == user.id
 
     def is_managed_by(self, user: "User") -> bool:
-        return user.is_admin or self.name in user.admin_project_names
+        return user.is_admin_or_maintainer or self.name in user.admin_project_names
 
     def is_shared_with(self, user: "User") -> bool:
-        if user.is_admin:
+        if user.is_admin_or_maintainer:
             return True
         if self.project_type == self.ProjectType.PERSONAL:
             return False
@@ -658,7 +658,7 @@ class UserResponse(BaseModel):
     email: str = Field(default="")  # Added for user management (EPMCDME-10160)
     # Phase 2: Replaced applications/applications_admin with projects array
     projects: list[ProjectInfoResponse] = Field(default_factory=list)
-    project_limit: Optional[int] = None  # NULL = unlimited (super admins); None when user management disabled
+    project_limit: Optional[int] = None  # NULL = unlimited (admins); None when user management disabled
     picture: str = Field(default="")
     knowledge_bases: list[str] = Field(default_factory=list)
     user_type: Optional[str] = None
@@ -667,6 +667,7 @@ class UserResponse(BaseModel):
     applications: list[str] = Field(default_factory=list)
     applications_admin: list[str] = Field(default_factory=list)
     is_admin: bool = False
+    is_maintainer: bool = False
 
 
 class ApplicationsResponse(ConfiguredModel):

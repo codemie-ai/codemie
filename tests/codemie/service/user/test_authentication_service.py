@@ -834,7 +834,7 @@ class TestAuthenticatePersistentUser:
                 "codemie.service.user.authentication_service.AuthenticationService._finalize_authentication",
                 new_callable=AsyncMock,
             ) as mock_finalize,
-            patch("codemie.service.user.authentication_service.personal_project_service") as mock_personal,
+            patch("codemie.service.project.personal_project_service.personal_project_service") as mock_personal,
             patch("codemie.service.user.authentication_service.config") as mock_config,
         ):
             mock_config.IDP_PROVIDER = "keycloak"
@@ -1214,7 +1214,7 @@ class TestAuthenticateAndLogin:
                 new_callable=AsyncMock,
             ) as mock_auth,
             patch("codemie.service.user.authentication_service.user_project_repository") as mock_proj_repo,
-            patch("codemie.service.user.authentication_service.personal_project_service") as mock_personal,
+            patch("codemie.service.project.personal_project_service.personal_project_service") as mock_personal,
             patch("codemie.rest_api.security.jwt_local.generate_access_token") as mock_gen_token,
         ):
             mock_get_session.return_value = _make_async_session_cm(mock_session)

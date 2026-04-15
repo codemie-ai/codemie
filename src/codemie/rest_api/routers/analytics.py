@@ -2486,7 +2486,7 @@ async def post_ai_adoption_user_engagement_users(
     ```
     """
     # Validate user has access to project
-    if not user.is_admin:
+    if not user.is_admin_or_maintainer:
         # Get user's accessible projects
         accessible_projects = set(user.project_names or []) | set(user.admin_project_names or [])
         if request.project not in accessible_projects:

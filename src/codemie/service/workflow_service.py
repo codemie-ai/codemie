@@ -477,7 +477,7 @@ class WorkflowService:
         with Session(WorkflowExecution.get_engine()) as session:
             query = select(WorkflowExecution).where(WorkflowExecution.workflow_id == workflow_id)
 
-            if not user.is_admin:
+            if not user.is_admin_or_maintainer:
                 user_id_expr = WorkflowExecution.created_by['user_id'].astext == user.id
 
                 exprs = []

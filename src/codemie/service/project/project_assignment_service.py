@@ -54,7 +54,7 @@ class ProjectAssignmentService:
         http_method = action.split()[0] if action else "UNKNOWN"
         logger.warning(f"personal_project_assignment_blocked: user_id={actor.id}, method={http_method}")
 
-        if actor.is_admin or project.created_by == actor.id:
+        if actor.is_admin_or_maintainer or project.created_by == actor.id:
             raise ExtendedHTTPException(code=403, message=_PERSONAL_PROJECT_MEMBERSHIP)
 
         raise ExtendedHTTPException(code=404, message="Project not found")

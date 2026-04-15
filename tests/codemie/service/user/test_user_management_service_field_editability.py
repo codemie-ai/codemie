@@ -112,6 +112,7 @@ def test_email_update_local_mode_success(mock_get_session, mock_repo, local_user
         user_type=updated_user.user_type,
         is_active=updated_user.is_active,
         is_admin=updated_user.is_admin,
+        is_maintainer=updated_user.is_maintainer,
         auth_source=updated_user.auth_source,
         email_verified=updated_user.email_verified,
         last_login_at=updated_user.last_login_at,
@@ -244,6 +245,7 @@ def test_user_type_update_local_mode_success(mock_get_session, mock_repo, local_
         user_type="external",
         is_active=updated_user.is_active,
         is_admin=updated_user.is_admin,
+        is_maintainer=updated_user.is_maintainer,
         auth_source=updated_user.auth_source,
         email_verified=updated_user.email_verified,
         last_login_at=updated_user.last_login_at,
@@ -337,6 +339,7 @@ def test_user_type_case_insensitive_normalization(mock_get_session, mock_repo, l
         user_type="external",
         is_active=updated_user.is_active,
         is_admin=updated_user.is_admin,
+        is_maintainer=updated_user.is_maintainer,
         auth_source=updated_user.auth_source,
         email_verified=updated_user.email_verified,
         last_login_at=updated_user.last_login_at,
@@ -391,6 +394,7 @@ def test_name_and_picture_editable_in_idp_mode(mock_get_session, mock_repo, idp_
         user_type=updated_user.user_type,
         is_active=updated_user.is_active,
         is_admin=updated_user.is_admin,
+        is_maintainer=updated_user.is_maintainer,
         auth_source=updated_user.auth_source,
         email_verified=updated_user.email_verified,
         last_login_at=updated_user.last_login_at,
@@ -525,7 +529,8 @@ def regular_admin_user():
         password_hash="hashed",
         auth_source="local",
         is_active=True,
-        is_admin=False,
+        is_admin=True,
+        is_maintainer=False,
         email_verified=True,
         project_limit=3,
         date=datetime.now(UTC),
@@ -558,6 +563,7 @@ def test_user_type_update_requires_super_admin(mock_get_session, mock_repo, supe
         user_type="external",
         is_active=updated_user.is_active,
         is_admin=updated_user.is_admin,
+        is_maintainer=updated_user.is_maintainer,
         auth_source=updated_user.auth_source,
         email_verified=updated_user.email_verified,
         last_login_at=updated_user.last_login_at,
@@ -582,23 +588,43 @@ def test_user_type_update_requires_super_admin(mock_get_session, mock_repo, supe
 @patch("codemie.service.user.user_management_service.config.IDP_PROVIDER", "local")
 @patch("codemie.service.user.user_management_service.user_repository")
 @patch("codemie.clients.postgres.get_session")
-def test_user_type_update_blocked_for_non_super_admin(mock_get_session, mock_repo, regular_admin_user):
-    """AC-9: user_type update blocked for non-super admin even in local mode"""
+def test_user_type_update_allowed_for_regular_admin(mock_get_session, mock_repo, regular_admin_user):
+    """AC-9: user_type update is allowed for regular admins in local mode"""
     # Arrange
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
-    mock_repo.get_by_id.return_value = regular_admin_user
+    mock_repo.get_by_id.side_effect = [regular_admin_user, regular_admin_user]
+    updated_user = UserDB(**regular_admin_user.model_dump())
+    updated_user.user_type = "external"
+    mock_repo.update.return_value = updated_user
 
-    # Act & Assert
-    with pytest.raises(ExtendedHTTPException) as exc_info:
-        UserManagementService.update_user_fields(
+    mock_detail = CodeMieUserDetail(
+        id=updated_user.id,
+        username=updated_user.username,
+        email=updated_user.email,
+        name=updated_user.name,
+        picture=None,
+        user_type="external",
+        is_active=updated_user.is_active,
+        is_admin=updated_user.is_admin,
+        is_maintainer=updated_user.is_maintainer,
+        auth_source=updated_user.auth_source,
+        email_verified=updated_user.email_verified,
+        last_login_at=updated_user.last_login_at,
+        projects=[],
+        project_limit=updated_user.project_limit,
+        knowledge_bases=[],
+        date=updated_user.date,
+        update_date=updated_user.update_date,
+        deleted_at=updated_user.deleted_at,
+    )
+
+    with patch.object(UserManagementService, "get_user_with_relationships", return_value=mock_detail):
+        result = UserManagementService.update_user_fields(
             user_id="user-local-1", actor_user_id="regular-admin-1", user_type="external"
         )
 
-    # Verify exception
-    assert exc_info.value.code == 403
-    assert "Insufficient permissions to change user type" in exc_info.value.message
-    assert "super admin" in exc_info.value.details.lower()
+    assert result.user_type == "external"
 
 
 # ===========================================
@@ -614,7 +640,7 @@ def test_deactivation_via_put_is_active_false(mock_get_session, mock_repo, local
     mock_session = MagicMock()
     mock_get_session.return_value.__enter__.return_value = mock_session
     mock_repo.get_by_id.return_value = local_user
-    mock_repo.count_active_superadmins.return_value = 2  # Not last admin
+    mock_repo.count_active_admins.return_value = 2  # Not last admin
     mock_repo.soft_delete.return_value = True
 
     deactivated_user = UserDB(**local_user.model_dump())
@@ -631,6 +657,7 @@ def test_deactivation_via_put_is_active_false(mock_get_session, mock_repo, local
         user_type=deactivated_user.user_type,
         is_active=False,
         is_admin=deactivated_user.is_admin,
+        is_maintainer=deactivated_user.is_maintainer,
         auth_source=deactivated_user.auth_source,
         email_verified=deactivated_user.email_verified,
         last_login_at=deactivated_user.last_login_at,

@@ -215,6 +215,18 @@ class TestUserResponseModel:
         assert admin_user.is_admin is True
         assert regular_user.is_admin is False
 
+    def test_user_response_is_maintainer_field(self):
+        """Test UserResponse includes is_maintainer field."""
+        user = UserResponse(
+            user_id="user-123",
+            name="Maintainer User",
+            username="maintainer",
+            is_admin=False,
+            is_maintainer=True,
+        )
+
+        assert user.is_maintainer is True
+
     def test_user_response_legacy_fields(self):
         """Test UserResponse includes legacy applications fields for backward compatibility."""
         # Arrange & Act

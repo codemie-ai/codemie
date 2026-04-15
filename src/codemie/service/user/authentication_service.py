@@ -40,7 +40,6 @@ from codemie.repository.user_kb_repository import user_kb_repository
 from codemie.repository.application_repository import application_repository
 from codemie.rest_api.models.user_management import UserDB, CodeMieUserDetail, ProjectInfo
 from codemie.rest_api.security import user as security_user
-from codemie.service.project.personal_project_service import personal_project_service
 
 _INVALID_EMAIL_OR_PASSWORD = "Invalid email or password"
 _ACCOUNT_DEACTIVATED = "Account is deactivated"
@@ -159,6 +158,7 @@ class AuthenticationService:
             admin_project_names=[p.project_name for p in projects if p.is_project_admin],
             knowledge_bases=[kb.kb_name for kb in kbs],
             is_admin=db_user.is_admin,
+            is_maintainer=db_user.is_maintainer,
             project_limit=db_user.project_limit,
         )
 
@@ -183,7 +183,7 @@ class AuthenticationService:
         except ValueError:
             raise ExtendedHTTPException(code=422, message="User ID must be a valid UUID")
 
-        # Determine if IDP user should be SuperAdmin (legacy logic)
+        # Determine if IDP user should be admin (legacy logic)
         legacy_is_admin = idp_user.id == config.ADMIN_USER_ID or config.ADMIN_ROLE_NAME in idp_user.roles
 
         # Create user record
@@ -198,7 +198,7 @@ class AuthenticationService:
             email_verified=True,  # IDP users pre-verified
             is_active=True,
             is_admin=legacy_is_admin,
-            project_limit=config.USER_PROJECT_LIMIT,
+            project_limit=None if legacy_is_admin else config.USER_PROJECT_LIMIT,
         )
         db_user = await user_repository.acreate(session, db_user)
 
@@ -321,6 +321,7 @@ class AuthenticationService:
             admin_project_names=[],
             knowledge_bases=[],
             is_admin=db_user.is_admin,
+            is_maintainer=db_user.is_maintainer,
             project_limit=db_user.project_limit,
             auth_token=auth_token,
         )
@@ -340,6 +341,7 @@ class AuthenticationService:
             security.User with relationships populated
         """
         from codemie.clients.postgres import get_async_session
+        from codemie.service.project.personal_project_service import personal_project_service
 
         await personal_project_service.ensure_personal_project_async(security_user_ins.id, security_user_ins.email)
 
@@ -525,6 +527,8 @@ class AuthenticationService:
                     )
 
         if pre_sync_email and security_user_ins.email != pre_sync_email:
+            from codemie.service.project.personal_project_service import personal_project_service
+
             await personal_project_service.reconcile_personal_project_on_email_change(
                 security_user_ins.id, pre_sync_email, security_user_ins.email
             )
@@ -573,7 +577,7 @@ class AuthenticationService:
                     auth_source="dev_header",
                     email_verified=True,
                     is_active=True,
-                    is_admin=True,  # Persist superadmin
+                    is_admin=True,
                 )
                 db_user = await user_repository.acreate(session, db_user)
                 logger.info(f"Dev header user created: user_id={db_user.id}")
@@ -608,6 +612,7 @@ class AuthenticationService:
         """
         from codemie.clients.postgres import get_async_session
         from codemie.rest_api.security.jwt_local import generate_access_token
+        from codemie.service.project.personal_project_service import personal_project_service
 
         async with get_async_session() as session:
             user = await AuthenticationService.authenticate_local(session, email, password)
@@ -628,6 +633,7 @@ class AuthenticationService:
                 user_type=user.user_type,
                 is_active=user.is_active,
                 is_admin=user.is_admin,
+                is_maintainer=user.is_maintainer,
                 auth_source=user.auth_source,
                 email_verified=user.email_verified,
                 last_login_at=user.last_login_at,

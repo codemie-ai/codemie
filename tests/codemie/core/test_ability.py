@@ -42,6 +42,8 @@ def mock_index_info():
 
 def test_ability_can_creator(mock_index_info):
     user = MagicMock(name="test_user", is_admin=True)
+    user.is_maintainer = False
+    user.is_admin_or_maintainer = True
     ability = Ability(user=user)
 
     assert ability.can(Action.READ, mock_index_info) is True
@@ -51,6 +53,8 @@ def test_ability_can_creator(mock_index_info):
 
 def test_ability_can_admin(mock_index_info):
     user = MagicMock(name="admin-user", is_admin=True)
+    user.is_maintainer = False
+    user.is_admin_or_maintainer = True
     ability = Ability(user=user)
 
     assert ability.can(Action.READ, mock_index_info) is True
@@ -60,6 +64,8 @@ def test_ability_can_admin(mock_index_info):
 
 def test_ability_can_non_creator(mock_index_info):
     user = MagicMock(name="non-creator-user", is_admin=False)
+    user.is_maintainer = False
+    user.is_admin_or_maintainer = False
     ability = Ability(user=user)
 
     assert ability.can(Action.READ, mock_index_info) is False
@@ -70,6 +76,8 @@ def test_ability_can_non_creator(mock_index_info):
 @patch("codemie.rest_api.models.permission.Permission.exists_for", return_value=True)
 def test_ability_with_permissions(_mock_exists, mock_index_info):
     user = MagicMock(name="non-creator-user", is_admin=False)
+    user.is_maintainer = False
+    user.is_admin_or_maintainer = False
     ability = Ability(user=user)
 
     assert ability.can(Action.READ, mock_index_info, check_resource_permissions=True) is True
@@ -79,6 +87,8 @@ def test_ability_with_permissions(_mock_exists, mock_index_info):
 
 def test_ability_wo_permissions(mock_index_info):
     user = MagicMock(name="non-creator-user", is_admin=False)
+    user.is_maintainer = False
+    user.is_admin_or_maintainer = False
     ability = Ability(user=user)
 
     assert ability.can(Action.READ, mock_index_info) is False
@@ -88,6 +98,8 @@ def test_ability_wo_permissions(mock_index_info):
 
 def test_ability_list(mock_index_info):
     user = MagicMock(name="test_user", is_admin=True)
+    user.is_maintainer = False
+    user.is_admin_or_maintainer = True
     ability = Ability(user=user)
 
     abilities = ability.list(mock_index_info)

@@ -33,6 +33,7 @@ from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.repository.user_repository import user_repository
+from codemie.rest_api.security.permissions import is_admin_or_maintainer
 from codemie.service.user.authentication_service import invalidate_user_from_cache
 from codemie.rest_api.models.user_management import (
     AdminUserListItem,
@@ -48,6 +49,7 @@ from codemie.rest_api.models.user_management import (
 
 
 _USER_NOT_FOUND = "User not found"
+_ACCESS_DENIED = "Access denied"
 
 
 class UserManagementService:
@@ -65,8 +67,9 @@ class UserManagementService:
         password: str,
         name: Optional[str] = None,
         is_admin: bool = False,
+        is_maintainer: bool = False,
     ) -> UserDB:
-        """Create a local user (SuperAdmin only)
+        """Create a local user (admin only)
 
         Args:
             session: Database session
@@ -74,7 +77,7 @@ class UserManagementService:
             username: Username
             password: Plain text password
             name: Display name
-            is_admin: Grant SuperAdmin status
+            is_admin: Grant admin status
 
         Returns:
             Created UserDB
@@ -94,6 +97,9 @@ class UserManagementService:
         if user_repository.exists_by_username(session, username):
             raise ExtendedHTTPException(code=409, message="Username already taken")
 
+        if is_maintainer:
+            is_admin = True
+
         user = UserDB(
             id=str(uuid4()),
             email=email,
@@ -104,7 +110,8 @@ class UserManagementService:
             email_verified=True,  # Admin-created users are pre-verified
             is_active=True,
             is_admin=is_admin,
-            project_limit=None if is_admin else config.USER_PROJECT_LIMIT,  # Super admins always have unlimited (NULL)
+            is_maintainer=is_maintainer,
+            project_limit=None if is_admin else config.USER_PROJECT_LIMIT,  # Admins always have unlimited (NULL)
         )
 
         user = user_repository.create(session, user)
@@ -135,7 +142,7 @@ class UserManagementService:
             session: Database session
             user_id: Target user ID
             requesting_user_id: User requesting the detail (for visibility filtering)
-            is_admin: Whether requesting user is super admin
+            is_admin: Whether requesting user is admin
             is_project_admin: Whether requesting user is project admin (Story 18)
 
         Returns:
@@ -147,9 +154,9 @@ class UserManagementService:
         if not user:
             return None
 
-        # Story 18: Different filtering for project admins vs super admins
+        # Story 18: Different filtering for project admins vs admins
         if is_admin:
-            # Super admins see all projects (Story 10 visibility filtering)
+            # Admins see all projects (Story 10 visibility filtering)
             visible_projects = user_project_repository.get_visible_projects_for_user(
                 session, user_id, requesting_user_id, is_admin
             )
@@ -176,6 +183,7 @@ class UserManagementService:
             user_type=user.user_type,
             is_active=user.is_active,
             is_admin=user.is_admin,
+            is_maintainer=user.is_maintainer,
             auth_source=user.auth_source,
             email_verified=user.email_verified,
             last_login_at=user.last_login_at,
@@ -220,23 +228,23 @@ class UserManagementService:
             Deactivated UserDB
 
         Raises:
-            ExtendedHTTPException: 404 if not found, 403 if last SuperAdmin
+            ExtendedHTTPException: 404 if not found, 403 if last admin
         """
         user = user_repository.get_by_id(session, user_id)
         if not user:
             raise ExtendedHTTPException(code=404, message=_USER_NOT_FOUND)
 
-        # Last SuperAdmin protection
+        # Last admin protection
         if user.is_admin:
-            count = user_repository.count_active_superadmins(session)
+            count = user_repository.count_active_admins(session)
             if count <= 1:
                 msg = (
-                    f"blocked_last_super_admin_deactivation: actor_user_id={actor_user_id}, "
+                    f"blocked_last_admin_deactivation: actor_user_id={actor_user_id}, "
                     f"target_user_id={user_id}, action=deactivate, timestamp={datetime.now(UTC)}"
                 )
                 logger.warning(msg)
                 raise ExtendedHTTPException(
-                    code=403, message="Cannot deactivate last super admin - system must have at least one super admin"
+                    code=403, message="Cannot deactivate last admin - system must have at least one admin"
                 )
 
         # Soft delete
@@ -262,7 +270,7 @@ class UserManagementService:
         Args:
             session: Database session
             requesting_user_id: User requesting the list (for visibility filtering)
-            is_project_admin: Whether requesting user is super admin or project admin
+            is_project_admin: Whether requesting user is admin or project admin
             page: Page number (0-indexed)
             per_page: Items per page
             search: Search term
@@ -275,16 +283,12 @@ class UserManagementService:
 
         resolved_filters = filters or UserListFilters()
 
-        if not is_project_admin and resolved_filters.platform_role == PlatformRole.SUPER_ADMIN:
+        if not is_project_admin and resolved_filters.platform_role == PlatformRole.ADMIN:
             if not resolved_filters.projects:
-                raise ExtendedHTTPException(
-                    code=403, message="Access denied: only super admins can filter by super_admin role"
-                )
+                raise ExtendedHTTPException(code=403, message="Access denied: only admins can filter by admin role")
             user_project_names = user_project_repository.get_project_names_for_user(session, requesting_user_id)
             if not any(p in user_project_names for p in resolved_filters.projects):
-                raise ExtendedHTTPException(
-                    code=403, message="Access denied: only super admins can filter by super_admin role"
-                )
+                raise ExtendedHTTPException(code=403, message="Access denied: only admins can filter by admin role")
 
         total = user_repository.count_users(session, search, resolved_filters)
         users = user_repository.query_users(session, search, resolved_filters, page, per_page)
@@ -313,6 +317,7 @@ class UserManagementService:
                 user_type=u.user_type,
                 is_active=u.is_active,
                 is_admin=u.is_admin,
+                is_maintainer=u.is_maintainer,
                 auth_source=u.auth_source,
                 last_login_at=u.last_login_at,
                 projects=[
@@ -355,12 +360,18 @@ class UserManagementService:
         Returns:
             Created UserDB or None if already exists
         """
-        count = user_repository.count_active_superadmins(session)
+        count = user_repository.count_active_admins(session)
         if count > 0:
             return None
 
         return UserManagementService.create_local_user(
-            session, email=email, username="admin", password=password, name="System Administrator", is_admin=True
+            session,
+            email=email,
+            username="admin",
+            password=password,
+            name="System Administrator",
+            is_admin=True,
+            is_maintainer=True,
         )
 
     @staticmethod
@@ -398,9 +409,9 @@ class UserManagementService:
                 return None
 
     @staticmethod
-    def count_active_superadmins(session: Session) -> int:
-        """Count active SuperAdmins"""
-        return user_repository.count_active_superadmins(session)
+    def count_active_admins(session: Session) -> int:
+        """Count active admins"""
+        return user_repository.count_active_admins(session)
 
     @staticmethod
     def update_last_login(session: Session, user_id: str) -> bool:
@@ -428,7 +439,7 @@ class UserManagementService:
 
         Args:
             requesting_user_id: User requesting the list (for visibility filtering)
-            is_project_admin: Whether requesting user is super admin or project admin
+            is_project_admin: Whether requesting user is admin or project admin
             page: Page number (0-indexed)
             per_page: Items per page
             search: Search term
@@ -464,7 +475,7 @@ class UserManagementService:
         Args:
             user_id: Target user UUID
             requesting_user_id: User requesting the detail (for visibility filtering)
-            is_admin: Whether requesting user is super admin
+            is_admin: Whether requesting user is admin
             is_project_admin: Whether requesting user is project admin (Story 18)
 
         Returns:
@@ -492,6 +503,7 @@ class UserManagementService:
         password: str,
         name: Optional[str] = None,
         is_admin: bool = False,
+        is_maintainer: bool = False,
         actor_user_id: str = "system",
     ) -> CodeMieUserDetail:
         """Create local user (admin action)
@@ -504,7 +516,7 @@ class UserManagementService:
             username: Username
             password: Plain text password
             name: Display name
-            is_admin: Grant SuperAdmin status
+            is_admin: Grant admin status
             actor_user_id: User performing the action
 
         Returns:
@@ -516,8 +528,18 @@ class UserManagementService:
         from codemie.clients.postgres import get_session
 
         with get_session() as session:
+            is_admin, is_maintainer = UserManagementService._validate_role_change_permissions(
+                session, actor_user_id, is_admin, is_maintainer
+            )
+
             new_user = UserManagementService.create_local_user(
-                session, email=email, username=username, password=password, name=name, is_admin=is_admin
+                session,
+                email=email,
+                username=username,
+                password=password,
+                name=name,
+                is_admin=is_admin,
+                is_maintainer=is_maintainer,
             )
 
             # Extract values before commit to avoid expired attribute access
@@ -541,9 +563,9 @@ class UserManagementService:
 
             logger.info(f"user_created: actor_user_id={actor_user_id}, target_user_id={new_user_id}")
 
-            # Story 10: Get actor's super admin status for visibility filtering
+            # Story 10: Get actor's admin status for visibility filtering
             actor = user_repository.get_by_id(session, actor_user_id)
-            actor_is_admin = actor.is_admin if actor else False
+            actor_is_admin = is_admin_or_maintainer(actor) if actor else False
 
             return UserManagementService.get_user_with_relationships(
                 session, new_user_id, actor_user_id, actor_is_admin
@@ -554,23 +576,23 @@ class UserManagementService:
     # ===========================================
 
     @staticmethod
-    def _validate_super_admin_revocation(
+    def _validate_admin_revocation(
         session: Session, user: UserDB, user_id: str, actor_user_id: str, is_admin: Optional[bool]
     ) -> None:
-        """Validate super admin revocation attempt (Story 5).
+        """Validate admin revocation attempt (Story 5).
 
         Args:
-            session: Database session (needed for count_active_superadmins)
+            session: Database session (needed for count_active_admins)
             user: Current user object (already fetched)
             user_id: Target user UUID
             actor_user_id: User performing the action
-            is_admin: New super admin status
+            is_admin: New admin status
 
         Raises:
             ExtendedHTTPException: 403 if self-revocation or last admin revocation
         """
         if is_admin is not None and not is_admin and user.is_admin:
-            # Attempting to revoke super admin status from current super admin
+            # Attempting to revoke admin status from current admin
             # Rule 1: Self-revocation blocked
             if actor_user_id == user_id:
                 msg = (
@@ -578,20 +600,64 @@ class UserManagementService:
                     f"target_user_id={user_id}, action=revoke_self, timestamp={datetime.now(UTC)}"
                 )
                 logger.warning(msg)
-                raise ExtendedHTTPException(code=403, message="Cannot revoke own super admin status")
+                raise ExtendedHTTPException(code=403, message="Cannot revoke own admin status")
 
             # Rule 2: Last admin protection
-            count = user_repository.count_active_superadmins(session)
+            count = user_repository.count_active_admins(session)
             if count <= 1:
                 msg = (
-                    f"blocked_last_super_admin_revocation: actor_user_id={actor_user_id}, "
+                    f"blocked_last_admin_revocation: actor_user_id={actor_user_id}, "
                     f"target_user_id={user_id}, action=revoke_last, timestamp={datetime.now(UTC)}"
                 )
                 logger.warning(msg)
                 raise ExtendedHTTPException(
                     code=403,
-                    message="Cannot revoke last super admin - system must have at least one super admin",
+                    message="Cannot revoke last admin - system must have at least one admin",
                 )
+
+    @staticmethod
+    def _normalize_role_updates(
+        is_admin: Optional[bool], is_maintainer: Optional[bool]
+    ) -> tuple[Optional[bool], Optional[bool]]:
+        """Normalize role updates while enforcing maintainer implies admin."""
+        if is_maintainer:
+            is_admin = True
+
+        if is_admin is False and is_maintainer:
+            raise ExtendedHTTPException(code=400, message="Maintainers must also be admins")
+
+        return is_admin, is_maintainer
+
+    @staticmethod
+    def _validate_role_change_permissions(
+        session: Session,
+        actor_user_id: str,
+        is_admin: bool | None,
+        is_maintainer: bool | None,
+    ) -> tuple[bool | None, bool | None]:
+        """Require maintainer privileges for admin/maintainer role changes."""
+        is_admin, is_maintainer = UserManagementService._normalize_role_updates(is_admin, is_maintainer)
+
+        if is_admin is None and is_maintainer is None:
+            return None, None
+
+        actor_user = user_repository.get_by_id(session, actor_user_id)
+        if not actor_user:
+            raise ExtendedHTTPException(
+                code=403,
+                message=_ACCESS_DENIED,
+                details="Actor user not found in database",
+            )
+
+        if not actor_user.is_maintainer:
+            raise ExtendedHTTPException(
+                code=403,
+                message=_ACCESS_DENIED,
+                details="Only maintainers can modify admin or maintainer roles",
+                help="Contact a maintainer to request platform role changes",
+            )
+
+        return is_admin, is_maintainer
 
     @staticmethod
     def _auto_manage_project_limit(user: UserDB, user_id: str, is_admin: Optional[bool]) -> tuple[bool, Optional[int]]:
@@ -600,7 +666,7 @@ class UserManagementService:
         Args:
             user: Current user object (already fetched)
             user_id: Target user UUID
-            is_admin: New super admin status (None if not changing)
+            is_admin: New admin status (None if not changing)
 
         Returns:
             Tuple of (auto_set_limit: bool, auto_limit_value: Optional[int])
@@ -629,6 +695,7 @@ class UserManagementService:
         email: Optional[str],
         user_type: Optional[str],
         is_admin: Optional[bool],
+        is_maintainer: Optional[bool],
         project_limit: Optional[int],
         auto_set_limit: bool,
         auto_limit_value: Optional[int],
@@ -642,7 +709,8 @@ class UserManagementService:
             picture: New picture URL
             email: New email
             user_type: New user type (Story 8)
-            is_admin: New super admin status
+            is_admin: New admin status
+            is_maintainer: New maintainer status
             project_limit: Explicit project_limit value
             auto_set_limit: Whether auto-management triggered
             auto_limit_value: Auto-managed limit value
@@ -663,12 +731,14 @@ class UserManagementService:
             updates["user_type"] = user_type
         if is_admin is not None:
             updates["is_admin"] = is_admin
+        if is_maintainer is not None:
+            updates["is_maintainer"] = is_maintainer
 
         # Story 6 + F-15: Apply project_limit changes
         # INVARIANT: Super admins MUST have project_limit=NULL (unlimited)
-        # Priority: auto-management for super admin promotion > explicit > auto-management for demotion
+        # Priority: auto-management for admin promotion > explicit > auto-management for demotion
         if auto_set_limit and auto_limit_value is None:
-            # Promotion to super admin: FORCE project_limit=None (invariant enforcement)
+            # Promotion to admin: FORCE project_limit=None (invariant enforcement)
             updates["project_limit"] = None
             if project_limit is not None:
                 logger.warning(f"project_limit_override_ignored: user={user_id}, value={project_limit}")
@@ -676,7 +746,7 @@ class UserManagementService:
             # Explicit non-None project_limit provided (validated above)
             updates["project_limit"] = project_limit
         elif project_limit_provided:
-            # F-15: Explicit null sent (validated above — only super admins allowed)
+            # F-15: Explicit null sent (validated above — only admins allowed)
             updates["project_limit"] = None
         elif auto_set_limit:
             # Auto-managed demotion (project_limit=3)
@@ -702,12 +772,12 @@ class UserManagementService:
             project_limit_provided: Whether project_limit was explicitly in request body
 
         Raises:
-            ExtendedHTTPException: 403 if super admin modifying own limit
+            ExtendedHTTPException: 403 if admin modifying own limit
             ExtendedHTTPException: 400 if negative value or invalid null for non-super-admin
         """
         if project_limit is not None:
             # Rule 1: Super admin cannot modify own project_limit
-            if actor_user_id == user_id and user.is_admin:
+            if actor_user_id == user_id and is_admin_or_maintainer(user):
                 raise ExtendedHTTPException(
                     code=403, message="Super admins cannot modify their own project limit (always unlimited)"
                 )
@@ -718,15 +788,13 @@ class UserManagementService:
                     code=400, message="Invalid project_limit: must be non-negative integer or NULL"
                 )
         elif project_limit_provided:
-            # F-15: Explicit null sent — only super admins may have unlimited
+            # F-15: Explicit null sent — only admins may have unlimited
             if not user.is_admin:
-                raise ExtendedHTTPException(
-                    code=400, message="Only super admins can have unlimited project_limit (NULL)"
-                )
+                raise ExtendedHTTPException(code=400, message="Only admins can have unlimited project_limit (NULL)")
 
     @staticmethod
-    def _resolve_actor_super_admin_status(session: Session, actor_user_id: str, user_type: Optional[str]) -> bool:
-        """Resolve actor's super admin status for user_type validation (Story 8).
+    def _resolve_actor_admin_status(session: Session, actor_user_id: str, user_type: Optional[str]) -> bool:
+        """Resolve actor's admin status for user_type validation (Story 8).
 
         Args:
             session: Database session
@@ -734,7 +802,7 @@ class UserManagementService:
             user_type: New user_type value (triggers actor lookup if not None)
 
         Returns:
-            True if actor is super admin, False otherwise
+            True if actor is admin, False otherwise
 
         Raises:
             ExtendedHTTPException: 403 if actor not found when user_type change requested
@@ -745,10 +813,10 @@ class UserManagementService:
         if not actor_user:
             raise ExtendedHTTPException(
                 code=403,
-                message="Access denied",
+                message=_ACCESS_DENIED,
                 details="Actor user not found in database",
             )
-        return actor_user.is_admin
+        return is_admin_or_maintainer(actor_user)
 
     @staticmethod
     def _validate_user_and_auto_manage(
@@ -765,7 +833,7 @@ class UserManagementService:
             session: Database session
             user_id: Target user UUID
             actor_user_id: Actor user UUID
-            is_admin: New super admin status
+            is_admin: New admin status
             project_limit: Explicit project_limit value
             project_limit_provided: Whether project_limit was in request body
 
@@ -779,7 +847,7 @@ class UserManagementService:
         if not user:
             raise ExtendedHTTPException(code=404, message=_USER_NOT_FOUND)
 
-        UserManagementService._validate_super_admin_revocation(session, user, user_id, actor_user_id, is_admin)
+        UserManagementService._validate_admin_revocation(session, user, user_id, actor_user_id, is_admin)
 
         if project_limit is not None or project_limit_provided:
             UserManagementService._validate_project_limit(
@@ -801,8 +869,8 @@ class UserManagementService:
         Args:
             username: New username value (should always be None)
             email: New email value (conditional: local mode only)
-            user_type: New user_type value (conditional: super admin in local mode only)
-            actor_is_admin: Whether the actor performing the action is a super admin
+            user_type: New user_type value (conditional: admin in local mode only)
+            actor_is_admin: Whether the actor performing the action is an admin
 
         Raises:
             ExtendedHTTPException: 400 if field cannot be edited, 403 if insufficient permissions
@@ -824,14 +892,24 @@ class UserManagementService:
                 "Only local auth mode allows email changes.",
             )
 
-        # Rule 3: user_type is conditional - editable by super admin in local mode only (Story 8)
+        # Rule 3: user_type is conditional - editable by admin in local mode only (Story 8)
         if user_type is not None and not actor_is_admin:
             raise ExtendedHTTPException(
                 code=403,
                 message="Insufficient permissions to change user type",
-                details="Only super admins can modify user_type field",
-                help="Contact a super admin to request user type changes",
+                details="Only admins can modify user_type field",
+                help="Contact an admin to request user type changes",
             )
+
+    @staticmethod
+    def _validate_username_and_email_editability(username: Optional[str], email: Optional[str]) -> None:
+        """Validate field editability checks that must run before user_type validation."""
+        UserManagementService._validate_conditional_field_editability(
+            username=username,
+            email=email,
+            user_type=None,
+            actor_is_admin=True,
+        )
 
     @staticmethod
     def _validate_user_type(user_type: Optional[str]) -> Optional[str]:
@@ -880,7 +958,7 @@ class UserManagementService:
         UserManagementService.deactivate_user(session, user_id, actor_user_id)
         session.commit()
 
-        # Story 10: Get actor's super admin status for visibility filtering
+        # Story 10: Get actor's admin status for visibility filtering
         actor = user_repository.get_by_id(session, actor_user_id)
         actor_is_admin = actor.is_admin if actor else False
 
@@ -896,6 +974,7 @@ class UserManagementService:
         username: Optional[str] = None,
         user_type: Optional[str] = None,
         is_admin: Optional[bool] = None,
+        is_maintainer: Optional[bool] = None,
         is_active: Optional[bool] = None,
         project_limit: Optional[int] = None,
         project_limit_provided: bool = False,
@@ -905,9 +984,9 @@ class UserManagementService:
         Handles complete user update flow with session management.
         Special handling for is_active: deactivation only (one-way).
 
-        Super Admin Protection:
-        - Self-revocation blocked: super admin cannot revoke own status
-        - Last admin protection: cannot revoke last super admin's status
+        Admin Protection:
+        - Self-revocation blocked: admin cannot revoke own status
+        - Last admin protection: cannot revoke last admin's status
 
         Conditional Field Editability (Story 8):
         - username: Immutable - cannot be changed by anyone
@@ -922,10 +1001,11 @@ class UserManagementService:
             email: New email (Story 8: local mode only)
             username: Username cannot be changed (Story 8: always rejected)
             user_type: New user type (Story 8: local mode only, 'regular' or 'external')
-            is_admin: New SuperAdmin status
+            is_admin: New admin status
+            is_maintainer: New maintainer status
             is_active: Deactivation only (False allowed, True raises error)
             project_limit: Max shared projects (Story 6). Auto-managed on role changes.
-                NULL/unlimited for super admins, non-negative integers for regular users
+                NULL/unlimited for admins, non-negative integers for regular users
 
         Returns:
             CodeMieUserDetail with updated information
@@ -944,14 +1024,21 @@ class UserManagementService:
                     )
                 return UserManagementService._handle_deactivation_flow(session, user_id, actor_user_id)
 
-            # Story 8: Resolve actor's super admin status for user_type validation
-            actor_is_admin = UserManagementService._resolve_actor_super_admin_status(session, actor_user_id, user_type)
+            # Story 8: Resolve actor's admin status for user_type validation
+            actor_is_admin = UserManagementService._resolve_actor_admin_status(session, actor_user_id, user_type)
 
-            # Story 8: Validate conditional field editability (auth mode and role dependent)
-            UserManagementService._validate_conditional_field_editability(username, email, user_type, actor_is_admin)
+            is_admin, is_maintainer = UserManagementService._validate_role_change_permissions(
+                session, actor_user_id, is_admin, is_maintainer
+            )
+
+            # Story 8: Validate immutable/IDP-constrained fields first so they win precedence
+            UserManagementService._validate_username_and_email_editability(username, email)
 
             # Story 8: Validate and normalize user_type
             normalized_user_type = UserManagementService._validate_user_type(user_type)
+
+            # Story 8: Validate conditional field editability (auth mode and role dependent)
+            UserManagementService._validate_conditional_field_editability(None, None, user_type, actor_is_admin)
 
             # Run validations and auto-management (Stories 5, 6, F-15)
             auto_set_limit, auto_limit_value = (False, None)
@@ -967,6 +1054,7 @@ class UserManagementService:
                 email=email,
                 user_type=normalized_user_type,
                 is_admin=is_admin,
+                is_maintainer=is_maintainer,
                 project_limit=project_limit,
                 auto_set_limit=auto_set_limit,
                 auto_limit_value=auto_limit_value,
@@ -979,7 +1067,10 @@ class UserManagementService:
                     code=400,
                     message="No fields to update",
                     details="At least one field must be provided for update operation",
-                    help="Provide one or more fields: name, picture, email, user_type, is_admin, project_limit",
+                    help=(
+                        "Provide one or more fields: name, picture, email, "
+                        "user_type, is_admin, is_maintainer, project_limit"
+                    ),
                 )
 
             updated_user = UserManagementService.update_user(session, user_id, actor_user_id, **updates)
@@ -991,9 +1082,9 @@ class UserManagementService:
 
             invalidate_user_from_cache(user_id)
 
-            # Story 10: Get actor's super admin status for visibility filtering
+            # Story 10: Get actor's admin status for visibility filtering
             actor = user_repository.get_by_id(session, actor_user_id)
-            actor_is_admin = actor.is_admin if actor else False
+            actor_is_admin = is_admin_or_maintainer(actor) if actor else False
 
             return UserManagementService.get_user_with_relationships(session, user_id, actor_user_id, actor_is_admin)
 

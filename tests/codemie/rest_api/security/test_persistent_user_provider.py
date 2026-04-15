@@ -139,7 +139,7 @@ class TestPersistentUserProvider:
             name="Dev User",
             auth_token="dev-token",
             is_admin=False,
-            projects=[],
+            project_names=[],
             knowledge_bases=[],
         )
         mock_auth_service.authenticate_dev_header = AsyncMock(return_value=expected_user)
@@ -184,7 +184,7 @@ class TestPersistentUserProvider:
             name="JWT User",
             auth_token=jwt_token,
             is_admin=False,
-            projects=[],
+            project_names=[],
             knowledge_bases=[],
         )
         mock_auth_service.authenticate_persistent_user = AsyncMock(return_value=expected_user)
@@ -216,7 +216,7 @@ class TestPersistentUserProvider:
             name="IDP User",
             auth_token="idp-bearer-token",
             is_admin=False,
-            projects=[],
+            project_names=[],
             knowledge_bases=[],
         )
 
@@ -229,7 +229,7 @@ class TestPersistentUserProvider:
             name="IDP User",
             auth_token="idp-bearer-token",
             is_admin=False,
-            projects=[],
+            project_names=[],
             knowledge_bases=[],
         )
         mock_auth_service.authenticate_persistent_user = AsyncMock(return_value=expected_user)
@@ -278,7 +278,7 @@ class TestPersistentUserProvider:
             name="Prod User",
             auth_token=jwt_token,
             is_admin=False,
-            projects=[],
+            project_names=[],
             knowledge_bases=[],
         )
         mock_auth_service.authenticate_persistent_user = AsyncMock(return_value=expected_user)
@@ -308,7 +308,7 @@ class TestPersistentUserProvider:
             name="No Token User",
             auth_token=None,  # Missing token
             is_admin=False,
-            projects=[],
+            project_names=[],
             knowledge_bases=[],
         )
 
@@ -321,7 +321,7 @@ class TestPersistentUserProvider:
             name="No Token User",
             auth_token="",  # Should default to empty string
             is_admin=False,
-            projects=[],
+            project_names=[],
             knowledge_bases=[],
         )
         mock_auth_service.authenticate_persistent_user = AsyncMock(return_value=expected_user)

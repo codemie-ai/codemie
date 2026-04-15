@@ -37,6 +37,7 @@ class TestProjectAssignmentServiceValidation:
         # Should not raise exception
         ProjectAssignmentService._validate_user_id_format(valid_uuid)
 
+    @patch("codemie.service.project.project_assignment_service.config.ENV", "production")
     def test_validate_user_id_invalid_format(self):
         """Test that _validate_user_id_format rejects invalid UUID format"""
         # Arrange
@@ -153,7 +154,12 @@ class TestProjectAssignmentServiceSingleAssignment:
                 user_id=user_id,
                 project_name="user1-personal",
                 is_project_admin=False,
-                actor=MagicMock(id=requesting_user_id, is_admin=False),
+                actor=MagicMock(
+                    id=requesting_user_id,
+                    is_admin=False,
+                    is_maintainer=False,
+                    is_admin_or_maintainer=False,
+                ),
                 action="POST /v1/projects/user1-personal/users/user-123",
             )
 

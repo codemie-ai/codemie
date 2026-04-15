@@ -205,7 +205,7 @@ class Ability:
         return True
 
     def admin(self, *args):  # NOSONAR: S1172 - Unused method parameter
-        return self.user.is_admin
+        return self.user.is_admin_or_maintainer
 
     def owned_by(self, instance):
         return instance.is_owned_by(self.user)

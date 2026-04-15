@@ -331,7 +331,7 @@ def index_knowledge_bases(request: Request):
     """
     Get all knowledge bases
     """
-    if request.state.user.is_admin:
+    if request.state.user.is_admin_or_maintainer:
         return KnowledgeBaseIndexInfo.get_all()
 
     return KnowledgeBaseIndexInfo.filter_by_names_or_user(

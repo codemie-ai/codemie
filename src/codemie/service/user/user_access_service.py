@@ -286,7 +286,7 @@ class UserAccessService:
             action=action,
         )
 
-        if actor.is_admin or project.created_by == actor.id:
+        if actor.is_admin_or_maintainer or project.created_by == actor.id:
             raise ExtendedHTTPException(
                 code=403,
                 message=_ERRORS.PERSONAL_PROJECT_MEMBERSHIP,

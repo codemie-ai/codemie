@@ -38,6 +38,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.analytics import SummariesResponse, TabularResponse
 from codemie.rest_api.routers.analytics import _create_response, handle_analytics_errors
 from codemie.rest_api.security.user import User
+from codemie.configs import config
 
 
 @pytest.fixture
@@ -49,6 +50,8 @@ def mock_user():
     user.email = "testuser@example.com"
     user.name = "Test User"
     user.is_admin = False
+    user.is_maintainer = False
+    user.is_admin_or_maintainer = False
     user.project_names = ["project1", "project2"]
     user.admin_project_names = ["project1"]
     return user
@@ -203,7 +206,8 @@ class TestCreateResponse:
     def test_creates_response_with_pydantic_validation(self, sample_summaries_response_data):
         """Verify response data is validated against Pydantic model."""
         # Act
-        response = _create_response(sample_summaries_response_data, SummariesResponse)
+        with patch.object(config, "ENV", "production"):
+            response = _create_response(sample_summaries_response_data, SummariesResponse)
 
         # Assert
         assert isinstance(response, JSONResponse)
@@ -216,7 +220,8 @@ class TestCreateResponse:
     def test_adds_cache_headers(self, sample_summaries_response_data):
         """Verify cache control and ETag headers are added."""
         # Act
-        response = _create_response(sample_summaries_response_data, SummariesResponse)
+        with patch.object(config, "ENV", "production"):
+            response = _create_response(sample_summaries_response_data, SummariesResponse)
 
         # Assert
         assert "Cache-Control" in response.headers
@@ -226,8 +231,9 @@ class TestCreateResponse:
     def test_etag_consistent_for_same_data(self, sample_summaries_response_data):
         """Verify ETag is deterministic for identical data."""
         # Act
-        response1 = _create_response(sample_summaries_response_data, SummariesResponse)
-        response2 = _create_response(sample_summaries_response_data, SummariesResponse)
+        with patch.object(config, "ENV", "production"):
+            response1 = _create_response(sample_summaries_response_data, SummariesResponse)
+            response2 = _create_response(sample_summaries_response_data, SummariesResponse)
 
         # Assert
         assert response1.headers["ETag"] == response2.headers["ETag"]
@@ -240,8 +246,9 @@ class TestCreateResponse:
         data2["data"]["metrics"][0]["value"] = 9999
 
         # Act
-        response1 = _create_response(data1, SummariesResponse)
-        response2 = _create_response(data2, SummariesResponse)
+        with patch.object(config, "ENV", "production"):
+            response1 = _create_response(data1, SummariesResponse)
+            response2 = _create_response(data2, SummariesResponse)
 
         # Assert
         assert response1.headers["ETag"] != response2.headers["ETag"]
@@ -249,7 +256,8 @@ class TestCreateResponse:
     def test_etag_is_md5_hash_of_response_body(self, sample_summaries_response_data):
         """Verify ETag is MD5 hash of response body."""
         # Act
-        response = _create_response(sample_summaries_response_data, SummariesResponse)
+        with patch.object(config, "ENV", "production"):
+            response = _create_response(sample_summaries_response_data, SummariesResponse)
 
         # Assert
         validated = SummariesResponse(**sample_summaries_response_data)
@@ -636,16 +644,17 @@ class TestMultipleEndpointsPatterns:
         mock_service_class.return_value = mock_service
 
         # Act
-        response = await get_agents_usage(
-            user=mock_user,
-            time_period="last_24_hours",
-            start_date=None,
-            end_date=None,
-            users=None,
-            projects=None,
-            page=0,
-            per_page=50,
-        )
+        with patch.object(config, "ENV", "production"):
+            response = await get_agents_usage(
+                user=mock_user,
+                time_period="last_24_hours",
+                start_date=None,
+                end_date=None,
+                users=None,
+                projects=None,
+                page=0,
+                per_page=50,
+            )
 
         # Assert
         mock_service.get_agents_usage.assert_called_once()

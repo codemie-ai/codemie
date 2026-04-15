@@ -104,6 +104,7 @@ def mock_user_detail():
         user_type="regular",
         is_active=True,
         is_admin=False,
+        is_maintainer=False,
         auth_source="local",
         email_verified=True,
         last_login_at=None,

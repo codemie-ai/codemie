@@ -116,26 +116,38 @@ async def authenticate(
 
 async def admin_access_only(request: Request):
     """
-    Checks if current user is admin
+    Checks if current user is admin or maintainer
     """
-    if not request.state.user.is_admin:
-        logger.warning("Access denied: admin privileges required")
+    if not request.state.user.is_admin_or_maintainer:
+        logger.warning("Access denied: admin or maintainer privileges required")
         raise ExtendedHTTPException(
             code=status.HTTP_403_FORBIDDEN,
             message=ACCESS_DENIED_MESSAGE,
-            details="This action requires administrator privileges.",
-            help="If you believe you should have admin access, please contact your"
+            details="This action requires administrator or maintainer privileges.",
+            help="If you believe you should have elevated access, please contact your"
             " system administrator or check your account settings.",
         )
 
 
-async def project_admin_or_super_admin_user_detail_access(request: Request):
-    """Check if user is super admin or project admin with access to target user (Story 18)
+async def maintainer_access_only(request: Request):
+    """Checks if current user is maintainer."""
+    if not request.state.user.is_maintainer:
+        logger.warning("Access denied: maintainer privileges required")
+        raise ExtendedHTTPException(
+            code=status.HTTP_403_FORBIDDEN,
+            message=ACCESS_DENIED_MESSAGE,
+            details="This action requires maintainer privileges.",
+            help="If you believe you should have maintainer access, please contact your system administrator.",
+        )
+
+
+async def project_admin_or_admin_user_detail_access(request: Request):
+    """Check if user is admin or project admin with access to target user (Story 18)
 
     Authorization for user detail endpoint (GET /v1/admin/users/{user_id}).
 
     Authorization logic:
-    - Super admins: Full access to any user
+    - Admins: Full access to any user
     - Project admins: Can view users who exist in projects they admin
     - Regular users: Denied (403)
 
@@ -157,8 +169,8 @@ async def project_admin_or_super_admin_user_detail_access(request: Request):
 
     user = request.state.user
 
-    # Super admins have full access
-    if user.is_admin:
+    # Admins and maintainers have full access
+    if user.is_admin_or_maintainer:
         return
 
     # Project admins need to check if target user is in projects they admin
@@ -195,7 +207,7 @@ async def project_admin_or_super_admin_user_detail_access(request: Request):
             code=status.HTTP_403_FORBIDDEN,
             message="User not found in your projects",
             details="You can only view details for users who are members of projects you administer.",
-            help="Contact a super administrator if you need access to this user's information.",
+            help="Contact an administrator if you need access to this user's information.",
         )
 
     # Regular users are denied

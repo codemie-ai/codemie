@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, computed_field, model_validator
 from codemie.core.constants import Environment, DEMO_PROJECT
 from codemie.core.models import UserEntity
 from codemie.configs import config
+from codemie.rest_api.security.permissions import is_admin_or_maintainer
 
 DEMO_USER_ROLE = "demo_user"
 
@@ -43,7 +44,8 @@ class User(BaseModel):
     knowledge_bases: list = Field(default_factory=list)
     user_type: str | None = 'regular'
     is_admin: bool = Field(default=False)
-    project_limit: int | None = Field(default=None)  # NULL = unlimited (super admins); set from DB when flag ON
+    is_maintainer: bool = Field(default=False)
+    project_limit: int | None = Field(default=None)  # NULL = unlimited (admins); set from DB when flag ON
     auth_token: str | None = Field(None, exclude=True)
 
     @model_validator(mode='after')
@@ -60,6 +62,9 @@ class User(BaseModel):
             self.is_admin = (bool(config.ADMIN_USER_ID) and self.id == config.ADMIN_USER_ID) or (
                 config.ADMIN_ROLE_NAME in self.roles
             )
+
+        if self.is_maintainer:
+            self.is_admin = True
 
         return self
 
@@ -78,8 +83,12 @@ class User(BaseModel):
         return self.username or self.name or self.id
 
     @property
+    def is_admin_or_maintainer(self) -> bool:
+        return is_admin_or_maintainer(self)
+
+    @property
     def is_applications_admin(self) -> bool:
-        return len(self.admin_project_names) > 0 or self.is_admin
+        return len(self.admin_project_names) > 0 or self.is_admin_or_maintainer
 
     def is_application_admin(self, app_name: str) -> bool:
         return app_name in self.admin_project_names
@@ -99,10 +108,10 @@ class User(BaseModel):
         return apps[0]
 
     def has_access_to_application(self, app_name: str) -> bool:
-        return self.is_admin or (app_name in self.project_names) or self.is_application_admin(app_name)
+        return self.is_admin_or_maintainer or (app_name in self.project_names) or self.is_application_admin(app_name)
 
     def has_access_to_kb(self, name: str) -> bool:
-        return self.is_admin or (name in self.knowledge_bases)
+        return self.is_admin_or_maintainer or (name in self.knowledge_bases)
 
     def as_user_model(self) -> UserEntity:
         return UserEntity(user_id=self.id, name=self.name, username=self.username)

@@ -78,7 +78,7 @@ def index_settings(request: Request, user: User = Depends(authenticate)):
     """
     Returns all saved credentials available for user
     """
-    if user.is_admin:
+    if user.is_admin_or_maintainer:
         project_settings = SettingsService.get_all_settings(settings_type=SettingType.PROJECT)
     elif user.is_applications_admin:
         project_settings = SettingsService.get_settings(
@@ -104,7 +104,7 @@ def create_user_setting(request: SettingRequest, user: User = Depends(authentica
     if request.credential_type == CredentialTypes.SCHEDULER:
         validate_scheduler_request(request)
     elif request.credential_type == CredentialTypes.LITE_LLM:
-        if not user.is_admin:
+        if not user.is_admin_or_maintainer:
             raise ExtendedHTTPException(
                 code=status.HTTP_403_FORBIDDEN,
                 message="Access denied",
@@ -147,7 +147,7 @@ def update_user_setting(request: SettingRequest, setting_id: str, user: User = D
     if request.credential_type == CredentialTypes.SCHEDULER:
         validate_scheduler_request(request)
     elif request.credential_type == CredentialTypes.LITE_LLM:
-        if not user.is_admin:
+        if not user.is_admin_or_maintainer:
             raise ExtendedHTTPException(
                 code=status.HTTP_403_FORBIDDEN,
                 message="Access denied",

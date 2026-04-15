@@ -89,7 +89,7 @@ def create_project_setting(request: SettingRequest, user: User = Depends(authent
     if request.credential_type == CredentialTypes.SCHEDULER:
         validate_scheduler_request(request)
     elif request.credential_type == CredentialTypes.LITE_LLM:
-        if not user.is_admin:
+        if not user.is_admin_or_maintainer:
             raise ExtendedHTTPException(
                 code=status.HTTP_403_FORBIDDEN,
                 message="Access denied",
@@ -132,7 +132,7 @@ def update_project_setting(request: SettingRequest, setting_id: str, user: User 
     if request.credential_type == CredentialTypes.SCHEDULER:
         validate_scheduler_request(request)
     elif request.credential_type == CredentialTypes.LITE_LLM:
-        if not user.is_admin:
+        if not user.is_admin_or_maintainer:
             raise ExtendedHTTPException(
                 code=status.HTTP_403_FORBIDDEN,
                 message="Access denied",
@@ -198,7 +198,7 @@ def delete_project_setting(setting_id: str, user: User = Depends(authenticate)):
 
 
 def _check_permission(user: User, project_name: str):
-    if user.is_admin:
+    if user.is_admin_or_maintainer:
         return True
 
     if not user.is_application_admin(project_name):
