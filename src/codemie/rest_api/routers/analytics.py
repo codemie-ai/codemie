@@ -35,6 +35,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
 from codemie.configs.config import config
+from codemie.configs.customer_config import customer_config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.analytics import (
     AnalyticsDetailResponse,
@@ -45,6 +46,7 @@ from codemie.rest_api.models.analytics import (
 from codemie.rest_api.security.authentication import admin_access_only, authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.analytics_service import AnalyticsService
+from codemie.service.analytics.handlers.cli_handler import EnrichedUserScope
 from codemie.service.analytics.queries.ai_adoption_framework.config import AIAdoptionConfig
 
 logger = logging.getLogger(__name__)
@@ -596,6 +598,31 @@ def _create_response(data: dict, model_class) -> JSONResponse:
     return response
 
 
+class AnalyticsFilterParams(BaseModel):
+    """Common filter parameters shared across analytics endpoints."""
+
+    time_period: str | None = Query(None)
+    start_date: datetime | None = Query(None)
+    end_date: datetime | None = Query(None)
+    users: str | None = Query(None, description="Comma-separated user emails")
+    projects: str | None = Query(None, description="Comma-separated project names")
+
+    @property
+    def users_list(self) -> list[str] | None:
+        return [u.strip() for u in self.users.split(",")] if self.users else None
+
+    @property
+    def projects_list(self) -> list[str] | None:
+        return [p.strip() for p in self.projects.split(",")] if self.projects else None
+
+
+class AnalyticsQueryParams(AnalyticsFilterParams):
+    """Common filter + pagination parameters shared across analytics endpoints."""
+
+    page: int = Query(0, ge=0)
+    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000)
+
+
 @router.get(
     "/summaries",
     status_code=status.HTTP_200_OK,
@@ -685,24 +712,18 @@ async def get_summaries(
 @handle_analytics_errors("assistants chats analytics")
 async def get_assistants_chats(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get assistants chats analytics."""
     service = AnalyticsService(user)
     data = await service.get_assistants_chats(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -711,24 +732,18 @@ async def get_assistants_chats(
 @handle_analytics_errors("workflows analytics")
 async def get_workflows(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get workflows analytics."""
     service = AnalyticsService(user)
     data = await service.get_workflows(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -739,24 +754,18 @@ async def get_workflows(
 @handle_analytics_errors("tools usage analytics")
 async def get_tools_usage(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get tools usage analytics."""
     service = AnalyticsService(user)
     data = await service.get_tools_usage(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -767,24 +776,18 @@ async def get_tools_usage(
 @handle_analytics_errors("agents usage analytics")
 async def get_agents_usage(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get agents usage analytics."""
     service = AnalyticsService(user)
     data = await service.get_agents_usage(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -795,24 +798,18 @@ async def get_agents_usage(
 @handle_analytics_errors("power users analytics")
 async def get_power_users(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get power users analytics."""
     service = AnalyticsService(user)
     data = await service.get_power_users(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -823,24 +820,18 @@ async def get_power_users(
 @handle_analytics_errors("knowledge sharing analytics")
 async def get_knowledge_sharing(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get knowledge sharing analytics."""
     service = AnalyticsService(user)
     data = await service.get_knowledge_sharing(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -851,24 +842,18 @@ async def get_knowledge_sharing(
 @handle_analytics_errors("top agents usage analytics")
 async def get_top_agents_usage(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get top agents usage analytics."""
     service = AnalyticsService(user)
     data = await service.get_top_agents_usage(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -882,24 +867,18 @@ async def get_top_agents_usage(
 @handle_analytics_errors("top workflow usage analytics")
 async def get_top_workflow_usage(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get top workflow usage analytics."""
     service = AnalyticsService(user)
     data = await service.get_top_workflow_usage(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -913,24 +892,18 @@ async def get_top_workflow_usage(
 @handle_analytics_errors("published to marketplace analytics")
 async def get_published_to_marketplace(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get published to marketplace analytics."""
     service = AnalyticsService(user)
     data = await service.get_published_to_marketplace(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -941,24 +914,18 @@ async def get_published_to_marketplace(
 @handle_analytics_errors("webhooks invocation analytics")
 async def get_webhooks_invocation(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get webhooks invocation analytics."""
     service = AnalyticsService(user)
     data = await service.get_webhooks_invocation(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -969,24 +936,18 @@ async def get_webhooks_invocation(
 @handle_analytics_errors("MCP servers analytics")
 async def get_mcp_servers(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get MCP servers analytics."""
     service = AnalyticsService(user)
     data = await service.get_mcp_servers(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1000,24 +961,18 @@ async def get_mcp_servers(
 @handle_analytics_errors("MCP servers by users analytics")
 async def get_mcp_servers_by_users(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get MCP servers by users analytics."""
     service = AnalyticsService(user)
     data = await service.get_mcp_servers_by_users(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1028,24 +983,18 @@ async def get_mcp_servers_by_users(
 @handle_analytics_errors("projects spending analytics")
 async def get_projects_spending(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get projects spending analytics."""
     service = AnalyticsService(user)
     data = await service.get_projects_spending(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1054,24 +1003,18 @@ async def get_projects_spending(
 @handle_analytics_errors("LLMs usage analytics")
 async def get_llms_usage(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get LLMs usage analytics."""
     service = AnalyticsService(user)
     data = await service.get_llms_usage(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1082,24 +1025,18 @@ async def get_llms_usage(
 @handle_analytics_errors("embeddings usage analytics")
 async def get_embeddings_usage(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get embedding model usage analytics."""
     service = AnalyticsService(user)
     data = await service.get_embeddings_usage(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1110,24 +1047,18 @@ async def get_embeddings_usage(
 @handle_analytics_errors("users spending analytics")
 async def get_users_spending(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get users spending analytics."""
     service = AnalyticsService(user)
     data = await service.get_users_spending(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1138,24 +1069,18 @@ async def get_users_spending(
 @handle_analytics_errors("budget soft limit analytics")
 async def get_budget_soft_limit(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get budget soft limit analytics."""
     service = AnalyticsService(user)
     data = await service.get_budget_soft_limit(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1166,24 +1091,18 @@ async def get_budget_soft_limit(
 @handle_analytics_errors("budget hard limit analytics")
 async def get_budget_hard_limit(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get budget hard limit analytics."""
     service = AnalyticsService(user)
     data = await service.get_budget_hard_limit(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1194,24 +1113,18 @@ async def get_budget_hard_limit(
 @handle_analytics_errors("users activity analytics")
 async def get_users_activity(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get users activity analytics."""
     service = AnalyticsService(user)
     data = await service.get_users_activity(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1351,24 +1264,18 @@ async def get_users_list(
 @handle_analytics_errors("projects activity analytics")
 async def get_projects_activity(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get projects activity analytics."""
     service = AnalyticsService(user)
     data = await service.get_projects_activity(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1461,24 +1368,18 @@ async def get_cli_summary(
 @handle_analytics_errors("CLI agents analytics")
 async def get_cli_agents(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI agents analytics."""
     service = AnalyticsService(user)
     data = await service.get_cli_agents(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1487,24 +1388,18 @@ async def get_cli_agents(
 @handle_analytics_errors("CLI LLMs analytics")
 async def get_cli_llms(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI LLMs analytics."""
     service = AnalyticsService(user)
     data = await service.get_cli_llms(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1513,24 +1408,18 @@ async def get_cli_llms(
 @handle_analytics_errors("CLI users analytics")
 async def get_cli_users(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI users analytics."""
     service = AnalyticsService(user)
     data = await service.get_cli_users(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1539,24 +1428,18 @@ async def get_cli_users(
 @handle_analytics_errors("CLI errors analytics")
 async def get_cli_errors(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI errors analytics."""
     service = AnalyticsService(user)
     data = await service.get_cli_errors(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1567,24 +1450,18 @@ async def get_cli_errors(
 @handle_analytics_errors("CLI repositories analytics")
 async def get_cli_repositories(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI repositories analytics."""
     service = AnalyticsService(user)
     data = await service.get_cli_repositories(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1595,24 +1472,18 @@ async def get_cli_repositories(
 @handle_analytics_errors("CLI top performers analytics")
 async def get_cli_top_performers(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI top performers ranked by total lines added."""
     service = AnalyticsService(user)
     data = await service.get_cli_top_performers(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1623,24 +1494,18 @@ async def get_cli_top_performers(
 @handle_analytics_errors("CLI top versions analytics")
 async def get_cli_top_versions(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI top versions ranked by usage count."""
     service = AnalyticsService(user)
     data = await service.get_cli_top_versions(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1654,24 +1519,18 @@ async def get_cli_top_versions(
 @handle_analytics_errors("CLI top proxy endpoints analytics")
 async def get_cli_top_proxy_endpoints(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI top proxy endpoints ranked by request count."""
     service = AnalyticsService(user)
     data = await service.get_cli_top_proxy_endpoints(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1685,24 +1544,18 @@ async def get_cli_top_proxy_endpoints(
 @handle_analytics_errors("CLI tools usage analytics")
 async def get_cli_tools_usage(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI tool usage analytics showing which tools are used most frequently."""
     service = AnalyticsService(user)
     data = await service.get_cli_tools_usage(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1716,24 +1569,18 @@ async def get_cli_tools_usage(
 @handle_analytics_errors("CLI insights weekday pattern analytics")
 async def get_cli_insights_weekday_pattern(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI Insights weekday pattern widget data."""
     service = AnalyticsService(user)
     data = await service.get_cli_insights_weekday_pattern(
-        time_period=time_period,
-        start_date=start_date,
-        end_date=end_date,
-        users=[u.strip() for u in users.split(",")] if users else None,
-        projects=[p.strip() for p in projects.split(",")] if projects else None,
-        page=page,
-        per_page=per_page,
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1747,24 +1594,18 @@ async def get_cli_insights_weekday_pattern(
 @handle_analytics_errors("CLI insights hourly usage analytics")
 async def get_cli_insights_hourly_usage(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI Insights hourly usage widget data."""
     service = AnalyticsService(user)
     data = await service.get_cli_insights_hourly_usage(
-        time_period=time_period,
-        start_date=start_date,
-        end_date=end_date,
-        users=[u.strip() for u in users.split(",")] if users else None,
-        projects=[p.strip() for p in projects.split(",")] if projects else None,
-        page=page,
-        per_page=per_page,
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1778,24 +1619,18 @@ async def get_cli_insights_hourly_usage(
 @handle_analytics_errors("CLI insights session depth analytics")
 async def get_cli_insights_session_depth(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI Insights session depth widget data."""
     service = AnalyticsService(user)
     data = await service.get_cli_insights_session_depth(
-        time_period=time_period,
-        start_date=start_date,
-        end_date=end_date,
-        users=[u.strip() for u in users.split(",")] if users else None,
-        projects=[p.strip() for p in projects.split(",")] if projects else None,
-        page=page,
-        per_page=per_page,
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1809,24 +1644,18 @@ async def get_cli_insights_session_depth(
 @handle_analytics_errors("CLI insights user classification analytics")
 async def get_cli_insights_user_classification(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI Insights user classification widget data."""
     service = AnalyticsService(user)
     data = await service.get_cli_insights_user_classification(
-        time_period=time_period,
-        start_date=start_date,
-        end_date=end_date,
-        users=[u.strip() for u in users.split(",")] if users else None,
-        projects=[p.strip() for p in projects.split(",")] if projects else None,
-        page=page,
-        per_page=per_page,
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1840,24 +1669,18 @@ async def get_cli_insights_user_classification(
 @handle_analytics_errors("CLI insights top users by cost analytics")
 async def get_cli_insights_top_users_by_cost(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI Insights top users by cost widget data."""
     service = AnalyticsService(user)
     data = await service.get_cli_insights_top_users_by_cost(
-        time_period=time_period,
-        start_date=start_date,
-        end_date=end_date,
-        users=[u.strip() for u in users.split(",")] if users else None,
-        projects=[p.strip() for p in projects.split(",")] if projects else None,
-        page=page,
-        per_page=per_page,
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1871,24 +1694,18 @@ async def get_cli_insights_top_users_by_cost(
 @handle_analytics_errors("CLI insights top spenders analytics")
 async def get_cli_insights_top_spenders(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI Insights Top Spenders table data."""
     service = AnalyticsService(user)
     data = await service.get_cli_insights_top_spenders(
-        time_period=time_period,
-        start_date=start_date,
-        end_date=end_date,
-        users=[u.strip() for u in users.split(",")] if users else None,
-        projects=[p.strip() for p in projects.split(",")] if projects else None,
-        page=page,
-        per_page=per_page,
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -1902,24 +1719,18 @@ async def get_cli_insights_top_spenders(
 @handle_analytics_errors("CLI insights all users analytics")
 async def get_cli_insights_all_users(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI Insights all users table data."""
     service = AnalyticsService(user)
     data = await service.get_cli_insights_all_users(
-        time_period=time_period,
-        start_date=start_date,
-        end_date=end_date,
-        users=[u.strip() for u in users.split(",")] if users else None,
-        projects=[p.strip() for p in projects.split(",")] if projects else None,
-        page=page,
-        per_page=per_page,
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -2189,24 +2000,18 @@ async def get_cli_insights_user_repositories(
 @handle_analytics_errors("CLI insights project classification analytics")
 async def get_cli_insights_project_classification(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI Insights project classification widget data."""
     service = AnalyticsService(user)
     data = await service.get_cli_insights_project_classification(
-        time_period=time_period,
-        start_date=start_date,
-        end_date=end_date,
-        users=[u.strip() for u in users.split(",")] if users else None,
-        projects=[p.strip() for p in projects.split(",")] if projects else None,
-        page=page,
-        per_page=per_page,
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -2220,26 +2025,103 @@ async def get_cli_insights_project_classification(
 @handle_analytics_errors("CLI insights top projects by cost analytics")
 async def get_cli_insights_top_projects_by_cost(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI Insights top projects by cost widget data."""
     service = AnalyticsService(user)
     data = await service.get_cli_insights_top_projects_by_cost(
-        time_period=time_period,
-        start_date=start_date,
-        end_date=end_date,
-        users=[u.strip() for u in users.split(",")] if users else None,
-        projects=[p.strip() for p in projects.split(",")] if projects else None,
-        page=page,
-        per_page=per_page,
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
     )
     return _create_response(data, TabularResponse)
+
+
+_ENRICHMENT_DISABLED_MSG = "User enrichment analytics is not enabled for this instance."
+
+_ENRICHED_USER_ROUTE_PARAMS: dict = {
+    "status_code": status.HTTP_200_OK,
+    "response_model": TabularResponse,
+    "response_model_by_alias": True,
+}
+
+
+class CLIEnrichedUserBaseParams(AnalyticsFilterParams):
+    """Shared query parameters for enriched-user analytics endpoints."""
+
+
+class CLIEnrichedUserParams(CLIEnrichedUserBaseParams):
+    page: int = Query(0, ge=0)
+    per_page: int = Query(50, ge=1, le=1000)
+
+
+async def _run_enriched_user_insight(
+    user: User,
+    scope: EnrichedUserScope,
+    params: CLIEnrichedUserParams,
+) -> JSONResponse:
+    if not customer_config.is_feature_enabled("userEnrichmentEnabled"):
+        raise ExtendedHTTPException(
+            code=status.HTTP_403_FORBIDDEN,
+            message=_ENRICHMENT_DISABLED_MSG,
+            details="Enable the 'features:userEnrichmentEnabled' component in customer-config.yaml.",
+        )
+    service = AnalyticsService(user)
+    data = await service.get_cli_insights_by_enriched_user(
+        scope=scope,
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get("/cli-insights-by-enriched-user-primary-skill", **_ENRICHED_USER_ROUTE_PARAMS)
+@handle_analytics_errors("CLI insights by enriched user primary skill")
+async def get_cli_insights_by_enriched_user_primary_skill(
+    user: User = Depends(authenticate),
+    params: CLIEnrichedUserParams = Depends(),
+) -> JSONResponse:
+    """CLI users and cost grouped by primary skill (requires userEnrichmentEnabled)."""
+    return await _run_enriched_user_insight(user, EnrichedUserScope.PRIMARY_SKILL, params)
+
+
+@router.get("/cli-insights-by-enriched-user-country", **_ENRICHED_USER_ROUTE_PARAMS)
+@handle_analytics_errors("CLI insights by enriched user country")
+async def get_cli_insights_by_enriched_user_country(
+    user: User = Depends(authenticate),
+    params: CLIEnrichedUserParams = Depends(),
+) -> JSONResponse:
+    """CLI users and cost grouped by country (requires userEnrichmentEnabled)."""
+    return await _run_enriched_user_insight(user, EnrichedUserScope.COUNTRY, params)
+
+
+@router.get("/cli-insights-by-enriched-user-city", **_ENRICHED_USER_ROUTE_PARAMS)
+@handle_analytics_errors("CLI insights by enriched user city")
+async def get_cli_insights_by_enriched_user_city(
+    user: User = Depends(authenticate),
+    params: CLIEnrichedUserParams = Depends(),
+) -> JSONResponse:
+    """CLI users and cost grouped by city (requires userEnrichmentEnabled)."""
+    return await _run_enriched_user_insight(user, EnrichedUserScope.CITY, params)
+
+
+@router.get("/cli-insights-by-enriched-user-job-title", **_ENRICHED_USER_ROUTE_PARAMS)
+@handle_analytics_errors("CLI insights by enriched user job title")
+async def get_cli_insights_by_enriched_user_job_title(
+    user: User = Depends(authenticate),
+    params: CLIEnrichedUserParams = Depends(),
+) -> JSONResponse:
+    """CLI users and cost grouped by job title (requires userEnrichmentEnabled)."""
+    return await _run_enriched_user_insight(user, EnrichedUserScope.JOB_TITLE, params)
 
 
 @router.post(
@@ -3130,24 +3012,18 @@ async def get_engagement_weekly_histogram(
 @handle_analytics_errors("platform spending by users")
 async def get_spending_by_users_platform(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get platform spending per user (Assistants + Workflows + Datasources)."""
     service = AnalyticsService(user)
     data = await service.get_users_platform_spending(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 
@@ -3163,24 +3039,18 @@ async def get_spending_by_users_platform(
 @handle_analytics_errors("CLI spending by users")
 async def get_spending_by_users_cli(
     user: User = Depends(authenticate),
-    time_period: str | None = Query(None),
-    start_date: datetime | None = Query(None),
-    end_date: datetime | None = Query(None),
-    users: str | None = Query(None),
-    projects: str | None = Query(None),
-    page: int = Query(0, ge=0),
-    per_page: int = Query(config.ANALYTICS_DEFAULT_PAGE_SIZE, ge=1, le=1000),
+    params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get CLI-only spending per user grouped by user_name."""
     service = AnalyticsService(user)
     data = await service.get_users_cli_spending(
-        time_period,
-        start_date,
-        end_date,
-        [u.strip() for u in users.split(",")] if users else None,
-        [p.strip() for p in projects.split(",")] if projects else None,
-        page,
-        per_page,
+        params.time_period,
+        params.start_date,
+        params.end_date,
+        params.users_list,
+        params.projects_list,
+        params.page,
+        params.per_page,
     )
     return _create_response(data, TabularResponse)
 

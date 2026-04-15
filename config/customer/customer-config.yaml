@@ -146,6 +146,12 @@ components:
   - id: "features:costCenters"
     settings:
       enabled: true
+
+  - id: "features:userEnrichmentEnabled"
+    settings:
+      enabled: false
+      name: "Enriched User Dimensions"
+      description: "Enable enriched user dimension widgets (country, job title, level) in CLI analytics dashboard"
       
 preconfigured_assistants:
   - id: "codemie-onboarding"

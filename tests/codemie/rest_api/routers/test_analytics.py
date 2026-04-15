@@ -418,13 +418,11 @@ class TestPaginationEndpoints:
 
     @pytest.mark.asyncio
     @patch("codemie.rest_api.routers.analytics.AnalyticsService")
-    @patch("codemie.rest_api.routers.analytics.config")
-    async def test_pagination_defaults(self, mock_config, mock_service_class, mock_user, sample_tabular_response_data):
+    async def test_pagination_defaults(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify default pagination values are applied."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_assistants_chats
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_assistants_chats
 
-        mock_config.ANALYTICS_DEFAULT_PAGE_SIZE = 50
         mock_service = AsyncMock()
         mock_service.get_assistants_chats.return_value = sample_tabular_response_data
         mock_service_class.return_value = mock_service
@@ -432,13 +430,7 @@ class TestPaginationEndpoints:
         # Act
         response = await get_assistants_chats(
             user=mock_user,
-            time_period=None,
-            start_date=None,
-            end_date=None,
-            users=None,
-            projects=None,
-            page=0,
-            per_page=50,
+            params=AnalyticsQueryParams(page=0, per_page=50),
         )
 
         # Assert
@@ -454,7 +446,7 @@ class TestPaginationEndpoints:
     async def test_pagination_custom_values(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify custom pagination parameters are respected."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_assistants_chats
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_assistants_chats
 
         mock_service = AsyncMock()
         mock_service.get_assistants_chats.return_value = sample_tabular_response_data
@@ -463,13 +455,7 @@ class TestPaginationEndpoints:
         # Act
         response = await get_assistants_chats(
             user=mock_user,
-            time_period=None,
-            start_date=None,
-            end_date=None,
-            users=None,
-            projects=None,
-            page=2,
-            per_page=100,
+            params=AnalyticsQueryParams(page=2, per_page=100),
         )
 
         # Assert
@@ -489,7 +475,7 @@ class TestWorkflowsEndpoint:
     async def test_workflows_endpoint_basic(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify workflows endpoint processes request correctly."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_workflows
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_workflows
 
         mock_service = AsyncMock()
         mock_service.get_workflows.return_value = sample_tabular_response_data
@@ -498,13 +484,7 @@ class TestWorkflowsEndpoint:
         # Act
         response = await get_workflows(
             user=mock_user,
-            time_period="last_7_days",
-            start_date=None,
-            end_date=None,
-            users=None,
-            projects=None,
-            page=0,
-            per_page=50,
+            params=AnalyticsQueryParams(time_period="last_7_days", page=0, per_page=50),
         )
 
         # Assert
@@ -521,7 +501,7 @@ class TestToolsUsageEndpoint:
     async def test_tools_usage_endpoint_with_filters(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify tools usage endpoint applies filters correctly."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_tools_usage
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_tools_usage
 
         mock_service = AsyncMock()
         mock_service.get_tools_usage.return_value = sample_tabular_response_data
@@ -530,13 +510,14 @@ class TestToolsUsageEndpoint:
         # Act
         response = await get_tools_usage(
             user=mock_user,
-            time_period=None,
-            start_date=datetime(2025, 1, 1),
-            end_date=datetime(2025, 1, 31),
-            users="user1@example.com",
-            projects="project1,project2",
-            page=1,
-            per_page=25,
+            params=AnalyticsQueryParams(
+                start_date=datetime(2025, 1, 1),
+                end_date=datetime(2025, 1, 31),
+                users="user1@example.com",
+                projects="project1,project2",
+                page=1,
+                per_page=25,
+            ),
         )
 
         # Assert
@@ -637,7 +618,7 @@ class TestMultipleEndpointsPatterns:
     async def test_agents_usage_endpoint(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify agents usage endpoint follows standard pattern."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_agents_usage
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_agents_usage
 
         mock_service = AsyncMock()
         mock_service.get_agents_usage.return_value = sample_tabular_response_data
@@ -647,13 +628,7 @@ class TestMultipleEndpointsPatterns:
         with patch.object(config, "ENV", "production"):
             response = await get_agents_usage(
                 user=mock_user,
-                time_period="last_24_hours",
-                start_date=None,
-                end_date=None,
-                users=None,
-                projects=None,
-                page=0,
-                per_page=50,
+                params=AnalyticsQueryParams(time_period="last_24_hours", page=0, per_page=50),
             )
 
         # Assert
@@ -668,7 +643,7 @@ class TestMultipleEndpointsPatterns:
     async def test_llms_usage_endpoint(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify LLMs usage endpoint follows standard pattern."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_llms_usage
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_llms_usage
 
         mock_service = AsyncMock()
         mock_service.get_llms_usage.return_value = sample_tabular_response_data
@@ -677,13 +652,13 @@ class TestMultipleEndpointsPatterns:
         # Act
         response = await get_llms_usage(
             user=mock_user,
-            time_period="last_60_days",
-            start_date=None,
-            end_date=None,
-            users="user1@example.com,user2@example.com",
-            projects="project1",
-            page=0,
-            per_page=50,
+            params=AnalyticsQueryParams(
+                time_period="last_60_days",
+                users="user1@example.com,user2@example.com",
+                projects="project1",
+                page=0,
+                per_page=50,
+            ),
         )
 
         # Assert
@@ -723,7 +698,7 @@ class TestCliEndpoints:
     async def test_cli_agents_endpoint(self, mock_service_class, mock_user, sample_tabular_response_data):
         """Verify CLI agents endpoint with pagination."""
         # Arrange
-        from codemie.rest_api.routers.analytics import get_cli_agents
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_cli_agents
 
         mock_service = AsyncMock()
         mock_service.get_cli_agents.return_value = sample_tabular_response_data
@@ -732,13 +707,7 @@ class TestCliEndpoints:
         # Act
         response = await get_cli_agents(
             user=mock_user,
-            time_period="last_30_days",
-            start_date=None,
-            end_date=None,
-            users=None,
-            projects=None,
-            page=0,
-            per_page=50,
+            params=AnalyticsQueryParams(time_period="last_30_days", page=0, per_page=50),
         )
 
         # Assert
@@ -752,7 +721,7 @@ class TestCliEndpoints:
         self, mock_service_class, mock_user, sample_tabular_response_data
     ):
         """Verify CLI insights weekday pattern endpoint returns tabular response."""
-        from codemie.rest_api.routers.analytics import get_cli_insights_weekday_pattern
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_cli_insights_weekday_pattern
 
         mock_service = AsyncMock()
         mock_service.get_cli_insights_weekday_pattern.return_value = sample_tabular_response_data
@@ -760,13 +729,7 @@ class TestCliEndpoints:
 
         response = await get_cli_insights_weekday_pattern(
             user=mock_user,
-            time_period="last_30_days",
-            start_date=None,
-            end_date=None,
-            users=None,
-            projects=None,
-            page=0,
-            per_page=50,
+            params=AnalyticsQueryParams(time_period="last_30_days", page=0, per_page=50),
         )
 
         mock_service.get_cli_insights_weekday_pattern.assert_called_once()
@@ -779,7 +742,7 @@ class TestCliEndpoints:
         self, mock_service_class, mock_user, sample_tabular_response_data
     ):
         """Verify CLI insights Top Spenders endpoint returns tabular response."""
-        from codemie.rest_api.routers.analytics import get_cli_insights_top_spenders
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_cli_insights_top_spenders
 
         mock_service = AsyncMock()
         mock_service.get_cli_insights_top_spenders.return_value = sample_tabular_response_data
@@ -787,13 +750,7 @@ class TestCliEndpoints:
 
         response = await get_cli_insights_top_spenders(
             user=mock_user,
-            time_period="last_30_days",
-            start_date=None,
-            end_date=None,
-            users=None,
-            projects=None,
-            page=0,
-            per_page=50,
+            params=AnalyticsQueryParams(time_period="last_30_days", page=0, per_page=50),
         )
 
         mock_service.get_cli_insights_top_spenders.assert_called_once()

@@ -21,12 +21,13 @@ from uuid import uuid4
 
 from pydantic import BaseModel, EmailStr, Field, model_validator
 from sqlalchemy import UniqueConstraint
-from sqlmodel import Field as SQLField
+from sqlmodel import Field as SQLField, SQLModel
 
 from codemie.configs import config
 from codemie.rest_api.models.base import BaseModelWithSQLSupport
 
 _USERS_ID_FK = "users.id"
+_USERS_EMAIL_FK = "users.email"
 
 
 # ===========================================
@@ -97,6 +98,28 @@ class EmailVerificationToken(BaseModelWithSQLSupport, table=True):
     expires_at: datetime = SQLField(index=True, nullable=False)
     used_at: Optional[datetime] = SQLField(default=None)
     # Using date inherited from CommonBaseModel (no created_at)
+
+
+class UserEnrichment(SQLModel, table=True):
+    """
+    Enriched user data synced for EPAM users populated by an external codemie-epam-sync service.
+    All enrichment fields are optional.
+    """
+
+    __tablename__ = "user_enrichment"
+    __table_args__ = {"schema": "codemie"}
+
+    email: str = SQLField(primary_key=True, foreign_key="codemie.users.email")
+    user_id: str = SQLField(foreign_key="codemie.users.id", nullable=False, index=True)
+    first_name: Optional[str] = SQLField(default=None)
+    last_name: Optional[str] = SQLField(default=None)
+    job_title: Optional[str] = SQLField(default=None, index=True)
+    job_function: Optional[str] = SQLField(default=None)
+    level: Optional[str] = SQLField(default=None)
+    primary_skill: Optional[str] = SQLField(default=None)
+    country: Optional[str] = SQLField(default=None, index=True)
+    city: Optional[str] = SQLField(default=None, index=True)
+    synced_at: Optional[datetime] = SQLField(default=None)
 
 
 # ===========================================

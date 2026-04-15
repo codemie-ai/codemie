@@ -21,8 +21,11 @@ import logging
 import re
 from collections import defaultdict
 from datetime import datetime
+from enum import Enum
 
+from codemie.clients.postgres import get_async_session
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
+from codemie.repository.user_enrichment_repository import user_enrichment_repository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.cli_cost_processor import CLICostAdjustmentMixin
 from codemie.service.analytics.handlers.field_constants import (
@@ -37,6 +40,14 @@ from codemie.service.analytics.response_formatter import ResponseFormatter
 from codemie.service.analytics.time_parser import TimeParser
 
 logger = logging.getLogger(__name__)
+
+
+class EnrichedUserScope(str, Enum):
+    COUNTRY = "country"
+    CITY = "city"
+    JOB_TITLE = "job_title"
+    PRIMARY_SKILL = "primary_skill"
+
 
 # Elasticsearch field constants
 TIMESTAMP_FIELD = "@timestamp"
@@ -2956,3 +2967,92 @@ class CLIHandler(CLICostAdjustmentMixin):
             {"id": "classification", "label": "Classification", "type": "string"},
             {"id": "total_cost", "label": TOTAL_COST_LABEL, "type": "number", "format": "currency"},
         ]
+
+    # ------------------------------------------------------------------
+    # Enriched-user dimension widgets (primary_skill / country / city / job_title)
+    # ------------------------------------------------------------------
+
+    NO_HR_DATA_LABEL = "No Data"
+    CODEMIE_CLI_EMAIL_SUFFIX = "_codemie_cli"
+
+    async def _aggregate_user_rows_by_enrichment_field(
+        self,
+        field: str,
+        time_period: str | None,
+        start_date: datetime | None,
+        end_date: datetime | None,
+        users: list[str] | None,
+        projects: list[str] | None,
+    ) -> list[dict]:
+        """Return per-dimension aggregation rows joined with user enrichment data.
+
+        Steps:
+        1. Fetch per-user ES rows (email, cost, sessions).
+        2. Batch-fetch enrichment records from PostgreSQL for those emails.
+        3. Group by *field* (primary_skill / country / city / job_title); users without an
+           enrichment record land in the "No HR Data" bucket.
+        """
+        user_rows = await self._get_cli_insights_user_rows(time_period, start_date, end_date, users, projects)
+        emails = [r["user_email"] for r in user_rows if r.get("user_email")]
+
+        async with get_async_session() as session:
+            enrichment_map = await user_enrichment_repository.get_by_emails(session, emails)
+
+        grouped: dict[str, dict] = defaultdict(lambda: {"user_count": 0, "total_cost": 0.0})
+        for row in user_rows:
+            email = (row.get("user_email") or "").lower()
+            enrichment = enrichment_map.get(email) or enrichment_map.get(
+                email.removesuffix(self.CODEMIE_CLI_EMAIL_SUFFIX)
+            )
+
+            dimension_value = (getattr(enrichment, field, None) if enrichment else None) or self.NO_HR_DATA_LABEL
+
+            grouped[dimension_value]["user_count"] += 1
+            grouped[dimension_value]["total_cost"] = round(
+                grouped[dimension_value]["total_cost"] + row.get("total_cost", 0.0), 2
+            )
+
+        return [
+            {field: key, "user_count": val["user_count"], "total_cost": val["total_cost"]}
+            for key, val in sorted(grouped.items(), key=lambda kv: kv[1]["total_cost"], reverse=True)
+        ]
+
+    ENRICHED_SCOPE_LABELS: dict[EnrichedUserScope, str] = {
+        EnrichedUserScope.COUNTRY: "Country",
+        EnrichedUserScope.CITY: "City",
+        EnrichedUserScope.JOB_TITLE: "Job Title",
+        EnrichedUserScope.PRIMARY_SKILL: "Primary Skill",
+    }
+
+    async def get_cli_insights_by_enriched_user(
+        self,
+        scope: EnrichedUserScope,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 50,
+    ) -> dict:
+        """Users and cost aggregated by an enriched user dimension (country / city / job_title / primary_skill)."""
+        rows = await self._aggregate_user_rows_by_enrichment_field(
+            scope.value, time_period, start_date, end_date, users, projects
+        )
+        label = self.ENRICHED_SCOPE_LABELS[scope]
+        columns = [
+            {"id": scope.value, "label": label, "type": "string"},
+            {"id": "user_count", "label": USAGE_COUNT_LABEL, "type": "number"},
+            {"id": "total_cost", "label": TOTAL_COST_LABEL, "type": "number", "format": "currency"},
+        ]
+        return self._format_custom_tabular_response(
+            rows=rows,
+            columns=columns,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )

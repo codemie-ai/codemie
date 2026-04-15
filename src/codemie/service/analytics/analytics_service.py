@@ -882,6 +882,10 @@ class AnalyticsService:
         """Get CLI Insights top projects by cost widget data."""
         return await self._cli_handler.get_cli_insights_top_projects_by_cost(**kwargs)
 
+    async def get_cli_insights_by_enriched_user(self, **kwargs) -> dict:
+        """Get CLI users and cost aggregated by an enriched user dimension."""
+        return await self._cli_handler.get_cli_insights_by_enriched_user(**kwargs)
+
     # Budget endpoints
     async def get_budget_soft_limit(
         self,
