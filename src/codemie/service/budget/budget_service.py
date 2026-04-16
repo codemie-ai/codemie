@@ -539,7 +539,7 @@ class BudgetService:
         self,
         session: AsyncSession,
         actor_id: str = "litellm-backfill",
-        page_size: int = 100,
+        page_size: int = 1000,
     ) -> BudgetAssignmentBackfillResult:
         """Import existing LiteLLM customer budget assignments into Codemie DB.
 
@@ -555,26 +555,19 @@ class BudgetService:
             raise ExtendedHTTPException(code=502, message="LiteLLM proxy unavailable during assignment backfill")
 
         imported = skipped_existing = skipped_missing_user = failed = created_budgets = 0
-        total_in_litellm = 0
-        page = 1
 
-        while True:
-            entries = await asyncio.to_thread(litellm.get_customer_list, page=page, size=page_size)
-            if not entries:
-                break
+        all_entries = await asyncio.to_thread(litellm.get_customer_list)
+        total_in_litellm = len(all_entries)
 
-            total_in_litellm += len(entries)
-            i, se, smu, cb, f = await self._process_backfill_page(session, entries, actor_id)
+        for offset in range(0, total_in_litellm, page_size):
+            page_entries = all_entries[offset : offset + page_size]
+            i, se, smu, cb, f = await self._process_backfill_page(session, page_entries, actor_id)
             imported += i
             skipped_existing += se
             skipped_missing_user += smu
             created_budgets += cb
             failed += f
-
             await session.commit()
-            if len(entries) < page_size:
-                break
-            page += 1
 
         logger.info(
             f"LiteLLM budget assignment backfill finished: imported={imported}, "

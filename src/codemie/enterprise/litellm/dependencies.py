@@ -238,21 +238,72 @@ async def ensure_predefined_budgets() -> None:
     overwritten to match the configured definitions.
 
     Called once during application startup (in main.py lifespan) when
-    LLM_PROXY_BUDGET_CHECK_ENABLED is True.
+    LiteLLM is enabled and LLM_PROXY_BUDGET_CHECK_ENABLED is True.
     """
-    if not is_litellm_enabled():
-        logger.info("LiteLLM not available or disabled, skipping predefined budget initialization")
-        return
-
     from codemie.clients.postgres import get_async_session
     from codemie.service.budget.budget_service import budget_service
 
+    logger.info("Initializing predefined budgets...")
     try:
         async with get_async_session() as session:
             await budget_service.ensure_predefined_budgets(session)
         logger.info("✓ Predefined budgets initialized")
     except Exception as e:
         logger.error(f"✗ Failed to initialize predefined budgets: {e}")
+        raise
+
+
+async def sync_budgets_from_litellm() -> None:
+    """Pull all budgets from LiteLLM and upsert into DB at application startup.
+
+    Delegates to BudgetService.sync_budgets_from_litellm() which mirrors all
+    LiteLLM budget definitions into the local DB.
+
+    Called once during application startup (in main.py lifespan) when
+    LiteLLM is enabled and LLM_PROXY_BUDGET_SYNC_ENABLED is True.
+    """
+    from codemie.clients.postgres import get_async_session
+    from codemie.service.budget.budget_service import budget_service
+
+    logger.info("Syncing budgets from LiteLLM...")
+    try:
+        async with get_async_session() as session:
+            result = await budget_service.sync_budgets_from_litellm(session, actor_id="system")
+        logger.info(
+            f"✓ Budgets synced from LiteLLM: created={result.created}, "
+            f"updated={result.updated}, unchanged={result.unchanged}, "
+            f"total_in_litellm={result.total_in_litellm}"
+        )
+    except Exception as e:
+        logger.error(f"✗ Failed to sync budgets from LiteLLM: {e}")
+        raise
+
+
+async def backfill_user_budget_assignments() -> None:
+    """Import existing LiteLLM customer budget assignments into DB at application startup.
+
+    Delegates to BudgetService.backfill_user_budget_assignments_from_litellm()
+    which mirrors missing user/category assignments from LiteLLM customers.
+
+    Called once during application startup (in main.py lifespan) when
+    LiteLLM is enabled and LLM_PROXY_BUDGET_BACKFILL_ENABLED is True.
+    """
+    from codemie.clients.postgres import get_async_session
+    from codemie.service.budget.budget_service import budget_service
+
+    logger.info("Backfilling user budget assignments from LiteLLM...")
+    try:
+        async with get_async_session() as session:
+            result = await budget_service.backfill_user_budget_assignments_from_litellm(session)
+        logger.info(
+            f"✓ User budget assignments backfilled: imported={result.imported}, "
+            f"skipped_existing={result.skipped_existing}, "
+            f"skipped_missing_user={result.skipped_missing_user}, "
+            f"created_budgets={result.created_budgets}, failed={result.failed}, "
+            f"total_in_litellm={result.total_in_litellm}"
+        )
+    except Exception as e:
+        logger.error(f"✗ Failed to backfill user budget assignments: {e}")
         raise
 
 

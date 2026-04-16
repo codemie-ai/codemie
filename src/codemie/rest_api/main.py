@@ -30,11 +30,13 @@ from codemie.enterprise.langfuse import (
     set_global_langfuse_service,
 )
 from codemie.enterprise.litellm import (
+    backfill_user_budget_assignments,
     close_llm_proxy_client,
     ensure_predefined_budgets,
     initialize_litellm_from_config,
     is_litellm_enabled,
     set_global_litellm_service,
+    sync_budgets_from_litellm,
 )
 from codemie.enterprise.plugin import (
     initialize_plugin_from_config,
@@ -469,8 +471,13 @@ async def lifespan(app: FastAPI):
 
     # Setup LiteLLM features
     _setup_litellm_features()
-    if is_litellm_enabled() and config.LLM_PROXY_BUDGET_CHECK_ENABLED:
-        await ensure_predefined_budgets()
+    if is_litellm_enabled():
+        if config.LLM_PROXY_BUDGET_CHECK_ENABLED:
+            await ensure_predefined_budgets()
+        if config.LLM_PROXY_BUDGET_SYNC_ENABLED:
+            await sync_budgets_from_litellm()
+        if config.LLM_PROXY_BUDGET_BACKFILL_ENABLED:
+            await backfill_user_budget_assignments()
 
     # Initialize JWT keys and SuperAdmin for user management (EPMCDME-10160)
     _initialize_jwt_keys()

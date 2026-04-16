@@ -419,7 +419,9 @@ class Config(BaseSettings):
     # LiteLLM args
     LLM_PROXY_MODE: Literal["internal", "lite_llm"] = "internal"
     LLM_PROXY_ENABLED: bool = False
-    LLM_PROXY_BUDGET_CHECK_ENABLED: bool = True
+    LLM_PROXY_BUDGET_CHECK_ENABLED: bool = False
+    LLM_PROXY_BUDGET_SYNC_ENABLED: bool = False  # Sync budgets from LiteLLM into DB on startup
+    LLM_PROXY_BUDGET_BACKFILL_ENABLED: bool = False  # Backfill user budget assignments from LiteLLM on startup
     LLM_PROXY_EMBEDDINGS_DISABLED: bool = False  # Bypass LiteLLM for embeddings, use native providers
     LITE_LLM_URL: str = ""
     LITE_LLM_APP_KEY: str = ""

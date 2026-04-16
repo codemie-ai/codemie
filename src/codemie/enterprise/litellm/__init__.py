@@ -23,6 +23,8 @@ from .dependencies import (
     get_litellm_service_or_none,
     require_litellm_enabled,
     ensure_predefined_budgets,
+    sync_budgets_from_litellm,
+    backfill_user_budget_assignments,
     get_category_budget_id,
     check_user_budget,
     get_customer_spending,
@@ -86,6 +88,8 @@ __all__ = [
     "require_litellm_enabled",
     # Business logic
     "ensure_predefined_budgets",
+    "sync_budgets_from_litellm",
+    "backfill_user_budget_assignments",
     "get_category_budget_id",
     "check_user_budget",
     "get_customer_spending",
