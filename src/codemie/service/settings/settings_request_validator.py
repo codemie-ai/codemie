@@ -48,6 +48,22 @@ UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES_HELP_MESSAGE = (
     "Please select a datasource of a supported type (e.g., git/code, summary, chunk-summary, confluence, jira)."
 )
 
+UNSUPPORTED_WEBHOOK_DATASOURCE_TYPES: frozenset[str] = frozenset(
+    [
+        "knowledge_base_file",  # user-visible name: "file"
+        "knowledge_base_sharepoint",  # user-visible name: "sharepoint"
+        "knowledge_base_xray",  # user-visible name: "xray"
+        "knowledge_base_azure_devops_wiki",  # user-visible name: "azure devops wiki"
+        "knowledge_base_azure_devops_work_item",  # user-visible name: "azure devops work item"
+        "platform_marketplace_assistant",  # internal platform type
+    ]
+)
+UNSUPPORTED_WEBHOOK_DATASOURCE_TYPES_HELP_MESSAGE = (
+    "The following datasource types do not support triggering by webhook: "
+    "file, sharepoint, xray, azure devops wiki, azure devops work item. "
+    "Please select a datasource of a supported type (e.g., git/code, summary, chunk-summary, confluence, jira, google)."
+)
+
 
 def _validate_pat_authentication(values: dict):
     """Validate PAT authentication fields."""
@@ -207,6 +223,41 @@ def validate_datasource_type_for_scheduler(datasource: IndexInfo) -> None:
                 "which does not support schedule-based triggering."
             ),
             help=UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES_HELP_MESSAGE,
+        )
+
+
+def validate_webhook_request(request: SettingRequest) -> None:
+    """
+    Validate the incoming webhook setting request.
+    """
+    resource_type = validate_resource_type(request)
+    resource_id = validate_resource_id(request)
+
+    datasource = validate_resource_ownership(resource_type, resource_id, request.project_name)
+
+    if resource_type == "datasource" and datasource is not None:
+        validate_datasource_type_for_webhook(datasource)
+
+
+def validate_datasource_type_for_webhook(datasource: IndexInfo) -> None:
+    """
+    Validate that a datasource type supports triggering by webhook.
+
+    Args:
+        datasource: The already-fetched IndexInfo object to validate
+
+    Raises:
+        ExtendedHTTPException: If the datasource type does not support webhook triggering
+    """
+    if datasource.index_type in UNSUPPORTED_WEBHOOK_DATASOURCE_TYPES:
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Datasource type does not support triggering by webhook",
+            details=(
+                f"The datasource with ID '{datasource.id}' has type '{datasource.index_type}', "
+                "which does not support webhook-based triggering."
+            ),
+            help=UNSUPPORTED_WEBHOOK_DATASOURCE_TYPES_HELP_MESSAGE,
         )
 
 

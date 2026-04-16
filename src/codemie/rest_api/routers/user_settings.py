@@ -30,9 +30,10 @@ from codemie.rest_api.security.authentication import authenticate, User
 from codemie.rest_api.models.settings import SettingRequest, Settings, SettingType, TestSettingRequest
 from codemie_tools.base.models import CredentialTypes
 from codemie.service.settings.settings_request_validator import (
-    validate_scheduler_request,
-    validate_litellm_request,
     validate_git_request,
+    validate_litellm_request,
+    validate_scheduler_request,
+    validate_webhook_request,
 )
 
 router = APIRouter(
@@ -118,6 +119,8 @@ def create_user_setting(request: SettingRequest, user: User = Depends(authentica
         validate_litellm_request(request)
     elif request.credential_type == CredentialTypes.GIT:
         validate_git_request(request)
+    elif request.credential_type == CredentialTypes.WEBHOOK:
+        validate_webhook_request(request)
 
     if request.project_name:
         project_access_check(user, request.project_name)
@@ -159,6 +162,10 @@ def update_user_setting(request: SettingRequest, setting_id: str, user: User = D
 
         require_litellm_enabled()
         validate_litellm_request(request)
+    elif request.credential_type == CredentialTypes.GIT:
+        validate_git_request(request)
+    elif request.credential_type == CredentialTypes.WEBHOOK:
+        validate_webhook_request(request)
 
     if request.project_name:
         project_access_check(user, request.project_name)
