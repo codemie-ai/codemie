@@ -103,6 +103,7 @@ from codemie.core.workflow_models.workflow_execution import (
     WorkflowExecutionStateThought,
 )
 from codemie.rest_api.models.background_tasks import BackgroundTasks
+from codemie.rest_api.models.background_job import BackgroundJob
 from codemie.rest_api.models.index import IndexInfo
 from codemie.rest_api.models.permission import Permission
 from codemie.rest_api.models.guardrail import Guardrail, GuardrailAssignment
