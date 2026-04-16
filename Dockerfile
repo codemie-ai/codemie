@@ -71,7 +71,6 @@ COPY ./config /app/config
 COPY ./google_credentials_sample.json /app/credentials.json
 COPY ./README.md /app/README.md
 COPY ./pytest.ini /app
-COPY ./tests /app/tests
 
 # Production stage
 FROM python:${PYTHON_VERSION}-slim AS production
@@ -120,7 +119,11 @@ RUN apt-get update && \
     apt-get purge -y linux-libc-dev && \
     rm -rf /var/lib/apt/lists/*
 
-RUN chmod 555 /bin && chmod 555 /sbin && chmod 555 /usr && chmod 555 /lib && chmod 555 /lib64
+# Prevent writing files into critical directories
+RUN chmod 555 /usr/local/bin /usr/local/lib /usr/local/sbin && \
+    chmod 555 /usr/bin /usr/lib /usr/sbin && \
+    chmod 555 /bin /lib /sbin /usr && \
+    ( chmod -f 555 /lib64 || true )
 
 USER codemie
 
