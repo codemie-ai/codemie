@@ -89,6 +89,13 @@ class Config(BaseSettings):
     PG_POOL_SIZE: int = 10
     DEFAULT_DB_SCHEMA: str = "codemie"
 
+    # Database batch operation limits
+    # PostgreSQL has two relevant limits:
+    # 1. Parameter limit: 32,767-65,535 parameters per query (varies by server config)
+    # 2. Stack depth limit: 2048kB (can be exceeded with complex IN clauses)
+    DB_INSERT_BATCH_SIZE: int = 1000  # Rows per INSERT batch (11 columns × 1000 = 11,000 params)
+    DB_IN_CLAUSE_BATCH_SIZE: int = 500  # Items per IN clause in complex SELECT queries
+
     PROJECT_ROOT: Path = Path(__file__).absolute().parents[1]
     LLM_TEMPLATES_ROOT: Path = Path(__file__).absolute().parents[3] / "config/llms"
     DATASOURCES_CONFIG_DIR: Path = Path(__file__).absolute().parents[3] / "config/datasources"

@@ -21,11 +21,17 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
+from codemie.configs import config, logger
 from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 
 
 class ProjectSpendTrackingRepository:
     """Async repository for project_spend_tracking table."""
+
+    def __init__(self):
+        # Batch sizes for avoiding PostgreSQL limits (controlled via config)
+        self._insert_batch_size = config.DB_INSERT_BATCH_SIZE
+        self._in_clause_batch_size = config.DB_IN_CLAUSE_BATCH_SIZE
 
     async def get_latest_before_by_key_hashes(
         self,
@@ -38,6 +44,9 @@ class ProjectSpendTrackingRepository:
         Used by the spend collector to retrieve the previous snapshot baseline for
         delta calculation. Missing keys are absent from the result (bootstrap case).
 
+        Queries are batched to avoid PostgreSQL's stack depth limit when the IN clause
+        becomes too large.
+
         Args:
             session: Async database session
             key_hashes: List of key hashes to look up
@@ -49,29 +58,48 @@ class ProjectSpendTrackingRepository:
         if not key_hashes:
             return {}
 
-        # Subquery: max spend_date per key_hash before the target snapshot (key rows only)
-        latest_dates_subq = (
-            select(
-                ProjectSpendTracking.key_hash,
-                func.max(ProjectSpendTracking.spend_date).label("max_spend_date"),
+        total_keys = len(key_hashes)
+        if total_keys > self._in_clause_batch_size:
+            logger.info(f"Querying {total_keys} key hashes in batches of {self._in_clause_batch_size}")
+
+        all_results = {}
+
+        # Process in batches to avoid PostgreSQL stack depth limit
+        for i in range(0, total_keys, self._in_clause_batch_size):
+            batch = key_hashes[i : i + self._in_clause_batch_size]
+            batch_num = (i // self._in_clause_batch_size) + 1
+            total_batches = (total_keys + self._in_clause_batch_size - 1) // self._in_clause_batch_size
+
+            if total_keys > self._in_clause_batch_size:
+                logger.debug(f"Processing key hash batch {batch_num}/{total_batches} ({len(batch)} items)")
+
+            # Subquery: max spend_date per key_hash before the target snapshot (key rows only)
+            latest_dates_subq = (
+                select(
+                    ProjectSpendTracking.key_hash,
+                    func.max(ProjectSpendTracking.spend_date).label("max_spend_date"),
+                )
+                .where(ProjectSpendTracking.key_hash.in_(batch))
+                .where(ProjectSpendTracking.spend_date < before_spend_date)
+                .where(ProjectSpendTracking.spend_subject_type == "key")
+                .group_by(ProjectSpendTracking.key_hash)
+                .subquery()
             )
-            .where(ProjectSpendTracking.key_hash.in_(key_hashes))
-            .where(ProjectSpendTracking.spend_date < before_spend_date)
-            .where(ProjectSpendTracking.spend_subject_type == "key")
-            .group_by(ProjectSpendTracking.key_hash)
-            .subquery()
-        )
 
-        # Join to get full rows for those latest dates
-        stmt = select(ProjectSpendTracking).join(
-            latest_dates_subq,
-            (ProjectSpendTracking.key_hash == latest_dates_subq.c.key_hash)
-            & (ProjectSpendTracking.spend_date == latest_dates_subq.c.max_spend_date),
-        )
+            # Join to get full rows for those latest dates
+            stmt = select(ProjectSpendTracking).join(
+                latest_dates_subq,
+                (ProjectSpendTracking.key_hash == latest_dates_subq.c.key_hash)
+                & (ProjectSpendTracking.spend_date == latest_dates_subq.c.max_spend_date),
+            )
 
-        result = await session.execute(stmt)
-        rows = result.scalars().all()
-        return {row.key_hash: row for row in rows}
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+
+            # Merge batch results into all_results dict
+            all_results.update({row.key_hash: row for row in rows})
+
+        return all_results
 
     async def get_latest_before_by_project_budget_ids(
         self,
@@ -83,6 +111,9 @@ class ProjectSpendTrackingRepository:
 
         Used by the budget spend collector to retrieve the previous snapshot baseline for
         delta calculation. Missing pairs are absent from the result (bootstrap case).
+
+        Queries are batched to avoid PostgreSQL's stack depth limit when the IN clause
+        becomes too large.
 
         Args:
             session: Async database session
@@ -97,32 +128,49 @@ class ProjectSpendTrackingRepository:
 
         from sqlalchemy import tuple_ as sa_tuple
 
-        # Subquery: max spend_date per (project_name, budget_id) before the target snapshot
-        latest_dates_subq = (
-            select(
-                ProjectSpendTracking.project_name,
-                ProjectSpendTracking.budget_id,
-                func.max(ProjectSpendTracking.spend_date).label("max_spend_date"),
-            )
-            .where(
-                sa_tuple(ProjectSpendTracking.project_name, ProjectSpendTracking.budget_id).in_(project_budget_pairs)
-            )
-            .where(ProjectSpendTracking.spend_date < before_spend_date)
-            .where(ProjectSpendTracking.spend_subject_type == "budget")
-            .group_by(ProjectSpendTracking.project_name, ProjectSpendTracking.budget_id)
-            .subquery()
-        )
+        total_pairs = len(project_budget_pairs)
+        if total_pairs > self._in_clause_batch_size:
+            logger.info(f"Querying {total_pairs} project-budget pairs in batches of {self._in_clause_batch_size}")
 
-        stmt = select(ProjectSpendTracking).join(
-            latest_dates_subq,
-            (ProjectSpendTracking.project_name == latest_dates_subq.c.project_name)
-            & (ProjectSpendTracking.budget_id == latest_dates_subq.c.budget_id)
-            & (ProjectSpendTracking.spend_date == latest_dates_subq.c.max_spend_date),
-        )
+        all_results = {}
 
-        result = await session.execute(stmt)
-        rows = result.scalars().all()
-        return {(row.project_name, row.budget_id): row for row in rows}
+        # Process in batches to avoid PostgreSQL stack depth limit
+        for i in range(0, total_pairs, self._in_clause_batch_size):
+            batch = project_budget_pairs[i : i + self._in_clause_batch_size]
+            batch_num = (i // self._in_clause_batch_size) + 1
+            total_batches = (total_pairs + self._in_clause_batch_size - 1) // self._in_clause_batch_size
+
+            if total_pairs > self._in_clause_batch_size:
+                logger.debug(f"Processing project-budget batch {batch_num}/{total_batches} ({len(batch)} pairs)")
+
+            # Subquery: max spend_date per (project_name, budget_id) before the target snapshot
+            latest_dates_subq = (
+                select(
+                    ProjectSpendTracking.project_name,
+                    ProjectSpendTracking.budget_id,
+                    func.max(ProjectSpendTracking.spend_date).label("max_spend_date"),
+                )
+                .where(sa_tuple(ProjectSpendTracking.project_name, ProjectSpendTracking.budget_id).in_(batch))
+                .where(ProjectSpendTracking.spend_date < before_spend_date)
+                .where(ProjectSpendTracking.spend_subject_type == "budget")
+                .group_by(ProjectSpendTracking.project_name, ProjectSpendTracking.budget_id)
+                .subquery()
+            )
+
+            stmt = select(ProjectSpendTracking).join(
+                latest_dates_subq,
+                (ProjectSpendTracking.project_name == latest_dates_subq.c.project_name)
+                & (ProjectSpendTracking.budget_id == latest_dates_subq.c.budget_id)
+                & (ProjectSpendTracking.spend_date == latest_dates_subq.c.max_spend_date),
+            )
+
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+
+            # Merge batch results into all_results dict
+            all_results.update({(row.project_name, row.budget_id): row for row in rows})
+
+        return all_results
 
     async def insert_key_entries(
         self,
@@ -134,6 +182,8 @@ class ProjectSpendTrackingRepository:
         Conflict target is the partial unique index for ``spend_subject_type = 'key'``.
         On conflict, all mutable fields are updated.
 
+        Rows are inserted in batches to avoid exceeding PostgreSQL's parameter limit.
+
         Args:
             session: Async database session
             rows: ProjectSpendTracking rows with spend_subject_type='key' to upsert
@@ -141,41 +191,56 @@ class ProjectSpendTrackingRepository:
         if not rows:
             return
 
-        stmt = (
-            insert(ProjectSpendTracking)
-            .values(
-                [
-                    {
-                        "id": row.id,
-                        "project_name": row.project_name,
-                        "cost_center_id": row.cost_center_id,
-                        "cost_center_name": row.cost_center_name,
-                        "key_hash": row.key_hash,
-                        "spend_date": row.spend_date,
-                        "daily_spend": row.daily_spend,
-                        "cumulative_spend": row.cumulative_spend,
-                        "budget_period_spend": row.budget_period_spend,
-                        "budget_id": row.budget_id,
-                        "budget_category": row.budget_category,
-                        "spend_subject_type": "key",
-                    }
-                    for row in rows
-                ]
-            )
-            .on_conflict_do_update(
-                index_elements=["project_name", "key_hash", "spend_date"],
-                index_where=(ProjectSpendTracking.spend_subject_type == "key"),
-                set_={
-                    "daily_spend": insert(ProjectSpendTracking).excluded.daily_spend,
-                    "cumulative_spend": insert(ProjectSpendTracking).excluded.cumulative_spend,
-                    "budget_period_spend": insert(ProjectSpendTracking).excluded.budget_period_spend,
-                    "budget_id": insert(ProjectSpendTracking).excluded.budget_id,
-                    "budget_category": insert(ProjectSpendTracking).excluded.budget_category,
-                },
-            )
-        )
+        total_rows = len(rows)
+        if total_rows > self._insert_batch_size:
+            logger.info(f"Inserting {total_rows} key rows in batches of {self._insert_batch_size}")
 
-        await session.execute(stmt)
+        # Process in batches to avoid PostgreSQL parameter limit
+        for i in range(0, total_rows, self._insert_batch_size):
+            batch = rows[i : i + self._insert_batch_size]
+            batch_num = (i // self._insert_batch_size) + 1
+            total_batches = (total_rows + self._insert_batch_size - 1) // self._insert_batch_size
+
+            if total_rows > self._insert_batch_size:
+                logger.debug(f"Processing key batch {batch_num}/{total_batches} ({len(batch)} rows)")
+
+            stmt = (
+                insert(ProjectSpendTracking)
+                .values(
+                    [
+                        {
+                            "id": row.id,
+                            "project_name": row.project_name,
+                            "cost_center_id": row.cost_center_id,
+                            "cost_center_name": row.cost_center_name,
+                            "key_hash": row.key_hash,
+                            "spend_date": row.spend_date,
+                            "daily_spend": row.daily_spend,
+                            "cumulative_spend": row.cumulative_spend,
+                            "budget_period_spend": row.budget_period_spend,
+                            "budget_id": row.budget_id,
+                            "budget_category": row.budget_category,
+                            "spend_subject_type": "key",
+                        }
+                        for row in batch
+                    ]
+                )
+                .on_conflict_do_update(
+                    index_elements=["project_name", "key_hash", "spend_date"],
+                    index_where=(ProjectSpendTracking.spend_subject_type == "key"),
+                    set_={
+                        "daily_spend": insert(ProjectSpendTracking).excluded.daily_spend,
+                        "cumulative_spend": insert(ProjectSpendTracking).excluded.cumulative_spend,
+                        "budget_period_spend": insert(ProjectSpendTracking).excluded.budget_period_spend,
+                        "budget_id": insert(ProjectSpendTracking).excluded.budget_id,
+                        "budget_category": insert(ProjectSpendTracking).excluded.budget_category,
+                    },
+                )
+            )
+
+            await session.execute(stmt)
+
+        # Commit once after all batches
         await session.commit()
 
     async def insert_budget_entries(
@@ -188,6 +253,8 @@ class ProjectSpendTrackingRepository:
         Conflict target is the partial unique index for ``spend_subject_type = 'budget'``.
         On conflict, all mutable fields are updated.
 
+        Rows are inserted in batches to avoid exceeding PostgreSQL's parameter limit.
+
         Args:
             session: Async database session
             rows: ProjectSpendTracking rows with spend_subject_type='budget' to upsert
@@ -195,40 +262,55 @@ class ProjectSpendTrackingRepository:
         if not rows:
             return
 
-        stmt = (
-            insert(ProjectSpendTracking)
-            .values(
-                [
-                    {
-                        "id": row.id,
-                        "project_name": row.project_name,
-                        "cost_center_id": row.cost_center_id,
-                        "cost_center_name": row.cost_center_name,
-                        "key_hash": None,
-                        "spend_date": row.spend_date,
-                        "daily_spend": row.daily_spend,
-                        "cumulative_spend": row.cumulative_spend,
-                        "budget_period_spend": row.budget_period_spend,
-                        "budget_id": row.budget_id,
-                        "budget_category": row.budget_category,
-                        "spend_subject_type": "budget",
-                    }
-                    for row in rows
-                ]
-            )
-            .on_conflict_do_update(
-                index_elements=["project_name", "budget_id", "spend_date"],
-                index_where=(ProjectSpendTracking.spend_subject_type == "budget"),
-                set_={
-                    "daily_spend": insert(ProjectSpendTracking).excluded.daily_spend,
-                    "cumulative_spend": insert(ProjectSpendTracking).excluded.cumulative_spend,
-                    "budget_period_spend": insert(ProjectSpendTracking).excluded.budget_period_spend,
-                    "budget_category": insert(ProjectSpendTracking).excluded.budget_category,
-                },
-            )
-        )
+        total_rows = len(rows)
+        if total_rows > self._insert_batch_size:
+            logger.info(f"Inserting {total_rows} budget rows in batches of {self._insert_batch_size}")
 
-        await session.execute(stmt)
+        # Process in batches to avoid PostgreSQL parameter limit
+        for i in range(0, total_rows, self._insert_batch_size):
+            batch = rows[i : i + self._insert_batch_size]
+            batch_num = (i // self._insert_batch_size) + 1
+            total_batches = (total_rows + self._insert_batch_size - 1) // self._insert_batch_size
+
+            if total_rows > self._insert_batch_size:
+                logger.debug(f"Processing budget batch {batch_num}/{total_batches} ({len(batch)} rows)")
+
+            stmt = (
+                insert(ProjectSpendTracking)
+                .values(
+                    [
+                        {
+                            "id": row.id,
+                            "project_name": row.project_name,
+                            "cost_center_id": row.cost_center_id,
+                            "cost_center_name": row.cost_center_name,
+                            "key_hash": None,
+                            "spend_date": row.spend_date,
+                            "daily_spend": row.daily_spend,
+                            "cumulative_spend": row.cumulative_spend,
+                            "budget_period_spend": row.budget_period_spend,
+                            "budget_id": row.budget_id,
+                            "budget_category": row.budget_category,
+                            "spend_subject_type": "budget",
+                        }
+                        for row in batch
+                    ]
+                )
+                .on_conflict_do_update(
+                    index_elements=["project_name", "budget_id", "spend_date"],
+                    index_where=(ProjectSpendTracking.spend_subject_type == "budget"),
+                    set_={
+                        "daily_spend": insert(ProjectSpendTracking).excluded.daily_spend,
+                        "cumulative_spend": insert(ProjectSpendTracking).excluded.cumulative_spend,
+                        "budget_period_spend": insert(ProjectSpendTracking).excluded.budget_period_spend,
+                        "budget_category": insert(ProjectSpendTracking).excluded.budget_category,
+                    },
+                )
+            )
+
+            await session.execute(stmt)
+
+        # Commit once after all batches
         await session.commit()
 
     async def get_entries_for_date(
