@@ -259,6 +259,16 @@ model_list:
       base_model: us.anthropic.claude-opus-4-6-v1
       label: "Bedrock Claude Opus 4.6"
 
+  - model_name: claude-opus-4-7
+    litellm_params:
+      model: bedrock/eu.anthropic.claude-opus-4-7
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: eu-central-1
+    model_info:
+      id: claude-opus-4-7-eu-central-1
+      base_model: eu.anthropic.claude-opus-4-7
+      label: "Bedrock Claude Opus 4.7"
+
   # Bedrock Qwen3 Coder 30B A3B
   - model_name: qwen.qwen3-coder-30b-a3b-v1
     litellm_params:
