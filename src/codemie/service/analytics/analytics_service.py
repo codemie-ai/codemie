@@ -27,7 +27,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.ai_adoption_handler import AIAdoptionHandler
 from codemie.service.analytics.handlers.assistant_handler import AssistantHandler
 from codemie.service.analytics.handlers.budget_handler import BudgetHandler
-from codemie.service.analytics.handlers.cli_handler import CLIHandler
+from codemie.service.analytics.handlers.cli import CLIHandler, CLIInsightsHandler
 from codemie.service.analytics.handlers.embeddings_handler import EmbeddingsHandler
 from codemie.service.analytics.handlers.engagement_handler import EngagementHandler
 from codemie.service.analytics.handlers.leaderboard_handler import LeaderboardHandler
@@ -66,6 +66,7 @@ class AnalyticsService:
         self._user_handler_instance: UserHandler | None = None
         self._project_handler_instance: ProjectHandler | None = None
         self._cli_handler_instance: CLIHandler | None = None
+        self._cli_insights_handler_instance: CLIInsightsHandler | None = None
         self._budget_handler_instance: BudgetHandler | None = None
         self._webhook_handler_instance: WebhookHandler | None = None
         self._mcp_handler_instance: MCPHandler | None = None
@@ -129,6 +130,13 @@ class AnalyticsService:
         if self._cli_handler_instance is None:
             self._cli_handler_instance = CLIHandler(self._user, self._repository)
         return self._cli_handler_instance
+
+    @property
+    def _cli_insights_handler(self) -> CLIInsightsHandler:
+        """Lazy-load CLI insights handler."""
+        if self._cli_insights_handler_instance is None:
+            self._cli_insights_handler_instance = CLIInsightsHandler(self._user, self._repository)
+        return self._cli_insights_handler_instance
 
     @property
     def _budget_handler(self) -> BudgetHandler:
@@ -816,75 +824,75 @@ class AnalyticsService:
 
     async def get_cli_insights_weekday_pattern(self, **kwargs) -> dict:
         """Get CLI Insights weekday pattern widget data."""
-        return await self._cli_handler.get_cli_insights_weekday_pattern(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_weekday_pattern(**kwargs)
 
     async def get_cli_insights_hourly_usage(self, **kwargs) -> dict:
         """Get CLI Insights hourly usage widget data."""
-        return await self._cli_handler.get_cli_insights_hourly_usage(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_hourly_usage(**kwargs)
 
     async def get_cli_insights_session_depth(self, **kwargs) -> dict:
         """Get CLI Insights session depth widget data."""
-        return await self._cli_handler.get_cli_insights_session_depth(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_session_depth(**kwargs)
 
     async def get_cli_insights_user_classification(self, **kwargs) -> dict:
         """Get CLI Insights user classification widget data."""
-        return await self._cli_handler.get_cli_insights_user_classification(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_user_classification(**kwargs)
 
     async def get_cli_insights_top_users_by_cost(self, **kwargs) -> dict:
         """Get CLI Insights top users by cost widget data."""
-        return await self._cli_handler.get_cli_insights_top_users_by_cost(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_top_users_by_cost(**kwargs)
 
     async def get_cli_insights_top_spenders(self, **kwargs) -> dict:
         """Get CLI Insights Top Spenders table data."""
-        return await self._cli_handler.get_cli_insights_top_spenders(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_top_spenders(**kwargs)
 
     async def get_cli_insights_all_users(self, **kwargs) -> dict:
         """Get CLI Insights all users table data."""
-        return await self._cli_handler.get_cli_insights_all_users(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_all_users(**kwargs)
 
     async def get_cli_insights_user_detail(self, **kwargs) -> dict:
         """Get CLI Insights user detail drilldown data."""
-        return await self._cli_handler.get_cli_insights_user_detail(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_user_detail(**kwargs)
 
     async def get_cli_insights_user_key_metrics(self, **kwargs) -> dict:
         """Get CLI Insights user key metrics widget data."""
-        return await self._cli_handler.get_cli_insights_user_key_metrics(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_user_key_metrics(**kwargs)
 
     async def get_cli_insights_user_tools(self, **kwargs) -> dict:
         """Get CLI Insights user tools widget data."""
-        return await self._cli_handler.get_cli_insights_user_tools(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_user_tools(**kwargs)
 
     async def get_cli_insights_user_models(self, **kwargs) -> dict:
         """Get CLI Insights user models widget data."""
-        return await self._cli_handler.get_cli_insights_user_models(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_user_models(**kwargs)
 
     async def get_cli_insights_user_workflow_intent(self, **kwargs) -> dict:
         """Get CLI Insights user workflow intent widget data."""
-        return await self._cli_handler.get_cli_insights_user_workflow_intent(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_user_workflow_intent(**kwargs)
 
     async def get_cli_insights_user_classification_detail(self, **kwargs) -> dict:
         """Get CLI Insights user classification widget data."""
-        return await self._cli_handler.get_cli_insights_user_classification_detail(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_user_classification_detail(**kwargs)
 
     async def get_cli_insights_user_category_breakdown(self, **kwargs) -> dict:
         """Get CLI Insights user category breakdown widget data."""
-        return await self._cli_handler.get_cli_insights_user_category_breakdown(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_user_category_breakdown(**kwargs)
 
     async def get_cli_insights_user_repositories(self, **kwargs) -> dict:
         """Get CLI Insights user repositories widget data."""
-        return await self._cli_handler.get_cli_insights_user_repositories(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_user_repositories(**kwargs)
 
     async def get_cli_insights_project_classification(self, **kwargs) -> dict:
         """Get CLI Insights project classification widget data."""
-        return await self._cli_handler.get_cli_insights_project_classification(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_project_classification(**kwargs)
 
     async def get_cli_insights_top_projects_by_cost(self, **kwargs) -> dict:
         """Get CLI Insights top projects by cost widget data."""
-        return await self._cli_handler.get_cli_insights_top_projects_by_cost(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_top_projects_by_cost(**kwargs)
 
     async def get_cli_insights_by_enriched_user(self, **kwargs) -> dict:
         """Get CLI users and cost aggregated by an enriched user dimension."""
-        return await self._cli_handler.get_cli_insights_by_enriched_user(**kwargs)
+        return await self._cli_insights_handler.get_cli_insights_by_enriched_user(**kwargs)
 
     # Budget endpoints
     async def get_budget_soft_limit(

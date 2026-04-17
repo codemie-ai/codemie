@@ -22,6 +22,8 @@ import pytest
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
+from codemie.service.analytics.handlers.cli.classification_engine import CLIClassificationEngine
+from codemie.service.analytics.handlers.cli.insights_handler import CLIInsightsHandler
 from codemie.service.analytics.handlers.cli_handler import CLIHandler
 
 
@@ -1117,6 +1119,11 @@ class TestCLIToolsUsage:
 class TestCLIInsightsHelpers:
     """Tests for CLI Insights helper transformations."""
 
+    @pytest.fixture
+    def handler(self, mock_user, mock_repository):
+        """Override module-level fixture to return CLIInsightsHandler."""
+        return CLIInsightsHandler(mock_user, mock_repository)
+
     @pytest.mark.asyncio
     async def test_get_cli_time_pattern_rows_uses_sunday_first_weekday_order(self, handler, mock_repository):
         mock_repository.execute_aggregation_query = AsyncMock(
@@ -1418,12 +1425,12 @@ class TestCLIInsightsHelpers:
             }
         }
 
-        tool_counts = handler._extract_cli_tool_counts(result)
+        tool_counts = CLIClassificationEngine._extract_cli_tool_counts(result)
 
         assert tool_counts == [("Bash", 12), ("Read", 7), ("Edit", 3)]
 
     def test_classify_cli_entity_learning(self, handler):
-        classification, confidence = handler._classify_cli_entity(
+        classification, confidence = CLIClassificationEngine._classify_cli_entity(
             repositories=["tutorials/react-course"],
             branches=["main"],
             project_name="demo@epam.com",
@@ -1434,7 +1441,7 @@ class TestCLIInsightsHelpers:
         assert 0 <= confidence <= 1
 
     def test_classify_cli_entity_production(self, handler):
-        classification, confidence = handler._classify_cli_entity(
+        classification, confidence = CLIClassificationEngine._classify_cli_entity(
             repositories=["JnJ/payment-service/backend"],
             branches=["feature/ABC-123-auth"],
             project_name="team-project",

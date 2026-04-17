@@ -116,7 +116,7 @@ class UserEnrichment(SQLModel, table=True):
     job_title: Optional[str] = SQLField(default=None, index=True)
     job_function: Optional[str] = SQLField(default=None)
     level: Optional[str] = SQLField(default=None)
-    primary_skill: Optional[str] = SQLField(default=None)
+    primary_skill: Optional[str] = SQLField(default=None, index=True)
     country: Optional[str] = SQLField(default=None, index=True)
     city: Optional[str] = SQLField(default=None, index=True)
     synced_at: Optional[datetime] = SQLField(default=None)

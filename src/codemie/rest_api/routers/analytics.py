@@ -2057,6 +2057,7 @@ class CLIEnrichedUserBaseParams(AnalyticsFilterParams):
 class CLIEnrichedUserParams(CLIEnrichedUserBaseParams):
     page: int = Query(0, ge=0)
     per_page: int = Query(50, ge=1, le=1000)
+    top_n: int | None = Query(None, ge=1, description="Limit results to top N rows")
 
 
 async def _run_enriched_user_insight(
@@ -2080,6 +2081,7 @@ async def _run_enriched_user_insight(
         projects=params.projects_list,
         page=params.page,
         per_page=params.per_page,
+        top_n=params.top_n,
     )
     return _create_response(data, TabularResponse)
 

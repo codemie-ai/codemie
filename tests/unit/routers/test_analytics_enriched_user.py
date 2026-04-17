@@ -84,6 +84,7 @@ def default_params():
     params.projects_list = None
     params.page = 0
     params.per_page = 50
+    params.top_n = None
     return params
 
 
@@ -217,6 +218,7 @@ class TestSuccessfulResponse:
         params.projects_list = ["proj-a"]
         params.page = 1
         params.per_page = 25
+        params.top_n = None
 
         patch_service, mock_service = _patch_service(_TABULAR_DATA)
         with _patch_feature(True), patch_service:

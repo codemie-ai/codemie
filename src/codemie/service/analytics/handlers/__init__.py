@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from codemie.service.analytics.handlers.assistant_handler import AssistantHandler
 from codemie.service.analytics.handlers.budget_handler import BudgetHandler
-from codemie.service.analytics.handlers.cli_handler import CLIHandler
+from codemie.service.analytics.handlers.cli import CLIHandler, CLIInsightsHandler
 from codemie.service.analytics.handlers.llm_handler import LLMHandler
 from codemie.service.analytics.handlers.mcp_handler import MCPHandler
 from codemie.service.analytics.handlers.project_handler import ProjectHandler
@@ -32,6 +32,7 @@ __all__ = [
     "AssistantHandler",
     "BudgetHandler",
     "CLIHandler",
+    "CLIInsightsHandler",
     "LLMHandler",
     "MCPHandler",
     "ProjectHandler",

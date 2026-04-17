@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Backwards-compatibility shim — import from handlers/cli/ package instead."""
+"""CLI analytics handlers package."""
 
-from codemie.service.analytics.handlers.cli.handler import CLIHandler  # noqa: F401
-from codemie.service.analytics.handlers.cli.insights_handler import CLIInsightsHandler, EnrichedUserScope  # noqa: F401
+from .classification_engine import EnrichedUserScope
+from .handler import CLIHandler
+from .insights_handler import CLIInsightsHandler
+
+__all__ = ["CLIHandler", "CLIInsightsHandler", "EnrichedUserScope"]
