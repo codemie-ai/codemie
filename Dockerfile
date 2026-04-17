@@ -111,7 +111,7 @@ RUN apt-get update && \
     git=1:2.47.3-0+deb13u1 \
     procps=2:4.0.4-9 \
     libsqlite3-0=3.46.1-7 \
-    openssl=3.5.4-1~deb13u2 \
+    openssl=3.5.5-1~deb13u2 \
     pandoc \
     texlive-latex-base \
     texlive-latex-extra \

@@ -69,6 +69,7 @@ git push --set-upstream origin $(git branch --show-current)
 
 # Create MR - use template structure
 glab mr create \
+  --remove-source-branch \
   --title "EPMCDME-xxx: Brief description" \
   --description "## Summary
 [2-4 sentence overview]
