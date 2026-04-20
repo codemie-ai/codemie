@@ -935,7 +935,6 @@ def index_knowledge_base_sharepoint(
         SharePointDatasourceProcessor.check_sharepoint_connection(
             credentials=sharepoint_creds,
             site_url=request.site_url,
-            path_filter=request.path_filter,
             include_pages=request.include_pages,
             include_documents=request.include_documents,
             include_lists=request.include_lists,
@@ -955,7 +954,6 @@ def index_knowledge_base_sharepoint(
         credentials=sharepoint_creds,
         sp_config=SharePointProcessorConfig(
             site_url=request.site_url,
-            path_filter=request.path_filter,
             include_pages=request.include_pages,
             include_documents=request.include_documents,
             include_lists=request.include_lists,
@@ -1614,7 +1612,6 @@ def _create_sharepoint_processor_for_reindex(
         credentials=credentials,
         sp_config=SharePointProcessorConfig(
             site_url=request.site_url if request.site_url is not None else kb_index.sharepoint.site_url,
-            path_filter=(request.path_filter if request.path_filter is not None else kb_index.sharepoint.path_filter),
             include_pages=(
                 request.include_pages if request.include_pages is not None else kb_index.sharepoint.include_pages
             ),
@@ -1685,7 +1682,6 @@ def update_knowledge_base_sharepoint(
         description=request.description,
         project_space_visible=request.project_space_visible,
         site_url=request.site_url,
-        path_filter=request.path_filter,
         include_pages=request.include_pages,
         include_documents=request.include_documents,
         include_lists=request.include_lists,

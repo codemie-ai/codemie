@@ -576,7 +576,6 @@ def _resume_sharepoint(index_info: IndexInfo, user: User, request_uuid: str) -> 
         credentials=sharepoint_creds,
         sp_config=SharePointProcessorConfig(
             site_url=sp_index_info.site_url,
-            path_filter=sp_index_info.path_filter or "*",
             include_pages=sp_index_info.include_pages if sp_index_info.include_pages is not None else True,
             include_documents=sp_index_info.include_documents if sp_index_info.include_documents is not None else True,
             include_lists=sp_index_info.include_lists if sp_index_info.include_lists is not None else True,

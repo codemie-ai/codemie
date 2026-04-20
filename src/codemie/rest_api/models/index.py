@@ -155,7 +155,6 @@ _SITE_URL_SCHEME_ERROR = "site_url must start with https://"
 
 class SharePointIndexInfo(BaseModel):
     site_url: str  # e.g., https://tenant.sharepoint.com/sites/sitename
-    path_filter: Optional[str] = "*"  # e.g., /Shared Documents/*
     include_pages: Optional[bool] = True
     include_documents: Optional[bool] = True
     include_lists: Optional[bool] = True
@@ -682,7 +681,6 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
             return
 
         site_url = kwargs.get("site_url")
-        path_filter = kwargs.get("path_filter")
         include_pages = kwargs.get("include_pages")
         include_documents = kwargs.get("include_documents")
         include_lists = kwargs.get("include_lists")
@@ -694,8 +692,6 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
 
         if site_url is not None:
             self.sharepoint.site_url = site_url
-        if path_filter is not None:
-            self.sharepoint.path_filter = path_filter
         if include_pages is not None:
             self.sharepoint.include_pages = include_pages
         if include_documents is not None:
@@ -1241,7 +1237,6 @@ class IndexKnowledgeBaseAzureDevOpsWorkItemRequest(CronExpressionValidatorMixin,
 
 class IndexKnowledgeBaseSharePointRequest(CronExpressionValidatorMixin, IndexKnowledgeBaseRequest):
     site_url: str
-    path_filter: Optional[str] = "*"
     include_pages: Optional[bool] = True
     include_documents: Optional[bool] = True
     include_lists: Optional[bool] = True
@@ -1249,7 +1244,7 @@ class IndexKnowledgeBaseSharePointRequest(CronExpressionValidatorMixin, IndexKno
     setting_id: Optional[str] = None
     embedding_model: Optional[str] = None
     cron_expression: Optional[str] = None
-    files_filter: Optional[str] = ""  # Gitignore-style extension/name filter for documents
+    files_filter: Optional[str] = ""  # Multi-line filter: /path lines scope traversal, other lines match file names
     auth_type: Literal["integration", "oauth_codemie", "oauth_custom"] = "integration"
     access_token: Optional[str] = None  # OAuth delegated token (not stored)
     oauth_client_id: Optional[str] = None  # Custom Azure app client ID (oauth_custom only)
@@ -1381,7 +1376,6 @@ class UpdateKnowledgeBaseSharePointRequest(CronExpressionValidatorMixin, BaseMod
     name: str = Field(min_length=1, max_length=500)
     project_name: str
     site_url: Optional[str] = None
-    path_filter: Optional[str] = None
     include_pages: Optional[bool] = None
     include_documents: Optional[bool] = None
     include_lists: Optional[bool] = None
@@ -1396,8 +1390,9 @@ class UpdateKnowledgeBaseSharePointRequest(CronExpressionValidatorMixin, BaseMod
     files_filter: Optional[str] = Field(
         default=None,
         description=(
-            "Gitignore-style filter for documents. "
-            "Omit or set to null to keep the stored value; set to empty string to clear the filter."
+            "Multi-line filter. Lines starting with '/' or a SharePoint URL scope traversal to that folder; "
+            "other lines are gitignore-style file name patterns. "
+            "Omit or set to null to keep the stored value; set to empty string to clear."
         ),
     )
     auth_type: Optional[Literal["integration", "oauth_codemie", "oauth_custom"]] = None

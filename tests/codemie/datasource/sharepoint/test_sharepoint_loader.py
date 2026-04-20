@@ -29,7 +29,6 @@ def sharepoint_loader():
     """Create SharePoint loader instance for testing."""
     return SharePointLoader(
         site_url="https://tenant.sharepoint.com/sites/testsite",
-        path_filter="*",
         auth_config=SharePointAuthConfig(
             tenant_id="test-tenant-id",
             client_id="test-client-id",
@@ -48,7 +47,6 @@ class TestSharePointLoaderInit:
     def test_init_with_all_params(self, sharepoint_loader):
         """Test initialization with all parameters."""
         assert sharepoint_loader.site_url == "https://tenant.sharepoint.com/sites/testsite"
-        assert sharepoint_loader.path_filter == "*"
         assert sharepoint_loader.tenant_id == "test-tenant-id"
         assert sharepoint_loader.client_id == "test-client-id"
         assert sharepoint_loader.client_secret == "test-client-secret"
@@ -73,7 +71,6 @@ class TestSharePointLoaderValidation:
         """Test validation with missing tenant_id."""
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="",
                 client_id="test-client-id",
@@ -87,7 +84,6 @@ class TestSharePointLoaderValidation:
         """Test validation with missing client_id."""
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="",
@@ -101,7 +97,6 @@ class TestSharePointLoaderValidation:
         """Test validation with missing client_secret."""
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -193,40 +188,6 @@ class TestSharePointLoaderHelperMethods:
         assert should_skip is False
         assert reason is None
 
-    def test_matches_path_filter_wildcard(self, sharepoint_loader):
-        """Test path filter with wildcard."""
-        sharepoint_loader.path_filter = "*"
-        result = sharepoint_loader._matches_path_filter("https://tenant.sharepoint.com/sites/testsite/page1")
-        assert result is True
-
-    def test_matches_path_filter_specific(self):
-        """Test path filter with specific pattern."""
-        loader = SharePointLoader(
-            site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="/Shared Documents/*",
-            auth_config=SharePointAuthConfig(
-                tenant_id="test-tenant-id",
-                client_id="test-client-id",
-                client_secret="test-client-secret",
-            ),
-        )
-        result = loader._matches_path_filter("https://tenant.sharepoint.com/sites/testsite/Shared Documents/file.pdf")
-        assert result is True
-
-    def test_matches_path_filter_no_match(self):
-        """Test path filter with no match."""
-        loader = SharePointLoader(
-            site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="/Shared Documents/*",
-            auth_config=SharePointAuthConfig(
-                tenant_id="test-tenant-id",
-                client_id="test-client-id",
-                client_secret="test-client-secret",
-            ),
-        )
-        result = loader._matches_path_filter("https://tenant.sharepoint.com/sites/testsite/Other/file.pdf")
-        assert result is False
-
 
 class TestSharePointLoaderFileSkipping:
     """Test file skipping logic."""
@@ -252,26 +213,6 @@ class TestSharePointLoaderFileSkipping:
         should_skip, reason = sharepoint_loader._should_skip_file(item)
         assert should_skip is True
         assert reason == "extension"
-
-    def test_should_skip_file_path_filter(self):
-        """Test skipping file not matching path filter."""
-        loader = SharePointLoader(
-            site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="/Shared Documents/*",
-            auth_config=SharePointAuthConfig(
-                tenant_id="test-tenant-id",
-                client_id="test-client-id",
-                client_secret="test-client-secret",
-            ),
-        )
-        item = {
-            "name": "file.pdf",
-            "size": 1024,
-            "webUrl": "https://tenant.sharepoint.com/sites/testsite/Other/file.pdf",
-        }
-        should_skip, reason = loader._should_skip_file(item)
-        assert should_skip is True
-        assert reason == "path_filter"
 
     def test_should_not_skip_file_valid(self, sharepoint_loader):
         """Test not skipping valid file."""
@@ -330,27 +271,6 @@ class TestSharePointLoaderUrlBuilding:
 
 class TestSharePointLoaderPageProcessing:
     """Test page processing methods."""
-
-    def test_should_process_page_wildcard(self, sharepoint_loader):
-        """Test processing page with wildcard filter."""
-        page = {"title": "Test Page", "webUrl": "https://test.com/page"}
-        result = sharepoint_loader._should_process_page(page)
-        assert result is True
-
-    def test_should_process_page_no_filter(self):
-        """Test processing page without filter."""
-        loader = SharePointLoader(
-            site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter=None,
-            auth_config=SharePointAuthConfig(
-                tenant_id="test-tenant-id",
-                client_id="test-client-id",
-                client_secret="test-client-secret",
-            ),
-        )
-        page = {"title": "Test Page", "webUrl": "https://test.com/page"}
-        result = loader._should_process_page(page)
-        assert result is True
 
     def test_create_page_dict(self, sharepoint_loader):
         """Test creating page dictionary."""
@@ -627,7 +547,6 @@ class TestSharePointLoaderAuthentication:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -652,7 +571,6 @@ class TestSharePointLoaderAuthentication:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -671,7 +589,6 @@ class TestSharePointLoaderAuthentication:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -696,7 +613,6 @@ class TestSharePointLoaderGraphAPI:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -716,7 +632,6 @@ class TestSharePointLoaderGraphAPI:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -736,7 +651,6 @@ class TestSharePointLoaderGraphAPI:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -758,7 +672,6 @@ class TestSharePointLoaderGraphAPI:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -791,7 +704,6 @@ class TestSharePointLoaderPageMethods:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -825,7 +737,6 @@ class TestSharePointLoaderRetryLogic:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -859,7 +770,6 @@ class TestSharePointLoaderRetryLogic:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -873,29 +783,6 @@ class TestSharePointLoaderRetryLogic:
         assert result == {"value": [{"id": "1"}]}
         assert mock_get.call_count == 2
         mock_sleep.assert_called_once_with(2)
-
-
-class TestSharePointLoaderPathFilterEdgeCases:
-    """Test path filter edge cases."""
-
-    def test_should_process_page_no_match(self):
-        """Test page processing with non-matching path filter."""
-        loader = SharePointLoader(
-            site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="/Documents/*",
-            auth_config=SharePointAuthConfig(
-                tenant_id="test-tenant-id",
-                client_id="test-client-id",
-                client_secret="test-client-secret",
-            ),
-        )
-
-        page = {
-            "title": "Other Page",
-            "webUrl": "https://tenant.sharepoint.com/sites/testsite/SitePages/other.aspx",
-        }
-        result = loader._should_process_page(page)
-        assert result is False
 
 
 class TestSharePointLoaderPageContentExtraction:
@@ -940,7 +827,6 @@ class TestSharePointLoaderSiteIdCaching:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -969,7 +855,6 @@ class TestSharePointLoaderSiteIdCaching:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -994,7 +879,6 @@ class TestSharePointLoaderValidateCredsIntegration:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -1106,7 +990,6 @@ class TestSharePointLoaderDocumentLoadingBreaks:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -1128,7 +1011,6 @@ class TestSharePointLoaderDocumentLoadingBreaks:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -1150,7 +1032,6 @@ class TestSharePointLoaderDocumentLoadingBreaks:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -1201,7 +1082,6 @@ class TestSharePointLoaderLazyLoad:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -1251,7 +1131,6 @@ class TestSharePointLoaderLazyLoad:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -1270,43 +1149,6 @@ class TestSharePointLoaderLazyLoad:
     @patch("codemie.datasource.loader.sharepoint_loader.SharePointLoader._validate_creds")
     @patch("codemie.datasource.loader.sharepoint_loader.SharePointLoader._get_site_id")
     @patch("codemie.datasource.loader.sharepoint_loader.SharePointLoader._make_graph_request")
-    def test_lazy_load_pages_filtered_by_path(self, mock_request, mock_site_id, mock_validate):
-        """Test lazy loading with pages filtered by path."""
-        mock_site_id.return_value = "test-site-id"
-
-        mock_request.return_value = {
-            "value": [
-                {
-                    "id": "page1",
-                    "title": "Filtered Page",
-                    "webUrl": "https://tenant.sharepoint.com/sites/testsite/Other/page1",
-                    "createdDateTime": "2024-01-01T00:00:00Z",
-                    "lastModifiedDateTime": "2024-01-02T00:00:00Z",
-                }
-            ]
-        }
-
-        loader = SharePointLoader(
-            site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="/Documents/*",  # Only match Documents folder
-            auth_config=SharePointAuthConfig(
-                tenant_id="test-tenant-id",
-                client_id="test-client-id",
-                client_secret="test-client-secret",
-            ),
-            include_pages=True,
-            include_documents=False,
-            include_lists=False,
-        )
-
-        docs = list(loader.lazy_load())
-
-        # Page should be filtered out due to path filter
-        assert len(docs) == 0
-
-    @patch("codemie.datasource.loader.sharepoint_loader.SharePointLoader._validate_creds")
-    @patch("codemie.datasource.loader.sharepoint_loader.SharePointLoader._get_site_id")
-    @patch("codemie.datasource.loader.sharepoint_loader.SharePointLoader._make_graph_request")
     def test_lazy_load_pages_data_break(self, mock_request, mock_site_id, mock_validate):
         """Test lazy loading when API returns None (break)."""
         mock_site_id.return_value = "test-site-id"
@@ -1314,7 +1156,6 @@ class TestSharePointLoaderLazyLoad:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -1371,7 +1212,6 @@ class TestSharePointLoaderLazyLoad:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -1425,7 +1265,6 @@ class TestSharePointLoaderLazyLoad:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 tenant_id="test-tenant-id",
                 client_id="test-client-id",
@@ -1451,7 +1290,6 @@ class TestSharePointLoaderOAuthAuthentication:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 auth_type="oauth",
                 access_token="stored-oauth-token",
@@ -1469,7 +1307,6 @@ class TestSharePointLoaderOAuthAuthentication:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 auth_type="oauth",
                 access_token="",
@@ -1483,7 +1320,6 @@ class TestSharePointLoaderOAuthAuthentication:
         """Test that OAuth token is cached and returned on subsequent calls without re-resolving."""
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 auth_type="oauth",
                 access_token="stored-oauth-token",
@@ -1499,7 +1335,6 @@ class TestSharePointLoaderOAuthAuthentication:
         """Test _validate_creds raises MissingIntegrationException for OAuth with no stored token."""
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 auth_type="oauth",
                 access_token="",
@@ -1518,7 +1353,6 @@ class TestSharePointLoaderOAuthAuthentication:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(
                 auth_type="oauth",
                 access_token="valid-oauth-token",
@@ -1550,7 +1384,6 @@ class TestIsNotModifiedSince:
 
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
             modified_since=datetime(2024, 6, 1, tzinfo=timezone.utc),
         )
@@ -1564,7 +1397,6 @@ class TestIsNotModifiedSince:
         cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
             modified_since=cutoff,
         )
@@ -1577,7 +1409,6 @@ class TestIsNotModifiedSince:
         cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
             modified_since=cutoff,
         )
@@ -1590,7 +1421,6 @@ class TestIsNotModifiedSince:
         cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
             modified_since=cutoff,
         )
@@ -1603,7 +1433,6 @@ class TestIsNotModifiedSince:
         cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
             modified_since=cutoff,
         )
@@ -1616,7 +1445,6 @@ class TestIsNotModifiedSince:
         naive_cutoff = datetime(2024, 6, 1)
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
             modified_since=naive_cutoff,
         )
@@ -1705,7 +1533,6 @@ class TestShouldSkipFileModifiedSince:
         cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
             modified_since=cutoff,
         )
@@ -1725,7 +1552,6 @@ class TestShouldSkipFileModifiedSince:
         cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
             modified_since=cutoff,
         )
@@ -1747,19 +1573,11 @@ class TestShouldSkipFileModifiedSince:
 class TestProcessPage:
     """Tests for SharePointLoader._process_page."""
 
-    def test_skips_when_should_not_process(self, sharepoint_loader):
-        """Returns None when _should_process_page returns False."""
-        page = {"id": "p1", "title": "Hidden"}
-        with patch.object(sharepoint_loader, "_should_process_page", return_value=False):
-            result = sharepoint_loader._process_page("site-id", page)
-        assert result is None
-
     def test_skips_when_no_content(self, sharepoint_loader):
         """Returns None when _extract_page_content returns empty string."""
         page = {"id": "p1", "title": "Empty"}
         page_data = {"title": "Empty", "webUrl": "http://test", "lastModifiedDateTime": "2099-01-01T00:00:00Z"}
         with (
-            patch.object(sharepoint_loader, "_should_process_page", return_value=True),
             patch.object(sharepoint_loader, "_fetch_page_details", return_value=page_data),
             patch.object(sharepoint_loader, "_extract_page_content", return_value=""),
         ):
@@ -1773,7 +1591,6 @@ class TestProcessPage:
         cutoff = datetime(2024, 6, 1, tzinfo=timezone.utc)
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             auth_config=SharePointAuthConfig(tenant_id="t", client_id="c", client_secret="s"),
             modified_since=cutoff,
         )
@@ -1784,7 +1601,6 @@ class TestProcessPage:
             "lastModifiedDateTime": "2024-05-01T00:00:00Z",
         }
         with (
-            patch.object(loader, "_should_process_page", return_value=True),
             patch.object(loader, "_fetch_page_details", return_value=page_data),
             patch.object(loader, "_extract_page_content", return_value="some content"),
         ):
@@ -1801,7 +1617,6 @@ class TestProcessPage:
         }
         expected_dict = {"title": "New Page", "content": "some content"}
         with (
-            patch.object(sharepoint_loader, "_should_process_page", return_value=True),
             patch.object(sharepoint_loader, "_fetch_page_details", return_value=page_data),
             patch.object(sharepoint_loader, "_extract_page_content", return_value="some content"),
             patch.object(sharepoint_loader, "_create_page_dict", return_value=expected_dict),

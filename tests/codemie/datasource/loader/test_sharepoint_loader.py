@@ -18,7 +18,7 @@ import pytest
 import requests
 
 from codemie.datasource.exceptions import MissingIntegrationException, UnauthorizedException
-from codemie.datasource.loader.sharepoint_loader import SharePointAuthConfig, SharePointLoader
+from codemie.datasource.loader.sharepoint_loader import SharePointAuthConfig, SharePointLoader, _encode_url_path
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +52,6 @@ def loader(app_auth_config):
     """SharePointLoader with app auth, pages+docs+lists enabled."""
     return SharePointLoader(
         site_url="https://tenant.sharepoint.com/sites/MySite",
-        path_filter="*",
         auth_config=app_auth_config,
         include_pages=True,
         include_documents=True,
@@ -65,12 +64,30 @@ def oauth_loader(oauth_auth_config):
     """SharePointLoader with OAuth auth."""
     return SharePointLoader(
         site_url="https://tenant.sharepoint.com/sites/MySite",
-        path_filter="*",
         auth_config=oauth_auth_config,
         include_pages=True,
         include_documents=True,
         include_lists=True,
     )
+
+
+@pytest.fixture
+def single_drive(loader):
+    """One-drive fixture: 'Shared Documents' with drive cache pre-populated."""
+    drives = [{"id": "d1", "name": "Shared Documents"}]
+    loader._drive_library_paths = {"d1": "Shared Documents"}
+    return drives
+
+
+@pytest.fixture
+def two_drives(loader):
+    """Two-drive fixture: 'Shared Documents' + 'Archive' with drive cache pre-populated."""
+    drives = [
+        {"id": "d1", "name": "Shared Documents"},
+        {"id": "d2", "name": "Archive"},
+    ]
+    loader._drive_library_paths = {"d1": "Shared Documents", "d2": "Archive"}
+    return drives
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +154,6 @@ class TestParseSiteUrl:
         """Trailing slash in site_url is preserved in _site_path."""
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/MySite/",
-            path_filter="*",
             auth_config=app_auth_config,
         )
 
@@ -154,7 +170,6 @@ class TestParseSiteUrl:
         """Passing auth_config=None falls back to default SharePointAuthConfig."""
         loader = SharePointLoader(
             site_url="https://tenant.sharepoint.com/sites/MySite",
-            path_filter="*",
             auth_config=None,
         )
 
@@ -600,52 +615,6 @@ class TestMakeGraphRequest:
 # ---------------------------------------------------------------------------
 # TestShouldProcessPage
 # ---------------------------------------------------------------------------
-
-
-class TestShouldProcessPage:
-    """Tests for _should_process_page."""
-
-    def test_no_filter_returns_true(self, loader):
-        """Empty path_filter processes all pages."""
-        loader.path_filter = ""
-
-        assert (
-            loader._should_process_page({"webUrl": "https://tenant.sharepoint.com/sites/MySite/SitePage.aspx"}) is True
-        )
-
-    def test_wildcard_filter_returns_true(self, loader):
-        """path_filter='*' processes all pages."""
-        loader.path_filter = "*"
-
-        assert loader._should_process_page({"webUrl": "https://tenant.sharepoint.com/any/path"}) is True
-
-    def test_matching_filter_returns_true(self, loader):
-        """Page whose webUrl matches the filter returns True."""
-        loader.path_filter = "*/SitePages/*"
-
-        result = loader._should_process_page(
-            {"webUrl": "https://tenant.sharepoint.com/sites/MySite/SitePages/Home.aspx"}
-        )
-
-        assert result is True
-
-    def test_non_matching_filter_returns_false(self, loader):
-        """Page whose webUrl does not match the filter returns False."""
-        loader.path_filter = "*/SubSite/*"
-
-        result = loader._should_process_page(
-            {"webUrl": "https://tenant.sharepoint.com/sites/MySite/SitePages/Home.aspx"}
-        )
-
-        assert result is False
-
-    def test_missing_web_url_no_match(self, loader):
-        """Page without webUrl with a non-wildcard filter is not processed."""
-        loader.path_filter = "*/SitePages/*"
-
-        result = loader._should_process_page({})
-
-        assert result is False
 
 
 # ---------------------------------------------------------------------------
@@ -1313,7 +1282,6 @@ class TestShouldSkipFile:
 
     def test_does_not_skip_normal_file(self, loader):
         """Normal file within size limit and allowed extension is not skipped."""
-        loader.path_filter = "*"
         item = {"name": "document.pdf", "size": 100, "webUrl": "https://example.com/document.pdf"}
 
         should_skip, reason = loader._should_skip_file(item)
@@ -1334,7 +1302,6 @@ class TestShouldSkipFile:
     def test_skips_excluded_by_files_filter(self, mock_pathspec, loader):
         """File excluded by files_filter returns skip reason 'files_filter'."""
         loader.files_filter = "*.txt"
-        loader.path_filter = "*"
         loader._drive_library_paths = {}
 
         mock_include = MagicMock()
@@ -1355,20 +1322,49 @@ class TestShouldSkipFile:
         assert should_skip is True
         assert reason == "files_filter"
 
-    def test_skips_file_not_matching_path_filter(self, loader):
-        """File whose webUrl doesn't match path_filter is skipped."""
-        loader.path_filter = "*/SpecificFolder/*"
-        loader.files_filter = ""
+    def test_folder_scope_only_filter_does_not_skip_file(self, loader):
+        """Folder-scope lines (/path/*) must not be fed to pathspec — files should pass through."""
+        loader.files_filter = "/Shared Documents/Team/*"
+        loader._drive_library_paths = {}
+
         item = {
-            "name": "doc.pdf",
+            "name": "report.pdf",
             "size": 100,
-            "webUrl": "https://tenant.sharepoint.com/sites/MySite/OtherFolder/doc.pdf",
+            "webUrl": "https://example.com/report.pdf",
+            "parentReference": {"driveId": "d1", "path": "/drives/d1/root:/Shared Documents/Team"},
         }
 
         should_skip, reason = loader._should_skip_file(item)
 
-        assert should_skip is True
-        assert reason == "path_filter"
+        assert should_skip is False
+        assert reason is None
+
+    def test_typed_wildcard_in_scope_line_filters_by_extension(self, loader):
+        """Per-scope *.json filtering: when files_filter is set to "*.json" (as _load_and_yield_all_documents
+        does during a scoped traversal for "/Shared Documents/Team/*.json"), only .json files pass."""
+        # Simulate what _load_and_yield_all_documents sets for a scope with type_wildcard "*.json"
+        loader.files_filter = "*.json"
+        loader._drive_library_paths = {}
+
+        item_json = {
+            "name": "data.json",
+            "size": 100,
+            "webUrl": "https://example.com/data.json",
+            "parentReference": {"driveId": "d1", "path": "/drives/d1/root:/Shared Documents/Team"},
+        }
+        item_pdf = {
+            "name": "report.pdf",
+            "size": 100,
+            "webUrl": "https://example.com/report.pdf",
+            "parentReference": {"driveId": "d1", "path": "/drives/d1/root:/Shared Documents/Team"},
+        }
+
+        should_skip_json, _ = loader._should_skip_file(item_json)
+        should_skip_pdf, reason_pdf = loader._should_skip_file(item_pdf)
+
+        assert should_skip_json is False
+        assert should_skip_pdf is True
+        assert reason_pdf == "files_filter"
 
 
 # ---------------------------------------------------------------------------
@@ -1473,47 +1469,6 @@ class TestBuildListItemContent:
         assert "Description" not in result
         assert "Count" not in result
         assert "Title: Item" in result
-
-
-# ---------------------------------------------------------------------------
-# TestMatchesPathFilter
-# ---------------------------------------------------------------------------
-
-
-class TestMatchesPathFilter:
-    """Tests for _matches_path_filter."""
-
-    def test_wildcard_matches_everything(self, loader):
-        """'*' filter matches any URL."""
-        loader.path_filter = "*"
-
-        assert loader._matches_path_filter("https://tenant.sharepoint.com/sites/MySite/anything") is True
-
-    def test_exact_match(self, loader):
-        """Literal path (with no wildcards) matches only that path."""
-        loader.path_filter = "/sites/MySite/SitePages"
-
-        assert loader._matches_path_filter("https://tenant.sharepoint.com/sites/MySite/SitePages") is True
-        assert loader._matches_path_filter("https://tenant.sharepoint.com/sites/OtherSite") is False
-
-    def test_wildcard_in_filter(self, loader):
-        """'*' in filter acts as regex '.*'."""
-        loader.path_filter = "*/SitePages/*"
-
-        assert loader._matches_path_filter("https://tenant.sharepoint.com/sites/MySite/SitePages/Home.aspx") is True
-        assert loader._matches_path_filter("https://tenant.sharepoint.com/sites/MySite/Documents/file.pdf") is False
-
-    def test_case_insensitive_matching(self, loader):
-        """Matching is case-insensitive."""
-        loader.path_filter = "*/sitepages/*"
-
-        assert loader._matches_path_filter("https://tenant.sharepoint.com/sites/MySite/SitePages/Home.aspx") is True
-
-    def test_url_encoded_path_decoded(self, loader):
-        """URL-encoded spaces in the URL are decoded before matching."""
-        loader.path_filter = "*/My Folder/*"
-
-        assert loader._matches_path_filter("https://tenant.sharepoint.com/sites/MySite/My%20Folder/file.pdf") is True
 
 
 # ---------------------------------------------------------------------------
@@ -1695,6 +1650,28 @@ class TestWouldSkipFileForCount:
         """File with no extension is not flagged as skip extension."""
         loader.max_file_size_bytes = 1000
         assert loader._would_skip_file_for_count({"name": "README", "size": 10}) is False
+
+    def test_skips_when_files_filter_excludes(self, loader):
+        """File excluded by the active files_filter is counted as skipped."""
+        loader.files_filter = "*.json"
+        loader._drive_library_paths = {}
+        item = {
+            "name": "report.pdf",
+            "size": 100,
+            "parentReference": {"driveId": "d1", "path": "/drives/d1/root:"},
+        }
+        assert loader._would_skip_file_for_count(item) is True
+
+    def test_not_skipped_when_files_filter_matches(self, loader):
+        """File matching the active files_filter include pattern is not skipped."""
+        loader.files_filter = "*.json"
+        loader._drive_library_paths = {}
+        item = {
+            "name": "data.json",
+            "size": 100,
+            "parentReference": {"driveId": "d1", "path": "/drives/d1/root:"},
+        }
+        assert loader._would_skip_file_for_count(item) is False
 
 
 # ---------------------------------------------------------------------------
@@ -2118,3 +2095,634 @@ class TestLazyLoad:
         with patch.object(loader, '_validate_creds', side_effect=MissingIntegrationException("SharePoint")):
             with pytest.raises(MissingIntegrationException):
                 list(loader.lazy_load())
+
+
+# ---------------------------------------------------------------------------
+# TestEncodeUrlPath
+# ---------------------------------------------------------------------------
+
+
+class TestEncodeUrlPath:
+    """Tests for the module-level _encode_url_path helper."""
+
+    def test_encodes_spaces(self):
+        """Spaces are percent-encoded as %20."""
+
+        result = _encode_url_path("My Folder/Sub Folder")
+
+        assert result == "My%20Folder/Sub%20Folder"
+
+    def test_encodes_special_characters(self):
+        """Characters like # and ? are encoded."""
+
+        result = _encode_url_path("Folder#1/File?name")
+
+        assert "%23" in result
+        assert "%3F" in result
+
+    def test_preserves_slash_separator(self):
+        """Slashes between segments are preserved as literal /."""
+
+        result = _encode_url_path("A/B/C")
+
+        assert result == "A/B/C"
+
+    def test_strips_leading_slash(self):
+        """Leading slash is stripped so the result never starts with /."""
+
+        result = _encode_url_path("/Team/Project")
+
+        assert not result.startswith("/")
+        assert result == "Team/Project"
+
+    def test_empty_string_returns_empty(self):
+        """Empty input returns empty string."""
+
+        assert _encode_url_path("") == ""
+
+
+# ---------------------------------------------------------------------------
+# TestNormalizePathFilter
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizePathFilter:
+    """Tests for _normalize_path_filter."""
+
+    def test_plain_path_returned_unchanged(self, loader):
+        """A plain path filter (not a URL) is returned as-is."""
+        result = loader._normalize_path_filter("/Shared Documents/folder/*")
+
+        assert result == "/Shared Documents/folder/*"
+
+    def test_wildcard_returned_unchanged(self, loader):
+        """'*' is returned unchanged."""
+        assert loader._normalize_path_filter("*") == "*"
+
+    def test_empty_string_returned_unchanged(self, loader):
+        """Empty string is returned unchanged."""
+        assert loader._normalize_path_filter("") == ""
+
+    def test_copy_link_url_without_wildcard(self, loader):
+        """SharePoint copy-link URL is converted; /* is appended automatically."""
+        url = "https://tenant.sharepoint.com/:f:/r/sites/MySite" "/Shared%20Documents/test%20folder?csf=1&web=1&e=abc"
+
+        result = loader._normalize_path_filter(url)
+
+        assert result == "/Shared Documents/test folder/*"
+
+    def test_copy_link_url_with_wildcard(self, loader):
+        """Existing /* suffix on a copy-link URL is preserved."""
+        url = "https://tenant.sharepoint.com/:f:/r/sites/MySite" "/Shared%20Documents/test%20folder/*"
+
+        result = loader._normalize_path_filter(url)
+
+        assert result == "/Shared Documents/test folder/*"
+
+    def test_copy_link_url_with_extension_wildcard(self, loader):
+        """/*.pdf suffix on a copy-link URL is preserved."""
+        url = "https://tenant.sharepoint.com/:f:/r/sites/MySite" "/Shared%20Documents/test%20folder/*.pdf"
+
+        result = loader._normalize_path_filter(url)
+
+        assert result == "/Shared Documents/test folder/*.pdf"
+
+    def test_direct_url_without_wildcard(self, loader):
+        """Plain SharePoint folder URL gets /* appended."""
+        url = "https://tenant.sharepoint.com/sites/MySite/Shared%20Documents/folder"
+
+        result = loader._normalize_path_filter(url)
+
+        assert result == "/Shared Documents/folder/*"
+
+    def test_url_not_matching_site_path_returned_as_is(self, loader):
+        """URL for a different site is returned unchanged with a warning."""
+        url = "https://tenant.sharepoint.com/sites/OtherSite/Shared%20Documents/folder"
+
+        result = loader._normalize_path_filter(url)
+
+        assert result == url
+
+    def test_query_params_stripped(self, loader):
+        """Query parameters are stripped from the URL."""
+        url = "https://tenant.sharepoint.com/sites/MySite/Shared%20Documents/folder" "?csf=1&web=1&e=XYZ"
+
+        result = loader._normalize_path_filter(url)
+
+        assert "csf" not in result
+        assert result == "/Shared Documents/folder/*"
+
+    def test_plain_path_with_whitespace_is_stripped(self, loader):
+        """Leading/trailing whitespace in a non-URL path_filter is stripped."""
+        result = loader._normalize_path_filter("  /Shared Documents/folder/*  ")
+
+        assert result == "/Shared Documents/folder/*"
+
+    def test_site_root_url_produces_wildcard_glob(self, loader):
+        """A URL pointing at the site root itself normalizes to '/*', not '//*'."""
+        url = "https://tenant.sharepoint.com/sites/MySite"
+
+        result = loader._normalize_path_filter(url)
+
+        assert result == "/*"
+        assert "//*" not in result
+
+    def test_cross_tenant_url_returned_as_is(self, loader):
+        """URL from a different SharePoint tenant hostname is returned unchanged."""
+        url = "https://other-tenant.sharepoint.com/sites/MySite/Shared%20Documents/folder"
+
+        result = loader._normalize_path_filter(url)
+
+        assert result == url
+
+
+# ---------------------------------------------------------------------------
+# TestParseFolderScope
+# ---------------------------------------------------------------------------
+
+
+class TestParseFolderScope:
+    """Tests for _parse_folder_scope (static method)."""
+
+    def test_wildcard_returns_none(self):
+        """'*' returns None (no scoping)."""
+        assert SharePointLoader._parse_folder_scope("*") is None
+
+    def test_empty_returns_none(self):
+        """Empty string returns None."""
+        assert SharePointLoader._parse_folder_scope("") is None
+
+    def test_simple_library_with_wildcard(self):
+        """'/Shared Documents/*' returns library name and empty sub_path."""
+        assert SharePointLoader._parse_folder_scope("/Shared Documents/*") == ("Shared Documents", "")
+
+    def test_library_and_subfolder(self):
+        """'/Shared Documents/Team/Project/*' returns correct library and sub_path."""
+        assert SharePointLoader._parse_folder_scope("/Shared Documents/Team/Project/*") == (
+            "Shared Documents",
+            "Team/Project",
+        )
+
+    def test_extension_wildcard_stripped_from_sub_path(self):
+        """'*.pdf' at the end is stripped from sub_path."""
+        assert SharePointLoader._parse_folder_scope("/Shared Documents/folder/*.pdf") == ("Shared Documents", "folder")
+
+    def test_intermediate_wildcard_falls_back_to_library_root(self):
+        """An intermediate '*' segment makes sub_path empty (library root fallback)."""
+        assert SharePointLoader._parse_folder_scope("/Shared Documents/*/Project/*") == ("Shared Documents", "")
+
+    def test_encoded_path_is_decoded(self):
+        """Percent-encoded characters are decoded before parsing."""
+        assert SharePointLoader._parse_folder_scope("/Shared%20Documents/My%20Folder/*") == (
+            "Shared Documents",
+            "My Folder",
+        )
+
+    def test_bare_wildcard_library_segment_returns_none(self):
+        """A path whose only non-empty segment is '*' returns None."""
+        assert SharePointLoader._parse_folder_scope("/*") is None
+
+    def test_library_name_only_no_wildcard(self):
+        """'/Shared Documents' (no wildcard, no sub-path) returns library and empty sub_path."""
+        assert SharePointLoader._parse_folder_scope("/Shared Documents") == ("Shared Documents", "")
+
+
+# ---------------------------------------------------------------------------
+# TestResolveFolderStart
+# ---------------------------------------------------------------------------
+
+
+class TestResolveFolderStart:
+    """Tests for _resolve_folder_start."""
+
+    @patch("codemie.datasource.loader.sharepoint_loader.SHAREPOINT_CONFIG")
+    def test_returns_root_when_sub_path_empty(self, mock_config, loader):
+        """Empty sub_path returns 'root' without any API call."""
+        with patch.object(loader, "_make_graph_request") as mock_req:
+            result = loader._resolve_folder_start("drive-id", "")
+
+        assert result == "root"
+        mock_req.assert_not_called()
+
+    @patch("codemie.datasource.loader.sharepoint_loader.SHAREPOINT_CONFIG")
+    def test_returns_folder_item_id_on_success(self, mock_config, loader):
+        """Graph API response with 'id' returns that folder item ID."""
+        mock_config.graph_base_url = "https://graph.microsoft.com"
+        mock_config.graph_api_version = "v1.0"
+        loader._site_id = "site-id"
+
+        with patch.object(loader, "_make_graph_request", return_value={"id": "folder-abc"}):
+            result = loader._resolve_folder_start("drive-id", "Team/Project")
+
+        assert result == "folder-abc"
+
+    @patch("codemie.datasource.loader.sharepoint_loader.SHAREPOINT_CONFIG")
+    def test_returns_root_when_folder_not_found(self, mock_config, loader):
+        """None response (404) falls back to 'root'."""
+        mock_config.graph_base_url = "https://graph.microsoft.com"
+        mock_config.graph_api_version = "v1.0"
+        loader._site_id = "site-id"
+
+        with patch.object(loader, "_make_graph_request", return_value=None):
+            result = loader._resolve_folder_start("drive-id", "Missing/Folder")
+
+        assert result == "root"
+
+    @patch("codemie.datasource.loader.sharepoint_loader.SHAREPOINT_CONFIG")
+    def test_uses_provided_site_id(self, mock_config, loader):
+        """Explicitly provided site_id is used; _get_site_id is not called."""
+        mock_config.graph_base_url = "https://graph.microsoft.com"
+        mock_config.graph_api_version = "v1.0"
+
+        with patch.object(loader, "_get_site_id") as mock_get_site:
+            with patch.object(loader, "_make_graph_request", return_value={"id": "fid"}):
+                loader._resolve_folder_start("drive-id", "Folder", site_id="explicit-site")
+
+        mock_get_site.assert_not_called()
+
+    @patch("codemie.datasource.loader.sharepoint_loader.SHAREPOINT_CONFIG")
+    def test_url_contains_encoded_path(self, mock_config, loader):
+        """Spaces in sub_path are percent-encoded in the Graph API URL."""
+        mock_config.graph_base_url = "https://graph.microsoft.com"
+        mock_config.graph_api_version = "v1.0"
+        loader._site_id = "site-id"
+        captured = {}
+
+        def capture(url):
+            captured["url"] = url
+            return {"id": "fid"}
+
+        with patch.object(loader, "_make_graph_request", side_effect=capture):
+            loader._resolve_folder_start("drive-id", "My Folder/Sub Folder")
+
+        assert "My%20Folder" in captured["url"]
+        assert "Sub%20Folder" in captured["url"]
+
+    @patch("codemie.datasource.loader.sharepoint_loader.SHAREPOINT_CONFIG")
+    def test_calls_get_site_id_when_site_id_is_none(self, mock_config, loader):
+        """When site_id=None, _get_site_id() is called to resolve the site ID."""
+        mock_config.graph_base_url = "https://graph.microsoft.com"
+        mock_config.graph_api_version = "v1.0"
+        loader._site_id = None
+
+        with patch.object(loader, "_get_site_id", return_value="resolved-site") as mock_get_site:
+            with patch.object(loader, "_make_graph_request", return_value={"id": "fid"}):
+                loader._resolve_folder_start("drive-id", "Team/Project")
+
+        mock_get_site.assert_called_once()
+
+    @patch("codemie.datasource.loader.sharepoint_loader.SHAREPOINT_CONFIG")
+    def test_warning_includes_sub_path(self, mock_config, loader):
+        """Warning log on resolution failure includes the sub_path value."""
+        mock_config.graph_base_url = "https://graph.microsoft.com"
+        mock_config.graph_api_version = "v1.0"
+        loader._site_id = "site-id"
+
+        with patch.object(loader, "_make_graph_request", return_value=None):
+            with patch("codemie.datasource.loader.sharepoint_loader.logger") as mock_logger:
+                loader._resolve_folder_start("drive-id", "folder")
+
+        warning_msg = mock_logger.warning.call_args[0][0]
+        assert "folder" in warning_msg
+
+
+# ---------------------------------------------------------------------------
+# TestHasGlobalPatterns
+# ---------------------------------------------------------------------------
+
+
+class TestHasGlobalPatterns:
+    """Tests for _has_global_patterns."""
+
+    def test_empty_returns_false(self):
+        """Empty string has no global patterns."""
+        assert SharePointLoader._has_global_patterns("") is False
+
+    def test_only_path_lines_returns_false(self):
+        """/…-prefixed lines are folder scopes, not global patterns."""
+        assert SharePointLoader._has_global_patterns("/Shared Documents/*\n/Archive/*") is False
+
+    def test_extension_pattern_returns_true(self):
+        """'*.xlsx' is a global pattern."""
+        assert SharePointLoader._has_global_patterns("*.xlsx") is True
+
+    def test_mixed_returns_true(self):
+        """Global pattern alongside a path line → True."""
+        assert SharePointLoader._has_global_patterns("/folder/*\n*.pdf") is True
+
+    def test_negation_only_returns_false(self):
+        """Negation lines starting with '!' are not global include patterns."""
+        assert SharePointLoader._has_global_patterns("!*.tmp") is False
+
+    def test_comment_only_returns_false(self):
+        """Comment lines starting with '#' are not patterns."""
+        assert SharePointLoader._has_global_patterns("# just a comment") is False
+
+    def test_blank_lines_ignored(self):
+        """Lines that are only whitespace are skipped."""
+        assert SharePointLoader._has_global_patterns("  \n  \n/folder/*") is False
+
+    def test_url_line_returns_false(self):
+        """A SharePoint URL line is a folder scope, not a global pattern."""
+        url = "https://tenant.sharepoint.com/sites/MySite/Shared%20Documents/folder"
+        assert SharePointLoader._has_global_patterns(url) is False
+
+
+# ---------------------------------------------------------------------------
+# TestParseFolderRules
+# ---------------------------------------------------------------------------
+
+
+class TestParseFolderRules:
+    """Tests for _parse_folder_rules."""
+
+    def test_empty_returns_empty(self, loader):
+        """Empty files_filter returns no rules."""
+        assert loader._parse_folder_rules("") == []
+
+    def test_single_path_line(self, loader):
+        """'/Shared Documents/folder/*' produces one rule (no type wildcard)."""
+        rules = loader._parse_folder_rules("/Shared Documents/folder/*")
+        assert rules == [("Shared Documents", "folder", "")]
+
+    def test_typed_wildcard_captured(self, loader):
+        """'/Shared Documents/folder/*.json' produces one rule with type_wildcard."""
+        rules = loader._parse_folder_rules("/Shared Documents/folder/*.json")
+        assert rules == [("Shared Documents", "folder", "*.json")]
+
+    def test_global_pattern_excluded(self, loader):
+        """'*.xlsx' is a global pattern and not included in folder rules."""
+        assert loader._parse_folder_rules("*.xlsx") == []
+
+    def test_multiple_path_lines(self, loader):
+        """Multiple path lines produce multiple rules."""
+        ff = "/Shared Documents/folder/*\n/Archive/*"
+        rules = loader._parse_folder_rules(ff)
+        assert ("Shared Documents", "folder", "") in rules
+        assert ("Archive", "", "") in rules
+
+    def test_negation_excluded(self, loader):
+        """Negation lines are skipped."""
+        assert loader._parse_folder_rules("!*.tmp") == []
+
+    def test_duplicate_deduplicated(self, loader):
+        """Duplicate path lines produce a single rule."""
+        ff = "/Shared Documents/folder/*\n/Shared Documents/folder/*"
+        rules = loader._parse_folder_rules(ff)
+        assert rules == [("Shared Documents", "folder", "")]
+
+    def test_url_line_normalised(self, loader):
+        """SharePoint copy-link URL is normalised to a folder rule."""
+        url = "https://tenant.sharepoint.com/:f:/r/sites/MySite/Shared%20Documents/team?csf=1&web=1"
+        rules = loader._parse_folder_rules(url)
+        assert rules == [("Shared Documents", "team", "")]
+
+    def test_mismatched_hostname_url_skipped(self, loader):
+        """A URL from a different tenant that can't be normalised is silently skipped."""
+        url = "https://other-tenant.sharepoint.com/sites/Other/Shared%20Documents/folder"
+        rules = loader._parse_folder_rules(url)
+        assert rules == []
+
+
+# ---------------------------------------------------------------------------
+# TestResolveAllScopes
+# ---------------------------------------------------------------------------
+
+
+class TestResolveAllScopes:
+    """Tests for _resolve_all_scopes."""
+
+    def test_empty_filter_returns_all_drives(self, loader, two_drives):
+        """Empty files_filter → traverse all drives, scope_filter is empty."""
+        loader.files_filter = ""
+        result = loader._resolve_all_scopes(two_drives)
+        assert result == [(two_drives, "", "")]
+
+    def test_global_pattern_returns_all_drives(self, loader, two_drives):
+        """A global pattern (*.xlsx) → traverse all drives, scope_filter is original ff."""
+        loader.files_filter = "*.xlsx"
+        result = loader._resolve_all_scopes(two_drives)
+        assert result == [(two_drives, "", "*.xlsx")]
+
+    def test_single_folder_rule_scopes_drives(self, loader, two_drives):
+        """/Shared Documents/Team/* → only Shared Documents drive, empty scope_filter."""
+        loader.files_filter = "/Shared Documents/Team/*"
+        result = loader._resolve_all_scopes(two_drives)
+        assert len(result) == 1
+        drives, sub_path, scope_filter = result[0]
+        assert len(drives) == 1
+        assert drives[0]["id"] == "d1"
+        assert sub_path == "Team"
+        assert scope_filter == ""
+
+    def test_typed_wildcard_scope_filter(self, loader, two_drives):
+        """/Shared Documents/Team/*.json → scope_filter is '*.json'."""
+        loader.files_filter = "/Shared Documents/Team/*.json"
+        result = loader._resolve_all_scopes(two_drives)
+        assert len(result) == 1
+        _, sub_path, scope_filter = result[0]
+        assert sub_path == "Team"
+        assert scope_filter == "*.json"
+
+    def test_global_negation_carried_into_scope_filter(self, loader, two_drives):
+        """Global negation !*.pptx + scope URL → scope_filter includes negation."""
+        loader.files_filter = "/Shared Documents/Team/*\n!*.pptx"
+        result = loader._resolve_all_scopes(two_drives)
+        assert len(result) == 1
+        _, _, scope_filter = result[0]
+        assert "!*.pptx" in scope_filter
+
+    def test_multiple_rules_multiple_scopes(self, loader, two_drives):
+        """/Shared Documents/* + /Archive/* → two separate scopes."""
+        loader.files_filter = "/Shared Documents/*\n/Archive/*"
+        result = loader._resolve_all_scopes(two_drives)
+        assert len(result) == 2
+        drive_ids = {r[0][0]["id"] for r in result}
+        assert drive_ids == {"d1", "d2"}
+
+    def test_unknown_library_fallback_all_drives(self, loader, two_drives):
+        """Unknown library name falls back to all drives with empty sub_path."""
+        loader.files_filter = "/NonExistent/*"
+        result = loader._resolve_all_scopes(two_drives)
+        assert len(result) == 1
+        drives, sub_path, scope_filter = result[0]
+        assert drives == two_drives
+        assert sub_path == ""
+
+    def test_duplicates_deduplicated(self, loader, two_drives):
+        """Duplicate folder rules produce a single scope entry."""
+        loader.files_filter = "/Shared Documents/*\n/Shared Documents/*"
+        result = loader._resolve_all_scopes(two_drives)
+        assert len(result) == 1
+
+    def test_mixed_global_and_path_returns_all_drives(self, loader, two_drives):
+        """Mixed filter with at least one global pattern → all drives, full ff as scope_filter."""
+        ff = "/Shared Documents/*\n*.pdf"
+        loader.files_filter = ff
+        result = loader._resolve_all_scopes(two_drives)
+        assert result == [(two_drives, "", ff)]
+
+    def test_multiple_unknown_libraries_produce_single_fallback(self, loader, two_drives):
+        """Two different unknown library names both fall back to all drives, but only one entry."""
+        loader.files_filter = "/NonExistent1/*\n/NonExistent2/*"
+        result = loader._resolve_all_scopes(two_drives)
+        assert len(result) == 1
+        drives, sub_path, scope_filter = result[0]
+        assert drives == two_drives
+        assert sub_path == ""
+
+
+# ---------------------------------------------------------------------------
+# TestLoadAndYieldAllDocuments
+# ---------------------------------------------------------------------------
+
+
+class TestLoadAndYieldAllDocuments:
+    """Integration tests verifying the call chain inside _load_and_yield_all_documents."""
+
+    def test_no_drives_yields_nothing(self, loader):
+        """When _get_all_drives returns empty, no documents are yielded."""
+        with patch.object(loader, "_get_all_drives", return_value=[]):
+            result = list(loader._load_and_yield_all_documents())
+
+        assert result == []
+
+    def test_unscoped_filter_uses_root_start_folder(self, loader, single_drive):
+        """When files_filter is empty, start_folder='root' is passed to the drive loader."""
+        loader.files_filter = ""
+
+        with (
+            patch.object(loader, "_get_all_drives", return_value=single_drive),
+            patch.object(loader, "_resolve_all_scopes", return_value=[(single_drive, "", "")]) as mock_scope,
+            patch.object(loader, "_resolve_folder_start") as mock_resolve,
+            patch.object(loader, "_load_and_yield_documents_from_drive", return_value=iter([])) as mock_load,
+        ):
+            list(loader._load_and_yield_all_documents())
+
+        mock_scope.assert_called_once_with(single_drive)
+        mock_resolve.assert_not_called()
+        mock_load.assert_called_once_with("d1", "Shared Documents", "root")
+
+    def test_scoped_filter_resolves_start_folder(self, loader, single_drive):
+        """When sub_path is non-empty, _resolve_folder_start is called with pre-resolved site_id."""
+        loader.files_filter = "/Shared Documents/Team/*"
+
+        with (
+            patch.object(loader, "_get_all_drives", return_value=single_drive),
+            patch.object(loader, "_resolve_all_scopes", return_value=[(single_drive, "Team", "")]),
+            patch.object(loader, "_get_site_id", return_value="site-abc") as mock_site_id,
+            patch.object(loader, "_resolve_folder_start", return_value="folder-item-id") as mock_resolve,
+            patch.object(loader, "_load_and_yield_documents_from_drive", return_value=iter([])) as mock_load,
+        ):
+            list(loader._load_and_yield_all_documents())
+
+        mock_site_id.assert_called_once()
+        mock_resolve.assert_called_once_with("d1", "Team", "site-abc")
+        mock_load.assert_called_once_with("d1", "Shared Documents", "folder-item-id")
+
+
+# ---------------------------------------------------------------------------
+# TestCountDocuments
+# ---------------------------------------------------------------------------
+
+
+class TestCountDocuments:
+    """Integration tests verifying the call chain inside _count_documents."""
+
+    def test_no_drives_returns_zeros(self, loader):
+        """When _get_all_drives returns empty, (0, 0) is returned without error."""
+        with patch.object(loader, "_get_all_drives", return_value=[]):
+            total, skipped = loader._count_documents("site-id")
+
+        assert total == 0
+        assert skipped == 0
+
+    def test_unscoped_filter_uses_root_start_folder(self, loader, single_drive):
+        """When sub_path is empty, _resolve_folder_start is not called and 'root' is used."""
+        loader.files_filter = ""
+
+        with (
+            patch.object(loader, "_get_all_drives", return_value=single_drive),
+            patch.object(loader, "_resolve_all_scopes", return_value=[(single_drive, "", "")]),
+            patch.object(loader, "_resolve_folder_start") as mock_resolve,
+            patch.object(loader, "_count_files_recursive", return_value=(5, 1)) as mock_count,
+        ):
+            total, skipped = loader._count_documents("site-id")
+
+        mock_resolve.assert_not_called()
+        mock_count.assert_called_once_with("site-id", "d1", "root")
+        assert total == 5
+        assert skipped == 1
+
+    def test_scoped_filter_passes_site_id_to_resolve(self, loader, single_drive):
+        """site_id is forwarded to _resolve_folder_start and the returned ID used for counting."""
+        loader.files_filter = "/Shared Documents/Team/*"
+
+        with (
+            patch.object(loader, "_get_all_drives", return_value=single_drive),
+            patch.object(loader, "_resolve_all_scopes", return_value=[(single_drive, "Team", "")]),
+            patch.object(loader, "_resolve_folder_start", return_value="folder-item-id") as mock_resolve,
+            patch.object(loader, "_count_files_recursive", return_value=(3, 0)) as mock_count,
+        ):
+            total, skipped = loader._count_documents("site-xyz")
+
+        mock_resolve.assert_called_once_with("d1", "Team", "site-xyz")
+        mock_count.assert_called_once_with("site-xyz", "d1", "folder-item-id")
+        assert total == 3
+        assert skipped == 0
+
+    def test_aggregates_counts_across_drives(self, loader, two_drives):
+        """Counts from multiple drives are summed correctly."""
+        loader.files_filter = ""
+
+        with (
+            patch.object(loader, "_get_all_drives", return_value=two_drives),
+            patch.object(loader, "_resolve_all_scopes", return_value=[(two_drives, "", "")]),
+            patch.object(loader, "_count_files_recursive", side_effect=[(10, 2), (5, 1)]),
+        ):
+            total, skipped = loader._count_documents("site-id")
+
+        assert total == 15
+        assert skipped == 3
+
+    def test_deduplicates_same_drive_across_scopes(self, loader, two_drives):
+        """Same (drive_id, sub_path) pair from two scopes is counted only once."""
+        loader.files_filter = "/NonExistent1/*\n/NonExistent2/*"
+        # Both unknown libraries fall back to all_drives with sub_path=""
+        scopes = [(two_drives, "", ""), (two_drives, "", "")]
+
+        with (
+            patch.object(loader, "_get_all_drives", return_value=two_drives),
+            patch.object(loader, "_resolve_all_scopes", return_value=scopes),
+            patch.object(loader, "_count_files_recursive", side_effect=[(10, 2), (5, 1)]) as mock_count,
+        ):
+            total, skipped = loader._count_documents("site-id")
+
+        # Each of the two drives is counted once, not twice
+        assert mock_count.call_count == 2
+        assert total == 15
+        assert skipped == 3
+
+    def test_scope_filter_applied_during_count(self, loader, single_drive):
+        """files_filter is temporarily set to scope_filter so _would_skip_file_for_count
+        picks up files_filter skips (not just extension/size), matching actual indexing behaviour."""
+        loader.files_filter = "/Shared Documents/Team/*.json"
+        # _resolve_all_scopes returns scope_filter="*.json" for this folder rule
+        scope_filter = "*.json"
+        observed: list[str] = []
+
+        def capture_count(*_args, **_kwargs):
+            observed.append(loader.files_filter)  # capture what files_filter is during count
+            return (0, 0)
+
+        with (
+            patch.object(loader, "_get_all_drives", return_value=single_drive),
+            patch.object(loader, "_resolve_all_scopes", return_value=[(single_drive, "", scope_filter)]),
+            patch.object(loader, "_count_files_recursive", side_effect=capture_count),
+        ):
+            loader._count_documents("site-id")
+
+        # During counting the scope_filter must have been active
+        assert observed == [scope_filter]
+        # After counting the original files_filter is restored
+        assert loader.files_filter == "/Shared Documents/Team/*.json"

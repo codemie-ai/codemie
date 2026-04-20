@@ -69,7 +69,6 @@ def sharepoint_processor(sharepoint_credentials):
     index_info.created_by = created_by
     index_info.sharepoint = SharePointIndexInfo(
         site_url=site_url,
-        path_filter="*",
         include_pages=True,
         include_documents=True,
         include_lists=True,
@@ -87,7 +86,6 @@ def sharepoint_processor(sharepoint_credentials):
         credentials=sharepoint_credentials,
         sp_config=SharePointProcessorConfig(
             site_url=site_url,
-            path_filter="*",
             include_pages=True,
             include_documents=True,
             include_lists=True,
@@ -108,7 +106,6 @@ class TestSharePointProcessorInit:
         assert sharepoint_processor.project_name == "test_project"
         assert sharepoint_processor.credentials == sharepoint_credentials
         assert sharepoint_processor.site_url == "https://tenant.sharepoint.com/sites/testsite"
-        assert sharepoint_processor.path_filter == "*"
         assert sharepoint_processor.include_pages is True
         assert sharepoint_processor.include_documents is True
         assert sharepoint_processor.include_lists is True
@@ -145,7 +142,6 @@ class TestSharePointProcessorLoader:
         mock_loader.assert_called_once()
         args, kwargs = mock_loader.call_args
         assert kwargs["site_url"] == "https://tenant.sharepoint.com/sites/testsite"
-        assert kwargs["path_filter"] == "*"
         auth_config = kwargs["auth_config"]
         assert auth_config.tenant_id == "test-tenant-id"
         assert auth_config.client_id == "test-client-id"
@@ -172,7 +168,6 @@ class TestSharePointProcessorConnectionValidation:
 
         result = SharePointDatasourceProcessor.validate_creds_and_loader(
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             credentials=sharepoint_credentials,
             include_pages=True,
             include_documents=True,
@@ -194,7 +189,6 @@ class TestSharePointProcessorConnectionValidation:
         with pytest.raises(UnauthorizedException):
             SharePointDatasourceProcessor.validate_creds_and_loader(
                 site_url="https://tenant.sharepoint.com/sites/testsite",
-                path_filter="*",
                 credentials=sharepoint_credentials,
                 include_pages=True,
                 include_documents=True,
@@ -211,7 +205,6 @@ class TestSharePointProcessorConnectionValidation:
         result = SharePointDatasourceProcessor.check_sharepoint_connection(
             credentials=sharepoint_credentials,
             site_url="https://tenant.sharepoint.com/sites/testsite",
-            path_filter="*",
             include_pages=True,
             include_documents=True,
             include_lists=True,
@@ -228,7 +221,6 @@ class TestSharePointProcessorConnectionValidation:
             SharePointDatasourceProcessor.check_sharepoint_connection(
                 credentials=sharepoint_credentials,
                 site_url="",
-                path_filter="*",
             )
 
     @patch("codemie.datasource.sharepoint.sharepoint_datasource_processor.SharePointLoader")
@@ -244,7 +236,6 @@ class TestSharePointProcessorConnectionValidation:
             SharePointDatasourceProcessor.check_sharepoint_connection(
                 credentials=sharepoint_credentials,
                 site_url="https://tenant.sharepoint.com/sites/testsite",
-                path_filter="*",
             )
 
 
@@ -486,14 +477,14 @@ class TestSharePointProcessorIndexUpdate:
         """Test that _init_index updates an existing index's SharePoint config fields."""
         processor = sharepoint_processor
         processor.site_url = "https://tenant.sharepoint.com/sites/newsite"
-        processor.path_filter = "/Docs/*"
+        processor.files_filter = "/Docs/*"
         processor.include_pages = False
 
         with patch.object(processor, "_assign_and_sync_guardrails"):
             processor._init_index()
 
         assert processor.index.sharepoint.site_url == "https://tenant.sharepoint.com/sites/newsite"
-        assert processor.index.sharepoint.path_filter == "/Docs/*"
+        assert processor.index.sharepoint.files_filter == "/Docs/*"
         assert processor.index.sharepoint.include_pages is False
 
     def test_init_index_creates_sharepoint_config_when_missing(self, sharepoint_processor):
@@ -651,7 +642,6 @@ class TestSharePointProcessorValidateCredsExtended:
         with pytest.raises(MissingIntegrationException):
             SharePointDatasourceProcessor.validate_creds_and_loader(
                 site_url="https://tenant.sharepoint.com/sites/testsite",
-                path_filter="*",
                 credentials=sharepoint_credentials,
             )
 
@@ -668,7 +658,6 @@ class TestSharePointProcessorValidateCredsExtended:
         with pytest.raises(InvalidQueryException):
             SharePointDatasourceProcessor.validate_creds_and_loader(
                 site_url="https://tenant.sharepoint.com/sites/testsite",
-                path_filter="*",
                 credentials=sharepoint_credentials,
             )
 

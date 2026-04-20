@@ -62,7 +62,6 @@ class SharePointProcessorConfig:
     """Content and metadata configuration for SharePoint datasource processor."""
 
     site_url: str
-    path_filter: str = "*"
     include_pages: bool = True
     include_documents: bool = True
     include_lists: bool = True
@@ -122,7 +121,6 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
         self.description = sp_config.description
         self.credentials = credentials
         self.site_url = sp_config.site_url
-        self.path_filter = sp_config.path_filter
         self.include_pages = sp_config.include_pages
         self.include_documents = sp_config.include_documents
         self.include_lists = sp_config.include_lists
@@ -170,7 +168,6 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
             modified_since = self.index.last_reindex_date or self.index.update_date
         return SharePointLoader(
             site_url=self.site_url,
-            path_filter=self.path_filter,
             auth_config=SharePointAuthConfig(
                 auth_type=self.credentials.auth_type,
                 tenant_id=self.credentials.tenant_id or "",
@@ -219,7 +216,6 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
                 user=self.user,
                 sharepoint=SharePointIndexInfo(
                     site_url=self.site_url,
-                    path_filter=self.path_filter,
                     include_pages=self.include_pages,
                     include_documents=self.include_documents,
                     include_lists=self.include_lists,
@@ -240,7 +236,6 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
                 # Create SharePoint config if it doesn't exist (shouldn't happen, but defensive)
                 self.index.sharepoint = SharePointIndexInfo(
                     site_url=self.site_url,
-                    path_filter=self.path_filter,
                     include_pages=self.include_pages,
                     include_documents=self.include_documents,
                     include_lists=self.include_lists,
@@ -255,7 +250,6 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
             else:
                 # Update existing SharePoint config
                 self.index.sharepoint.site_url = self.site_url
-                self.index.sharepoint.path_filter = self.path_filter
                 self.index.sharepoint.include_pages = self.include_pages
                 self.index.sharepoint.include_documents = self.include_documents
                 self.index.sharepoint.include_lists = self.include_lists
@@ -323,7 +317,6 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
     def validate_creds_and_loader(
         cls,
         site_url: str,
-        path_filter: str,
         credentials: SharePointCredentials,
         include_pages: bool = True,
         include_documents: bool = True,
@@ -334,7 +327,6 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
 
         Args:
             site_url: SharePoint site URL
-            path_filter: Path filter
             credentials: SharePoint credentials
             include_pages: Whether to include site pages
             include_documents: Whether to include documents
@@ -348,7 +340,6 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
         """
         loader = SharePointLoader(
             site_url=site_url,
-            path_filter=path_filter,
             auth_config=SharePointAuthConfig(
                 auth_type=credentials.auth_type,
                 tenant_id=credentials.tenant_id or "",
@@ -383,7 +374,6 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
         cls,
         credentials: SharePointCredentials,
         site_url: str,
-        path_filter: str = "*",
         include_pages: bool = True,
         include_documents: bool = True,
         include_lists: bool = True,
@@ -402,7 +392,6 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
         Args:
             credentials: SharePoint credentials
             site_url: SharePoint site URL
-            path_filter: Path filter (stored for indexing, not validated here)
             include_pages: Whether to include site pages
             include_documents: Whether to include documents
             include_lists: Whether to include list items
@@ -418,7 +407,6 @@ class SharePointDatasourceProcessor(BaseDatasourceProcessor):
 
         loader = SharePointLoader(
             site_url=site_url,
-            path_filter=path_filter,
             auth_config=SharePointAuthConfig(
                 auth_type=credentials.auth_type,
                 tenant_id=credentials.tenant_id or "",

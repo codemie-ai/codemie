@@ -763,7 +763,6 @@ class TestResumeSharepoint:
         sp_info = MagicMock()
         sp_info.auth_type = "integration"
         sp_info.site_url = "https://tenant.sharepoint.com/sites/test"
-        sp_info.path_filter = "*"
         sp_info.include_pages = True
         sp_info.include_documents = True
         sp_info.include_lists = True
