@@ -980,11 +980,32 @@ class Assistant(BaseModelWithSQLSupport, AssistantBase, table=True):
 
     @classmethod
     def delete_assistant(cls, assistant_id: str):
+        from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService
+        from codemie_tools.base.models import CredentialTypes
+
         assistant = cls.find_by_id(assistant_id)
         if assistant:
-            assistant.delete()
-            GuardrailService.remove_guardrail_assignments_for_entity(GuardrailEntity.ASSISTANT, str(assistant.id))
+            assistant_project = assistant.project
+            assistant_internal_id = str(assistant.id)
 
+            for credential_type in (CredentialTypes.SCHEDULER, CredentialTypes.WEBHOOK):
+                try:
+                    deleted = SchedulerSettingsService.delete_integrations_by_resource(
+                        resource_id=assistant_internal_id,
+                        project_name=assistant_project,
+                        credential_type=credential_type,
+                    )
+                    if deleted:
+                        logger.info(
+                            f"Deleted {deleted} {credential_type.value} integration(s) for assistant {assistant_id}"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to delete {credential_type.value} integrations for assistant {assistant_id}: {e}"
+                    )
+
+            assistant.delete()
+            GuardrailService.remove_guardrail_assignments_for_entity(GuardrailEntity.ASSISTANT, assistant_internal_id)
             return
         return {"status": "not found"}
 

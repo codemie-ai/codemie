@@ -332,6 +332,35 @@ class SchedulerSettingsService(BaseSettingsService):
             logger.error(f"Failed to delete schedule for datasource {resource_id}: {e}", exc_info=True)
             return False
 
+    @staticmethod
+    def delete_integrations_by_resource(resource_id: str, project_name: str, credential_type: CredentialTypes) -> int:
+        """
+        Delete all settings of the given credential_type linked to a specific resource.
+
+        Args:
+            resource_id: ID of the resource (datasource, assistant, or workflow)
+            project_name: Name of the project the resource belongs to
+            credential_type: Type of integration to delete (e.g. SCHEDULER, WEBHOOK)
+
+        Returns:
+            Number of deleted integrations
+
+        Raises:
+            Exception: Propagates any storage errors to the caller for handling
+        """
+        matched_settings = Settings.find_by_resource_id(project_name, credential_type, resource_id)
+
+        deleted_count = 0
+        for setting in matched_settings:
+            setting.delete()
+            deleted_count += 1
+            logger.info(f"Deleted {credential_type.value} integration '{setting.alias}' for resource {resource_id}")
+
+        if not deleted_count:
+            logger.debug(f"No {credential_type.value} integrations found for resource {resource_id}")
+
+        return deleted_count
+
 
 def validate_cron_expression(cron_expr: str | None) -> None:
     """

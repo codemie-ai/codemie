@@ -73,8 +73,29 @@ class WorkflowService:
             raise e
 
     def delete_workflow(self, workflow_config: WorkflowConfig, user: User):
+        from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService
+        from codemie_tools.base.models import CredentialTypes
+
         try:
             self.delete_all_executions_by_workflow_id(workflow_config.id)
+
+            for credential_type in (CredentialTypes.SCHEDULER, CredentialTypes.WEBHOOK):
+                try:
+                    deleted = SchedulerSettingsService.delete_integrations_by_resource(
+                        resource_id=str(workflow_config.id),
+                        project_name=workflow_config.project,
+                        credential_type=credential_type,
+                    )
+                    if deleted:
+                        logger.info(
+                            f"Deleted {deleted} {credential_type.value} integration(s) "
+                            f"for workflow {workflow_config.id}"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to delete {credential_type.value} integrations for workflow {workflow_config.id}: {e}"
+                    )
+
             WorkflowConfig.delete(workflow_config.id)
 
             WorkflowMonitoringService.send_delete_workflow_metric(

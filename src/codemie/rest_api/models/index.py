@@ -1051,12 +1051,18 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         if elastic_client.indices.exists(index=index_name):
             elastic_client.indices.delete(index=index_name)
 
-        # Delete associated scheduler settings (cron jobs)
-        if self.created_by and self.created_by.id:
+        # Delete associated scheduler and webhook integrations
+        from codemie_tools.base.models import CredentialTypes
+
+        for credential_type in (CredentialTypes.SCHEDULER, CredentialTypes.WEBHOOK):
             try:
-                SchedulerSettingsService.delete_schedule(resource_id=self.id, user_id=self.created_by.id)
+                deleted = SchedulerSettingsService.delete_integrations_by_resource(
+                    resource_id=str(self.id), project_name=self.project_name, credential_type=credential_type
+                )
+                if deleted:
+                    logger.info(f"Deleted {deleted} {credential_type.value} integration(s) for datasource {self.id}")
             except Exception as e:
-                logger.warning(f"Failed to delete scheduler settings for datasource {self.id}: {e}")
+                logger.warning(f"Failed to delete {credential_type.value} integrations for datasource {self.id}: {e}")
 
         super().delete()
 

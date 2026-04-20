@@ -383,6 +383,25 @@ class Settings(BaseModelWithSQLSupport, SettingsBase, table=True):
             return session.exec(statement).all()
 
     @classmethod
+    def find_by_resource_id(
+        cls, project_name: str, credential_type: CredentialTypes, resource_id: str
+    ) -> list["Settings"]:
+        """
+        Find all settings linked to a specific resource using a JSONB containment query.
+
+        Filters by project_name and credential_type (both indexed) first, then uses
+        PostgreSQL JSONB @> operator to match resource_id inside credential_values array.
+        """
+        with Session(cls.get_engine()) as session:
+            statement = (
+                select(cls)
+                .where(cls.project_name == project_name)
+                .where(cls.credential_type == credential_type)
+                .where(cls.credential_values.contains([{"key": "resource_id", "value": resource_id}]))
+            )
+            return session.exec(statement).all()
+
+    @classmethod
     def delete_setting(cls, setting_id: str):
         setting = cls.find_by_id(setting_id)
         if setting:
