@@ -1022,7 +1022,9 @@ def _budget_only_service(
     service = _make_service()
     service._app_repository.aget_all_non_deleted = AsyncMock(return_value=[])
     service._tracking_repository.get_latest_before_by_key_hashes = AsyncMock(return_value={})
-    service._tracking_repository.get_latest_before_by_project_budget_ids = AsyncMock(return_value=get_latest_prev or {})
+    service._tracking_repository.get_latest_before_by_project_budget_categories = AsyncMock(
+        return_value=get_latest_prev or {}
+    )
     service._tracking_repository.insert_key_entries = AsyncMock()
     service._tracking_repository.insert_budget_entries = AsyncMock()
     return service
@@ -1078,7 +1080,7 @@ class TestCollectBudgetBased:
     async def test_delta_computed_against_prev_budget_row(self, mock_session, async_session_ctx, mock_budget_repo):
         """Normal delta: lifetime cumulative grows by the period-spend difference."""
         prev = _prev_row("unused", cumulative=Decimal("10.00"), budget_period_spend=Decimal("3.00"))
-        service = _budget_only_service(get_latest_prev={("alice@example.com", "cli"): prev})
+        service = _budget_only_service(get_latest_prev={("alice@example.com", "cli", "cli"): prev})
         mock_budget_repo.get_all_keyed_by_id = AsyncMock(return_value={"cli": _make_budget("cli", "cli")})
 
         customer_entries = [_make_customer_entry("alice@example.com_codemie_cli", "cli", Decimal("5.50"))]
@@ -1105,7 +1107,7 @@ class TestCollectBudgetBased:
     async def test_zero_delta_budget_row_not_persisted(self, mock_session, async_session_ctx, mock_budget_repo):
         """Unchanged spend (zero delta) produces no row."""
         prev = _prev_row("unused", cumulative=Decimal("10.00"), budget_period_spend=Decimal("3.00"))
-        service = _budget_only_service(get_latest_prev={("alice@example.com", "cli"): prev})
+        service = _budget_only_service(get_latest_prev={("alice@example.com", "cli", "cli"): prev})
         mock_budget_repo.get_all_keyed_by_id = AsyncMock(return_value={"cli": _make_budget("cli", "cli")})
 
         customer_entries = [_make_customer_entry("alice@example.com_codemie_cli", "cli", Decimal("3.00"))]
@@ -1162,7 +1164,7 @@ class TestCollectBudgetBased:
             budget_period_spend=Decimal("9.00"),
             spend_date=datetime(2026, 3, 16, 23, 55, tzinfo=timezone.utc),
         )
-        service = _budget_only_service(get_latest_prev={("alice@example.com", "cli"): prev})
+        service = _budget_only_service(get_latest_prev={("alice@example.com", "cli", "cli"): prev})
         mock_budget_repo.get_all_keyed_by_id = AsyncMock(
             return_value={
                 "cli": _make_budget(

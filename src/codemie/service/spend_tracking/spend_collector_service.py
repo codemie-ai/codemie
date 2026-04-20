@@ -277,13 +277,17 @@ class LiteLLMSpendCollectorService:
         logger.info(f"Processing {len(customer_entries)} customer budget entries")
 
         async with get_async_session() as session:
-            project_budget_pairs = [
-                (self._normalize_project_name(entry.user_id, entry.budget_id), entry.budget_id)
+            project_budget_category_triples = [
+                (
+                    self._normalize_project_name(entry.user_id, entry.budget_id),
+                    entry.budget_id,
+                    derive_category_from_user_id(entry.user_id).value,
+                )
                 for entry in customer_entries
             ]
-            prev_rows = await self._tracking_repository.get_latest_before_by_project_budget_ids(
+            prev_rows = await self._tracking_repository.get_latest_before_by_project_budget_categories(
                 session,
-                project_budget_pairs,
+                project_budget_category_triples,
                 target_snapshot_at,
             )
             logger.debug(f"Loaded {len(prev_rows)} prior budget baseline rows for delta calculation")
@@ -294,9 +298,10 @@ class LiteLLMSpendCollectorService:
             rows_to_insert: list[ProjectSpendTracking] = []
             for entry in customer_entries:
                 project_name = self._normalize_project_name(entry.user_id, entry.budget_id)
+                budget_category = derive_category_from_user_id(entry.user_id).value
                 current_budget_period_spend = self._quantize_spend(Decimal(str(entry.spend)))
                 budget = budgets_map.get(entry.budget_id)
-                prev_row = prev_rows.get((project_name, entry.budget_id))
+                prev_row = prev_rows.get((project_name, entry.budget_id, budget_category))
 
                 try:
                     daily_spend, cumulative_spend = self._compute_spend_snapshot(
@@ -337,9 +342,7 @@ class LiteLLMSpendCollectorService:
                         cumulative_spend=cumulative_spend,
                         budget_period_spend=current_budget_period_spend,
                         budget_id=entry.budget_id,
-                        budget_category=budget.budget_category
-                        if budget
-                        else derive_category_from_user_id(entry.user_id).value,
+                        budget_category=budget_category,
                         spend_subject_type="budget",
                     )
                 )
