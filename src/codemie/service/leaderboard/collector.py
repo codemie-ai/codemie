@@ -144,6 +144,7 @@ class LeaderboardCollector:
             cost_metrics, "Leaderboard cost metrics collection failed", logger.warning
         )
 
+        self._normalize_es_user_ids(users, es_metrics)
         self._merge_es_users(users, es_metrics)
         raw_metrics = self._build_raw_metrics(users, pg_metrics, es_metrics, cost_metrics)
 
@@ -170,7 +171,44 @@ class LeaderboardCollector:
         return result
 
     @staticmethod
+    def _normalize_es_user_ids(users: dict[str, dict], es_metrics: dict[str, dict[str, dict]]) -> None:
+        """Fold email-keyed ES buckets into their canonical UUID bucket.
+
+        Some event sources (e.g. budget-limit metrics) emit the user's email as
+        ``attributes.user_id`` instead of their UUID. This produces a spurious
+        second bucket in ``es_metrics`` for the same person. We resolve it here —
+        before identity merging — so the rest of the pipeline only sees UUID keys.
+        """
+        email_to_uuid: dict[str, str] = {v["user_email"]: k for k, v in users.items() if v.get("user_email")}
+        email_keys = [uid for uid in es_metrics if "@" in uid and uid in email_to_uuid]
+        for email_uid in email_keys:
+            canonical_uid = email_to_uuid[email_uid]
+            LeaderboardCollector._fold_es_bucket(es_metrics.setdefault(canonical_uid, {}), es_metrics.pop(email_uid))
+
+    @staticmethod
+    def _fold_es_bucket(target: dict[str, dict], source: dict[str, dict]) -> None:
+        """Merge *source* metric sections into *target*, summing numeric values."""
+        for section, values in source.items():
+            if section == "identity":
+                continue
+            if section not in target:
+                target[section] = dict(values)
+                continue
+            for key, val in values.items():
+                existing = target[section].get(key)
+                if isinstance(val, (int, float)) and isinstance(existing, (int, float)):
+                    target[section][key] = existing + val
+                elif key not in target[section]:
+                    target[section][key] = val
+
+    @staticmethod
     def _merge_es_users(users: dict[str, dict], es_metrics: dict[str, dict[str, dict]]) -> None:
+        """Add ES-only users to *users* and enrich identity of existing ones.
+
+        By this point ``es_metrics`` has already been normalised (email keys
+        folded into UUID keys by ``_normalize_es_user_ids``), so every key here
+        is either a UUID or an email that has no PG counterpart.
+        """
         for uid, es_data in es_metrics.items():
             identity = es_data.get("identity", {})
             if uid not in users:
@@ -182,13 +220,23 @@ class LeaderboardCollector:
                 }
                 continue
 
-            if identity.get("user_name") and not users[uid].get("user_name"):
-                users[uid]["user_name"] = identity["user_name"]
-            if identity.get("user_email") and not users[uid].get("user_email"):
-                users[uid]["user_email"] = identity["user_email"]
-            existing_projects = set(users[uid].get("projects") or [])
-            existing_projects.update(identity.get("projects") or [])
-            users[uid]["projects"] = sorted(p for p in existing_projects if p)
+            LeaderboardCollector._update_existing_user(users[uid], identity)
+
+    @staticmethod
+    def _update_existing_user(user: dict, identity: dict) -> None:
+        # Allow ES name to overwrite if the current name is the UUID
+        # fallback (set by _discover_users_pg when conversations.user_name
+        # is null). A UUID string is truthy so the plain `not existing`
+        # guard would silently keep the UUID as the display name.
+        existing_name = user.get("user_name", "")
+        es_name = identity.get("user_name", "")
+        if es_name and (not existing_name or UUID_PATTERN.match(existing_name)):
+            user["user_name"] = es_name
+        if identity.get("user_email") and not user.get("user_email"):
+            user["user_email"] = identity["user_email"]
+        existing_projects = set(user.get("projects") or [])
+        existing_projects.update(identity.get("projects") or [])
+        user["projects"] = sorted(p for p in existing_projects if p)
 
     @staticmethod
     def _build_raw_metrics(
@@ -329,6 +377,23 @@ class LeaderboardCollector:
               AND sc.created_at >= :start
               AND sc.created_at < :end_exclusive
         )
+        -- Resolve email-format user_ids to their canonical UUID via the users
+        -- table. Some records (e.g. created_by on assistants/workflows) were
+        -- written when the IdP used email as the JWT sub claim. Without this
+        -- join those users appear twice: once under their UUID (from
+        -- conversations) and once under their email, producing duplicate
+        -- leaderboard entries.
+        , normalized AS (
+            SELECT
+                COALESCE(u.id, src.user_id) AS user_id,
+                COALESCE(src.user_name, u.name)  AS user_name,
+                COALESCE(src.user_email, u.email) AS user_email,
+                src.project
+            FROM src
+            LEFT JOIN {s}.users u
+                   ON src.user_id LIKE '%%@%%'
+                  AND LOWER(u.email) = LOWER(src.user_id)
+        )
         SELECT
             user_id,
             COALESCE(
@@ -339,7 +404,7 @@ class LeaderboardCollector:
             ) AS user_name,
             MAX(user_email) FILTER (WHERE user_email LIKE '%%@%%') AS user_email,
             array_remove(array_agg(DISTINCT project), NULL) AS projects
-        FROM src
+        FROM normalized
         WHERE user_id IS NOT NULL AND user_id != ''
         GROUP BY user_id
         """
