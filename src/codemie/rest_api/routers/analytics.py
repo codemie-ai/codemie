@@ -2126,6 +2126,16 @@ async def get_cli_insights_by_enriched_user_job_title(
     return await _run_enriched_user_insight(user, EnrichedUserScope.JOB_TITLE, params)
 
 
+@router.get("/cli-insights-by-enriched-user-job-title-group", **_ENRICHED_USER_ROUTE_PARAMS)
+@handle_analytics_errors("CLI insights by enriched user job title group")
+async def get_cli_insights_by_enriched_user_job_title_group(
+    user: User = Depends(authenticate),
+    params: CLIEnrichedUserParams = Depends(),
+) -> JSONResponse:
+    """CLI users and cost grouped by job title group (requires userEnrichmentEnabled)."""
+    return await _run_enriched_user_insight(user, EnrichedUserScope.JOB_TITLE_GROUP, params)
+
+
 @router.post(
     "/ai-adoption-overview",
     status_code=status.HTTP_200_OK,

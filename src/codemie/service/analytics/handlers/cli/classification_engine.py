@@ -45,6 +45,7 @@ class EnrichedUserScope(str, Enum):
     COUNTRY = "country"
     CITY = "city"
     JOB_TITLE = "job_title"
+    JOB_TITLE_GROUP = "job_title_group"
     PRIMARY_SKILL = "primary_skill"
 
 
@@ -57,6 +58,7 @@ class CLIClassificationEngine:
         EnrichedUserScope.COUNTRY: "Country",
         EnrichedUserScope.CITY: "City",
         EnrichedUserScope.JOB_TITLE: "Job Title",
+        EnrichedUserScope.JOB_TITLE_GROUP: "Job Title Group",
         EnrichedUserScope.PRIMARY_SKILL: "Primary Skill",
     }
 
