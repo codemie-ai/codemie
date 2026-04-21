@@ -80,7 +80,7 @@ class User(BaseModel):
 
     @property
     def full_name(self):
-        return self.username or self.name or self.id
+        return self.name or self.username or self.id
 
     @property
     def is_admin_or_maintainer(self) -> bool:

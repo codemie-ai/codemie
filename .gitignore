@@ -52,3 +52,5 @@ bmad/*
 /.gitleaksignore
 /.claude/skills/bmad*
 /.agents/skills/bmad*
+/.mcp.json*
+/CLAUDE.local.md

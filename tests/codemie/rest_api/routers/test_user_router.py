@@ -90,8 +90,8 @@ async def test_get_user_basic(mock_authenticate, mock_user):
     data = response.json()
     assert data["user_id"] == "user-123"
     assert data["username"] == "testuser"
-    # Note: name in response comes from User.full_name which returns username when available
-    assert data["name"] == "testuser"
+    # Note: name in response comes from User.full_name which returns name when available, falls back to username
+    assert data["name"] == "Test User"
     assert data["email"] == "test@example.com"
     assert data["is_maintainer"] is False
     # Note: In local ENV, both is_admin and is_admin can be True (dev override)
@@ -251,9 +251,9 @@ async def test_update_user_data_success(mock_authenticate, mock_get_by_fields, m
         data = response.json()
         assert data["sidebar_view"] == "folders"
         mock_update.assert_called_once()
-        # Note: full_name property returns username when name is set (testuser, not "Test User")
+        # Note: full_name property returns name when set (name takes priority over username)
         mock_monitoring_service.send_view_mode_metric.assert_called_once_with(
-            "folders", user_id="user-123", user_name="testuser"
+            "folders", user_id="user-123", user_name="Test User"
         )
 
 

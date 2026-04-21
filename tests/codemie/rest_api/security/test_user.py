@@ -94,10 +94,10 @@ class TestIsExternalUser:
 class TestUserProperties:
     """Test cases for various User properties"""
 
-    def test_full_name_uses_username_when_available(self):
-        """Test that full_name returns username when it's set"""
+    def test_full_name_prioritizes_name_over_username(self):
+        """Test that full_name returns name when both name and username are set"""
         user = User(id="123", username="testuser", name="Test Name")
-        assert user.full_name == "testuser"
+        assert user.full_name == "Test Name"
 
     def test_full_name_uses_name_when_username_empty(self):
         """Test that full_name returns name when username is empty"""
