@@ -91,6 +91,8 @@ class AzureDevOpsWorkItemConfig(BaseModel):
     chunk_size: int
     chunk_overlap: int
     loader_batch_size: int
+    index_comments: bool = True
+    index_attachments: bool = True
 
 
 class XrayConfig(BaseModel):

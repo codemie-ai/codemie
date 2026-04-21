@@ -111,7 +111,17 @@ class AzureDevOpsWorkItemDatasourceProcessor(BaseDatasourceProcessor):
         self._assign_and_sync_guardrails()
 
     def _init_loader(self):
-        """Initialize Azure DevOps Work Item loader."""
+        """Initialize Azure DevOps Work Item loader with an optional vision-capable chat model."""
+        chat_model = None
+        try:
+            from codemie.core.dependecies import get_llm_by_credentials
+
+            multimodal_llms = llm_service.get_multimodal_llms()
+            if multimodal_llms:
+                chat_model = get_llm_by_credentials(llm_model=multimodal_llms[0], streaming=False)
+        except Exception as e:
+            logger.warning(f"Could not initialise vision model for work item attachment indexing: {e}")
+
         return AzureDevOpsWorkItemLoader(
             base_url=self.credentials.base_url,
             wiql_query=self.wiql_query,
@@ -119,6 +129,9 @@ class AzureDevOpsWorkItemDatasourceProcessor(BaseDatasourceProcessor):
             organization=self.credentials.organization,
             project=self.credentials.project,
             batch_size=AZURE_DEVOPS_WORK_ITEM_CONFIG.loader_batch_size,
+            chat_model=chat_model,
+            index_comments=AZURE_DEVOPS_WORK_ITEM_CONFIG.index_comments,
+            index_attachments=AZURE_DEVOPS_WORK_ITEM_CONFIG.index_attachments,
         )
 
     def _process_chunk(self, chunk: str, chunk_metadata, document: Document) -> Document:
@@ -129,16 +142,23 @@ class AzureDevOpsWorkItemDatasourceProcessor(BaseDatasourceProcessor):
         state = document.metadata.get("state", "")
         title = document.metadata.get("title", "")
 
-        return Document(
-            page_content=chunk,
-            metadata={
-                "source": source,
-                "work_item_id": work_item_id,
-                "work_item_type": work_item_type,
-                "state": state,
-                "title": title,
-            },
-        )
+        metadata: dict = {
+            "source": source,
+            "work_item_id": work_item_id,
+            "work_item_type": work_item_type,
+            "state": state,
+            "title": title,
+        }
+
+        # Preserve content_type and attachment/comment metadata when present
+        content_type = document.metadata.get("content_type")
+        if content_type:
+            metadata["content_type"] = content_type
+        for key in ("attachment_name", "attachment_mime_type", "attachment_summary", "summary"):
+            if key in document.metadata:
+                metadata[key] = document.metadata[key]
+
+        return Document(page_content=chunk, metadata=metadata)
 
     @classmethod
     def _get_splitter(cls, document: Optional[Document] = None) -> RecursiveCharacterTextSplitter:

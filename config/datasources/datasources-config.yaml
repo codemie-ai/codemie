@@ -126,6 +126,8 @@ loaders:
     chunk_size: 1000
     chunk_overlap: 50
     loader_batch_size: 50
+    index_comments: true
+    index_attachments: true
 
   xray_loader:
     chunk_size: 1000
