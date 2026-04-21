@@ -153,10 +153,10 @@ class TestStartState:
         mock_instance = MagicMock()
         mock_state_cls.return_value = mock_instance
 
-        service.start_state(workflow_state_id="node_b", task="do something", preceding_state_id="node_a")
+        service.start_state(workflow_state_id="node_b", task="do something", preceding_state_ids="node_a")
 
         _, kwargs = mock_state_cls.call_args
-        assert kwargs["preceding_state_id"] == "node_a"
+        assert kwargs["preceding_state_ids"] == "node_a"
 
     @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowExecutionState")
     def test_saves_none_when_preceding_state_id_omitted(self, mock_state_cls, service):
@@ -166,7 +166,7 @@ class TestStartState:
         service.start_state(workflow_state_id="node_a", task="do something")
 
         _, kwargs = mock_state_cls.call_args
-        assert kwargs["preceding_state_id"] is None
+        assert kwargs["preceding_state_ids"] is None
 
     @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowExecutionState")
     def test_saves_explicit_state_id_when_provided(self, mock_state_cls, service):
@@ -187,6 +187,26 @@ class TestStartState:
 
         _, kwargs = mock_state_cls.call_args
         assert kwargs["state_id"] == "node_a"
+
+    @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowExecutionState")
+    def test_saves_iteration_number_when_provided(self, mock_state_cls, service):
+        mock_instance = MagicMock()
+        mock_state_cls.return_value = mock_instance
+
+        service.start_state(workflow_state_id="agent_node 3 of 10", task="do something", iteration_number=3)
+
+        _, kwargs = mock_state_cls.call_args
+        assert kwargs["iteration_number"] == 3
+
+    @patch("codemie.service.workflow_execution.workflow_execution_service.WorkflowExecutionState")
+    def test_saves_none_when_iteration_number_omitted(self, mock_state_cls, service):
+        mock_instance = MagicMock()
+        mock_state_cls.return_value = mock_instance
+
+        service.start_state(workflow_state_id="node_a", task="do something")
+
+        _, kwargs = mock_state_cls.call_args
+        assert kwargs["iteration_number"] is None
 
 
 class TestInterruptGuard:

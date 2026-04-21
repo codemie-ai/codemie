@@ -176,8 +176,9 @@ class WorkflowExecutionService:
         self,
         workflow_state_id: str,
         task: Any,
-        preceding_state_id: Optional[str] = None,
+        preceding_state_ids: Optional[list[str]] = None,
         state_id: Optional[str] = None,
+        iteration_number: Optional[int] = None,
     ) -> str:
         with self.workflow_execution_lock:
             started_at = datetime.now()
@@ -188,7 +189,8 @@ class WorkflowExecutionService:
                 task=str(task),
                 status=WorkflowExecutionStatusEnum.IN_PROGRESS,
                 started_at=started_at,
-                preceding_state_id=preceding_state_id,
+                preceding_state_ids=preceding_state_ids,
+                iteration_number=iteration_number,
             )
             state.save()
 

@@ -30,21 +30,23 @@ from codemie.service.workflow_execution import WorkflowExecutionService
 from codemie.service.workflow_service import WorkflowService
 from codemie.workflows.callbacks.base_callback import BaseCallback
 from codemie.workflows.constants import (
+    CLEAR_CONTEXT_STORE_KEEP_CURRENT,
+    CONTEXT_STORE_KEEP_NEW_ONLY_FLAG,
+    CONTEXT_STORE_VARIABLE,
+    END_NODE,
+    FIRST_STATE_IN_ITERATION,
     GUARDRAIL_CHECKED_FLAG,
+    ITER_SOURCE,
+    ITERATION_NODE_NUMBER_KEY,
+    PREV_STATE_NAMES_TO_MERGE,
     MESSAGES_VARIABLE,
     ABORTED_MSG,
     NEXT_KEY,
-    END_NODE,
+    PREVIOUS_EXECUTION_STATE_NAMES,
     TASK_KEY,
-    CONTEXT_STORE_VARIABLE,
-    ITER_SOURCE,
-    ITERATION_NODE_NUMBER_KEY,
     TOTAL_ITERATIONS_KEY,
-    FIRST_STATE_IN_ITERATION,
-    CLEAR_CONTEXT_STORE_KEEP_CURRENT,
-    CONTEXT_STORE_KEEP_NEW_ONLY_FLAG,
     PREVIOUS_EXECUTION_STATE_ID,
-    PREVIOUS_EXECUTION_STATE_NAME,
+    SUMMARIZE_MEMORY_NODE,
 )
 from codemie.workflows.models import CONTEXT_STORE_DELETE_MARKER, CONTEXT_STORE_APPEND_MARKER
 from codemie.workflows.utils import (
@@ -173,8 +175,9 @@ class BaseNode(ABC, Generic[StateSchemaType]):
         execution_state_id = self.workflow_execution_service.start_state(
             workflow_state_id=current_node_name,
             task=task,
-            preceding_state_id=state_schema.get(PREVIOUS_EXECUTION_STATE_NAME),
+            preceding_state_ids=state_schema.get(PREVIOUS_EXECUTION_STATE_NAMES),
             state_id=self.node_name,
+            iteration_number=state_schema.get(ITERATION_NODE_NUMBER_KEY),
         )
         raw_output = None
 
@@ -227,7 +230,7 @@ class BaseNode(ABC, Generic[StateSchemaType]):
             state_for_serialization = {
                 k: v
                 for k, v in state_schema.items()
-                if k not in (PREVIOUS_EXECUTION_STATE_ID, PREVIOUS_EXECUTION_STATE_NAME)
+                if k not in (PREVIOUS_EXECUTION_STATE_NAMES, PREVIOUS_EXECUTION_STATE_ID)
             }
             serialized_state = serialize_state(state_for_serialization)
             checked_state = check_state_size(serialized_state, self.workflow_execution_service.workflow_execution_id)
@@ -238,15 +241,14 @@ class BaseNode(ABC, Generic[StateSchemaType]):
                 workflow_context=checked_state,
             )
 
-            # Store current execution state ID and name for next node in this track
+            prev_state_names = self._get_prev_state_names(state_schema, raw_output)
+
             if isinstance(final_state, Command):
                 update = dict(final_state.update) if final_state.update else {}
-                update[PREVIOUS_EXECUTION_STATE_ID] = execution_state_id
-                update[PREVIOUS_EXECUTION_STATE_NAME] = self.node_name
+                update[PREVIOUS_EXECUTION_STATE_NAMES] = prev_state_names
                 final_state = Command(goto=final_state.goto, update=update)
             else:
-                final_state[PREVIOUS_EXECUTION_STATE_ID] = execution_state_id
-                final_state[PREVIOUS_EXECUTION_STATE_NAME] = self.node_name
+                final_state[PREVIOUS_EXECUTION_STATE_NAMES] = prev_state_names
 
             return final_state
         except ExecutionAbortedException:
@@ -280,6 +282,20 @@ class BaseNode(ABC, Generic[StateSchemaType]):
         if fist_state_in_iteration and (task := state_schema.get(TASK_KEY)):
             return [repr(task)]
         return []
+
+    def _get_prev_state_names(self, state_schema: Type[StateSchemaType], raw_output) -> list[str]:
+        # Case 1: raw_output is None meams summarization node was triggered w/o actual summarization
+        # but don't want to writew the summarization node, so we grab the prevous node name
+        if self.node_name == SUMMARIZE_MEMORY_NODE and raw_output is None:
+            return [state_schema[NEXT_KEY][-1]]
+
+        # Case 2: in state_ids fanout case, the PREV_STATE_NAMES_TO_MERGE are passed
+        # so we don't lose the parrallel names
+        if merge_state_names := state_schema.get(PREV_STATE_NAMES_TO_MERGE):
+            names_to_merge = set(merge_state_names) | {self.node_name}
+            return list(names_to_merge)
+
+        return [self.node_name]  # Case 3: default, return just this node name
 
     def _prepare_context_store_update(self, iter_task_messages: list[str], processed_output: str) -> list[str]:
         """Prepare context store updates based on configuration flags.

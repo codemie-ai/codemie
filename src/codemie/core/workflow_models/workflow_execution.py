@@ -112,7 +112,11 @@ class BaseWorkflowExecutionState(CommonBaseModel):
     status: WorkflowExecutionStatusEnum = WorkflowExecutionStatusEnum.NOT_STARTED
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    preceding_state_id: Optional[str] = None
+    preceding_state_ids: Optional[list[str]] = SQLField(
+        default=None,
+        sa_column=Column(JSONB, nullable=True),
+    )
+    iteration_number: Optional[int] = None
 
 
 class WorkflowExecutionState(BaseModelWithSQLSupport, BaseWorkflowExecutionState, table=True):

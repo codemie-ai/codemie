@@ -59,21 +59,22 @@ from codemie.service.workflow_execution import WorkflowExecutionService, Thought
 from codemie.service.workflow_service import WorkflowService
 from codemie.workflows.callbacks.graph_callback import LanggraphNodeCallback
 from codemie.workflows.constants import (
-    RESULT_FINALIZER_NODE,
-    MESSAGES_VARIABLE,
-    RECURSION_LIMIT,
-    STATE_MISSING_ERR,
-    TASK_KEY,
-    ITERATION_NODE_NUMBER_KEY,
-    SUMMARIZE_MEMORY_NODE,
-    TOTAL_ITERATIONS_KEY,
-    WorkflowErrorType,
-    ITER_SOURCE,
     CONTEXT_STORE_VARIABLE,
-    USER_INPUT,
     FIRST_STATE_IN_ITERATION,
+    ITER_SOURCE,
+    ITERATION_NODE_NUMBER_KEY,
+    PREV_STATE_NAMES_TO_MERGE,
+    MESSAGES_VARIABLE,
+    PREVIOUS_EXECUTION_STATE_NAMES,
+    RECURSION_LIMIT,
+    RESULT_FINALIZER_NODE,
+    STATE_MISSING_ERR,
+    SUMMARIZE_MEMORY_NODE,
+    TASK_KEY,
+    TOTAL_ITERATIONS_KEY,
+    USER_INPUT,
     PREVIOUS_EXECUTION_STATE_ID,
-    PREVIOUS_EXECUTION_STATE_NAME,
+    WorkflowErrorType,
 )
 from codemie.workflows.checkpoint_saver import CheckpointSaver
 from codemie.workflows.models import AgentMessages
@@ -452,6 +453,7 @@ class WorkflowExecutor:
                 self.workflow_execution_service,
                 self.thought_queue,
                 self.workflow_config,
+                node_name=SUMMARIZE_MEMORY_NODE,
                 execution_id=self.execution_id,
             ),
         )
@@ -465,6 +467,7 @@ class WorkflowExecutor:
                     self.thought_queue,
                     workflow_config=self.workflow_config,
                     execution_id=self.execution_id,
+                    node_name=RESULT_FINALIZER_NODE,
                 ),
             )
 
@@ -599,7 +602,7 @@ class WorkflowExecutor:
             return {**context_store}
         return {k: v for k, v in context_store.items() if k in include_keys}
 
-    def continue_iteration(self, state_schema: dict[str, Any], workflow_state: WorkflowState) -> List[Send]:
+    def continue_iteration(self, state_schema: dict[str, Any], workflow_state: WorkflowState) -> Send:
         messages = get_messages_from_state_schema(state_schema=state_schema)
         context_store = get_context_store_from_state_schema(state_schema=state_schema)
         iter_key = workflow_state.next.iter_key
@@ -650,7 +653,7 @@ class WorkflowExecutor:
                     TOTAL_ITERATIONS_KEY: total_iterations,
                     FIRST_STATE_IN_ITERATION: iter_key not in state_schema,
                     PREVIOUS_EXECUTION_STATE_ID: state_schema.get(PREVIOUS_EXECUTION_STATE_ID),
-                    PREVIOUS_EXECUTION_STATE_NAME: state_schema.get(PREVIOUS_EXECUTION_STATE_NAME),
+                    PREVIOUS_EXECUTION_STATE_NAMES: state_schema.get(PREVIOUS_EXECUTION_STATE_NAMES),
                 },
             )
             for index, item in enumerate(items_to_process)
@@ -694,9 +697,12 @@ class WorkflowExecutor:
             workflow.add_edge(source, target)
 
     def _handle_multiple_states(self, workflow: StateGraph, transition, enable_summarization_node: bool):
-        for next_state in transition.next.state_ids:
-            target = get_final_state(next_state, enable_summarization_node)
-            workflow.add_edge(transition.id, target)
+        targets = [get_final_state(next_state, enable_summarization_node) for next_state in transition.next.state_ids]
+
+        def _fan_out(state, _targets=targets):
+            return [Send(target, {**state, PREV_STATE_NAMES_TO_MERGE: targets}) for target in _targets]
+
+        workflow.add_conditional_edges(transition.id, _fan_out)
 
     def _handle_condition(self, workflow: StateGraph, transition, enable_summarization_node: bool):
         source = transition.id
