@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -33,6 +33,9 @@ def mock_user():
     user.project_names = []
     user.admin_project_names = []
     user.is_global_user = False
+    user.is_admin_or_maintainer = False
+    user.is_admin = False
+    user.is_maintainer = False
     user.id = "test-user-id"
     return user
 
@@ -348,70 +351,164 @@ class TestGetUsersActivity:
         )
 
 
+def _make_es_page(user_ids: list[str], after_key: dict | None = None) -> dict:
+    """Build a fake ES composite aggregation response page."""
+    buckets = [{"key": {"user_id": uid, "user_name": f"User {uid}"}, "doc_count": 1} for uid in user_ids]
+    agg: dict = {"buckets": buckets}
+    if after_key is not None:
+        agg["after_key"] = after_key
+    return {"aggregations": {"unique_users": agg}}
+
+
 class TestGetUsersList:
-    """Tests for get_users_list method."""
+    """Tests for get_users_list / _fetch_all_users_with_after_key."""
 
-    def test_get_users_list_builds_composite_aggregation(self, handler):
-        """Verify composite aggregation structure."""
-        # Arrange
+    @pytest.mark.asyncio
+    async def test_single_page_returns_all_users(self, handler, mock_repository):
+        """When ES returns fewer than page_size buckets with no after_key, stops after 1 call."""
+        mock_repository.execute_aggregation_query = AsyncMock(return_value=_make_es_page(["u1", "u2", "u3"]))
+
         query = {"bool": {"filter": []}}
+        buckets = await handler._fetch_all_users_with_after_key(query)
 
-        # Act
-        agg_body = handler._build_users_list_aggregation(query)
+        assert len(buckets) == 3
+        assert buckets[0]["key"]["user_id"] == "u1"
+        mock_repository.execute_aggregation_query.assert_called_once()
 
-        # Assert
-        assert agg_body["query"] == query
-        assert agg_body["size"] == 0
+    @pytest.mark.asyncio
+    async def test_multi_page_collects_all_users(self, handler, mock_repository):
+        """When first page is full (10000 buckets) ES returns after_key; loop continues until partial page."""
+        page1_ids = [f"u{i}" for i in range(10000)]
+        page2_ids = ["u10000", "u10001", "u10002"]
 
-        # Verify unique_users aggregation
-        unique_users = agg_body["aggs"]["unique_users"]["composite"]
-        assert unique_users["size"] == 10000
-        sources = unique_users["sources"]
-        assert len(sources) == 2
-        assert "user_id" in sources[0]
-        assert "user_name" in sources[1]
-        assert sources[0]["user_id"]["terms"]["field"] == "attributes.user_id.keyword"
-        assert sources[1]["user_name"]["terms"]["field"] == "attributes.user_name.keyword"
+        mock_repository.execute_aggregation_query = AsyncMock(
+            side_effect=[
+                _make_es_page(page1_ids, after_key={"user_id": "u9999", "user_name": "User u9999"}),
+                _make_es_page(page2_ids),
+            ]
+        )
 
-    def test_parse_users_list_result_extracts_users(self, handler):
-        """Verify bucket parsing."""
-        # Arrange
-        result = {
-            "aggregations": {
-                "unique_users": {
-                    "buckets": [
-                        {"key": {"user_id": "u1", "user_name": "User One"}, "doc_count": 10},
-                        {"key": {"user_id": "u2", "user_name": "User Two"}, "doc_count": 5},
-                    ]
-                }
-            }
-        }
-        metadata = {"timestamp": "2025-01-01T00:00:00Z"}
+        query = {"bool": {"filter": []}}
+        buckets = await handler._fetch_all_users_with_after_key(query)
 
-        # Act
-        response = handler._parse_users_list_result(result, metadata)
+        assert len(buckets) == 10003
+        assert mock_repository.execute_aggregation_query.call_count == 2
 
-        # Assert
+    @pytest.mark.asyncio
+    async def test_second_call_includes_after_key(self, handler, mock_repository):
+        """Verifies the after_key from page 1 is passed as 'after' in the page 2 request."""
+        page1_ids = [f"u{i}" for i in range(10000)]
+        after = {"user_id": "u9999", "user_name": "User u9999"}
+
+        mock_repository.execute_aggregation_query = AsyncMock(
+            side_effect=[
+                _make_es_page(page1_ids, after_key=after),
+                _make_es_page(["u10000"]),
+            ]
+        )
+
+        query = {"bool": {"filter": []}}
+        await handler._fetch_all_users_with_after_key(query)
+
+        _, second_call_kwargs = mock_repository.execute_aggregation_query.call_args_list[1]
+        second_body = mock_repository.execute_aggregation_query.call_args_list[1][0][0]
+        assert second_body["aggs"]["unique_users"]["composite"]["after"] == after
+
+    @pytest.mark.asyncio
+    async def test_three_pages_stops_at_partial_last_page(self, handler, mock_repository):
+        """Loops correctly across three pages."""
+        full_page = [f"u{i}" for i in range(10000)]
+        after1 = {"user_id": "u9999", "user_name": "User u9999"}
+        after2 = {"user_id": "u19999", "user_name": "User u19999"}
+
+        mock_repository.execute_aggregation_query = AsyncMock(
+            side_effect=[
+                _make_es_page(full_page, after_key=after1),
+                _make_es_page(full_page, after_key=after2),
+                _make_es_page(["u20000", "u20001"]),
+            ]
+        )
+
+        query = {"bool": {"filter": []}}
+        buckets = await handler._fetch_all_users_with_after_key(query)
+
+        assert len(buckets) == 20002
+        assert mock_repository.execute_aggregation_query.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_partial_page_with_after_key_continues_pagination(self, handler, mock_repository):
+        """Partial page (<10000 buckets) with after_key must NOT stop — ES multi-shard scenario."""
+        after = {"user_id": "u6999", "user_name": "User u6999"}
+
+        mock_repository.execute_aggregation_query = AsyncMock(
+            side_effect=[
+                _make_es_page([f"u{i}" for i in range(7000)], after_key=after),
+                _make_es_page([f"u{i}" for i in range(7000, 10000)]),
+            ]
+        )
+
+        query = {"bool": {"filter": []}}
+        buckets = await handler._fetch_all_users_with_after_key(query)
+
+        assert len(buckets) == 10000
+        assert mock_repository.execute_aggregation_query.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_empty_result_returns_empty_list(self, handler, mock_repository):
+        """ES returning zero buckets produces an empty list with one call."""
+        mock_repository.execute_aggregation_query = AsyncMock(return_value=_make_es_page([]))
+
+        query = {"bool": {"filter": []}}
+        buckets = await handler._fetch_all_users_with_after_key(query)
+
+        assert buckets == []
+        mock_repository.execute_aggregation_query.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_get_users_list_non_admin_returns_correct_response_shape(self, handler, mock_repository, mock_user):
+        """Non-admin get_users_list uses single-page query and returns correct response shape."""
+        mock_user.is_admin_or_maintainer = False
+        mock_repository.execute_aggregation_query = AsyncMock(return_value=_make_es_page(["alice", "bob"]))
+
+        response = await handler.get_users_list(time_period="last_24_hours")
+
         data = response["data"]
         assert data["total_count"] == 2
-        assert len(data["users"]) == 2
-        assert data["users"][0] == {"id": "u1", "name": "User One"}
-        assert data["users"][1] == {"id": "u2", "name": "User Two"}
-        assert response["metadata"] == metadata
+        assert {"id": "alice", "name": "User alice"} in data["users"]
+        assert {"id": "bob", "name": "User bob"} in data["users"]
+        assert "metadata" in response
+        mock_repository.execute_aggregation_query.assert_called_once()
 
-    def test_parse_users_list_handles_empty_result(self, handler):
-        """Verify empty buckets handling."""
-        # Arrange
-        result = {"aggregations": {"unique_users": {"buckets": []}}}
-        metadata = {"timestamp": "2025-01-01T00:00:00Z"}
+    @pytest.mark.asyncio
+    async def test_get_users_list_superadmin_uses_after_key_pagination(self, handler, mock_repository, mock_user):
+        """Superadmin get_users_list uses after_key pagination to fetch beyond 10,000 users."""
+        mock_user.is_admin_or_maintainer = True
+        page1_ids = [f"u{i}" for i in range(10000)]
+        page2_ids = ["u10000", "u10001"]
+        mock_repository.execute_aggregation_query = AsyncMock(
+            side_effect=[
+                _make_es_page(page1_ids, after_key={"user_id": "u9999", "user_name": "User u9999"}),
+                _make_es_page(page2_ids),
+            ]
+        )
 
-        # Act
-        response = handler._parse_users_list_result(result, metadata)
+        response = await handler.get_users_list(time_period="last_24_hours")
 
-        # Assert
         data = response["data"]
-        assert data["total_count"] == 0
-        assert data["users"] == []
+        assert data["total_count"] == 10002
+        assert mock_repository.execute_aggregation_query.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_get_users_list_non_admin_uses_single_query(self, handler, mock_repository, mock_user):
+        """Non-admin get_users_list executes exactly one ES query (no pagination loop)."""
+        mock_user.is_admin_or_maintainer = False
+        mock_repository.execute_aggregation_query = AsyncMock(
+            return_value=_make_es_page([f"u{i}" for i in range(10000)])
+        )
+
+        await handler.get_users_list(time_period="last_24_hours")
+
+        mock_repository.execute_aggregation_query.assert_called_once()
 
 
 class TestGetUsersUniqueDaily:

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
@@ -26,10 +27,11 @@ from codemie.service.analytics.handlers.field_constants import (
     PROJECT_KEYWORD_FIELD,
     USER_NAME_KEYWORD_FIELD,
 )
+from codemie.service.analytics.handlers.cli_cost_processor import CLICostAdjustmentMixin
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
+from codemie.service.analytics.response_formatter import ResponseFormatter
 from codemie.service.analytics.time_parser import TimeParser
-from codemie.service.analytics.handlers.cli_cost_processor import CLICostAdjustmentMixin
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,7 @@ class UserHandler(CLICostAdjustmentMixin):
 
     def __init__(self, user: User, repository: MetricsElasticRepository):
         """Initialize user handler."""
+        self._user = user
         self._pipeline = AnalyticsQueryPipeline(user, repository)
         self.repository = repository
 
@@ -76,6 +79,22 @@ class UserHandler(CLICostAdjustmentMixin):
             Response with users list, total count, and metadata
         """
         logger.info("Requesting users-list analytics")
+
+        if self._user.is_admin_or_maintainer:
+            start_time = time.monotonic()
+            start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
+            query = self._pipeline._build_query(start_dt, end_dt, users, projects, None)
+
+            all_buckets = await self._fetch_all_users_with_after_key(query)
+
+            execution_time_ms = (time.monotonic() - start_time) * 1000
+            filters_applied = self._pipeline._build_filters_applied(time_period, start_dt, end_dt, users, projects)
+            metadata = ResponseFormatter.create_metadata(filters_applied, execution_time_ms)
+
+            users_list = [{"id": b["key"]["user_id"], "name": b["key"]["user_name"]} for b in all_buckets]
+            total_count = len(users_list)
+            logger.info(f"Parsed users-list result: total_users={total_count}")
+            return {"data": {"users": users_list, "total_count": total_count}, "metadata": metadata}
 
         return await self._pipeline.execute_composite_query(
             agg_builder=self._build_users_list_aggregation,
@@ -116,6 +135,46 @@ class UserHandler(CLICostAdjustmentMixin):
         logger.debug(f"Parsed users-list result: total_users={total_count}")
 
         return {"data": {"users": users_list, "total_count": total_count}, "metadata": metadata}
+
+    async def _fetch_all_users_with_after_key(self, query: dict) -> list[dict]:
+        """Fetch all unique users from ES using composite aggregation with after_key pagination.
+
+        Loops through pages of 10,000 buckets until ES returns no after_key,
+        collecting all (user_id, user_name) pairs across every page.
+        """
+        page_size = 10000
+        all_buckets: list[dict] = []
+        after_key: dict | None = None
+
+        while True:
+            composite: dict = {
+                "size": page_size,
+                "sources": [
+                    {"user_id": {"terms": {"field": USER_ID_KEYWORD_FIELD}}},
+                    {"user_name": {"terms": {"field": USER_NAME_KEYWORD_FIELD}}},
+                ],
+            }
+            if after_key:
+                composite["after"] = after_key
+
+            agg_body = {
+                "query": query,
+                "size": 0,
+                "aggs": {"unique_users": {"composite": composite}},
+            }
+
+            result = await self.repository.execute_aggregation_query(agg_body)
+            unique_users_agg = result.get("aggregations", {}).get("unique_users", {})
+            buckets = unique_users_agg.get("buckets", [])
+            all_buckets.extend(buckets)
+
+            logger.debug(f"Users-list page fetched: page_size={len(buckets)} total_so_far={len(all_buckets)}")
+
+            after_key = unique_users_agg.get("after_key")
+            if not after_key:
+                break
+
+        return all_buckets
 
     async def get_users_spending(
         self,
