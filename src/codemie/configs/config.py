@@ -487,6 +487,7 @@ class Config(BaseSettings):
     LITELLM_CUSTOMER_CACHE_TTL: int = 300  # 5 minutes - cache customer info TTL
     LITELLM_MODELS_CACHE_TTL: int = 1800  # 30 minutes - cache available models TTL
     LITELLM_REQUEST_TIMEOUT: float = 5.0  # 5 seconds - HTTP request timeout
+    LITELLM_LIST_REQUEST_TIMEOUT: float = 30.0  # 30 seconds - timeout for list/bulk endpoints
     LITELLM_FAIL_OPEN_ON_503: bool = True  # Fail open - allow requests on 503 errors
 
     AI_AGENT_RECURSION_LIMIT: int = 150

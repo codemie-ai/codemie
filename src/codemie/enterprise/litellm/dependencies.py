@@ -100,6 +100,7 @@ def initialize_litellm_from_config() -> Optional["LiteLLMService"]:
             budget_check_enabled=config.LLM_PROXY_BUDGET_CHECK_ENABLED,
             fail_open_on_503=config.LITELLM_FAIL_OPEN_ON_503,
             request_timeout=config.LITELLM_REQUEST_TIMEOUT,
+            list_request_timeout=config.LITELLM_LIST_REQUEST_TIMEOUT,
             max_retries=config.LITELLM_MAX_RETRIES if hasattr(config, "LITELLM_MAX_RETRIES") else 3,
             customer_cache_ttl=config.LITELLM_CUSTOMER_CACHE_TTL,
             models_cache_ttl=config.LITELLM_MODELS_CACHE_TTL,
