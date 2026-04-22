@@ -16,6 +16,7 @@
 
 import logging
 import time
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 import requests
@@ -70,7 +71,8 @@ class GithubClient:
         """
         Get GitHub App installation token with caching.
 
-        Caches token for 1 hour (GitHub default) and auto-refreshes when expired.
+        Caches token until the expiry time returned by GitHub (falling back to 1 hour)
+        and auto-refreshes when expired.
 
         Returns:
             str: Installation access token
@@ -118,9 +120,13 @@ class GithubClient:
             access_token = integration.get_access_token(installation_id)
             token = access_token.token
 
-            # Cache token with expiration (default 1 hour)
+            # Use actual expiry from GitHub response; fall back to 1 hour
+            expires_at = getattr(access_token, "expires_at", None)
+            if isinstance(expires_at, datetime):
+                self._token_expires_at = expires_at.timestamp()
+            else:
+                self._token_expires_at = current_time + 3600
             self._installation_token = token
-            self._token_expires_at = current_time + 3600  # 1 hour from now
 
             logger.info("Successfully generated GitHub App installation token")
             return token
@@ -135,6 +141,26 @@ class GithubClient:
             raise
         except Exception as e:
             raise ToolException(f"Unexpected error generating GitHub App token: {str(e)}")
+
+    @staticmethod
+    def _is_auth_error(response: requests.Response) -> bool:
+        """
+        Return True when the response indicates an authentication failure.
+
+        GitHub returns 401 for invalid tokens on public resources, but 404 for
+        private repos with expired tokens to avoid leaking repo existence.
+        Auth-driven 404s can be distinguished from genuine ones: GitHub rejects
+        the request before the resource layer, so no rate-limit headers are set.
+        """
+        if response.status_code == 401:
+            return True
+        if response.status_code == 404:
+            try:
+                msg = response.json().get("message", "")
+                return msg == "Not Found" and "X-RateLimit-Limit" not in response.headers
+            except Exception:
+                return False
+        return False
 
     def make_request(self, method: str, url: str, headers: Dict[str, str], data: Optional[str] = None) -> Any:
         """
@@ -163,10 +189,13 @@ class GithubClient:
             # Make request
             response = requests.request(method=method, url=url, headers=headers, data=data)
 
-            # Handle 401 errors for GitHub App (token might have expired)
-            if response.status_code == 401 and self.config.is_github_app:
-                logger.info("Received 401 error, refreshing GitHub App token")
-                # Clear cached token and retry once
+            # Handle auth errors for GitHub App — refresh and retry once.
+            # GitHub returns 401 for invalid tokens but 404 for private repos with
+            # expired tokens (to avoid leaking repo existence). Only retry a 404 when
+            # it looks auth-driven: "Not Found" body with no rate-limit headers means
+            # the request was rejected before reaching the resource layer.
+            if self.config.is_github_app and self._is_auth_error(response):
+                logger.info(f"Received {response.status_code} error, refreshing GitHub App token")
                 self._installation_token = None
                 self._token_expires_at = None
                 token = self.get_auth_token()
