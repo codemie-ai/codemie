@@ -32,12 +32,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from codemie.configs.config import config
+from codemie.enterprise.litellm.budget_categories import BudgetCategory, derive_category_from_user_id
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 
 logger = logging.getLogger(__name__)
 
 CLI_ASSISTANT_ID = "5a430368-9e91-4564-be20-989803bf4da2"
-_CLI_USER_ID_SUFFIX = "_codemie_cli"
 
 # Whitelist of JSONB column names allowed in dynamic SQL helper functions.
 # Prevents SQL injection if callers pass untrusted column names.
@@ -181,11 +181,20 @@ class LeaderboardCollector:
         before identity merging — so the rest of the pipeline only sees UUID keys.
         """
         email_to_uuid: dict[str, str] = {v["user_email"]: k for k, v in users.items() if v.get("user_email")}
+        # PG tables like conversations emit NULL for user_email, so the mapping above may be
+        # incomplete. Enrich it from ES identity data on UUID-keyed buckets.
+        for uid, es_data in es_metrics.items():
+            if "@" in uid:
+                continue
+            es_email = es_data.get("identity", {}).get("user_email")
+            if es_email and es_email not in email_to_uuid:
+                email_to_uuid[es_email] = uid
         to_fold: list[tuple[str, str]] = []
         for uid in es_metrics:
             if "@" not in uid:
                 continue
-            base = uid.removesuffix(_CLI_USER_ID_SUFFIX)
+            category = derive_category_from_user_id(uid)
+            base = uid if category == BudgetCategory.PLATFORM else uid[: -len(f"_codemie_{category.value}")]
             canonical_uid = email_to_uuid.get(base)
             if canonical_uid is not None:
                 to_fold.append((uid, canonical_uid))
