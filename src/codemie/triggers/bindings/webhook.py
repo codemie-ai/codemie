@@ -19,6 +19,7 @@ from fastapi import BackgroundTasks, HTTPException, Request, status
 from codemie.configs import logger
 from codemie.core.constants import CodeIndexType
 from codemie.core.models import BaseResponse, GitRepo
+from codemie.rest_api.models.settings import Settings
 from codemie.rest_api.routers.utils import run_in_thread_pool
 from codemie.rest_api.security.user import User
 from codemie.service.constants import FullDatasourceTypes
@@ -138,11 +139,11 @@ class WebhookService:
         )
 
         if resource_type == ResourceType.ASSISTANT.value:
-            cls.handle_assistant(resource_id, raw_payload, background_tasks, setting.user_id)
+            cls.handle_assistant(resource_id, raw_payload, background_tasks, setting)
         elif resource_type == ResourceType.WORKFLOW.value:
-            cls.handle_workflow(resource_id, raw_payload, background_tasks, setting.user_id)
+            cls.handle_workflow(resource_id, raw_payload, background_tasks, setting)
         elif resource_type == ResourceType.DATASOURCE.value:
-            await cls.handle_datasource(resource_id, background_tasks, setting.user_id)
+            await cls.handle_datasource(resource_id, background_tasks, setting)
         else:
             WebhookMonitoringService.send_webhook_invocation_metric(
                 webhook_id=webhook_id,
@@ -376,7 +377,9 @@ class WebhookService:
         )
 
     @classmethod
-    def handle_assistant(cls, assistant_id: str, raw_payload: bytes, background_tasks: BackgroundTasks, user_id: str):
+    def handle_assistant(
+        cls, assistant_id: str, raw_payload: bytes, background_tasks: BackgroundTasks, setting: Settings
+    ):
         formatted_payload = raw_payload.decode('utf-8')
         assistant = validate_assistant(assistant_id)
         if not assistant:
@@ -385,28 +388,31 @@ class WebhookService:
             )
 
         background_tasks.add_task(
-            run_in_thread_pool, invoke_assistant, assistant_id, user_id, assistant_id, formatted_payload
+            run_in_thread_pool, invoke_assistant, assistant_id, setting.user_id, assistant_id, formatted_payload
         )
 
         return BaseResponse(message=cls.WEBHOOK_INVOKED_SUCCESSFULLY, data="")
 
     @classmethod
-    def handle_workflow(cls, workflow_id: str, raw_payload: bytes, background_tasks: BackgroundTasks, user_id: str):
+    def handle_workflow(
+        cls, workflow_id: str, raw_payload: bytes, background_tasks: BackgroundTasks, setting: Settings
+    ):
         formatted_payload = raw_payload.decode('utf-8')
         workflow = WorkflowService().get_workflow(workflow_id=workflow_id)
         if not workflow:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=cls.WORKFLOW_NOT_FOUND.format(workflow_id)
             )
+        user = User(id=setting.user_id)
 
         background_tasks.add_task(
-            run_in_thread_pool, invoke_workflow, workflow_id, user_id, workflow_id, formatted_payload
+            run_in_thread_pool, invoke_workflow, workflow_id, user.id, workflow_id, formatted_payload
         )
 
         return BaseResponse(message=cls.WEBHOOK_INVOKED_SUCCESSFULLY, data="")
 
     @classmethod
-    async def handle_datasource(cls, resource_id, background_tasks: BackgroundTasks, user_id: str):
+    async def handle_datasource(cls, resource_id, background_tasks: BackgroundTasks, setting: Settings):
         datasource = validate_datasource(resource_id)
         if not datasource:
             raise HTTPException(
@@ -425,7 +431,7 @@ class WebhookService:
                 + f" to the webhook project '{project_name}'.",
             )
 
-        user = User(id=user_id)
+        user = User(id=setting.user_id)
         resource_name = datasource.repo_name
         index_type = datasource.index_type
 
