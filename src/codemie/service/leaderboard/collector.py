@@ -37,6 +37,7 @@ from codemie.repository.metrics_elastic_repository import MetricsElasticReposito
 logger = logging.getLogger(__name__)
 
 CLI_ASSISTANT_ID = "5a430368-9e91-4564-be20-989803bf4da2"
+_CLI_USER_ID_SUFFIX = "_codemie_cli"
 
 # Whitelist of JSONB column names allowed in dynamic SQL helper functions.
 # Prevents SQL injection if callers pass untrusted column names.
@@ -180,9 +181,15 @@ class LeaderboardCollector:
         before identity merging — so the rest of the pipeline only sees UUID keys.
         """
         email_to_uuid: dict[str, str] = {v["user_email"]: k for k, v in users.items() if v.get("user_email")}
-        email_keys = [uid for uid in es_metrics if "@" in uid and uid in email_to_uuid]
-        for email_uid in email_keys:
-            canonical_uid = email_to_uuid[email_uid]
+        to_fold: list[tuple[str, str]] = []
+        for uid in es_metrics:
+            if "@" not in uid:
+                continue
+            base = uid.removesuffix(_CLI_USER_ID_SUFFIX)
+            canonical_uid = email_to_uuid.get(base)
+            if canonical_uid is not None:
+                to_fold.append((uid, canonical_uid))
+        for email_uid, canonical_uid in to_fold:
             LeaderboardCollector._fold_es_bucket(es_metrics.setdefault(canonical_uid, {}), es_metrics.pop(email_uid))
 
     @staticmethod
