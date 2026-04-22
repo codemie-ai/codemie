@@ -116,6 +116,7 @@ def create_litellm_chat_model(
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     streaming: bool = True,
+    user_id: Optional[str] = None,
 ) -> AzureChatOpenAI:
     """
     Create LiteLLM chat model instance (enterprise business logic).
@@ -180,7 +181,7 @@ def create_litellm_chat_model(
         # Check budget for non-credentialed users
         from .dependencies import check_user_budget
 
-        check_user_budget(user_id=user_email)
+        check_user_budget(user_email=user_email, user_id=user_id)
         base_args["model_kwargs"] = {"user": user_email}
 
     # Enable streaming usage tracking
@@ -204,6 +205,7 @@ def create_litellm_embedding_model(
     llm_model_details: "LLMModel",
     litellm_context: Optional["LiteLLMContext"],
     user_email: Optional[str],
+    user_id: Optional[str] = None,
 ) -> "AzureOpenAIEmbeddings":
     """
     Create LiteLLM embedding model instance (enterprise business logic).
@@ -252,7 +254,7 @@ def create_litellm_embedding_model(
     else:
         from .dependencies import check_user_budget
 
-        check_user_budget(user_id=user_email)
+        check_user_budget(user_email=user_email, user_id=user_id)
         embedding_params["model_kwargs"] = {"user": user_email}
 
     # Add headers
@@ -395,6 +397,7 @@ def get_litellm_chat_model(
     temperature: Optional[float] = None,
     top_p: Optional[float] = None,
     streaming: bool = True,
+    user_id: Optional[str] = None,
 ) -> Optional["AzureChatOpenAI"]:
     """
     Get LiteLLM chat model if enterprise is enabled AND proxy mode is lite_llm.
@@ -439,6 +442,7 @@ def get_litellm_chat_model(
             temperature=temperature,
             top_p=top_p,
             streaming=streaming,
+            user_id=user_id,
         )
     except Exception as e:
         logger.warning(f"Failed to create LiteLLM chat model: {e}", exc_info=True)
@@ -450,6 +454,7 @@ def get_litellm_embedding_model(
     llm_model_details: "LLMModel",
     litellm_context: Optional["LiteLLMContext"],
     user_email: Optional[str],
+    user_id: Optional[str] = None,
 ) -> Optional["AzureOpenAIEmbeddings"]:
     """
     Get LiteLLM embedding model if enterprise is enabled AND proxy mode is lite_llm.
@@ -488,6 +493,7 @@ def get_litellm_embedding_model(
             llm_model_details=llm_model_details,
             litellm_context=litellm_context,
             user_email=user_email,
+            user_id=user_id,
         )
     except Exception as e:
         logger.warning(f"Failed to create LiteLLM embedding model: {e}", exc_info=True)

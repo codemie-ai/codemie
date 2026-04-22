@@ -321,7 +321,7 @@ async def _create_body_stream_with_optional_injection(
 
         logger.debug(f"Injecting user for budget tracking: {username} (model={llm_model})")
 
-        check_user_budget(user_id=username, budget_id=budget_id)
+        check_user_budget(user_email=username, budget_id=budget_id, user_id=user.id)
 
         return _inject_user_into_request_body_from_bytes(
             body_bytes=body_bytes, user_id=username, request_info=request_info

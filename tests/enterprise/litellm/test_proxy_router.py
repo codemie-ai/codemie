@@ -384,8 +384,9 @@ class TestCreateBodyStreamWithOptionalInjection:
 
         assert result == "stream"
         mock_check_user_budget.assert_called_once_with(
-            user_id="user@example.com_codemie_premium_models",
+            user_email="user@example.com_codemie_premium_models",
             budget_id="premium_models",
+            user_id=user.id,
         )
         mock_inject.assert_called_once_with(
             body_bytes=b"{}", user_id="user@example.com_codemie_premium_models", request_info=request_info
@@ -415,7 +416,7 @@ class TestCreateBodyStreamWithOptionalInjection:
                     )
 
         assert result == "stream"
-        mock_check_user_budget.assert_called_once_with(user_id="user@example.com", budget_id=None)
+        mock_check_user_budget.assert_called_once_with(user_email="user@example.com", budget_id=None, user_id=user.id)
 
     @pytest.mark.asyncio
     async def test_non_premium_request_uses_proxy_budget_id(self):
@@ -453,8 +454,9 @@ class TestCreateBodyStreamWithOptionalInjection:
 
         assert result == "stream"
         mock_check_user_budget.assert_called_once_with(
-            user_id="user@example.com_codemie_cli",
+            user_email="user@example.com_codemie_cli",
             budget_id="cli_budget",
+            user_id=user.id,
         )
         mock_inject.assert_called_once_with(
             body_bytes=b"{}", user_id="user@example.com_codemie_cli", request_info=request_info

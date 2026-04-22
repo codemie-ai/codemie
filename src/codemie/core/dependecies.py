@@ -27,7 +27,7 @@ from codemie.agents.callbacks.tokens_callback import TokensCalculationCallback
 from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs import config, logger
 from codemie.configs.llm_config import LLMProvider, LLMModel
-from codemie.configs.logger import current_user_email
+from codemie.configs.logger import current_user_email, logging_user_id
 from codemie.core.constants import DEFAULT_MAX_OUTPUT_TOKENS_4K, DEFAULT_MAX_OUTPUT_TOKENS_8K
 from codemie.core.models import ElasticSearchKwargs, GitRepo, CodeFields, Application
 from codemie.rest_api.models.settings import DialCredentials, LiteLLMContext
@@ -50,12 +50,14 @@ def get_embeddings_model(embedding_model: str = llm_service.default_embedding_mo
     # Try LiteLLM path (abstracted - returns None if not available)
     context = litellm_context.get(None)
     user_email = current_user_email.get()
+    user_id = logging_user_id.get(None)
 
     litellm_embeddings = get_litellm_embedding_model(
         embedding_model=embedding_model,
         llm_model_details=llm_model_details,
         litellm_context=context,
         user_email=user_email,
+        user_id=user_id,
     )
 
     if litellm_embeddings:
@@ -190,14 +192,12 @@ def _should_wrap_llm_client(llm_model_details: LLMModel, llm: Any) -> bool:
 
 def _resolve_user_email(user_email: str | None) -> str | None:
     # Context variable may be "unknown"/"−"/empty when tools create LLMs at toolkit init
-    # (before agent sets logging context). Fall back to request.state.user for correct
+    # (before agent sets logging context). Fall back to logging_user_id for correct
     # LiteLLM budget attribution. Safe because all user contexts point to same user.
     if not user_email or user_email in ("-", "unknown"):
-        from codemie.rest_api.security.user_context import get_current_user
-
-        current_user = get_current_user()
-        if current_user:
-            return current_user.username or current_user.id
+        uid = logging_user_id.get(None)
+        if uid and uid != "-":
+            return uid
     return user_email
 
 
@@ -214,6 +214,7 @@ def get_llm_by_credentials(
 
     context = litellm_context.get(None)
     user_email = _resolve_user_email(current_user_email.get())
+    user_id = logging_user_id.get(None)
 
     litellm_llm = get_litellm_chat_model(
         llm_model_details=llm_model_details,
@@ -222,6 +223,7 @@ def get_llm_by_credentials(
         temperature=temperature,
         top_p=top_p,
         streaming=streaming,
+        user_id=user_id,
     )
 
     if litellm_llm:
