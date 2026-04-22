@@ -21,6 +21,7 @@ from requests.exceptions import RequestException
 from codemie.configs import logger
 from codemie.rest_api.security.authentication import BIND_KEY_HEADER, get_bind_key
 from codemie.rest_api.security.user import USER_ID_HEADER
+from codemie.triggers.actors.conversation import create_conversation, delete_conversation
 from codemie.triggers.config import BASE_API_URL
 
 
@@ -33,8 +34,16 @@ def invoke_assistant(
         USER_ID_HEADER: user_id,
         BIND_KEY_HEADER: get_bind_key(),
     }
+    created_conversation_id = create_conversation(
+        assistant_id=assistant_id,
+        conversation_name=f"Webhook: {assistant_id}",
+        user_id=user_id,
+        job_id=job_id,
+        url=url,
+    )
+    conversation_id = created_conversation_id or str(uuid.uuid4())
     data = {
-        'conversation_id': str(uuid.uuid4()),
+        'conversation_id': conversation_id,
         'text': task,
         'content_raw': f'<p>{task}</p>',
         'stream': False,
@@ -44,9 +53,11 @@ def invoke_assistant(
 
     try:
         response = requests.post(
-            url=f'{url}/v1/assistants/{assistant_id}/model', headers=headers, json=data, timeout=600
+            url=f'{url.rstrip("/")}/v1/assistants/{assistant_id}/model', headers=headers, json=data, timeout=600
         )
         response.raise_for_status()
         logger.info('Successfully invoked assistant: %s, job_id: %s', assistant_id, job_id)
     except RequestException as e:
         logger.error('Failed to invoke assistant %s for job_id %s: %s', assistant_id, job_id, str(e))
+        if created_conversation_id:
+            delete_conversation(created_conversation_id, user_id, job_id, url)

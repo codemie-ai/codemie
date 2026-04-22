@@ -35,7 +35,7 @@ def invoke_workflow(
             USER_ID_HEADER: user_id,
             BIND_KEY_HEADER: get_bind_key(),
         }
-        full_url = f'{url}/v1/workflows/{workflow_id}/executions'
+        full_url = f'{url.rstrip("/")}/v1/workflows/{workflow_id}/executions'
 
         # What about stream boolean that we always having on routers?
         # Maybe we wanted to have it disabled for troggered by webhook workflows?

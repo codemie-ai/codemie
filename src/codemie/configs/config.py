@@ -51,6 +51,7 @@ class Config(BaseSettings):
     MODELS_ENV: str = "dial"
     LOG_LEVEL: str = "INFO"
     CALLBACK_API_BASE_URL: str = "http://host.docker.internal:8080"
+    INTERNAL_BIND_KEY: str = ""  # shared secret for loopback auth in multi-worker deployments
     API_ROOT_PATH: str = ""
     TIMEZONE: str = "UTC"
 

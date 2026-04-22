@@ -17,6 +17,7 @@ import secrets
 from fastapi import Depends, Request, status
 from fastapi.security import APIKeyHeader
 
+from codemie.configs import config as _app_config
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.idp.local import USER_ID_HEADER, LocalIdp
@@ -35,7 +36,7 @@ BIND_KEY_HEADER = "X-Bind-Key"
 user_id_header = APIKeyHeader(name=USER_ID_HEADER, auto_error=False, scheme_name=USER_ID_HEADER)
 bind_key_header = APIKeyHeader(name=BIND_KEY_HEADER, auto_error=False, scheme_name=BIND_KEY_HEADER)
 
-__bind_key: str = secrets.token_hex(32)
+__bind_key: str = _app_config.INTERNAL_BIND_KEY if _app_config.INTERNAL_BIND_KEY else secrets.token_hex(32)
 
 
 def _create_auth_error(details: str) -> ExtendedHTTPException:

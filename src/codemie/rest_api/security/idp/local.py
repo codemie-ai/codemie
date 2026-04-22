@@ -16,6 +16,7 @@ import jwt
 from datetime import datetime, timedelta, timezone
 from fastapi import Request, status
 
+from codemie.configs import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.idp.base import BaseIdp
 from codemie.rest_api.security.user import User, USER_ID_HEADER, AUTHORIZATION_HEADER
@@ -63,7 +64,7 @@ class LocalIdp(BaseIdp):
             request: FastAPI request object with user-id header
 
         Returns:
-            User object with local development credentials
+            User object populated from DB when available, stub otherwise
         """
         user_id = request.headers.get(USER_ID_HEADER)
         if not user_id:
@@ -76,7 +77,38 @@ class LocalIdp(BaseIdp):
                 details="Missing user-id header for local authentication",
             )
 
-        # Generate mock JWT token for local authentication
         auth_token = self._generate_mock_token(user_id)
 
-        return User(id=user_id, username=user_id, name=user_id, auth_token=auth_token)
+        from codemie.clients.postgres import get_async_session
+        from codemie.repository.user_kb_repository import user_kb_repository
+        from codemie.repository.user_project_repository import user_project_repository
+        from codemie.repository.user_repository import user_repository
+
+        try:
+            async with get_async_session() as session:
+                db_user = await user_repository.aget_active_by_id(session, user_id)
+                if db_user is None:
+                    return User(id=user_id, username=user_id, name=user_id, auth_token=auth_token)
+
+                projects = await user_project_repository.aget_by_user_id(session, db_user.id)
+                kbs = await user_kb_repository.aget_by_user_id(session, db_user.id)
+
+            return User(
+                id=db_user.id,
+                username=db_user.username,
+                name=db_user.name or "",
+                email=db_user.email,
+                picture=db_user.picture or "",
+                user_type=db_user.user_type,
+                roles=[],
+                project_names=[p.project_name for p in projects],
+                admin_project_names=[p.project_name for p in projects if p.is_project_admin],
+                knowledge_bases=[kb.kb_name for kb in kbs],
+                is_admin=db_user.is_admin,
+                is_maintainer=db_user.is_maintainer,
+                project_limit=db_user.project_limit,
+                auth_token=auth_token,
+            )
+        except Exception as e:
+            logger.warning(f"LocalIdp: DB lookup failed for user_id='{user_id}', falling back to stub user: {e}")
+            return User(id=user_id, username=user_id, name=user_id, auth_token=auth_token)

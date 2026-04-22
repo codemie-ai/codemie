@@ -20,6 +20,7 @@ from unittest.mock import patch
 
 from codemie.rest_api.main import app
 from codemie.rest_api.routers.assistant import router
+from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 
 app.include_router(router)
@@ -38,11 +39,12 @@ def mock_auth_header():
     return {"Authorization": "Bearer test_token"}
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def mock_authenticate(mock_user):
-    """Mock authentication dependency."""
-    with patch("codemie.rest_api.routers.assistant.authenticate", return_value=mock_user) as mock:
-        yield mock
+    """Mock authentication dependency via FastAPI dependency_overrides."""
+    app.dependency_overrides[authenticate] = lambda: mock_user
+    yield
+    app.dependency_overrides.pop(authenticate, None)
 
 
 @pytest.fixture
