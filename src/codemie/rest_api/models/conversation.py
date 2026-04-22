@@ -469,7 +469,7 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             result.append(
                 ConversationListItem(
                     id=row.conversation_id,
-                    name=row.conversation_name or None,
+                    name=row.conversation_name or "",
                     folder=row.folder,
                     assistant_ids=row.assistant_ids,
                     initial_assistant_id=row.initial_assistant_id,
