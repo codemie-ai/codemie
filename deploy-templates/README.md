@@ -77,6 +77,12 @@ A Helm chart for AI/Run API
 | livenessProbe.timeoutSeconds | int | `1` | Number of seconds after which the probe times out |
 | nameOverride | string | `""` |  |
 | nodeSelector | object | `{}` | Node selector to be added to the AI/Run API pods |
+| opsPool.argoRollout.enabled | bool | `false` | Enable Argo Rollouts instead of standard Kubernetes Deployment for ops-pool |
+| opsPool.argoRollout.scaleDownDelaySeconds | int | `120` | The time to wait before scaling down the old replica set |
+| opsPool.enabled | bool | `false` | Enable a separate deployment/rollout for ops-pool processing |
+| opsPool.extraEnv | list | `[]` | Additional env vars merged after extraEnv + customEnv. Use this to enable startup operations and schedulers, for example:   - name: KEYCLOAK_MIGRATION_ENABLED     value: "true" |
+| opsPool.replicaCount | int | `1` | Number of ops-pool pods to run |
+| opsPool.resources | object | `{"limits":{"cpu":1,"memory":"1024Mi"},"requests":{"cpu":1,"memory":"1024Mi"}}` | Resource limits and requests for ops-pool pods |
 | podAnnotations | object | `{}` | Annotations to be added to AI/Run API pods |
 | podLabels | object | `{}` | Labels to be added to AI/Run UI pods. |
 | podSecurityContext | object | `{}` | Toggle and define pod-level security context |

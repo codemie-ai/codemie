@@ -291,6 +291,38 @@ ingressCallbacksIndex:
   # -- The path to AI/Run API for Callbacks Index
   path: "/code-assistant-api/v1/callbacks/index/(.*)"
 
+## Dedicated ops-pool workload
+## Handles one-time startup operations (migrations, bootstrapping) and background
+## schedulers. No service or ingress is created for this workload.
+opsPool:
+  # -- Enable a separate deployment/rollout for ops-pool processing
+  enabled: false
+  # -- Number of ops-pool pods to run
+  replicaCount: 1
+
+  ## Use Argo Rollouts for the ops-pool workload
+  argoRollout:
+    # -- Enable Argo Rollouts instead of standard Kubernetes Deployment for ops-pool
+    enabled: false
+    # -- The time to wait before scaling down the old replica set
+    scaleDownDelaySeconds: 120
+
+  # -- Additional env vars merged after extraEnv + customEnv.
+  # Use this to enable startup operations and schedulers, for example:
+  #   - name: KEYCLOAK_MIGRATION_ENABLED
+  #     value: "true"
+  # @default -- `[]`
+  extraEnv: []
+
+  # -- Resource limits and requests for ops-pool pods
+  resources:
+    limits:
+      cpu: 1
+      memory: 1024Mi
+    requests:
+      cpu: 1
+      memory: 1024Mi
+
 ## Dedicated ds-pool processing workload
 dsPool:
   # -- Enable a separate deployment/rollout for ds-pool processing

@@ -1,0 +1,17 @@
+{{- if and .Values.opsPool.enabled .Values.opsPool.argoRollout.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "codemie.ops-pool.fullname" . }}
+  labels:
+    {{- include "codemie.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "codemie.ops-pool.selectorLabels" . | nindent 4 }}
+{{- end }}
