@@ -554,6 +554,7 @@ class Config(BaseSettings):
     MEMORY_PROFILING_SNAPSHOT_PREFIX: str = "memory_snapshots"  # Prefix path for snapshot storage
 
     # Conversation Analysis Configuration
+    CONVERSATION_HISTORY_STATS_ENABLED: bool = False  # Compute very_first/last_msg_at via history scan on list requests
     CONVERSATION_ANALYSIS_ENABLED: bool = False
     CONVERSATION_ANALYSIS_SCHEDULE: str = "0 0 * * *"  # Midnight daily (cron format)
     CONVERSATION_ANALYSIS_START_DATE: str = "2025-12-01"  # Only analyze conversations from this date onwards

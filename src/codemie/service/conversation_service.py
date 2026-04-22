@@ -102,6 +102,11 @@ class ConversationService:
     Service class for Conversation and related models, captures all business logic.
     """
 
+    @staticmethod
+    def _truncate_name(msg: str | None) -> str:
+        msg = msg or ""
+        return (msg[:50] + "...") if len(msg) > 50 else msg
+
     @classmethod
     def upsert_chat_history(
         cls,
@@ -124,7 +129,7 @@ class ConversationService:
             conversation = Conversation(
                 id=request.conversation_id,
                 conversation_id=request.conversation_id,
-                conversation_name=request.text,
+                conversation_name=cls._truncate_name(request.text),
                 user_id=user.id,
                 user_name=user.name,
                 assistant_ids=[assistant.id],
@@ -132,6 +137,9 @@ class ConversationService:
                 project=assistant.project,
             )
             should_create_conversation = True
+        elif not conversation.conversation_name and not conversation.history:
+            # Conversation was pre-created without a name; set it from the first message.
+            conversation.conversation_name = cls._truncate_name(request.text)
 
         # Determine history_index if it's not provided in the request
         history_index = request.history_index
@@ -352,6 +360,8 @@ class ConversationService:
         Returns:
             New Conversation instance (not yet saved)
         """
+        first_msg = (request.history[0].message or "") if request.history else ""
+        conversation_name = cls._truncate_name(first_msg)
         return Conversation(
             id=conversation_id,
             conversation_id=conversation_id,
@@ -361,7 +371,7 @@ class ConversationService:
             assistant_ids=[request.assistant_id],
             initial_assistant_id=request.assistant_id,
             folder=request.folder,
-            conversation_name="",
+            conversation_name=conversation_name,
         )
 
     @classmethod
@@ -1135,14 +1145,26 @@ class ConversationService:
     ) -> List[ConversationListItem]:
         """DB-level paginated list of user conversations.
 
-        Selects only the scalar columns required for ConversationListItem plus SQL-level
-        MIN/MAX subqueries for timestamp bounds. The full ``history`` column is never
-        fetched, avoiding large JSONB payloads crossing the network for list requests.
+        Selects only the scalar columns required for ConversationListItem — the history
+        column is never loaded, avoiding expensive TOAST reads for large conversations.
+        Timestamp bounds are computed only when CONVERSATION_HISTORY_STATS_ENABLED is True.
         """
         offset = page * per_page
 
+        if config.CONVERSATION_HISTORY_STATS_ENABLED:
+            timestamp_sql = """
+                (SELECT MIN((elem->>'date')::timestamptz)
+                 FROM jsonb_array_elements(COALESCE(history, '[]'::jsonb)) AS elem
+                 WHERE NULLIF(TRIM(elem->>'date'), '') IS NOT NULL) AS very_first_msg_at,
+                (SELECT MAX((elem->>'date')::timestamptz)
+                 FROM jsonb_array_elements(COALESCE(history, '[]'::jsonb)) AS elem
+                 WHERE NULLIF(TRIM(elem->>'date'), '') IS NOT NULL) AS very_last_msg_at
+            """
+        else:
+            timestamp_sql = "NULL AS very_first_msg_at, NULL AS very_last_msg_at"
+
         with get_session() as session:
-            stmt = text("""
+            stmt = text(f"""
                 SELECT
                     conversation_id,
                     conversation_name,
@@ -1153,13 +1175,7 @@ class ConversationService:
                     date,
                     update_date,
                     is_workflow_conversation,
-                    COALESCE(history->0->>'message', '') AS first_message,
-                    (SELECT MIN((elem->>'date')::timestamptz)
-                     FROM jsonb_array_elements(COALESCE(history, '[]'::jsonb)) AS elem
-                     WHERE NULLIF(TRIM(elem->>'date'), '') IS NOT NULL) AS very_first_msg_at,
-                    (SELECT MAX((elem->>'date')::timestamptz)
-                     FROM jsonb_array_elements(COALESCE(history, '[]'::jsonb)) AS elem
-                     WHERE NULLIF(TRIM(elem->>'date'), '') IS NOT NULL) AS very_last_msg_at
+                    {timestamp_sql}
                 FROM conversations
                 WHERE user_id = :uid
                 ORDER BY update_date DESC NULLS LAST
@@ -1170,17 +1186,10 @@ class ConversationService:
         result = []
         for row in rows:
             is_workflow = row.is_workflow_conversation or False
-            first_msg = row.first_message or ""
-            # Mirror Conversation.get_conversation_name() truncation logic.
-            name = (
-                row.conversation_name
-                or (first_msg[:50] + "..." if first_msg and len(first_msg) > 50 else first_msg)
-                or None
-            )
             result.append(
                 ConversationListItem(
                     id=row.conversation_id,
-                    name=name,
+                    name=row.conversation_name or None,
                     folder=row.folder,
                     assistant_ids=row.assistant_ids,
                     initial_assistant_id=row.initial_assistant_id,

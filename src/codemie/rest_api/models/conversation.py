@@ -21,8 +21,10 @@ from codemie_tools.base.models import Tool
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from codemie.chains.base import Thought
-from codemie.configs import logger
+from codemie.clients.postgres import get_session
+from codemie.configs import config, logger
 from codemie.core.ability import Owned, Action
+from codemie.core.exceptions import ValidationException
 from codemie.core.models import CodeIndexType, ChatMessage, ChatRole
 from codemie.rest_api.models.assistant import Context, AssistantType
 from codemie.rest_api.models.base import (
@@ -33,8 +35,7 @@ from codemie.rest_api.models.base import (
 )
 from codemie.rest_api.models.feedback import MarkEnum
 from codemie.rest_api.security.user import User
-from codemie.utils.datetime_utils import get_timestamp_bounds
-from sqlmodel import Field as SQLField, Session, delete, Column
+from sqlmodel import Field as SQLField, Session, delete, Column, text
 from sqlalchemy import Boolean
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.mutable import MutableList
@@ -401,39 +402,87 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
         return conversation
 
     @classmethod
-    def get_user_conversations(cls, user_id, filters: dict = None) -> List[ConversationListItem]:
+    def get_user_conversations(cls, user_id: str, filters: dict = None) -> List[ConversationListItem]:
         """
         Get all user conversations (both assistant and workflow conversations).
         Uses is_workflow_conversation flag to distinguish conversation types.
+
+        Fetches only the scalar columns needed for ConversationListItem — the history
+        column is never loaded, avoiding expensive TOAST reads for large conversations.
+        Timestamp bounds (very_first_msg_at / very_last_msg_at) are computed only when
+        CONVERSATION_HISTORY_STATS_ENABLED is True.
         """
-        records = cls.get_all_by_fields(fields={"user_id.keyword": user_id, **(filters if filters else {})})
+        if config.CONVERSATION_HISTORY_STATS_ENABLED:
+            timestamp_sql = """
+                (SELECT MIN((elem->>'date')::timestamptz)
+                 FROM jsonb_array_elements(COALESCE(history, '[]'::jsonb)) AS elem
+                 WHERE NULLIF(TRIM(elem->>'date'), '') IS NOT NULL) AS very_first_msg_at,
+                (SELECT MAX((elem->>'date')::timestamptz)
+                 FROM jsonb_array_elements(COALESCE(history, '[]'::jsonb)) AS elem
+                 WHERE NULLIF(TRIM(elem->>'date'), '') IS NOT NULL) AS very_last_msg_at
+            """
+        else:
+            timestamp_sql = "NULL AS very_first_msg_at, NULL AS very_last_msg_at"
 
-        conversation_list = []
-        for conversation in records:
-            # Use the is_workflow_conversation flag to determine conversation type
-            is_workflow = conversation.is_workflow_conversation or False
-            workflow_id = conversation.initial_assistant_id if is_workflow else None
-            conversation_id = conversation.conversation_id
-            very_first_msg_at, very_last_msg_at = get_timestamp_bounds(conversation.history)
+        allowed_filter_columns = {
+            "initial_assistant_id",
+            "is_workflow_conversation",
+            "folder",
+            "pinned",
+            "project",
+        }
 
-            conversation_list.append(
+        filter_clauses = ""
+        params: dict = {"uid": user_id}
+        if filters:
+            for i, (key, value) in enumerate(filters.items()):
+                clean_key = key.replace(".keyword", "")
+                if clean_key not in allowed_filter_columns:
+                    raise ValidationException(f"Unsupported filter: {clean_key}")
+                param_name = f"filter_{i}"
+                filter_clauses += f" AND {clean_key} = :{param_name}"
+                params[param_name] = value
+
+        stmt = text(f"""
+            SELECT
+                conversation_id,
+                conversation_name,
+                folder,
+                assistant_ids,
+                initial_assistant_id,
+                pinned,
+                date,
+                update_date,
+                is_workflow_conversation,
+                {timestamp_sql}
+            FROM conversations
+            WHERE user_id = :uid{filter_clauses}
+            ORDER BY COALESCE(update_date, date) DESC NULLS LAST
+        """).bindparams(**params)
+
+        with get_session() as session:
+            rows = list(session.exec(stmt).all())
+
+        result = []
+        for row in rows:
+            is_workflow = bool(row.is_workflow_conversation)
+            result.append(
                 ConversationListItem(
-                    id=conversation.conversation_id,
-                    name=conversation.get_conversation_name(),
-                    folder=conversation.folder,
-                    assistant_ids=conversation.assistant_ids,
-                    initial_assistant_id=conversation.initial_assistant_id,
-                    pinned=conversation.pinned,
-                    date=conversation.update_date or conversation.date,
+                    id=row.conversation_id,
+                    name=row.conversation_name or None,
+                    folder=row.folder,
+                    assistant_ids=row.assistant_ids,
+                    initial_assistant_id=row.initial_assistant_id,
+                    pinned=row.pinned,
+                    date=row.update_date or row.date,
                     is_workflow=is_workflow,
-                    workflow_id=workflow_id,
-                    conversation_id=conversation_id if is_workflow else None,
-                    very_first_msg_at=very_first_msg_at,
-                    very_last_msg_at=very_last_msg_at,
+                    workflow_id=row.initial_assistant_id if is_workflow else None,
+                    conversation_id=row.conversation_id if is_workflow else None,
+                    very_first_msg_at=row.very_first_msg_at,
+                    very_last_msg_at=row.very_last_msg_at,
                 )
             )
-
-        return sorted(conversation_list, key=lambda x: x.date, reverse=True)
+        return result
 
     def find_messages(self, history_index: int, message_index: int) -> tuple[GeneratedMessage, GeneratedMessage]:
         """Find message pair by history and message index"""
