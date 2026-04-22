@@ -391,6 +391,19 @@ class Config(BaseSettings):
     WORKERS: int = 1
     LANGFUSE_TRACES: bool = False
     LANGFUSE_BLOCKED_INSTRUMENTATION_SCOPES: list[str] = ["elasticsearch-api"]
+
+    # ===========================================
+    # OpenTelemetry Configuration
+    # ===========================================
+    # OTEL_ENABLED controls whether tracing is bootstrapped at all.
+    # All other OTEL settings use standard SDK env vars read directly by the SDK:
+    #   OTEL_SERVICE_NAME            — service name (default: "codemie")
+    #   OTEL_EXPORTER_OTLP_ENDPOINT  — OTLP endpoint; triggers OTLP export when set
+    #   OTEL_EXPORTER_OTLP_HEADERS   — "key=val,key2=val2" auth headers
+    #   OTEL_RESOURCE_ATTRIBUTES     — extra resource tags, e.g. "k8s.cluster.name=dev"
+    OTEL_ENABLED: bool = False
+    OTEL_EXCLUDED_URLS: str = "healthcheck"  # comma-separated URL fragment exclusions
+
     CODEMIE_SUPPORT: str = "https://epa.ms/codemie-support"
     CODEMIE_SUPPORT_MSG: str = f"For assistance, please contact support at {CODEMIE_SUPPORT}"
 

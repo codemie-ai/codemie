@@ -42,6 +42,7 @@ from codemie.enterprise.langfuse import (
     get_langfuse_callback_handler,
 )
 from codemie.core.exceptions import InterruptedException
+from codemie.core.otel_tracing import get_otel_context_for_thread, propagated_span, record_exception_on_span
 from codemie.core.thought_queue import ThoughtQueue
 from codemie.core.thread import MessageQueue
 from codemie.core.workflow_models import (
@@ -335,6 +336,10 @@ class WorkflowExecutor:
         )
         self.callbacks = [self.graph_callback]
         self.disable_cache = disable_cache
+        # Capture the active OTel context from the HTTP handler thread so that stream() /
+        # stream_to_client(), which run in a background thread with no inherited contextvars,
+        # can attach it and make workflow.execute a child of the HTTP request span.
+        self._otel_context = get_otel_context_for_thread()
 
     def _init_workflow(self) -> CompiledStateGraph:
         workflow = self.init_state_graph()
@@ -820,23 +825,39 @@ class WorkflowExecutor:
                 f"execution_id={self.execution_id}, project={self.workflow_config.project}"
             )
 
-        self._start_thought_consumer_if_enabled(enable_verbose_consumer)
-        graph_config = self._build_graph_config()
-        chunks_collector = []
-
-        try:
-            self._run_workflow_execution(graph_config, chunks_collector)
-        except InterruptedException as e:
-            self._handle_interrupt(str(e.message), e.interrupted_state, chunks_collector)
-        except Exception as e:
-            self._handle_task_exception(e, chunks_collector)
-        finally:
-            self.thought_queue.close()
-            if self.delete_on_completion:
-                self._auto_delete_execution()
-            # Clear trace context to prevent memory leaks
-            clear_workflow_trace_context(self.execution_id)
-            VirtualAssistantService.delete_by_execution_id(self.execution_id)
+        # propagated_span() attaches the OTel context captured in __init__ (HTTP handler thread)
+        # so that workflow.execute and the ThoughtConsumer thread (which does DB writes) both
+        # become children of the HTTP request span even though this method runs in a background
+        # thread that does not inherit contextvars.
+        # Must be done BEFORE starting ThoughtConsumer so that ThoughtConsumer.__init__
+        # captures the correct (HTTP) context when it calls get_otel_context_for_thread().
+        with propagated_span(
+            self._otel_context,
+            "workflow.execute",
+            {
+                "codemie.workflow_name": self.workflow_config.name or "",
+                "codemie.workflow_id": str(self.workflow_config.id) if self.workflow_config.id else "",
+                "codemie.execution_id": self.execution_id or "",
+                "codemie.user_id": str(self.user.id) if self.user else "",
+            },
+        ):
+            self._start_thought_consumer_if_enabled(enable_verbose_consumer)
+            graph_config = self._build_graph_config()
+            chunks_collector = []
+            try:
+                self._run_workflow_execution(graph_config, chunks_collector)
+            except InterruptedException as e:
+                self._handle_interrupt(str(e.message), e.interrupted_state, chunks_collector)
+            except Exception as e:
+                record_exception_on_span(e)
+                self._handle_task_exception(e, chunks_collector)
+            finally:
+                self.thought_queue.close()
+                if self.delete_on_completion:
+                    self._auto_delete_execution()
+                # Clear trace context to prevent memory leaks
+                clear_workflow_trace_context(self.execution_id)
+                VirtualAssistantService.delete_by_execution_id(self.execution_id)
 
     def _start_thought_consumer_if_enabled(self, enable_verbose_consumer: bool):
         """Start ThoughtConsumer for database persistence if enabled."""

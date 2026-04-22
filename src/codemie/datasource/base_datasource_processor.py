@@ -31,6 +31,7 @@ from codemie.clients.elasticsearch import ElasticSearchClient
 from codemie.configs import logger
 from codemie.configs.logger import set_logging_info
 from codemie.core.dependecies import get_elasticsearch
+from codemie.core.otel_tracing import get_otel_context_for_thread, propagated_span, record_exception_on_span
 from codemie.datasource.callback.base_datasource_callback import DatasourceProcessorCallback
 from codemie.datasource.callback.datasource_monitoring_callback import DatasourceMonitoringCallback
 from codemie.datasource.datasources_config import STORAGE_CONFIG, CODE_CONFIG
@@ -92,6 +93,10 @@ class BaseDatasourceProcessor(ABC):
         self.cron_expression = cron_expression
         if user:
             set_logging_info(uuid=request_uuid, user_id=user.id, user_email=user.username)
+        # Capture the active OTel context from the HTTP handler thread so that process(),
+        # which runs in a background thread with no inherited contextvars, can attach it
+        # and make the datasource.process span a child of the HTTP request span.
+        self._otel_context = get_otel_context_for_thread()
 
     @property
     @abstractmethod
@@ -151,88 +156,98 @@ class BaseDatasourceProcessor(ABC):
         # Import is here because of circular import error
         from codemie.service.llm_service.utils import set_llm_context
 
-        try:
-            self._init_index()
+        with propagated_span(
+            self._otel_context,
+            "datasource.process",
+            {"codemie.datasource_name": self.datasource_name},
+        ):
+            try:
+                self._init_index()
 
-            # Ensure Application exists for the project_name
-            if self.index and self.index.project_name:
-                ensure_application_exists(self.index.project_name)
+                # Ensure Application exists for the project_name
+                if self.index and self.index.project_name:
+                    ensure_application_exists(self.index.project_name)
 
-            self.callbacks.append(
-                DatasourceMonitoringCallback(
-                    self.index,
-                    self.user,
-                    (self.is_full_reindex or self.is_incremental_reindex),
-                    self.is_resume_indexing,
-                    self.request_uuid,
+                self.callbacks.append(
+                    DatasourceMonitoringCallback(
+                        self.index,
+                        self.user,
+                        (self.is_full_reindex or self.is_incremental_reindex),
+                        self.is_resume_indexing,
+                        self.request_uuid,
+                    )
                 )
-            )
-            self.index.start_fetching(is_incremental=self.is_incremental_reindex)
-            self.loader = self._init_loader()
-            self._on_process_start()
-            if self.index and self.user:
-                set_llm_context(None, self.index.project_name, self.user)
-            start_time = time.time()
-            datasource_remote_stats = self.loader.fetch_remote_stats()
-            expected_docs_count = datasource_remote_stats.get(BaseDatasourceLoader.DOCUMENTS_COUNT_KEY)
-            self.index.start_progress(
-                complete_state=expected_docs_count,
-                processing_info=datasource_remote_stats,
-                is_incremental=self.is_incremental_reindex,
-            )
-            logger.info(
-                f"IndexDatasource. Started. "
-                f"Datasource={self.datasource_name}. "
-                f"ExpectedDocumentsCount={expected_docs_count}. "
-                f"InitialCompleteState={self.index.complete_state}. "
-                f"InitialCurrentState={self.index.current_state}. "
-                f"DatasourceStats={datasource_remote_stats}"
-            )
-            result = self._process()
-            execution_time = time.time() - start_time
-            self._on_process_end()
-            logger.info(
-                f"IndexDatasource. Finished. "
-                f"Datasource={self.datasource_name}. "
-                f"ProcessingStats={result}. "
-                f"ExecutionTimeSeconds={execution_time}"
-            )
-            self._validate_indexing_result()
-            self.index.complete_progress(self.index.current_state)
+                self.index.start_fetching(is_incremental=self.is_incremental_reindex)
+                self.loader = self._init_loader()
+                self._on_process_start()
+                if self.index and self.user:
+                    set_llm_context(None, self.index.project_name, self.user)
+                start_time = time.time()
+                datasource_remote_stats = self.loader.fetch_remote_stats()
+                expected_docs_count = datasource_remote_stats.get(BaseDatasourceLoader.DOCUMENTS_COUNT_KEY)
+                self.index.start_progress(
+                    complete_state=expected_docs_count,
+                    processing_info=datasource_remote_stats,
+                    is_incremental=self.is_incremental_reindex,
+                )
+                logger.info(
+                    f"IndexDatasource. Started. "
+                    f"Datasource={self.datasource_name}. "
+                    f"ExpectedDocumentsCount={expected_docs_count}. "
+                    f"InitialCompleteState={self.index.complete_state}. "
+                    f"InitialCurrentState={self.index.current_state}. "
+                    f"DatasourceStats={datasource_remote_stats}"
+                )
+                result = self._process()
+                execution_time = time.time() - start_time
+                self._on_process_end()
+                logger.info(
+                    f"IndexDatasource. Finished. "
+                    f"Datasource={self.datasource_name}. "
+                    f"ProcessingStats={result}. "
+                    f"ExecutionTimeSeconds={execution_time}"
+                )
+                self._validate_indexing_result()
+                self.index.complete_progress(self.index.current_state)
 
-            # Create scheduler if cron_expression was provided
-            self._create_or_update_scheduler()
+                # Create scheduler if cron_expression was provided
+                self._create_or_update_scheduler()
 
-            # Call the on_complete method of each callback
-            for callback in self.callbacks:
-                callback.on_complete(result)
-        except IndexDeletedException as ex:
-            logger.error(f"Stopping, index was deleted for datasource {self.index.repo_name}", exc_info=True)
-            self.client.indices.delete(index=self._index_name, ignore=[400, 404])  # Ensure embeddings index is deleted
-            self._on_process_end()  # Clear any sensitive state (e.g. OAuth tokens)
-            # Call the on_error method of each callback
-            for callback in self.callbacks:
-                callback.on_error(ex)
-            return
-        except GuardrailBlockedException as ex:
-            logger.error(
-                f"Stopping, index was blocked by guardrail for datasource {self.index.repo_name}", exc_info=True
-            )
-            self.client.indices.delete(index=self._index_name, ignore=[400, 404])
-            self.index.set_error(str(ex))
-            self._on_process_end()
-            # Call the on_error method of each callback
-            for callback in self.callbacks:
-                callback.on_error(ex)
-            return
-        except Exception as ex:
-            logger.error(f"Error occurred while indexing repo {self.index.repo_name}", exc_info=True)
-            self.index.set_error(str(ex))
-            self._on_process_end()
-            # Call the on_error method of each callback
-            for callback in self.callbacks:
-                callback.on_error(ex)
-            raise
+                # Call the on_complete method of each callback
+                for callback in self.callbacks:
+                    callback.on_complete(result)
+            except IndexDeletedException as ex:
+                record_exception_on_span(ex)
+                logger.error(f"Stopping, index was deleted for datasource {self.index.repo_name}", exc_info=True)
+                self.client.indices.delete(
+                    index=self._index_name, ignore=[400, 404]
+                )  # Ensure embeddings index is deleted
+                self._on_process_end()  # Clear any sensitive state (e.g. OAuth tokens)
+                # Call the on_error method of each callback
+                for callback in self.callbacks:
+                    callback.on_error(ex)
+                return
+            except GuardrailBlockedException as ex:
+                record_exception_on_span(ex)
+                logger.error(
+                    f"Stopping, index was blocked by guardrail for datasource {self.index.repo_name}", exc_info=True
+                )
+                self.client.indices.delete(index=self._index_name, ignore=[400, 404])
+                self.index.set_error(str(ex))
+                self._on_process_end()
+                # Call the on_error method of each callback
+                for callback in self.callbacks:
+                    callback.on_error(ex)
+                return
+            except Exception as ex:
+                record_exception_on_span(ex)
+                logger.error(f"Error occurred while indexing repo {self.index.repo_name}", exc_info=True)
+                self.index.set_error(str(ex))
+                self._on_process_end()
+                # Call the on_error method of each callback
+                for callback in self.callbacks:
+                    callback.on_error(ex)
+                raise
 
     def _create_or_update_scheduler(self, cron_expression: Optional[str] = None):
         """

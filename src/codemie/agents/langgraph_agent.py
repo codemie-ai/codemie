@@ -45,10 +45,10 @@ from codemie.agents.callbacks.monitoring_callback import MonitoringCallback
 from codemie.agents.callbacks.tool_error_capture_callback import ToolErrorCaptureCallback
 from codemie.agents.smart_react_agent import create_smart_react_agent
 from codemie.agents.utils import suppress_stdout
-from codemie.agents.utils import validate_json_schema, get_run_config
+from codemie.agents.utils import validate_json_schema, get_run_config, ExecutionErrorEnum
 from codemie.chains.base import StreamedGenerationResult, GenerationResult, ThoughtAuthorType, ThoughtOutputFormat
 from codemie.chains.pure_chat_chain import PureChatChain
-from codemie.configs import config
+from codemie.configs import Config, config
 from codemie.configs.logger import logger, set_logging_info
 from codemie.core.constants import (
     ChatRole,
@@ -78,6 +78,7 @@ from codemie.service.llm_service.llm_service import LLMService
 from codemie.service.llm_service.utils import set_llm_context
 from codemie.templates.agents.assistant_base import markdown_response_prompt
 from codemie.core.exceptions import TokenLimitExceededException
+from codemie.core.otel_tracing import get_otel_context_for_thread, propagated_span, record_exception_on_span, traced
 
 # LangGraph supervisor agent adds wrong params to our LLM in tools binding stage
 # which causes parallel tools calls errors
@@ -248,6 +249,10 @@ class LangGraphAgent(AbstractAgent):
             if self._is_conversation_replay_v2_enabled()
             else None
         )
+        # Capture the active OTel context from the calling thread (Thread A / asyncio HTTP handler)
+        # so that stream(), which runs in a bare threading.Thread with no inherited contextvars,
+        # can attach it and become a child of the HTTP request span.
+        self._otel_context = get_otel_context_for_thread()
 
         # Smart tool selection/lookup configuration
         # Controls both:
@@ -437,6 +442,15 @@ class LangGraphAgent(AbstractAgent):
                 return error_response.get_error().message
             return self.extended_error(error_response, e)
 
+    @traced(
+        "agent.invoke_task",
+        lambda self, *args, **kwargs: {
+            "codemie.agent_name": self.agent_name,
+            "codemie.model": self.llm_model,
+            "codemie.request_id": self.request_uuid,
+            "codemie.conversation_id": self.conversation_id or "",
+        },
+    )
     def invoke_task(self, workflow_input: str = "", history=None, args=None) -> TaskResult:
         """
         Used in workflows invocation
@@ -458,11 +472,21 @@ class LangGraphAgent(AbstractAgent):
 
             return TaskResult.from_agent_response(agent_response)
         except Exception as e:
+            record_exception_on_span(e)
             error_response: ErrorResponse = handle_agent_exception(e)
             if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
                 return TaskResult.failed_result(error_response.get_error().message, original_exc=e)
             return TaskResult.failed_result(self.extended_error(error_response, e), original_exc=e)
 
+    @traced(
+        "agent.generate",
+        lambda self, *args, **kwargs: {
+            "codemie.agent_name": self.agent_name,
+            "codemie.model": self.llm_model,
+            "codemie.request_id": self.request_uuid,
+            "codemie.conversation_id": self.conversation_id or "",
+        },
+    )
     def generate(self, background_task_id: str = "") -> GenerationResult:
         """
         Executes the AI agent and returns the generated output along with performance metadata.
@@ -498,6 +522,7 @@ class LangGraphAgent(AbstractAgent):
                 tool_errors=self.tool_error_callback.tool_errors if self.tool_error_callback.has_errors() else None,
             )
         except Exception as e:
+            record_exception_on_span(e)
             time_elapsed = time() - start_time
             error_response: ErrorResponse = handle_agent_exception(e)
             if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
@@ -526,41 +551,95 @@ class LangGraphAgent(AbstractAgent):
         This method enables assistant streaming, with the stream’s destination generally being a user interface (UI).
         To handle the incoming stream content, you can use a thread generator.
         """
-        set_logging_info(
-            uuid=self.request_uuid,
-            user_id=self.user.id,
-            conversation_id=self.conversation_id,
-            user_email=self.user.username,
-        )
-        set_llm_context(self.assistant, None, self.user)
-
-        execution_start = time()
-        chunks_collector = []
-
-        try:
-            logger.info(f"Starting {self.agent_name} agent for task: {self._task}")
-            result = self._agent_streaming(chunks_collector)
-            logger.info(f"Finish {self.agent_name} agent for task: {self._task}")
-            time_elapsed = time() - execution_start
-
-            result = json.dumps(result) if isinstance(result, (dict, BaseModel)) else result
-            self.thread_generator.send(
-                StreamedGenerationResult(
-                    generated=result,
-                    generated_chunk="",
-                    last=True,
-                    time_elapsed=time_elapsed,
-                    debug={},
-                    context=self.thread_context,
-                ).model_dump_json()
+        # stream() runs in a bare threading.Thread (Thread C) that does not inherit contextvars
+        # from the asyncio HTTP handler (Thread A).  propagated_span() attaches the context
+        # captured in __init__ so that the span becomes a child of the HTTP request span.
+        with propagated_span(
+            self._otel_context,
+            "agent.stream",
+            {
+                "codemie.agent_name": self.agent_name,
+                "codemie.model": self.llm_model,
+                "codemie.request_id": self.request_uuid,
+                "codemie.conversation_id": self.conversation_id or "",
+            },
+        ):
+            set_logging_info(
+                uuid=self.request_uuid,
+                user_id=self.user.id,
+                conversation_id=self.conversation_id,
+                user_email=self.user.username,
             )
-        except Exception as exception:
-            self.send_error_response(
-                self.thread_generator, self.thread_context, exception, execution_start, chunks_collector
-            )
+            set_llm_context(self.assistant, None, self.user)
 
-        finally:
-            self.thread_generator.close()
+            execution_start = time()
+            chunks_collector = []
+
+            try:
+                logger.info(f"Starting {self.agent_name} agent for task: {self._task}")
+                result = self._agent_streaming(chunks_collector)
+                logger.info(f"Finish {self.agent_name} agent for task: {self._task}")
+                time_elapsed = time() - execution_start
+
+                result = json.dumps(result) if isinstance(result, (dict, BaseModel)) else result
+
+                self.thread_generator.send(
+                    StreamedGenerationResult(
+                        generated=result,
+                        generated_chunk="",
+                        last=True,
+                        time_elapsed=time_elapsed,
+                        debug={},
+                        context=self.thread_context,
+                    ).model_dump_json()
+                )
+            except Exception as e:
+                record_exception_on_span(e)
+                time_elapsed = time() - execution_start
+                error_response: ErrorResponse = handle_agent_exception(e)
+                llm_error_code = error_response.get_error().error_code.value
+                if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
+                    user_message = error_response.get_error().message
+                else:
+                    user_message = self.extended_error(error_response, e)
+                chunks_collector.append(user_message)
+                generated, execution_error = self._process_chunks(chunks_collector, config, llm_error_code)
+
+                self.thread_generator.send(
+                    StreamedGenerationResult(
+                        generated=generated,
+                        generated_chunk="",
+                        last=True,
+                        time_elapsed=time_elapsed,
+                        debug={},
+                        context=self.thread_context,
+                        execution_error=execution_error,
+                    ).model_dump_json()
+                )
+            finally:
+                self.thread_generator.close()
+
+    def _process_chunks(
+        self,
+        chunks_collector: list[str],
+        cfg: Config,
+        llm_error_code: str | None = None,
+    ) -> tuple[str, str | None]:
+        """Build final generated text and determine ``execution_error``.
+
+        When *llm_error_code* is provided it takes precedence: the friendly
+        LLM message (already in chunks) is safe for the end-user, so we
+        always join chunks and propagate the specific error code.
+        """
+        if llm_error_code:
+            return "".join(chunks_collector), llm_error_code
+
+        if cfg.HIDE_AGENT_STREAMING_EXCEPTIONS:
+            if any("guardrail" in chunk.lower() for chunk in chunks_collector):
+                return cfg.CUSTOM_GUARDRAILS_MESSAGE, ExecutionErrorEnum.GUARDRAILS.value
+            return cfg.CUSTOM_STACKTRACE_MESSAGE, ExecutionErrorEnum.STACKTRACE.value
+
+        return "".join(chunks_collector), None
 
     def invoke_with_a2a_output(self, query: str = "") -> dict:
         try:

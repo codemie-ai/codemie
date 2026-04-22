@@ -453,6 +453,13 @@ async def _shutdown_services(app: FastAPI, langfuse_service, litellm_service, ta
 
     logger.info("CodeMie application shutdown complete")
 
+    # Flush any remaining spans before the process exits.
+    from opentelemetry import trace as otel_trace
+
+    otel_provider = otel_trace.get_tracer_provider()
+    if hasattr(otel_provider, "shutdown"):
+        otel_provider.shutdown()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -478,6 +485,25 @@ async def lifespan(app: FastAPI):
             await sync_budgets_from_litellm()
         if config.LLM_PROXY_BUDGET_BACKFILL_ENABLED:
             await backfill_user_budget_assignments()
+
+    # Instrument SQLAlchemy engines explicitly after they are created.
+    # PostgresClient uses from-imports (sqlmodel.create_engine /
+    # sqlalchemy.ext.asyncio.create_async_engine) whose references are captured at import
+    # time, so the module-level monkey-patch in SQLAlchemyInstrumentor would never reach
+    # them.  Passing engine instances directly here ensures both the pool "connect" spans
+    # and the actual SQL cursor-execute spans appear as children of the HTTP span.
+    if config.OTEL_ENABLED:
+        from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+        from codemie.clients.postgres import PostgresClient
+        from codemie.configs.otel_config import enrich_sqlalchemy_spans
+
+        sync_engine = PostgresClient.get_engine()
+        async_engine = PostgresClient.get_async_engine()
+        engines = [sync_engine, async_engine.sync_engine]
+        SQLAlchemyInstrumentor().instrument(engines=engines)
+        # Enrich span names from "SELECT" to "SELECT <table>" for better visibility.
+        # Must be called after instrument() so our listener runs after OTel's.
+        enrich_sqlalchemy_spans(engines)
 
     # Initialize JWT keys and SuperAdmin for user management (EPMCDME-10160)
     _initialize_jwt_keys()
@@ -652,6 +678,15 @@ async def configure_logging(request: Request, call_next):
     request.state.uuid = uuid_str
     set_logging_info(uuid=uuid_str, user_id="")
 
+    # Attach the Codemie request ID to the active OTel span (created by
+    # FastAPIInstrumentor before this middleware runs) so traces can be
+    # correlated with X-Request-ID in logs and external systems.
+    from opentelemetry import trace as otel_trace
+
+    current_span = otel_trace.get_current_span()
+    if current_span.is_recording():
+        current_span.set_attribute("codemie.request_id", uuid_str)
+
     return await call_next(request)
 
 
@@ -809,6 +844,13 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Disposition"],
 )
+
+# Initialize OTEL at module level so that OTelMiddleware is included in the
+# middleware stack from its first compile (before the first HTTP request).
+# Must come after all app.add_middleware / @app.middleware registrations above.
+from codemie.configs.otel_config import configure_opentelemetry  # noqa: E402
+
+configure_opentelemetry(app)
 
 
 if __name__ == '__main__':

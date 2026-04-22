@@ -18,6 +18,7 @@ import re
 import sys
 import threading
 import jsonschema
+from enum import Enum
 from inspect import signature
 from contextlib import contextmanager
 from typing import Dict, Type, List, Any, Optional
@@ -43,6 +44,11 @@ from codemie.core.models import CodeFields, AssistantChatRequest
 OPEN_AI_TOOL_NAME_LIMIT = 64
 
 thread_local = threading.local()
+
+
+class ExecutionErrorEnum(Enum):
+    GUARDRAILS = "guardrails"
+    STACKTRACE = "stacktrace"
 
 
 class LangfuseLiteLLMErrorOutputCallback(BaseCallbackHandler):

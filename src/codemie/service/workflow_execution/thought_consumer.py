@@ -15,10 +15,11 @@
 import threading
 
 from codemie.chains.base import Thought
+from codemie.configs import logger
+from codemie.core.otel_tracing import get_otel_context_for_thread, propagated_span
+from codemie.core.thought_queue import ThoughtContext, ThoughtQueueItem
 from codemie.core.thread import ThreadedGenerator
 from codemie.core.workflow_models import WorkflowExecutionStateThought
-from codemie.configs import logger
-from codemie.core.thought_queue import ThoughtQueueItem, ThoughtContext
 
 
 class ThoughtConsumer:
@@ -35,43 +36,48 @@ class ThoughtConsumer:
         self.workflow_execution_id = workflow_execution_id
         self.message_queue = message_queue
         self.cache = {}
+        # Capture the active OTel context from the calling thread so that consume(),
+        # which runs in a bare threading.Thread with no inherited contextvars, can
+        # attach it and make DB write spans children of the workflow.execute span.
+        self._otel_context = get_otel_context_for_thread()
 
     def consume(self):
-        while True:
-            if not hasattr(self.message_queue, "queue"):
-                logger.debug("ThoughtConsumer: No message queue found")
-                break
+        with propagated_span(self._otel_context, "thought_consumer.consume"):
+            while True:
+                if not hasattr(self.message_queue, "queue"):
+                    logger.debug("ThoughtConsumer: No message queue found")
+                    break
 
-            value = self.message_queue.queue.get()
+                value = self.message_queue.queue.get()
 
-            if isinstance(value, StopIteration):
-                self.message_queue.queue.task_done()
-                break
+                if isinstance(value, StopIteration):
+                    self.message_queue.queue.task_done()
+                    break
 
-            if isinstance(value, ThoughtQueueItem):
-                if not value.context.execution_state_id:
-                    logger.debug("ThoughtConsumer: Skipping thought, no execution state id found in context")
-                    continue
+                if isinstance(value, ThoughtQueueItem):
+                    if not value.context.execution_state_id:
+                        logger.debug("ThoughtConsumer: Skipping thought, no execution state id found in context")
+                        continue
 
-                thought_data: Thought = value.data
-                context: ThoughtContext = value.context
+                    thought_data: Thought = value.data
+                    context: ThoughtContext = value.context
 
-                self._update_thought_cache(thought_data)
+                    self._update_thought_cache(thought_data)
 
-                if thought_data.in_progress:
-                    continue
+                    if thought_data.in_progress:
+                        continue
 
-                thought = WorkflowExecutionStateThought(
-                    id=thought_data.id,
-                    execution_state_id=context.execution_state_id,
-                    parent_id=thought_data.parent_id,
-                    content=self.cache[thought_data.id],
-                    author_name=thought_data.author_name,
-                    author_type=thought_data.author_type,
-                    input_text=thought_data.input_text,
-                )
-                thought.save(refresh=True)
-                self.cache.pop(thought_data.id)
+                    thought = WorkflowExecutionStateThought(
+                        id=thought_data.id,
+                        execution_state_id=context.execution_state_id,
+                        parent_id=thought_data.parent_id,
+                        content=self.cache[thought_data.id],
+                        author_name=thought_data.author_name,
+                        author_type=thought_data.author_type,
+                        input_text=thought_data.input_text,
+                    )
+                    thought.save(refresh=True)
+                    self.cache.pop(thought_data.id)
 
     def _update_thought_cache(self, thought_data: Thought):
         """Update the cache with the thought data"""

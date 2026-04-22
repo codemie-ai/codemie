@@ -45,13 +45,16 @@ class LogConfig(BaseModel):
     LOCAL_LOG_FORMAT: str = (
         'Timestamp: %(asctime)s | Level: %(levelname)s | UUID: %(uuid)s \n'
         'User ID: %(user_id)s | Conversation ID: %(conversation_id)s\n'
+        'Trace ID: %(trace_id)s | Span ID: %(span_id)s\n'
         'Message: %(message)s\n'
     )
 
     LOG_FORMAT: str = (
         '{"timestamp": "%(asctime)s", "level": "%(levelname)s", '
         '"uuid": "%(uuid)s", "user_id": "%(user_id)s", '
-        '"conversation_id": "%(conversation_id)s", "message": "%(message)s"}'
+        '"conversation_id": "%(conversation_id)s", '
+        '"trace_id": "%(trace_id)s", "span_id": "%(span_id)s", '
+        '"message": "%(message)s"}'
     )
 
     version: int = 1
@@ -116,6 +119,24 @@ def record_factory(*args, **kwargs):
 
     # make message json safe
     record.msg = process_record_msg(record.msg)
+
+    # Inject the current OTel trace/span IDs so every log line can be correlated
+    # with a trace in Jaeger/Tempo. Import inside the factory to avoid a circular
+    # import (logger.py is loaded before otel_config.py is fully initialised).
+    # Gracefully falls back to '-' when OTEL is disabled or no span is active.
+    try:
+        from opentelemetry import trace as otel_trace
+
+        ctx = otel_trace.get_current_span().get_span_context()
+        if ctx.is_valid:
+            record.trace_id = format(ctx.trace_id, '032x')
+            record.span_id = format(ctx.span_id, '016x')
+        else:
+            record.trace_id = '-'
+            record.span_id = '-'
+    except Exception:
+        record.trace_id = '-'
+        record.span_id = '-'
 
     return record
 
