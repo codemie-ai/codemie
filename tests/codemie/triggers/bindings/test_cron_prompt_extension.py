@@ -190,6 +190,7 @@ class TestCronPromptExtension:
                 "user_id": "test_user",
                 "job_id": "test_job",
                 "task": custom_prompt,
+                "trigger_source": "Scheduler",
             },
         )
 

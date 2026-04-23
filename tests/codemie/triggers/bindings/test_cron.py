@@ -59,6 +59,7 @@ def test_add_assistant_job(mock_cron_trigger, setup):
             "assistant_id": resource_id,
             "user_id": user_id,
             "job_id": job_id,
+            "trigger_source": "Scheduler",
         },
     )
     jobs[job_id] = Job(job_id=job_id, modified_at=datetime.now(), instance=instance)

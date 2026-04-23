@@ -428,6 +428,7 @@ class Cron:
                 "user_id": user_id,
                 "job_id": job_id,
                 "task": task_prompt,
+                "trigger_source": "Scheduler",
             },
         )
 

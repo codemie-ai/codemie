@@ -26,7 +26,12 @@ from codemie.triggers.config import BASE_API_URL
 
 
 def invoke_assistant(
-    assistant_id: str, user_id: str, job_id: str, task: Optional[str] = "Do it", url: str = BASE_API_URL
+    assistant_id: str,
+    user_id: str,
+    job_id: str,
+    task: Optional[str] = "Do it",
+    url: str = BASE_API_URL,
+    trigger_source: str = "Webhook",
 ):
     """Invoke assistant."""
     headers = {
@@ -36,7 +41,7 @@ def invoke_assistant(
     }
     created_conversation_id = create_conversation(
         assistant_id=assistant_id,
-        conversation_name=f"Webhook: {assistant_id}",
+        conversation_name=f"{trigger_source}: {assistant_id}",
         user_id=user_id,
         job_id=job_id,
         url=url,

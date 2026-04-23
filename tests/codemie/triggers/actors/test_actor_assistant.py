@@ -53,6 +53,32 @@ class TestInvokeAssistant(unittest.TestCase):
             job_id='job-id',
             url='http://mockserver:8080',
         )
+
+    @patch('codemie.triggers.actors.assistant.get_bind_key', return_value=_MOCK_BIND_KEY)
+    @patch('codemie.triggers.actors.assistant.create_conversation', return_value='conversation-id')
+    @patch('codemie.triggers.actors.assistant.requests.post')
+    def test_invoke_assistant_uses_scheduler_prefix(self, mock_post, mock_create_conversation, mock_get_bind_key):
+        """Test that trigger_source=Scheduler produces 'Scheduler: <id>' conversation name."""
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        invoke_assistant(
+            assistant_id='assistant-id',
+            user_id='user-id',
+            job_id='job-id',
+            task='Do a task',
+            url="http://mockserver:8080",
+            trigger_source='Scheduler',
+        )
+
+        mock_create_conversation.assert_called_once_with(
+            assistant_id='assistant-id',
+            conversation_name='Scheduler: assistant-id',
+            user_id='user-id',
+            job_id='job-id',
+            url='http://mockserver:8080',
+        )
         mock_post.assert_called_once_with(
             url='http://mockserver:8080/v1/assistants/assistant-id/model',
             headers=_EXPECTED_HEADERS,
