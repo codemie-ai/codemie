@@ -57,6 +57,11 @@ spec:
           env:
             - name: APP_VERSION
               value: {{ .Values.image.tag | default .Chart.AppVersion }}
+            - name: INTERNAL_BIND_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "codemie.processAuthSecretName" . }}
+                  key: {{ include "codemie.processAuthSecretField" . }}
             {{- with .Values.extraEnv }}
               {{- toYaml . | nindent 12 }}
             {{- end }}

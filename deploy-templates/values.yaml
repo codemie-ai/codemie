@@ -205,6 +205,12 @@ features:
         # -- Specify name to use a separate namespace for scheduling code_executor pods. Empty means the same namespace as CodeMie
         namespace: ""
 
+security:
+  processAuthSecret:
+    create: true  # whether generate random secret, the secret must present in namespace if disabled. Has no effect if argoRollout enabled
+    name: ""  # the secret name to use, defaults to codemie-process-auth
+    field: ""  # the field name in secret, defaults to internal_bind_key
+
 serviceAccount:
   # -- Specifies whether a service account should be created
   create: false

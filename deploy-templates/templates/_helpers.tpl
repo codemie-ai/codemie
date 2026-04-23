@@ -94,3 +94,17 @@ Return if ingress supports pathType.
 {{- define "codemie.ingress.supportsPathType" -}}
   {{- or (eq (include "codemie.ingress.isStable" .) "true") (and (eq (include "codemie.ingress.apiVersion" .) "networking.k8s.io/v1beta1") (semverCompare ">= 1.18-0" .Capabilities.KubeVersion.Version)) -}}
 {{- end -}}
+
+{{/*
+Create the name of the secret for inter-process authentication
+*/}}
+{{- define "codemie.processAuthSecretName" -}}
+{{- default (printf "%s-process-auth" (include "codemie.name" .)) .Values.security.processAuthSecret.name }}
+{{- end }}
+
+{{/*
+Create the name of the secret field for inter-process authentication
+*/}}
+{{- define "codemie.processAuthSecretField" -}}
+{{- default "internal_bind_key" .Values.security.processAuthSecret.field }}
+{{- end }}
