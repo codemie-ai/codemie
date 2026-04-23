@@ -16,7 +16,7 @@ import jwt
 from datetime import datetime, timedelta, timezone
 from fastapi import Request, status
 
-from codemie.configs import logger
+from codemie.configs import config, logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.idp.base import BaseIdp
 from codemie.rest_api.security.user import User, USER_ID_HEADER, AUTHORIZATION_HEADER
@@ -78,6 +78,9 @@ class LocalIdp(BaseIdp):
             )
 
         auth_token = self._generate_mock_token(user_id)
+
+        if config.ENV == "local":
+            return User(id=user_id, username=user_id, name=user_id, auth_token=auth_token)
 
         from codemie.clients.postgres import get_async_session
         from codemie.repository.user_kb_repository import user_kb_repository
