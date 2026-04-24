@@ -68,6 +68,9 @@ MCP_IMAGES_SUBDIR = "mcp_images"
 # Supervisor handoff tool prefix for LangGraph agents
 SUPERVISOR_HANDOFF_TOOL_PREFIX = "transfer_to"
 
+# Max length of tool name
+MAX_TOOL_NAME_LENGTH = 64
+
 
 ModelTypes = LLMService(llm_config).create_model_types_enum()
 

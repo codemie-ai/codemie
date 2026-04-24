@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,7 +25,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from codemie.chains.base import ThoughtAuthorType
 from codemie.configs import config
 from codemie.configs.logger import logger
-from codemie.core.constants import ChatRole
+from codemie.core.constants import MAX_TOOL_NAME_LENGTH, ChatRole
 from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
 
 SKILL_TOOL_NAME = "skill"
@@ -427,7 +428,18 @@ class ConversationHistoryProjectionService:
     def _normalize_tool_name(cls, author_name: str | None) -> str:
         if not author_name:
             return "unknown_tool"
-        return author_name.strip().replace(" ", "_").lower()
+
+        # Strip and lowercase
+        normalized = author_name.strip().lower()
+
+        # Replace invalid chars with underscore
+        normalized = re.sub(r'[^a-z0-9_.\-]', '_', normalized)
+        normalized = re.sub(r'_+', '_', normalized)
+        normalized = normalized.strip('_')
+        if len(normalized) >= MAX_TOOL_NAME_LENGTH:
+            normalized = normalized[:MAX_TOOL_NAME_LENGTH]
+
+        return normalized if normalized else "unknown_tool"
 
     @classmethod
     def _coerce_tool_args(cls, tool_args: Any, args_text: str) -> dict[str, Any]:
