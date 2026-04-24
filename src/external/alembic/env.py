@@ -23,7 +23,6 @@ from codemie.rest_api.models.base import PydanticListType, PydanticType
 from sqlmodel import SQLModel
 from codemie.clients.postgres import PostgresClient
 
-
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
@@ -36,10 +35,10 @@ import importlib
 # with not default schema.
 ###############################################
 # Force reload modules to ensure clean state
-if 'alembic_postgresql_enum.get_enum_data.defined_enums' in sys.modules:
-    importlib.reload(sys.modules['alembic_postgresql_enum.get_enum_data.defined_enums'])
-if 'alembic_postgresql_enum.sql_commands.enum_type' in sys.modules:
-    importlib.reload(sys.modules['alembic_postgresql_enum.sql_commands.enum_type'])
+if "alembic_postgresql_enum.get_enum_data.defined_enums" in sys.modules:
+    importlib.reload(sys.modules["alembic_postgresql_enum.get_enum_data.defined_enums"])
+if "alembic_postgresql_enum.sql_commands.enum_type" in sys.modules:
+    importlib.reload(sys.modules["alembic_postgresql_enum.sql_commands.enum_type"])
 
 
 def patched_get_all_enums(connection, schema):
@@ -62,8 +61,14 @@ def patched_get_all_enums(connection, schema):
 
 # Patch both modules
 patches = [
-    patch('alembic_postgresql_enum.sql_commands.enum_type.get_all_enums', patched_get_all_enums),
-    patch('alembic_postgresql_enum.get_enum_data.defined_enums.get_all_enums', patched_get_all_enums),
+    patch(
+        "alembic_postgresql_enum.sql_commands.enum_type.get_all_enums",
+        patched_get_all_enums,
+    ),
+    patch(
+        "alembic_postgresql_enum.get_enum_data.defined_enums.get_all_enums",
+        patched_get_all_enums,
+    ),
 ]
 
 # Start patches
@@ -113,6 +118,7 @@ from codemie.rest_api.models.user_kata_progress import UserKataProgress
 from codemie.rest_api.models.usage.kata_user_interaction import KataUserInteractionSQL
 from codemie.rest_api.models.mcp_config import MCPConfig
 from codemie.rest_api.models.dynamic_config import DynamicConfig
+from codemie.rest_api.models.agent_workspace import AgentWorkspace, AgentWorkspaceFile
 from codemie.rest_api.a2a.types import Task
 
 target_metadata = SQLModel.metadata
@@ -132,7 +138,7 @@ def include_object(object, name, type_, reflected, compare_to):
 def render_item(type_, obj, autogen_context):
     """Apply custom rendering for selected items."""
 
-    if type_ == 'type':
+    if type_ == "type":
         if isinstance(obj, (PydanticType, PydanticListType)):
             return "postgresql.JSONB(astext_type=sa.Text())"
 

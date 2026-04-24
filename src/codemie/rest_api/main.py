@@ -49,6 +49,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 from codemie.rest_api.routers import budget_router
 from codemie.rest_api.routers import (
+    agent_workspace,
     guardrail,
     index,
     common,
@@ -616,6 +617,7 @@ app.include_router(llm_models.proxy_router)
 app.include_router(guardrail.router)
 app.include_router(vendor.router)
 app.include_router(files.router)
+app.include_router(agent_workspace.router)
 app.include_router(webhook.router)
 app.include_router(customer_config.router)
 app.include_router(provider.router)
