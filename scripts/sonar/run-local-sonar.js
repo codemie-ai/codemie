@@ -82,30 +82,6 @@ function createRequestModule(targetUrl) {
     return targetUrl.protocol === 'https:' ? https : http;
 }
 
-function isServerReachable(sonarHostUrl) {
-    return new Promise((resolve) => {
-        const requestUrl = new URL('/api/system/status', sonarHostUrl);
-        const request = createRequestModule(requestUrl).request(
-            requestUrl,
-            { method: 'GET', timeout: SERVER_TIMEOUT_MS },
-            (response) => {
-                response.resume();
-                resolve(true);
-            },
-        );
-
-        request.on('timeout', () => {
-            request.destroy(new Error(`Timed out after ${SERVER_TIMEOUT_MS}ms`));
-        });
-
-        request.on('error', () => {
-            resolve(false);
-        });
-
-        request.end();
-    });
-}
-
 function resolveBranchName() {
     const overrideBranchName = process.env.SONAR_BRANCH_NAME?.trim();
     if (overrideBranchName) {
@@ -373,11 +349,6 @@ async function main() {
 
     log(`Using SonarQube project "${sonarProjectKey}" from .sonarlint/connectedMode.json.`);
     log(`Running analysis for branch "${branchName}".`);
-
-    if (!(await isServerReachable(sonarHostUrl))) {
-        log(`Skipping Sonar scan because ${sonarHostUrl} is unreachable.`);
-        process.exit(0);
-    }
 
     if (sonarProperties['sonar.projectKey'] && sonarProperties['sonar.projectKey'] !== sonarProjectKey) {
         log(

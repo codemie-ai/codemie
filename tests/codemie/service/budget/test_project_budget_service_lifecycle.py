@@ -77,6 +77,7 @@ async def test_reset_project_budget_uses_ensure_when_provider_budget_ref_missing
             "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
             new=AsyncMock(),
         ) as mock_update_metadata,
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
     ):
         await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
 
@@ -126,6 +127,10 @@ async def test_delete_project_budget_marks_deleted_and_clears_resolution_cache()
         patch(
             "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.get_active_by_budget_id",
             new=AsyncMock(return_value=allocations),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.budget_repository.list_active_child_budgets",
+            new=AsyncMock(return_value=[]),
         ),
         patch("codemie.service.budget.project_budget_service.get_active_provider", return_value=provider),
         patch(
@@ -187,9 +192,15 @@ async def test_clear_member_override_raises_404_when_member_missing():
     service = ProjectBudgetService()
     session = AsyncMock()
 
-    with patch(
-        "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.clear_member_override",
-        new=AsyncMock(return_value=None),
+    with (
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.clear_member_override",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.budget_repository.get_by_id",
+            new=AsyncMock(return_value=SimpleNamespace(budget_type="project")),
+        ),
     ):
         with pytest.raises(ExtendedHTTPException) as exc_info:
             await service.clear_member_override(

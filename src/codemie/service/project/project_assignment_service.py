@@ -33,7 +33,12 @@ from codemie.repository.user_repository import user_repository
 from codemie.rest_api.models.user_management import UserProject
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_enums import AllocationMode, SyncStatus
-from codemie.service.budget.budget_models import Budget, ProjectBudgetAssignment, ProjectMemberBudgetAssignment
+from codemie.service.budget.budget_models import (
+    Budget,
+    ProjectBudgetAssignment,
+    ProjectMemberBudgetAssignment,
+    build_shared_project_budget_id,
+)
 from codemie.service.budget.provider_registry import get_active_provider
 
 
@@ -140,6 +145,8 @@ class ProjectAssignmentService:
                 allocation_mode=AllocationMode.EQUAL.value,
                 allocated_soft_budget=soft_budget,
                 allocated_max_budget=max_budget,
+                shared_budget_id=build_shared_project_budget_id(assignment.budget_id),
+                effective_budget_id=build_shared_project_budget_id(assignment.budget_id),
                 budget_reset_at=budget.budget_reset_at,
                 assigned_by=actor_id,
                 sync_status=SyncStatus.PENDING,
@@ -209,9 +216,7 @@ class ProjectAssignmentService:
             raise ExtendedHTTPException(
                 code=400,
                 message="Cannot remove the project creator from the project",
-                details=(
-                    f"User '{creator_name}' is the creator of project " f"'{project_name}' and cannot be unassigned"
-                ),
+                details=f"User '{creator_name}' is the creator of project '{project_name}' and cannot be unassigned",
                 help="The project creator must always remain a member of the project",
             )
 

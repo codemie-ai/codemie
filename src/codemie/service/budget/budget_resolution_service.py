@@ -50,6 +50,9 @@ class ResolvedBudgetContext(BaseModel):
     project_name: str | None
     budget_category: BudgetCategory
     budget_id: str | None
+    effective_budget_id: str | None = None
+    shared_budget_id: str | None = None
+    override_budget_id: str | None = None
     member_allocation_id: str | None = None
     provider_metadata: dict[str, Any] = Field(default_factory=dict)
     member_provider_metadata: dict[str, Any] = Field(default_factory=dict)
@@ -89,6 +92,9 @@ class BudgetResolutionService:
             project_name=project_name,
             budget_category=budget_category,
             budget_id=ctx.budget_id,
+            effective_budget_id=ctx.effective_budget_id,
+            shared_budget_id=ctx.shared_budget_id,
+            override_budget_id=ctx.override_budget_id,
             member_allocation_id=ctx.allocation_id,
             provider_metadata=ctx.budget_provider_metadata,
             member_provider_metadata=ctx.member_provider_metadata,
@@ -130,6 +136,9 @@ class BudgetResolutionService:
                     """
                     SELECT pba.budget_id,
                            pmba.id                     AS allocation_id,
+                           pmba.effective_budget_id    AS effective_budget_id,
+                           pmba.shared_budget_id       AS shared_budget_id,
+                           pmba.override_budget_id     AS override_budget_id,
                            b.provider_metadata         AS budget_meta,
                            pmba.pmba_provider_metadata AS member_meta
                     FROM   project_budget_assignments pba
@@ -158,6 +167,9 @@ class BudgetResolutionService:
             project_name=project_name,
             budget_category=budget_category,
             budget_id=row["budget_id"],
+            effective_budget_id=row.get("effective_budget_id"),
+            shared_budget_id=row.get("shared_budget_id"),
+            override_budget_id=row.get("override_budget_id"),
             member_allocation_id=row["allocation_id"],
             provider_metadata=row["budget_meta"] or {},
             member_provider_metadata=row["member_meta"] or {},

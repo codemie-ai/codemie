@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from sqlalchemy import text
@@ -31,8 +31,11 @@ class ProjectBudgetContext:
 
     budget_id: str
     allocation_id: str
-    budget_provider_metadata: dict
-    member_provider_metadata: dict
+    effective_budget_id: str | None = None
+    shared_budget_id: str | None = None
+    override_budget_id: str | None = None
+    budget_provider_metadata: dict = field(default_factory=dict)
+    member_provider_metadata: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -310,6 +313,9 @@ class ProjectBudgetAssignmentRepository:
             """
             SELECT pba.budget_id,
                    pmba.id                     AS allocation_id,
+                   pmba.effective_budget_id    AS effective_budget_id,
+                   pmba.shared_budget_id       AS shared_budget_id,
+                   pmba.override_budget_id     AS override_budget_id,
                    b.provider_metadata         AS budget_meta,
                    pmba.pmba_provider_metadata AS member_meta
             FROM   project_budget_assignments pba
@@ -335,6 +341,9 @@ class ProjectBudgetAssignmentRepository:
         return ProjectBudgetContext(
             budget_id=row["budget_id"],
             allocation_id=row["allocation_id"],
+            effective_budget_id=row.get("effective_budget_id"),
+            shared_budget_id=row.get("shared_budget_id"),
+            override_budget_id=row.get("override_budget_id"),
             budget_provider_metadata=row["budget_meta"] or {},
             member_provider_metadata=row["member_meta"] or {},
         )
@@ -499,6 +508,33 @@ class ProjectMemberBudgetAssignmentRepository:
             session.add(row)
             await session.flush()
             await session.refresh(row)
+        return row
+
+    async def update_member_budget_routing(
+        self,
+        session: AsyncSession,
+        *,
+        allocation_id: str,
+        shared_budget_id: str | None,
+        override_budget_id: str | None,
+        effective_budget_id: str | None,
+        allocation_mode: str,
+        override_reason: str | None = None,
+    ) -> ProjectMemberBudgetAssignment | None:
+        """Update the effective child-budget routing for one member allocation."""
+        stmt = select(ProjectMemberBudgetAssignment).where(ProjectMemberBudgetAssignment.id == allocation_id)
+        result = await session.execute(stmt)
+        row = result.scalars().first()
+        if row is None:
+            return None
+        row.shared_budget_id = shared_budget_id
+        row.override_budget_id = override_budget_id
+        row.effective_budget_id = effective_budget_id
+        row.allocation_mode = allocation_mode
+        row.override_reason = override_reason
+        session.add(row)
+        await session.flush()
+        await session.refresh(row)
         return row
 
     async def update_member_override(

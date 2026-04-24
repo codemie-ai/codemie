@@ -25,6 +25,7 @@ from codemie.repository.project_budget_repository import (
     project_member_budget_assignment_repository,
 )
 from codemie.service.budget.budget_enums import BudgetCategory, BudgetScope, SyncStatus
+from codemie.service.budget.budget_models import build_override_project_budget_id, build_shared_project_budget_id
 from codemie.service.budget.budget_resolution_service import _resolution_cache, budget_resolution_service
 from codemie.service.budget.provider import BudgetProviderMemberState
 from codemie.service.budget.provider_registry import get_active_provider
@@ -55,6 +56,31 @@ def _build_member_provider_metadata(member_state: BudgetProviderMemberState) -> 
     }
 
 
+def _effective_budget_id_for_member(
+    *,
+    budget_id: str,
+    user_id: str,
+    resolved,
+    allocation: Any | None = None,
+    current_provider_budget_id: str | None = None,
+) -> str:
+    effective_budget_id = resolved.effective_budget_id or current_provider_budget_id
+    if effective_budget_id:
+        return effective_budget_id
+
+    override_budget_id = getattr(resolved, "override_budget_id", None)
+    if override_budget_id:
+        return override_budget_id
+
+    shared_budget_id = getattr(resolved, "shared_budget_id", None)
+    if shared_budget_id:
+        return shared_budget_id
+
+    if getattr(allocation, "allocation_mode", None) == "fixed":
+        return build_override_project_budget_id(budget_id, user_id)
+    return build_shared_project_budget_id(budget_id)
+
+
 async def ensure_project_member_runtime_ready(
     *,
     user_id: str,
@@ -78,8 +104,14 @@ async def ensure_project_member_runtime_ready(
         if resolved.scope != BudgetScope.PROJECT:
             return
 
-        if _metadata_value(resolved.member_provider_metadata, "provider_member_ref") and _metadata_value(
-            resolved.member_provider_metadata, "provider_budget_id"
+        current_provider_member_ref = _metadata_value(resolved.member_provider_metadata, "provider_member_ref")
+        current_provider_budget_id = _metadata_value(resolved.member_provider_metadata, "provider_budget_id")
+        expected_budget_id = resolved.effective_budget_id or current_provider_budget_id
+        if (
+            current_provider_member_ref
+            and current_provider_budget_id
+            and expected_budget_id
+            and current_provider_budget_id == expected_budget_id
         ):
             return
 
@@ -106,6 +138,15 @@ async def ensure_project_member_runtime_ready(
                 f"Budget not found for budget_id={resolved.budget_id!r}, "
                 f"project={project_name!r}, budget_category={budget_category.value!r}, user_id={user_id!r}"
             )
+
+        effective_budget_id = _effective_budget_id_for_member(
+            budget_id=resolved.budget_id,
+            user_id=user_id,
+            resolved=resolved,
+            allocation=allocation,
+            current_provider_budget_id=current_provider_budget_id,
+        )
+        allocation.effective_budget_id = effective_budget_id
 
         try:
             member_state = await get_active_provider().sync_member_allocation(allocation=allocation, budget=budget)

@@ -367,8 +367,13 @@ Tech Lead:
 - Pass task details (Jira or user-provided) and analysis findings
 - Wait for specification before implementation
 
+### QA Lead Skill
+- Use after implementation is complete — runs ruff, license checks, gitleaks, and sonar-local
+- Always suggest `qa-lead` as the next step when implementation concludes
+- Example: "Implementation is complete. Run `/qa-lead` to verify quality gates before committing."
+
 ### Codemie-Commit Skill
-- Use after implementation completion
+- Use after `qa-lead` passes
 - Ensure commit message references Jira ticket (if applicable)
 - Follow git workflow from guides
 

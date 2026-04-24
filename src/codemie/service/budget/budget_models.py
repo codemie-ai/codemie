@@ -27,6 +27,18 @@ from sqlmodel import Field, SQLModel
 from codemie.service.budget.budget_enums import AllocationMode, BudgetType
 
 BUDGET_ID_FOREIGN_KEY = "budgets.budget_id"
+USER_ID_FOREIGN_KEY = "users.id"
+APPLICATION_ID_FOREIGN_KEY = "applications.id"
+
+
+def build_shared_project_budget_id(main_budget_id: str) -> str:
+    """Return the deterministic shared child budget id for a project budget."""
+    return f"{main_budget_id}:shared"
+
+
+def build_override_project_budget_id(main_budget_id: str, user_id: str) -> str:
+    """Return the deterministic override child budget id for a user."""
+    return f"{main_budget_id}:user:{user_id}"
 
 
 class BudgetProviderMetadata(BaseModel):
@@ -70,8 +82,19 @@ class Budget(SQLModel, table=True):
 
     __tablename__ = "budgets"
 
-    budget_id: str = Field(primary_key=True, max_length=128)
+    budget_id: str = Field(primary_key=True, max_length=255)
     budget_type: str = Field(nullable=False, max_length=16, default=BudgetType.GLOBAL)
+    budget_origin_type: str = Field(nullable=False, max_length=32, default="main")
+    parent_budget_id: Optional[str] = Field(
+        default=None,
+        nullable=True,
+        max_length=255,
+        foreign_key=BUDGET_ID_FOREIGN_KEY,
+    )
+    owner_user_id: Optional[str] = Field(default=None, nullable=True, max_length=36, foreign_key=USER_ID_FOREIGN_KEY)
+    project_name: Optional[str] = Field(
+        default=None, nullable=True, max_length=100, foreign_key=APPLICATION_ID_FOREIGN_KEY
+    )
     name: str = Field(nullable=False, max_length=128)
     description: Optional[str] = Field(default=None, max_length=500)
     soft_budget: float = Field(nullable=False)
@@ -96,6 +119,10 @@ class Budget(SQLModel, table=True):
         sa_column=Column(TIMESTAMP(timezone=True), nullable=True),
         default=None,
     )
+    detached_at: Optional[datetime] = Field(
+        sa_column=Column(TIMESTAMP(timezone=True), nullable=True),
+        default=None,
+    )
 
     __table_args__ = (
         # Partial unique index: only active (non-deleted) budgets must have unique names.
@@ -103,6 +130,9 @@ class Budget(SQLModel, table=True):
         Index("ix_budgets_budget_category", "budget_category"),
         Index("ix_budgets_budget_type", "budget_type"),
         Index("ix_budgets_type_category", "budget_type", "budget_category"),
+        Index("ix_budgets_parent_budget_id", "parent_budget_id"),
+        Index("ix_budgets_origin_type", "budget_origin_type"),
+        Index("ix_budgets_project_origin", "project_name", "budget_category", "budget_origin_type"),
         Index("ix_budgets_created_by", "created_by"),
     )
 
@@ -121,7 +151,7 @@ class UserBudgetAssignment(SQLModel, table=True):
 
     user_id: str = Field(
         primary_key=True,
-        foreign_key="users.id",
+        foreign_key=USER_ID_FOREIGN_KEY,
         max_length=36,
     )
     category: str = Field(
@@ -132,7 +162,7 @@ class UserBudgetAssignment(SQLModel, table=True):
     budget_id: str = Field(
         foreign_key=BUDGET_ID_FOREIGN_KEY,
         nullable=False,
-        max_length=128,
+        max_length=255,
     )
     assigned_at: Optional[datetime] = Field(
         sa_column=Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
@@ -160,11 +190,11 @@ class ProjectBudgetAssignment(SQLModel, table=True):
         primary_key=True,
         max_length=36,
     )
-    project_name: str = Field(nullable=False, max_length=100, foreign_key="applications.id")
+    project_name: str = Field(nullable=False, max_length=100, foreign_key=APPLICATION_ID_FOREIGN_KEY)
     budget_category: str = Field(nullable=False, max_length=32)
     budget_id: str = Field(
         nullable=False,
-        max_length=128,
+        max_length=255,
         foreign_key=BUDGET_ID_FOREIGN_KEY,
     )
     allocation_mode: str = Field(nullable=False, max_length=16, default=AllocationMode.EQUAL)
@@ -200,18 +230,36 @@ class ProjectMemberBudgetAssignment(SQLModel, table=True):
         primary_key=True,
         max_length=36,
     )
-    project_name: str = Field(nullable=False, max_length=100, foreign_key="applications.id")
+    project_name: str = Field(nullable=False, max_length=100, foreign_key=APPLICATION_ID_FOREIGN_KEY)
     budget_category: str = Field(nullable=False, max_length=32)
     project_budget_id: str = Field(
         nullable=False,
-        max_length=128,
+        max_length=255,
         foreign_key=BUDGET_ID_FOREIGN_KEY,
     )
-    user_id: str = Field(nullable=False, max_length=36, foreign_key="users.id")
+    user_id: str = Field(nullable=False, max_length=36, foreign_key=USER_ID_FOREIGN_KEY)
     allocation_mode: str = Field(nullable=False, max_length=16, default=AllocationMode.EQUAL)
     allocation_weight: Optional[float] = Field(default=None, nullable=True)
     allocated_soft_budget: float = Field(nullable=False)
     allocated_max_budget: float = Field(nullable=False)
+    shared_budget_id: Optional[str] = Field(
+        default=None,
+        nullable=True,
+        max_length=255,
+        foreign_key=BUDGET_ID_FOREIGN_KEY,
+    )
+    override_budget_id: Optional[str] = Field(
+        default=None,
+        nullable=True,
+        max_length=255,
+        foreign_key=BUDGET_ID_FOREIGN_KEY,
+    )
+    effective_budget_id: Optional[str] = Field(
+        default=None,
+        nullable=True,
+        max_length=255,
+        foreign_key=BUDGET_ID_FOREIGN_KEY,
+    )
     provider_metadata: Optional[dict] = Field(
         default=None,
         sa_column=Column("pmba_provider_metadata", JSONB, nullable=True),
@@ -238,4 +286,5 @@ class ProjectMemberBudgetAssignment(SQLModel, table=True):
         Index("ix_pmba_project_budget_id", "project_budget_id"),
         Index("ix_pmba_user_id", "user_id"),
         Index("ix_pmba_project_category", "project_name", "budget_category"),
+        Index("ix_pmba_effective_budget_id", "effective_budget_id"),
     )

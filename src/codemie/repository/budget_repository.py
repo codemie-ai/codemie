@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 
 from sqlalchemy import func, or_, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -49,6 +50,41 @@ class BudgetRepository:
         result = await session.execute(stmt)
         return result.scalars().first()
 
+    async def get_child_budget(
+        self,
+        session: AsyncSession,
+        *,
+        parent_budget_id: str,
+        budget_origin_type: str,
+        owner_user_id: str | None = None,
+    ) -> Budget | None:
+        """Return an active child budget for the given parent/origin/user tuple."""
+        stmt = select(Budget).where(
+            Budget.parent_budget_id == parent_budget_id,
+            Budget.budget_origin_type == budget_origin_type,
+            Budget.deleted_at.is_(None),
+        )
+        if owner_user_id is None:
+            stmt = stmt.where(Budget.owner_user_id.is_(None))
+        else:
+            stmt = stmt.where(Budget.owner_user_id == owner_user_id)
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    async def list_active_child_budgets(
+        self,
+        session: AsyncSession,
+        *,
+        parent_budget_id: str,
+    ) -> list[Budget]:
+        """Return all active child budgets for a parent budget."""
+        stmt = select(Budget).where(
+            Budget.parent_budget_id == parent_budget_id,
+            Budget.deleted_at.is_(None),
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_paginated(
         self,
         session: AsyncSession,
@@ -80,6 +116,17 @@ class BudgetRepository:
             raise ExtendedHTTPException(code=404, message=f"Budget not found: {budget_id}")
         for key, value in fields.items():
             setattr(budget, key, value)
+        session.add(budget)
+        await session.flush()
+        await session.refresh(budget)
+        return budget
+
+    async def detach_budget(self, session: AsyncSession, budget_id: str) -> Budget | None:
+        """Mark a budget as detached from active routing while keeping it for audit."""
+        budget = await self.get_by_id(session, budget_id)
+        if budget is None:
+            return None
+        budget.detached_at = datetime.now(tz=timezone.utc)
         session.add(budget)
         await session.flush()
         await session.refresh(budget)

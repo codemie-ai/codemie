@@ -30,6 +30,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
+from codemie.service.budget.budget_models import build_override_project_budget_id, build_shared_project_budget_id
 from codemie.service.budget.provider import (
     BudgetProviderMemberState,
     BudgetProviderState,
@@ -98,6 +99,24 @@ def _normalize_budget_reset_at(raw_value: Any, fallback: str | None) -> str | No
     if raw_value is None:
         return fallback
     return raw_value.isoformat()
+
+
+def _effective_project_member_budget_id(allocation: "ProjectMemberBudgetAssignment") -> str:
+    effective_budget_id = getattr(allocation, "effective_budget_id", None)
+    if effective_budget_id:
+        return effective_budget_id
+
+    override_budget_id = getattr(allocation, "override_budget_id", None)
+    if override_budget_id:
+        return override_budget_id
+
+    shared_budget_id = getattr(allocation, "shared_budget_id", None)
+    if shared_budget_id:
+        return shared_budget_id
+
+    if getattr(allocation, "allocation_mode", None) == "fixed":
+        return build_override_project_budget_id(allocation.project_budget_id, allocation.user_id)
+    return build_shared_project_budget_id(allocation.project_budget_id)
 
 
 class LiteLLMBudgetEnforcementProvider:
@@ -304,6 +323,7 @@ class LiteLLMBudgetEnforcementProvider:
         soft_budget: Decimal,
         max_budget: Decimal,
         budget_duration: str,
+        budget_reset_at: str | None = None,
         models: list[str] | None,
     ) -> BudgetProviderState:
         """Recreate the project key with the canonical project/category alias."""
@@ -319,6 +339,7 @@ class LiteLLMBudgetEnforcementProvider:
             max_budget=float(max_budget),
             soft_budget=float(soft_budget),
             budget_duration=budget_duration,
+            budget_reset_at=budget_reset_at,
             models=models,
         )
         if key_state is not None and key_state.get("budget_reset_at") is None:
@@ -348,6 +369,7 @@ class LiteLLMBudgetEnforcementProvider:
         soft_budget: Decimal,
         max_budget: Decimal,
         budget_duration: str,
+        budget_reset_at: str | None = None,
         models: list[str] | None,
     ) -> BudgetProviderState | None:
         existing_key = await asyncio.to_thread(service._get_project_key_by_alias, key_alias)
@@ -361,6 +383,7 @@ class LiteLLMBudgetEnforcementProvider:
                 max_budget=float(max_budget),
                 soft_budget=float(soft_budget),
                 budget_duration=budget_duration,
+                budget_reset_at=budget_reset_at,
                 models=models,
             )
         elif existing_key.get("key_hash"):
@@ -374,6 +397,7 @@ class LiteLLMBudgetEnforcementProvider:
                 max_budget=float(max_budget),
                 soft_budget=float(soft_budget),
                 budget_duration=budget_duration,
+                budget_reset_at=budget_reset_at,
                 models=models,
             )
         else:
@@ -652,6 +676,7 @@ class LiteLLMBudgetEnforcementProvider:
             soft_budget=soft_budget,
             max_budget=max_budget,
             budget_duration=budget_duration,
+            budget_reset_at=budget_state.budget_reset_at,
             models=models,
         )
         if state is None:
@@ -667,6 +692,7 @@ class LiteLLMBudgetEnforcementProvider:
                 soft_budget=soft_budget,
                 max_budget=max_budget,
                 budget_duration=budget_duration,
+                budget_reset_at=budget_state.budget_reset_at,
                 models=models,
             )
 
@@ -729,6 +755,7 @@ class LiteLLMBudgetEnforcementProvider:
             allocated_soft_budget=allocation.allocated_soft_budget,
             budget_duration=budget.budget_duration,
             budget_reset_at=budget.budget_reset_at,
+            effective_budget_id=_effective_project_member_budget_id(allocation),
         )
         if result is None:
             return BudgetProviderMemberState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
@@ -738,9 +765,9 @@ class LiteLLMBudgetEnforcementProvider:
             return BudgetProviderMemberState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
 
         metadata = dict(result.metadata)
-        metadata["provider_budget_id"] = provider_budget_id
         metadata["internal_budget"] = True
         metadata["budget_scope"] = "project_member"
+        metadata["provider_budget_id"] = provider_budget_id
 
         return BudgetProviderMemberState(
             provider=_PROVIDER_NAME,

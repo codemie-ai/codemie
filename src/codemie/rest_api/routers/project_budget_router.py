@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
@@ -167,7 +167,7 @@ def _build_project_budget_response(
                 allocated_soft_budget=a.allocated_soft_budget,
                 allocated_max_budget=a.allocated_max_budget,
                 sync_status=a.sync_status,
-                budget_id=_member_budget_id(a.provider_metadata),
+                budget_id=_member_budget_id(a),
             )
             for a in allocations
         ],
@@ -181,8 +181,20 @@ async def _load_and_build_response(session: AsyncSession, budget: Budget) -> Pro
     return _build_project_budget_response(budget, assignment, allocations)
 
 
-def _member_budget_id(provider_metadata: dict | None) -> str | None:
-    metadata = provider_metadata or {}
+def _allocation_value(allocation: ProjectMemberBudgetAssignment | dict[str, Any], key: str) -> Any:
+    if isinstance(allocation, dict):
+        return allocation.get(key)
+    return getattr(allocation, key, None)
+
+
+def _member_budget_id(allocation: ProjectMemberBudgetAssignment | dict[str, Any]) -> str | None:
+    effective_budget_id = _allocation_value(allocation, "effective_budget_id")
+    if isinstance(effective_budget_id, str) and effective_budget_id:
+        return effective_budget_id
+
+    metadata = _allocation_value(allocation, "provider_metadata") or allocation
+    if not isinstance(metadata, dict):
+        return None
     raw = metadata.get("raw")
     if isinstance(raw, dict):
         raw_budget_id = raw.get("provider_budget_id")
@@ -369,7 +381,7 @@ async def list_project_budget_members(
                 allocated_soft_budget=a.allocated_soft_budget,
                 allocated_max_budget=a.allocated_max_budget,
                 sync_status=a.sync_status,
-                budget_id=_member_budget_id(a.provider_metadata),
+                budget_id=_member_budget_id(a),
             )
             for a in allocations
         ]

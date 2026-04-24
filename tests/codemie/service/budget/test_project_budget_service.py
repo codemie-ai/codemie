@@ -26,7 +26,7 @@ from codemie.service.budget.provider import BudgetProviderMemberState, BudgetPro
 
 
 @pytest.mark.asyncio
-async def test_resync_member_allocations_persists_provider_budget_id():
+async def test_resync_member_allocations_updates_shared_child_budget_for_equal_members():
     service = ProjectBudgetService()
     session = AsyncMock()
     budget = SimpleNamespace(
@@ -60,6 +60,10 @@ async def test_resync_member_allocations_persists_provider_budget_id():
             new=AsyncMock(return_value=[allocation]),
         ),
         patch(
+            "codemie.service.budget.project_budget_service.project_budget_assignment_repository.get_active_by_budget_id",
+            new=AsyncMock(return_value=SimpleNamespace(project_name="proj-a")),
+        ),
+        patch(
             "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_allocation",
             new=AsyncMock(return_value=allocation),
         ),
@@ -67,6 +71,7 @@ async def test_resync_member_allocations_persists_provider_budget_id():
             "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
             new=AsyncMock(),
         ) as mock_update_metadata,
+        patch.object(service, "_ensure_shared_child_budget", new=AsyncMock()) as mock_ensure_shared_child_budget,
     ):
         await service._resync_member_allocations(
             session=session,
@@ -77,8 +82,16 @@ async def test_resync_member_allocations_persists_provider_budget_id():
             provider=provider,
         )
 
-    update_call = mock_update_metadata.await_args.kwargs
-    assert update_call["provider_metadata"]["raw"]["provider_budget_id"] == "member-budget-1"
+    provider.sync_member_allocation.assert_not_awaited()
+    mock_update_metadata.assert_not_awaited()
+    mock_ensure_shared_child_budget.assert_awaited_once_with(
+        session,
+        main_budget=budget,
+        project_name="proj-a",
+        actor_id="system",
+        per_member_soft_budget=20.0,
+        per_member_max_budget=25.0,
+    )
 
 
 @pytest.mark.asyncio
@@ -232,6 +245,7 @@ async def test_reset_project_budget_persists_provider_budget_id_for_each_member(
             "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
             new=AsyncMock(),
         ) as mock_update_metadata,
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
     ):
         await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
 
