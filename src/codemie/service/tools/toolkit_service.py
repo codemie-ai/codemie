@@ -72,7 +72,11 @@ from codemie.service.tools.toolkit_lookup_service import ToolkitLookupService
 from codemie.repository.skill_repository import SkillRepository
 from codemie.service.tools.toolkit_settings_service import ToolkitSettingService
 from codemie.service.tools.tools_preprocessing import ToolsPreprocessorFactory
-from codemie.agents.tools.skill.skill_tool import create_skill_tool_if_needed
+from codemie.agents.tools.skill.skill_tool import (
+    create_skill_companion_file_tool_if_needed,
+    create_skill_tool_if_needed,
+)
+from codemie_tools.data_management.workspace.tools_vars import AGENT_WORKSPACE_TOOLKIT
 
 
 class ToolkitService:
@@ -125,18 +129,26 @@ class ToolkitService:
             ToolSet.PLATFORM_TOOLS: lambda assistant, user, llm_model, request_uuid, request: PlatformToolkit(
                 user=user
             ).get_tools(),
-            ToolSet.FILE_SYSTEM: lambda assistant,
-            user,
-            llm_model,
-            request_uuid,
-            request: ToolkitSettingService.get_file_system_toolkit(
-                assistant,
-                assistant.project,
-                user,
-                llm_model,
-                request_uuid,
-                request.tools_config if request else None,
-                cls._get_file_objects_from_request(request),
+            ToolSet.FILE_SYSTEM: lambda assistant, user, llm_model, request_uuid, request: (
+                ToolkitSettingService.get_file_system_toolkit(
+                    assistant,
+                    assistant.project,
+                    user,
+                    llm_model,
+                    request_uuid,
+                    request.tools_config if request else None,
+                    cls._get_file_objects_from_request(request),
+                )
+            ),
+            AGENT_WORKSPACE_TOOLKIT: lambda assistant, user, llm_model, request_uuid, request: (
+                ToolkitSettingService.get_agent_workspace_toolkit(
+                    assistant,
+                    assistant.project,
+                    user,
+                    llm_model,
+                    request_uuid,
+                    request,
+                )
             ),
             **cls.get_provider_toolkits_methods(),
         }
@@ -244,7 +256,7 @@ class ToolkitService:
         toolkit_methods = {}
 
         for toolkit in provider_toolkits:
-            toolkit_name = toolkit.get_tools_ui_info()['toolkit']
+            toolkit_name = toolkit.get_tools_ui_info()["toolkit"]
 
             toolkit_methods[toolkit_name] = (
                 lambda assistant, user, llm_model, request_uuid, request, _toolkit=toolkit: [
@@ -306,8 +318,7 @@ class ToolkitService:
                     merged.append(toolkit)
                     existing_toolkit_names.add(toolkit.toolkit)
                     logger.debug(
-                        f"Skill '{skill.name}' contributed toolkit '{toolkit.toolkit}' "
-                        f"to assistant '{assistant.name}'"
+                        f"Skill '{skill.name}' contributed toolkit '{toolkit.toolkit}' to assistant '{assistant.name}'"
                     )
 
         return merged
@@ -444,6 +455,14 @@ class ToolkitService:
         if skill_tool:
             tools.append(skill_tool)
             logger.debug(f"Initialized skill tool for assistant `{assistant.name}`. Total tools: {len(tools)}")
+
+        skill_file_tool = create_skill_companion_file_tool_if_needed(
+            assistant_config=assistant,
+            user=user,
+        )
+        if skill_file_tool:
+            tools.append(skill_file_tool)
+            logger.debug(f"Initialized skill file tool for assistant `{assistant.name}`. Total tools: {len(tools)}")
 
         # File tools
         if file_objects:
@@ -1088,14 +1107,18 @@ class ToolkitService:
         assistant_tools_names = [tool.name for tool in assistant_tools]
         filtered_tools = []
         for agent_tool in agent_tools:
-            is_plugin_tool = agent_tool.metadata and agent_tool.metadata.get('tool_type') == ToolType.PLUGIN
+            is_plugin_tool = agent_tool.metadata and agent_tool.metadata.get("tool_type") == ToolType.PLUGIN
             has_global_plugin_tool = is_plugin_tool and ToolType.PLUGIN.value.capitalize() in assistant_tools_names
 
             tool_name = cleanup_plugin_tool_name(agent_tool.name) if is_plugin_tool else agent_tool.name
             tool_enabled = tool_name in assistant_tools_names
-            tool_is_internal = tool_name.startswith('_')
+            tool_is_internal = tool_name.startswith("_")
             tool_enabled_but_with_suffix = next(
-                filter(lambda x, tool_name=tool_name: tool_name.startswith(x + '_'), assistant_tools_names), None
+                filter(
+                    lambda x, tool_name=tool_name: tool_name.startswith(x + "_"),
+                    assistant_tools_names,
+                ),
+                None,
             )
 
             if (

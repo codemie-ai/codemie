@@ -19,6 +19,8 @@ This module provides services for exporting files from sandbox environments
 back to the file repository with proper MIME type detection.
 """
 
+from __future__ import annotations
+
 import logging
 import mimetypes
 import os
@@ -28,6 +30,8 @@ from pathlib import Path
 from typing import List, Optional, Any
 
 from llm_sandbox import SandboxSession
+
+from codemie_tools.base.file_object import FileObject
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +84,29 @@ class FileExportService:
 
         return urls
 
+    def collect_files_from_execution(
+        self, session: SandboxSession, file_paths: Optional[List[str]], workdir: str
+    ) -> List[FileObject]:
+        """Collect files from the execution environment into in-memory FileObjects."""
+        if file_paths is None:
+            return []
+
+        collected_files: List[FileObject] = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for i, src_path in enumerate(file_paths, 1):
+                file_object = self._collect_single_file(session, src_path, workdir, temp_dir, i)
+                if file_object:
+                    collected_files.append(file_object)
+
+        return collected_files
+
     def _export_single_file(
-        self, session: SandboxSession, src_path: str, workdir: str, temp_dir: str, index: int
+        self,
+        session: SandboxSession,
+        src_path: str,
+        workdir: str,
+        temp_dir: str,
+        index: int,
     ) -> Optional[str]:
         """
         Export a single file from sandbox.
@@ -124,6 +149,38 @@ class FileExportService:
 
         except Exception as e:
             logger.error(f"Failed to export file {src_path}: {e}")
+            return None
+
+    def _collect_single_file(
+        self,
+        session: SandboxSession,
+        src_path: str,
+        workdir: str,
+        temp_dir: str,
+        index: int,
+    ) -> FileObject | None:
+        try:
+            normalized_path = Path(src_path).as_posix()
+            filename = os.path.basename(normalized_path) or f"file_{index}"
+            temp_file_path = os.path.join(temp_dir, f"{index}_{filename}")
+
+            session.copy_from_runtime(f"{workdir}/{normalized_path}", temp_file_path)
+
+            extension = Path(normalized_path).suffix.lower().lstrip(".")
+            mime_type = self._determine_mime_type(extension)
+
+            with open(temp_file_path, "rb") as f:
+                content = f.read()
+
+            return FileObject(
+                name=normalized_path,
+                path=normalized_path,
+                mime_type=mime_type,
+                owner=self.user_id,
+                content=content,
+            )
+        except Exception as e:
+            logger.error(f"Failed to collect file {src_path}: {e}")
             return None
 
     @staticmethod

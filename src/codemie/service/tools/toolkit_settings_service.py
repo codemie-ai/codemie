@@ -17,6 +17,8 @@ from typing import Any, List, Optional
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.base.models import ToolKit, ToolSet
 from codemie_tools.data_management.file_system.toolkit import FileSystemToolkit
+from codemie_tools.data_management.workspace.toolkit import AgentWorkspaceToolkit
+from codemie_tools.data_management.workspace.tools_vars import AGENT_WORKSPACE_TOOLKIT
 from codemie_tools.git.toolkit import GitToolkit
 
 from codemie.agents.tools.code.code_toolkit import CodeToolkit
@@ -30,6 +32,8 @@ from codemie.rest_api.security.user import User
 
 
 class ToolkitSettingService:
+    AGENT_WORKSPACE_TOOLKIT = AGENT_WORKSPACE_TOOLKIT
+
     @classmethod
     def get_git_tools_with_creds(
         cls,
@@ -136,7 +140,9 @@ class ToolkitSettingService:
                 if context.context_type == ContextType.CODE:
                     code_index = ToolkitSettingService._find_code_index(assistant.project, context.name)
                     code_fields = CodeFields(
-                        app_name=assistant.project, repo_name=context.name, index_type=code_index.index_type
+                        app_name=assistant.project,
+                        repo_name=context.name,
+                        index_type=code_index.index_type,
                     )
                     configs["code_fields"] = code_fields.model_dump()
 
@@ -153,6 +159,24 @@ class ToolkitSettingService:
             chat_model=chat_model,
             image_generator=image_generator,
             input_files=input_files,
+        ).get_tools()
+
+    @classmethod
+    def get_agent_workspace_toolkit(
+        cls,
+        assistant: Assistant,
+        project_name: str,
+        user: User,
+        llm_model: Any,
+        request_uuid: str,
+        request=None,
+    ):
+        if not request or not getattr(request, "conversation_id", None):
+            return []
+
+        return AgentWorkspaceToolkit.get_toolkit(
+            conversation_id=request.conversation_id,
+            user=user,
         ).get_tools()
 
     @staticmethod

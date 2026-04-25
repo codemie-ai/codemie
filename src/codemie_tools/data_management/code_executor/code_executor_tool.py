@@ -26,16 +26,29 @@ from pydantic import BaseModel, Field
 
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.file_object import FileObject
-from codemie_tools.data_management.code_executor.file_export_service import FileExportService
-from codemie_tools.data_management.code_executor.file_upload_service import FileUploadService
-from codemie_tools.data_management.code_executor.llm_sandbox import apply_llm_sandbox_patch
-from codemie_tools.data_management.code_executor.local_execution_engine import LocalExecutionEngine
-from codemie_tools.data_management.code_executor.models import CodeExecutorConfig, ExecutionMode
+from codemie_tools.data_management.code_executor.file_export_service import (
+    FileExportService,
+)
+from codemie_tools.data_management.code_executor.file_upload_service import (
+    FileUploadService,
+)
+from codemie_tools.data_management.code_executor.llm_sandbox import (
+    apply_llm_sandbox_patch,
+)
+from codemie_tools.data_management.code_executor.local_execution_engine import (
+    LocalExecutionEngine,
+)
+from codemie_tools.data_management.code_executor.models import (
+    CodeExecutorConfig,
+    ExecutionMode,
+)
 from codemie_tools.data_management.code_executor.security_policies import (
     get_codemie_security_policy,
     get_restricted_module_names,
 )
-from codemie_tools.data_management.code_executor.session_manager import SandboxSessionManager
+from codemie_tools.data_management.code_executor.session_manager import (
+    SandboxSessionManager,
+)
 from codemie_tools.data_management.code_executor.tools_vars import (
     CODE_EXECUTOR_TOOL,
     COMMON_SANDBOX_LIBRARIES,
@@ -228,10 +241,12 @@ class CodeExecutorTool(CodeMieTool):
 
         #
         self.security_policy = get_codemie_security_policy(
-            severity_threshold=self.config.security_threshold, yaml_config_path=yaml_path
+            severity_threshold=self.config.security_threshold,
+            yaml_config_path=yaml_path,
         )
         blocked_modules_list = get_restricted_module_names(
-            severity_threshold=self.config.security_threshold, yaml_config_path=yaml_path
+            severity_threshold=self.config.security_threshold,
+            yaml_config_path=yaml_path,
         )
         blocked_modules_str = ", ".join(blocked_modules_list) if blocked_modules_list else "None (unrestricted mode)"
 
@@ -345,7 +360,10 @@ class CodeExecutorTool(CodeMieTool):
                         },
                     }
                 ],
-                "volumes": [{"name": "tmp", "emptyDir": {}}, {"name": "workdir", "emptyDir": {}}],
+                "volumes": [
+                    {"name": "tmp", "emptyDir": {}},
+                    {"name": "workdir", "emptyDir": {}},
+                ],
                 "securityContext": {
                     "runAsUser": self.config.run_as_user,
                     "runAsGroup": self.config.run_as_group,
