@@ -60,6 +60,7 @@ class FileDatasourceProcessor(BaseDatasourceProcessor):
         csv_rows_per_document: int = 1,
         embedding_model: Optional[str] = None,
         guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None,
+        include_email_attachments: bool = True,
     ):
         """
         Initialize FileDatasourceProcessor with the provided parameters.
@@ -74,6 +75,7 @@ class FileDatasourceProcessor(BaseDatasourceProcessor):
             csv_separator (str): Separator used in CSV files.
             csv_start_row (int): Starting row for processing CSV files.
             csv_rows_per_document (int): Number of rows per document for CSV files.
+            include_email_attachments (bool): Extract attachments from EML/MSG files.
         """
         self.project_name = project_name
         self.description = description
@@ -81,6 +83,7 @@ class FileDatasourceProcessor(BaseDatasourceProcessor):
         self.files_paths = files_paths
         self.index = index
         self.embedding_model = embedding_model
+        self.include_email_attachments = include_email_attachments
 
         # Required for CSV processing
         self.csv_separator = csv_separator
@@ -132,6 +135,7 @@ class FileDatasourceProcessor(BaseDatasourceProcessor):
             files_paths=self.files_paths,
             csv_separator=self.csv_separator,
             request_uuid=self.request_uuid,
+            include_email_attachments=self.include_email_attachments,
         )
 
     def _pre_process_csv(self, documents: List[Document]) -> List[Document]:

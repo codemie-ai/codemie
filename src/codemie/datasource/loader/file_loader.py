@@ -53,6 +53,7 @@ class FilesDatasourceLoader(BaseDatasourceLoader):
         files_paths: List[collections.namedtuple],
         csv_separator: str,
         request_uuid: Optional[str] = None,
+        include_email_attachments: bool = True,
     ):
         """
         Initialize the FilesDatasourceLoader.
@@ -62,12 +63,14 @@ class FilesDatasourceLoader(BaseDatasourceLoader):
             files_paths (list): List of file paths to be loaded.
             csv_separator (str): CSV delimiter.
             request_uuid (str, optional): Request UUID for tracking LLM usage.
+            include_email_attachments (bool): Extract attachments from EML/MSG files.
         """
         self.total_count_of_documents = total_count_of_documents
         self.file_repo = FileRepositoryFactory.get_current_repository()
         self.files_paths = files_paths
         self.request_uuid = request_uuid
         self._csv_separator = csv_separator
+        self._include_email_attachments = include_email_attachments
 
     def fetch_remote_stats(self) -> dict[str, Any]:
         """
@@ -108,4 +111,5 @@ class FilesDatasourceLoader(BaseDatasourceLoader):
             file_name=file.name,
             request_uuid=self.request_uuid,
             csv_separator=self._csv_separator,
+            include_email_attachments=self._include_email_attachments,
         )

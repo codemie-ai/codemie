@@ -1420,6 +1420,7 @@ class IndexKnowledgeBaseFileTypes(Enum):
     EPUB = 'epub'
     IPYNB = 'ipynb'
     MSG = 'msg'
+    EML = 'eml'
     YAML = 'yaml'
     YML = 'yml'
     JSON = 'json'
@@ -1441,6 +1442,7 @@ class IndexKnowledgeBaseFileRequest(IndexKnowledgeBaseRequest):
     csv_rows_per_document: Optional[int] = 1
     embedding_model: Optional[str] = None
     guardrail_assignments: Optional[str] = None  # json encoded list of GuardrailAssignmentItem
+    include_email_attachments: bool = True
 
     MIN_FILE_COUNT: ClassVar[int] = 1
     MAX_FILE_COUNT: ClassVar[int] = 10

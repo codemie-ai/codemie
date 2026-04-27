@@ -20,13 +20,29 @@ FILE_ANALYSIS_TOOL = ToolMetadata(
     Use this tool to read the content of files and convert it into markdown format.
     It supports various file types such as plain text files, HTML, zip archives, etc.
     This tool ensures that content is structured and easy to read with markdown syntax.
-    Do not use this tool for PDFs, PowerPoint presentations (PPTX), Excel files (XLS/XLSX), Word documents (DOCX) or CSV files,
-    as separate tools handle those formats. Call this tool when tasks involve reading and analyzing file content or
+    Do not use this tool for PDFs, PowerPoint presentations (PPTX), Excel files (XLS/XLSX), Word documents (DOCX),
+    CSV files, or email files (EML/MSG), as separate tools handle those formats.
+    Call this tool when tasks involve reading and analyzing file content or
     extracting information in a structured, markdown-friendly format. The output will include elements like headers,
     lists, tables, and more, converted into an easy-to-read markdown style. Useful for tasks like summarization,
     knowledge extraction, or reasoning based on file input.
     """,
     label="File Analysis",
+)
+
+EMAIL_TOOL = ToolMetadata(
+    name="email_analysis_tool",
+    description="""
+    Use this tool to read and analyze email files (EML and MSG formats).
+    By default it returns the email headers (From, To, Subject, Date, Cc), the message body,
+    and a list of attached file names with their sizes — no attachment content is extracted
+    unless the user explicitly requests it.
+    To analyze one or more attachments, provide their filenames in the `attachment_names`
+    parameter; the tool will then extract and return the content of each requested attachment
+    using the appropriate specialized file-analysis tool (PDF, DOCX, XLSX, PPTX, or generic).
+    Use this tool whenever the user uploads or references an EML or MSG file.
+    """,
+    label="Email Analysis Tool",
 )
 
 PPTX_TOOL = ToolMetadata(

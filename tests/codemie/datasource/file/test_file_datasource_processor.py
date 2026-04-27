@@ -111,6 +111,7 @@ def test_init_loader(mock_files_datasource_loader, sample_file_datasource_proces
         files_paths=sample_file_datasource_processor.files_paths,
         csv_separator=sample_file_datasource_processor.csv_separator,
         request_uuid=None,
+        include_email_attachments=True,
     )
 
 

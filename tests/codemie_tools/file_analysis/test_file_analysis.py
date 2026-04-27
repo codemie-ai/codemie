@@ -55,7 +55,7 @@ class TestFileAnalysisTool:
             pytest.param(filename, id=filename)
             for filename in os.listdir(pathlib.Path(__file__).parent / "samples")
             if os.path.isfile(os.path.join(pathlib.Path(__file__).parent / "samples", filename))
-            and not filename.endswith(('.pdf', '.pptx', '.xlsx', '.xls', '.csv', '.docx'))
+            and not filename.endswith(('.pdf', '.pptx', '.xlsx', '.xls', '.csv', '.docx', '.eml', '.msg'))
         ],
     )
     def test_file_processing(self, samples_dir, filename):
@@ -103,7 +103,7 @@ class TestFileAnalysisTool:
             pytest.param(filename, id=filename)
             for filename in os.listdir(pathlib.Path(__file__).parent / "samples")
             if os.path.isfile(os.path.join(pathlib.Path(__file__).parent / "samples", filename))
-            and not filename.endswith(('.pdf', '.pptx', '.xlsx', '.xls', '.csv', '.docx'))
+            and not filename.endswith(('.pdf', '.pptx', '.xlsx', '.xls', '.csv', '.docx', '.eml', '.msg'))
         ],
     )
     def test_fallback_mechanism(self, samples_dir, filename):
@@ -193,22 +193,20 @@ class TestFileAnalysisTool:
             txt_content = f.read()
         txt_file = FileObject(name="sample.txt", content=txt_content, mime_type="text/plain", owner="test")
 
-        # Get another sample file that's not handled by specialized tools (e.g., MSG)
-        msg_path = os.path.join(samples_dir, "sample.msg")
-        with open(msg_path, 'rb') as f:
-            msg_content = f.read()
-        msg_file = FileObject(
-            name="sample.msg", content=msg_content, mime_type="application/vnd.ms-outlook", owner="test"
-        )
+        # Get another sample file that's not handled by specialized tools (e.g., SVG)
+        svg_path = os.path.join(samples_dir, "sample.svg")
+        with open(svg_path, 'rb') as f:
+            svg_content = f.read()
+        svg_file = FileObject(name="sample.svg", content=svg_content, mime_type="image/svg+xml", owner="test")
 
         # Process both files together
-        tool = FileAnalysisTool(config=FileAnalysisConfig(input_files=[txt_file, msg_file]))
+        tool = FileAnalysisTool(config=FileAnalysisConfig(input_files=[txt_file, svg_file]))
         result = tool.execute(query="analyze these files")
 
         # Check for expected content
         assert "###SOURCE DOCUMENT###" in result, "Missing source document header"
         assert "**Source:** sample.txt" in result, "Missing source for text file"
-        assert "**Source:** sample.msg" in result, "Missing source for MSG file"
+        assert "**Source:** sample.svg" in result, "Missing source for SVG file"
         assert "**File Content:**" in result, "Missing file content header"
 
         # Verify files are properly separated

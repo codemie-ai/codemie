@@ -26,6 +26,7 @@ from codemie_tools.base.file_object import FileObject
 from codemie_tools.base.models import ToolKit, ToolSet, Tool
 from codemie_tools.file_analysis.csv.tools import CSVTool, get_csv_delimiter
 from codemie_tools.file_analysis.docx.tools import DocxTool
+from codemie_tools.file_analysis.email.tools import EmailAnalysisTool
 from codemie_tools.file_analysis.file_analysis_tool import FileAnalysisTool
 from codemie_tools.file_analysis.models import FileAnalysisConfig
 from codemie_tools.file_analysis.pdf.tools import PDFTool
@@ -37,6 +38,7 @@ from codemie_tools.file_analysis.tool_vars import (
     CSV_TOOL,
     EXCEL_TOOL,
     DOCX_TOOL,
+    EMAIL_TOOL,
 )
 from codemie_tools.file_analysis.xlsx.tools import XlsxTool
 from codemie_tools.utils.common import normalize_filename
@@ -51,6 +53,7 @@ SPECIALIZED_TOOL_CLASSES = [
     PPTXTool,
     XlsxTool,
     CSVTool,
+    EmailAnalysisTool,
 ]
 
 
@@ -71,6 +74,7 @@ class FileAnalysisToolkit(BaseToolkit):
                 Tool.from_metadata(CSV_TOOL),
                 Tool.from_metadata(EXCEL_TOOL),
                 Tool.from_metadata(DOCX_TOOL),
+                Tool.from_metadata(EMAIL_TOOL),
             ],
         ).model_dump()
 

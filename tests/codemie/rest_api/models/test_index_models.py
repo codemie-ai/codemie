@@ -40,6 +40,7 @@ class TestIndexKnowledgeBaseFileTypes:
             'epub',
             'ipynb',
             'msg',
+            'eml',
             'yaml',
             'yml',
             'json',

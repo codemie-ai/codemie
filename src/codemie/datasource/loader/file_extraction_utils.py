@@ -30,7 +30,6 @@ from langchain_markitdown import (
     HtmlLoader,
     ImageLoader,
     IpynbLoader,
-    OutlookMsgLoader,
     PlainTextLoader,
     XlsxLoader,
     ZipLoader,
@@ -38,6 +37,8 @@ from langchain_markitdown import (
 
 from codemie.configs import logger
 from codemie.core.dependecies import get_llm_by_credentials
+from codemie.datasource.loader.eml_loader import EmlLoader
+from codemie.datasource.loader.msg_loader import OutlookMsgWithAttachmentsLoader
 from codemie.datasource.loader.pdf_plumber_loader import PDFPlumberLoader
 from codemie.rest_api.models.index import IndexKnowledgeBaseFileTypes
 
@@ -50,7 +51,8 @@ LOADERS: dict[str, type] = {
     IndexKnowledgeBaseFileTypes.HTML.value: HtmlLoader,
     IndexKnowledgeBaseFileTypes.EPUB.value: EpubLoader,
     IndexKnowledgeBaseFileTypes.IPYNB.value: IpynbLoader,
-    IndexKnowledgeBaseFileTypes.MSG.value: OutlookMsgLoader,
+    IndexKnowledgeBaseFileTypes.MSG.value: OutlookMsgWithAttachmentsLoader,
+    IndexKnowledgeBaseFileTypes.EML.value: EmlLoader,
     IndexKnowledgeBaseFileTypes.ZIP.value: ZipLoader,
     IndexKnowledgeBaseFileTypes.AUDIO.value: AudioLoader,
     IndexKnowledgeBaseFileTypes.IMAGE.value: ImageLoader,
@@ -97,11 +99,36 @@ def is_binary_extractable(file_path: str) -> bool:
     return ext in LOADERS
 
 
+_EMAIL_EXTENSIONS = {IndexKnowledgeBaseFileTypes.MSG.value, IndexKnowledgeBaseFileTypes.EML.value}
+_IMAGE_EXTENSIONS = {
+    IndexKnowledgeBaseFileTypes.IMAGE.value,
+    IndexKnowledgeBaseFileTypes.JPEG.value,
+    IndexKnowledgeBaseFileTypes.PNG.value,
+}
+
+
+def _extract_image_documents(temp_path: str, file_name: str, request_uuid: str | None) -> list[Document]:
+    """Use the blob-based image parser (LLM or Tesseract) to extract text from an image file."""
+    from langchain_core.document_loaders.blob_loaders import Blob
+
+    documents: list[Document] = []
+    try:
+        parser = _build_pdf_images_parser(request_uuid)
+        blob = Blob.from_path(temp_path)
+        for doc in parser.lazy_parse(blob):
+            doc.metadata["source"] = file_name
+            documents.append(doc)
+    except Exception as e:
+        logger.warning(f"Failed to extract text from image {file_name}: {e}")
+    return documents
+
+
 def extract_documents_from_bytes(
     file_bytes: bytes,
     file_name: str,
     request_uuid: str | None = None,
     csv_separator: str = ",",
+    include_email_attachments: bool = True,
 ) -> list[Document]:
     """
     Extract LangChain Documents from raw bytes using the appropriate loader.
@@ -111,6 +138,7 @@ def extract_documents_from_bytes(
         file_name: Original file name used to determine loader and rewrite metadata.
         request_uuid: Optional request ID for LLM token-usage tracking.
         csv_separator: CSV column delimiter (default ",").
+        include_email_attachments: When True, EML/MSG loaders also extract embedded attachments.
 
     Returns:
         List of LangChain Document objects.
@@ -126,12 +154,19 @@ def extract_documents_from_bytes(
     if file_ext == IndexKnowledgeBaseFileTypes.PDF.value:
         loader_kwargs["images_parser"] = _build_pdf_images_parser(request_uuid)
 
+    if file_ext in _EMAIL_EXTENSIONS:
+        loader_kwargs["include_email_attachments"] = include_email_attachments
+
     temp_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(suffix=f".{file_ext}", delete=False) as tmp:
             tmp.write(file_bytes)
             tmp.flush()
             temp_path = tmp.name
+
+        if file_ext in _IMAGE_EXTENSIONS:
+            return _extract_image_documents(temp_path, file_name, request_uuid)
+
         loader = loader_class(temp_path, **loader_kwargs)
         try:
             for document in loader.lazy_load():

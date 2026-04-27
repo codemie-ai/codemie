@@ -1778,6 +1778,7 @@ def index_knowledge_base_files(
         user=raw_request.state.user,
         embedding_model=request.embedding_model,
         guardrail_assignments=parsed_guardrail_assignments,
+        include_email_attachments=request.include_email_attachments,
     )
 
     file_data_source_processor.schedule(background_tasks)
