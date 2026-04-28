@@ -17,12 +17,15 @@
 from __future__ import annotations
 
 import contextlib
+import datetime
 import email as _email_lib
 import email.message
 import logging
 import os
+import re
+import struct
 import tempfile
-from typing import Optional, Type, List
+from typing import Any, List, Optional, Type
 
 from markitdown import MarkItDown
 from pydantic import BaseModel, Field
@@ -38,11 +41,18 @@ logger = logging.getLogger(__name__)
 # OLE stream IDs for MSG files (MAPI property format)
 _MSG_BODY_UNICODE = "__substg1.0_1000001F"
 _MSG_BODY_ASCII = "__substg1.0_1000001E"
+_MSG_BODY_HTML = "__substg1.0_10130102"  # PR_HTML — binary blob (PT_BINARY = 0x0102)
+_MSG_BODY_RTF = "__substg1.0_10090102"  # RTF-compressed body (last resort)
+_MSG_INTERNET_CPID = "__substg1.0_3FDE0003"  # PR_INTERNET_CPID — charset code page (PT_LONG)
 _MSG_SUBJECT_UNICODE = "__substg1.0_0037001F"
 _MSG_SUBJECT_ASCII = "__substg1.0_0037001E"
-_MSG_SENDER_NAME = "__substg1.0_0C1A001F"
-_MSG_SENDER_EMAIL = "__substg1.0_0C1F001F"
+_MSG_SENDER_NAME = "__substg1.0_0C1A001F"  # Sender display name
+_MSG_SENDER_EMAIL = "__substg1.0_0C1F001F"  # May be X.500 DN on Exchange
+_MSG_SENDER_SMTP = "__substg1.0_5D01001F"  # SMTP address of the sender
 _MSG_TO = "__substg1.0_0E04001F"
+_MSG_CC = "__substg1.0_0E03001F"
+_MSG_DATE = "__substg1.0_00390040"  # PR_CLIENT_SUBMIT_TIME (FILETIME, 8 bytes)
+_MSG_TRANSPORT_HEADERS = "__substg1.0_007D001F"  # Full RFC transport headers
 _MSG_ATTACH_DATA = "__substg1.0_37010102"
 _MSG_ATTACH_FILENAME_SHORT = "__substg1.0_3704001F"
 _MSG_ATTACH_FILENAME_LONG = "__substg1.0_3707001F"
@@ -65,6 +75,9 @@ _EXT_TO_MIME: dict[str, str] = {
 }
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"}
+
+# Windows code page → Python codec mapping used when decoding PR_HTML
+_CPID_MAP: dict[int, str] = {1200: "utf-16-le", 1201: "utf-16-be", 65001: "utf-8", 28591: "iso-8859-1"}
 
 
 class EmailToolInput(BaseModel):
@@ -253,16 +266,30 @@ class EmailAnalysisTool(CodeMieTool, FileToolMixin):
 
         try:
             subject = self._read_ole_text(ole, _MSG_SUBJECT_UNICODE) or self._read_ole_text(ole, _MSG_SUBJECT_ASCII)
-            sender = self._read_ole_text(ole, _MSG_SENDER_EMAIL) or self._read_ole_text(ole, _MSG_SENDER_NAME)
+            sender_name = self._read_ole_text(ole, _MSG_SENDER_NAME)
+            sender_smtp = self._read_ole_text(ole, _MSG_SENDER_SMTP) or self._read_ole_text(ole, _MSG_SENDER_EMAIL)
+            # Discard Exchange X.500 DN addresses (start with /O=)
+            if sender_smtp.upper().startswith("/O="):
+                sender_smtp = ""
+            sender = f"{sender_name} <{sender_smtp}>" if sender_name and sender_smtp else sender_smtp or sender_name
             recipients = self._read_ole_text(ole, _MSG_TO)
-            body = self._read_ole_text(ole, _MSG_BODY_UNICODE) or self._read_ole_text(ole, _MSG_BODY_ASCII)
+            cc = self._read_ole_text(ole, _MSG_CC)
+            date = self._read_msg_date(ole)
+            body = (
+                self._read_ole_text(ole, _MSG_BODY_UNICODE)
+                or self._read_ole_text(ole, _MSG_BODY_ASCII)
+                or self._read_msg_html_body(ole)
+                or self._read_msg_rtf_body(ole)
+            )
 
             header_lines = [
                 line
                 for line in [
                     f"**From:** {sender}" if sender else "",
                     f"**To:** {recipients}" if recipients else "",
+                    f"**Cc:** {cc}" if cc else "",
                     f"**Subject:** {subject}" if subject else "",
+                    f"**Date:** {date}" if date else "",
                 ]
                 if line
             ]
@@ -314,7 +341,7 @@ class EmailAnalysisTool(CodeMieTool, FileToolMixin):
                     os.unlink(temp_path)
 
     @staticmethod
-    def _read_ole_text(ole, stream_path: str) -> str:
+    def _read_ole_text(ole: Any, stream_path: str) -> str:
         try:
             if ole.exists(stream_path):
                 raw = ole.openstream(stream_path).read()
@@ -323,6 +350,118 @@ class EmailAnalysisTool(CodeMieTool, FileToolMixin):
                 return raw.decode("latin-1", errors="replace").rstrip("\x00")
         except Exception as e:
             logger.debug(f"EmailAnalysisTool: could not read OLE stream {stream_path}: {e}")
+        return ""
+
+    @staticmethod
+    def _read_msg_date(ole: Any) -> str:
+        """Extract the send date from the MSG file.
+
+        First tries the transport headers (contains full RFC 2822 Date header).
+        Falls back to parsing the PR_CLIENT_SUBMIT_TIME FILETIME value.
+        """
+        # Try transport headers first — contains the original RFC Date line
+        try:
+            if ole.exists(_MSG_TRANSPORT_HEADERS):
+                raw = ole.openstream(_MSG_TRANSPORT_HEADERS).read()
+                headers_text = raw.decode("utf-16-le", errors="replace").rstrip("\x00")
+                for line in headers_text.splitlines():
+                    if line.lower().startswith("date:"):
+                        return line[5:].strip()
+        except Exception as e:
+            logger.debug(f"EmailAnalysisTool: could not parse transport headers for date: {e}")
+
+        # Fall back to FILETIME binary property (PR_CLIENT_SUBMIT_TIME)
+        try:
+            if ole.exists(_MSG_DATE):
+                raw = ole.openstream(_MSG_DATE).read()
+                if len(raw) >= 8:
+                    filetime = struct.unpack_from("<Q", raw)[0]
+                    # Windows FILETIME: 100-nanosecond intervals since 1601-01-01
+                    epoch_diff = 116444736000000000  # 100-ns ticks between 1601 and 1970
+                    unix_ts = (filetime - epoch_diff) / 10_000_000
+                    dt = datetime.datetime.fromtimestamp(unix_ts, tz=datetime.timezone.utc)
+                    return dt.strftime("%a, %d %b %Y %H:%M:%S +0000")
+        except Exception as e:
+            logger.debug(f"EmailAnalysisTool: could not parse MSG date FILETIME: {e}")
+
+        return ""
+
+    @staticmethod
+    def _read_msg_html_body(ole: Any) -> str:
+        """Extract and strip the HTML body stored in PR_HTML (binary blob) to plain text."""
+        raw_html = ""
+        try:
+            if not ole.exists(_MSG_BODY_HTML):
+                return ""
+            raw = ole.openstream(_MSG_BODY_HTML).read()
+            if not raw:
+                return ""
+            # Determine charset from PR_INTERNET_CPID (PT_LONG, 4 bytes little-endian)
+            cpid: int = 0
+            try:
+                if ole.exists(_MSG_INTERNET_CPID):
+                    cpid_raw = ole.openstream(_MSG_INTERNET_CPID).read()
+                    if len(cpid_raw) >= 4:
+                        cpid = struct.unpack_from("<I", cpid_raw)[0]
+            except Exception:
+                pass
+            charset = _CPID_MAP.get(cpid) or (f"cp{cpid}" if cpid else "utf-8")
+            try:
+                raw_html = raw.decode(charset, errors="replace")
+            except (LookupError, UnicodeDecodeError):
+                raw_html = raw.decode("utf-8", errors="replace")
+        except Exception as e:
+            logger.debug(f"EmailAnalysisTool: could not read MSG HTML body: {e}")
+            return ""
+
+        if not raw_html:
+            return ""
+
+        # Strip <style> and <script> blocks entirely
+        text = re.sub(r"<(style|script)[^>]*>.*?</\1>", "", raw_html, flags=re.DOTALL | re.IGNORECASE)
+        # Replace common block-level tags with newlines for readability
+        text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"</(p|div|tr|li|blockquote|h[1-6])>", "\n", text, flags=re.IGNORECASE)
+        # Remove all remaining HTML tags
+        text = re.sub(r"<[^>]+>", "", text)
+        # Decode basic HTML entities
+        text = (
+            text.replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", '"')
+            .replace("&apos;", "'")
+            .replace("&nbsp;", " ")
+        )
+        # Collapse excessive blank lines
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    @staticmethod
+    def _read_msg_rtf_body(ole: Any) -> str:
+        """Decompress and extract plain text from the RTF-compressed body stream."""
+        try:
+            if not ole.exists(_MSG_BODY_RTF):
+                return ""
+            compressed = ole.openstream(_MSG_BODY_RTF).read()
+            if not compressed:
+                return ""
+            try:
+                import compressed_rtf
+
+                rtf_bytes = compressed_rtf.decompress(compressed)
+            except ImportError:
+                logger.debug("EmailAnalysisTool: compressed_rtf not installed; skipping RTF body")
+                return ""
+            rtf_text = rtf_bytes.decode("latin-1", errors="replace")
+            # Strip RTF control words to get readable plain text
+            plain = re.sub(r"\\[a-z]+[-\d]*\s?", " ", rtf_text)
+            plain = re.sub(r"[{}]", "", plain)
+            plain = re.sub(r"\\'\.\.", "", plain)
+            plain = re.sub(r" {2,}", " ", plain)
+            return plain.strip()
+        except Exception as e:
+            logger.debug(f"EmailAnalysisTool: could not extract RTF body: {e}")
         return ""
 
     def _analyze_attachment(self, data: bytes, filename: str) -> str:

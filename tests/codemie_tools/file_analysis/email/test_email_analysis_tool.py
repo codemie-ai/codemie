@@ -17,13 +17,21 @@
 import email.mime.base
 import email.mime.multipart
 import email.mime.text
+import struct
 from email import encoders as email_encoders
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from codemie_tools.base.file_object import FileObject
-from codemie_tools.file_analysis.email.tools import EmailAnalysisTool
+from codemie_tools.file_analysis.email.tools import (
+    EmailAnalysisTool,
+    _MSG_BODY_HTML,
+    _MSG_BODY_RTF,
+    _MSG_DATE,
+    _MSG_INTERNET_CPID,
+    _MSG_TRANSPORT_HEADERS,
+)
 from codemie_tools.file_analysis.models import FileAnalysisConfig
 
 
@@ -317,3 +325,229 @@ def test_execute_with_multiple_eml_files_returns_both():
     assert "First Email" in result
     assert "Second Email" in result
     assert "---" in result  # separator between files
+
+
+# ---------------------------------------------------------------------------
+# Helpers for MSG / OLE unit tests
+# ---------------------------------------------------------------------------
+
+
+def _utf16le(text: str) -> bytes:
+    return text.encode("utf-16-le")
+
+
+def _make_ole_mock(streams: dict[str, bytes]) -> MagicMock:
+    """Build a minimal OLE mock whose streams are provided as a dict."""
+    ole = MagicMock()
+    ole.exists.side_effect = lambda path: path in streams
+
+    def _openstream(path: str) -> MagicMock:
+        mock_stream = MagicMock()
+        mock_stream.read.return_value = streams.get(path, b"")
+        return mock_stream
+
+    ole.openstream.side_effect = _openstream
+    ole.listdir.return_value = []
+    return ole
+
+
+def _make_msg_ole(
+    subject: str = "Subject",
+    sender_name: str = "Sender",
+    sender_smtp: str = "sender@test.com",
+    to_addr: str = "to@test.com",
+    cc_addr: str = "",
+    body: str = "Body text",
+) -> MagicMock:
+    """Return an OLE mock pre-loaded with typical MSG streams."""
+    streams: dict[str, bytes] = {
+        "__substg1.0_0037001F": _utf16le(subject),
+        "__substg1.0_0C1A001F": _utf16le(sender_name),
+        "__substg1.0_5D01001F": _utf16le(sender_smtp),
+        "__substg1.0_0E04001F": _utf16le(to_addr),
+        "__substg1.0_1000001F": _utf16le(body),
+    }
+    if cc_addr:
+        streams["__substg1.0_0E03001F"] = _utf16le(cc_addr)
+    return _make_ole_mock(streams)
+
+
+def _run_process_msg(
+    tool: EmailAnalysisTool,
+    ole_mock: MagicMock,
+    source_name: str = "test.msg",
+    attachment_names: list[str] | None = None,
+) -> str:
+    """Run _process_msg with all file-system and OLE calls mocked out."""
+    mock_olefile = MagicMock()
+    mock_olefile.OleFileIO.return_value = ole_mock
+
+    mock_tmp = MagicMock()
+    mock_tmp.__enter__ = MagicMock(return_value=mock_tmp)
+    mock_tmp.__exit__ = MagicMock(return_value=False)
+    mock_tmp.name = "/tmp/fake_test.msg"
+
+    with (
+        patch.dict("sys.modules", {"olefile": mock_olefile}),
+        patch("codemie_tools.file_analysis.email.tools.tempfile.NamedTemporaryFile", return_value=mock_tmp),
+        patch("codemie_tools.file_analysis.email.tools.os.unlink"),
+    ):
+        return tool._process_msg(b"fake", source_name, attachment_names or [])
+
+
+# ---------------------------------------------------------------------------
+# _read_msg_date tests
+# ---------------------------------------------------------------------------
+
+
+def test_read_msg_date_returns_date_from_transport_headers():
+    headers = "From: alice\r\nDate: Mon, 01 Jan 2024 12:00:00 +0000\r\nTo: bob"
+    ole = _make_ole_mock({_MSG_TRANSPORT_HEADERS: _utf16le(headers)})
+    assert EmailAnalysisTool._read_msg_date(ole) == "Mon, 01 Jan 2024 12:00:00 +0000"
+
+
+def test_read_msg_date_returns_empty_when_no_date_line_in_headers():
+    headers = "From: alice\r\nSubject: Hello\r\nTo: bob"
+    ole = _make_ole_mock({_MSG_TRANSPORT_HEADERS: _utf16le(headers)})
+    assert EmailAnalysisTool._read_msg_date(ole) == ""
+
+
+def test_read_msg_date_falls_back_to_filetime():
+    import datetime as _dt
+
+    dt = _dt.datetime(2024, 1, 15, 10, 30, 0, tzinfo=_dt.timezone.utc)
+    epoch_diff = 116444736000000000
+    filetime = int(dt.timestamp() * 10_000_000) + epoch_diff
+    raw = struct.pack("<Q", filetime)
+    ole = _make_ole_mock({_MSG_DATE: raw})
+    result = EmailAnalysisTool._read_msg_date(ole)
+    assert "15 Jan 2024" in result
+    assert "+0000" in result
+
+
+def test_read_msg_date_returns_empty_when_no_streams():
+    ole = _make_ole_mock({})
+    assert EmailAnalysisTool._read_msg_date(ole) == ""
+
+
+# ---------------------------------------------------------------------------
+# _read_msg_html_body tests
+# ---------------------------------------------------------------------------
+
+
+def test_read_msg_html_body_returns_empty_when_no_stream():
+    ole = _make_ole_mock({})
+    assert EmailAnalysisTool._read_msg_html_body(ole) == ""
+
+
+def test_read_msg_html_body_strips_html_tags():
+    html = b"<html><body><p>Hello World</p></body></html>"
+    ole = _make_ole_mock({_MSG_BODY_HTML: html})
+    result = EmailAnalysisTool._read_msg_html_body(ole)
+    assert "Hello World" in result
+    assert "<p>" not in result
+
+
+def test_read_msg_html_body_decodes_html_entities():
+    html = b"<p>AT&amp;T &lt;Hello&gt;</p>"
+    ole = _make_ole_mock({_MSG_BODY_HTML: html})
+    result = EmailAnalysisTool._read_msg_html_body(ole)
+    assert "AT&T" in result
+    assert "<Hello>" in result
+
+
+def test_read_msg_html_body_strips_style_and_script_blocks():
+    html = b"<style>body{color:red}</style><p>Visible</p><script>alert(1)</script>"
+    ole = _make_ole_mock({_MSG_BODY_HTML: html})
+    result = EmailAnalysisTool._read_msg_html_body(ole)
+    assert "Visible" in result
+    assert "color:red" not in result
+    assert "alert(1)" not in result
+
+
+def test_read_msg_html_body_uses_cpid_charset():
+    """When PR_INTERNET_CPID signals UTF-16-LE, the HTML bytes are decoded correctly."""
+    text = "Héllo"
+    html_bytes = f"<p>{text}</p>".encode("utf-16-le")
+    cpid_raw = struct.pack("<I", 1200)  # 1200 = utf-16-le
+    ole = _make_ole_mock({_MSG_BODY_HTML: html_bytes, _MSG_INTERNET_CPID: cpid_raw})
+    result = EmailAnalysisTool._read_msg_html_body(ole)
+    assert text in result
+
+
+# ---------------------------------------------------------------------------
+# _read_msg_rtf_body tests
+# ---------------------------------------------------------------------------
+
+
+def test_read_msg_rtf_body_returns_empty_when_no_stream():
+    ole = _make_ole_mock({})
+    assert EmailAnalysisTool._read_msg_rtf_body(ole) == ""
+
+
+def test_read_msg_rtf_body_returns_empty_when_compressed_rtf_missing():
+    ole = _make_ole_mock({_MSG_BODY_RTF: b"some data"})
+    with patch.dict("sys.modules", {"compressed_rtf": None}):
+        result = EmailAnalysisTool._read_msg_rtf_body(ole)
+    assert result == ""
+
+
+def test_read_msg_rtf_body_extracts_plain_text():
+    ole = _make_ole_mock({_MSG_BODY_RTF: b"compressed"})
+    mock_crtf = MagicMock()
+    mock_crtf.decompress.return_value = b"{\\rtf1 Hello World}"
+    with patch.dict("sys.modules", {"compressed_rtf": mock_crtf}):
+        result = EmailAnalysisTool._read_msg_rtf_body(ole)
+    assert "Hello" in result
+    assert "World" in result
+
+
+# ---------------------------------------------------------------------------
+# _process_msg integration tests (CC, Date, sender resolution)
+# ---------------------------------------------------------------------------
+
+
+def test_process_msg_includes_cc():
+    tool = EmailAnalysisTool(config=_make_config())
+    ole = _make_msg_ole(cc_addr="charlie@example.com")
+    result = _run_process_msg(tool, ole)
+    assert "charlie@example.com" in result
+
+
+def test_process_msg_includes_date_from_transport_headers():
+    tool = EmailAnalysisTool(config=_make_config())
+    ole = _make_msg_ole()
+    with patch.object(EmailAnalysisTool, "_read_msg_date", return_value="Mon, 01 Jan 2024 12:00:00 +0000"):
+        result = _run_process_msg(tool, ole)
+    assert "01 Jan 2024" in result
+
+
+def test_process_msg_formats_sender_as_name_plus_email():
+    tool = EmailAnalysisTool(config=_make_config())
+    ole = _make_msg_ole(sender_name="Alice Smith", sender_smtp="alice@example.com")
+    result = _run_process_msg(tool, ole)
+    assert "Alice Smith <alice@example.com>" in result
+
+
+def test_process_msg_filters_x500_sender_address():
+    """Exchange X.500 DN (/O=...) should be discarded; only the display name is used."""
+    tool = EmailAnalysisTool(config=_make_config())
+    streams = {
+        "__substg1.0_0037001F": _utf16le("Subject"),
+        "__substg1.0_0C1A001F": _utf16le("Alice Smith"),
+        "__substg1.0_5D01001F": _utf16le("/O=EXCHANGE/OU=First/CN=Alice"),
+        "__substg1.0_0E04001F": _utf16le("to@test.com"),
+        "__substg1.0_1000001F": _utf16le("Body"),
+    }
+    ole = _make_ole_mock(streams)
+    result = _run_process_msg(tool, ole)
+    assert "/O=EXCHANGE" not in result
+    assert "Alice Smith" in result
+
+
+def test_process_msg_body_falls_back_to_html_when_no_plain_text():
+    tool = EmailAnalysisTool(config=_make_config())
+    ole = _make_msg_ole(body="")
+    with patch.object(EmailAnalysisTool, "_read_msg_html_body", return_value="HTML body content"):
+        result = _run_process_msg(tool, ole)
+    assert "HTML body content" in result
