@@ -12,19 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import uuid
 from datetime import datetime, UTC
 from enum import Enum, StrEnum
-from typing import Any, Optional, Self, Dict, List
+from typing import Annotated, Any, Optional, Self, Dict, List
 
 import yaml
 from codemie_tools.base.models import ToolKit, Tool
-from pydantic import BaseModel, Field, model_validator, field_serializer, computed_field
+from pydantic import AfterValidator, BaseModel, Field, model_validator, field_serializer, computed_field
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field as SQLField, Session, select, Column, and_, Index, text
 
 from codemie.core.ability import Owned, Ability, Action
 from codemie.core.constants import CodeIndexType, ProviderIndexType, DEMO_PROJECT
-from codemie.core.models import CreatedByUser, ToolConfig
+from codemie.core.models import AssistantChatRequest, ChatMessage, CreatedByUser, ToolConfig
 from codemie.rest_api.a2a.types import AgentCard
 from codemie.rest_api.models.base import (
     CommonBaseModel,
@@ -1288,3 +1289,133 @@ class AssistantHealthCheckResponse(BaseModel):
         default=None, description="Number of misconfigured tools that failed to load"
     )
     error: Optional[AssistantHealthCheckError] = Field(default=None, description="Error details if health check failed")
+
+
+class VirtualAssistantChatRequest(BaseModel):
+    """
+    Request model for ephemeral virtual assistant inference.
+    The assistant definition is provided inline; no database record is used.
+    History is never persisted regardless of save_history value.
+    """
+
+    # --- Assistant definition fields ---
+    system_prompt: str = Field(
+        default='',
+        description='System prompt for the virtual assistant.',
+    )
+    llm_model_type: Optional[str] = Field(
+        default=None,
+        description="LLM model identifier (e.g. 'gpt-4o', 'claude-3-5-sonnet'). "
+        'Falls back to deployment default if omitted.',
+    )
+    temperature: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=2.0,
+        description='Sampling temperature. Uses model default if omitted.',
+    )
+    top_p: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description='Top-p nucleus sampling parameter.',
+    )
+    toolkits: list[ToolKitDetails] = Field(
+        default_factory=list,
+        description='Toolkits to enable for this request.',
+    )
+    context: list[Context] = Field(
+        default_factory=list,
+        description='Knowledge base or code context sources.',
+    )
+    mcp_servers: list[MCPServerDetails] = Field(
+        default_factory=list,
+        description='MCP server definitions to attach.',
+    )
+    skill_ids: list[str] = Field(
+        default_factory=list,
+        description='Skill IDs to include in addition to inline configuration.',
+    )
+    assistant_ids: list[str] = Field(
+        default_factory=list,
+        description='Sub-assistant IDs to include (orchestrator pattern).',
+    )
+    agent_mode: AgentMode = Field(
+        default=AgentMode.GENERAL,
+        description="Agent execution mode: 'general' or 'plan_execute'.",
+    )
+    plan_prompt: Optional[str] = Field(
+        default=None,
+        description="Planning prompt used when agent_mode is 'plan_execute'.",
+    )
+    smart_tool_selection_enabled: bool = Field(
+        default=False,
+        description='Enable LLM-driven smart tool selection.',
+    )
+    prompt_variables: list[PromptVariable] = Field(
+        default_factory=list,
+        description='Variables to interpolate into system_prompt.',
+    )
+
+    # --- Chat parameters (same semantics as AssistantChatRequest) ---
+    conversation_id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        description='Conversation identifier. Auto-generated if omitted.',
+    )
+    text: Optional[str] = Field(
+        default=None,
+        description='User message text.',
+    )
+    content_raw: Optional[str] = Field(
+        default='',
+        description='Raw content string (e.g. IDE content).',
+    )
+    file_names: Optional[list[str]] = Field(
+        default_factory=list,
+        description='File URLs previously uploaded via the files endpoint.',
+    )
+    history: list[ChatMessage] | str = Field(
+        default_factory=list,
+        description='Conversation history messages or serialized string.',
+    )
+    stream: Optional[bool] = Field(
+        default=False,
+        description='Whether to stream the response as NDJSON.',
+    )
+    output_schema: Annotated[
+        Optional[dict],
+        AfterValidator(AssistantChatRequest.validate_structured_output),
+    ] = Field(
+        default=None,
+        description='JSON Schema for structured output validation.',
+    )
+    tools_config: Optional[list[ToolConfig]] = Field(
+        default=None,
+        description='Per-tool credential overrides.',
+    )
+    metadata: Optional[dict[str, Any]] = Field(
+        default=None,
+        description='Arbitrary metadata passed through to the agent.',
+    )
+    top_k: int = Field(
+        default=10,
+        description='Number of context chunks to retrieve.',
+    )
+    propagate_headers: bool = Field(
+        default=False,
+        description='Whether to propagate X-* headers to MCP servers.',
+    )
+    disable_cache: Optional[bool] = Field(
+        default=False,
+        description='Disable prompt caching for this request.',
+    )
+    mcp_server_single_usage: Optional[bool] = Field(
+        default=None,
+        description='Override conversation-level MCP single-usage setting.',
+    )
+
+    # save_history is accepted for signature symmetry but always treated as False.
+    save_history: bool = Field(
+        default=False,
+        description='Always False for virtual assistants. Field is accepted but ignored.',
+    )

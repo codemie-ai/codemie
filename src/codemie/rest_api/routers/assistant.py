@@ -24,6 +24,7 @@ from codemie_tools.base.models import ToolKit
 from fastapi import APIRouter, status, Request, Depends, BackgroundTasks, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
+from starlette.responses import StreamingResponse
 
 from codemie.configs import logger, config
 from codemie.configs.logger import set_logging_info
@@ -58,6 +59,7 @@ from codemie.rest_api.models.assistant import (
     AssistantHealthCheckRequest,
     AssistantHealthCheckResponse,
     AssistantOrigin,
+    VirtualAssistantChatRequest,
 )
 from codemie.rest_api.models.assistant_generator import (
     AssistantGeneratorRequest,
@@ -98,6 +100,7 @@ from codemie.service.tools import ToolsInfoService
 from codemie.service.mcp_config_service import MCPConfigService
 from codemie.service.assistant.assistant_health_check_service import AssistantHealthCheckService
 from codemie.service.tools.plugin_tools_info_service import PluginToolsInfoService, PluginToolsInfoServiceError
+from codemie.service.llm_service.llm_service import llm_service
 
 
 router = APIRouter(
@@ -795,6 +798,87 @@ def delete_assistant(assistant_id: str, user: User = Depends(authenticate)):
     Assistant.delete_assistant(assistant_id)
     _track_assistant_management_metric("delete_assistant", assistant, user, True)
     return BaseResponse(message="Specified assistant removed")
+
+
+@router.post(
+    '/assistants/virtual/model',
+    status_code=status.HTTP_200_OK,
+    response_model=BaseModelResponse,
+    response_model_by_alias=True,
+)
+async def ask_virtual_assistant(
+    raw_request: Request,
+    background_tasks: BackgroundTasks,
+    request: VirtualAssistantChatRequest,
+    user: User = Depends(authenticate),
+    include_tool_errors: bool = Query(
+        False,
+        description='Include tool error details in response',
+    ),
+    error_detail_level: ErrorDetailLevel = Query(
+        ErrorDetailLevel.STANDARD,
+        description='Error verbosity level: minimal (code+message), standard (+http_status), full (+all details)',
+    ),
+) -> StreamingResponse | BaseModelResponse:
+    """
+    Run inference using an inline assistant definition without a database record.
+    The assistant configuration is provided entirely in the request body.
+    Conversation history is never persisted.
+    """
+    asyncio.create_task(raw_request.state.wait_for_disconnect())
+
+    assistant = Assistant.model_construct(
+        id=None,
+        name='virtual',
+        description='',
+        project=user.current_project,
+        system_prompt=request.system_prompt,
+        llm_model_type=request.llm_model_type or llm_service.default_llm_model,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        toolkits=request.toolkits,
+        context=request.context,
+        mcp_servers=request.mcp_servers,
+        skill_ids=request.skill_ids,
+        assistant_ids=request.assistant_ids,
+        agent_mode=request.agent_mode,
+        plan_prompt=request.plan_prompt,
+        smart_tool_selection_enabled=request.smart_tool_selection_enabled,
+        prompt_variables=request.prompt_variables,
+        shared=False,
+        is_global=False,
+        is_react=True,
+        creator=user.name,
+    )
+
+    chat_request = AssistantChatRequest.model_construct(
+        conversation_id=request.conversation_id,
+        text=request.text,
+        content_raw=request.content_raw,
+        file_names=request.file_names,
+        history=request.history,
+        stream=request.stream,
+        output_schema=request.output_schema,
+        tools_config=request.tools_config,
+        metadata=request.metadata,
+        top_k=request.top_k,
+        propagate_headers=request.propagate_headers,
+        disable_cache=request.disable_cache,
+        mcp_server_single_usage=request.mcp_server_single_usage,
+        save_history=False,  # Enforced — virtual assistants never persist history
+    )
+
+    result = await asyncio.to_thread(
+        _ask_virtual_assistant,
+        assistant,
+        raw_request,
+        chat_request,
+        user,
+        background_tasks,
+        include_tool_errors,
+        error_detail_level,
+    )
+    return result
 
 
 @router.post(
@@ -1918,6 +2002,77 @@ def _save_error(
             status=ConversationStatus.ERROR,
         )
     )
+
+
+def _ask_virtual_assistant(
+    assistant: Assistant,
+    raw_request: Request,
+    request: AssistantChatRequest,
+    user: User,
+    background_tasks: BackgroundTasks,
+    include_tool_errors: bool = False,
+    error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
+) -> StreamingResponse | BaseModelResponse:
+    """
+    Executes a virtual (transient) assistant request.
+    Skips ownership checks (no DB record) and usage tracking (id is None).
+    Forces save_history=False. Delegates to the shared request handler pipeline.
+    """
+    request_uuid = raw_request.state.uuid
+
+    # No _check_user_can_access_assistant — there is no DB record to check ownership against
+    _validate_remote_entities_and_raise(assistant)
+    _validate_assistant_supports_files_and_raise(assistant, request.file_names)
+    _validate_assistant_supports_model_change_and_raise(assistant, request.llm_model)
+
+    # Guardrail check is skipped automatically: assistant.id is None, so the
+    # `if assistant.id and request.text` guard in _ask_assistant never fires here.
+
+    try:
+        # No assistant_user_interaction_service.record_usage — assistant.id is None
+
+        request_summary_manager.create_request_summary(
+            request_id=request_uuid,
+            project_name=assistant.project,
+            user=user.as_user_model(),
+        )
+
+        handler = get_request_handler(assistant, user, request_uuid)
+        return handler.process_request(
+            request,
+            background_tasks,
+            raw_request,
+            include_tool_errors=include_tool_errors,
+            error_detail_level=error_detail_level,
+        )
+
+    except MissingContextException as mce:
+        error = _create_assistant_error(
+            'Assistant Error',
+            f'An error occurred during assistant initialization: {str(mce)}\n',
+            'We apologize for the inconvenience. Here are some steps you can try:\n'
+            '1. Check if the given datasource context is not deleted.\n'
+            '2. Check if the correct datasource context is specified for the assistant.\n'
+            'If you continue to experience issues, please contact our support team '
+            'with the timestamp of your request and any error messages you received.',
+        )
+        _save_error(request_uuid, request, error, user, assistant)
+        raise error from mce
+    except BrokerAuthRequiredException:
+        raise
+    except Exception as e:
+        error = _create_assistant_error(
+            'Assistant Error',
+            f'{str(e)}',
+            'We apologize for the inconvenience. Here are some steps you can try:\n'
+            '1. Retry your request after a short delay.\n'
+            '2. Check if your input is within the expected parameters.\n'
+            'If you continue to experience issues, please contact our support team '
+            'with the timestamp of your request and any error messages you received.',
+        )
+        _save_error(request_uuid, request, error, user, assistant)
+        logger.error(f'{str(e)}', exc_info=True)
+        raise error from e
 
 
 def _ask_assistant(
