@@ -381,7 +381,7 @@ class TestProxyPremiumUsernameInjection:
         assert captured_usernames == ["alice@example.com"]
 
     @pytest.mark.asyncio
-    async def test_injects_proxy_username_for_non_premium_request(self):
+    async def test_injects_platform_username_for_non_premium_web_request(self):
         captured_usernames: list[str] = []
 
         def fake_inject(body_bytes, user_id, request_info):
@@ -412,7 +412,7 @@ class TestProxyPremiumUsernameInjection:
                         request_info=request_info,
                     )
 
-        assert captured_usernames == ["alice@example.com_codemie_cli"]
+        assert captured_usernames == ["alice@example.com"]
 
     @pytest.mark.asyncio
     async def test_premium_budget_takes_precedence_over_proxy_budget(self):

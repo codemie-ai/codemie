@@ -27,6 +27,7 @@ from cachetools import TTLCache
 
 from codemie.configs import config, logger
 from codemie.configs.budget_config import budget_config
+from codemie.configs.config import PredefinedBudgetConfig
 from codemie.core.exceptions import ExtendedHTTPException, ValidationException
 from codemie.repository.budget_repository import budget_repository
 from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory, BudgetType
@@ -34,6 +35,7 @@ from codemie.service.budget.budget_models import Budget
 from codemie.service.budget.provider_registry import get_active_provider
 
 if TYPE_CHECKING:
+    from codemie.service.budget.provider import BudgetEnforcementProvider, BudgetProviderState
     from codemie.service.budget.provider import PersonalBudgetEntry
     from codemie.rest_api.routers.budget_router import (
         BudgetAssignmentBackfillResult,
@@ -133,6 +135,12 @@ class BudgetService:
         actor_name: str = "",
     ) -> Budget:
         """Validate, persist in DB, sync to provider, read back budget_reset_at."""
+        logger.debug(
+            f"budget_event=budget_create_started component=budget_service budget_id={data.budget_id!r} "
+            f"budget_category={data.budget_category.value!r} max_budget={data.max_budget!r} "
+            f"soft_budget={data.soft_budget!r} budget_duration={data.budget_duration!r} "
+            f"actor_id={actor_id!r} actor_name={actor_name!r}"
+        )
         try:
             self._validate_constraints(
                 soft_budget=data.soft_budget,
@@ -144,8 +152,16 @@ class BudgetService:
             raise ExtendedHTTPException(code=400, message=str(exc)) from exc
 
         if await budget_repository.get_by_id(session, data.budget_id) is not None:
+            logger.debug(
+                f"budget_event=budget_create_rejected component=budget_service budget_id={data.budget_id!r} "
+                f"reason=duplicate_budget_id actor_id={actor_id!r} actor_name={actor_name!r}"
+            )
             raise ExtendedHTTPException(code=409, message=f"Budget '{data.budget_id}' already exists")
         if await budget_repository.get_by_name(session, data.name) is not None:
+            logger.debug(
+                f"budget_event=budget_create_rejected component=budget_service budget_id={data.budget_id!r} "
+                f"name={data.name!r} reason=duplicate_name actor_id={actor_id!r} actor_name={actor_name!r}"
+            )
             raise ExtendedHTTPException(code=409, message=f"Budget name '{data.name}' already in use")
 
         budget = Budget(
@@ -169,6 +185,11 @@ class BudgetService:
 
         try:
             provider = get_active_provider()
+            logger.debug(
+                f"budget_event=provider_global_budget_sync_started component=budget_service "
+                f"provider={provider.provider_name!r} operation=create budget_id={data.budget_id!r} "
+                f"budget_category={data.budget_category.value!r}"
+            )
             state = await provider.ensure_global_budget(
                 budget_id=data.budget_id,
                 budget_category=data.budget_category,
@@ -176,8 +197,19 @@ class BudgetService:
                 max_budget=data.max_budget,
                 budget_duration=data.budget_duration,
             )
+            logger.debug(
+                f"budget_event=provider_global_budget_sync_completed component=budget_service "
+                f"provider={state.provider!r} operation=create budget_id={data.budget_id!r} "
+                f"provider_budget_ref={state.provider_budget_ref!r} sync_status={state.sync_status!r} "
+                f"budget_reset_at={state.budget_reset_at!r}"
+            )
         except Exception as exc:
-            logger.error(f"Provider ensure_global_budget failed for '{data.budget_id}': {exc}")
+            logger.error(
+                f"budget_event=provider_global_budget_sync_failed component=budget_service "
+                f"operation=create budget_id={data.budget_id!r} "
+                f"budget_category={data.budget_category.value!r} error={exc}",
+                exc_info=True,
+            )
             await session.rollback()
             raise ExtendedHTTPException(code=502, message="Failed to sync budget to enforcement provider") from exc
 
@@ -187,8 +219,9 @@ class BudgetService:
         budget = await budget_repository.update(session, data.budget_id, fields)
 
         logger.info(
-            f"Budget '{data.budget_id}' created by '{actor_name or actor_id}' "
-            f"(name='{data.name}', category='{data.budget_category.value}')"
+            f"budget_event=budget_create_completed component=budget_service budget_id={data.budget_id!r} "
+            f"name={data.name!r} budget_category={data.budget_category.value!r} "
+            f"actor_id={actor_id!r} actor_name={actor_name or actor_id!r}"
         )
         return budget
 
@@ -228,7 +261,15 @@ class BudgetService:
         actor_name: str = "",
     ) -> Budget:
         """Apply partial update to DB row, then sync enforcement-owned fields to provider."""
+        logger.debug(
+            f"budget_event=budget_update_started component=budget_service budget_id={budget_id!r} "
+            f"provided_fields={sorted(data.model_fields_set)!r} actor_id={actor_id!r} actor_name={actor_name!r}"
+        )
         if any(b.budget_id == budget_id for b in budget_config.predefined_budgets):
+            logger.debug(
+                f"budget_event=budget_update_rejected component=budget_service budget_id={budget_id!r} "
+                f"reason=predefined_budget actor_id={actor_id!r} actor_name={actor_name!r}"
+            )
             raise ExtendedHTTPException(
                 code=403,
                 message=f"Budget '{budget_id}' is preconfigured and cannot be modified via API",
@@ -257,7 +298,9 @@ class BudgetService:
             )
 
         logger.info(
-            f"Budget '{budget_id}' updated by '{actor_name or actor_id}' (fields={sorted(update_fields.keys())})"
+            f"budget_event=budget_update_completed component=budget_service budget_id={budget_id!r} "
+            f"updated_fields={sorted(update_fields.keys())!r} actor_id={actor_id!r} "
+            f"actor_name={actor_name or actor_id!r}"
         )
         return budget
 
@@ -305,14 +348,31 @@ class BudgetService:
     ) -> Budget:
         try:
             provider = get_active_provider()
+            provider_ref = self._provider_ref_for_budget(budget)
+            logger.debug(
+                f"budget_event=provider_global_budget_sync_started component=budget_service "
+                f"provider={provider.provider_name!r} operation=update budget_id={budget_id!r} "
+                f"provider_budget_ref={provider_ref!r} max_budget={max_budget!r} "
+                f"soft_budget={soft_budget!r} budget_duration={budget_duration!r}"
+            )
             state = await provider.update_global_budget(
-                budget_id=self._provider_ref_for_budget(budget),
+                budget_id=provider_ref,
                 soft_budget=soft_budget,
                 max_budget=max_budget,
                 budget_duration=budget_duration,
             )
+            logger.debug(
+                f"budget_event=provider_global_budget_sync_completed component=budget_service "
+                f"provider={state.provider!r} operation=update budget_id={budget_id!r} "
+                f"provider_budget_ref={state.provider_budget_ref!r} sync_status={state.sync_status!r} "
+                f"budget_reset_at={state.budget_reset_at!r}"
+            )
         except Exception as exc:
-            logger.error(f"Provider update_global_budget failed for '{budget_id}': {exc}")
+            logger.error(
+                f"budget_event=provider_global_budget_sync_failed component=budget_service "
+                f"operation=update budget_id={budget_id!r} error={exc}",
+                exc_info=True,
+            )
             await session.rollback()
             raise ExtendedHTTPException(
                 code=502,
@@ -381,6 +441,84 @@ class BudgetService:
                 return b.budget_id
         return None
 
+    async def _upsert_predefined_budget_db(self, session: AsyncSession, bc: PredefinedBudgetConfig) -> None:
+        existing = await budget_repository.get_by_id(session, bc.budget_id)
+        logger.debug(
+            f"budget_event=predefined_budget_db_decision component=budget_service budget_id={bc.budget_id!r} "
+            f"budget_category={bc.budget_category!r} action={'create' if existing is None else 'update'}"
+        )
+        if existing is None:
+            new_budget = Budget(
+                budget_id=bc.budget_id,
+                name=bc.name,
+                description=bc.description,
+                soft_budget=bc.soft_budget,
+                max_budget=bc.max_budget,
+                budget_duration=bc.budget_duration,
+                budget_category=bc.budget_category,
+                provider_metadata=self._provider_metadata(bc.budget_id),
+                created_by="system",
+            )
+            await budget_repository.insert(session, new_budget)
+            return
+
+        fields = {
+            "name": bc.name,
+            "description": bc.description,
+            "soft_budget": bc.soft_budget,
+            "max_budget": bc.max_budget,
+            "budget_duration": bc.budget_duration,
+            "budget_category": bc.budget_category,
+            "provider_metadata": self._provider_metadata(self._provider_ref_for_budget(existing)),
+        }
+        await budget_repository.update(session, bc.budget_id, fields)
+
+    async def _sync_predefined_budget_provider(
+        self,
+        provider: "BudgetEnforcementProvider",
+        bc: PredefinedBudgetConfig,
+        provider_budget_ids: set[str],
+    ) -> "BudgetProviderState":
+        should_update = bc.budget_id in provider_budget_ids
+        logger.debug(
+            f"budget_event=predefined_budget_provider_decision component=budget_service "
+            f"budget_id={bc.budget_id!r} budget_category={bc.budget_category!r} "
+            f"action={'update' if should_update else 'create'}"
+        )
+        if should_update:
+            return await provider.update_global_budget(
+                budget_id=bc.budget_id,
+                max_budget=bc.max_budget,
+                soft_budget=bc.soft_budget,
+                budget_duration=bc.budget_duration,
+            )
+        return await provider.ensure_global_budget(
+            budget_id=bc.budget_id,
+            budget_category=BudgetCategory(bc.budget_category),
+            max_budget=bc.max_budget,
+            soft_budget=bc.soft_budget,
+            budget_duration=bc.budget_duration,
+        )
+
+    async def _persist_predefined_budget_provider_state(
+        self,
+        session: AsyncSession,
+        bc: PredefinedBudgetConfig,
+        state: "BudgetProviderState",
+    ) -> None:
+        if state.sync_status == "failed":
+            logger.error(
+                f"budget_event=predefined_budget_sync_failed component=budget_service "
+                f"budget_id={bc.budget_id!r} budget_category={bc.budget_category!r} "
+                f"provider={state.provider!r} sync_status={state.sync_status!r}"
+            )
+            return
+        await budget_repository.update(
+            session,
+            bc.budget_id,
+            {"provider_metadata": self._provider_metadata(state.provider_budget_ref or bc.budget_id)},
+        )
+
     async def ensure_predefined_budgets(self, session: AsyncSession) -> None:
         """Force-create or update all predefined budgets at startup.
 
@@ -389,80 +527,42 @@ class BudgetService:
         """
         configured_ids = [bc.budget_id for bc in budget_config.predefined_budgets]
         if not configured_ids:
-            logger.info("No predefined budgets configured, skipping startup budget initialization")
+            logger.info(
+                "budget_event=predefined_budget_initialization_skipped component=budget_service "
+                "reason=no_configured_budgets configured_count=0"
+            )
             return
 
-        logger.info(f"Starting predefined budget initialization: {configured_ids}")
+        logger.info(
+            f"budget_event=predefined_budget_initialization_started component=budget_service "
+            f"configured_budget_ids={configured_ids!r} configured_count={len(configured_ids)}"
+        )
 
         provider = get_active_provider()
         existing_states = await provider.list_global_budget_states()
         provider_budget_ids: set[str] = {s.budget_id for s in (existing_states or [])}
-        logger.info(f"Budgets found in provider: {sorted(provider_budget_ids)}")
+        logger.debug(
+            f"budget_event=provider_global_budget_list_completed component=budget_service "
+            f"provider={provider.provider_name!r} provider_budget_ids={sorted(provider_budget_ids)!r} "
+            f"provider_budget_count={len(provider_budget_ids)}"
+        )
 
         for bc in budget_config.predefined_budgets:
-            existing = await budget_repository.get_by_id(session, bc.budget_id)
-            if existing is None:
-                logger.info(f"Budget '{bc.budget_id}' not found in DB — creating")
-                new_budget = Budget(
-                    budget_id=bc.budget_id,
-                    name=bc.name,
-                    description=bc.description,
-                    soft_budget=bc.soft_budget,
-                    max_budget=bc.max_budget,
-                    budget_duration=bc.budget_duration,
-                    budget_category=bc.budget_category,
-                    provider_metadata=self._provider_metadata(bc.budget_id),
-                    created_by="system",
-                )
-                await budget_repository.insert(session, new_budget)
-            else:
-                logger.info(f"Budget '{bc.budget_id}' already exists in DB - updating to match config")
-                fields = {
-                    "name": bc.name,
-                    "description": bc.description,
-                    "soft_budget": bc.soft_budget,
-                    "max_budget": bc.max_budget,
-                    "budget_duration": bc.budget_duration,
-                    "budget_category": bc.budget_category,
-                    "provider_metadata": self._provider_metadata(self._provider_ref_for_budget(existing)),
-                }
-                await budget_repository.update(session, bc.budget_id, fields)
-
-            if bc.budget_id in provider_budget_ids:
-                logger.info(f"Budget '{bc.budget_id}' found in provider — updating")
-                state = await provider.update_global_budget(
-                    budget_id=bc.budget_id,
-                    max_budget=bc.max_budget,
-                    soft_budget=bc.soft_budget,
-                    budget_duration=bc.budget_duration,
-                )
-            else:
-                logger.info(f"Budget '{bc.budget_id}' not found in provider — creating")
-                state = await provider.ensure_global_budget(
-                    budget_id=bc.budget_id,
-                    budget_category=BudgetCategory(bc.budget_category),
-                    max_budget=bc.max_budget,
-                    soft_budget=bc.soft_budget,
-                    budget_duration=bc.budget_duration,
-                )
-
-            if state.sync_status == "failed":
-                logger.error(f"Failed to sync predefined budget '{bc.budget_id}' to provider")
-            else:
-                await budget_repository.update(
-                    session,
-                    bc.budget_id,
-                    {"provider_metadata": self._provider_metadata(state.provider_budget_ref or bc.budget_id)},
-                )
-
+            await self._upsert_predefined_budget_db(session, bc)
+            state = await self._sync_predefined_budget_provider(provider, bc, provider_budget_ids)
+            await self._persist_predefined_budget_provider_state(session, bc, state)
             await session.commit()
             logger.info(
-                f"Predefined budget '{bc.budget_id}' synced "
-                f"(category={bc.budget_category}, max={bc.max_budget}, "
-                f"soft={bc.soft_budget}, duration={bc.budget_duration})"
+                f"budget_event=predefined_budget_synced component=budget_service budget_id={bc.budget_id!r} "
+                f"budget_category={bc.budget_category!r} max_budget={bc.max_budget!r} "
+                f"soft_budget={bc.soft_budget!r} budget_duration={bc.budget_duration!r} "
+                f"sync_status={state.sync_status!r}"
             )
 
-        logger.info(f"Predefined budget initialization complete: {len(configured_ids)} budget(s) processed")
+        logger.info(
+            f"budget_event=predefined_budget_initialization_completed component=budget_service "
+            f"configured_count={len(configured_ids)}"
+        )
 
     async def sync_budgets_from_provider(
         self,
@@ -473,8 +573,16 @@ class BudgetService:
         from codemie.rest_api.routers.budget_router import BudgetSyncResult
 
         provider = get_active_provider()
+        logger.debug(
+            f"budget_event=provider_budget_pull_started component=budget_service provider={provider.provider_name!r} "
+            f"actor_id={actor_id!r}"
+        )
         provider_states = await provider.list_global_budget_states()
         if provider_states is None:
+            logger.warning(
+                f"budget_event=provider_budget_pull_failed component=budget_service "
+                f"provider={provider.provider_name!r} actor_id={actor_id!r} reason=provider_unreachable"
+            )
             raise ExtendedHTTPException(code=502, message="Enforcement provider unreachable during sync")
 
         created = updated = unchanged = deleted = 0
@@ -494,6 +602,10 @@ class BudgetService:
                 "created_by": actor_id,
             }
             _budget, status = await budget_repository.upsert_from_provider(session, state.budget_id, fields)
+            logger.debug(
+                f"budget_event=provider_budget_upserted component=budget_service budget_id={state.budget_id!r} "
+                f"budget_category={fields['budget_category']!r} status={status!r} actor_id={actor_id!r}"
+            )
             if status == "created":
                 created += 1
             elif status == "updated":
@@ -505,13 +617,21 @@ class BudgetService:
         db_budgets = await budget_repository.get_all_keyed_by_id(session)
         global_db_ids = {bid for bid, b in db_budgets.items() if b.budget_type == BudgetType.GLOBAL}
         for budget_id in global_db_ids - provider_ids:
-            logger.info(f"sync_budgets: deleting orphan global budget {budget_id!r} absent from provider")
+            logger.info(
+                f"budget_event=provider_budget_orphan_deleted component=budget_service budget_id={budget_id!r} "
+                f"reason=absent_from_provider actor_id={actor_id!r}"
+            )
             await budget_repository.delete(session, budget_id)
             deleted += 1
 
         await session.commit()
 
         all_budgets, _ = await budget_repository.list_paginated(session, page=0, per_page=10000)
+        logger.info(
+            f"budget_event=provider_budget_pull_completed component=budget_service created={created} "
+            f"updated={updated} unchanged={unchanged} deleted={deleted} total_in_provider={len(provider_states)} "
+            f"actor_id={actor_id!r}"
+        )
         return BudgetSyncResult(
             created=created,
             updated=updated,
@@ -668,12 +788,25 @@ class BudgetService:
         assigned_by: str = "system",
     ) -> None:
         """Best-effort mirror of a proxy budget assignment into Codemie DB."""
+        logger.debug(
+            f"budget_event=budget_assignment_mirror_started component=budget_service user_id={user_id!r} "
+            f"budget_category={category.value!r} budget_id={budget_id!r} assigned_by={assigned_by!r}"
+        )
         if not budget_id:
+            logger.debug(
+                f"budget_event=budget_assignment_mirror_skipped component=budget_service user_id={user_id!r} "
+                f"budget_category={category.value!r} reason=missing_budget_id"
+            )
             return
 
         cache_key = (user_id, category.value)
         # Skip DB entirely if the cache already has this exact assignment recorded
         if cache_key in _budget_assignment_cache and _budget_assignment_cache[cache_key] == budget_id:
+            logger.debug(
+                f"budget_event=budget_assignment_cache_hit component=budget_service user_id={user_id!r} "
+                f"budget_category={category.value!r} budget_id={budget_id!r} "
+                f"cache_value={_budget_assignment_cache[cache_key]!r}"
+            )
             return
 
         from codemie.clients.postgres import get_async_session
@@ -683,6 +816,11 @@ class BudgetService:
                 existing = await budget_repository.get_user_category_budget_id(session, user_id, category)
                 if existing is not None:
                     _budget_assignment_cache[cache_key] = existing
+                    logger.debug(
+                        f"budget_event=budget_assignment_mirror_skipped component=budget_service "
+                        f"user_id={user_id!r} budget_category={category.value!r} budget_id={budget_id!r} "
+                        f"existing_budget_id={existing!r}"
+                    )
                     return
                 await budget_repository.upsert_user_category_assignment(
                     session,
@@ -693,17 +831,30 @@ class BudgetService:
                 )
                 await session.commit()
             _budget_assignment_cache[cache_key] = budget_id
+            logger.debug(
+                f"budget_event=budget_assignment_mirrored component=budget_service user_id={user_id!r} "
+                f"budget_category={category.value!r} budget_id={budget_id!r} assigned_by={assigned_by!r}"
+            )
         except Exception as exc:
             logger.warning(
-                f"Failed to mirror proxy budget assignment for user {user_id!r}, "
-                f"category {category.value!r}, budget {budget_id!r}: {exc}"
+                f"budget_event=budget_assignment_mirror_failed component=budget_service user_id={user_id!r} "
+                f"budget_category={category.value!r} budget_id={budget_id!r} assigned_by={assigned_by!r} "
+                f"error={exc}"
             )
 
     async def get_user_category_budget_id_for_request(self, user_id: str, category: BudgetCategory) -> str | None:
         """Best-effort lookup of the currently assigned budget for a proxy request."""
         cache_key = (user_id, category.value)
         if cache_key in _budget_assignment_cache:
+            logger.debug(
+                f"budget_event=budget_assignment_cache_hit component=budget_service user_id={user_id!r} "
+                f"budget_category={category.value!r} budget_id={_budget_assignment_cache[cache_key]!r}"
+            )
             return _budget_assignment_cache[cache_key]
+        logger.debug(
+            f"budget_event=budget_assignment_cache_miss component=budget_service user_id={user_id!r} "
+            f"budget_category={category.value!r}"
+        )
 
         from codemie.clients.postgres import get_async_session
 
@@ -711,10 +862,15 @@ class BudgetService:
             async with get_async_session() as session:
                 result = await budget_repository.get_user_category_budget_id(session, user_id, category)
             _budget_assignment_cache[cache_key] = result
+            logger.debug(
+                f"budget_event=budget_assignment_resolved component=budget_service user_id={user_id!r} "
+                f"budget_category={category.value!r} budget_id={result!r}"
+            )
             return result
         except Exception as exc:
             logger.warning(
-                f"Failed to resolve proxy budget assignment for user {user_id!r}, category {category.value!r}: {exc}"
+                f"budget_event=budget_assignment_resolve_failed component=budget_service user_id={user_id!r} "
+                f"budget_category={category.value!r} error={exc}"
             )
             return None
 
@@ -730,18 +886,34 @@ class BudgetService:
         categories = [c.value for c in BudgetCategory]
         # Fast path: all categories already in cache
         if all((user_id, cat) in _budget_assignment_cache for cat in categories):
+            logger.debug(
+                f"budget_event=budget_assignment_batch_cache_hit component=budget_service user_id={user_id!r} "
+                f"budget_categories={categories!r}"
+            )
             return {cat: _budget_assignment_cache[(user_id, cat)] for cat in categories}
 
         # Cache miss for at least one category — fetch all in one query
+        missing_categories = [cat for cat in categories if (user_id, cat) not in _budget_assignment_cache]
+        logger.debug(
+            f"budget_event=budget_assignment_batch_cache_miss component=budget_service user_id={user_id!r} "
+            f"missing_categories={missing_categories!r}"
+        )
         try:
             async with get_async_session() as session:
                 assignments = await budget_repository.get_user_category_assignments(session, user_id)
             assignment_map: dict[str, str | None] = {a.category: a.budget_id for a in assignments}
             for cat in categories:
                 _budget_assignment_cache[(user_id, cat)] = assignment_map.get(cat)
+            logger.debug(
+                f"budget_event=budget_assignment_batch_resolved component=budget_service user_id={user_id!r} "
+                f"budget_categories={categories!r} resolved_assignments={assignment_map!r}"
+            )
             return {cat: assignment_map.get(cat) for cat in categories}
         except Exception as exc:
-            logger.warning(f"Failed to batch-fetch budget assignments for user {user_id!r}: {exc}")
+            logger.warning(
+                f"budget_event=budget_assignment_batch_resolve_failed component=budget_service "
+                f"user_id={user_id!r} error={exc}"
+            )
             return {cat: None for cat in categories}
 
     async def validate_assignment_budget_categories(

@@ -19,6 +19,7 @@ import re
 import uuid
 from datetime import datetime
 from functools import lru_cache
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
 import httpx
@@ -73,7 +74,6 @@ from .budget_categories import BudgetCategory
 from .dependencies import (
     get_category_budget_id,
     get_premium_username,
-    get_proxy_username,
     is_litellm_enabled,
     is_premium_models_enabled,
 )
@@ -127,6 +127,89 @@ PROXY_RESPONSE_HOP_BY_HOP_HEADERS = {
 def _sanitize_local_response_headers(headers: dict) -> dict:
     """Drop upstream body/framing headers when constructing a new local response."""
     return {k: v for k, v in headers.items() if k.lower() not in {"content-length", "content-encoding"}}
+
+
+def _anonymized_key_fingerprint(secret_value: str | None) -> str | None:
+    """Return a stable non-secret fingerprint for provider keys used in logs."""
+    if not secret_value:
+        return None
+    return sha256(secret_value.encode("utf-8")).hexdigest()[:12]
+
+
+def _log_proxy_auth_source_selected(
+    *,
+    auth_source: str,
+    api_key: str | None,
+    request_info: dict | None,
+    integration_id: str | None = None,
+) -> None:
+    integration_part = f"integration_id={integration_id!r} " if integration_id else ""
+    logger.debug(
+        f"budget_event=proxy_auth_source_selected component=proxy_router "
+        f"auth_source={auth_source} {integration_part}api_key_present={bool(api_key)} "
+        f"api_key_fingerprint={_anonymized_key_fingerprint(api_key)!r} "
+        f"customer_header_applied={bool(request_info and request_info.get('litellm_customer_id'))} "
+        f"provider_headers_applied={bool(request_info and request_info.get('budget_provider_headers'))}"
+    )
+
+
+def _apply_proxy_auth_header(headers: dict, request: Request, request_info: dict | None) -> Response | None:
+    integration_id = request.headers.get(HEADER_CODEMIE_INTEGRATION)
+    if request_info is not None and request_info.get("budget_provider_api_key"):
+        provider_key = request_info["budget_provider_api_key"]
+        headers["Authorization"] = f"Bearer {provider_key}"
+        _log_proxy_auth_source_selected(
+            auth_source="project_budget_key",
+            api_key=provider_key,
+            request_info=request_info,
+        )
+        return None
+
+    if integration_id:
+        try:
+            api_key = _get_integration_api_key(integration_id)
+        except HTTPException as exc:
+            return Response(content=exc.detail, status_code=exc.status_code)
+        headers["Authorization"] = f"Bearer {api_key}"
+        _log_proxy_auth_source_selected(
+            auth_source="integration",
+            api_key=api_key,
+            request_info=request_info,
+            integration_id=integration_id,
+        )
+        return None
+
+    proxy_key = config.LITE_LLM_PROXY_APP_KEY or config.LITE_LLM_APP_KEY
+    headers["Authorization"] = f"Bearer {proxy_key}"
+    _log_proxy_auth_source_selected(auth_source="app_key", api_key=proxy_key, request_info=request_info)
+    return None
+
+
+def _apply_budget_provider_headers(headers: dict, request_info: dict | None) -> None:
+    if request_info is not None and request_info.get("litellm_customer_id"):
+        headers[LITELLM_CUSTOMER_ID_HEADER] = request_info["litellm_customer_id"]
+        logger.debug(
+            f"budget_event=proxy_customer_header_applied component=proxy_router "
+            f"header_name={LITELLM_CUSTOMER_ID_HEADER!r} "
+            f"litellm_customer_key={request_info['litellm_customer_id']!r}"
+        )
+    if request_info is not None and request_info.get("budget_provider_headers"):
+        headers.update(request_info["budget_provider_headers"])
+        logger.debug(
+            f"budget_event=proxy_provider_headers_applied component=proxy_router "
+            f"provider_header_names={sorted(request_info['budget_provider_headers'].keys())!r}"
+        )
+
+
+def _apply_context_headers(headers: dict) -> None:
+    try:
+        context = litellm_context.get(None)
+        if context:
+            additional_headers = generate_litellm_headers_from_context(context)
+            if additional_headers:
+                headers.update(additional_headers)
+    except LookupError:
+        pass
 
 
 # Proxy router for LiteLLM endpoints
@@ -285,6 +368,12 @@ async def _resolve_tracking_identity(user: User, request_info: dict) -> tuple[Bu
     )
     username = get_premium_username(user.username, llm_model)
     if username is not None and premium_budget_id:
+        logger.debug(
+            f"budget_event=runtime_category_selected component=proxy_router user_id={user.id!r} "
+            f"username={user.username!r} project_name={request_info.get(PROJECT)!r} "
+            f"budget_category={BudgetCategory.PREMIUM_MODELS.value!r} budget_id={premium_budget_id!r} "
+            f"model={llm_model!r} reason=premium_model"
+        )
         return BudgetCategory.PREMIUM_MODELS, username, premium_budget_id, llm_model
 
     return _resolve_non_premium_tracking_identity(
@@ -308,19 +397,31 @@ def _resolve_non_premium_tracking_identity(
         "codemie-cli",
         "codemie_cli",
     }
-    cli_budget_id = category_budget_ids.get(BudgetCategory.CLI.value)
-    if cli_request and (cli_budget_id or get_category_budget_id(BudgetCategory.CLI)):
-        return (
-            BudgetCategory.CLI,
-            build_user_id(user.username, BudgetCategory.CLI),
-            cli_budget_id or get_category_budget_id(BudgetCategory.CLI),
-            llm_model,
-        )
+    if cli_request:
+        cli_budget_id = category_budget_ids.get(BudgetCategory.CLI.value)
+        configured_cli_budget_id = get_category_budget_id(BudgetCategory.CLI)
+        if cli_budget_id or configured_cli_budget_id:
+            logger.debug(
+                f"budget_event=runtime_category_selected component=proxy_router user_id={user.id!r} "
+                f"username={user.username!r} project_name={request_info.get(PROJECT)!r} "
+                f"budget_category={BudgetCategory.CLI.value!r} "
+                f"budget_id={(cli_budget_id or configured_cli_budget_id)!r} "
+                f"model={llm_model!r} reason=cli_request"
+            )
+            return (
+                BudgetCategory.CLI,
+                build_user_id(user.username, BudgetCategory.CLI),
+                cli_budget_id or configured_cli_budget_id,
+                llm_model,
+            )
 
-    username = get_proxy_username(user.username)
-    if username is not None:
-        return BudgetCategory.CLI, username, get_category_budget_id(BudgetCategory.CLI), llm_model
-
+    logger.debug(
+        f"budget_event=runtime_category_selected component=proxy_router user_id={user.id!r} "
+        f"username={user.username!r} project_name={request_info.get(PROJECT)!r} "
+        f"budget_category={BudgetCategory.PLATFORM.value!r} "
+        f"budget_id={category_budget_ids.get(BudgetCategory.PLATFORM.value)!r} "
+        f"model={llm_model!r} reason=platform_default"
+    )
     return (
         BudgetCategory.PLATFORM,
         user.username,
@@ -352,7 +453,11 @@ async def _create_body_stream_with_optional_injection(
     """
     if has_own_credentials:
         # Passthrough without user injection - budget tracked against integration key
-        logger.debug(f"Passthrough mode (own credentials): {user.username}")
+        logger.debug(
+            f"budget_event=runtime_mode_selected component=proxy_router user_id={user.id!r} "
+            f"username={user.username!r} project_name={request_info.get(PROJECT)!r} "
+            f"mode={RuntimeBudgetMode.USER_CREDENTIALS_BYPASS.value!r} reason=own_credentials"
+        )
         return _stream_body_bytes(body_bytes)
 
     category, username, tracking_budget_id, llm_model = await _resolve_tracking_identity(user, request_info)
@@ -381,8 +486,11 @@ async def _create_body_stream_with_optional_injection(
                 )
             username = project_runtime_username
             logger.debug(
-                f"Project budget selected for {user.username}: using provider runtime subject {username} "
-                f"(project={request_info.get(PROJECT)!r}, category={category.value!r}, model={llm_model})"
+                f"budget_event=runtime_mode_selected component=proxy_router user_id={user.id!r} "
+                f"username={user.username!r} project_name={project_name!r} "
+                f"budget_category={category.value!r} model={llm_model!r} "
+                f"mode={selection.mode.value!r} provider_member_ref={project_runtime_username!r} "
+                f"litellm_customer_key={project_runtime_username!r}"
             )
             request_info["litellm_customer_id"] = username
             return _inject_user_into_request_body_from_bytes(
@@ -392,8 +500,10 @@ async def _create_body_stream_with_optional_injection(
             )
 
         logger.debug(
-            f"Project-only budget selected for {user.username}: using project key without customer override "
-            f"(project={request_info.get(PROJECT)!r}, category={category.value!r}, model={llm_model})"
+            f"budget_event=runtime_mode_selected component=proxy_router user_id={user.id!r} "
+            f"username={user.username!r} project_name={project_name!r} "
+            f"budget_category={category.value!r} model={llm_model!r} "
+            f"mode={selection.mode.value!r} reason=project_key_only"
         )
         return _stream_body_bytes(body_bytes)
 
@@ -406,11 +516,18 @@ async def _create_body_stream_with_optional_injection(
 
     if budget_id:
         logger.debug(
-            f"Dedicated proxy budget selected for {user.username}: "
-            f"using username {username} with budget_id={budget_id} (model={llm_model})"
+            f"budget_event=runtime_mode_selected component=proxy_router user_id={user.id!r} "
+            f"username={user.username!r} project_name={project_name!r} "
+            f"budget_category={category.value!r} budget_id={budget_id!r} model={llm_model!r} "
+            f"mode={RuntimeBudgetMode.GLOBAL_OR_PERSONAL_BUDGET.value!r}"
         )
 
-    logger.debug(f"Injecting user for budget tracking: {username} (model={llm_model})")
+    logger.debug(
+        f"budget_event=runtime_budget_user_injected component=proxy_router user_id={user.id!r} "
+        f"username={user.username!r} provider_member_ref={username!r} "
+        f"litellm_customer_key={username!r} budget_category={category.value!r} "
+        f"budget_id={budget_id!r} model={llm_model!r}"
+    )
 
     check_user_budget(user_email=username, budget_id=budget_id, user_id=user.id)
     request_info["litellm_customer_id"] = username
@@ -422,9 +539,19 @@ async def _resolve_project_budget_runtime(user: User, category: BudgetCategory, 
     """Resolve project-scoped budget runtime overrides, falling back to global behavior."""
     project_name = request_info.get(PROJECT) or None
     if not project_name:
+        logger.debug(
+            f"budget_event=budget_resolution_global_fallback component=proxy_router user_id={user.id!r} "
+            f"username={user.username!r} project_name={project_name!r} budget_category={category.value!r} "
+            f"reason=missing_project_name"
+        )
         return None
 
     core_category = CoreBudgetCategory(category.value)
+    logger.debug(
+        f"budget_event=runtime_project_budget_resolution_started component=proxy_router user_id={user.id!r} "
+        f"username={user.username!r} project_name={project_name!r} budget_category={category.value!r} "
+        f"model={request_info.get(LLM_MODEL)!r}"
+    )
     await ensure_project_member_runtime_ready(
         user_id=user.id,
         user_email=user.username,
@@ -439,11 +566,24 @@ async def _resolve_project_budget_runtime(user: User, category: BudgetCategory, 
             project_name=project_name,
             budget_category=core_category,
         )
+    logger.debug(
+        f"budget_event=runtime_budget_resolved component=proxy_router user_id={user.id!r} "
+        f"username={user.username!r} project_name={project_name!r} "
+        f"budget_category={category.value!r} scope={resolved.scope.value!r} "
+        f"budget_id={resolved.budget_id!r} effective_budget_id={resolved.effective_budget_id!r} "
+        f"shared_budget_id={resolved.shared_budget_id!r} override_budget_id={resolved.override_budget_id!r} "
+        f"allocation_id={resolved.member_allocation_id!r} model={request_info.get(LLM_MODEL)!r}"
+    )
 
     provider_result = await budget_resolution_service.dispatch_runtime(
         resolved, user_id=user.id, user_email=user.username, model=request_info.get(LLM_MODEL)
     )
     if provider_result is None:
+        logger.debug(
+            f"budget_event=runtime_project_budget_resolution_skipped component=proxy_router user_id={user.id!r} "
+            f"username={user.username!r} project_name={project_name!r} budget_category={category.value!r} "
+            f"reason=no_provider_result"
+        )
         return None
 
     if provider_result.headers:
@@ -452,6 +592,16 @@ async def _resolve_project_budget_runtime(user: User, category: BudgetCategory, 
         request_info["budget_provider_api_key"] = provider_result.api_key
     if provider_result.base_url:
         request_info["budget_provider_base_url"] = provider_result.base_url
+    logger.debug(
+        f"budget_event=runtime_provider_overrides_applied component=proxy_router user_id={user.id!r} "
+        f"username={user.username!r} project_name={project_name!r} budget_category={category.value!r} "
+        f"provider={provider_result.provider!r} api_key_present={provider_result.api_key is not None} "
+        f"api_key_fingerprint={_anonymized_key_fingerprint(provider_result.api_key)!r} "
+        f"base_url_present={provider_result.base_url is not None} headers_applied={bool(provider_result.headers)} "
+        f"body_overrides_applied={bool(provider_result.body_overrides)} "
+        f"provider_header_names={sorted(provider_result.headers.keys())!r} "
+        f"litellm_customer_key={provider_result.body_overrides.get('user')!r}"
+    )
 
     return provider_result
 
@@ -469,34 +619,11 @@ def _prepare_proxy_headers(request: Request, request_info: dict | None = None) -
     # Extract and filter hop-by-hop headers
     headers = {k: v for k, v in request.headers.items() if k.lower() not in PROXY_HOP_BY_HOP_HEADERS}
 
-    # Get integration key or use default
-    integration_id = request.headers.get(HEADER_CODEMIE_INTEGRATION)
-    if request_info is not None and request_info.get("budget_provider_api_key"):
-        headers["Authorization"] = f"Bearer {request_info['budget_provider_api_key']}"
-    elif integration_id:
-        try:
-            api_key = _get_integration_api_key(integration_id)
-            headers["Authorization"] = f"Bearer {api_key}"
-        except HTTPException as e:
-            return Response(content=e.detail, status_code=e.status_code)
-    else:
-        proxy_key = config.LITE_LLM_PROXY_APP_KEY or config.LITE_LLM_APP_KEY
-        headers["Authorization"] = f"Bearer {proxy_key}"
-
-    if request_info is not None and request_info.get("litellm_customer_id"):
-        headers[LITELLM_CUSTOMER_ID_HEADER] = request_info["litellm_customer_id"]
-    if request_info is not None and request_info.get("budget_provider_headers"):
-        headers.update(request_info["budget_provider_headers"])
-
-    # Add project tags from context
-    try:
-        context = litellm_context.get(None)
-        if context:
-            additional_headers = generate_litellm_headers_from_context(context)
-            if additional_headers:
-                headers.update(additional_headers)
-    except LookupError:
-        pass
+    auth_error = _apply_proxy_auth_header(headers, request, request_info)
+    if auth_error is not None:
+        return auth_error
+    _apply_budget_provider_headers(headers, request_info)
+    _apply_context_headers(headers)
 
     return headers
 

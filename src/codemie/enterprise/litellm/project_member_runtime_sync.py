@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from codemie.clients.postgres import get_async_session
+from codemie.configs import logger
 from codemie.repository.budget_repository import budget_repository
 from codemie.repository.project_budget_repository import (
     project_member_budget_assignment_repository,
@@ -88,10 +89,19 @@ async def ensure_project_member_runtime_ready(
     project_name: str,
     budget_category: BudgetCategory,
 ) -> None:
-    _ = user_email
     from codemie.service.settings.settings import SettingsService
 
+    logger.debug(
+        f"budget_event=runtime_member_sync_check_started component=project_member_runtime_sync "
+        f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+        f"budget_category={budget_category.value!r}"
+    )
     if not SettingsService.get_project_member_budget_tracking_enabled(project_name):
+        logger.debug(
+            f"budget_event=runtime_member_sync_skipped component=project_member_runtime_sync "
+            f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+            f"budget_category={budget_category.value!r} reason=member_tracking_disabled"
+        )
         return
 
     async with get_async_session() as session:
@@ -102,6 +112,11 @@ async def ensure_project_member_runtime_ready(
             budget_category=budget_category,
         )
         if resolved.scope != BudgetScope.PROJECT:
+            logger.debug(
+                f"budget_event=runtime_member_sync_skipped component=project_member_runtime_sync "
+                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"budget_category={budget_category.value!r} scope={resolved.scope.value!r} reason=global_scope"
+            )
             return
 
         current_provider_member_ref = _metadata_value(resolved.member_provider_metadata, "provider_member_ref")
@@ -113,6 +128,13 @@ async def ensure_project_member_runtime_ready(
             and expected_budget_id
             and current_provider_budget_id == expected_budget_id
         ):
+            logger.debug(
+                f"budget_event=runtime_member_sync_skipped component=project_member_runtime_sync "
+                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
+                f"provider_member_ref={current_provider_member_ref!r} "
+                f"provider_budget_id={current_provider_budget_id!r} reason=provider_metadata_current"
+            )
             return
 
         allocation = await project_member_budget_assignment_repository.get_active_by_project_category_user(
@@ -122,11 +144,23 @@ async def ensure_project_member_runtime_ready(
             user_id=user_id,
         )
         if allocation is None:
+            logger.error(
+                f"budget_event=runtime_member_sync_failed component=project_member_runtime_sync "
+                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
+                f"reason=missing_allocation error=None"
+            )
             raise RuntimeError(
                 f"Project member allocation missing for project={project_name!r}, "
                 f"budget_category={budget_category.value!r}, user_id={user_id!r}"
             )
         if resolved.budget_id is None:
+            logger.error(
+                f"budget_event=runtime_member_sync_failed component=project_member_runtime_sync "
+                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
+                f"reason=missing_resolved_budget_id error=None"
+            )
             raise RuntimeError(
                 f"Resolved project budget context missing budget_id for project={project_name!r}, "
                 f"budget_category={budget_category.value!r}, user_id={user_id!r}"
@@ -134,6 +168,12 @@ async def ensure_project_member_runtime_ready(
 
         budget = await budget_repository.get_by_id(session, resolved.budget_id)
         if budget is None:
+            logger.error(
+                f"budget_event=runtime_member_sync_failed component=project_member_runtime_sync "
+                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
+                f"reason=missing_budget_row error=None"
+            )
             raise RuntimeError(
                 f"Budget not found for budget_id={resolved.budget_id!r}, "
                 f"project={project_name!r}, budget_category={budget_category.value!r}, user_id={user_id!r}"
@@ -149,8 +189,21 @@ async def ensure_project_member_runtime_ready(
         allocation.effective_budget_id = effective_budget_id
 
         try:
+            logger.debug(
+                f"budget_event=runtime_member_sync_started component=project_member_runtime_sync "
+                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"budget_id={resolved.budget_id!r} effective_budget_id={effective_budget_id!r} "
+                f"budget_category={budget_category.value!r} allocation_id={allocation.id!r}"
+            )
             member_state = await get_active_provider().sync_member_allocation(allocation=allocation, budget=budget)
         except Exception as exc:
+            logger.error(
+                f"budget_event=runtime_member_sync_failed component=project_member_runtime_sync "
+                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
+                f"reason=provider_sync_failed error={exc}",
+                exc_info=True,
+            )
             raise RuntimeError(
                 f"Provider member sync failed for project={project_name!r}, "
                 f"budget_category={budget_category.value!r}, user_id={user_id!r}: {exc}"
@@ -158,11 +211,23 @@ async def ensure_project_member_runtime_ready(
 
         sync_status = str(member_state.sync_status)
         if sync_status not in _ALLOWED_SYNC_STATUSES:
+            logger.error(
+                f"budget_event=runtime_member_sync_failed component=project_member_runtime_sync "
+                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
+                f"reason=unexpected_sync_status sync_status={sync_status!r} error=None"
+            )
             raise RuntimeError(
                 f"Provider member sync returned unexpected sync_status={sync_status!r} "
                 f"for project={project_name!r}, budget_category={budget_category.value!r}, user_id={user_id!r}"
             )
         if not member_state.provider_budget_id:
+            logger.error(
+                f"budget_event=runtime_member_sync_failed component=project_member_runtime_sync "
+                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
+                f"reason=missing_provider_budget_id sync_status={sync_status!r} error=None"
+            )
             raise RuntimeError(
                 f"Provider member sync missing provider_budget_id for project={project_name!r}, "
                 f"budget_category={budget_category.value!r}, user_id={user_id!r}"
@@ -178,6 +243,15 @@ async def ensure_project_member_runtime_ready(
 
         _resolution_cache.pop((project_name, budget_category.value, user_id), None)
         await session.commit()
+        logger.debug(
+            f"budget_event=runtime_member_sync_completed component=project_member_runtime_sync "
+            f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+            f"budget_id={resolved.budget_id!r} effective_budget_id={effective_budget_id!r} "
+            f"budget_category={budget_category.value!r} allocation_id={allocation.id!r} "
+            f"provider={member_state.provider!r} provider_member_ref={member_state.provider_member_ref!r} "
+            f"provider_budget_id={member_state.provider_budget_id!r} sync_status={sync_status!r} "
+            f"cache_invalidated=true"
+        )
 
 
 def ensure_project_member_runtime_ready_sync(

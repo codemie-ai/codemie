@@ -15,13 +15,15 @@
 from __future__ import annotations
 
 import json
-import logging
+from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Optional, TypeVar
 
 from langchain_openai import AzureChatOpenAI
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.runnables import Runnable
 from pydantic import BaseModel
+
+from codemie.configs import logger
 
 from .project_member_runtime_sync import ensure_project_member_runtime_ready_sync
 from .runtime_budget_selection import RuntimeBudgetMode, select_runtime_budget_mode
@@ -30,8 +32,6 @@ if TYPE_CHECKING:
     from codemie.configs.llm_config import LLMModel
     from codemie.rest_api.models.settings import LiteLLMContext, LiteLLMCredentials
     from langchain_openai import AzureOpenAIEmbeddings
-
-logger = logging.getLogger(__name__)
 
 _BM = TypeVar("_BM", bound=BaseModel)
 _DictOrPydanticClass = dict[str, Any] | type[_BM]
@@ -45,6 +45,13 @@ def _metadata_value(metadata: dict[str, Any], key: str) -> Any:
     if isinstance(raw, dict):
         return raw.get(key)
     return None
+
+
+def _anonymized_key_fingerprint(secret_value: str | None) -> str | None:
+    """Return a stable non-secret fingerprint for provider keys used in logs."""
+    if not secret_value:
+        return None
+    return sha256(secret_value.encode("utf-8")).hexdigest()[:12]
 
 
 class LiteLLMChatOpenAI(AzureChatOpenAI):
@@ -278,7 +285,11 @@ def _configure_direct_runtime_overrides(
     request_params: dict[str, Any],
 ) -> None:
     if creds:
-        logger.debug(f"Using own credentials for LiteLLM by user: {user_email}")
+        logger.debug(
+            f"budget_event=runtime_mode_selected component=litellm_llm_factory "
+            f"user_id={user_id!r} username={user_email!r} "
+            f"mode={RuntimeBudgetMode.USER_CREDENTIALS_BYPASS.value!r} reason=own_credentials"
+        )
         return
 
     (
@@ -307,10 +318,27 @@ def _configure_direct_runtime_overrides(
             runtime_api_key=project_runtime_api_key,
             runtime_base_url=project_runtime_base_url,
         )
+        logger.debug(
+            f"budget_event=runtime_provider_overrides_applied component=litellm_llm_factory "
+            f"user_id={user_id!r} username={user_email!r} model={llm_model_details.base_name!r} "
+            f"api_key_present={project_runtime_api_key is not None} "
+            f"api_key_fingerprint={_anonymized_key_fingerprint(project_runtime_api_key)!r} "
+            f"base_url_present={project_runtime_base_url is not None} "
+            f"headers_applied={bool(project_runtime_headers)} "
+            f"provider_header_names={sorted(project_runtime_headers.keys())!r} "
+            f"body_user_present={project_runtime_user is not None} "
+            f"litellm_customer_key={project_runtime_user!r}"
+        )
         return
 
     from .dependencies import check_user_budget
 
+    logger.debug(
+        f"budget_event=runtime_mode_selected component=litellm_llm_factory "
+        f"user_id={user_id!r} username={user_email!r} model={llm_model_details.base_name!r} "
+        f"mode={RuntimeBudgetMode.GLOBAL_OR_PERSONAL_BUDGET.value!r} "
+        f"litellm_customer_key={user_email!r}"
+    )
     check_user_budget(user_email=user_email, user_id=user_id)
     request_params["model_kwargs"] = {"user": user_email}
 
@@ -364,6 +392,11 @@ def _resolve_direct_project_budget_runtime(
     from codemie.service.settings.settings import SettingsService
 
     project_name = litellm_context.current_project
+    logger.debug(
+        f"budget_event=runtime_category_selected component=litellm_llm_factory "
+        f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+        f"budget_category={category.value!r} model={llm_model_details.base_name!r}"
+    )
     member_tracking_enabled = SettingsService.get_project_member_budget_tracking_enabled(project_name)
 
     if member_tracking_enabled:
@@ -379,10 +412,24 @@ def _resolve_direct_project_budget_runtime(
         project_name=project_name,
         budget_category=category,
     )
+    logger.debug(
+        f"budget_event=runtime_budget_resolved component=litellm_llm_factory "
+        f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+        f"budget_category={category.value!r} scope={resolved.scope.value!r} "
+        f"budget_id={resolved.budget_id!r} effective_budget_id={resolved.effective_budget_id!r} "
+        f"shared_budget_id={resolved.shared_budget_id!r} override_budget_id={resolved.override_budget_id!r} "
+        f"allocation_id={resolved.member_allocation_id!r} model={llm_model_details.base_name!r}"
+    )
     provider_result = budget_resolution_service.dispatch_runtime_sync(
         resolved, user_id=user_id, user_email=user_email, model=llm_model_details.base_name
     )
     if provider_result is None:
+        logger.debug(
+            f"budget_event=runtime_project_budget_resolution_skipped component=litellm_llm_factory "
+            f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+            f"budget_category={category.value!r} model={llm_model_details.base_name!r} "
+            f"reason=no_provider_result"
+        )
         return None, {}, None, None
 
     selection = select_runtime_budget_mode(
@@ -392,6 +439,17 @@ def _resolve_direct_project_budget_runtime(
         resolved_project_budget=True,
     )
     runtime_user = provider_result.body_overrides.get("user")
+    logger.debug(
+        f"budget_event=runtime_mode_selected component=litellm_llm_factory "
+        f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+        f"budget_category={category.value!r} model={llm_model_details.base_name!r} "
+        f"mode={selection.mode.value!r} member_tracking_enabled={member_tracking_enabled} "
+        f"api_key_present={provider_result.api_key is not None} "
+        f"api_key_fingerprint={_anonymized_key_fingerprint(provider_result.api_key)!r} "
+        f"headers_applied={bool(provider_result.headers)} "
+        f"provider_header_names={sorted(provider_result.headers.keys())!r} "
+        f"litellm_customer_key={runtime_user!r}"
+    )
     if selection.mode == RuntimeBudgetMode.PROJECT_BUDGET_WITH_MEMBER_TRACKING:
         if not isinstance(runtime_user, str) or not runtime_user:
             raise RuntimeError(

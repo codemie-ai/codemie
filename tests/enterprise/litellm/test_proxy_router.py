@@ -43,6 +43,7 @@ from codemie.enterprise.litellm.proxy_router import (
     _get_integration_api_key,
     _handle_error_response,
     _prepare_proxy_headers,
+    _resolve_non_premium_tracking_identity,
     _resolve_project_budget_runtime,
     register_proxy_endpoints,
 )
@@ -271,6 +272,90 @@ class TestResolveProjectBudgetRuntime:
 
         mock_resolve.assert_not_called()
         mock_dispatch.assert_not_called()
+
+
+class TestResolveNonPremiumTrackingIdentity:
+    """Tests for non-premium proxy budget category selection."""
+
+    def test_web_request_uses_platform_even_when_cli_budget_configured(self):
+        user = MagicMock()
+        user.username = "user@example.com"
+        request_info = {
+            LLM_MODEL: "gpt-4.1-mini",
+            "client_type": "web",
+            CODEMIE_CLI: "",
+        }
+        category_budget_ids = {
+            BudgetCategory.PLATFORM.value: "platform-budget",
+            BudgetCategory.CLI.value: "cli-budget",
+        }
+
+        with patch(
+            "codemie.enterprise.litellm.proxy_router.get_category_budget_id",
+            return_value="cli-budget",
+        ):
+            category, username, budget_id, llm_model = _resolve_non_premium_tracking_identity(
+                user=user,
+                request_info=request_info,
+                category_budget_ids=category_budget_ids,
+                llm_model="gpt-4.1-mini",
+            )
+
+        assert category == BudgetCategory.PLATFORM
+        assert username == "user@example.com"
+        assert budget_id == "platform-budget"
+        assert llm_model == "gpt-4.1-mini"
+
+    def test_cli_header_request_uses_cli_budget(self):
+        user = MagicMock()
+        user.username = "user@example.com"
+        request_info = {
+            LLM_MODEL: "gpt-4.1-mini",
+            "client_type": "web",
+            CODEMIE_CLI: "codemie-cli/1.2.3",
+        }
+        category_budget_ids = {
+            BudgetCategory.PLATFORM.value: "platform-budget",
+            BudgetCategory.CLI.value: "cli-budget",
+        }
+
+        category, username, budget_id, llm_model = _resolve_non_premium_tracking_identity(
+            user=user,
+            request_info=request_info,
+            category_budget_ids=category_budget_ids,
+            llm_model="gpt-4.1-mini",
+        )
+
+        assert category == BudgetCategory.CLI
+        assert username == "user@example.com_codemie_cli"
+        assert budget_id == "cli-budget"
+        assert llm_model == "gpt-4.1-mini"
+
+    @pytest.mark.parametrize("client_type", ["codemie-cli", "codemie_cli"])
+    def test_cli_client_type_uses_cli_budget(self, client_type):
+        user = MagicMock()
+        user.username = "user@example.com"
+        request_info = {
+            LLM_MODEL: "gpt-4.1-mini",
+            "client_type": client_type,
+            CODEMIE_CLI: "",
+        }
+        category_budget_ids = {
+            BudgetCategory.PLATFORM.value: "platform-budget",
+            BudgetCategory.CLI.value: "cli-budget",
+        }
+
+        category, username, budget_id, llm_model = _resolve_non_premium_tracking_identity(
+            user=user,
+            request_info=request_info,
+            category_budget_ids=category_budget_ids,
+            llm_model="gpt-4.1-mini",
+        )
+
+        assert category == BudgetCategory.CLI
+        assert username == "user@example.com_codemie_cli"
+        assert budget_id == "cli-budget"
+        assert llm_model == "gpt-4.1-mini"
 
 
 class TestPrepareProxyHeaders:
@@ -621,25 +706,91 @@ class TestCreateBodyStreamWithOptionalInjection:
         mock_check_user_budget.assert_called_once_with(user_email="user@example.com", budget_id=None, user_id=user.id)
 
     @pytest.mark.asyncio
-    async def test_non_premium_request_uses_proxy_budget_id(self):
-        """Non-premium proxy requests should use the dedicated proxy budget instead of the default one."""
+    async def test_non_premium_web_request_uses_platform_budget_even_when_cli_configured(self):
+        """Non-premium web proxy requests should not use the dedicated CLI budget."""
         from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
 
         user = MagicMock()
+        user.id = "user-1"
         user.username = "user@example.com"
         request_info = {
             "llm_model": "gpt-4.1-mini",
             "session_id": "session-123",
             "request_id": "request-456",
             "client_type": "web",
+            CODEMIE_CLI: "",
         }
 
         with patch("codemie.enterprise.litellm.proxy_router.get_premium_username", return_value=None):
-            with patch("codemie.enterprise.litellm.proxy_router.get_proxy_username") as mock_get_proxy_username:
-                mock_get_proxy_username.return_value = "user@example.com_codemie_cli"
+            with patch(
+                "codemie.enterprise.litellm.proxy_router.budget_service.get_all_category_budget_ids_for_request",
+                new=AsyncMock(
+                    return_value={
+                        "platform": "platform-budget",
+                        "cli": "cli-budget",
+                        "premium_models": None,
+                    }
+                ),
+            ):
                 with patch(
                     "codemie.enterprise.litellm.proxy_router.get_category_budget_id",
-                    return_value="cli_budget",
+                    return_value="cli-budget",
+                ):
+                    with patch("codemie.enterprise.litellm.proxy_router.check_user_budget") as mock_check_user_budget:
+                        with patch(
+                            "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes"
+                        ) as mock_inject:
+                            mock_inject.return_value = "stream"
+
+                            result = await _create_body_stream_with_optional_injection(
+                                body_bytes=b"{}",
+                                has_own_credentials=False,
+                                user=user,
+                                request_info=request_info,
+                            )
+
+        assert result == "stream"
+        mock_check_user_budget.assert_called_once_with(
+            user_email="user@example.com",
+            budget_id=None,
+            user_id="user-1",
+        )
+        mock_inject.assert_called_once_with(
+            body_bytes=b"{}",
+            user_id="user@example.com",
+            request_info=request_info,
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_premium_cli_request_uses_cli_budget(self):
+        """Non-premium CLI proxy requests should use the dedicated CLI budget."""
+        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+
+        user = MagicMock()
+        user.id = "user-1"
+        user.username = "user@example.com"
+        request_info = {
+            "llm_model": "gpt-4.1-mini",
+            "session_id": "session-123",
+            "request_id": "request-456",
+            "client_type": "codemie-cli",
+            CODEMIE_CLI: "codemie-cli/1.2.3",
+        }
+
+        with patch("codemie.enterprise.litellm.proxy_router.get_premium_username", return_value=None):
+            with patch(
+                "codemie.enterprise.litellm.proxy_router.budget_service.get_all_category_budget_ids_for_request",
+                new=AsyncMock(
+                    return_value={
+                        "platform": "platform-budget",
+                        "cli": "cli-budget",
+                        "premium_models": None,
+                    }
+                ),
+            ):
+                with patch(
+                    "codemie.enterprise.litellm.proxy_router.get_category_budget_id",
+                    return_value="cli-budget",
                 ):
                     with patch("codemie.enterprise.litellm.proxy_router.check_user_budget") as mock_check_user_budget:
                         with patch(
@@ -657,12 +808,66 @@ class TestCreateBodyStreamWithOptionalInjection:
         assert result == "stream"
         mock_check_user_budget.assert_called_once_with(
             user_email="user@example.com_codemie_cli",
-            budget_id="cli_budget",
-            user_id=user.id,
+            budget_id="cli-budget",
+            user_id="user-1",
         )
         mock_inject.assert_called_once_with(
-            body_bytes=b"{}", user_id="user@example.com_codemie_cli", request_info=request_info
+            body_bytes=b"{}",
+            user_id="user@example.com_codemie_cli",
+            request_info=request_info,
         )
+
+    @pytest.mark.asyncio
+    async def test_web_project_runtime_resolves_platform_category(self):
+        """Web project requests must resolve project runtime against the platform category."""
+        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+
+        user = MagicMock()
+        user.id = "user-1"
+        user.username = "user@example.com"
+        request_info = {
+            "llm_model": "gpt-4.1-mini",
+            "session_id": "session-123",
+            "request_id": "request-456",
+            "client_type": "web",
+            CODEMIE_CLI: "",
+            PROJECT: "project-a",
+        }
+
+        with patch("codemie.enterprise.litellm.proxy_router.get_premium_username", return_value=None):
+            with patch(
+                "codemie.enterprise.litellm.proxy_router.budget_service.get_all_category_budget_ids_for_request",
+                new=AsyncMock(
+                    return_value={
+                        "platform": "platform-budget",
+                        "cli": "cli-budget",
+                        "premium_models": None,
+                    }
+                ),
+            ):
+                with patch(
+                    "codemie.enterprise.litellm.proxy_router._resolve_project_budget_runtime",
+                    new=AsyncMock(return_value=None),
+                ) as mock_resolve_runtime:
+                    with patch(
+                        "codemie.enterprise.litellm.proxy_router.get_category_budget_id",
+                        return_value="cli-budget",
+                    ):
+                        with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
+                            with patch(
+                                "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes",
+                                return_value="stream",
+                            ):
+                                result = await _create_body_stream_with_optional_injection(
+                                    body_bytes=b"{}",
+                                    has_own_credentials=False,
+                                    user=user,
+                                    request_info=request_info,
+                                )
+
+        assert result == "stream"
+        mock_resolve_runtime.assert_awaited_once()
+        assert mock_resolve_runtime.await_args.kwargs["category"] == BudgetCategory.PLATFORM
 
 
 class TestParseUsageWithCost:

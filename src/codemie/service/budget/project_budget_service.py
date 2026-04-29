@@ -40,6 +40,7 @@ from codemie.service.budget.budget_models import (
     build_override_project_budget_id,
     build_shared_project_budget_id,
 )
+from codemie.service.budget.provider import BudgetEnforcementProvider, BudgetProviderState
 from codemie.service.budget.provider_registry import get_active_provider
 
 if TYPE_CHECKING:
@@ -300,6 +301,13 @@ class ProjectBudgetService:
         owner_user_id: str | None = None,
     ) -> Budget:
         existing = await budget_repository.get_by_id(session, child_budget_id)
+        action = "create" if existing is None else "update"
+        logger.debug(
+            f"budget_event=project_child_budget_upsert_started component=project_budget_service "
+            f"budget_id={child_budget_id!r} parent_budget_id={main_budget.budget_id!r} "
+            f"project_name={project_name!r} budget_category={main_budget.budget_category!r} "
+            f"origin_type={budget_origin_type!r} owner_user_id={owner_user_id!r} action={action}"
+        )
         fields = {
             "budget_type": BudgetType.PROJECT.value,
             "budget_origin_type": budget_origin_type,
@@ -319,7 +327,7 @@ class ProjectBudgetService:
             "deleted_at": None,
         }
         if existing is None:
-            return await budget_repository.insert(
+            budget = await budget_repository.insert(
                 session,
                 Budget(
                     budget_id=child_budget_id,
@@ -327,7 +335,15 @@ class ProjectBudgetService:
                     **fields,
                 ),
             )
-        return await budget_repository.update(session, child_budget_id, fields)
+        else:
+            budget = await budget_repository.update(session, child_budget_id, fields)
+        logger.debug(
+            f"budget_event=project_child_budget_upsert_completed component=project_budget_service "
+            f"budget_id={child_budget_id!r} parent_budget_id={main_budget.budget_id!r} "
+            f"project_name={project_name!r} budget_category={main_budget.budget_category!r} "
+            f"origin_type={budget_origin_type!r} owner_user_id={owner_user_id!r} action={action}"
+        )
+        return budget
 
     async def _ensure_shared_child_budget(
         self,
@@ -408,11 +424,28 @@ class ProjectBudgetService:
         allocations: list[ProjectMemberBudgetAssignment],
     ) -> None:
         for alloc in allocations:
+            provider_name = getattr(provider, "provider_name", "unknown")
+            project_name = getattr(alloc, "project_name", None)
+            budget_id = getattr(budget, "budget_id", None)
+            budget_category = getattr(alloc, "budget_category", None)
+            allocation_id = getattr(alloc, "id", None)
+            user_id = getattr(alloc, "user_id", None)
+            allocation_mode = getattr(alloc, "allocation_mode", None)
             try:
+                effective_budget_id = self._effective_member_budget_id(budget_id, alloc) if budget_id else None
+                logger.debug(
+                    f"budget_event=provider_member_budget_sync_started component=project_budget_service "
+                    f"provider={provider_name!r} project_name={project_name!r} "
+                    f"budget_id={budget_id!r} effective_budget_id={effective_budget_id!r} "
+                    f"budget_category={budget_category!r} allocation_id={allocation_id!r} "
+                    f"user_id={user_id!r} allocation_mode={allocation_mode!r} "
+                    f"allocated_max_budget={getattr(alloc, 'allocated_max_budget', None)!r} "
+                    f"allocated_soft_budget={getattr(alloc, 'allocated_soft_budget', None)!r}"
+                )
                 member_state = await provider.sync_member_allocation(allocation=alloc, budget=budget)
                 await self._persist_child_budget_provider_state(
                     session,
-                    budget_id=self._effective_member_budget_id(budget.budget_id, alloc),
+                    budget_id=effective_budget_id,
                     member_state=member_state,
                 )
                 await project_member_budget_assignment_repository.update_provider_metadata(
@@ -430,10 +463,21 @@ class ProjectBudgetService:
                     sync_status=member_state.sync_status,
                     budget_reset_at=member_state.budget_reset_at,
                 )
+                logger.debug(
+                    f"budget_event=provider_member_budget_sync_completed component=project_budget_service "
+                    f"provider={member_state.provider!r} project_name={project_name!r} "
+                    f"budget_id={budget_id!r} effective_budget_id={effective_budget_id!r} "
+                    f"budget_category={budget_category!r} allocation_id={allocation_id!r} "
+                    f"user_id={user_id!r} provider_member_ref={member_state.provider_member_ref!r} "
+                    f"provider_budget_id={member_state.provider_budget_id!r} "
+                    f"sync_status={member_state.sync_status!r} budget_reset_at={member_state.budget_reset_at!r}"
+                )
             except Exception as exc:
                 logger.warning(
-                    f"Provider sync_member_allocation failed for allocation {alloc.id!r} "
-                    f"(user={alloc.user_id!r}): {exc}"
+                    f"budget_event=provider_member_budget_sync_failed component=project_budget_service "
+                    f"provider={provider_name!r} project_name={project_name!r} budget_id={budget_id!r} "
+                    f"budget_category={budget_category!r} allocation_id={allocation_id!r} "
+                    f"user_id={user_id!r} error={exc}"
                 )
                 await project_member_budget_assignment_repository.update_provider_metadata(
                     session,
@@ -458,6 +502,14 @@ class ProjectBudgetService:
         allocations: list[ProjectMemberBudgetAssignment],
     ) -> Budget:
         try:
+            provider_name = getattr(provider, "provider_name", "unknown")
+            logger.debug(
+                f"budget_event=provider_project_budget_sync_started component=project_budget_service "
+                f"provider={provider_name!r} operation=create project_name={project_name!r} "
+                f"budget_id={budget_id!r} budget_category={budget_category.value!r} "
+                f"max_budget={max_budget!r} soft_budget={soft_budget!r} "
+                f"budget_duration={budget_duration!r} model_count={len(models or [])}"
+            )
             provider_state = await provider.ensure_project_budget(
                 project_name=project_name,
                 budget_category=budget_category,
@@ -469,10 +521,20 @@ class ProjectBudgetService:
             )
             if provider_state.sync_status not in {SyncStatus.OK, SyncStatus.NOOP}:
                 raise RuntimeError(f"Project budget enforcement provider sync failed: {provider_state.sync_status}")
+            logger.debug(
+                f"budget_event=provider_project_budget_sync_completed component=project_budget_service "
+                f"provider={provider_state.provider!r} operation=create project_name={project_name!r} "
+                f"budget_id={budget_id!r} budget_category={budget_category.value!r} "
+                f"provider_budget_ref={provider_state.provider_budget_ref!r} "
+                f"sync_status={provider_state.sync_status!r} budget_reset_at={provider_state.budget_reset_at!r}"
+            )
         except Exception as exc:
             logger.error(
-                f"Provider ensure_project_budget failed for '{budget_id}' "
-                f"(project={project_name!r}, category={budget_category.value!r}): {exc}"
+                f"budget_event=provider_project_budget_sync_failed component=project_budget_service "
+                f"provider={getattr(provider, 'provider_name', 'unknown')!r} operation=create "
+                f"project_name={project_name!r} budget_id={budget_id!r} "
+                f"budget_category={budget_category.value!r} error={exc}",
+                exc_info=True,
             )
             await session.rollback()
             raise ExtendedHTTPException(
@@ -558,6 +620,14 @@ class ProjectBudgetService:
             sync_status=provider_meta.get("sync_status", SyncStatus.OK),
         )
         try:
+            logger.debug(
+                f"budget_event=provider_project_budget_sync_started component=project_budget_service "
+                f"provider={provider.provider_name!r} operation=update "
+                f"project_name={assignment.project_name if assignment else None!r} budget_id={budget_id!r} "
+                f"budget_category={budget.budget_category!r} provider_budget_ref={budget_state.provider_budget_ref!r} "
+                f"max_budget={eff_max!r} soft_budget={eff_soft!r} budget_duration={eff_duration!r} "
+                f"model_count={len(models or [])}"
+            )
             new_provider_state = await provider.update_project_budget(
                 budget_state=budget_state,
                 project_name=assignment.project_name if assignment else "",
@@ -583,8 +653,22 @@ class ProjectBudgetService:
                     "budget_reset_at": new_provider_state.budget_reset_at,
                 },
             )
+            logger.debug(
+                f"budget_event=provider_project_budget_sync_completed component=project_budget_service "
+                f"provider={new_provider_state.provider!r} operation=update "
+                f"project_name={assignment.project_name if assignment else None!r} budget_id={budget_id!r} "
+                f"budget_category={budget.budget_category!r} "
+                f"provider_budget_ref={new_provider_state.provider_budget_ref!r} "
+                f"sync_status={new_provider_state.sync_status!r} "
+                f"budget_reset_at={new_provider_state.budget_reset_at!r}"
+            )
         except Exception as exc:
-            logger.warning(f"Provider update_project_budget failed for '{budget_id}': {exc}")
+            logger.warning(
+                f"budget_event=provider_project_budget_sync_failed component=project_budget_service "
+                f"provider={getattr(provider, 'provider_name', 'unknown')!r} operation=update "
+                f"project_name={assignment.project_name if assignment else None!r} budget_id={budget_id!r} "
+                f"budget_category={budget.budget_category!r} error={exc}"
+            )
         return budget, assignment, provider
 
     # ==================== Create ====================
@@ -613,6 +697,13 @@ class ProjectBudgetService:
         """
         from sqlalchemy.exc import IntegrityError
 
+        logger.debug(
+            f"budget_event=project_budget_create_started component=project_budget_service "
+            f"project_name={data.project_name!r} requested_budget_id={data.budget_id!r} "
+            f"budget_category={data.budget_category.value!r} allocation_mode={data.allocation_mode!r} "
+            f"max_budget={data.max_budget!r} soft_budget={data.soft_budget!r} "
+            f"budget_duration={data.budget_duration!r} actor_id={actor_id!r} actor_name={actor_name!r}"
+        )
         try:
             self._validate_constraints(
                 soft_budget=data.soft_budget,
@@ -629,6 +720,11 @@ class ProjectBudgetService:
         # Append a UUID suffix so the stored budget_id is always unique,
         # allowing the same human-readable prefix to be reused after deletion.
         budget_id = f"{data.budget_id}-{uuid.uuid4().hex}"
+        logger.debug(
+            f"budget_event=project_budget_id_generated component=project_budget_service "
+            f"project_name={data.project_name!r} requested_budget_id={data.budget_id!r} "
+            f"budget_id={budget_id!r} budget_category={data.budget_category.value!r}"
+        )
 
         # Validate name uniqueness — skip soft-deleted budgets (partial DB index handles the rest).
         existing_by_name = await budget_repository.get_by_name(session, data.name)
@@ -640,6 +736,11 @@ class ProjectBudgetService:
             session, data.project_name, data.budget_category.value
         )
         if existing_assignment is not None:
+            logger.debug(
+                f"budget_event=project_budget_create_rejected component=project_budget_service "
+                f"project_name={data.project_name!r} budget_category={data.budget_category.value!r} "
+                f"existing_budget_id={existing_assignment.budget_id!r} reason=active_assignment_exists"
+            )
             raise ExtendedHTTPException(
                 code=409,
                 message=(
@@ -681,6 +782,11 @@ class ProjectBudgetService:
 
         # Step 6: resolve active project members
         member_user_ids = await self._get_active_member_user_ids(session, data.project_name)
+        logger.debug(
+            f"budget_event=project_budget_members_resolved component=project_budget_service "
+            f"project_name={data.project_name!r} budget_id={budget_id!r} "
+            f"budget_category={data.budget_category.value!r} member_count={len(member_user_ids)}"
+        )
 
         # Step 7: create member allocation rows
         allocation_rows = self._allocate_equal(
@@ -693,6 +799,12 @@ class ProjectBudgetService:
             allocation_mode=data.allocation_mode,
             assigned_by=actor_id,
         )
+        logger.debug(
+            f"budget_event=project_budget_allocations_built component=project_budget_service "
+            f"project_name={data.project_name!r} budget_id={budget_id!r} "
+            f"budget_category={data.budget_category.value!r} allocation_count={len(allocation_rows)} "
+            f"allocation_mode={data.allocation_mode!r}"
+        )
         shared_budget = await self._ensure_shared_child_budget(
             session,
             main_budget=budget,
@@ -700,6 +812,11 @@ class ProjectBudgetService:
             actor_id=actor_id,
             per_member_soft_budget=allocation_rows[0].allocated_soft_budget if allocation_rows else budget.soft_budget,
             per_member_max_budget=allocation_rows[0].allocated_max_budget if allocation_rows else budget.max_budget,
+        )
+        logger.debug(
+            f"budget_event=project_shared_child_budget_selected component=project_budget_service "
+            f"project_name={data.project_name!r} budget_id={budget_id!r} "
+            f"shared_budget_id={shared_budget.budget_id!r} budget_category={data.budget_category.value!r}"
         )
         for row in allocation_rows:
             row.shared_budget_id = shared_budget.budget_id
@@ -723,9 +840,10 @@ class ProjectBudgetService:
 
         member_count = len(allocations)
         logger.info(
-            f"Project budget '{budget_id}' created for project='{data.project_name}' "
-            f"category='{data.budget_category.value}' members={member_count} "
-            f"by '{actor_name or actor_id}'"
+            f"budget_event=project_budget_create_completed component=project_budget_service "
+            f"project_name={data.project_name!r} budget_id={budget_id!r} "
+            f"budget_category={data.budget_category.value!r} member_count={member_count} "
+            f"actor_id={actor_id!r} actor_name={actor_name or actor_id!r}"
         )
         return budget
 
@@ -789,8 +907,8 @@ class ProjectBudgetService:
         session: AsyncSession,
         budget: Budget,
         alloc_id: str,
-        updated: object,
-        provider: object,
+        updated: ProjectMemberBudgetAssignment,
+        provider: BudgetEnforcementProvider,
     ) -> None:
         """Sync a single FIXED-mode member allocation with the provider."""
         await self._ensure_override_child_budget(
@@ -824,6 +942,64 @@ class ProjectBudgetService:
             budget_reset_at=member_state.budget_reset_at,
         )
 
+    async def _resync_member_allocation(
+        self,
+        session: AsyncSession,
+        *,
+        budget_id: str,
+        budget: Budget,
+        alloc: ProjectMemberBudgetAssignment,
+        new_amounts: tuple[float, float] | None,
+        provider: BudgetEnforcementProvider,
+    ) -> tuple[float, float] | None:
+        if new_amounts is None:
+            return None
+        new_max, new_soft = new_amounts
+        try:
+            updated = await project_member_budget_assignment_repository.update_allocation(
+                session,
+                allocation_id=alloc.id,
+                allocated_max_budget=new_max,
+                allocated_soft_budget=new_soft,
+            )
+            if updated is None:
+                return None
+            if updated.allocation_mode == AllocationMode.FIXED.value:
+                await self._sync_fixed_allocation(session, budget, alloc.id, updated, provider)
+                return None
+            return updated.allocated_max_budget, updated.allocated_soft_budget
+        except Exception as exc:
+            logger.warning(
+                f"budget_event=provider_member_budget_sync_failed component=project_budget_service "
+                f"provider={getattr(provider, 'provider_name', 'unknown')!r} "
+                f"project_name={alloc.project_name!r} budget_id={budget_id!r} "
+                f"budget_category={alloc.budget_category!r} allocation_id={alloc.id!r} "
+                f"user_id={alloc.user_id!r} error={exc}"
+            )
+            return None
+
+    async def _ensure_shared_child_budget_after_resync(
+        self,
+        session: AsyncSession,
+        *,
+        budget_id: str,
+        budget: Budget,
+        shared_sample: tuple[float, float] | None,
+    ) -> None:
+        if shared_sample is None:
+            return
+        assignment = await project_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
+        if assignment is None:
+            return
+        await self._ensure_shared_child_budget(
+            session,
+            main_budget=budget,
+            project_name=assignment.project_name,
+            actor_id=getattr(budget, "created_by", "system"),
+            per_member_soft_budget=shared_sample[1],
+            per_member_max_budget=shared_sample[0],
+        )
+
     async def _resync_member_allocations(
         self,
         session: AsyncSession,
@@ -831,7 +1007,7 @@ class ProjectBudgetService:
         budget: Budget,
         eff_max: float,
         eff_soft: float,
-        provider: object,
+        provider: BudgetEnforcementProvider,
     ) -> None:
         """Re-compute allocations and sync only budgets/customers that actually require provider changes."""
         allocations = await project_member_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
@@ -843,41 +1019,21 @@ class ProjectBudgetService:
             raise ExtendedHTTPException(code=400, message=str(exc)) from exc
         shared_sample: tuple[float, float] | None = None
         for alloc in allocations:
-            new_amounts = new_alloc_map.get(alloc.user_id)
-            if new_amounts is None:
-                continue
-            new_max, new_soft = new_amounts
-            try:
-                updated = await project_member_budget_assignment_repository.update_allocation(
-                    session,
-                    allocation_id=alloc.id,
-                    allocated_max_budget=new_max,
-                    allocated_soft_budget=new_soft,
-                )
-                if updated is None:
-                    continue
-                if updated.allocation_mode == AllocationMode.FIXED.value:
-                    await self._sync_fixed_allocation(session, budget, alloc.id, updated, provider)
-                elif shared_sample is None:
-                    shared_sample = (updated.allocated_max_budget, updated.allocated_soft_budget)
-            except Exception as exc:
-                logger.warning(
-                    f"Provider sync_member_allocation failed for allocation {alloc.id!r} "
-                    f"(user={alloc.user_id!r}): {exc}"
-                )
-        if shared_sample is not None:
-            assignment = await project_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
-        else:
-            assignment = None
-        if assignment is not None and shared_sample is not None:
-            await self._ensure_shared_child_budget(
+            sample = await self._resync_member_allocation(
                 session,
-                main_budget=budget,
-                project_name=assignment.project_name,
-                actor_id=getattr(budget, "created_by", "system"),
-                per_member_soft_budget=shared_sample[1],
-                per_member_max_budget=shared_sample[0],
+                budget_id=budget_id,
+                budget=budget,
+                alloc=alloc,
+                new_amounts=new_alloc_map.get(alloc.user_id),
+                provider=provider,
             )
+            shared_sample = shared_sample or sample
+        await self._ensure_shared_child_budget_after_resync(
+            session,
+            budget_id=budget_id,
+            budget=budget,
+            shared_sample=shared_sample,
+        )
 
     async def update_project_budget(
         self,
@@ -927,7 +1083,12 @@ class ProjectBudgetService:
                     provider=provider,
                 )
 
-        logger.info(f"Project budget '{budget_id}' updated by '{actor_id}'")
+        logger.info(
+            f"budget_event=project_budget_update_completed component=project_budget_service "
+            f"project_name={_assignment.project_name if _assignment else None!r} budget_id={budget_id!r} "
+            f"budget_category={budget.budget_category!r} updated_fields={sorted(changed_fields.keys())!r} "
+            f"actor_id={actor_id!r}"
+        )
         return budget
 
     async def rebalance_project_budget(
@@ -958,7 +1119,11 @@ class ProjectBudgetService:
                 if key[0] == proj and key[1] == cat:
                     _resolution_cache.pop(key, None)
 
-        logger.info(f"Project budget '{budget_id}' rebalanced by '{actor_id}'")
+        logger.info(
+            f"budget_event=project_budget_rebalance_completed component=project_budget_service "
+            f"project_name={assignment.project_name if assignment else None!r} budget_id={budget_id!r} "
+            f"budget_category={budget.budget_category!r} actor_id={actor_id!r}"
+        )
         return budget
 
     async def reset_project_budget(
@@ -1038,7 +1203,12 @@ class ProjectBudgetService:
                 sync_status=member_state.sync_status,
                 budget_reset_at=member_state.budget_reset_at,
             )
-        logger.info(f"Project budget '{budget_id}' reset by '{actor_id}'")
+        logger.info(
+            f"budget_event=project_budget_reset_completed component=project_budget_service "
+            f"project_name={assignment.project_name!r} budget_id={budget_id!r} "
+            f"budget_category={budget.budget_category!r} allocation_count={len(allocations)} "
+            f"actor_id={actor_id!r}"
+        )
         return budget
 
     async def override_member_allocation(
@@ -1154,34 +1324,34 @@ class ProjectBudgetService:
 
     # ==================== Delete ====================
 
-    async def delete_project_budget(
+    async def _delete_provider_member_allocations(
         self,
-        session: AsyncSession,
+        provider: BudgetEnforcementProvider,
+        *,
+        allocations: list[ProjectMemberBudgetAssignment],
         budget_id: str,
-        actor_id: str,
     ) -> None:
-        """Delete a project budget by soft-deleting active assignment/allocation rows."""
-        budget = await budget_repository.get_by_id(session, budget_id)
-        if budget is None or budget.budget_type != BudgetType.PROJECT.value:
-            raise ExtendedHTTPException(code=404, message=f"Project budget not found: {budget_id}")
-
-        assignment = await project_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
-        allocations = await project_member_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
-        child_budgets = await budget_repository.list_active_child_budgets(session, parent_budget_id=budget_id)
-
-        provider = get_active_provider()
         for alloc in allocations:
             try:
                 await provider.delete_member_allocation(allocation=alloc)
             except Exception as exc:
                 logger.warning(
-                    f"Provider delete_member_allocation failed for allocation {alloc.id!r} "
-                    f"(user={alloc.user_id!r}): {exc}"
+                    f"budget_event=provider_member_budget_delete_failed component=project_budget_service "
+                    f"provider={getattr(provider, 'provider_name', 'unknown')!r} "
+                    f"project_name={alloc.project_name!r} budget_id={budget_id!r} "
+                    f"budget_category={alloc.budget_category!r} allocation_id={alloc.id!r} "
+                    f"user_id={alloc.user_id!r} error={exc}"
                 )
 
-        provider_meta = budget.provider_metadata or {}
-        from codemie.service.budget.provider import BudgetProviderState
-
+    async def _delete_provider_project_budget(
+        self,
+        provider: BudgetEnforcementProvider,
+        *,
+        budget: Budget,
+        budget_id: str,
+        assignment: ProjectBudgetAssignment | None,
+        provider_meta: dict[str, Any],
+    ) -> None:
         budget_state = BudgetProviderState(
             provider=provider_meta.get("provider", ""),
             provider_budget_ref=self._metadata_value(provider_meta, "provider_budget_ref"),
@@ -1194,14 +1364,28 @@ class ProjectBudgetService:
                 project_name=assignment.project_name if assignment else None,
             )
         except Exception as exc:
-            logger.warning(f"Provider delete_project_budget failed for '{budget_id}': {exc}")
+            logger.warning(
+                f"budget_event=provider_project_budget_delete_failed component=project_budget_service "
+                f"provider={getattr(provider, 'provider_name', 'unknown')!r} operation=delete "
+                f"project_name={assignment.project_name if assignment else None!r} budget_id={budget_id!r} "
+                f"budget_category={budget.budget_category!r} error={exc}"
+            )
 
+    async def _soft_delete_project_budget_rows(
+        self,
+        session: AsyncSession,
+        *,
+        budget_id: str,
+        assignment: ProjectBudgetAssignment | None,
+        allocations: list[ProjectMemberBudgetAssignment],
+        child_budgets: list[Budget],
+        provider_meta: dict[str, Any],
+    ) -> None:
         await project_member_budget_assignment_repository.soft_delete_all_by_budget_id(session, budget_id)
 
         if assignment is not None:
             await project_budget_assignment_repository.soft_delete(session, assignment.id)
 
-        # Invalidate resolution cache entries for each affected user.
         from codemie.service.budget.budget_resolution_service import _resolution_cache
 
         if assignment is not None:
@@ -1236,7 +1420,47 @@ class ProjectBudgetService:
                 },
             },
         )
-        logger.info(f"Project budget '{budget_id}' deleted by '{actor_id}'")
+
+    async def delete_project_budget(
+        self,
+        session: AsyncSession,
+        budget_id: str,
+        actor_id: str,
+    ) -> None:
+        """Delete a project budget by soft-deleting active assignment/allocation rows."""
+        budget = await budget_repository.get_by_id(session, budget_id)
+        if budget is None or budget.budget_type != BudgetType.PROJECT.value:
+            raise ExtendedHTTPException(code=404, message=f"Project budget not found: {budget_id}")
+
+        assignment = await project_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
+        allocations = await project_member_budget_assignment_repository.get_active_by_budget_id(session, budget_id)
+        child_budgets = await budget_repository.list_active_child_budgets(session, parent_budget_id=budget_id)
+
+        provider = get_active_provider()
+        await self._delete_provider_member_allocations(provider, allocations=allocations, budget_id=budget_id)
+
+        provider_meta = budget.provider_metadata or {}
+        await self._delete_provider_project_budget(
+            provider,
+            budget=budget,
+            budget_id=budget_id,
+            assignment=assignment,
+            provider_meta=provider_meta,
+        )
+        await self._soft_delete_project_budget_rows(
+            session,
+            budget_id=budget_id,
+            assignment=assignment,
+            allocations=allocations,
+            child_budgets=child_budgets,
+            provider_meta=provider_meta,
+        )
+        logger.info(
+            f"budget_event=project_budget_delete_completed component=project_budget_service "
+            f"project_name={assignment.project_name if assignment else None!r} budget_id={budget_id!r} "
+            f"budget_category={budget.budget_category!r} allocation_count={len(allocations)} "
+            f"child_budget_count={len(child_budgets)} actor_id={actor_id!r}"
+        )
 
 
 project_budget_service = ProjectBudgetService()

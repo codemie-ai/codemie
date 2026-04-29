@@ -23,7 +23,7 @@ from cachetools import TTLCache
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from codemie.configs import config
+from codemie.configs import config, logger
 from codemie.repository.project_budget_repository import (
     project_budget_assignment_repository,
 )
@@ -70,13 +70,29 @@ class BudgetResolutionService:
         budget_category: BudgetCategory,
     ) -> ResolvedBudgetContext:
         if not project_name:
+            logger.debug(
+                f"budget_event=budget_resolution_global_fallback component=budget_resolution_service "
+                f"user_id={user_id!r} project_name={project_name!r} "
+                f"budget_category={budget_category.value!r} reason=missing_project_name"
+            )
             return self._global_context(budget_category)
 
         cache_key = (project_name, budget_category.value, user_id)
         if cache_key in _resolution_cache:
             cached = _resolution_cache[cache_key]
+            logger.debug(
+                f"budget_event=budget_resolution_cache_hit component=budget_resolution_service "
+                f"user_id={user_id!r} project_name={project_name!r} "
+                f"budget_category={budget_category.value!r} "
+                f"scope={(cached.scope.value if cached is not None else 'global')!r} "
+                f"budget_id={(cached.budget_id if cached is not None else None)!r} negative={cached is None}"
+            )
             return cached if cached is not None else self._global_context(budget_category)
 
+        logger.debug(
+            f"budget_event=budget_resolution_cache_miss component=budget_resolution_service "
+            f"user_id={user_id!r} project_name={project_name!r} budget_category={budget_category.value!r}"
+        )
         ctx = await project_budget_assignment_repository.get_project_budget_context(
             session,
             project_name=project_name,
@@ -85,6 +101,11 @@ class BudgetResolutionService:
         )
         if ctx is None:
             _resolution_cache[cache_key] = None
+            logger.debug(
+                f"budget_event=budget_resolution_global_fallback component=budget_resolution_service "
+                f"user_id={user_id!r} project_name={project_name!r} "
+                f"budget_category={budget_category.value!r} reason=project_budget_not_found"
+            )
             return self._global_context(budget_category)
 
         resolved = ResolvedBudgetContext(
@@ -100,6 +121,14 @@ class BudgetResolutionService:
             member_provider_metadata=ctx.member_provider_metadata,
         )
         _resolution_cache[cache_key] = resolved
+        logger.debug(
+            f"budget_event=project_budget_resolved component=budget_resolution_service "
+            f"user_id={user_id!r} project_name={project_name!r} "
+            f"budget_category={budget_category.value!r} budget_id={resolved.budget_id!r} "
+            f"effective_budget_id={resolved.effective_budget_id!r} shared_budget_id={resolved.shared_budget_id!r} "
+            f"override_budget_id={resolved.override_budget_id!r} allocation_id={resolved.member_allocation_id!r} "
+            f"scope={resolved.scope.value!r} cache_hit=false"
+        )
         return resolved
 
     def resolve_sync(
@@ -118,13 +147,29 @@ class BudgetResolutionService:
         blocking the event loop on cache-miss DB access.
         """
         if not project_name:
+            logger.debug(
+                f"budget_event=budget_resolution_global_fallback component=budget_resolution_service path=sync "
+                f"user_id={user_id!r} project_name={project_name!r} "
+                f"budget_category={budget_category.value!r} reason=missing_project_name"
+            )
             return self._global_context(budget_category)
 
         cache_key = (project_name, budget_category.value, user_id)
         if cache_key in _resolution_cache:
             cached = _resolution_cache[cache_key]
+            logger.debug(
+                f"budget_event=budget_resolution_cache_hit component=budget_resolution_service path=sync "
+                f"user_id={user_id!r} project_name={project_name!r} "
+                f"budget_category={budget_category.value!r} "
+                f"scope={(cached.scope.value if cached is not None else 'global')!r} "
+                f"budget_id={(cached.budget_id if cached is not None else None)!r} negative={cached is None}"
+            )
             return cached if cached is not None else self._global_context(budget_category)
 
+        logger.debug(
+            f"budget_event=budget_resolution_cache_miss component=budget_resolution_service path=sync "
+            f"user_id={user_id!r} project_name={project_name!r} budget_category={budget_category.value!r}"
+        )
         from sqlalchemy import text
         from sqlmodel import Session
 
@@ -160,6 +205,11 @@ class BudgetResolutionService:
 
         if row is None:
             _resolution_cache[cache_key] = None
+            logger.debug(
+                f"budget_event=budget_resolution_global_fallback component=budget_resolution_service path=sync "
+                f"user_id={user_id!r} project_name={project_name!r} "
+                f"budget_category={budget_category.value!r} reason=project_budget_not_found"
+            )
             return self._global_context(budget_category)
 
         resolved = ResolvedBudgetContext(
@@ -175,6 +225,14 @@ class BudgetResolutionService:
             member_provider_metadata=row["member_meta"] or {},
         )
         _resolution_cache[cache_key] = resolved
+        logger.debug(
+            f"budget_event=project_budget_resolved component=budget_resolution_service path=sync "
+            f"user_id={user_id!r} project_name={project_name!r} "
+            f"budget_category={budget_category.value!r} budget_id={resolved.budget_id!r} "
+            f"effective_budget_id={resolved.effective_budget_id!r} shared_budget_id={resolved.shared_budget_id!r} "
+            f"override_budget_id={resolved.override_budget_id!r} allocation_id={resolved.member_allocation_id!r} "
+            f"scope={resolved.scope.value!r} cache_hit=false"
+        )
         return resolved
 
     @staticmethod
@@ -218,10 +276,32 @@ class BudgetResolutionService:
         """Build context and dispatch to the active provider (async path)."""
         context = self.build_runtime_context(resolved, user_id=user_id, user_email=user_email, model=model)
         if context is None:
+            logger.debug(
+                f"budget_event=runtime_provider_dispatch_skipped component=budget_resolution_service "
+                f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
+                f"budget_category={resolved.budget_category.value!r} scope={resolved.scope.value!r} "
+                f"reason=global_scope"
+            )
             return None
         from codemie.service.budget.provider_registry import get_active_provider
 
-        return await get_active_provider().resolve_runtime(context=context)
+        provider = get_active_provider()
+        logger.debug(
+            f"budget_event=runtime_provider_dispatch_started component=budget_resolution_service "
+            f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
+            f"budget_id={resolved.budget_id!r} budget_category={resolved.budget_category.value!r} "
+            f"model={model!r} provider={provider.provider_name!r}"
+        )
+        result = await provider.resolve_runtime(context=context)
+        logger.debug(
+            f"budget_event=runtime_provider_dispatch_completed component=budget_resolution_service "
+            f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
+            f"budget_id={resolved.budget_id!r} budget_category={resolved.budget_category.value!r} "
+            f"provider={result.provider!r} api_key_present={result.api_key is not None} "
+            f"base_url_present={result.base_url is not None} headers_applied={bool(result.headers)} "
+            f"body_overrides_applied={bool(result.body_overrides)}"
+        )
+        return result
 
     def dispatch_runtime_sync(
         self,
@@ -234,10 +314,32 @@ class BudgetResolutionService:
         """Build context and dispatch to the active provider (sync path)."""
         context = self.build_runtime_context(resolved, user_id=user_id, user_email=user_email, model=model)
         if context is None:
+            logger.debug(
+                f"budget_event=runtime_provider_dispatch_skipped component=budget_resolution_service path=sync "
+                f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
+                f"budget_category={resolved.budget_category.value!r} scope={resolved.scope.value!r} "
+                f"reason=global_scope"
+            )
             return None
         from codemie.service.budget.provider_registry import get_active_provider
 
-        return get_active_provider().resolve_runtime_sync(context=context)
+        provider = get_active_provider()
+        logger.debug(
+            f"budget_event=runtime_provider_dispatch_started component=budget_resolution_service path=sync "
+            f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
+            f"budget_id={resolved.budget_id!r} budget_category={resolved.budget_category.value!r} "
+            f"model={model!r} provider={provider.provider_name!r}"
+        )
+        result = provider.resolve_runtime_sync(context=context)
+        logger.debug(
+            f"budget_event=runtime_provider_dispatch_completed component=budget_resolution_service path=sync "
+            f"user_id={user_id!r} username={user_email!r} project_name={resolved.project_name!r} "
+            f"budget_id={resolved.budget_id!r} budget_category={resolved.budget_category.value!r} "
+            f"provider={result.provider!r} api_key_present={result.api_key is not None} "
+            f"base_url_present={result.base_url is not None} headers_applied={bool(result.headers)} "
+            f"body_overrides_applied={bool(result.body_overrides)}"
+        )
+        return result
 
     @staticmethod
     def _global_context(budget_category: BudgetCategory) -> ResolvedBudgetContext:

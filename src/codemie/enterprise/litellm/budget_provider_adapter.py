@@ -25,10 +25,10 @@ budget operations — they must go through get_active_provider().
 from __future__ import annotations
 
 import asyncio
-import logging
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from codemie.configs import logger
 from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
 from codemie.service.budget.budget_models import build_override_project_budget_id, build_shared_project_budget_id
 from codemie.service.budget.provider import (
@@ -48,8 +48,6 @@ if TYPE_CHECKING:
     from codemie_enterprise.litellm import LiteLLMService
 
     from codemie.service.budget.budget_models import Budget, ProjectMemberBudgetAssignment
-
-logger = logging.getLogger(__name__)
 
 _PROVIDER_NAME = "litellm"
 _PROJECT_SCOPED_CUSTOMER_PREFIX = "codemie:project:"
@@ -256,6 +254,11 @@ class LiteLLMBudgetEnforcementProvider:
         api_key: str | None,
     ) -> None:
         if not api_key:
+            logger.debug(
+                f"budget_event=project_api_key_persist_skipped component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} project_name={project_name!r} key_alias={key_alias!r} "
+                f"reason=missing_api_key"
+            )
             return
 
         from codemie.service.settings.settings import SettingsService
@@ -266,9 +269,19 @@ class LiteLLMBudgetEnforcementProvider:
             key_alias,
             api_key,
         )
+        logger.debug(
+            f"budget_event=project_api_key_persist_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} project_name={project_name!r} key_alias={key_alias!r} "
+            f"api_key_present={api_key is not None}"
+        )
 
     async def _delete_project_api_key(self, *, project_name: str | None, key_alias: str | None) -> None:
         if not project_name or not key_alias:
+            logger.debug(
+                f"budget_event=project_api_key_delete_skipped component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} project_name={project_name!r} key_alias={key_alias!r} "
+                f"reason=missing_project_or_alias"
+            )
             return
 
         from codemie.service.settings.settings import SettingsService
@@ -278,12 +291,19 @@ class LiteLLMBudgetEnforcementProvider:
             project_name,
             key_alias,
         )
+        logger.debug(
+            f"budget_event=project_api_key_delete_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} project_name={project_name!r} key_alias={key_alias!r}"
+        )
 
     async def _delete_project_provider_key_alias(self, *, service: "LiteLLMService", key_alias: str) -> None:
         try:
             await asyncio.to_thread(service.api_client.post, "/key/delete", data={"key_aliases": [key_alias]})
         except Exception as exc:
-            logger.warning(f"Failed to delete stale LiteLLM project key alias {key_alias!r}: {exc}")
+            logger.warning(
+                f"budget_event=provider_project_key_delete_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} key_alias={key_alias!r} error={exc}"
+            )
 
     @staticmethod
     def _build_project_budget_state_from_key_state(
@@ -328,6 +348,11 @@ class LiteLLMBudgetEnforcementProvider:
     ) -> BudgetProviderState:
         """Recreate the project key with the canonical project/category alias."""
         key_alias = _project_key_alias(project_name, budget_category)
+        logger.debug(
+            f"budget_event=provider_project_key_recreate_started component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} project_name={project_name!r} budget_id={budget_id!r} "
+            f"budget_category={budget_category.value!r} key_alias={key_alias!r} model_count={len(models or [])}"
+        )
         await self._delete_project_provider_key_alias(service=service, key_alias=key_alias)
         await self._delete_project_api_key(project_name=project_name, key_alias=key_alias)
         key_state = await asyncio.to_thread(
@@ -349,12 +374,23 @@ class LiteLLMBudgetEnforcementProvider:
 
         state = self._build_project_budget_state_from_key_state(key_state=key_state or {}, models=models)
         if state is None:
+            logger.warning(
+                f"budget_event=provider_project_key_recreate_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} project_name={project_name!r} budget_id={budget_id!r} "
+                f"budget_category={budget_category.value!r} key_alias={key_alias!r} reason=missing_key_alias"
+            )
             return BudgetProviderState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
 
         await self._persist_project_api_key(
             project_name=project_name,
             key_alias=state.provider_budget_ref or key_alias,
             api_key=key_state.get("api_key"),
+        )
+        logger.debug(
+            f"budget_event=provider_project_key_recreate_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} project_name={project_name!r} budget_id={budget_id!r} "
+            f"budget_category={budget_category.value!r} key_alias={state.provider_budget_ref!r} "
+            f"sync_status={state.sync_status!r} api_key_present={bool(key_state and key_state.get('api_key'))}"
         )
         return state
 
@@ -372,8 +408,18 @@ class LiteLLMBudgetEnforcementProvider:
         budget_reset_at: str | None = None,
         models: list[str] | None,
     ) -> BudgetProviderState | None:
+        logger.debug(
+            f"budget_event=provider_project_key_lookup_started component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} project_name={project_name!r} budget_id={budget_id!r} "
+            f"budget_category={budget_category.value!r} key_alias={key_alias!r}"
+        )
         existing_key = await asyncio.to_thread(service._get_project_key_by_alias, key_alias)
         if existing_key is None:
+            logger.debug(
+                f"budget_event=provider_project_key_missing component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} project_name={project_name!r} budget_id={budget_id!r} "
+                f"budget_category={budget_category.value!r} key_alias={key_alias!r}"
+            )
             key_state = await asyncio.to_thread(
                 service._generate_project_key,
                 key_alias=key_alias,
@@ -387,6 +433,11 @@ class LiteLLMBudgetEnforcementProvider:
                 models=models,
             )
         elif existing_key.get("key_hash"):
+            logger.debug(
+                f"budget_event=provider_project_key_update_started component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} project_name={project_name!r} budget_id={budget_id!r} "
+                f"budget_category={budget_category.value!r} key_alias={key_alias!r} model_count={len(models or [])}"
+            )
             key_state = await asyncio.to_thread(
                 service._update_project_key,
                 existing_key=existing_key,
@@ -401,6 +452,11 @@ class LiteLLMBudgetEnforcementProvider:
                 models=models,
             )
         else:
+            logger.debug(
+                f"budget_event=provider_project_key_sync_skipped component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} project_name={project_name!r} budget_id={budget_id!r} "
+                f"budget_category={budget_category.value!r} key_alias={key_alias!r} reason=missing_key_hash"
+            )
             return None
 
         if key_state is not None and key_state.get("budget_reset_at") is None:
@@ -413,7 +469,15 @@ class LiteLLMBudgetEnforcementProvider:
                 key_alias=key_state.get("key_alias") or key_alias,
                 api_key=key_state.get("api_key"),
             )
-        return self._build_project_budget_state_from_key_state(key_state=key_state or {}, models=models)
+        state = self._build_project_budget_state_from_key_state(key_state=key_state or {}, models=models)
+        logger.debug(
+            f"budget_event=provider_project_key_update_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} project_name={project_name!r} budget_id={budget_id!r} "
+            f"budget_category={budget_category.value!r} key_alias={key_alias!r} "
+            f"sync_status={(state.sync_status if state else SyncStatus.FAILED)!r} "
+            f"api_key_present={bool(key_state and key_state.get('api_key'))}"
+        )
+        return state
 
     # ── Global / user budget methods ────────────────────────────────────
 
@@ -433,9 +497,26 @@ class LiteLLMBudgetEnforcementProvider:
         _ = budget_category
         from codemie.enterprise.litellm.budget_helpers import create_budget_in_litellm
 
+        logger.debug(
+            f"budget_event=provider_global_budget_sync_started component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} operation=create budget_id={budget_id!r} "
+            f"budget_category={budget_category.value!r} max_budget={max_budget!r} "
+            f"soft_budget={soft_budget!r} budget_duration={budget_duration!r}"
+        )
         result = await asyncio.to_thread(create_budget_in_litellm, budget_id, max_budget, soft_budget, budget_duration)
         if result is None:
+            logger.debug(
+                f"budget_event=provider_global_budget_sync_completed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} operation=create budget_id={budget_id!r} "
+                f"sync_status={SyncStatus.FAILED!r}"
+            )
             return BudgetProviderState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
+        logger.debug(
+            f"budget_event=provider_global_budget_sync_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} operation=create budget_id={budget_id!r} "
+            f"provider_budget_ref={budget_id!r} sync_status={SyncStatus.OK!r} "
+            f"budget_reset_at={getattr(result, 'budget_reset_at', None)!r}"
+        )
         return BudgetProviderState(
             provider=_PROVIDER_NAME,
             provider_budget_ref=budget_id,
@@ -454,9 +535,25 @@ class LiteLLMBudgetEnforcementProvider:
         """Update an existing LiteLLM budget."""
         from codemie.enterprise.litellm.budget_helpers import update_budget_in_litellm
 
+        logger.debug(
+            f"budget_event=provider_global_budget_sync_started component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} operation=update budget_id={budget_id!r} "
+            f"max_budget={max_budget!r} soft_budget={soft_budget!r} budget_duration={budget_duration!r}"
+        )
         result = await asyncio.to_thread(update_budget_in_litellm, budget_id, max_budget, soft_budget, budget_duration)
         if result is None:
+            logger.debug(
+                f"budget_event=provider_global_budget_sync_completed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} operation=update budget_id={budget_id!r} "
+                f"sync_status={SyncStatus.FAILED!r}"
+            )
             return BudgetProviderState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
+        logger.debug(
+            f"budget_event=provider_global_budget_sync_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} operation=update budget_id={budget_id!r} "
+            f"provider_budget_ref={budget_id!r} sync_status={SyncStatus.OK!r} "
+            f"budget_reset_at={getattr(result, 'budget_reset_at', None)!r}"
+        )
         return BudgetProviderState(
             provider=_PROVIDER_NAME,
             provider_budget_ref=budget_id,
@@ -466,7 +563,10 @@ class LiteLLMBudgetEnforcementProvider:
 
     async def delete_global_budget(self, *, budget_id: str) -> None:
         """No-op: LiteLLM has no budget deletion API."""
-        logger.debug(f"delete_global_budget: LiteLLM has no delete budget API, skipping {budget_id!r}")
+        logger.debug(
+            f"budget_event=provider_global_budget_delete_skipped component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} budget_id={budget_id!r} reason=provider_has_no_delete_api"
+        )
 
     async def assign_user_budget(
         self,
@@ -480,9 +580,27 @@ class LiteLLMBudgetEnforcementProvider:
         from codemie.enterprise.litellm.budget_helpers import update_customer_budget_in_litellm
 
         litellm_user_id = build_user_id(user_email, budget_category)
+        logger.debug(
+            f"budget_event=provider_customer_budget_assignment_started component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} operation=assign username={user_email!r} "
+            f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r} "
+            f"budget_id={budget_id!r}"
+        )
         success = await asyncio.to_thread(update_customer_budget_in_litellm, litellm_user_id, budget_id)
         if not success:
+            logger.warning(
+                f"budget_event=provider_customer_budget_assignment_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} operation=assign username={user_email!r} "
+                f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r} "
+                f"budget_id={budget_id!r}"
+            )
             raise RuntimeError(f"Failed to assign budget {budget_id!r} for LiteLLM customer {litellm_user_id!r}")
+        logger.debug(
+            f"budget_event=provider_customer_budget_assignment_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} operation=assign username={user_email!r} "
+            f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r} "
+            f"budget_id={budget_id!r}"
+        )
 
     async def clear_user_budget(
         self,
@@ -495,9 +613,24 @@ class LiteLLMBudgetEnforcementProvider:
         from codemie.enterprise.litellm.budget_helpers import update_customer_budget_in_litellm
 
         litellm_user_id = build_user_id(user_email, budget_category)
+        logger.debug(
+            f"budget_event=provider_customer_budget_assignment_started component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} operation=clear username={user_email!r} "
+            f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r}"
+        )
         success = await asyncio.to_thread(update_customer_budget_in_litellm, litellm_user_id, None)
         if not success:
+            logger.warning(
+                f"budget_event=provider_customer_budget_assignment_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} operation=clear username={user_email!r} "
+                f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r}"
+            )
             raise RuntimeError(f"Failed to clear budget for LiteLLM customer {litellm_user_id!r}")
+        logger.debug(
+            f"budget_event=provider_customer_budget_assignment_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} operation=clear username={user_email!r} "
+            f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r}"
+        )
 
     async def reset_user_budget_spending(
         self,
@@ -511,9 +644,24 @@ class LiteLLMBudgetEnforcementProvider:
         from codemie.enterprise.litellm.budget_helpers import reset_customer_spending_in_litellm
 
         litellm_user_id = build_user_id(user_email, budget_category)
+        logger.debug(
+            f"budget_event=provider_customer_spending_reset_started component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} username={user_email!r} provider_member_ref={litellm_user_id!r} "
+            f"budget_category={budget_category.value!r} budget_id={budget_id!r}"
+        )
         success = await asyncio.to_thread(reset_customer_spending_in_litellm, litellm_user_id, budget_id)
         if not success:
+            logger.warning(
+                f"budget_event=provider_customer_spending_reset_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} username={user_email!r} provider_member_ref={litellm_user_id!r} "
+                f"budget_category={budget_category.value!r} budget_id={budget_id!r}"
+            )
             raise RuntimeError(f"Failed to reset spending for LiteLLM customer {litellm_user_id!r}")
+        logger.debug(
+            f"budget_event=provider_customer_spending_reset_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} username={user_email!r} provider_member_ref={litellm_user_id!r} "
+            f"budget_category={budget_category.value!r} budget_id={budget_id!r}"
+        )
 
     async def list_global_budget_states(self) -> list[GlobalBudgetState] | None:
         """Return all LiteLLM budgets as GlobalBudgetState objects.
@@ -556,12 +704,19 @@ class LiteLLMBudgetEnforcementProvider:
 
         service = get_litellm_service_or_none()
         if service is None:
+            logger.debug(
+                "budget_event=provider_unavailable component=litellm_budget_provider provider=litellm "
+                "operation=list_personal_budget_assignments"
+            )
             return None
 
         try:
             raw_entries = await asyncio.to_thread(service.get_customer_list)
         except Exception as exc:
-            logger.warning(f"list_personal_budget_assignments: get_customer_list failed: {exc}")
+            logger.warning(
+                f"budget_event=provider_customer_list_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} operation=list_personal_budget_assignments error={exc}"
+            )
             return None
 
         entries: list[PersonalBudgetEntry] = []
@@ -583,11 +738,23 @@ class LiteLLMBudgetEnforcementProvider:
         _ = user_email
         from codemie.enterprise.litellm.dependencies import get_litellm_service_or_none
 
+        logger.debug(
+            f"budget_event=provider_customer_provision_started component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={user_email!r}"
+        )
         service = get_litellm_service_or_none()
         if service is None:
-            logger.debug(f"provision_global_user: LiteLLM not available, skipping user_id={user_id!r}")
+            logger.debug(
+                f"budget_event=provider_customer_provision_skipped component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={user_email!r} "
+                f"reason=provider_unavailable"
+            )
             return
         await asyncio.to_thread(service.get_or_create_customer_with_budget, user_id)
+        logger.debug(
+            f"budget_event=provider_customer_provision_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={user_email!r}"
+        )
 
     # ── Project budget methods ───────────────────────────────────────────
 
@@ -604,8 +771,20 @@ class LiteLLMBudgetEnforcementProvider:
         metadata: dict[str, Any] | None = None,
     ) -> BudgetProviderState:
         _ = metadata
+        logger.debug(
+            f"budget_event=provider_project_budget_sync_started component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} operation=create project_name={project_name!r} "
+            f"budget_id={budget_id!r} budget_category={budget_category.value!r} "
+            f"max_budget={max_budget!r} soft_budget={soft_budget!r} budget_duration={budget_duration!r} "
+            f"model_count={len(models or [])}"
+        )
         service = self._get_service()
         if service is None:
+            logger.debug(
+                f"budget_event=provider_unavailable component=litellm_budget_provider provider={_PROVIDER_NAME!r} "
+                f"operation=ensure_project_budget project_name={project_name!r} budget_id={budget_id!r} "
+                f"budget_category={budget_category.value!r}"
+            )
             return BudgetProviderState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
 
         result = await asyncio.to_thread(
@@ -620,8 +799,10 @@ class LiteLLMBudgetEnforcementProvider:
         )
         if result is None:
             logger.warning(
-                f"Canonical LiteLLM project key alias for project={project_name!r}, "
-                f"category={budget_category.value!r} could not be synced; recreating the canonical alias"
+                f"budget_event=provider_project_budget_sync_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} operation=create project_name={project_name!r} "
+                f"budget_id={budget_id!r} budget_category={budget_category.value!r} "
+                f"reason=empty_provider_result action=recreate_canonical_alias"
             )
             return await self._recreate_project_budget_key_alias(
                 service=service,
@@ -640,6 +821,13 @@ class LiteLLMBudgetEnforcementProvider:
             api_key=getattr(result, "api_key", None),
         )
 
+        logger.debug(
+            f"budget_event=provider_project_budget_sync_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} operation=create project_name={project_name!r} "
+            f"budget_id={budget_id!r} budget_category={budget_category.value!r} "
+            f"provider_budget_ref={result.provider_budget_ref!r} sync_status={SyncStatus.OK!r} "
+            f"budget_reset_at={result.budget_reset_at!r} api_key_present={getattr(result, 'api_key', None) is not None}"
+        )
         return BudgetProviderState(
             provider=_PROVIDER_NAME,
             provider_budget_ref=result.provider_budget_ref,
@@ -662,9 +850,22 @@ class LiteLLMBudgetEnforcementProvider:
         metadata: dict[str, Any] | None = None,
     ) -> BudgetProviderState:
         _ = metadata
+        logger.debug(
+            f"budget_event=provider_project_budget_sync_started component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} operation=update project_name={project_name!r} "
+            f"budget_id={budget_id!r} budget_category={budget_category.value!r} "
+            f"provider_budget_ref={budget_state.provider_budget_ref!r} max_budget={max_budget!r} "
+            f"soft_budget={soft_budget!r} budget_duration={budget_duration!r} model_count={len(models or [])}"
+        )
         service = self._get_service()
         provider_budget_ref = budget_state.provider_budget_ref
         if service is None or provider_budget_ref is None:
+            logger.debug(
+                f"budget_event=provider_project_budget_sync_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} operation=update project_name={project_name!r} "
+                f"budget_id={budget_id!r} budget_category={budget_category.value!r} "
+                f"reason={'provider_unavailable' if service is None else 'missing_provider_budget_ref'}"
+            )
             return BudgetProviderState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
 
         state = await self._sync_existing_project_key_alias(
@@ -681,8 +882,11 @@ class LiteLLMBudgetEnforcementProvider:
         )
         if state is None:
             logger.warning(
-                f"Existing LiteLLM project key alias {provider_budget_ref!r} could not be synced; "
-                "recreating the canonical alias"
+                f"budget_event=provider_project_budget_sync_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} operation=update project_name={project_name!r} "
+                f"budget_id={budget_id!r} budget_category={budget_category.value!r} "
+                f"provider_budget_ref={provider_budget_ref!r} reason=key_alias_sync_failed "
+                f"action=recreate_canonical_alias"
             )
             state = await self._recreate_project_budget_key_alias(
                 service=service,
@@ -700,6 +904,13 @@ class LiteLLMBudgetEnforcementProvider:
         if old_provider_budget_ref != state.provider_budget_ref:
             await self._delete_project_api_key(project_name=project_name, key_alias=old_provider_budget_ref)
 
+        logger.debug(
+            f"budget_event=provider_project_budget_sync_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} operation=update project_name={project_name!r} "
+            f"budget_id={budget_id!r} budget_category={budget_category.value!r} "
+            f"provider_budget_ref={state.provider_budget_ref!r} sync_status={state.sync_status!r} "
+            f"budget_reset_at={state.budget_reset_at!r}"
+        )
         return state
 
     async def delete_project_budget(
@@ -710,9 +921,24 @@ class LiteLLMBudgetEnforcementProvider:
     ) -> None:
         service = self._get_service()
         if budget_state.provider_budget_ref is None:
+            logger.debug(
+                f"budget_event=provider_project_budget_delete_skipped component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} project_name={project_name!r} reason=missing_provider_budget_ref"
+            )
             return
         if service is not None:
             await asyncio.to_thread(service.delete_project_budget, provider_budget_ref=budget_state.provider_budget_ref)
+            logger.debug(
+                f"budget_event=provider_project_budget_delete_completed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} project_name={project_name!r} "
+                f"provider_budget_ref={budget_state.provider_budget_ref!r}"
+            )
+        else:
+            logger.debug(
+                f"budget_event=provider_unavailable component=litellm_budget_provider provider={_PROVIDER_NAME!r} "
+                f"operation=delete_project_budget project_name={project_name!r} "
+                f"provider_budget_ref={budget_state.provider_budget_ref!r}"
+            )
         await self._delete_project_api_key(project_name=project_name, key_alias=budget_state.provider_budget_ref)
 
     async def get_project_budget_state_by_ref(
@@ -721,12 +947,30 @@ class LiteLLMBudgetEnforcementProvider:
         provider_budget_ref: str,
     ) -> ProjectBudgetState | None:
         """Fetch the LiteLLM virtual key for the given budget ref and return its limits, or None if not found."""
+        logger.debug(
+            f"budget_event=provider_project_budget_lookup_started component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} provider_budget_ref={provider_budget_ref!r}"
+        )
         service = self._get_service()
         if service is None:
+            logger.debug(
+                f"budget_event=provider_unavailable component=litellm_budget_provider provider={_PROVIDER_NAME!r} "
+                f"operation=get_project_budget_state provider_budget_ref={provider_budget_ref!r}"
+            )
             return None
         raw = await asyncio.to_thread(service._get_project_key_by_alias, provider_budget_ref)
         if raw is None:
+            logger.debug(
+                f"budget_event=provider_project_budget_lookup_missed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} provider_budget_ref={provider_budget_ref!r}"
+            )
             return None
+        logger.debug(
+            f"budget_event=provider_project_budget_lookup_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} provider_budget_ref={provider_budget_ref!r} "
+            f"max_budget={(raw.get('max_budget') or 0.0)!r} soft_budget={(raw.get('soft_budget') or 0.0)!r} "
+            f"budget_duration={(raw.get('budget_duration') or '30d')!r} budget_reset_at={raw.get('budget_reset_at')!r}"
+        )
         return ProjectBudgetState(
             max_budget=raw.get("max_budget") or 0.0,
             soft_budget=raw.get("soft_budget") or 0.0,
@@ -741,8 +985,24 @@ class LiteLLMBudgetEnforcementProvider:
         allocation: "ProjectMemberBudgetAssignment",
         budget: "Budget",
     ) -> BudgetProviderMemberState:
+        effective_budget_id = _effective_project_member_budget_id(allocation)
+        allocation_id = getattr(allocation, "id", None)
+        logger.debug(
+            f"budget_event=provider_member_budget_sync_started component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} project_name={allocation.project_name!r} "
+            f"budget_id={allocation.project_budget_id!r} effective_budget_id={effective_budget_id!r} "
+            f"budget_category={allocation.budget_category!r} allocation_id={allocation_id!r} "
+            f"user_id={allocation.user_id!r} allocated_max_budget={allocation.allocated_max_budget!r} "
+            f"allocated_soft_budget={allocation.allocated_soft_budget!r}"
+        )
         service = self._get_service()
         if service is None:
+            logger.debug(
+                f"budget_event=provider_member_budget_sync_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} project_name={allocation.project_name!r} "
+                f"budget_id={allocation.project_budget_id!r} budget_category={allocation.budget_category!r} "
+                f"allocation_id={allocation_id!r} user_id={allocation.user_id!r} reason=provider_unavailable"
+            )
             return BudgetProviderMemberState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
 
         result = await asyncio.to_thread(
@@ -755,13 +1015,25 @@ class LiteLLMBudgetEnforcementProvider:
             allocated_soft_budget=allocation.allocated_soft_budget,
             budget_duration=budget.budget_duration,
             budget_reset_at=budget.budget_reset_at,
-            effective_budget_id=_effective_project_member_budget_id(allocation),
+            effective_budget_id=effective_budget_id,
         )
         if result is None:
+            logger.debug(
+                f"budget_event=provider_member_budget_sync_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} project_name={allocation.project_name!r} "
+                f"budget_id={allocation.project_budget_id!r} budget_category={allocation.budget_category!r} "
+                f"allocation_id={allocation_id!r} user_id={allocation.user_id!r} reason=empty_provider_result"
+            )
             return BudgetProviderMemberState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
 
         provider_budget_id = getattr(result, "budget_id", None)
         if not provider_budget_id:
+            logger.debug(
+                f"budget_event=provider_member_budget_sync_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} project_name={allocation.project_name!r} "
+                f"budget_id={allocation.project_budget_id!r} budget_category={allocation.budget_category!r} "
+                f"allocation_id={allocation_id!r} user_id={allocation.user_id!r} reason=missing_provider_budget_id"
+            )
             return BudgetProviderMemberState(provider=_PROVIDER_NAME, sync_status=SyncStatus.FAILED)
 
         metadata = dict(result.metadata)
@@ -769,6 +1041,14 @@ class LiteLLMBudgetEnforcementProvider:
         metadata["budget_scope"] = "project_member"
         metadata["provider_budget_id"] = provider_budget_id
 
+        logger.debug(
+            f"budget_event=provider_member_budget_sync_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} project_name={allocation.project_name!r} "
+            f"budget_id={allocation.project_budget_id!r} budget_category={allocation.budget_category!r} "
+            f"allocation_id={allocation_id!r} user_id={allocation.user_id!r} "
+            f"provider_member_ref={result.provider_member_ref!r} provider_budget_id={provider_budget_id!r} "
+            f"budget_reset_at={result.budget_reset_at!r}"
+        )
         return BudgetProviderMemberState(
             provider=_PROVIDER_NAME,
             provider_member_ref=result.provider_member_ref,
@@ -787,7 +1067,8 @@ class LiteLLMBudgetEnforcementProvider:
             raw_entries = await asyncio.to_thread(service.get_customer_list)
         except Exception as exc:
             logger.warning(
-                f"list_global_budget_states: get_customer_list failed while filtering internal budgets: {exc}"
+                f"budget_event=provider_customer_list_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} operation=list_internal_member_budget_ids error={exc}"
             )
             return set()
 
@@ -808,11 +1089,25 @@ class LiteLLMBudgetEnforcementProvider:
     async def delete_member_allocation(self, *, allocation: "ProjectMemberBudgetAssignment") -> None:
         service = self._get_service()
         if service is None:
+            logger.debug(
+                f"budget_event=provider_member_budget_delete_skipped component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} project_name={allocation.project_name!r} "
+                f"budget_id={allocation.project_budget_id!r} budget_category={allocation.budget_category!r} "
+                f"allocation_id={allocation.id!r} user_id={allocation.user_id!r} reason=provider_unavailable"
+            )
             return
         provider_metadata = allocation.provider_metadata or {}
+        provider_member_ref = _metadata_value(provider_metadata, "provider_member_ref")
         await asyncio.to_thread(
             service.delete_project_member_budget_assignment,
-            provider_member_ref=_metadata_value(provider_metadata, "provider_member_ref"),
+            provider_member_ref=provider_member_ref,
+        )
+        logger.debug(
+            f"budget_event=provider_member_budget_delete_completed component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} project_name={allocation.project_name!r} "
+            f"budget_id={allocation.project_budget_id!r} budget_category={allocation.budget_category!r} "
+            f"allocation_id={allocation.id!r} user_id={allocation.user_id!r} "
+            f"provider_member_ref={provider_member_ref!r}"
         )
 
     def _resolve_runtime_core(self, *, context: BudgetRuntimeContext) -> BudgetRuntimeProviderResult:
@@ -829,12 +1124,36 @@ class LiteLLMBudgetEnforcementProvider:
             if credentials:
                 project_api_key = credentials.api_key
                 project_base_url = credentials.url or None
+        logger.debug(
+            f"budget_event=runtime_project_credentials_resolved component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} user_id={context.user_id!r} username={context.user_email!r} "
+            f"project_name={context.project_name!r} budget_id={context.budget_id!r} "
+            f"budget_category={context.budget_category.value!r} model={context.model!r} "
+            f"key_alias={project_key_alias!r} api_key_present={project_api_key is not None} "
+            f"base_url_present={project_base_url is not None}"
+        )
 
         provider_member_ref = _metadata_value(context.member_provider_metadata, "provider_member_ref")
         member_tracking_enabled = bool(
             context.project_name and SettingsService.get_project_member_budget_tracking_enabled(context.project_name)
         )
+        logger.debug(
+            f"budget_event=runtime_mode_selected component=litellm_budget_provider provider={_PROVIDER_NAME!r} "
+            f"user_id={context.user_id!r} username={context.user_email!r} project_name={context.project_name!r} "
+            f"budget_id={context.budget_id!r} budget_category={context.budget_category.value!r} "
+            f"model={context.model!r} member_tracking_enabled={member_tracking_enabled} "
+            f"provider_member_ref={provider_member_ref!r}"
+        )
         if member_tracking_enabled and provider_member_ref:
+            logger.debug(
+                f"budget_event=runtime_provider_overrides_applied component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} user_id={context.user_id!r} username={context.user_email!r} "
+                f"project_name={context.project_name!r} budget_id={context.budget_id!r} "
+                f"budget_category={context.budget_category.value!r} model={context.model!r} "
+                f"api_key_present={project_api_key is not None} base_url_present={project_base_url is not None} "
+                f"member_tracking_enabled={member_tracking_enabled} provider_member_ref={provider_member_ref!r} "
+                f"headers_applied=true body_overrides_applied=true"
+            )
             return BudgetRuntimeProviderResult(
                 provider=_PROVIDER_NAME,
                 api_key=project_api_key,
@@ -842,6 +1161,15 @@ class LiteLLMBudgetEnforcementProvider:
                 headers={"x-litellm-customer-id": provider_member_ref},
                 body_overrides={"user": provider_member_ref},
             )
+        logger.debug(
+            f"budget_event=runtime_provider_overrides_applied component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} user_id={context.user_id!r} username={context.user_email!r} "
+            f"project_name={context.project_name!r} budget_id={context.budget_id!r} "
+            f"budget_category={context.budget_category.value!r} model={context.model!r} "
+            f"api_key_present={project_api_key is not None} base_url_present={project_base_url is not None} "
+            f"member_tracking_enabled={member_tracking_enabled} provider_member_ref={provider_member_ref!r} "
+            f"headers_applied=false body_overrides_applied=false"
+        )
         return BudgetRuntimeProviderResult(
             provider=_PROVIDER_NAME,
             api_key=project_api_key,
@@ -870,21 +1198,44 @@ class LiteLLMBudgetEnforcementProvider:
         Returns:
             (member_snapshots, project_snapshots) — both empty on any error.
         """
+        provider_member_ref_count = len(provider_member_refs) if provider_member_refs is not None else None
+        logger.debug(
+            f"budget_event=spend_collection_started component=litellm_budget_provider provider={_PROVIDER_NAME!r} "
+            f"scope=member provider_member_ref_count={provider_member_ref_count!r}"
+        )
         service = self._get_service()
         if service is None:
+            logger.debug(
+                f"budget_event=provider_unavailable component=litellm_budget_provider provider={_PROVIDER_NAME!r} "
+                f"operation=collect_member_spend scope=member"
+            )
             return [], []
 
         try:
             ref_to_alloc = await self._load_synced_member_allocations(provider_member_refs)
+            logger.debug(
+                f"budget_event=spend_collection_allocations_loaded component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} scope=member allocation_count={len(ref_to_alloc)}"
+            )
             if not ref_to_alloc:
-                logger.debug("No synced project member allocations found; skipping spend collection")
+                logger.debug(
+                    f"budget_event=spend_collection_skipped component=litellm_budget_provider "
+                    f"provider={_PROVIDER_NAME!r} scope=member reason=no_synced_member_allocations"
+                )
                 return [], []
 
             try:
                 all_customers = await asyncio.to_thread(service.get_customer_list)
             except Exception as exc:
-                logger.warning(f"collect_spend: get_customer_list failed: {exc}")
+                logger.warning(
+                    f"budget_event=spend_collection_provider_rows_failed component=litellm_budget_provider "
+                    f"provider={_PROVIDER_NAME!r} scope=member error={exc}"
+                )
                 return [], []
+            logger.debug(
+                f"budget_event=spend_collection_provider_rows_loaded component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} scope=member customer_count={len(all_customers)}"
+            )
 
             member_snapshots, project_spend, project_reset = self._collect_member_spend_snapshots(
                 all_customers=all_customers,
@@ -894,19 +1245,31 @@ class LiteLLMBudgetEnforcementProvider:
             project_snapshots = self._build_project_spend_snapshots(project_spend, project_reset)
 
             logger.info(
-                f"Collected {len(member_snapshots)} member spend snapshot(s) and "
-                f"{len(project_snapshots)} project budget spend snapshot(s) from LiteLLM"
+                f"budget_event=spend_collection_completed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} scope=member member_snapshot_count={len(member_snapshots)} "
+                f"project_snapshot_count={len(project_snapshots)}"
             )
             return member_snapshots, project_snapshots
 
         except Exception as exc:
-            logger.warning(f"_load_member_spend_from_litellm failed: {exc}")
+            logger.warning(
+                f"budget_event=spend_collection_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} scope=member error={exc}"
+            )
             return [], []
 
     async def _load_project_key_spend_from_litellm(self) -> list[ProjectBudgetSpendSnapshot]:
         """Load authoritative project/category spend from LiteLLM virtual keys."""
+        logger.debug(
+            f"budget_event=spend_collection_started component=litellm_budget_provider "
+            f"provider={_PROVIDER_NAME!r} scope=project_key"
+        )
         service = self._get_service()
         if service is None:
+            logger.debug(
+                f"budget_event=provider_unavailable component=litellm_budget_provider provider={_PROVIDER_NAME!r} "
+                f"operation=collect_project_key_spend scope=project_key"
+            )
             return []
 
         try:
@@ -927,6 +1290,10 @@ class LiteLLMBudgetEnforcementProvider:
                 )
                 result = await session.execute(stmt)
                 rows = list(result.all())
+            logger.debug(
+                f"budget_event=spend_collection_allocations_loaded component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} scope=project_key assignment_count={len(rows)}"
+            )
 
             snapshots: list[ProjectBudgetSpendSnapshot] = []
             for assignment, budget in rows:
@@ -936,14 +1303,32 @@ class LiteLLMBudgetEnforcementProvider:
                     "key_alias",
                 )
                 if not isinstance(key_alias, str) or not key_alias:
+                    logger.debug(
+                        f"budget_event=spend_collection_row_skipped component=litellm_budget_provider "
+                        f"provider={_PROVIDER_NAME!r} scope=project_key project_name={assignment.project_name!r} "
+                        f"budget_id={assignment.budget_id!r} budget_category={assignment.budget_category!r} "
+                        f"reason=missing_key_alias"
+                    )
                     continue
 
                 credentials = SettingsService.get_project_litellm_creds_by_alias(assignment.project_name, key_alias)
                 if not credentials:
+                    logger.debug(
+                        f"budget_event=spend_collection_row_skipped component=litellm_budget_provider "
+                        f"provider={_PROVIDER_NAME!r} scope=project_key project_name={assignment.project_name!r} "
+                        f"budget_id={assignment.budget_id!r} budget_category={assignment.budget_category!r} "
+                        f"key_alias={key_alias!r} reason=missing_project_credentials"
+                    )
                     continue
 
                 key_spend = await asyncio.to_thread(service.get_key_spending_info, credentials.api_key)
                 if not key_spend:
+                    logger.debug(
+                        f"budget_event=spend_collection_row_skipped component=litellm_budget_provider "
+                        f"provider={_PROVIDER_NAME!r} scope=project_key project_name={assignment.project_name!r} "
+                        f"budget_id={assignment.budget_id!r} budget_category={assignment.budget_category!r} "
+                        f"key_alias={key_alias!r} reason=missing_key_spend"
+                    )
                     continue
 
                 spend = key_spend.get("total_spend", key_spend.get("spend", 0))
@@ -959,11 +1344,17 @@ class LiteLLMBudgetEnforcementProvider:
                     )
                 )
 
-            logger.info(f"Collected {len(snapshots)} project key spend snapshot(s) from LiteLLM")
+            logger.info(
+                f"budget_event=spend_collection_completed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} scope=project_key project_snapshot_count={len(snapshots)}"
+            )
             return snapshots
 
         except Exception as exc:
-            logger.warning(f"_load_project_key_spend_from_litellm failed: {exc}")
+            logger.warning(
+                f"budget_event=spend_collection_failed component=litellm_budget_provider "
+                f"provider={_PROVIDER_NAME!r} scope=project_key error={exc}"
+            )
             return []
 
     async def collect_project_budget_spend(self) -> list[ProjectBudgetSpendSnapshot]:
