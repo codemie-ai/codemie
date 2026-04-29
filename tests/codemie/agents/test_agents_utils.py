@@ -31,6 +31,7 @@ from codemie.agents.utils import (
     get_run_config,
     parse_tool_input,
     render_text_description_and_args,
+    sanitize_tool_name,
     to_snake_case,
 )
 from codemie.core.errors import ErrorResponse, ErrorCategory, InternalError, LiteLLMErrorClassifier
@@ -133,6 +134,16 @@ class TestUtils:
     def test_to_snake_case(self):
         assert to_snake_case('test string') == 'test_string', 'Failed to convert space separated string to snake case'
         assert to_snake_case('test-string') == 'test_string', 'Failed to convert hyphen separated string to snake case'
+
+    def test_sanitize_tool_name_preserves_hyphens_and_replaces_invalid_chars(self):
+        assert sanitize_tool_name('get.file-contents/v1') == 'get_file-contents_v1'
+
+    def test_sanitize_tool_name_truncates_with_hash_suffix(self):
+        tool_name = sanitize_tool_name('tool.' + ('a' * 100))
+
+        assert len(tool_name) <= OPEN_AI_TOOL_NAME_LIMIT
+        assert tool_name.startswith('tool_')
+        assert tool_name.rsplit('_', 1)[-1].isdigit()
 
     def test_single_tool_with_execute(self):
         # Mock a tool with execute method

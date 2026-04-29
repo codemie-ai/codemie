@@ -218,6 +218,37 @@ def adapt_tool_name(template: str, alias: str) -> str:
     return tool_name
 
 
+# Pattern of characters allowed in LLM tool names by all major providers
+# (OpenAI, Anthropic, AWS Bedrock Converse). Bedrock enforces ``[a-zA-Z0-9_-]+``
+# strictly and rejects any other characters (e.g. dots, spaces, slashes).
+_INVALID_TOOL_NAME_CHARS_RE = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def sanitize_tool_name(name: str) -> str:
+    """Sanitize a tool name to satisfy LLM-provider naming constraints.
+
+    Replaces any character outside ``[a-zA-Z0-9_-]`` with ``_`` and enforces
+    the OpenAI/Bedrock 64-character limit (deterministic hash suffix on
+    overflow). Hyphens are preserved because Bedrock allows them.
+
+    This is required because AWS Bedrock Converse rejects messages whose
+    ``toolUse.name`` contains any other characters (e.g. dots from MCP tool
+    names like ``get.file.contents`` or repository names with dots).
+    """
+    if not name:
+        return name
+
+    sanitized = _INVALID_TOOL_NAME_CHARS_RE.sub("_", name)
+
+    if len(sanitized) > OPEN_AI_TOOL_NAME_LIMIT:
+        suffix = generate_tool_hash(name)
+        # Reserve room for the underscore separator + hash suffix.
+        keep = OPEN_AI_TOOL_NAME_LIMIT - len(suffix) - 1
+        sanitized = f"{sanitized[:keep].rstrip('_')}_{suffix}"
+
+    return sanitized
+
+
 def generate_tool_hash(input_string: str) -> str:
     """Generate an MD5 hash from the input string."""
     # Generate MD5 hash from input string
