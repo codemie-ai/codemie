@@ -32,6 +32,8 @@ from codemie.rest_api.models.skill import (
     MarketplaceFilter,
     Skill,
     SkillCategory,
+    SkillCompanionFileMetadata,
+    SkillCompanionFileResponse,
     SkillCreateRequest,
     SkillDetailResponse,
     SkillListPaginatedResponse,
@@ -127,6 +129,32 @@ class SkillService:
                 help="Contact the skill owner or project manager to request access",
             )
 
+    @staticmethod
+    def _get_skill_or_raise(skill_id: str) -> Skill:
+        """Load a skill or raise a standard not-found error."""
+        skill = SkillRepository.get_by_id(skill_id)
+        if not skill:
+            raise ExtendedHTTPException(
+                code=status.HTTP_404_NOT_FOUND,
+                message=SkillErrors.MSG_SKILL_NOT_FOUND,
+                details=SkillErrors.SKILL_NOT_FOUND.format(skill_id=skill_id),
+                help=SkillErrors.HELP_VERIFY_SKILL_ID,
+            )
+        return skill
+
+    @staticmethod
+    def _normalize_companion_file_path(path: str) -> str:
+        """Normalize a bundle-relative companion file path."""
+        normalized_path = path.strip().replace("\\", "/").lstrip("/")
+        if not normalized_path:
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST,
+                message="Invalid companion file path",
+                details="Companion file path must not be empty",
+                help="Provide a relative bundle path such as 'references/foo.md'",
+            )
+        return normalized_path
+
     # ============================================================================
     # CRUD Operations
     # ============================================================================
@@ -168,7 +196,7 @@ class SkillService:
         # - user_is_global_admin: Can see ALL skills from ALL projects
         # - user_admin_projects: Projects where user is admin (can see ALL skills in these projects)
         user_is_global_admin = user.is_admin
-        user_admin_projects = user.applications_admin if hasattr(user, 'applications_admin') else []
+        user_admin_projects = user.applications_admin if hasattr(user, "applications_admin") else []
 
         result = SkillRepository.list_accessible_to_user(
             user_id=user.id,
@@ -219,14 +247,7 @@ class SkillService:
         Get skill details by ID.
         Validates user has read access based on visibility.
         """
-        skill = SkillRepository.get_by_id(skill_id)
-        if not skill:
-            raise ExtendedHTTPException(
-                code=status.HTTP_404_NOT_FOUND,
-                message=SkillErrors.MSG_SKILL_NOT_FOUND,
-                details=SkillErrors.SKILL_NOT_FOUND.format(skill_id=skill_id),
-                help=SkillErrors.HELP_VERIFY_SKILL_ID,
-            )
+        skill = SkillService._get_skill_or_raise(skill_id)
 
         SkillService._raise_if_no_access(user, skill, Action.READ)
 
@@ -237,6 +258,31 @@ class SkillService:
         return skill.to_detail_response(
             assistants_count=assistants_count,
             user_abilities=user_abilities,
+        )
+
+    @staticmethod
+    def list_companion_files(skill_id: str, user: User) -> list[SkillCompanionFileMetadata]:
+        """List bundle companion files for a skill without returning payload content."""
+        skill = SkillService._get_skill_or_raise(skill_id)
+        SkillService._raise_if_no_access(user, skill, Action.READ)
+        return skill.get_companion_file_metadata()
+
+    @staticmethod
+    def get_companion_file(skill_id: str, path: str, user: User) -> SkillCompanionFileResponse:
+        """Return a single companion file payload for a skill."""
+        skill = SkillService._get_skill_or_raise(skill_id)
+        SkillService._raise_if_no_access(user, skill, Action.READ)
+
+        normalized_path = SkillService._normalize_companion_file_path(path)
+        for file_data in skill.companion_files or []:
+            if file_data.get("path") == normalized_path:
+                return SkillCompanionFileResponse.model_validate(file_data)
+
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message="Companion file not found",
+            details=f"No companion file found at path '{normalized_path}' for skill '{skill.name}'",
+            help="List available companion files for this skill and retry with one of those paths",
         )
 
     @staticmethod
@@ -327,7 +373,7 @@ class SkillService:
         if request.project is None or request.project == skill.project:
             return None
 
-        user_admin_projects = user.applications_admin if hasattr(user, 'applications_admin') else []
+        user_admin_projects = user.applications_admin if hasattr(user, "applications_admin") else []
         is_admin_of_target = user.is_admin or request.project in user_admin_projects
 
         if not is_admin_of_target and request.project not in user.applications:
@@ -1359,8 +1405,7 @@ description: {skill.description}
 
                 important: str | None = PydanticField(
                     description=(
-                        "Critical rules or must-follow guidelines. "
-                        "Only include if truly critical. Use bullet points."
+                        "Critical rules or must-follow guidelines. Only include if truly critical. Use bullet points."
                     ),
                     default=None,
                     min_length=50,

@@ -134,6 +134,29 @@ MAX_CATEGORIES_ERROR_MSG = "Maximum 3 categories allowed per skill"
 MAX_CONTENT_LENGTH = 30000
 
 
+class SkillCompanionFileKind(str, Enum):
+    """Supported companion file kinds for bundled skills."""
+
+    REFERENCE = "reference"
+    ASSET = "asset"
+
+
+class SkillCompanionFileMetadata(BaseModel):
+    """Companion file metadata exposed by the API and agent tools."""
+
+    path: str = Field(description="Relative file path inside the skill bundle")
+    kind: SkillCompanionFileKind = Field(description="Logical companion file kind")
+    mime_type: str = Field(default="text/plain", description="Detected MIME type")
+    encoding: str = Field(default="text", description="Stored payload encoding: text or base64")
+    size_bytes: int = Field(default=0, description="Stored file size in bytes")
+
+
+class SkillCompanionFileResponse(SkillCompanionFileMetadata):
+    """Companion file content response."""
+
+    content: str = Field(description="Stored companion file payload")
+
+
 # =============================================================================
 # Request Models
 # =============================================================================
@@ -385,6 +408,7 @@ class SkillDetailResponse(BaseModel):
     unique_dislikes_count: int = Field(default=0)
     toolkits: list[ToolKitDetails] = Field(default_factory=list)
     mcp_servers: list[MCPServerDetails] = Field(default_factory=list)
+    companion_files: list[SkillCompanionFileMetadata] = Field(default_factory=list)
 
 
 class SkillListPaginatedResponse(BaseModel):
@@ -433,6 +457,12 @@ class SkillBase(CommonBaseModel, Owned):
     mcp_servers: list[MCPServerDetails] = SQLField(
         default_factory=list,
         sa_column=Column(PydanticListType(MCPServerDetails), nullable=False, server_default="[]"),
+    )
+
+    # Optional bundled files for the skill (references, assets)
+    companion_files: list[dict] = SQLField(
+        default_factory=list,
+        sa_column=Column(JSONB, nullable=False, server_default="[]"),
     )
 
     # Reaction counts
@@ -533,7 +563,16 @@ class Skill(BaseModelWithSQLSupport, SkillBase, table=True):
             unique_dislikes_count=self.unique_dislikes_count or 0,
             toolkits=self.toolkits or [],
             mcp_servers=self.mcp_servers or [],
+            companion_files=self.get_companion_file_metadata(),
         )
+
+    def get_companion_file_metadata(self) -> list[SkillCompanionFileMetadata]:
+        """Return companion file metadata without embedding payload content."""
+        companion_files: list[SkillCompanionFileMetadata] = []
+        for file_data in self.companion_files or []:
+            metadata = {key: value for key, value in file_data.items() if key != "content"}
+            companion_files.append(SkillCompanionFileMetadata.model_validate(metadata))
+        return companion_files
 
     def to_basic_info(self) -> SkillBasicInfo:
         """Convert to basic info response model (for assistant responses)"""

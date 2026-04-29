@@ -24,6 +24,7 @@ import os
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import List, Any, Optional
 
 from langchain_core.tools import ToolException
@@ -88,7 +89,12 @@ class FileUploadService:
         """
         for file_obj in file_objects:
             try:
-                temp_file_path = os.path.join(temp_dir, file_obj.name)
+                relative_path = Path(file_obj.name)
+                if relative_path.is_absolute() or ".." in relative_path.parts:
+                    raise ToolException(f"Invalid file path for sandbox upload: {file_obj.name}")
+
+                temp_file_path = Path(temp_dir) / relative_path
+                temp_file_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(temp_file_path, "wb") as f:
                     f.write(
                         self.file_repository.read_file(
@@ -103,7 +109,11 @@ class FileUploadService:
                 raise ToolException(f"Failed to download file {file_obj.name}: {str(e)}")
 
     def _upload_files_parallel(
-        self, session: SandboxSession, file_objects: List[FileObject], temp_dir: str, workdir: str
+        self,
+        session: SandboxSession,
+        file_objects: List[FileObject],
+        temp_dir: str,
+        workdir: str,
     ) -> None:
         """
         Upload files to sandbox in parallel for improved performance.
@@ -157,8 +167,12 @@ class FileUploadService:
             Tuple of (filename, success, error_message)
         """
         try:
-            temp_file_path = os.path.join(temp_dir, file_obj.name)
-            dest_file_path = f"{workdir}/{file_obj.name}"
+            relative_path = Path(file_obj.name)
+            if relative_path.is_absolute() or ".." in relative_path.parts:
+                raise ValueError(f"Invalid file path for sandbox upload: {file_obj.name}")
+
+            temp_file_path = Path(temp_dir) / relative_path
+            dest_file_path = f"{workdir}/{relative_path.as_posix()}"
 
             session.copy_to_runtime(temp_file_path, dest_file_path)
 

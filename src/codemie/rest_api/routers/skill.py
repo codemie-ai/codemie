@@ -28,6 +28,8 @@ from codemie.rest_api.models.skill import (
     SkillAttachRequest,
     SkillBulkAttachRequest,
     SkillCategory,
+    SkillCompanionFileMetadata,
+    SkillCompanionFileResponse,
     SkillCreateRequest,
     SkillDetailResponse,
     SkillImportRequest,
@@ -361,6 +363,38 @@ def get_skill_by_id(
     Returns full skill details including content, if user has read access.
     """
     return SkillService.get_skill_by_id(skill_id, user)
+
+
+@router.get(
+    "/skills/{skill_id}/companion-files",
+    status_code=status.HTTP_200_OK,
+    response_model=list[SkillCompanionFileMetadata],
+    response_model_by_alias=True,
+)
+def list_skill_companion_files(
+    skill_id: str,
+    user: User = Depends(authenticate),
+):
+    """List metadata for bundled companion files attached to a skill."""
+    return SkillService.list_companion_files(skill_id, user)
+
+
+@router.get(
+    "/skills/{skill_id}/companion-files/content",
+    status_code=status.HTTP_200_OK,
+    response_model=SkillCompanionFileResponse,
+    response_model_by_alias=True,
+)
+def get_skill_companion_file(
+    skill_id: str,
+    path: str = Query(
+        ...,
+        description="Relative companion file path, e.g. references/writing-guidelines.md",
+    ),
+    user: User = Depends(authenticate),
+):
+    """Get one bundled companion file payload by relative path."""
+    return SkillService.get_companion_file(skill_id, path, user)
 
 
 @router.post(

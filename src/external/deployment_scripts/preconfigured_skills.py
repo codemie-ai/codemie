@@ -21,7 +21,10 @@ Similar to preconfigured assistants, these skills are loaded into the marketplac
 and accessible to all users.
 """
 
+import base64
+import mimetypes
 import os
+from pathlib import Path
 
 import yaml
 
@@ -33,6 +36,11 @@ from codemie.rest_api.utils.default_applications import CODEMIE_PROJECT_NAME
 
 # skill_name -> UUID of skills created/updated from templates (for later use if needed)
 preconfigured_skill_ids: dict[str, str] = {}
+_BUNDLE_TEMPLATE_FILENAMES = ("skill.yaml", "skill.yml")
+_COMPANION_DIRECTORIES = {
+    "references": "reference",
+    "assets": "asset",
+}
 
 
 def get_preconfigured_skill_id_by_name(name: str) -> str | None:
@@ -48,6 +56,71 @@ def get_preconfigured_skill_id_by_name(name: str) -> str | None:
     return preconfigured_skill_ids.get(name)
 
 
+def _load_skill_template_file(file_path: Path) -> dict | None:
+    """Load a YAML skill template file from disk."""
+    with file_path.open(encoding="utf-8") as file:
+        skill_data = yaml.safe_load(file.read())
+
+    if skill_data and "name" in skill_data:
+        return skill_data
+
+    logger.warning(f"Invalid skill template in {file_path.name}: missing 'name' field")
+    return None
+
+
+def _encode_companion_file(file_path: Path, kind: str, bundle_root: Path) -> dict[str, str | int]:
+    """Serialize a companion file payload for storage on the skill record."""
+    raw_content = file_path.read_bytes()
+    mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+
+    try:
+        content = raw_content.decode("utf-8")
+        encoding = "text"
+    except UnicodeDecodeError:
+        content = base64.b64encode(raw_content).decode("ascii")
+        encoding = "base64"
+
+    return {
+        "path": file_path.relative_to(bundle_root).as_posix(),
+        "kind": kind,
+        "mime_type": mime_type,
+        "encoding": encoding,
+        "size_bytes": len(raw_content),
+        "content": content,
+    }
+
+
+def _load_companion_files(bundle_root: Path) -> list[dict[str, str | int]]:
+    """Load optional references/assets directories for a bundled skill template."""
+    companion_files: list[dict[str, str | int]] = []
+    for directory_name, kind in _COMPANION_DIRECTORIES.items():
+        companion_root = bundle_root / directory_name
+        if not companion_root.exists():
+            continue
+
+        for file_path in sorted(path for path in companion_root.rglob("*") if path.is_file()):
+            companion_files.append(_encode_companion_file(file_path, kind, bundle_root))
+
+    return companion_files
+
+
+def _load_bundled_skill_template(bundle_dir: Path) -> dict | None:
+    """Load a bundled skill template from a directory containing skill.yaml and optional companion files."""
+    template_file = next(
+        (bundle_dir / name for name in _BUNDLE_TEMPLATE_FILENAMES if (bundle_dir / name).exists()),
+        None,
+    )
+    if not template_file:
+        return None
+
+    skill_data = _load_skill_template_file(template_file)
+    if not skill_data:
+        return None
+
+    skill_data["companion_files"] = _load_companion_files(bundle_dir)
+    return skill_data
+
+
 def load_skill_templates() -> list[dict]:
     """
     Load skill templates from YAML files in the skill templates directory.
@@ -55,7 +128,7 @@ def load_skill_templates() -> list[dict]:
     Returns:
         List of skill template dictionaries.
     """
-    templates_dir = config.SKILL_TEMPLATES_DIR
+    templates_dir = Path(config.SKILL_TEMPLATES_DIR)
     skill_templates = []
 
     logger.info(f"Loading skill templates from {templates_dir}")
@@ -65,19 +138,19 @@ def load_skill_templates() -> list[dict]:
         return skill_templates
 
     try:
-        for filename in os.listdir(templates_dir):
-            if filename.endswith(".yaml"):
-                file_path = os.path.join(templates_dir, filename)
-                try:
-                    with open(file_path) as file:
-                        skill_data = yaml.safe_load(file.read())
-                        if skill_data and 'name' in skill_data:
-                            skill_templates.append(skill_data)
-                            logger.info(f"Loaded skill template: {skill_data['name']}")
-                        else:
-                            logger.warning(f"Invalid skill template in {filename}: missing 'name' field")
-                except Exception as e:
-                    logger.error(f"Failed to load skill template from {filename}: {e}")
+        for entry in sorted(templates_dir.iterdir()):
+            try:
+                skill_data = None
+                if entry.is_file() and entry.suffix in {".yaml", ".yml"}:
+                    skill_data = _load_skill_template_file(entry)
+                elif entry.is_dir():
+                    skill_data = _load_bundled_skill_template(entry)
+
+                if skill_data and "name" in skill_data:
+                    skill_templates.append(skill_data)
+                    logger.info(f"Loaded skill template: {skill_data['name']}")
+            except Exception as e:
+                logger.error(f"Failed to load skill template from {entry.name}: {e}")
     except Exception as e:
         logger.error(f"Failed to load skill templates from directory: {e}")
 
@@ -94,8 +167,8 @@ def create_or_update_skill(template: dict) -> str | None:
     Returns:
         The skill ID if created/updated, None if failed.
     """
-    skill_name = template.get('name')
-    project = template.get('project', CODEMIE_PROJECT_NAME)
+    skill_name = template.get("name")
+    project = template.get("project", CODEMIE_PROJECT_NAME)
 
     # Check if skill already exists using repository
     existing_skill = SkillRepository.get_by_name_author_project(
@@ -105,17 +178,18 @@ def create_or_update_skill(template: dict) -> str | None:
     )
 
     # Parse categories from template (filter valid ones)
-    categories = [cat for cat in template.get('categories', []) if cat in [e.value for e in SkillCategory]]
+    categories = [cat for cat in template.get("categories", []) if cat in [e.value for e in SkillCategory]]
 
     if existing_skill:
         logger.info(f"Skill '{skill_name}' already exists, updating...")
 
         # Prepare updates
         updates = {
-            'description': template.get('description', ''),
-            'content': template.get('content', ''),
-            'visibility': SkillVisibility(template.get('visibility', 'public')),
-            'categories': categories,
+            "description": template.get("description", ""),
+            "content": template.get("content", ""),
+            "visibility": SkillVisibility(template.get("visibility", "public")),
+            "categories": categories,
+            "companion_files": template.get("companion_files", []),
         }
 
         # Update using repository
@@ -129,13 +203,14 @@ def create_or_update_skill(template: dict) -> str | None:
 
     # Create new skill using repository
     skill_data = {
-        'name': skill_name,
-        'description': template.get('description', ''),
-        'content': template.get('content', ''),
-        'project': project,
-        'visibility': SkillVisibility(template.get('visibility', 'public')),
-        'created_by': SYSTEM_USER,
-        'categories': categories,
+        "name": skill_name,
+        "description": template.get("description", ""),
+        "content": template.get("content", ""),
+        "project": project,
+        "visibility": SkillVisibility(template.get("visibility", "public")),
+        "created_by": SYSTEM_USER,
+        "categories": categories,
+        "companion_files": template.get("companion_files", []),
     }
 
     try:
@@ -169,7 +244,7 @@ def manage_preconfigured_skills() -> None:
     # Create or update each skill
     success_count = 0
     for template in templates:
-        skill_name = template.get('name')
+        skill_name = template.get("name")
         if not skill_name:
             logger.warning(f"Skipping template without name: {template}")
             continue

@@ -81,21 +81,15 @@ class TestGetPreconfiguredSkillIdByName:
 class TestLoadSkillTemplates:
     """Tests for load_skill_templates function."""
 
-    @patch('external.deployment_scripts.preconfigured_skills.os.listdir')
-    @patch('external.deployment_scripts.preconfigured_skills.config.SKILL_TEMPLATES_DIR')
-    @patch('builtins.open', create=True)
-    def test_load_valid_templates(self, mock_open, mock_templates_dir, mock_listdir):
+    def test_load_valid_templates(self, tmp_path):
         """Test loading valid skill templates."""
-        mock_templates_dir.exists.return_value = True
-        mock_listdir.return_value = ['skill1.yaml', 'skill2.yaml', 'not-a-yaml.txt']
+        (tmp_path / 'skill1.yaml').write_text("name: skill1\ndescription: Test skill 1")
+        (tmp_path / 'skill2.yaml').write_text("name: skill2\ndescription: Test skill 2")
+        (tmp_path / 'not-a-yaml.txt').write_text("not yaml content")
 
-        # Mock file content
-        mock_open.return_value.__enter__.return_value.read.side_effect = [
-            "name: skill1\ndescription: Test skill 1",
-            "name: skill2\ndescription: Test skill 2",
-        ]
-
-        templates = load_skill_templates()
+        with patch('external.deployment_scripts.preconfigured_skills.config') as mock_config:
+            mock_config.SKILL_TEMPLATES_DIR = str(tmp_path)
+            templates = load_skill_templates()
 
         assert len(templates) == 2
         assert templates[0]['name'] == 'skill1'

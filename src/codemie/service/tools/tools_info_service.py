@@ -18,6 +18,7 @@ from typing import List, Dict, Optional
 from codemie_tools.base.models import ToolSet
 from codemie_tools.base import toolkit_provider
 from codemie_tools.data_management.file_system.toolkit import FileSystemToolkit
+from codemie_tools.data_management.workspace.toolkit import AgentWorkspaceToolkit
 from codemie_tools.git.toolkit import GitToolkit
 from codemie_tools.research.toolkit import ResearchToolkit
 
@@ -55,6 +56,7 @@ class ToolsInfoService:
             GitToolkit.get_tools_ui_info(),
             ResearchToolkit.get_tools_ui_info(),
             FileSystemToolkit.get_tools_ui_info(show_admin_tools),
+            AgentWorkspaceToolkit.get_tools_ui_info(),
         ]
 
         # Add plugin toolkit if available (enterprise dependency pattern)
@@ -85,13 +87,16 @@ class ToolsInfoService:
         """Merge backend code tools into autodiscovered CodeToolkit (if exists), or add it."""
         from codemie.agents.tools.code.code_toolkit import CodeToolkit as BackendCodeToolkit
 
-        code_toolkit = next((t for t in toolkits if t.get('toolkit') == ToolSet.CODEBASE_TOOLS.value), None)
+        code_toolkit = next(
+            (t for t in toolkits if t.get("toolkit") == ToolSet.CODEBASE_TOOLS.value),
+            None,
+        )
         backend_tools = (
             BackendCodeToolkit.get_tools_ui_info() if show_for_ui else BackendCodeToolkit.get_tools_api_info()
         )
 
         if code_toolkit:
-            code_toolkit.setdefault('tools', []).extend(backend_tools['tools'])
+            code_toolkit.setdefault("tools", []).extend(backend_tools["tools"])
         else:
             toolkits.append(backend_tools)
 
