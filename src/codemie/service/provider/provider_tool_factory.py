@@ -17,6 +17,7 @@ from typing import Type, Optional
 from urllib3.exceptions import MaxRetryError
 
 from codemie_tools.base.codemie_tool import CodeMieTool
+from codemie.agents.utils import sanitize_tool_name
 from codemie.clients.provider import client as provider_client
 from codemie.rest_api.models.provider import ProviderBase, ProviderToolkit
 from codemie.rest_api.models.index import ProviderIndexInfo
@@ -99,9 +100,16 @@ class ProviderToolFactory:
     @property
     def _tool_name(self):
         if self.datasource:
-            return f"{self.datasource.repo_name}_{self.tool_config.name}"
+            raw_name = f"{self.datasource.repo_name}_{self.tool_config.name}"
+        else:
+            raw_name = self.tool_config.name
 
-        return self.tool_config.name
+        # LLM providers (notably AWS Bedrock Converse) reject tool names that
+        # contain characters outside ``[a-zA-Z0-9_-]`` -- e.g. dots in a
+        # datasource ``repo_name`` such as ``my.repo.name``. Sanitize here so
+        # both the tool definition and any later ``toolUse`` entries in the
+        # conversation history use a compliant name.
+        return sanitize_tool_name(raw_name)
 
     def _generate_execute(self):
         """Generate tool execute method"""

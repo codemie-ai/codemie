@@ -24,6 +24,7 @@ from codemie.service.provider.provider_tool_factory import (
 )
 from codemie.rest_api.models.provider import Provider, ProviderConfiguration, ProviderToolkit, ProviderToolArgument
 from codemie.rest_api.security.user import User
+from codemie.rest_api.models.index import ProviderIndexInfo
 from codemie.configs import config
 
 
@@ -158,3 +159,14 @@ def test_build_tool_class_args_schema(tool_factory, tool_params):
     assert "param2" in args_schema.__annotations__
     assert args_schema.__annotations__["param1"] is Optional[str]
     assert args_schema.__annotations__["param2"] is int
+
+
+def test_build_sanitizes_datasource_tool_name(provider_config, toolkit_config, tool_config, tool_params):
+    datasource = MagicMock(spec=ProviderIndexInfo)
+    datasource.repo_name = "my.repo-name/v1"
+
+    tool_factory = ProviderToolFactory(provider_config, toolkit_config, tool_config, datasource=datasource)
+    tool_class = tool_factory.build()
+    instance = tool_class(**tool_params)
+
+    assert instance.name == "my_repo-name_v1_test"
