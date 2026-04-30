@@ -87,6 +87,10 @@ glab mr create \
 - [ ] No breaking changes (or documented)"
 ```
 
+After the MR is created, hand off to the `babysit-mr` skill to monitor it:
+- Invoke `babysit-mr` with the MR URL returned by `glab mr create`
+- It will watch for CI failures, reviewer comments, and merge conflicts, fixing them autonomously until the MR merges
+
 ## Commit Format
 
 **Required Pattern**: `EPMCDME-xxx: Action and message`

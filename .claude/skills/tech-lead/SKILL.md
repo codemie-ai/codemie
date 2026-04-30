@@ -377,6 +377,11 @@ Tech Lead:
 - Ensure commit message references Jira ticket (if applicable)
 - Follow git workflow from guides
 
+### Babysit-MR Skill
+- Invoke after `codemie-mr` creates the MR
+- Monitors the MR autonomously: fixes CI failures, addresses reviewer comments, resolves merge conflicts
+- Example: "After the MR is created, hand off to `babysit-mr` with the MR URL"
+
 ## Error Handling
 
 ### Ticket Not Found
