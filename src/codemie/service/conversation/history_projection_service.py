@@ -433,7 +433,7 @@ class ConversationHistoryProjectionService:
         normalized = author_name.strip().lower()
 
         # Replace invalid chars with underscore
-        normalized = re.sub(r'[^a-z0-9_.\-]', '_', normalized)
+        normalized = re.sub(r'[^a-z0-9_\-]', '_', normalized)
         normalized = re.sub(r'_+', '_', normalized)
         normalized = normalized.strip('_')
         if len(normalized) >= MAX_TOOL_NAME_LENGTH:

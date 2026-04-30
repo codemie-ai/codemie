@@ -27,7 +27,7 @@ from codemie.service.conversation.history_projection_service import (
     ConversationHistoryProjectionService,
 )
 
-TOOL_NAME_REGEX = re.compile(r"^[a-zA-Z0-9_.\-]+$")
+TOOL_NAME_REGEX = re.compile(r"^[a-zA-Z0-9_\-]+$")
 
 
 def _build_conversation_with_tool_turn(
@@ -138,6 +138,10 @@ def test_normalize_tool_name_removes_invalid_characters():
     assert result == "sub_assistant_with_different_chars"
     assert TOOL_NAME_REGEX.match(result)
 
+    result = normalize("Tool.!@#$%^&*()Name")
+    assert result == "tool_name"
+    assert TOOL_NAME_REGEX.match(result)
+
     result = normalize("Tool!@#$%^&*()Name")
     assert result == "tool_name"
     assert TOOL_NAME_REGEX.match(result)
@@ -152,12 +156,12 @@ def test_normalize_tool_name_removes_invalid_characters():
     assert TOOL_NAME_REGEX.match(result)
 
     # Valid characters preserved (letters, numbers, dots, hyphens, underscores)
-    result = normalize("valid.tool-name_123")
-    assert result == "valid.tool-name_123"
+    result = normalize("valid_tool-name_123")
+    assert result == "valid_tool-name_123"
     assert TOOL_NAME_REGEX.match(result)
 
-    result = normalize("test-tool.v1_beta")
-    assert result == "test-tool.v1_beta"
+    result = normalize("test-tool_v1_beta")
+    assert result == "test-tool_v1_beta"
     assert TOOL_NAME_REGEX.match(result)
 
     # Multiple underscores collapsed
@@ -248,7 +252,7 @@ def test_normalize_tool_name_combined_scenarios():
     assert TOOL_NAME_REGEX.match(result)
 
     # All valid regex chars work
-    valid_chars = "abc123_def.-456"
+    valid_chars = "abc123_def_-456"
     result = normalize(valid_chars)
     assert result == valid_chars.lower()
     assert TOOL_NAME_REGEX.match(result)
