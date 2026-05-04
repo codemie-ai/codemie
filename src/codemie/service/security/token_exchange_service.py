@@ -24,6 +24,7 @@ from codemie.configs.logger import logger
 from codemie.rest_api.security.user_context import get_current_user
 from codemie.service.security.token_providers.base_provider import (
     BaseTokenProvider,
+    BrokerAuthRequiredException,
     TokenProviderException,
 )
 from codemie.service.security.token_providers.broker_token_exchange_provider import (
@@ -173,6 +174,10 @@ class TokenExchangeService:
                 logger.debug(f"No token available for user_id={user_id}")
 
             return token
+
+        except BrokerAuthRequiredException:
+            logger.debug(f"Broker re-authentication required for user_id={user_id}")
+            raise
 
         except TokenProviderException as e:
             logger.exception(f"Token provider failed for user_id={user_id}: {e.message}")
