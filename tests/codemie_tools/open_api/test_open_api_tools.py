@@ -37,6 +37,12 @@ def test_get_auth_header_value(config, expected_header):
 
 
 class TestOpenApiTools:
+    @pytest.fixture(autouse=True)
+    def mock_ssl_verify(self):
+        with patch('codemie_tools.open_api.tools.config') as mock_config:
+            mock_config.HTTPS_VERIFY_SSL = True
+            yield mock_config
+
     @pytest.fixture
     def mock_requests(self):
         with patch('codemie_tools.open_api.tools.requests.request') as mock:

@@ -23,6 +23,7 @@ from codemie.service.provider.provider_tool_factory import (
     ProviderConnectionError,
 )
 from codemie.rest_api.models.provider import Provider, ProviderConfiguration, ProviderToolkit, ProviderToolArgument
+from codemie.rest_api.models.index import ProviderIndexInfo
 from codemie.rest_api.security.user import User
 from codemie.configs import config
 
@@ -158,3 +159,13 @@ def test_build_tool_class_args_schema(tool_factory, tool_params):
     assert "param2" in args_schema.__annotations__
     assert args_schema.__annotations__["param1"] is Optional[str]
     assert args_schema.__annotations__["param2"] is int
+
+
+def test_build_sanitizes_datasource_tool_name(provider_config, toolkit_config, tool_config):
+    datasource = MagicMock(spec=ProviderIndexInfo)
+    datasource.repo_name = "My.Repo.Name"
+    factory = ProviderToolFactory(provider_config, toolkit_config, tool_config, datasource=datasource)
+
+    tool_class = factory.build()
+
+    assert tool_class.name == "my_repo_name_test"

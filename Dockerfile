@@ -55,14 +55,14 @@ COPY ./pyproject.toml ./poetry.lock ./
 ARG INSTALL_ENTERPRISE
 RUN --mount=type=secret,id=google_credentials,dst=/kaniko/google_credentials.json \
     if [ "$INSTALL_ENTERPRISE" = "true" ]; then \
-        echo "Installing with enterprise features..."; \
-        export GOOGLE_APPLICATION_CREDENTIALS=/kaniko/google_credentials.json; \
-        poetry self add keyrings.google-artifactregistry-auth; \
-        poetry install --only main -E enterprise --no-root; \
-        poetry self remove keyrings.google-artifactregistry-auth; \
+    echo "Installing with enterprise features..."; \
+    export GOOGLE_APPLICATION_CREDENTIALS=/kaniko/google_credentials.json; \
+    poetry self add keyrings.google-artifactregistry-auth; \
+    poetry install --only main -E enterprise --no-root; \
+    poetry self remove keyrings.google-artifactregistry-auth; \
     else \
-        echo "Installing base dependencies only..."; \
-        poetry install --only main --no-root; \
+    echo "Installing base dependencies only..."; \
+    poetry install --only main --no-root; \
     fi
 
 # Copy source code and configuration
@@ -152,3 +152,4 @@ EXPOSE 8080
 
 # Start the application with Poetry
 CMD ["sh", "-c", "poetry run uvicorn codemie.rest_api.main:app --host=0.0.0.0 --port=8080 --root-path $SUFFIX"]
+

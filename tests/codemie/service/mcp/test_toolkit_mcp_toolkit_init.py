@@ -256,6 +256,7 @@ class TestMCPToolkit(unittest.TestCase):
             mcp_client=self.mock_client,
             mcp_server_config=self.mock_server_config,
             args_schema=unittest.mock.ANY,  # Can't easily compare the dynamically created model
+            mcp_tool_name="tool1",
         )
         mock_mcp_tool_class.assert_any_call(
             name="tool2",
@@ -263,6 +264,7 @@ class TestMCPToolkit(unittest.TestCase):
             mcp_client=self.mock_client,
             mcp_server_config=self.mock_server_config,
             args_schema=unittest.mock.ANY,  # Can't easily compare the dynamically created model
+            mcp_tool_name="tool2",
         )
 
     @patch("codemie.service.mcp.toolkit.logger")

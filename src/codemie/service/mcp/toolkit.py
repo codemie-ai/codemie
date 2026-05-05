@@ -36,6 +36,7 @@ from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.errors import TruncatedOutputError
 from codemie_tools.base.utils import get_encoding
 
+from codemie.agents.utils import sanitize_tool_name
 from codemie.configs.config import config
 from codemie.configs.logger import logger
 from codemie.core.constants import TOOL_TYPE, ToolType, MCP_IMAGES_SUBDIR
@@ -88,6 +89,10 @@ class MCPTool(CodeMieTool):
     # Additional attributes for MCP tools
     mcp_server_config: MCPServerConfig
     mcp_client: MCPConnectClient
+    # Original tool name as registered on the MCP server. May differ from
+    # ``name`` when the server-side name contains characters sanitized for
+    # LLM-provider compatibility (e.g. AWS Bedrock only allows [a-z0-9_-]).
+    mcp_tool_name: str = ""
     # Override tokens_size_limit with the value from config
     tokens_size_limit: int = config.MCP_TOOL_TOKENS_SIZE_LIMIT
 
@@ -98,6 +103,7 @@ class MCPTool(CodeMieTool):
         mcp_client: MCPConnectClient,
         mcp_server_config: MCPServerConfig,
         args_schema: Type[BaseModel],
+        mcp_tool_name: str | None = None,
         **kwargs,
     ):
         """
@@ -117,12 +123,14 @@ class MCPTool(CodeMieTool):
             mcp_client=mcp_client,
             mcp_server_config=mcp_server_config,
             args_schema=args_schema,
+            mcp_tool_name=mcp_tool_name or name,
             **kwargs,
         )
 
         # Also set as instance attributes for direct access
         self.mcp_client = mcp_client
         self.mcp_server_config = mcp_server_config
+        self.mcp_tool_name = mcp_tool_name or name
         if self.metadata is None:
             self.metadata = {}
         self.metadata[TOOL_TYPE] = ToolType.MCP
@@ -146,7 +154,7 @@ class MCPTool(CodeMieTool):
         try:
             response = await self.mcp_client.invoke_tool(
                 server_config=self.mcp_server_config,
-                tool_name=self.name,
+                tool_name=self.mcp_tool_name,
                 tool_args=kwargs,
                 execution_context=execution_context,  # Pass context to client
             )
@@ -329,6 +337,7 @@ class ContextAwareMCPTool(MCPTool):
             mcp_client=original_tool.mcp_client,
             mcp_server_config=original_tool.mcp_server_config,
             args_schema=original_tool.args_schema,
+            mcp_tool_name=original_tool.mcp_tool_name,
             **kwargs,
         )
         self._execution_context = context
@@ -560,13 +569,20 @@ class MCPToolkit(BaseToolkit):
                 # Create args schema for the tool
                 args_schema = self._create_args_schema(tool_def)
 
-                # Create and add the tool
+                sanitized_name = sanitize_tool_name(tool_def.name)
+                if sanitized_name != tool_def.name:
+                    logger.debug(
+                        f"Sanitized MCP tool name '{tool_def.name}' -> '{sanitized_name}' "
+                        f"for LLM-provider compatibility"
+                    )
+
                 tool = MCPTool(
-                    name=tool_def.name,
+                    name=sanitized_name,
                     description=tool_def.description,
                     mcp_client=self.mcp_client,
                     mcp_server_config=self.mcp_server_config,
                     args_schema=args_schema,
+                    mcp_tool_name=tool_def.name,
                 )
                 tools.append(tool)
 

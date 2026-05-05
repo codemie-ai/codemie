@@ -17,6 +17,7 @@ from typing import Type, Optional
 from urllib3.exceptions import MaxRetryError
 
 from codemie_tools.base.codemie_tool import CodeMieTool
+from codemie.agents.utils import sanitize_datasource_name
 from codemie.clients.provider import client as provider_client
 from codemie.rest_api.models.provider import ProviderBase, ProviderToolkit
 from codemie.rest_api.models.index import ProviderIndexInfo
@@ -99,7 +100,7 @@ class ProviderToolFactory:
     @property
     def _tool_name(self):
         if self.datasource:
-            return f"{self.datasource.repo_name}_{self.tool_config.name}"
+            return f"{sanitize_datasource_name(self.datasource.repo_name)}_{self.tool_config.name}"
 
         return self.tool_config.name
 

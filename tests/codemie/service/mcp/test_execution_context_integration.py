@@ -25,10 +25,11 @@ from unittest.mock import MagicMock, patch, AsyncMock
 from codemie.service.mcp.models import (
     MCPExecutionContext,
     MCPServerConfig,
+    MCPToolDefinition,
     MCPToolInvocationResponse,
     MCPToolContentItem,
 )
-from codemie.service.mcp.toolkit import MCPTool, ContextAwareMCPTool
+from codemie.service.mcp.toolkit import MCPTool, ContextAwareMCPTool, MCPToolkit
 from codemie.service.mcp.toolkit_service import MCPToolkitService
 from codemie.service.mcp.client import MCPConnectClient
 from codemie.rest_api.models.assistant import MCPServerDetails
@@ -132,6 +133,59 @@ class TestMCPExecutionContextIntegration:
         # Verify metadata is copied but not shared
         assert context_aware_tool.metadata == original_tool.metadata
         assert context_aware_tool.metadata is not original_tool.metadata
+        assert context_aware_tool.mcp_tool_name == original_tool.mcp_tool_name
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_uses_original_server_tool_name_when_invoked(self, sample_execution_context):
+        mock_client = MagicMock(spec=MCPConnectClient)
+        mock_client.invoke_tool = AsyncMock(
+            return_value=MCPToolInvocationResponse(content=[MCPToolContentItem(type="text", text="ok")], isError=False)
+        )
+        mock_server_config = MCPServerConfig(command="test_command", args=["arg1"], env={"TEST_VAR": "test_value"})
+
+        from pydantic import create_model
+
+        args_schema = create_model("TestSchema", test_param=(str, ...))
+        tool = MCPTool(
+            name="get_file_contents",
+            description="A test MCP tool",
+            mcp_client=mock_client,
+            mcp_server_config=mock_server_config,
+            args_schema=args_schema,
+            mcp_tool_name="get.file.contents",
+        )
+        context_aware_tool = ContextAwareMCPTool(tool, sample_execution_context)
+
+        await context_aware_tool._aexecute_with_context(sample_execution_context, test_param="value")
+
+        mock_client.invoke_tool.assert_awaited_once_with(
+            server_config=mock_server_config,
+            tool_name="get.file.contents",
+            tool_args={"test_param": "value"},
+            execution_context=sample_execution_context,
+        )
+
+    def test_mcp_toolkit_sanitizes_tool_name_but_preserves_original_server_name(self):
+        mock_client = MagicMock(spec=MCPConnectClient)
+        mock_server_config = MCPServerConfig(command="test_command", args=["arg1"], env={"TEST_VAR": "test_value"})
+        tool_definitions = [
+            MCPToolDefinition(
+                name="get.file.contents",
+                description="Reads a file",
+                inputSchema={"type": "object", "properties": {}, "required": []},
+            )
+        ]
+        toolkit = MCPToolkit(
+            name="test_toolkit",
+            description="A test toolkit",
+            mcp_client=mock_client,
+            mcp_server_config=mock_server_config,
+            tools_definitions=tool_definitions,
+        )
+
+        assert len(toolkit.tools) == 1
+        assert toolkit.tools[0].name == "get_file_contents"
+        assert toolkit.tools[0].mcp_tool_name == "get.file.contents"
 
     def test_create_context_aware_tools_empty_list(self, sample_execution_context):
         """Test creation of context-aware tools with empty tool list."""

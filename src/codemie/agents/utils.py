@@ -210,8 +210,37 @@ def get_repo_files_by_search_phrase_path(code_fields: CodeFields, search_phrase:
     return sorted_response
 
 
+_INVALID_TOOL_NAME_CHARS_RE = re.compile(r"[^a-z0-9_-]")
+_INVALID_DATASOURCE_NAME_CHARS_RE = _INVALID_TOOL_NAME_CHARS_RE
+
+
+def sanitize_tool_name(name: str) -> str:
+    """Sanitize a tool name to [a-z0-9_-]+, enforcing a 64-char limit with hash suffix on overflow.
+
+    Lowercases first, replaces invalid chars with '_'. Required because AWS Bedrock Converse
+    rejects tool names containing characters outside [a-zA-Z0-9_-], and cross-provider
+    consistency requires lowercase.
+    """
+    if not name:
+        return name
+    sanitized = _INVALID_TOOL_NAME_CHARS_RE.sub("_", name.lower())
+    if len(sanitized) > OPEN_AI_TOOL_NAME_LIMIT:
+        suffix = generate_tool_hash(name)
+        keep = OPEN_AI_TOOL_NAME_LIMIT - len(suffix) - 1
+        sanitized = f"{sanitized[:keep].rstrip('_')}_{suffix}"
+    return sanitized
+
+
+def sanitize_datasource_name(name: str) -> str:
+    """Normalize a datasource repo_name to [a-z0-9_-]+."""
+    if not name:
+        return name
+    sanitized = _INVALID_DATASOURCE_NAME_CHARS_RE.sub("_", name.lower())
+    return sanitized.strip("_")
+
+
 def adapt_tool_name(template: str, alias: str) -> str:
-    tool_name = template.format(to_snake_case(alias))
+    tool_name = template.format(sanitize_datasource_name(alias))
     if len(tool_name) > OPEN_AI_TOOL_NAME_LIMIT:
         tool_name = template.format(generate_tool_hash(alias))
 
