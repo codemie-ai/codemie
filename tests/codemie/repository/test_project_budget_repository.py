@@ -71,6 +71,47 @@ async def test_get_project_budget_context_returns_context_when_row_found():
 
 
 @pytest.mark.asyncio
+async def test_get_project_budget_categories_batch_returns_rows_for_requested_categories():
+    repo = ProjectBudgetAssignmentRepository()
+    session = AsyncMock()
+    result_mock = MagicMock()
+    result_mock.mappings.return_value.all.return_value = [
+        {
+            "budget_category": "platform",
+            "budget_id": "budget-platform",
+            "allocation_id": "alloc-platform",
+            "effective_budget_id": "budget-platform",
+            "shared_budget_id": "budget-platform",
+            "override_budget_id": None,
+            "budget_meta": {"provider": "litellm"},
+            "member_meta": {"provider_budget_id": "budget-platform"},
+        },
+        {
+            "budget_category": "cli",
+            "budget_id": "budget-cli",
+            "allocation_id": "alloc-cli",
+            "effective_budget_id": "budget-cli",
+            "shared_budget_id": "budget-cli",
+            "override_budget_id": None,
+            "budget_meta": {"provider": "litellm"},
+            "member_meta": {"provider_budget_id": "budget-cli"},
+        },
+    ]
+    session.execute = AsyncMock(return_value=result_mock)
+
+    result = await repo.get_project_budget_categories_batch(
+        session=session,
+        project_name="proj-a",
+        user_id="u1",
+        categories=["platform", "cli", "premium_models"],
+    )
+
+    assert set(result.keys()) == {"platform", "cli"}
+    assert result["platform"].budget_id == "budget-platform"
+    assert result["cli"].allocation_id == "alloc-cli"
+
+
+@pytest.mark.asyncio
 async def test_get_active_for_projects_returns_empty_for_empty_input():
     repo = ProjectBudgetAssignmentRepository()
     session = AsyncMock()

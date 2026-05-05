@@ -632,6 +632,33 @@ async def test_get_user_category_budget_id_for_request_uses_cache():
     assert result == "cached-budget"
 
 
+def test_get_all_category_budget_ids_for_request_sync_uses_cache():
+    """Sync batch lookup skips DB when all category assignments are already cached."""
+    from unittest.mock import patch
+
+    from codemie.service.budget.budget_service import (
+        BudgetService,
+        _budget_assignment_cache,
+        clear_budget_assignment_cache,
+    )
+
+    clear_budget_assignment_cache()
+    _budget_assignment_cache[("u1", BudgetCategory.PLATFORM.value)] = "platform-budget"
+    _budget_assignment_cache[("u1", BudgetCategory.CLI.value)] = "cli-budget"
+    _budget_assignment_cache[("u1", BudgetCategory.PREMIUM_MODELS.value)] = "premium-budget"
+    svc = BudgetService()
+
+    with patch("sqlmodel.Session") as mock_session_cls:
+        result = svc.get_all_category_budget_ids_for_request_sync("u1")
+
+    assert result == {
+        BudgetCategory.PLATFORM.value: "platform-budget",
+        BudgetCategory.CLI.value: "cli-budget",
+        BudgetCategory.PREMIUM_MODELS.value: "premium-budget",
+    }
+    mock_session_cls.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_load_bulk_budget_users_raises_when_any_user_missing():
     service = _make_service()

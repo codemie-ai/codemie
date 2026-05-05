@@ -358,6 +358,61 @@ class ProjectBudgetAssignmentRepository:
             member_provider_metadata=row["member_meta"] or {},
         )
 
+    async def get_project_budget_categories_batch(
+        self,
+        session: AsyncSession,
+        project_name: str,
+        user_id: str,
+        categories: list[str],
+    ) -> dict[str, ProjectBudgetContext]:
+        """Return project budget contexts for all requested categories in one query."""
+        if not categories:
+            return {}
+
+        stmt = text(
+            """
+            SELECT pba.budget_category,
+                   pba.budget_id,
+                   pmba.id                     AS allocation_id,
+                   pmba.effective_budget_id    AS effective_budget_id,
+                   pmba.shared_budget_id       AS shared_budget_id,
+                   pmba.override_budget_id     AS override_budget_id,
+                   b.provider_metadata         AS budget_meta,
+                   pmba.pmba_provider_metadata AS member_meta
+            FROM   project_budget_assignments pba
+            JOIN   project_member_budget_assignments pmba
+                     ON  pmba.project_name    = pba.project_name
+                     AND pmba.budget_category = pba.budget_category
+                     AND pmba.user_id         = :user_id
+                     AND pmba.pmba_deleted_at IS NULL
+            JOIN   budgets b ON b.budget_id = pba.budget_id
+            WHERE  pba.project_name = :project_name
+              AND  pba.budget_category = ANY(:categories)
+              AND  pba.deleted_at IS NULL
+            """
+        )
+        result = await session.execute(
+            stmt,
+            {
+                "project_name": project_name,
+                "user_id": user_id,
+                "categories": categories,
+            },
+        )
+
+        return {
+            row["budget_category"]: ProjectBudgetContext(
+                budget_id=row["budget_id"],
+                allocation_id=row["allocation_id"],
+                effective_budget_id=row.get("effective_budget_id"),
+                shared_budget_id=row.get("shared_budget_id"),
+                override_budget_id=row.get("override_budget_id"),
+                budget_provider_metadata=row["budget_meta"] or {},
+                member_provider_metadata=row["member_meta"] or {},
+            )
+            for row in result.mappings().all()
+        }
+
     async def soft_delete(
         self,
         session: AsyncSession,

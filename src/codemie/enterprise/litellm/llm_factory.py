@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Optional, TypeVar
 
@@ -30,6 +31,7 @@ from .runtime_budget_selection import RuntimeBudgetMode, select_runtime_budget_m
 
 if TYPE_CHECKING:
     from codemie.configs.llm_config import LLMModel
+    from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
     from codemie.rest_api.models.settings import LiteLLMContext, LiteLLMCredentials
     from langchain_openai import AzureOpenAIEmbeddings
 
@@ -359,6 +361,144 @@ def _get_direct_request_category_budget_id(user_id: str, category: str) -> str |
         ).first()
 
 
+@dataclass(slots=True)
+class DirectBudgetAvailability:
+    user_budget_ids: dict[str, str | None] = field(default_factory=dict)
+    project_scopes: set["CoreBudgetCategory"] = field(default_factory=set)
+
+
+def _get_cached_direct_project_budget_scopes(project_name: str, user_id: str) -> set["CoreBudgetCategory"] | None:
+    from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+    from codemie.service.budget.budget_resolution_service import _resolution_cache
+
+    categories = (CoreBudgetCategory.PLATFORM, CoreBudgetCategory.CLI, CoreBudgetCategory.PREMIUM_MODELS)
+    if not all((project_name, category.value, user_id) in _resolution_cache for category in categories):
+        return None
+
+    scopes = {
+        category for category in categories if _resolution_cache[(project_name, category.value, user_id)] is not None
+    }
+    logger.debug(
+        f"budget_event=project_budget_availability_cache_hit component=litellm_llm_factory "
+        f"user_id={user_id!r} project_name={project_name!r} project_scopes={sorted(scope.value for scope in scopes)!r}"
+    )
+    return scopes
+
+
+def _probe_direct_project_budget_scopes(project_name: str, user_id: str) -> set["CoreBudgetCategory"]:
+    from sqlalchemy import text
+    from sqlmodel import Session
+
+    from codemie.clients.postgres import PostgresClient
+    from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+    from codemie.service.budget.budget_resolution_service import BudgetScope, ResolvedBudgetContext, _resolution_cache
+
+    cached_scopes = _get_cached_direct_project_budget_scopes(project_name, user_id)
+    if cached_scopes is not None:
+        return cached_scopes
+
+    categories = [
+        CoreBudgetCategory.PLATFORM.value,
+        CoreBudgetCategory.CLI.value,
+        CoreBudgetCategory.PREMIUM_MODELS.value,
+    ]
+    with Session(PostgresClient.get_engine()) as session:
+        result = session.execute(
+            text(
+                """
+                SELECT pba.budget_category,
+                       pba.budget_id,
+                       pmba.id                     AS allocation_id,
+                       pmba.effective_budget_id    AS effective_budget_id,
+                       pmba.shared_budget_id       AS shared_budget_id,
+                       pmba.override_budget_id     AS override_budget_id,
+                       b.provider_metadata         AS budget_meta,
+                       pmba.pmba_provider_metadata AS member_meta
+                FROM   project_budget_assignments pba
+                JOIN   project_member_budget_assignments pmba
+                         ON  pmba.project_name    = pba.project_name
+                         AND pmba.budget_category = pba.budget_category
+                         AND pmba.user_id         = :user_id
+                         AND pmba.pmba_deleted_at IS NULL
+                JOIN   budgets b ON b.budget_id = pba.budget_id
+                WHERE  pba.project_name = :project_name
+                  AND  pba.budget_category = ANY(:categories)
+                  AND  pba.deleted_at IS NULL
+                """
+            ),
+            {"project_name": project_name, "user_id": user_id, "categories": categories},
+        )
+        rows = {row["budget_category"]: row for row in result.mappings().all()}
+
+    scopes: set[CoreBudgetCategory] = set()
+    for category in (CoreBudgetCategory.PLATFORM, CoreBudgetCategory.CLI, CoreBudgetCategory.PREMIUM_MODELS):
+        cache_key = (project_name, category.value, user_id)
+        row = rows.get(category.value)
+        if row is None:
+            _resolution_cache[cache_key] = None
+            continue
+
+        scopes.add(category)
+        _resolution_cache[cache_key] = ResolvedBudgetContext(
+            scope=BudgetScope.PROJECT,
+            project_name=project_name,
+            budget_category=category,
+            budget_id=row["budget_id"],
+            effective_budget_id=row.get("effective_budget_id"),
+            shared_budget_id=row.get("shared_budget_id"),
+            override_budget_id=row.get("override_budget_id"),
+            member_allocation_id=row["allocation_id"],
+            provider_metadata=row["budget_meta"] or {},
+            member_provider_metadata=row["member_meta"] or {},
+        )
+
+    logger.debug(
+        f"budget_event=project_budget_availability_probed component=litellm_llm_factory "
+        f"user_id={user_id!r} project_name={project_name!r} project_scopes={sorted(scope.value for scope in scopes)!r}"
+    )
+    return scopes
+
+
+def _resolve_direct_budget_availability(project_name: str, user_id: str) -> DirectBudgetAvailability:
+    from codemie.service.budget.budget_service import budget_service
+
+    return DirectBudgetAvailability(
+        user_budget_ids=budget_service.get_all_category_budget_ids_for_request_sync(user_id),
+        project_scopes=_probe_direct_project_budget_scopes(project_name, user_id),
+    )
+
+
+def _resolve_direct_budget_category(
+    *,
+    user_email: str,
+    llm_model: str,
+    availability: DirectBudgetAvailability,
+) -> "CoreBudgetCategory":
+    from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+
+    from .budget_categories import BudgetCategory as LiteLLMBudgetCategory
+    from .dependencies import get_category_budget_id, get_premium_username
+
+    premium_budget_id = availability.user_budget_ids.get(CoreBudgetCategory.PREMIUM_MODELS.value)
+    if (
+        get_premium_username(user_email, llm_model) is not None
+        and CoreBudgetCategory.PREMIUM_MODELS in availability.project_scopes
+    ):
+        return CoreBudgetCategory.PREMIUM_MODELS
+
+    if not availability.project_scopes:
+        premium_budget_id = premium_budget_id or get_category_budget_id(LiteLLMBudgetCategory.PREMIUM_MODELS)
+
+    if (
+        get_premium_username(user_email, llm_model) is not None
+        and premium_budget_id
+        and (not availability.project_scopes or CoreBudgetCategory.PREMIUM_MODELS in availability.project_scopes)
+    ):
+        return CoreBudgetCategory.PREMIUM_MODELS
+
+    return CoreBudgetCategory.PLATFORM
+
+
 def _resolve_direct_project_budget_runtime(
     *,
     llm_model_details: "LLMModel",
@@ -370,23 +510,16 @@ def _resolve_direct_project_budget_runtime(
     if not litellm_context or not litellm_context.current_project or not user_id or not user_email:
         return None, {}, None, None
 
-    from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
     from codemie.service.budget.budget_resolution_service import budget_resolution_service
 
-    from .dependencies import get_category_budget_id, get_premium_username
-    from .budget_categories import BudgetCategory as LiteLLMBudgetCategory
-
-    premium_assigned_budget_id = _get_direct_request_category_budget_id(
-        user_id, CoreBudgetCategory.PREMIUM_MODELS.value
+    availability = _resolve_direct_budget_availability(
+        litellm_context.current_project,
+        user_id,
     )
-
-    category = (
-        CoreBudgetCategory.PREMIUM_MODELS
-        if (
-            get_premium_username(user_email, llm_model_details.base_name) is not None
-            and (premium_assigned_budget_id or get_category_budget_id(LiteLLMBudgetCategory.PREMIUM_MODELS))
-        )
-        else CoreBudgetCategory.PLATFORM
+    category = _resolve_direct_budget_category(
+        user_email=user_email,
+        llm_model=llm_model_details.base_name,
+        availability=availability,
     )
 
     from codemie.service.settings.settings import SettingsService

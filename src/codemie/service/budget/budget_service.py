@@ -954,6 +954,48 @@ class BudgetService:
             )
             return {cat: None for cat in categories}
 
+    def get_all_category_budget_ids_for_request_sync(self, user_id: str) -> dict[str, str | None]:
+        """Sync version of batch category→budget_id lookup with shared cache reuse."""
+        from sqlmodel import Session, select
+
+        from codemie.clients.postgres import PostgresClient
+        from codemie.service.budget.budget_models import UserBudgetAssignment
+
+        categories = [c.value for c in BudgetCategory]
+        if all((user_id, cat) in _budget_assignment_cache for cat in categories):
+            logger.debug(
+                f"budget_event=budget_assignment_batch_cache_hit component=budget_service path=sync "
+                f"user_id={user_id!r} budget_categories={categories!r}"
+            )
+            return {cat: _budget_assignment_cache[(user_id, cat)] for cat in categories}
+
+        missing_categories = [cat for cat in categories if (user_id, cat) not in _budget_assignment_cache]
+        logger.debug(
+            f"budget_event=budget_assignment_batch_cache_miss component=budget_service path=sync "
+            f"user_id={user_id!r} missing_categories={missing_categories!r}"
+        )
+        try:
+            with Session(PostgresClient.get_engine()) as session:
+                rows = session.exec(
+                    select(UserBudgetAssignment.category, UserBudgetAssignment.budget_id).where(
+                        UserBudgetAssignment.user_id == user_id
+                    )
+                ).all()
+            assignment_map = dict(rows)
+            for cat in categories:
+                _budget_assignment_cache[(user_id, cat)] = assignment_map.get(cat)
+            logger.debug(
+                f"budget_event=budget_assignment_batch_resolved component=budget_service path=sync "
+                f"user_id={user_id!r} budget_categories={categories!r} resolved_assignments={assignment_map!r}"
+            )
+            return {cat: assignment_map.get(cat) for cat in categories}
+        except Exception as exc:
+            logger.warning(
+                f"budget_event=budget_assignment_batch_resolve_failed component=budget_service path=sync "
+                f"user_id={user_id!r} error={exc}"
+            )
+            return {cat: None for cat in categories}
+
     async def validate_assignment_budget_categories(
         self,
         session: AsyncSession,

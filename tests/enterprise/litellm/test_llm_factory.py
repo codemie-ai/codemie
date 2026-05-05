@@ -233,10 +233,91 @@ class TestCreateLiteLLMEmbeddingModel:
 class TestResolveDirectProjectBudgetRuntime:
     """Test _resolve_direct_project_budget_runtime() direct budget path behavior."""
 
+    def test_project_platform_only_suppresses_global_premium_selection(self):
+        from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+        from codemie.enterprise.litellm.llm_factory import DirectBudgetAvailability, _resolve_direct_budget_category
+
+        availability = DirectBudgetAvailability(
+            user_budget_ids={
+                CoreBudgetCategory.PLATFORM.value: None,
+                CoreBudgetCategory.PREMIUM_MODELS.value: None,
+            },
+            project_scopes={CoreBudgetCategory.PLATFORM},
+        )
+
+        with patch(
+            "codemie.enterprise.litellm.dependencies.get_premium_username",
+            return_value="user@example.com_codemie_premium_models",
+        ):
+            with patch(
+                "codemie.enterprise.litellm.dependencies.get_category_budget_id",
+                return_value="global-premium-budget",
+            ):
+                category = _resolve_direct_budget_category(
+                    user_email="user@example.com",
+                    llm_model="claude-opus-4-6-20260205",
+                    availability=availability,
+                )
+
+        assert category == CoreBudgetCategory.PLATFORM
+
+    def test_project_premium_scope_selects_premium_category(self):
+        from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+        from codemie.enterprise.litellm.llm_factory import DirectBudgetAvailability, _resolve_direct_budget_category
+
+        availability = DirectBudgetAvailability(
+            user_budget_ids={
+                CoreBudgetCategory.PLATFORM.value: None,
+                CoreBudgetCategory.PREMIUM_MODELS.value: None,
+            },
+            project_scopes={CoreBudgetCategory.PLATFORM, CoreBudgetCategory.PREMIUM_MODELS},
+        )
+
+        with patch(
+            "codemie.enterprise.litellm.dependencies.get_premium_username",
+            return_value="user@example.com_codemie_premium_models",
+        ):
+            category = _resolve_direct_budget_category(
+                user_email="user@example.com",
+                llm_model="claude-opus-4-6-20260205",
+                availability=availability,
+            )
+
+        assert category == CoreBudgetCategory.PREMIUM_MODELS
+
+    def test_project_scope_probe_uses_resolution_cache_when_warm(self):
+        from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+        from codemie.service.budget.budget_resolution_service import (
+            BudgetScope,
+            ResolvedBudgetContext,
+            _resolution_cache,
+            clear_budget_resolution_cache,
+        )
+        from codemie.enterprise.litellm.llm_factory import _probe_direct_project_budget_scopes
+
+        clear_budget_resolution_cache()
+        _resolution_cache[("project-1", CoreBudgetCategory.PLATFORM.value, "user-1")] = ResolvedBudgetContext(
+            scope=BudgetScope.PROJECT,
+            project_name="project-1",
+            budget_category=CoreBudgetCategory.PLATFORM,
+            budget_id="platform-budget",
+        )
+        _resolution_cache[("project-1", CoreBudgetCategory.CLI.value, "user-1")] = None
+        _resolution_cache[("project-1", CoreBudgetCategory.PREMIUM_MODELS.value, "user-1")] = None
+
+        with patch("codemie.clients.postgres.PostgresClient.get_engine") as mock_get_engine:
+            scopes = _probe_direct_project_budget_scopes("project-1", "user-1")
+
+        assert scopes == {CoreBudgetCategory.PLATFORM}
+        mock_get_engine.assert_not_called()
+
     def test_calls_sync_before_resolve_and_dispatch_and_returns_provider_runtime(self):
         """Sync helper must run before budget resolve/dispatch and preserve provider values."""
         from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
-        from codemie.enterprise.litellm.llm_factory import _resolve_direct_project_budget_runtime
+        from codemie.enterprise.litellm.llm_factory import (
+            DirectBudgetAvailability,
+            _resolve_direct_project_budget_runtime,
+        )
 
         model_details = MagicMock()
         model_details.base_name = "gpt-4.1"
@@ -265,32 +346,35 @@ class TestResolveDirectProjectBudgetRuntime:
             execution_order.append("dispatch")
             return provider_result
 
-        with patch("codemie.enterprise.litellm.dependencies.get_premium_username", return_value=None):
+        with patch(
+            "codemie.enterprise.litellm.llm_factory._resolve_direct_budget_availability",
+            return_value=DirectBudgetAvailability(
+                user_budget_ids={CoreBudgetCategory.PLATFORM.value: None},
+                project_scopes={CoreBudgetCategory.PLATFORM},
+            ),
+        ):
             with patch(
-                "codemie.enterprise.litellm.llm_factory._get_direct_request_category_budget_id", return_value=None
+                "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
+                return_value=True,
             ):
                 with patch(
-                    "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
-                    return_value=True,
-                ):
+                    "codemie.enterprise.litellm.llm_factory.ensure_project_member_runtime_ready_sync",
+                    side_effect=_helper_side_effect,
+                ) as mock_sync:
                     with patch(
-                        "codemie.enterprise.litellm.llm_factory.ensure_project_member_runtime_ready_sync",
-                        side_effect=_helper_side_effect,
-                    ) as mock_sync:
+                        "codemie.service.budget.budget_resolution_service.budget_resolution_service.resolve_sync",
+                        side_effect=_resolve_side_effect,
+                    ) as mock_resolve:
                         with patch(
-                            "codemie.service.budget.budget_resolution_service.budget_resolution_service.resolve_sync",
-                            side_effect=_resolve_side_effect,
-                        ) as mock_resolve:
-                            with patch(
-                                "codemie.service.budget.budget_resolution_service.budget_resolution_service.dispatch_runtime_sync",
-                                side_effect=_dispatch_side_effect,
-                            ) as mock_dispatch:
-                                result = _resolve_direct_project_budget_runtime(
-                                    llm_model_details=model_details,
-                                    litellm_context=litellm_context,
-                                    user_id="user-1",
-                                    user_email="user@example.com",
-                                )
+                            "codemie.service.budget.budget_resolution_service.budget_resolution_service.dispatch_runtime_sync",
+                            side_effect=_dispatch_side_effect,
+                        ) as mock_dispatch:
+                            result = _resolve_direct_project_budget_runtime(
+                                llm_model_details=model_details,
+                                litellm_context=litellm_context,
+                                user_id="user-1",
+                                user_email="user@example.com",
+                            )
 
         assert execution_order == ["sync", "resolve", "dispatch"]
         assert result == (
@@ -319,7 +403,11 @@ class TestResolveDirectProjectBudgetRuntime:
 
     def test_helper_failure_bubbles_up(self):
         """Sync helper failures must not be swallowed."""
-        from codemie.enterprise.litellm.llm_factory import _resolve_direct_project_budget_runtime
+        from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+        from codemie.enterprise.litellm.llm_factory import (
+            DirectBudgetAvailability,
+            _resolve_direct_project_budget_runtime,
+        )
 
         model_details = MagicMock()
         model_details.base_name = "gpt-4.1"
@@ -327,31 +415,34 @@ class TestResolveDirectProjectBudgetRuntime:
         litellm_context = MagicMock()
         litellm_context.current_project = "project-1"
 
-        with patch("codemie.enterprise.litellm.dependencies.get_premium_username", return_value=None):
+        with patch(
+            "codemie.enterprise.litellm.llm_factory._resolve_direct_budget_availability",
+            return_value=DirectBudgetAvailability(
+                user_budget_ids={CoreBudgetCategory.PLATFORM.value: None},
+                project_scopes={CoreBudgetCategory.PLATFORM},
+            ),
+        ):
             with patch(
-                "codemie.enterprise.litellm.llm_factory._get_direct_request_category_budget_id", return_value=None
+                "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
+                return_value=True,
             ):
                 with patch(
-                    "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
-                    return_value=True,
+                    "codemie.enterprise.litellm.llm_factory.ensure_project_member_runtime_ready_sync",
+                    side_effect=RuntimeError("sync failed"),
                 ):
                     with patch(
-                        "codemie.enterprise.litellm.llm_factory.ensure_project_member_runtime_ready_sync",
-                        side_effect=RuntimeError("sync failed"),
-                    ):
+                        "codemie.service.budget.budget_resolution_service.budget_resolution_service.resolve_sync"
+                    ) as mock_resolve:
                         with patch(
-                            "codemie.service.budget.budget_resolution_service.budget_resolution_service.resolve_sync"
-                        ) as mock_resolve:
-                            with patch(
-                                "codemie.service.budget.budget_resolution_service.budget_resolution_service.dispatch_runtime_sync"
-                            ) as mock_dispatch:
-                                with pytest.raises(RuntimeError, match="sync failed"):
-                                    _resolve_direct_project_budget_runtime(
-                                        llm_model_details=model_details,
-                                        litellm_context=litellm_context,
-                                        user_id="user-1",
-                                        user_email="user@example.com",
-                                    )
+                            "codemie.service.budget.budget_resolution_service.budget_resolution_service.dispatch_runtime_sync"
+                        ) as mock_dispatch:
+                            with pytest.raises(RuntimeError, match="sync failed"):
+                                _resolve_direct_project_budget_runtime(
+                                    llm_model_details=model_details,
+                                    litellm_context=litellm_context,
+                                    user_id="user-1",
+                                    user_email="user@example.com",
+                                )
 
         mock_resolve.assert_not_called()
         mock_dispatch.assert_not_called()
@@ -399,7 +490,10 @@ class TestResolveDirectProjectBudgetRuntime:
 
     def test_premium_model_uses_premium_category_when_runtime_budget_assigned(self):
         from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
-        from codemie.enterprise.litellm.llm_factory import _resolve_direct_project_budget_runtime
+        from codemie.enterprise.litellm.llm_factory import (
+            DirectBudgetAvailability,
+            _resolve_direct_project_budget_runtime,
+        )
 
         model_details = MagicMock()
         model_details.base_name = "claude-opus-4-6-20260205"
@@ -415,34 +509,33 @@ class TestResolveDirectProjectBudgetRuntime:
         provider_result.base_url = "https://runtime.example"
 
         with patch(
-            "codemie.enterprise.litellm.dependencies.get_premium_username",
-            return_value="user@example.com_codemie_premium_models",
+            "codemie.enterprise.litellm.llm_factory._resolve_direct_budget_availability",
+            return_value=DirectBudgetAvailability(
+                user_budget_ids={CoreBudgetCategory.PREMIUM_MODELS.value: "premium-runtime-budget"},
+                project_scopes={CoreBudgetCategory.PLATFORM, CoreBudgetCategory.PREMIUM_MODELS},
+            ),
         ):
             with patch(
-                "codemie.enterprise.litellm.llm_factory._get_direct_request_category_budget_id",
-                return_value="premium-runtime-budget",
+                "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
+                return_value=True,
             ):
                 with patch(
-                    "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
-                    return_value=True,
-                ):
+                    "codemie.enterprise.litellm.llm_factory.ensure_project_member_runtime_ready_sync"
+                ) as mock_sync:
                     with patch(
-                        "codemie.enterprise.litellm.llm_factory.ensure_project_member_runtime_ready_sync"
-                    ) as mock_sync:
+                        "codemie.service.budget.budget_resolution_service.budget_resolution_service.resolve_sync",
+                        return_value=resolved,
+                    ) as mock_resolve:
                         with patch(
-                            "codemie.service.budget.budget_resolution_service.budget_resolution_service.resolve_sync",
-                            return_value=resolved,
-                        ) as mock_resolve:
-                            with patch(
-                                "codemie.service.budget.budget_resolution_service.budget_resolution_service.dispatch_runtime_sync",
-                                return_value=provider_result,
-                            ) as mock_dispatch:
-                                result = _resolve_direct_project_budget_runtime(
-                                    llm_model_details=model_details,
-                                    litellm_context=litellm_context,
-                                    user_id="user-1",
-                                    user_email="user@example.com",
-                                )
+                            "codemie.service.budget.budget_resolution_service.budget_resolution_service.dispatch_runtime_sync",
+                            return_value=provider_result,
+                        ) as mock_dispatch:
+                            result = _resolve_direct_project_budget_runtime(
+                                llm_model_details=model_details,
+                                litellm_context=litellm_context,
+                                user_id="user-1",
+                                user_email="user@example.com",
+                            )
 
         assert result == (
             "premium-runtime-user",

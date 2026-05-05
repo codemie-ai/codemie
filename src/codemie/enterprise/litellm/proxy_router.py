@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from hashlib import sha256
@@ -64,7 +65,12 @@ from codemie.rest_api.security.authentication import BEARER_AUTHORIZATION_HEADER
 from codemie.rest_api.security.user import User
 from codemie.enterprise.litellm.dependencies import check_user_budget
 from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
-from codemie.service.budget.budget_resolution_service import budget_resolution_service
+from codemie.service.budget.budget_resolution_service import (
+    BudgetScope,
+    ResolvedBudgetContext,
+    _resolution_cache,
+    budget_resolution_service,
+)
 from codemie.service.budget.budget_service import budget_service
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.monitoring.llm_proxy_monitoring_service import LLMProxyMonitoringService
@@ -81,6 +87,7 @@ from .dependencies import (
 from .llm_factory import generate_litellm_headers_from_context
 from .project_member_runtime_sync import ensure_project_member_runtime_ready
 from .runtime_budget_selection import RuntimeBudgetMode, select_runtime_budget_mode
+from codemie.repository.project_budget_repository import project_budget_assignment_repository
 
 # Import proxy utils from loader (with enterprise package availability check)
 from ..loader import inject_user_into_body, parse_usage_from_response
@@ -361,13 +368,112 @@ def _stream_body_bytes(body_bytes: bytes):
     return passthrough()
 
 
-async def _resolve_tracking_identity(user: User, request_info: dict) -> tuple[BudgetCategory, str, str | None, str]:
-    llm_model = request_info.get(LLM_MODEL, "unknown")
-    category_budget_ids = await budget_service.get_all_category_budget_ids_for_request(user.id)
-    premium_budget_id = category_budget_ids.get(BudgetCategory.PREMIUM_MODELS.value) or get_category_budget_id(
-        BudgetCategory.PREMIUM_MODELS
+@dataclass(slots=True)
+class BudgetAvailability:
+    user_budget_ids: dict[str, str | None] = field(default_factory=dict)
+    project_scopes: set[BudgetCategory] = field(default_factory=set)
+
+
+def _get_cached_project_budget_scopes(project_name: str | None, user_id: str) -> set[BudgetCategory] | None:
+    if not project_name:
+        return set()
+
+    categories = (BudgetCategory.PLATFORM, BudgetCategory.CLI, BudgetCategory.PREMIUM_MODELS)
+    if not all((project_name, category.value, user_id) in _resolution_cache for category in categories):
+        return None
+
+    scopes = {
+        category for category in categories if _resolution_cache[(project_name, category.value, user_id)] is not None
+    }
+    logger.debug(
+        f"budget_event=project_budget_availability_cache_hit component=proxy_router "
+        f"user_id={user_id!r} project_name={project_name!r} project_scopes={sorted(scope.value for scope in scopes)!r}"
     )
+    return scopes
+
+
+async def _probe_project_budget_scopes(project_name: str | None, user_id: str) -> set[BudgetCategory]:
+    if not project_name:
+        return set()
+
+    cached_scopes = _get_cached_project_budget_scopes(project_name, user_id)
+    if cached_scopes is not None:
+        return cached_scopes
+
+    categories = [
+        BudgetCategory.PLATFORM.value,
+        BudgetCategory.CLI.value,
+        BudgetCategory.PREMIUM_MODELS.value,
+    ]
+    async with get_async_session() as session:
+        rows = await project_budget_assignment_repository.get_project_budget_categories_batch(
+            session=session,
+            project_name=project_name,
+            user_id=user_id,
+            categories=categories,
+        )
+
+    scopes: set[BudgetCategory] = set()
+    for category in (BudgetCategory.PLATFORM, BudgetCategory.CLI, BudgetCategory.PREMIUM_MODELS):
+        cache_key = (project_name, category.value, user_id)
+        resolved_or_context = rows.get(category) or rows.get(category.value)
+        if resolved_or_context is None:
+            _resolution_cache[cache_key] = None
+            continue
+
+        scopes.add(category)
+        if isinstance(resolved_or_context, ResolvedBudgetContext):
+            _resolution_cache[cache_key] = resolved_or_context
+            continue
+
+        _resolution_cache[cache_key] = ResolvedBudgetContext(
+            scope=BudgetScope.PROJECT,
+            project_name=project_name,
+            budget_category=CoreBudgetCategory(category.value),
+            budget_id=resolved_or_context.budget_id,
+            effective_budget_id=resolved_or_context.effective_budget_id,
+            shared_budget_id=resolved_or_context.shared_budget_id,
+            override_budget_id=resolved_or_context.override_budget_id,
+            member_allocation_id=resolved_or_context.allocation_id,
+            provider_metadata=resolved_or_context.budget_provider_metadata,
+            member_provider_metadata=resolved_or_context.member_provider_metadata,
+        )
+
+    logger.debug(
+        f"budget_event=project_budget_availability_probed component=proxy_router "
+        f"user_id={user_id!r} project_name={project_name!r} project_scopes={sorted(scope.value for scope in scopes)!r}"
+    )
+    return scopes
+
+
+async def _resolve_budget_availability(user: User, request_info: dict) -> BudgetAvailability:
+    return BudgetAvailability(
+        user_budget_ids=await budget_service.get_all_category_budget_ids_for_request(user.id),
+        project_scopes=await _probe_project_budget_scopes(request_info.get(PROJECT) or None, user.id),
+    )
+
+
+def _resolve_tracking_identity(
+    *,
+    user: User,
+    request_info: dict,
+    availability: BudgetAvailability,
+) -> tuple[BudgetCategory, str, str | None, str]:
+    llm_model = request_info.get(LLM_MODEL, "unknown")
     username = get_premium_username(user.username, llm_model)
+    premium_budget_id = availability.user_budget_ids.get(BudgetCategory.PREMIUM_MODELS.value)
+    if username is not None and BudgetCategory.PREMIUM_MODELS in availability.project_scopes:
+        logger.debug(
+            f"budget_event=runtime_category_selected component=proxy_router user_id={user.id!r} "
+            f"username={user.username!r} project_name={request_info.get(PROJECT)!r} "
+            f"budget_category={BudgetCategory.PREMIUM_MODELS.value!r} budget_id={premium_budget_id!r} "
+            f"model={llm_model!r} reason=project_premium_available"
+        )
+        return BudgetCategory.PREMIUM_MODELS, username, premium_budget_id, llm_model
+
+    if not availability.project_scopes:
+        premium_budget_id = premium_budget_id or get_category_budget_id(BudgetCategory.PREMIUM_MODELS)
+
     if username is not None and premium_budget_id:
         logger.debug(
             f"budget_event=runtime_category_selected component=proxy_router user_id={user.id!r} "
@@ -380,8 +486,47 @@ async def _resolve_tracking_identity(user: User, request_info: dict) -> tuple[Bu
     return _resolve_non_premium_tracking_identity(
         user=user,
         request_info=request_info,
-        category_budget_ids=category_budget_ids,
+        availability=availability,
         llm_model=llm_model,
+    )
+
+
+def _is_cli_request(request_info: dict) -> bool:
+    return bool(request_info.get(CODEMIE_CLI)) or request_info.get(CLIENT_TYPE) in {
+        "codemie-cli",
+        "codemie_cli",
+    }
+
+
+def _resolve_cli_tracking_identity(
+    *,
+    user: User,
+    request_info: dict,
+    availability: BudgetAvailability,
+    llm_model: str,
+) -> tuple[BudgetCategory, str, str | None, str] | None:
+    from codemie.enterprise.litellm.budget_categories import build_user_id
+
+    project_has_budget = bool(availability.project_scopes)
+    cli_budget_id = availability.user_budget_ids.get(BudgetCategory.CLI.value)
+    configured_cli_budget_id = None if project_has_budget else get_category_budget_id(BudgetCategory.CLI)
+    cli_available = BudgetCategory.CLI in availability.project_scopes or cli_budget_id or configured_cli_budget_id
+    if not cli_available:
+        return None
+
+    selected_budget_id = cli_budget_id if project_has_budget else (cli_budget_id or configured_cli_budget_id)
+    logger.debug(
+        f"budget_event=runtime_category_selected component=proxy_router user_id={user.id!r} "
+        f"username={user.username!r} project_name={request_info.get(PROJECT)!r} "
+        f"budget_category={BudgetCategory.CLI.value!r} "
+        f"budget_id={selected_budget_id!r} "
+        f"model={llm_model!r} reason={'project_cli_available' if project_has_budget else 'cli_request'}"
+    )
+    return (
+        BudgetCategory.CLI,
+        build_user_id(user.username, BudgetCategory.CLI),
+        selected_budget_id,
+        llm_model,
     )
 
 
@@ -389,44 +534,35 @@ def _resolve_non_premium_tracking_identity(
     *,
     user: User,
     request_info: dict,
-    category_budget_ids: dict[str, str | None],
     llm_model: str,
+    availability: BudgetAvailability | None = None,
+    category_budget_ids: dict[str, str | None] | None = None,
 ) -> tuple[BudgetCategory, str, str | None, str]:
-    from codemie.enterprise.litellm.budget_categories import build_user_id
+    availability = availability or BudgetAvailability(user_budget_ids=category_budget_ids or {})
+    cli_tracking_identity = None
+    if _is_cli_request(request_info):
+        cli_tracking_identity = _resolve_cli_tracking_identity(
+            user=user,
+            request_info=request_info,
+            availability=availability,
+            llm_model=llm_model,
+        )
 
-    cli_request = bool(request_info.get(CODEMIE_CLI)) or request_info.get(CLIENT_TYPE) in {
-        "codemie-cli",
-        "codemie_cli",
-    }
-    if cli_request:
-        cli_budget_id = category_budget_ids.get(BudgetCategory.CLI.value)
-        configured_cli_budget_id = get_category_budget_id(BudgetCategory.CLI)
-        if cli_budget_id or configured_cli_budget_id:
-            logger.debug(
-                f"budget_event=runtime_category_selected component=proxy_router user_id={user.id!r} "
-                f"username={user.username!r} project_name={request_info.get(PROJECT)!r} "
-                f"budget_category={BudgetCategory.CLI.value!r} "
-                f"budget_id={(cli_budget_id or configured_cli_budget_id)!r} "
-                f"model={llm_model!r} reason=cli_request"
-            )
-            return (
-                BudgetCategory.CLI,
-                build_user_id(user.username, BudgetCategory.CLI),
-                cli_budget_id or configured_cli_budget_id,
-                llm_model,
-            )
+    if cli_tracking_identity is not None:
+        return cli_tracking_identity
 
+    project_has_budget = bool(availability.project_scopes)
     logger.debug(
         f"budget_event=runtime_category_selected component=proxy_router user_id={user.id!r} "
         f"username={user.username!r} project_name={request_info.get(PROJECT)!r} "
         f"budget_category={BudgetCategory.PLATFORM.value!r} "
-        f"budget_id={category_budget_ids.get(BudgetCategory.PLATFORM.value)!r} "
-        f"model={llm_model!r} reason=platform_default"
+        f"budget_id={availability.user_budget_ids.get(BudgetCategory.PLATFORM.value)!r} "
+        f"model={llm_model!r} reason={'project_platform_default' if project_has_budget else 'platform_default'}"
     )
     return (
         BudgetCategory.PLATFORM,
         user.username,
-        category_budget_ids.get(BudgetCategory.PLATFORM.value),
+        availability.user_budget_ids.get(BudgetCategory.PLATFORM.value),
         llm_model,
     )
 
@@ -463,7 +599,12 @@ async def _create_body_stream_with_optional_injection(
         )
         return _stream_body_bytes(body_bytes)
 
-    category, username, tracking_budget_id, llm_model = await _resolve_tracking_identity(user, request_info)
+    availability = await _resolve_budget_availability(user, request_info)
+    category, username, tracking_budget_id, llm_model = _resolve_tracking_identity(
+        user=user,
+        request_info=request_info,
+        availability=availability,
+    )
 
     project_runtime = await _resolve_project_budget_runtime(
         user=user,

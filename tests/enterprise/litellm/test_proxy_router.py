@@ -45,6 +45,7 @@ from codemie.enterprise.litellm.proxy_router import (
     _handle_error_response,
     _prepare_proxy_headers,
     _resolve_non_premium_tracking_identity,
+    _resolve_tracking_identity,
     _resolve_project_budget_runtime,
     register_proxy_endpoints,
 )
@@ -332,6 +333,121 @@ class TestResolveNonPremiumTrackingIdentity:
         assert username == "user@example.com_codemie_cli"
         assert budget_id == "cli-budget"
         assert llm_model == "gpt-4.1-mini"
+
+
+class TestResolveTrackingIdentity:
+    """Tests for availability-first proxy budget category selection."""
+
+    def test_project_platform_only_suppresses_global_premium_selection(self):
+        from codemie.enterprise.litellm.proxy_router import BudgetAvailability
+
+        user = MagicMock()
+        user.id = "user-1"
+        user.username = "user@example.com"
+        request_info = {
+            PROJECT: "proj-a",
+            LLM_MODEL: "claude-opus-4-6-20260205",
+            CODEMIE_CLI: "",
+            "client_type": "web",
+        }
+        availability = BudgetAvailability(
+            user_budget_ids={
+                BudgetCategory.PLATFORM.value: None,
+                BudgetCategory.CLI.value: None,
+                BudgetCategory.PREMIUM_MODELS.value: None,
+            },
+            project_scopes={BudgetCategory.PLATFORM},
+        )
+
+        with patch(
+            "codemie.enterprise.litellm.proxy_router.get_premium_username",
+            return_value="user@example.com_codemie_premium_models",
+        ):
+            category, username, tracking_budget_id, llm_model = _resolve_tracking_identity(
+                user=user,
+                request_info=request_info,
+                availability=availability,
+            )
+
+        assert category == BudgetCategory.PLATFORM
+        assert username == "user@example.com"
+        assert tracking_budget_id is None
+        assert llm_model == "claude-opus-4-6-20260205"
+
+    def test_project_platform_only_suppresses_global_cli_selection(self):
+        from codemie.enterprise.litellm.proxy_router import BudgetAvailability
+
+        user = MagicMock()
+        user.id = "user-1"
+        user.username = "user@example.com"
+        request_info = {
+            PROJECT: "proj-a",
+            LLM_MODEL: "gpt-4.1-mini",
+            CODEMIE_CLI: "codemie-cli/1.2.3",
+            "client_type": "web",
+        }
+        availability = BudgetAvailability(
+            user_budget_ids={
+                BudgetCategory.PLATFORM.value: None,
+                BudgetCategory.CLI.value: None,
+                BudgetCategory.PREMIUM_MODELS.value: None,
+            },
+            project_scopes={BudgetCategory.PLATFORM},
+        )
+
+        category, username, tracking_budget_id, llm_model = _resolve_tracking_identity(
+            user=user,
+            request_info=request_info,
+            availability=availability,
+        )
+
+        assert category == BudgetCategory.PLATFORM
+        assert username == "user@example.com"
+        assert tracking_budget_id is None
+        assert llm_model == "gpt-4.1-mini"
+
+
+class TestProbeProjectBudgetScopes:
+    """Tests for project budget availability probing."""
+
+    @pytest.mark.asyncio
+    async def test_probe_project_budget_scopes_populates_resolution_cache_for_all_categories(self):
+        from codemie.enterprise.litellm.proxy_router import _probe_project_budget_scopes
+        from codemie.service.budget.budget_resolution_service import (
+            BudgetScope as CoreBudgetScope,
+            ResolvedBudgetContext,
+        )
+
+        fake_session = MagicMock()
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=fake_session)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+
+        rows = {
+            BudgetCategory.PLATFORM: ResolvedBudgetContext(
+                scope=CoreBudgetScope.PROJECT,
+                project_name="proj-a",
+                budget_category=CoreBudgetCategory.PLATFORM,
+                budget_id="budget-platform",
+            ),
+            BudgetCategory.CLI: ResolvedBudgetContext(
+                scope=CoreBudgetScope.PROJECT,
+                project_name="proj-a",
+                budget_category=CoreBudgetCategory.CLI,
+                budget_id="budget-cli",
+            ),
+        }
+
+        with (
+            patch("codemie.enterprise.litellm.proxy_router.get_async_session", return_value=ctx),
+            patch(
+                "codemie.enterprise.litellm.proxy_router.project_budget_assignment_repository.get_project_budget_categories_batch",
+                new=AsyncMock(return_value=rows),
+            ),
+        ):
+            scopes = await _probe_project_budget_scopes("proj-a", "user-1")
+
+        assert scopes == {BudgetCategory.PLATFORM, BudgetCategory.CLI}
 
     @pytest.mark.parametrize("client_type", ["codemie-cli", "codemie_cli"])
     def test_cli_client_type_uses_cli_budget(self, client_type):
@@ -867,23 +983,27 @@ class TestCreateBodyStreamWithOptionalInjection:
                 ),
             ):
                 with patch(
-                    "codemie.enterprise.litellm.proxy_router._resolve_project_budget_runtime",
-                    new=AsyncMock(return_value=None),
-                ) as mock_resolve_runtime:
+                    "codemie.enterprise.litellm.proxy_router._probe_project_budget_scopes",
+                    new=AsyncMock(return_value={BudgetCategory.PLATFORM}),
+                ):
                     with patch(
-                        "codemie.enterprise.litellm.proxy_router.get_category_budget_id",
-                        return_value="cli-budget",
-                    ):
-                        with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
-                            with patch(
-                                "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes",
-                                return_value="stream",
-                            ):
-                                result = await _create_body_stream_with_optional_injection(
-                                    body_bytes=b"{}",
-                                    user=user,
-                                    request_info=request_info,
-                                )
+                        "codemie.enterprise.litellm.proxy_router._resolve_project_budget_runtime",
+                        new=AsyncMock(return_value=None),
+                    ) as mock_resolve_runtime:
+                        with patch(
+                            "codemie.enterprise.litellm.proxy_router.get_category_budget_id",
+                            return_value="cli-budget",
+                        ):
+                            with patch("codemie.enterprise.litellm.proxy_router.check_user_budget"):
+                                with patch(
+                                    "codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes",
+                                    return_value="stream",
+                                ):
+                                    result = await _create_body_stream_with_optional_injection(
+                                        body_bytes=b"{}",
+                                        user=user,
+                                        request_info=request_info,
+                                    )
 
         assert result == "stream"
         mock_resolve_runtime.assert_awaited_once()
