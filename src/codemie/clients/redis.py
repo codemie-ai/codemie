@@ -21,12 +21,12 @@ def create_redis_client():
     import redis
 
     return redis.Redis(
-        host=config.MCP_AUTH_REDIS_HOST,
-        port=config.MCP_AUTH_REDIS_PORT,
-        db=config.MCP_AUTH_REDIS_DB,
-        password=config.MCP_AUTH_REDIS_PASSWORD or None,
-        ssl=config.MCP_AUTH_REDIS_SSL,
+        host=config.REDIS_HOST,
+        port=config.REDIS_PORT,
+        db=config.REDIS_DB,
+        password=config.REDIS_PASSWORD or None,
+        ssl=config.REDIS_SSL,
         decode_responses=False,
-        socket_connect_timeout=config.MCP_AUTH_REDIS_CONNECT_TIMEOUT_SECONDS,
-        socket_timeout=config.MCP_AUTH_REDIS_TIMEOUT_SECONDS,
+        socket_connect_timeout=config.REDIS_CONNECT_TIMEOUT_SECONDS,
+        socket_timeout=config.REDIS_TIMEOUT_SECONDS,
     )

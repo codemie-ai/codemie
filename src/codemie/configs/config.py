@@ -368,13 +368,13 @@ class Config(BaseSettings):
 
     MCP_AUTH_ENABLED: bool = False
     MCP_AUTH_HMAC_SECRET: str = ""
-    MCP_AUTH_REDIS_HOST: str = "localhost"
-    MCP_AUTH_REDIS_PORT: int = 6379
-    MCP_AUTH_REDIS_DB: int = 0
-    MCP_AUTH_REDIS_PASSWORD: str = ""
-    MCP_AUTH_REDIS_SSL: bool = False
-    MCP_AUTH_REDIS_CONNECT_TIMEOUT_SECONDS: float = 5.0
-    MCP_AUTH_REDIS_TIMEOUT_SECONDS: float = 5.0
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    REDIS_PASSWORD: str = ""
+    REDIS_SSL: bool = False
+    REDIS_CONNECT_TIMEOUT_SECONDS: float = 5.0
+    REDIS_TIMEOUT_SECONDS: float = 5.0
 
     # Enables PostgreSQL-backed enterprise Token Management System instead of the mock in-memory TMS.
     MCP_AUTH_TMS_ENABLED: bool = False
