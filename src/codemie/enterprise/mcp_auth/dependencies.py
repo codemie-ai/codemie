@@ -1469,7 +1469,11 @@ def _build_token_management_system(redis_client: Any, audit_context_provider: An
         )
 
     refresh_lock = (
-        RedisTMSRefreshLock(redis_client, tms_config.redis_lock_ttl_seconds) if tms_config.redis_lock_enabled else None
+        RedisTMSRefreshLock(
+            redis_client, tms_config.redis_lock_ttl_seconds, namespace=config.MCP_AUTH_REDIS_KEY_NAMESPACE
+        )
+        if tms_config.redis_lock_enabled
+        else None
     )
 
     return PostgresTokenManagementSystem(
@@ -1551,17 +1555,18 @@ def initialize_mcp_auth() -> None:
     mcp_auth_service: Any = None
 
     try:
+        redis_key_namespace = config.MCP_AUTH_REDIS_KEY_NAMESPACE
         redis_encryption = RedisEncryption(config.MCP_AUTH_HMAC_SECRET)
-        pkce_store = RedisPKCEStore(redis_client, redis_encryption)
-        saml_relay_state_store = SAMLRelayStateStore(redis_client, redis_encryption)
+        pkce_store = RedisPKCEStore(redis_client, redis_encryption, namespace=redis_key_namespace)
+        saml_relay_state_store = SAMLRelayStateStore(redis_client, redis_encryption, namespace=redis_key_namespace)
         audit_context_provider = ContextVarTMSAuditContextProvider()
         token_management_system = _build_token_management_system(redis_client, audit_context_provider)
         mcp_auth_service = MCPAuthService(
-            config=MCPAuthServiceConfig(),
+            config=MCPAuthServiceConfig(redis_key_namespace=redis_key_namespace),
             redis_client=redis_client,
             pkce_store=pkce_store,
-            discovery_cache=DiscoveryMetadataCache(redis_client),
-            dcr_credentials_cache=DCRCredentialsCache(redis_client, redis_encryption),
+            discovery_cache=DiscoveryMetadataCache(redis_client, namespace=redis_key_namespace),
+            dcr_credentials_cache=DCRCredentialsCache(redis_client, redis_encryption, namespace=redis_key_namespace),
             token_management_system=token_management_system,
             alert_callback=_build_alert_callback(),
             audit_context_provider=audit_context_provider,

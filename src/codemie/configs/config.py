@@ -396,6 +396,8 @@ class Config(BaseSettings):
     MCP_AUTH_TMS_AUDIT_FALLBACK_SINK_CONFIGURED: bool = False
     # Allows mock TMS only in non-production environments when real TMS is disabled.
     MCP_AUTH_TMS_ALLOW_MOCK: bool = False
+    # Redis key namespace prefix for all MCP auth stores; must not end with ':'.
+    MCP_AUTH_REDIS_KEY_NAMESPACE: str = "codemie:mcp_auth"
     MCP_CONNECT_ENABLED: bool = True
     MCP_CONNECT_URL: str = "http://localhost:3000"
     MCP_CONNECT_BUCKETS_COUNT: int = 10
