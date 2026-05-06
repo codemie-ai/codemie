@@ -15,7 +15,7 @@
 import json
 import re
 from time import time
-from typing import Any, List, Optional
+from typing import Annotated, Any, List, Optional
 import uuid
 from uuid import UUID
 import hashlib
@@ -28,10 +28,13 @@ from codemie.enterprise.litellm.proxy_router import handle_agent_exception
 from codemie_tools.base.file_object import FileObject
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage, BaseMessage
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, InjectedToolCallId, tool as langchain_tool
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph_supervisor import create_supervisor, create_handoff_tool
-from pydantic import BaseModel
+from langgraph.prebuilt import InjectedState
+from langgraph.types import Command, Send
+from langgraph_supervisor import create_supervisor
+from langgraph_supervisor.handoff import METADATA_KEY_HANDOFF_DESTINATION
+from pydantic import BaseModel, Field
 
 from codemie.agents.agent_log_utils import (
     serialize_messages_for_log,
@@ -312,7 +315,7 @@ class LangGraphAgent(WorkspaceAwareAgent):
                 tools=all_tools,  # Include handoff tools with descriptions
                 prompt=system_prompt,
                 add_handoff_back_messages=True,
-                output_mode="full_history",
+                output_mode="last_message",
                 response_format=self.output_schema,
             ).compile()
         else:
@@ -349,6 +352,7 @@ class LangGraphAgent(WorkspaceAwareAgent):
         Each handoff tool will have:
         - name: "transfer_to_{normalized_agent_name}"
         - description: The subagent's description from self.subagent_descriptions
+        - task: A required parameter that the supervisor LLM must fill in with instructions for the subagent.
 
         Returns:
             List of handoff tools for supervisor to use
@@ -379,7 +383,7 @@ class LangGraphAgent(WorkspaceAwareAgent):
             # Create handoff tool with description
             # Add "Sub-assistant" prefix if description exists, otherwise use default message
             final_description = f"Sub-assistant: {description}" if description else f'Hand off task to {agent_name}'
-            handoff_tool = create_handoff_tool(
+            handoff_tool = LangGraphAgent._create_custom_handoff_tool(
                 agent_name=normalized_handoff_agent_name,  # Use normalized name to match subagent's internal name
                 name=normalized_handoff_tool_name,  # Truncate only the tool name
                 description=final_description,
@@ -391,6 +395,80 @@ class LangGraphAgent(WorkspaceAwareAgent):
 
     def create_handoff_tool_name(self, agent_name: str) -> str:
         return f"{self.SUPERVISOR_HANDOFF_TOOL_PREFIX}_{agent_name}"
+
+    @staticmethod
+    def _create_custom_handoff_tool(
+        *,
+        agent_name: str,
+        name: str,
+        description: str,
+    ) -> BaseTool:
+        """Create a handoff tool that forces the supervisor LLM to provide an explicit task.
+
+        The ``task`` parameter is LLM-visible and required.  On execution it is injected
+        as a HumanMessage appended after the routing ToolMessage, making it the last
+        message the sub-agent receives.
+
+        Replicates the full langgraph_supervisor routing contract:
+        - Single handoff  → Command(goto=agent_name, graph=Command.PARENT, update=...)
+        - Parallel handoff → Command(graph=Command.PARENT, goto=[Send(agent_name, ...)])
+          with other agents' tool calls stripped from the last AIMessage.
+        """
+
+        @langchain_tool(name, description=description)
+        def handoff_to_agent_with_task(
+            task: Annotated[
+                str,
+                Field(
+                    description=(
+                        "A self-contained task instruction for the sub-agent. "
+                        "Include all context required to complete the task independently — "
+                        "do not assume the sub-agent has access to prior conversation turns."
+                    )
+                ),
+            ],
+            state: Annotated[dict, InjectedState],
+            tool_call_id: Annotated[str, InjectedToolCallId],
+        ) -> Command:
+            tool_message = ToolMessage(
+                content=f"Successfully transferred to {agent_name}",
+                name=name,
+                tool_call_id=tool_call_id,
+                response_metadata={METADATA_KEY_HANDOFF_DESTINATION: agent_name},
+            )
+            task_message = HumanMessage(content=task)
+            messages = state.get("messages") or []
+            if not messages:
+                raise ValueError(f"Cannot handoff to {agent_name}: state contains no messages")
+            ai_message = messages[-1]
+            if not isinstance(ai_message, AIMessage):
+                raise TypeError(
+                    f"Cannot handoff to {agent_name}: expected AIMessage as last message, "
+                    f"got {type(ai_message).__name__}"
+                )
+
+            # Parallel handoff: strip other agents' tool calls for a clean sub-agent history
+            if len(ai_message.tool_calls) > 1:
+                handoff_messages = messages[:-1] + [
+                    LangGraphAgent._strip_other_tool_calls(ai_message, tool_call_id),
+                    tool_message,
+                    task_message,
+                ]
+                return Command(
+                    graph=Command.PARENT,
+                    goto=[Send(agent_name, {**state, "messages": handoff_messages})],
+                )
+
+            # Single handoff
+            handoff_messages = messages + [tool_message, task_message]
+            return Command(
+                goto=agent_name,
+                graph=Command.PARENT,
+                update={**state, "messages": handoff_messages},
+            )
+
+        handoff_to_agent_with_task.metadata = {METADATA_KEY_HANDOFF_DESTINATION: agent_name}
+        return handoff_to_agent_with_task
 
     def configure_callbacks(self) -> List[BaseCallbackHandler]:
         callbacks = list(self.callbacks or [])
@@ -1420,6 +1498,28 @@ class LangGraphAgent(WorkspaceAwareAgent):
                     transformed_history.append(AIMessage(content=item.message))
 
         return transformed_history
+
+    @staticmethod
+    def _strip_other_tool_calls(ai_message: AIMessage, tool_call_id: str) -> AIMessage:
+        """Return a copy of ai_message retaining only the tool call matching tool_call_id.
+
+        Mirrors langgraph_supervisor.handoff._remove_non_handoff_tool_calls without
+        depending on that private symbol.  Preserves non-tool-use content blocks
+        (e.g. "text") and removes "tool_use" blocks that don't match tool_call_id
+        (Anthropic-style content arrays).
+        """
+        content = ai_message.content
+        if isinstance(content, list) and len(content) >= 1 and isinstance(content[0], dict):
+            content = [block for block in content if block.get("type") != "tool_use" or block.get("id") == tool_call_id]
+        return AIMessage(
+            content=content,
+            tool_calls=[tc for tc in ai_message.tool_calls if tc["id"] == tool_call_id],
+            name=ai_message.name,
+            id=ai_message.id,
+            response_metadata=ai_message.response_metadata,
+            additional_kwargs=ai_message.additional_kwargs,
+            usage_metadata=ai_message.usage_metadata,
+        )
 
     @staticmethod
     def _get_node_name_from_metadata(node: tuple, default_name: str = "supervisor") -> str:
