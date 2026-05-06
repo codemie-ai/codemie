@@ -430,7 +430,11 @@ class Config(BaseSettings):
     AMNA_AIRN_PRECREATE_WORKFLOWS: bool = False
     WORKERS: int = 1
     LANGFUSE_TRACES: bool = False
-    LANGFUSE_BLOCKED_INSTRUMENTATION_SCOPES: list[str] = ["elasticsearch-api"]
+    LANGFUSE_BLOCKED_INSTRUMENTATION_SCOPES: list[str] = [
+        "elasticsearch-api",
+        "opentelemetry.instrumentation.fastapi",
+        "opentelemetry.instrumentation.sqlalchemy",
+    ]
 
     # ===========================================
     # OpenTelemetry Configuration
