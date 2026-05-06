@@ -1,0 +1,6 @@
+extraEnv:
+  - name: ALPHA
+    value: "alpha-value"
+  - name: BETA
+    value: "beta-value"
+customEnv: []

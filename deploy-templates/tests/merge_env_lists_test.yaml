@@ -1,0 +1,117 @@
+suite: codemie.mergeEnvLists
+templates:
+  - templates/deployment.yaml
+values:
+  - ../values.yaml
+
+tests:
+  - it: both lists empty produces no merged env vars
+    values:
+      - values/merge_env_lists_empty.yaml
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.containers[0].env
+          count: 2  # only APP_VERSION and INTERNAL_BIND_KEY (hardcoded); mergeEnvLists contributes nothing
+
+  - it: extraEnv only passes through unchanged when customEnv is empty
+    values:
+      - values/merge_env_lists_extra_only.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ALPHA
+            value: "alpha-value"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BETA
+            value: "beta-value"
+
+  - it: customEnv value wins on name collision (last-wins semantics)
+    values:
+      - values/merge_env_lists_override.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BETA
+            value: "beta-overridden"
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BETA
+            value: "beta-original"
+
+  - it: customEnv appends new entry without touching existing extraEnv entries
+    values:
+      - values/merge_env_lists_append.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ALPHA
+            value: "alpha-value"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: GAMMA
+            value: "gamma-value"
+
+  - it: customEnv both overrides existing and appends new entries
+    values:
+      - values/merge_env_lists_mixed.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ALPHA
+            value: "alpha-original"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BETA
+            value: "beta-overridden"
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BETA
+            value: "beta-original"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: GAMMA
+            value: "gamma-new"
+
+  - it: extraEnv insertion order is preserved and new customEnv entries are appended after
+    values:
+      - values/merge_env_lists_mixed.yaml
+    asserts:
+      - equal:
+          # APP_VERSION=0, INTERNAL_BIND_KEY=1, then merged: ALPHA=2, BETA=3, GAMMA=4
+          path: spec.template.spec.containers[0].env[2].name
+          value: ALPHA
+      - equal:
+          path: spec.template.spec.containers[0].env[3].name
+          value: BETA
+      - equal:
+          path: spec.template.spec.containers[0].env[4].name
+          value: GAMMA
+
+  - it: customEnv valueFrom overrides plain value entry with same name
+    values:
+      - values/merge_env_lists_value_from.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: my-secret
+                key: secret-key
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: SECRET_KEY
+            value: "plaintext"

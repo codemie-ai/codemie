@@ -63,15 +63,7 @@ spec:
           env:
             - name: APP_VERSION
               value: {{ .Values.image.tag | default .Chart.AppVersion }}
-            {{- with .Values.extraEnv }}
-              {{- toYaml . | nindent 12 }}
-            {{- end }}
-            {{- with .Values.customEnv }}
-              {{- toYaml . | nindent 12 }}
-            {{- end }}
-            {{- with .Values.dsPool.extraEnv }}
-              {{- toYaml . | nindent 12 }}
-            {{- end }}
+            {{- include "codemie.mergeEnvLists" (list .Values.extraEnv .Values.customEnv .Values.dsPool.extraEnv) | nindent 12 }}
           volumeMounts:
             {{- with .Values.extraVolumeMounts }}
             {{- tpl . $ | nindent 12 }}

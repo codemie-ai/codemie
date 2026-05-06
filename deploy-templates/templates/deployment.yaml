@@ -62,12 +62,7 @@ spec:
                 secretKeyRef:
                   name: {{ include "codemie.processAuthSecretName" . }}
                   key: {{ include "codemie.processAuthSecretField" . }}
-            {{- with .Values.extraEnv }}
-              {{- toYaml . | nindent 12 }}
-            {{- end }}
-            {{- with .Values.customEnv }}
-              {{- toYaml . | nindent 12 }}
-            {{- end }}
+            {{- include "codemie.mergeEnvLists" (list .Values.extraEnv .Values.customEnv) | nindent 12 }}
           volumeMounts:
             {{- with .Values.extraVolumeMounts }}
             {{- tpl . $ | nindent 12 }}

@@ -1,0 +1,8 @@
+extraEnv:
+  - name: ALPHA
+    value: "alpha-original"
+  - name: BETA
+    value: "beta-original"
+customEnv:
+  - name: BETA
+    value: "beta-overridden"

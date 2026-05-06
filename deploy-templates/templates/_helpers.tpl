@@ -108,3 +108,40 @@ Create the name of the secret field for inter-process authentication
 {{- define "codemie.processAuthSecretField" -}}
 {{- default "internal_bind_key" .Values.security.processAuthSecret.field }}
 {{- end }}
+
+{{/*
+Merge two or more lists of dicts by the "name" field (last-wins on collision).
+Items without a "name" field are skipped.
+Insertion order from the first list is preserved; new names from later lists are appended.
+
+Usage:
+  {{- include "codemie.mergeEnvLists" (list <list1> <list2> [...]) | nindent 2 }}
+
+Example:
+  env:
+    {{- include "codemie.mergeEnvLists" (list .Values.baseEnv .Values.extraEnv) | nindent 4 }}
+*/}}
+{{- define "codemie.mergeEnvLists" -}}
+{{- $index := dict -}}
+{{- $order := list -}}
+{{- range . -}}
+  {{- range . -}}
+    {{- if hasKey . "name" -}}
+      {{- $name := .name -}}
+      {{- if hasKey $index $name -}}
+        {{- $_ := set $index $name (. | deepCopy) -}}
+      {{- else -}}
+        {{- $_ := set $index $name (. | deepCopy) -}}
+        {{- $order = append $order $name -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- $result := list -}}
+{{- range $order -}}
+  {{- $result = append $result (get $index .) -}}
+{{- end -}}
+{{- if $result }}
+{{ $result | toYaml }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,9 @@
+extraEnv:
+  - name: SECRET_KEY
+    value: "plaintext"
+customEnv:
+  - name: SECRET_KEY
+    valueFrom:
+      secretKeyRef:
+        name: my-secret
+        key: secret-key
