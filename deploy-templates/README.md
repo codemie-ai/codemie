@@ -87,6 +87,19 @@ A Helm chart for AI/Run API
 | podLabels | object | `{}` | Labels to be added to AI/Run UI pods. |
 | podSecurityContext | object | `{}` | Toggle and define pod-level security context |
 | priorityClassName | string | `""` | Priority class for the AI/Run API pods |
+| proxyPool.argoRollout.enabled | bool | `false` | Enable Argo Rollouts instead of standard Kubernetes Deployment for proxy-pool |
+| proxyPool.argoRollout.scaleDownDelaySeconds | int | `120` | The time to wait before scaling down the old replica set |
+| proxyPool.enabled | bool | `false` | Enable a separate deployment/rollout for proxy-pool processing |
+| proxyPool.extraEnv | list | `[]` | Additional env vars merged after extraEnv + customEnv |
+| proxyPool.ingress.annotations | object | `{"nginx.ingress.kubernetes.io/auth-response-headers":"X-Auth-Request-Access-Token,Authorization","nginx.ingress.kubernetes.io/auth-signin":"https://$host/oauth2/start?rd=$escaped_request_uri","nginx.ingress.kubernetes.io/auth-url":"http://oauth2-proxy.oauth2-proxy.svc.cluster.local:80/oauth2/auth","nginx.ingress.kubernetes.io/proxy-body-size":"900m","nginx.ingress.kubernetes.io/proxy-read-timeout":"600"}` | Additional ingress annotations |
+| proxyPool.ingress.enabled | bool | `false` | Enable ingress for the proxy-pool workload |
+| proxyPool.ingress.pathType | string | `"ImplementationSpecific"` | Ingress path type |
+| proxyPool.ingress.paths | list | `[{"path":"/v1/chat/completions"},{"path":"/chat/completions"},{"path":"/v1/completions"},{"path":"/completions"},{"path":"/v1/messages"},{"path":"/messages"},{"path":"/v1/messages/count_tokens"},{"path":"/messages/count_tokens"},{"path":"/v1/responses"},{"path":"/responses"},{"path":"/v1/embeddings"},{"path":"/embeddings"},{"path":"/v1/health"},{"path":"/health"},{"path":"/v1/models"},{"path":"/models"},{"path":"/v1/models/(.*):generateContent"},{"path":"/models/(.*):generateContent"},{"path":"/v1/models/(.*):streamGenerateContent"},{"path":"/models/(.*):streamGenerateContent"},{"path":"/v1/models/(.*):countTokens"},{"path":"/models/(.*):countTokens"},{"path":"/v1beta/models/(.*):generateContent"},{"path":"/v1beta/models/(.*):streamGenerateContent"}]` | Paths routed to the proxy-pool service (all LiteLLM proxy endpoints) |
+| proxyPool.replicaCount | int | `1` | Number of proxy-pool pods to run |
+| proxyPool.resources | object | `{"limits":{"cpu":2,"memory":"2048Mi"},"requests":{"cpu":"100m","memory":"1024Mi"}}` | Resource limits and requests for proxy-pool pods |
+| proxyPool.service.annotations | object | `{}` | proxy-pool service annotations |
+| proxyPool.service.port | int | `8080` | proxy-pool service port |
+| proxyPool.service.type | string | `"ClusterIP"` | proxy-pool service type |
 | readinessProbe.failureThreshold | int | `3` | Minimum consecutive failures for the probe to be considered failed after having succeeded |
 | readinessProbe.httpGet.path | string | `"/v1/healthcheck"` |  |
 | readinessProbe.httpGet.port | int | `8080` |  |

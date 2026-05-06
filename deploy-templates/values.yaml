@@ -396,6 +396,89 @@ dsPool:
     # -- Path routed to the ds-pool service (/v1/application/*/index* endpoints)
     path: "/code-assistant-api/v1/application/(.*)/index(.*)"
 
+## Dedicated proxy-pool workload
+## Handles LiteLLM proxy traffic (chat, completions, messages, embeddings, models, health, Gemini endpoints).
+## Exposes a service and ingress with one path per proxy endpoint.
+proxyPool:
+  # -- Enable a separate deployment/rollout for proxy-pool processing
+  enabled: false
+  # -- Number of proxy-pool pods to run
+  replicaCount: 1
+
+  ## Use Argo Rollouts for the proxy-pool workload
+  argoRollout:
+    # -- Enable Argo Rollouts instead of standard Kubernetes Deployment for proxy-pool
+    enabled: false
+    # -- The time to wait before scaling down the old replica set
+    scaleDownDelaySeconds: 120
+
+  # -- Additional env vars merged after extraEnv + customEnv
+  # @default -- `[]`
+  extraEnv: []
+
+  # -- Resource limits and requests for proxy-pool pods
+  resources:
+    limits:
+      cpu: 2
+      memory: 2048Mi
+    requests:
+      cpu: 100m
+      memory: 1024Mi
+
+  service:
+    # -- proxy-pool service type
+    type: ClusterIP
+    # -- proxy-pool service port
+    port: 8080
+    # -- proxy-pool service annotations
+    annotations: {}
+
+  ingress:
+    # -- Enable ingress for the proxy-pool workload
+    enabled: false
+    # -- Additional ingress annotations
+    annotations:
+      nginx.ingress.kubernetes.io/auth-response-headers: X-Auth-Request-Access-Token,Authorization
+      nginx.ingress.kubernetes.io/auth-signin: https://$host/oauth2/start?rd=$escaped_request_uri
+      nginx.ingress.kubernetes.io/auth-url: http://oauth2-proxy.oauth2-proxy.svc.cluster.local:80/oauth2/auth
+      nginx.ingress.kubernetes.io/proxy-body-size: 900m
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    # -- Ingress path type
+    pathType: ImplementationSpecific
+    # -- Paths routed to the proxy-pool service (all LiteLLM proxy endpoints)
+    paths:
+      # Chat & Completions (OpenAI-compatible)
+      - path: "/v1/chat/completions"
+      - path: "/chat/completions"
+      - path: "/v1/completions"
+      - path: "/completions"
+      # Messages (Claude/Anthropic API)
+      - path: "/v1/messages"
+      - path: "/messages"
+      - path: "/v1/messages/count_tokens"
+      - path: "/messages/count_tokens"
+      # Responses (Codex CLI)
+      - path: "/v1/responses"
+      - path: "/responses"
+      # Embeddings
+      - path: "/v1/embeddings"
+      - path: "/embeddings"
+      # Health & Models
+      - path: "/v1/health"
+      - path: "/health"
+      - path: "/v1/models"
+      - path: "/models"
+      # Google/Gemini API endpoints
+      - path: "/v1/models/(.*):generateContent"
+      - path: "/models/(.*):generateContent"
+      - path: "/v1/models/(.*):streamGenerateContent"
+      - path: "/models/(.*):streamGenerateContent"
+      - path: "/v1/models/(.*):countTokens"
+      - path: "/models/(.*):countTokens"
+      # v1beta Gemini endpoints
+      - path: "/v1beta/models/(.*):generateContent"
+      - path: "/v1beta/models/(.*):streamGenerateContent"
+
 ## Probes for the AI/Run API
 # Ref: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
 #
