@@ -257,7 +257,9 @@ class OIDCTokenExchangeService:
                 return None
 
             exchanged_token, response_data = self._run_async(self._aexchange_token_with_response(idp_token, audience))
-
+            masked_refresh = "***" if response_data.get("refresh_token") else "N/A"
+            masked_response = {**response_data, "access_token": "***", "refresh_token": masked_refresh}
+            logger.debug(f"OIDC exchange response: {masked_response}")
             expires_at = self._resolve_expires_at(response_data, exchanged_token)
             refresh_token = response_data.get("refresh_token")
             refresh_metadata_kwargs = None

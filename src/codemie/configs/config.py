@@ -396,6 +396,8 @@ class Config(BaseSettings):
     MCP_AUTH_TMS_AUDIT_FALLBACK_ENABLED: bool = False
     # Confirms that a durable fallback audit sink is configured when fallback audit is enabled.
     MCP_AUTH_TMS_AUDIT_FALLBACK_SINK_CONFIGURED: bool = False
+    # Sanitizes sensitive diagnostic details from audit records before storage.
+    MCP_AUTH_TMS_AUDIT_SANITIZE_DIAGNOSTICS: bool = True
     # Allows mock TMS only in non-production environments when real TMS is disabled.
     MCP_AUTH_TMS_ALLOW_MOCK: bool = False
     # Redis key namespace prefix for all MCP auth stores; must not end with ':'.

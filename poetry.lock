@@ -1382,15 +1382,15 @@ files = [
 
 [[package]]
 name = "codemie-enterprise"
-version = "2.3.20"
+version = "2.3.22"
 description = "CodeMie Enterprise Package - Closed-source enterprise features"
 optional = true
 python-versions = ">=3.12,<4.0"
 groups = ["main"]
 markers = "extra == \"enterprise\""
 files = [
-    {file = "codemie_enterprise-2.3.20-py3-none-any.whl", hash = "sha256:83b77e7a0957039789da23b2b1d211eaf994f50216e87ff9388f04e4f6bae3f0"},
-    {file = "codemie_enterprise-2.3.20.tar.gz", hash = "sha256:aea74e9e44c493d02a3ce42d21b53a227eb249e80a28fa5354883dfe3898b3ce"},
+    {file = "codemie_enterprise-2.3.22-py3-none-any.whl", hash = "sha256:650e80c570f7ba1b4a1a75fd08211cae12cde98c0b4127f7865f6ca7e9ae14cc"},
+    {file = "codemie_enterprise-2.3.22.tar.gz", hash = "sha256:5101aa1c7e455a12ea5da27955d19b54db0d256dc2e7536497d10f0074417e8a"},
 ]
 
 [package.dependencies]
@@ -11151,4 +11151,4 @@ pdf-svg = ["cairosvg"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<3.14"
-content-hash = "6537b86a7d94a1153e2da2f5bd211e7164cf0869f52a877e221542d0ee2b44b6"
+content-hash = "ec400c1f81391b9edb64efb8245cdec28766c561fa5dbd26d0bcc517bd05655c"

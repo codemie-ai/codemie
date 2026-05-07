@@ -75,6 +75,9 @@ def _patch_enterprise_imports(monkeypatch):
             for k, v in kwargs.items():
                 setattr(self, k, v)
 
+        def model_dump(self):
+            return self.__dict__.copy()
+
     class FakeOAuth2TokenData:
         def __init__(self, **kwargs):
             for k, v in kwargs.items():

@@ -78,7 +78,9 @@ _SAML_HTTP_ERROR = "SAML is not supported for HTTP transport. Use OAuth2 for HTT
 encryption_service: BaseEncryptionService = EncryptionFactory().get_current_encryption_service()
 
 _OAUTH2_CALLBACK_PATH = "/v1/mcp-auth/oauth2/callback"
-_OAUTH2_CALLBACK_PAGE_SCRIPT_PATH = "/v1/mcp-auth/oauth2/callback-page.js"
+_OAUTH2_CALLBACK_PAGE_SCRIPT_PATH = (
+    f"{config.API_ROOT_PATH.strip('/')}/" if config.API_ROOT_PATH else "/"
+) + "v1/mcp-auth/oauth2/callback-page.js"
 _SAML_ACS_PATH = "/v1/mcp-auth/saml/acs"
 _LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _INVALID_OAUTH2_CONFIG_MESSAGE = "Invalid OAuth2 MCP configuration"
@@ -1443,6 +1445,7 @@ def _build_token_management_system(redis_client: Any, audit_context_provider: An
         kms_key_id=config.MCP_AUTH_TMS_KMS_KEY_ID,
         encryption_context_prefix=config.MCP_AUTH_TMS_ENCRYPTION_CONTEXT_PREFIX,
         allow_mock_tms=config.MCP_AUTH_TMS_ALLOW_MOCK,
+        audit_sanitize_diagnostics=config.MCP_AUTH_TMS_AUDIT_SANITIZE_DIAGNOSTICS,
     )
 
     if not tms_config.enabled:

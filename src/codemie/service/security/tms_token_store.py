@@ -106,7 +106,12 @@ class TMSTokenStore:
             refresh_metadata=refresh_metadata,
             scope=scope,
         )
-
+        if refresh_metadata:
+            masked_secret = "***" if refresh_metadata.client_secret else None
+            masked = {**refresh_metadata.model_dump(), "client_secret": masked_secret}
+            logger.debug(f"Storing token with refresh_metadata={masked}")
+        else:
+            logger.debug("Storing token without refresh_metadata")
         try:
             with self._audit_ctx.context(source=_AUDIT_SOURCE, correlation_id=auth_config_id):
                 self._tms.store(user_id, auth_config_id, token_data)
