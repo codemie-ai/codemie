@@ -352,7 +352,6 @@ class LiteLLMBudgetEnforcementProvider:
         project_name: str,
         budget_category: BudgetCategory,
         budget_id: str,
-        soft_budget: Decimal,
         max_budget: Decimal,
         budget_duration: str,
         budget_reset_at: str | None = None,
@@ -374,7 +373,6 @@ class LiteLLMBudgetEnforcementProvider:
             budget_category=budget_category.value,
             project_budget_id=budget_id,
             max_budget=float(max_budget),
-            soft_budget=float(soft_budget),
             budget_duration=budget_duration,
             budget_reset_at=budget_reset_at,
             models=models,
@@ -414,7 +412,6 @@ class LiteLLMBudgetEnforcementProvider:
         project_name: str,
         budget_category: BudgetCategory,
         budget_id: str,
-        soft_budget: Decimal,
         max_budget: Decimal,
         budget_duration: str,
         budget_reset_at: str | None = None,
@@ -439,7 +436,6 @@ class LiteLLMBudgetEnforcementProvider:
                 budget_category=budget_category.value,
                 project_budget_id=budget_id,
                 max_budget=float(max_budget),
-                soft_budget=float(soft_budget),
                 budget_duration=budget_duration,
                 budget_reset_at=budget_reset_at,
                 models=models,
@@ -461,7 +457,6 @@ class LiteLLMBudgetEnforcementProvider:
                 budget_category=budget_category.value,
                 project_budget_id=budget_id,
                 max_budget=float(max_budget),
-                soft_budget=float(soft_budget),
                 budget_duration=budget_duration,
                 budget_reset_at=budget_reset_at,
                 models=models,
@@ -871,7 +866,6 @@ class LiteLLMBudgetEnforcementProvider:
         project_name: str,
         budget_category: BudgetCategory,
         budget_id: str,
-        soft_budget: Decimal,
         max_budget: Decimal,
         budget_duration: str,
         models: list[str] | None,
@@ -882,7 +876,7 @@ class LiteLLMBudgetEnforcementProvider:
             f"budget_event=provider_project_budget_sync_started component=litellm_budget_provider "
             f"provider={_PROVIDER_NAME!r} operation=create project_name={project_name!r} "
             f"budget_id={budget_id!r} budget_category={budget_category.value!r} "
-            f"max_budget={max_budget!r} soft_budget={soft_budget!r} budget_duration={budget_duration!r} "
+            f"max_budget={max_budget!r} budget_duration={budget_duration!r} "
             f"model_count={len(models or [])}"
         )
         service = self._get_service()
@@ -900,7 +894,6 @@ class LiteLLMBudgetEnforcementProvider:
             project_name=project_name,
             budget_category=budget_category.value,
             max_budget=float(max_budget),
-            soft_budget=float(soft_budget),
             budget_duration=budget_duration,
             models=models,
         )
@@ -916,7 +909,6 @@ class LiteLLMBudgetEnforcementProvider:
                 project_name=project_name,
                 budget_category=budget_category,
                 budget_id=budget_id,
-                soft_budget=soft_budget,
                 max_budget=max_budget,
                 budget_duration=budget_duration,
                 models=models,
@@ -950,7 +942,6 @@ class LiteLLMBudgetEnforcementProvider:
         project_name: str,
         budget_category: BudgetCategory,
         budget_id: str,
-        soft_budget: Decimal,
         max_budget: Decimal,
         budget_duration: str,
         models: list[str] | None,
@@ -962,7 +953,7 @@ class LiteLLMBudgetEnforcementProvider:
             f"provider={_PROVIDER_NAME!r} operation=update project_name={project_name!r} "
             f"budget_id={budget_id!r} budget_category={budget_category.value!r} "
             f"provider_budget_ref={budget_state.provider_budget_ref!r} max_budget={max_budget!r} "
-            f"soft_budget={soft_budget!r} budget_duration={budget_duration!r} model_count={len(models or [])}"
+            f"budget_duration={budget_duration!r} model_count={len(models or [])}"
         )
         service = self._get_service()
         provider_budget_ref = budget_state.provider_budget_ref
@@ -981,7 +972,6 @@ class LiteLLMBudgetEnforcementProvider:
             project_name=project_name,
             budget_category=budget_category,
             budget_id=budget_id,
-            soft_budget=soft_budget,
             max_budget=max_budget,
             budget_duration=budget_duration,
             budget_reset_at=budget_state.budget_reset_at,
@@ -1000,7 +990,6 @@ class LiteLLMBudgetEnforcementProvider:
                 project_name=project_name,
                 budget_category=budget_category,
                 budget_id=budget_id,
-                soft_budget=soft_budget,
                 max_budget=max_budget,
                 budget_duration=budget_duration,
                 budget_reset_at=budget_state.budget_reset_at,
@@ -1188,7 +1177,6 @@ class LiteLLMBudgetEnforcementProvider:
 
         result = await asyncio.to_thread(
             service.sync_project_member_budget_assignment,
-            project_budget_id=allocation.project_budget_id,
             project_name=allocation.project_name,
             budget_category=allocation.budget_category,
             user_id=allocation.user_id,

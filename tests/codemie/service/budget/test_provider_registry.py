@@ -41,7 +41,6 @@ async def test_noop_budget_provider_accepts_all_protocol_arguments(monkeypatch):
         project_name="proj-a",
         budget_category=BudgetCategory.CLI,
         budget_id="project-budget",
-        soft_budget=Decimal("10"),
         max_budget=Decimal("20"),
         budget_duration="30d",
         models=["gpt-4.1"],

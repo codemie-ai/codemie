@@ -163,13 +163,12 @@ class _NoopBudgetEnforcementProvider:
         project_name: str,
         budget_category: BudgetCategory,
         budget_id: str,
-        soft_budget: Decimal,
         max_budget: Decimal,
         budget_duration: str,
         models: list[str] | None,
         metadata: dict[str, Any] | None = None,
     ) -> BudgetProviderState:
-        _ = (project_name, budget_category, budget_id, soft_budget, max_budget, budget_duration, models, metadata)
+        _ = (project_name, budget_category, budget_id, max_budget, budget_duration, models, metadata)
         return BudgetProviderState(provider=_NOOP_PROVIDER_NAME, sync_status=SyncStatus.NOOP)
 
     async def update_project_budget(
@@ -179,7 +178,6 @@ class _NoopBudgetEnforcementProvider:
         project_name: str,
         budget_category: BudgetCategory,
         budget_id: str,
-        soft_budget: Decimal,
         max_budget: Decimal,
         budget_duration: str,
         models: list[str] | None,
@@ -190,7 +188,6 @@ class _NoopBudgetEnforcementProvider:
             project_name,
             budget_category,
             budget_id,
-            soft_budget,
             max_budget,
             budget_duration,
             models,
