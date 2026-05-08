@@ -491,7 +491,6 @@ class AuthenticationService:
         AuthenticationService._validate_user_id_uuid(user_id)
 
         pre_sync_email = None
-        is_new_user = False
         async with get_async_session() as session:
             db_user = await user_repository.aget_by_id(session, user_id)
 
@@ -501,28 +500,12 @@ class AuthenticationService:
                 db_user, pre_sync_email = await AuthenticationService._create_or_recover_user(
                     session, user_id, idp_user
                 )
-                is_new_user = True
 
             if not db_user.is_active or db_user.deleted_at is not None:
                 raise ExtendedHTTPException(code=401, message=_ACCOUNT_DEACTIVATED)
 
             security_user_ins = AuthenticationService._build_security_user(db_user, auth_token)
             await session.commit()
-
-        if is_new_user:
-            from codemie.service.budget.provider_registry import get_active_provider
-
-            try:
-                await get_active_provider().provision_global_user(
-                    user_id=security_user_ins.id,
-                    user_email=security_user_ins.email,
-                )
-                logger.debug(f"Budget provider provisioned new user: {security_user_ins.id}")
-            except Exception as e:
-                logger.warning(
-                    f"Failed to provision budget for new user {security_user_ins.id}, "
-                    f"will retry on first LLM request: {e}"
-                )
 
         if pre_sync_email and security_user_ins.email != pre_sync_email:
             from codemie.service.project.personal_project_service import personal_project_service
