@@ -33,6 +33,7 @@ from codemie.configs import config
 from codemie.clients.redis import create_redis_client
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException
+from codemie.core.utils import get_api_root_path
 from codemie.enterprise.loader import HAS_MCP_AUTH
 from codemie.rest_api.security.user import User
 from codemie.service.encryption.base_encryption_service import BaseEncryptionService
@@ -78,9 +79,7 @@ _SAML_HTTP_ERROR = "SAML is not supported for HTTP transport. Use OAuth2 for HTT
 encryption_service: BaseEncryptionService = EncryptionFactory().get_current_encryption_service()
 
 _OAUTH2_CALLBACK_PATH = "/v1/mcp-auth/oauth2/callback"
-_OAUTH2_CALLBACK_PAGE_SCRIPT_PATH = (
-    f"/{config.API_ROOT_PATH.strip('/')}/" if config.API_ROOT_PATH else "/"
-) + "v1/mcp-auth/oauth2/callback-page.js"
+_OAUTH2_CALLBACK_PAGE_SCRIPT_PATH = get_api_root_path() + "/v1/mcp-auth/oauth2/callback-page.js"
 _SAML_ACS_PATH = "/v1/mcp-auth/saml/acs"
 _LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _INVALID_OAUTH2_CONFIG_MESSAGE = "Invalid OAuth2 MCP configuration"
@@ -177,7 +176,7 @@ def _is_localhost_hostname(hostname: str | None) -> bool:
 
 
 def _build_callback_uri(path: str, *, invalid_message: str, label: str) -> tuple[str, str, bool]:
-    callback_uri = f"{config.CALLBACK_API_BASE_URL.rstrip('/')}{path}"
+    callback_uri = f"{config.CALLBACK_API_BASE_URL}{get_api_root_path()}{path}"
     parsed_callback_uri = urlsplit(callback_uri)
     hostname = parsed_callback_uri.hostname
     if not hostname:

@@ -33,7 +33,7 @@ import hashlib
 from codemie_tools.base.utils import get_encoding
 from codemie_tools.base.file_object import FileObject
 
-from codemie.configs import logger
+from codemie.configs import logger, config
 from codemie.configs.llm_config import CostConfig
 from codemie.service.llm_service.llm_service import llm_service
 
@@ -665,3 +665,20 @@ def append_random_suffix(value: str) -> str:
     """
     suffix = "".join(secrets.choice(string.ascii_lowercase) for _ in range(15))
     return f"{value}_{suffix}"
+
+
+def get_api_root_path() -> str:
+    """
+    Build the normalized API root path from configuration.
+
+    Returns:
+        str: A root path that always starts with a single leading slash and has
+        no trailing slash, or an empty string when `config.API_ROOT_PATH` is not set.
+
+    Examples:
+        - `config.API_ROOT_PATH = "api/v1"` -> `"/api/v1"`
+        - `config.API_ROOT_PATH = "/api/v1/"` -> `"/api/v1"`
+        - `config.API_ROOT_PATH = ""` -> `""`
+        - `config.API_ROOT_PATH = None` -> `""`
+    """
+    return f"/{config.API_ROOT_PATH.strip('/')}" if config.API_ROOT_PATH else ""
