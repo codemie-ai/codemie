@@ -184,45 +184,54 @@ class ProjectBudgetAssignmentRepository:
             return {}
 
         from sqlalchemy import and_, func
+        from sqlalchemy.sql.selectable import Subquery
 
         from codemie.service.budget.budget_models import Budget
 
-        latest_spend_dates_subq = (
-            select(
-                ProjectSpendTracking.project_name.label("project_name"),
-                ProjectSpendTracking.budget_id.label("budget_id"),
-                ProjectSpendTracking.budget_category.label("budget_category"),
-                func.max(ProjectSpendTracking.spend_date).label("max_spend_date"),
+        def _latest_spend_subquery(spend_subject_type: str) -> Subquery:
+            latest_spend_dates_subq = (
+                select(
+                    ProjectSpendTracking.project_name.label("project_name"),
+                    ProjectSpendTracking.budget_id.label("budget_id"),
+                    ProjectSpendTracking.budget_category.label("budget_category"),
+                    func.max(ProjectSpendTracking.spend_date).label("max_spend_date"),
+                )
+                .where(ProjectSpendTracking.project_name.in_(project_names))
+                .where(ProjectSpendTracking.spend_subject_type == spend_subject_type)
+                .group_by(
+                    ProjectSpendTracking.project_name,
+                    ProjectSpendTracking.budget_id,
+                    ProjectSpendTracking.budget_category,
+                )
+                .subquery()
             )
-            .where(ProjectSpendTracking.project_name.in_(project_names))
-            .where(ProjectSpendTracking.spend_subject_type == "budget")
-            .group_by(
-                ProjectSpendTracking.project_name,
-                ProjectSpendTracking.budget_id,
-                ProjectSpendTracking.budget_category,
-            )
-            .subquery()
-        )
 
-        latest_budget_spend_subq = (
-            select(
-                ProjectSpendTracking.project_name.label("project_name"),
-                ProjectSpendTracking.budget_id.label("budget_id"),
-                ProjectSpendTracking.budget_category.label("budget_category"),
-                ProjectSpendTracking.budget_period_spend.label("current_spending"),
+            return (
+                select(
+                    ProjectSpendTracking.project_name.label("project_name"),
+                    ProjectSpendTracking.budget_id.label("budget_id"),
+                    ProjectSpendTracking.budget_category.label("budget_category"),
+                    ProjectSpendTracking.budget_period_spend.label("current_spending"),
+                )
+                .join(
+                    latest_spend_dates_subq,
+                    and_(
+                        ProjectSpendTracking.project_name == latest_spend_dates_subq.c.project_name,
+                        ProjectSpendTracking.budget_id == latest_spend_dates_subq.c.budget_id,
+                        ProjectSpendTracking.budget_category == latest_spend_dates_subq.c.budget_category,
+                        ProjectSpendTracking.spend_date == latest_spend_dates_subq.c.max_spend_date,
+                    ),
+                )
+                .where(ProjectSpendTracking.spend_subject_type == spend_subject_type)
+                .subquery()
             )
-            .join(
-                latest_spend_dates_subq,
-                and_(
-                    ProjectSpendTracking.project_name == latest_spend_dates_subq.c.project_name,
-                    ProjectSpendTracking.budget_id == latest_spend_dates_subq.c.budget_id,
-                    ProjectSpendTracking.budget_category == latest_spend_dates_subq.c.budget_category,
-                    ProjectSpendTracking.spend_date == latest_spend_dates_subq.c.max_spend_date,
-                ),
-            )
-            .where(ProjectSpendTracking.spend_subject_type == "budget")
-            .subquery()
-        )
+
+        latest_project_budget_spend_subq = _latest_spend_subquery("project_budget")
+        latest_legacy_budget_spend_subq = _latest_spend_subquery("budget")
+        current_spending_expr = func.coalesce(
+            latest_project_budget_spend_subq.c.current_spending,
+            latest_legacy_budget_spend_subq.c.current_spending,
+        ).label("current_spending")
 
         stmt = (
             select(
@@ -235,7 +244,7 @@ class ProjectBudgetAssignmentRepository:
                 Budget.budget_duration,
                 Budget.budget_reset_at,
                 Budget.provider_metadata,
-                latest_budget_spend_subq.c.current_spending,
+                current_spending_expr,
                 func.count(ProjectMemberBudgetAssignment.id).label("member_count"),
                 func.coalesce(func.sum(ProjectMemberBudgetAssignment.allocated_max_budget), 0.0).label(
                     "allocated_member_budget_total",
@@ -243,11 +252,19 @@ class ProjectBudgetAssignmentRepository:
             )
             .join(Budget, Budget.budget_id == ProjectBudgetAssignment.budget_id)
             .outerjoin(
-                latest_budget_spend_subq,
+                latest_project_budget_spend_subq,
                 and_(
-                    latest_budget_spend_subq.c.project_name == ProjectBudgetAssignment.project_name,
-                    latest_budget_spend_subq.c.budget_id == Budget.budget_id,
-                    latest_budget_spend_subq.c.budget_category == ProjectBudgetAssignment.budget_category,
+                    latest_project_budget_spend_subq.c.project_name == ProjectBudgetAssignment.project_name,
+                    latest_project_budget_spend_subq.c.budget_id == Budget.budget_id,
+                    latest_project_budget_spend_subq.c.budget_category == ProjectBudgetAssignment.budget_category,
+                ),
+            )
+            .outerjoin(
+                latest_legacy_budget_spend_subq,
+                and_(
+                    latest_legacy_budget_spend_subq.c.project_name == ProjectBudgetAssignment.project_name,
+                    latest_legacy_budget_spend_subq.c.budget_id == Budget.budget_id,
+                    latest_legacy_budget_spend_subq.c.budget_category == ProjectBudgetAssignment.budget_category,
                 ),
             )
             .outerjoin(
@@ -274,7 +291,8 @@ class ProjectBudgetAssignmentRepository:
                 Budget.budget_duration,
                 Budget.budget_reset_at,
                 Budget.provider_metadata,
-                latest_budget_spend_subq.c.current_spending,
+                latest_project_budget_spend_subq.c.current_spending,
+                latest_legacy_budget_spend_subq.c.current_spending,
             )
             .order_by(ProjectBudgetAssignment.project_name.asc(), Budget.budget_category.asc())
         )
