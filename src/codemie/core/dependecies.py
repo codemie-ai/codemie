@@ -104,6 +104,9 @@ def get_elasticsearch(index_name, embeddings_model: str = llm_service.default_em
         client=elastic_client,
         index_name=index_name,
         embedding=embeddings,
+        custom_index_settings={
+            "number_of_replicas": config.ELASTIC_DATASOURCE_REPLICAS,
+        },
     )
 
 

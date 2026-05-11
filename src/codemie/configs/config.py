@@ -74,6 +74,7 @@ class Config(BaseSettings):
     ELASTIC_URL: str = "http://localhost:9200"
     ELASTIC_PASSWORD: str = ""
     ELASTIC_USERNAME: str = ""
+    ELASTIC_DATASOURCE_REPLICAS: int = 1
 
     # Mermaid diagram rendering configuration
     MERMAID_SERVER_URL: str = "http://localhost:8082"  # URL of the local Mermaid rendering server
