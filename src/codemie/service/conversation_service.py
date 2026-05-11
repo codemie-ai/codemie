@@ -39,6 +39,8 @@ from codemie.rest_api.models.conversation import (
     UserMark,
     UpsertHistoryRequest,
     ConversationListItem,
+    ConversationSearchResponse,
+    SearchResultItem,
 )
 from codemie.rest_api.models.index import SortOrder
 from codemie.rest_api.models.conversation_folder import ConversationFolder
@@ -1372,3 +1374,62 @@ class ConversationService:
             meta_row.very_first_msg_at,
             meta_row.very_last_msg_at,
         )
+
+    @staticmethod
+    def search_conversations(user_id: str, query: str, limit: int = 20) -> ConversationSearchResponse:
+        """
+        Search conversations and folders by name for a specific user.
+
+        Args:
+            user_id: User ID to filter by
+            query: Search string (case-insensitive partial match)
+            limit: Max results to return
+
+        Returns:
+            ConversationSearchResponse with combined results sorted by update_date DESC
+        """
+        # Search chats
+        chat_results = Conversation.search_by_name_and_user(
+            user_id=user_id,
+            query=query,
+            limit=limit,
+        )
+
+        # Search folders
+        folder_results = ConversationFolder.search_by_name_and_user(
+            user_id=user_id,
+            query=query,
+            limit=limit,
+        )
+
+        # Combine and convert to SearchResultItem
+        combined = []
+
+        for chat in chat_results:
+            combined.append(
+                SearchResultItem(
+                    id=chat.id,
+                    name=chat.name or '',
+                    updated_at=chat.date,
+                    type='chat',
+                    folder=chat.folder or None,
+                )
+            )
+
+        for folder in folder_results:
+            combined.append(
+                SearchResultItem(
+                    id=folder.id,
+                    name=folder.folder_name,
+                    updated_at=folder.update_date or folder.date,
+                    type='folder',
+                )
+            )
+
+        # Sort combined results by updated_at descending
+        combined.sort(key=lambda x: x.updated_at, reverse=True)
+
+        # Limit to 20 total results
+        combined = combined[:limit]
+
+        return ConversationSearchResponse(items=combined)

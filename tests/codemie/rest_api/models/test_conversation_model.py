@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
+from unittest.mock import patch, MagicMock
+
+from codemie.rest_api.models.conversation import Conversation, ConversationListItem, GeneratedMessage
 from datetime import datetime
 from codemie.core.models import ChatRole
 
@@ -111,3 +113,59 @@ def test_generated_message_backward_compatibility():
     data = message.model_dump()
     assert data['file_name'] == "legacy.txt"
     assert data['file_names'] == ["legacy.txt"]
+
+
+def _make_row(conversation_id, conversation_name, folder, update_date):
+    """Build a mock DB row with named attributes matching the SQL query columns."""
+    row = MagicMock()
+    row.conversation_id = conversation_id
+    row.conversation_name = conversation_name
+    row.folder = folder
+    row.assistant_ids = []
+    row.initial_assistant_id = None
+    row.pinned = False
+    row.date = update_date
+    row.update_date = update_date
+    row.is_workflow_conversation = False
+    return row
+
+
+@patch('codemie.rest_api.models.conversation.get_session')
+def test_conversation_search_by_name_and_user(mock_get_session):
+    """Test search_by_name_and_user returns matching conversations."""
+    user_id = 'user-123'
+    query = 'admin'
+
+    row1 = _make_row('conv-1', 'Admin Dashboard', '', datetime(2026, 4, 30, 12, 0, 0))
+    row2 = _make_row('conv-2', 'Administrator Panel', 'Work', datetime(2026, 4, 29, 12, 0, 0))
+
+    mock_session = MagicMock()
+    mock_get_session.return_value.__enter__.return_value = mock_session
+    mock_session.exec.return_value.all.return_value = [row1, row2]
+
+    results = Conversation.search_by_name_and_user(user_id=user_id, query=query, limit=20)
+
+    assert len(results) == 2
+    assert isinstance(results[0], ConversationListItem)
+    assert results[0].name == 'Admin Dashboard'
+    assert results[1].name == 'Administrator Panel'
+    assert results[1].folder == 'Work'
+
+    # Verify the session was used
+    mock_session.exec.assert_called_once()
+
+
+@patch('codemie.rest_api.models.conversation.get_session')
+def test_conversation_search_by_name_and_user_empty_results(mock_get_session):
+    """Test search_by_name_and_user with no matches returns empty list."""
+    mock_session = MagicMock()
+    mock_get_session.return_value.__enter__.return_value = mock_session
+    mock_session.exec.return_value.all.return_value = []
+
+    results = Conversation.search_by_name_and_user(
+        user_id='user-123',
+        query='nonexistent',
+        limit=20,
+    )
+
+    assert len(results) == 0

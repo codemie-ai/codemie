@@ -13,10 +13,15 @@
 # limitations under the License.
 
 import pytest
+from datetime import datetime, timezone, timedelta
 from fastapi.testclient import TestClient
 from httpx import AsyncClient, ASGITransport
 from codemie.rest_api.main import app
-from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
+from codemie.rest_api.models.conversation import (
+    Conversation,
+    ConversationListItem,
+    GeneratedMessage,
+)
 from codemie.rest_api.models.conversation_folder import ConversationFolder
 from codemie.rest_api.security.user import User
 import codemie.rest_api.routers.conversation as conversation_router
@@ -444,3 +449,184 @@ class TestResumeConversation:
         call_kwargs = mock_create.call_args[1]
         assert call_kwargs["resume_execution"] is True
         assert call_kwargs["execution_id"] == "exec-001"
+
+
+# ---------------------------------------------------------------------------
+# Tests for search_conversations endpoint
+# ---------------------------------------------------------------------------
+
+_NOW = datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+_OLDER = _NOW - timedelta(hours=1)
+
+
+def _make_chat_item(name: str, updated_at: datetime, folder: str = None) -> ConversationListItem:
+    return ConversationListItem(
+        id='chat-1',
+        name=name,
+        folder=folder,
+        date=updated_at,
+        update_date=updated_at,
+    )
+
+
+def _make_folder_item(name: str, updated_at: datetime) -> ConversationFolder:
+    return ConversationFolder(
+        id='folder-1',
+        folder_name=name,
+        user_id='123',
+        update_date=updated_at,
+        date=updated_at,
+    )
+
+
+class TestSearchConversations:
+    def test_search_conversations_success(self):
+        """Test /v1/conversations/search returns combined results"""
+        chat = _make_chat_item('admin chat', _NOW)
+        folder = _make_folder_item('admin folder', _OLDER)
+
+        with (
+            patch(
+                'codemie.rest_api.routers.conversation.Conversation.search_by_name_and_user',
+                return_value=[chat],
+            ),
+            patch(
+                'codemie.rest_api.routers.conversation.ConversationFolder.search_by_name_and_user',
+                return_value=[folder],
+            ),
+        ):
+            response = client.get(
+                '/v1/conversations/search',
+                params={'query': 'admin'},
+                headers={'Authorization': 'Bearer testtoken'},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+
+        assert 'items' in data
+        assert len(data['items']) > 0
+
+        # Verify items have required fields
+        item = data['items'][0]
+        assert 'name' in item
+        assert 'updated_at' in item
+        assert 'type' in item
+        assert item['type'] in ['chat', 'folder']
+
+    def test_search_conversations_requires_auth(self):
+        """Test search endpoint requires authentication when override is cleared"""
+        # Temporarily clear the dependency override so auth is enforced
+        app.dependency_overrides = {}
+        try:
+            response = client.get('/v1/conversations/search', params={'query': 'test'})
+            assert response.status_code == 401
+        finally:
+            # Restore the override for subsequent tests
+            app.dependency_overrides[conversation_router.authenticate] = lambda: User(
+                id='123', username='testuser', name='Test User'
+            )
+
+    def test_search_conversations_validation_min_length(self):
+        """Test query must be at least 3 characters"""
+        response = client.get(
+            '/v1/conversations/search',
+            params={'query': 'ab'},
+            headers={'Authorization': 'Bearer testtoken'},
+        )
+
+        assert response.status_code == 422
+
+    def test_search_conversations_validation_max_length(self):
+        """Test query must not exceed 100 characters"""
+        long_query = 'a' * 101
+        response = client.get(
+            '/v1/conversations/search',
+            params={'query': long_query},
+            headers={'Authorization': 'Bearer testtoken'},
+        )
+
+        assert response.status_code == 422
+
+    def test_search_conversations_sorted_by_update_date(self):
+        """Test results are sorted by updated_at DESC"""
+        earlier = _NOW - timedelta(hours=2)
+        later = _NOW
+
+        chat_newer = _make_chat_item('test chat newer', later)
+        folder_older = _make_folder_item('test folder older', earlier)
+
+        with (
+            patch(
+                'codemie.rest_api.routers.conversation.Conversation.search_by_name_and_user',
+                return_value=[chat_newer],
+            ),
+            patch(
+                'codemie.rest_api.routers.conversation.ConversationFolder.search_by_name_and_user',
+                return_value=[folder_older],
+            ),
+        ):
+            response = client.get(
+                '/v1/conversations/search',
+                params={'query': 'test'},
+                headers={'Authorization': 'Bearer testtoken'},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        items = data['items']
+
+        # Verify descending order
+        for i in range(len(items) - 1):
+            current_time = datetime.fromisoformat(items[i]['updated_at'])
+            next_time = datetime.fromisoformat(items[i + 1]['updated_at'])
+            assert current_time >= next_time
+
+    def test_search_conversations_returns_correct_types(self):
+        """Test that chats have type 'chat' and folders have type 'folder'"""
+        chat = _make_chat_item('test chat', _NOW)
+        folder = _make_folder_item('test folder', _OLDER)
+
+        with (
+            patch(
+                'codemie.rest_api.routers.conversation.Conversation.search_by_name_and_user',
+                return_value=[chat],
+            ),
+            patch(
+                'codemie.rest_api.routers.conversation.ConversationFolder.search_by_name_and_user',
+                return_value=[folder],
+            ),
+        ):
+            response = client.get(
+                '/v1/conversations/search',
+                params={'query': 'test'},
+                headers={'Authorization': 'Bearer testtoken'},
+            )
+
+        assert response.status_code == 200
+        items = response.json()['items']
+        types = {item['type'] for item in items}
+        assert 'chat' in types
+        assert 'folder' in types
+
+    def test_search_conversations_empty_results(self):
+        """Test search returns empty list when no matches"""
+        with (
+            patch(
+                'codemie.rest_api.routers.conversation.Conversation.search_by_name_and_user',
+                return_value=[],
+            ),
+            patch(
+                'codemie.rest_api.routers.conversation.ConversationFolder.search_by_name_and_user',
+                return_value=[],
+            ),
+        ):
+            response = client.get(
+                '/v1/conversations/search',
+                params={'query': 'zzz'},
+                headers={'Authorization': 'Bearer testtoken'},
+            )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data['items'] == []

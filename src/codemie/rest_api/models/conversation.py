@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from codemie_tools.base.models import Tool
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
@@ -24,6 +24,7 @@ from codemie.chains.base import Thought
 from codemie.clients.postgres import get_session
 from codemie.configs import config, logger
 from codemie.core.ability import Owned, Action
+from codemie.core.db_utils import escape_like_wildcards
 from codemie.core.exceptions import ValidationException
 from codemie.core.models import CodeIndexType, ChatMessage, ChatRole
 from codemie.rest_api.models.assistant import Context, AssistantType
@@ -543,6 +544,68 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
         return False
 
     @classmethod
+    def search_by_name_and_user(cls, user_id: str, query: str, limit: int = 20) -> List['ConversationListItem']:
+        """
+        Search conversations by partial name match for a specific user.
+
+        Special handling: When query matches "new chat" (the display name for empty conversations),
+        also includes conversations with empty/null names.
+
+        Args:
+            user_id: User ID to filter by
+            query: Search string (case-insensitive partial match)
+            limit: Max results to return
+
+        Returns:
+            List of matching ConversationListItem objects, sorted by update_date DESC
+        """
+        stmt = text("""
+            SELECT
+                conversation_id,
+                conversation_name,
+                folder,
+                assistant_ids,
+                initial_assistant_id,
+                pinned,
+                date,
+                update_date,
+                is_workflow_conversation
+            FROM conversations
+            WHERE user_id = :uid
+              AND (
+                LOWER(conversation_name) LIKE :pattern
+                OR (
+                  LOWER('new chat') LIKE :pattern
+                  AND (conversation_name IS NULL OR conversation_name = '')
+                )
+              )
+            ORDER BY COALESCE(update_date, date) DESC NULLS LAST
+            LIMIT :limit
+        """).bindparams(uid=user_id, pattern=f'%{escape_like_wildcards(query.lower())}%', limit=limit)
+
+        with get_session() as session:
+            rows = list(session.exec(stmt).all())
+
+        result = []
+        for row in rows:
+            is_workflow = bool(row.is_workflow_conversation)
+            result.append(
+                ConversationListItem(
+                    id=row.conversation_id,
+                    name=row.conversation_name or '',
+                    folder=row.folder,
+                    assistant_ids=row.assistant_ids,
+                    initial_assistant_id=row.initial_assistant_id,
+                    pinned=row.pinned,
+                    date=row.update_date or row.date,
+                    is_workflow=is_workflow,
+                    workflow_id=row.initial_assistant_id if is_workflow else None,
+                    conversation_id=row.conversation_id if is_workflow else None,
+                )
+            )
+        return result
+
+    @classmethod
     def delete_by_id(cls, conversation_id: str):
         with Session(cls.get_engine()) as session:
             statement = delete(cls).where(cls.id == conversation_id)
@@ -642,3 +705,19 @@ class ConversationHistoryPaginationData(PaginationData):
 
     has_next: bool
     has_previous: bool
+
+
+class SearchResultItem(BaseModel):
+    """Single search result item (chat or folder)"""
+
+    id: str  # Chat ID or Folder ID
+    name: str  # Chat or folder name
+    updated_at: datetime  # Last update timestamp
+    type: Literal['chat', 'folder']  # Discriminator
+    folder: Optional[str] = None  # Parent folder (for chats only)
+
+
+class ConversationSearchResponse(BaseModel):
+    """Response for conversation search endpoint"""
+
+    items: List[SearchResultItem]  # Combined chats + folders, sorted by updated_at DESC

@@ -43,6 +43,7 @@ from codemie.rest_api.models.conversation import (
     ConversationListItem,
     ConversationExportFormat,
     ConversationResponse,
+    ConversationSearchResponse,
     UpsertHistoryRequest,
     UpsertHistoryResponse,
 )
@@ -79,6 +80,33 @@ EXPORT_FORMAT_NOT_SUPPORTED_HELP = (
     "Please select one of the supported export formats and try again."
     + "For additional supported formats, refer to the documentation or contact support."
 )
+
+
+@router.get('/conversations/search', response_model=ConversationSearchResponse)
+def search_conversations(
+    query: str = Query(..., min_length=3, max_length=100),
+    user: User = Depends(authenticate),
+) -> ConversationSearchResponse:
+    """
+    Search user's conversations and folders by name.
+
+    Returns combined results sorted by update_date DESC.
+    Case-insensitive partial matching on name/folder_name fields.
+    Limit: 20 results total.
+    """
+    try:
+        return ConversationService.search_conversations(user.id, query)
+
+    except ExtendedHTTPException:
+        raise
+    except Exception as e:
+        logger.error(f'Search error: {e}')
+        raise ExtendedHTTPException(
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            message='Search service unavailable',
+            details='An error occurred while searching conversations.',
+            help='Please try again later.',
+        )
 
 
 def _enrich_conv_with_workflow(conversation: Conversation, conversation_id: str) -> Conversation:

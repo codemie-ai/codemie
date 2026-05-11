@@ -17,10 +17,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import List, Optional
 
+from codemie.clients.postgres import get_session
+from codemie.core.db_utils import escape_like_wildcards
 from codemie.rest_api.models.base import BaseModelWithSQLSupport
 from codemie.core.ability import Owned, Action
 from codemie.rest_api.security.user import User
-from sqlmodel import Field as SQLField, Column
+from sqlmodel import Field as SQLField, Column, text
 from sqlalchemy.dialects.postgresql import JSONB
 
 FOLDER_NAME_KEYWORD = "folder_name.keyword"
@@ -108,3 +110,46 @@ class ConversationFolder(BaseModelWithSQLSupport, Owned, table=True):
         if folder:
             folder.update_date = datetime.now(timezone.utc)
             folder.update(refresh=False)
+
+    @classmethod
+    def search_by_name_and_user(cls, user_id: str, query: str, limit: int = 20) -> List['ConversationFolder']:
+        """
+        Search folders by partial name match for a specific user.
+
+        Args:
+            user_id: User ID to filter by
+            query: Search string (case-insensitive partial match)
+            limit: Max results to return
+
+        Returns:
+            List of matching ConversationFolder objects, sorted by update_date DESC
+        """
+        stmt = text("""
+            SELECT
+                id,
+                folder_name,
+                user_id,
+                date,
+                update_date,
+                user_abilities
+            FROM conversation_folders
+            WHERE user_id = :uid
+              AND LOWER(folder_name) LIKE :pattern
+            ORDER BY COALESCE(update_date, date) DESC NULLS LAST
+            LIMIT :limit
+        """).bindparams(uid=user_id, pattern=f'%{escape_like_wildcards(query.lower())}%', limit=limit)
+
+        with get_session() as session:
+            rows = list(session.exec(stmt).all())
+
+        return [
+            cls(
+                id=row.id,
+                folder_name=row.folder_name,
+                user_id=row.user_id,
+                date=row.date,
+                update_date=row.update_date,
+                user_abilities=row.user_abilities,
+            )
+            for row in rows
+        ]
