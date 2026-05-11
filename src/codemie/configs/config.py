@@ -133,7 +133,7 @@ class Config(BaseSettings):
 
     ELASTIC_APPLICATION_INDEX: str = "applications"
     ELASTIC_GIT_REPO_INDEX: str = "repositories"
-    ELASTIC_LOGS_INDEX: str = "codemie_infra_logs*"
+    ELASTIC_LOGS_INDEX: str = "logs-codemie-infra*"
     ELASTIC_METRICS_INDEX: str = "codemie_metrics_logs*"
     FEEDBACK_INDEX_NAME: str = "ca_feedback"
     BACKGROUND_TASKS_INDEX: str = "background_tasks"
