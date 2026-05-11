@@ -53,6 +53,16 @@ model_list:
       label: "GPT-5 Nano 2025-08-07"
       top_p: false
 
+  - model_name: gpt-5-2-2025-12-11
+    litellm_params:
+      model: azure/codemie-gpt-5.2-2025-12-11
+      api_base: https://codemie-swedencentral-0.openai.azure.com/
+      litellm_credential_name: default_azure_openai_credential
+    model_info:
+      id: gpt-5-2-2025-12-11-swedencentral-0
+      base_model: azure/gpt-5.2-2025-12-11
+      label: "GPT-5.2 2025-12-11"
+
   - model_name: gpt-5.4-2026-03-05
     litellm_params:
       model: azure/codemie-gpt-5.4-2026-03-05
@@ -128,16 +138,38 @@ model_list:
       label: "GPT-5.3 Codex 2026-02-24"
       forbidden_for_web: true
 
+  - model_name: gpt-image-1.5
+    litellm_params:
+      model: azure/codemie-gpt-image-1.5-2025-12-16
+      api_base: https://codemie-swedencentral-0.openai.azure.com/
+      litellm_credential_name: default_azure_openai_credential
+    model_info:
+      id: gpt-image-1-5-2025-12-16-swedencentral-0
+      base_model: azure/gpt-image-1.5-2025-12-16
+      label: "GPT Image 1.5"
+      forbidden_for_web: true
+
+  - model_name: gpt-image-2
+    litellm_params:
+      model: azure/codemie-gpt-image-2-2026-04-21
+      api_base: https://codemie-swedencentral-0.openai.azure.com/
+      litellm_credential_name: default_azure_openai_credential
+    model_info:
+      id: gpt-image-2-2026-04-21-swedencentral-0
+      base_model: azure/gpt-image-2-2026-04-21
+      label: "GPT Image 2"
+      forbidden_for_web: true
+
   # Google Vertex AI Models
   - model_name: gemini-3.1-flash-image-preview
     litellm_params:
       model: vertex_ai/gemini-3.1-flash-image-preview
       vertex_location: "global"
-      tags: ["global"]
     model_info:
       id: gemini-3.1-flash-image-preview-global
       base_model: gemini-3.1-flash-image-preview
       label: "Gemini 3.1 Flash Image Preview"
+      forbidden_for_web: true
 
   - model_name: gemini-3.1-pro
     litellm_params:
@@ -415,7 +447,7 @@ credential_list:
       api_key: os.environ/DIAL_API_KEY
   - credential_name: default_azure_openai_credential
     credential_info:
-      description: "Production credentials for Azure OpenAI models from Azure account of Codemie"
+      description: "Production credentials for Azure OpenAI models from Azure account of CodeMie"
     credential_values:
       tenant_id: os.environ/AZURE_TENANT_ID
       client_id: os.environ/AZURE_CLIENT_ID
