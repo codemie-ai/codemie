@@ -146,7 +146,7 @@ class ToolDiscoveryService:
         formatted = {}
         for field_name, field_info in schema.items():
             field_type = field_info.get('type')
-            type_str = getattr(field_type, "__name__", str(field_type))
+            type_str = getattr(field_type, "__name__", str(field_type)).lower()
             formatted[field_name] = {'type': type_str, 'required': field_info.get('required', True)}
         return formatted
 

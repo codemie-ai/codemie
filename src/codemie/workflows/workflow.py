@@ -697,9 +697,14 @@ class WorkflowExecutor:
                 lambda _self=self, _transition=transition: self.continue_iteration(_self, _transition),
                 transition_nodes,
             )
-
         else:
-            workflow.add_edge(source, target)
+            workflow.add_conditional_edges(
+                source,
+                lambda state, _transition=transition, _enable=enable_summarization_node: evaluate(
+                    state, _transition, _enable
+                ),
+                transition_nodes,
+            )
 
     def _handle_multiple_states(self, workflow: StateGraph, transition, enable_summarization_node: bool):
         targets = [get_final_state(next_state, enable_summarization_node) for next_state in transition.next.state_ids]
