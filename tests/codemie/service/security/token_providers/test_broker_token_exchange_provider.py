@@ -16,7 +16,7 @@ import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 import httpx
 from codemie.service.security.token_providers.broker_token_exchange_provider import BrokerTokenExchangeProvider
-from codemie.service.security.token_providers.base_provider import TokenProviderException
+from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException, TokenProviderException
 from codemie.configs.config import config
 
 
@@ -148,10 +148,11 @@ async def test_aget_token_http_error(mock_client_cls, mock_config):
         "codemie.service.security.token_providers.broker_token_exchange_provider.get_current_auth_token",
         return_value="initial-token",
     ):
-        with pytest.raises(TokenProviderException) as exc:
+        with pytest.raises(BrokerAuthRequiredException) as exc:
             await provider._aget_token()
 
-    assert "Broker token exchange failed with HTTP 401" in str(exc.value)
+    assert "Authentication required" in str(exc.value)
+    assert exc.value.details == "HTTP 401"
 
 
 def test_get_token_sync_wrapper(mock_config):

@@ -187,10 +187,12 @@ class BrokerTokenExchangeProvider(BaseTokenProvider):
                 return response_data["access_token"]
 
         except httpx.HTTPStatusError as e:
-            error_msg = f"Broker token exchange failed with HTTP {e.response.status_code}"
-            logger.error(f"{error_msg} for user_id={user_id}: {e.response.reason_phrase}")
+            logger.error(
+                f"Broker token exchange failed with HTTP {e.response.status_code} "
+                f"for user_id={user_id}: {e.response.reason_phrase}"
+            )
             raise BrokerAuthRequiredException(
-                message=error_msg,
+                message="Authentication required. Please log in to access the MCP server.",
                 auth_location=config.BROKER_AUTH_LOCATION_URL,
                 details=self._get_http_error_details(e),
             ) from e
