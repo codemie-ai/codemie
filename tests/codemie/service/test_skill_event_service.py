@@ -256,7 +256,7 @@ def test_get_all_skills_stats_admin_passes_none_user_id_to_repository() -> None:
     assert repository.get_all_skills_stats_calls[0]["user_id"] is None
 
 
-def test_get_all_skills_stats_regular_user_passes_own_user_id_to_repository() -> None:
+def test_get_all_skills_stats_regular_user_passes_none_user_id_to_repository() -> None:
     repository = FakeSkillEventRepository()
     service = SkillEventService(repository=repository)
     user = User.model_construct(id="user-1", username="user", email="user@example.com", is_admin=False)
@@ -264,7 +264,7 @@ def test_get_all_skills_stats_regular_user_passes_own_user_id_to_repository() ->
     service.get_all_skills_stats(user=user)
 
     assert len(repository.get_all_skills_stats_calls) == 1
-    assert repository.get_all_skills_stats_calls[0]["user_id"] == "user-1"
+    assert repository.get_all_skills_stats_calls[0]["user_id"] is None
 
 
 def test_get_skill_stats_returns_none_when_repository_returns_none() -> None:

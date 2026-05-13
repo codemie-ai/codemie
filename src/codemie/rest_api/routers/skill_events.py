@@ -168,9 +168,10 @@ def get_all_skills_stats(
 ) -> PaginatedListResponse[SkillStatsListItem]:
     """Return paginated per-skill aggregated install/remove stats.
 
-    Admins see stats across all users; regular users see only their own.
-    Each item contains ``skill_slug``, ``installs``, ``removals``, and
-    a ``by_agent`` breakdown of install counts per agent.
+    All authenticated users see platform-wide stats, ordered by installs
+    descending (top installed first). Each item contains ``skill_slug``,
+    ``installs``, ``removals``, and a ``by_agent`` breakdown of install counts
+    per agent.
     """
     try:
         stats, total = skill_event_service.get_all_skills_stats(

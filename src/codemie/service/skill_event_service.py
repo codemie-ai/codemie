@@ -235,14 +235,12 @@ class SkillEventService:
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[list[dict], int]:
-        """Return paginated per-skill aggregated install/remove stats visible to *user*.
+        """Return paginated per-skill aggregated install/remove stats.
 
-        Admins receive stats across all users (``user_id=None``); regular users
-        see only their own events aggregated.
+        All authenticated users see stats across all users.
         """
-        resolved_user_id: str | None = None if user.is_admin else user.id
         return self._repository.get_all_skills_aggregated_stats(
-            user_id=resolved_user_id,
+            user_id=None,
             from_dt=from_dt,
             to_dt=to_dt,
             limit=limit,

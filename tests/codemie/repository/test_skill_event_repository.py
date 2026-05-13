@@ -179,3 +179,51 @@ def test_get_all_skills_aggregated_stats_returns_per_skill_breakdown(mock_sessio
     assert item["removals"] == 1
     assert item["by_agent"]["agent-a"] == 2
     assert item["by_source"]["github.com/org"] == 2
+
+
+@patch("codemie.repository.skill_event_repository.Session")
+def test_get_all_skills_aggregated_stats_slug_query_orders_by_install_count_desc(mock_session_cls) -> None:
+    mock_session = MagicMock()
+    mock_session_cls.return_value.__enter__.return_value = mock_session
+    count_result = MagicMock()
+    count_result.one.return_value = 0
+    slugs_result = MagicMock()
+    slugs_result.all.return_value = []
+    mock_session.exec.side_effect = [count_result, slugs_result]
+
+    _repo().get_all_skills_aggregated_stats(user_id=None, from_dt=None, to_dt=None, limit=10, offset=0)
+
+    slug_stmt = mock_session.exec.call_args_list[1][0][0]
+    compiled = str(slug_stmt.compile()).lower()
+    assert "sum(" in compiled
+    assert "order by" in compiled
+    assert "desc" in compiled
+    # Secondary tie-breaker must also be present (stable pagination)
+    assert "skill_slug" in compiled
+
+
+@patch("codemie.repository.skill_event_repository.Session")
+def test_get_all_skills_aggregated_stats_returns_results_in_install_count_order(mock_session_cls) -> None:
+    """Skills with more installs must appear before skills with fewer installs."""
+    mock_session = MagicMock()
+    mock_session_cls.return_value.__enter__.return_value = mock_session
+
+    count_result = MagicMock()
+    count_result.one.return_value = 2
+    # Simulate DB returning slugs already ordered by installs DESC (popular-skill first)
+    slugs_result = MagicMock()
+    slugs_result.all.return_value = ["popular-skill", "rare-skill"]
+    rows_result = MagicMock()
+    rows_result.all.return_value = [
+        ("popular-skill", "add", "agent-a", None, 10),
+        ("rare-skill", "add", "agent-b", None, 1),
+    ]
+    mock_session.exec.side_effect = [count_result, slugs_result, rows_result]
+
+    items, total = _repo().get_all_skills_aggregated_stats(user_id=None, from_dt=None, to_dt=None, limit=10, offset=0)
+
+    assert total == 2
+    assert items[0]["skill_slug"] == "popular-skill"
+    assert items[0]["installs"] == 10
+    assert items[1]["skill_slug"] == "rare-skill"
+    assert items[1]["installs"] == 1

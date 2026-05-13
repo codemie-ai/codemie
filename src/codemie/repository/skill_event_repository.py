@@ -25,7 +25,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlmodel import Session, select
 
 from codemie.configs import logger
@@ -81,7 +81,8 @@ class SkillEventRepository(ABC):
         """Return paginated per-skill aggregated install/removal counts.
 
         Each entry: ``{skill_slug, installs, removals, by_agent, by_source}``.
-        Pass ``user_id=None`` to retrieve stats for all users (admin view).
+        Results are ordered by install count descending, with slug as a tie-breaker.
+        Pass ``user_id=None`` to retrieve stats for all users.
         """
 
     @abstractmethod
@@ -150,7 +151,7 @@ class SQLSkillEventRepository(SkillEventRepository):
         limit: int,
         offset: int,
     ) -> tuple[list[dict], int]:
-        """Return paginated per-skill aggregated install/removal counts."""
+        """Return paginated per-skill aggregated install/removal counts, ordered by installs descending."""
         with Session(SkillEvent.get_engine()) as session:
 
             def _apply_filters(stmt):
@@ -166,10 +167,13 @@ class SQLSkillEventRepository(SkillEventRepository):
 
             total: int = session.exec(_apply_filters(select(func.count(func.distinct(SkillEvent.skill_slug))))).one()
 
+            _install_count = func.sum(case((SkillEvent.command == "add", 1), else_=0))
             slugs: list[str | None] = list(
                 session.exec(
                     _apply_filters(
-                        select(SkillEvent.skill_slug).group_by(SkillEvent.skill_slug).order_by(SkillEvent.skill_slug)
+                        select(SkillEvent.skill_slug)
+                        .group_by(SkillEvent.skill_slug)
+                        .order_by(_install_count.desc(), SkillEvent.skill_slug.asc())
                     )
                     .offset(offset)
                     .limit(limit)
