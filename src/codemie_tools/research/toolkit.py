@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
 from typing import List, Dict, Any, Optional
 
 from langchain_tavily import TavilySearch
@@ -20,6 +19,7 @@ from langchain_community.utilities.wikipedia import WikipediaAPIWrapper
 from langchain_google_community import GoogleSearchAPIWrapper
 from pydantic import BaseModel
 
+from codemie.configs.logger import logger
 from codemie_tools.base.base_toolkit import BaseToolkit
 from codemie_tools.base.models import ToolKit, ToolSet, Tool
 from codemie_tools.research.google_places_wrapper import GooglePlacesAPIWrapper
@@ -29,6 +29,7 @@ from codemie_tools.research.tools import (
     GoogleSearchResults,
     GooglePlacesTool,
     GooglePlacesFindNearTool,
+    ThreadSafeGoogleSearchAPIWrapper,
 )
 from codemie_tools.research.tools_vars import (
     GOOGLE_SEARCH_RESULTS_TOOL,
@@ -38,8 +39,6 @@ from codemie_tools.research.tools_vars import (
     GOOGLE_PLACES_FIND_NEAR_TOOL,
     TAVILY_SEARCH_TOOL,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class ResearchConfig(BaseModel):
@@ -83,7 +82,7 @@ class ResearchToolkit(BaseToolkit):
         return tools
 
     def google_search_tool(self):
-        api_wrapper = GoogleSearchAPIWrapper(
+        api_wrapper = ThreadSafeGoogleSearchAPIWrapper(
             google_api_key=self.research_config.google_search_api_key,
             google_cse_id=self.research_config.google_search_cde_id,
         )

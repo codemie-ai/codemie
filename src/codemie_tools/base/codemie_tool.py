@@ -13,20 +13,19 @@
 # limitations under the License.
 
 import json
-import logging
 import traceback
 from abc import abstractmethod
+from time import time
 from typing import Any, Optional, Union
 
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import ToolException
 
 from codemie.configs import config
+from codemie.configs.logger import logger
 from codemie_tools.base.errors import TruncatedOutputError
 from codemie_tools.base.models import ToolOutputFormat
 from codemie_tools.base.utils import get_encoding, sanitize_string, humanize_error
-
-logger = logging.getLogger(__name__)
 
 
 class CodeMieTool(BaseTool):
@@ -59,6 +58,7 @@ class CodeMieTool(BaseTool):
             raise ToolException(error_message) from e
 
     def _run(self, *args, **kwargs):
+        start = time()
         try:
             # Validate configuration before executing
             self._validate_config()
@@ -66,13 +66,14 @@ class CodeMieTool(BaseTool):
             output, _ = self._limit_output_content(result)
             return self._post_process_output_content(output, *args, **kwargs)
         except Exception as ex:
+            duration = time() - start
             stacktrace = sanitize_string(traceback.format_exc())
             error_message = (
                 f"Error calling tool: {self.name} with: \n"
                 f"Arguments: {kwargs}. \n"
                 f"The root cause is: '{sanitize_string(str(ex))}'"
             )
-            logger.error(f"{error_message}. Error stacktrace: {stacktrace}")
+            logger.error(f"{error_message}. Error stacktrace: {stacktrace} duration={duration:.2f}s")
             raise ToolException(error_message) from ex
 
     @abstractmethod

@@ -13,8 +13,10 @@
 # limitations under the License.
 
 import re
-from typing import Type, Optional
+from time import time
+from typing import Any, Type, Optional
 
+import httplib2
 import requests
 from bs4 import BeautifulSoup
 from langchain_community.utilities import WikipediaAPIWrapper
@@ -22,6 +24,7 @@ from langchain_google_community import GoogleSearchAPIWrapper
 from markdownify import markdownify as md
 from pydantic import BaseModel, Field
 
+from codemie.configs.logger import logger
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.research.google_places_wrapper import GooglePlacesAPIWrapper
 from codemie_tools.research.tools_vars import (
@@ -152,6 +155,23 @@ class WebScrapperTool(CodeMieTool):
         return content
 
 
+class ThreadSafeGoogleSearchAPIWrapper(GoogleSearchAPIWrapper):
+    """GoogleSearchAPIWrapper that creates a fresh httplib2.Http per call.
+
+    The default GoogleSearchAPIWrapper shares one httplib2.Http instance across all calls.
+    httplib2.Http is not thread-safe, so parallel tool calls block each other and eventually
+    hit a 60s read timeout. Passing a fresh Http() to execute() isolates each call.
+    """
+
+    def _google_search_results(self, search_term: str, **kwargs: Any) -> list[dict]:
+        cse = self.search_engine.cse()
+        if self.siterestrict:
+            cse = cse.siterestrict()
+        # Fresh Http per call fixes httplib2 thread-safety issue; timeout matches googleapiclient default
+        res = cse.list(q=search_term, cx=self.google_cse_id, **kwargs).execute(http=httplib2.Http(timeout=60))
+        return res.get("items", [])
+
+
 class GoogleSearchResultsInput(BaseModel):
     query: str = Field(description="Query to look up in Google.")
 
@@ -176,7 +196,19 @@ class GoogleSearchResults(CodeMieTool):
     args_schema: Type[BaseModel] = GoogleSearchResultsInput
 
     def execute(self, query: str):
-        return str(self.api_wrapper.results(query, self.num_results))
+        start = time()
+        try:
+            result = self.api_wrapper.results(query, self.num_results)
+            duration = time() - start
+            results_count = len(result) if isinstance(result, list) else "N/A"
+            logger.info(
+                f"GoogleSearch: completed query='{query}' duration={duration:.2f}s results_count={results_count}"
+            )
+            return str(result)
+        except Exception:
+            duration = time() - start
+            logger.warning(f"GoogleSearch: failed query='{query}' duration={duration:.2f}s")
+            raise
 
 
 class GooglePlacesTool(CodeMieTool):
