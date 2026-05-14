@@ -30,6 +30,7 @@ import yaml
 
 from codemie.configs import logger
 from codemie.core.ability import Ability, Action
+from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import CreatedByUser
 from codemie.repository.skill_repository import SkillRepository
@@ -547,6 +548,8 @@ class SkillService:
             ),
         }
 
+        skill_data["mcp_servers"] = MCPAccessControlService.sanitize_for_save(skill_data.get("mcp_servers"))
+
         skill = SkillRepository.create(skill_data)
         logger.info(f"Created skill '{skill.name}' (ID: {skill.id}) by user '{user.id}'")
 
@@ -675,6 +678,8 @@ class SkillService:
         updates.update(SkillService._build_skill_updates(request, skill))
 
         if updates:
+            if "mcp_servers" in updates:
+                updates["mcp_servers"] = MCPAccessControlService.sanitize_for_save(updates["mcp_servers"])
             skill = SkillRepository.update(skill_id, updates)
             logger.info(f"Updated skill '{skill.name}' (ID: {skill_id}) by user '{user.id}'")
 

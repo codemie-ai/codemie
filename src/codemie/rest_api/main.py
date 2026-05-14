@@ -44,7 +44,7 @@ from codemie.enterprise.mcp_auth.router import get_mcp_auth_router
 from codemie.enterprise.mcp_auth.dependencies import initialize_mcp_auth, shutdown_mcp_auth
 from codemie.configs.logger import set_logging_info, logger
 from codemie.core.constants import APP_DESCRIPTION
-from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException
+from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException, ValidationException
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 from codemie.rest_api.routers import budget_router, project_budget_router
 from codemie.rest_api.routers import (
@@ -789,6 +789,14 @@ async def elastic_exception_handler(request: Request, exception: ApiError) -> JS
     )
 
 
+@app.exception_handler(ValidationException)
+async def domain_validation_exception_handler(request: Request, exc: ValidationException) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"error": {"message": str(exc), "details": None, "help": None}},
+    )
+
+
 @app.exception_handler(ExtendedHTTPException)
 async def extended_http_exception_handler(request: Request, exc: ExtendedHTTPException):
     """
@@ -844,8 +852,18 @@ async def mcp_auth_required_handler(request: Request, exc: MCPAuthenticationRequ
     )
 
 
+def _sanitize_error(error: dict) -> dict:
+    ctx = error.get("ctx")
+    if ctx and isinstance(ctx, dict):
+        sanitized_ctx = {
+            k: str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v for k, v in ctx.items()
+        }
+        return {**error, "ctx": sanitized_ctx}
+    return error
+
+
 def _validation_error_details(exc: RequestValidationError) -> tuple[list, list[str]]:
-    errors = exc.errors()
+    errors = [_sanitize_error(e) for e in exc.errors()]
     detailed_errors: list[str] = []
     for error in errors:
         loc = error.get("loc", [])

@@ -98,6 +98,7 @@ from codemie.service.request_summary_manager import request_summary_manager
 from codemie.service.assistant.assistant_version_service import AssistantVersionService
 from codemie.service.tools import ToolsInfoService
 from codemie.service.mcp_config_service import MCPConfigService
+from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.service.assistant.assistant_health_check_service import AssistantHealthCheckService
 from codemie.service.tools.plugin_tools_info_service import PluginToolsInfoService, PluginToolsInfoServiceError
 from codemie.service.llm_service.llm_service import llm_service
@@ -636,6 +637,8 @@ def create_assistant(request: AssistantRequest, user: User = Depends(authenticat
                 validation=validation_result,
             )
 
+    request.mcp_servers = MCPAccessControlService.sanitize_for_save(request.mcp_servers)
+
     assistant = Assistant(**request.model_dump(exclude={"guardrail_assignments", "skip_integration_validation"}))
     assistant.created_by = CreatedByUser(
         id=user.id,
@@ -722,7 +725,11 @@ def update_assistant(
                 validation=validation_result,
             )
 
+    request.mcp_servers = MCPAccessControlService.sanitize_for_save(request.mcp_servers)
+
     repository = AssistantRepository()
+
+    old_mcp_servers = list(assistant.mcp_servers or [])
 
     # Encrypt new plain-text sensitive values first (masked "********" values are skipped).
     if request.prompt_variables:
@@ -741,6 +748,7 @@ def update_assistant(
         guardrail_assignments = request.guardrail_assignments
 
         repository.update(assistant, request, user)
+        _track_mcp_usage_changes(old_mcp_servers, list(assistant.mcp_servers or []))
 
         # Filter out datasources that don't exist in the target project
         # This handles cases like editing an assistant and changing its project
@@ -829,6 +837,8 @@ async def ask_virtual_assistant(
     """
     asyncio.create_task(raw_request.state.wait_for_disconnect())
 
+    mcp_servers = MCPAccessControlService.sanitize_for_save(request.mcp_servers)
+
     assistant = Assistant.model_construct(
         id=None,
         name='virtual',
@@ -840,7 +850,7 @@ async def ask_virtual_assistant(
         top_p=request.top_p,
         toolkits=request.toolkits,
         context=request.context,
-        mcp_servers=request.mcp_servers,
+        mcp_servers=mcp_servers,
         skill_ids=request.skill_ids,
         assistant_ids=request.assistant_ids,
         agent_mode=request.agent_mode,
@@ -2751,49 +2761,36 @@ def rollback_assistant_version(
         raise
 
 
-def _track_mcp_usage_on_create(mcp_servers: list):
-    """
-    Track usage count when assistant is created with MCP servers.
-
-    Args:
-        mcp_servers: list of MCPServerDetails from the assistant
-    """
-
+def _track_mcp_usage_on_create(mcp_servers: list[MCPServerDetails]) -> None:
+    """Increment usage counts for all enabled catalog-ref servers on assistant create."""
     if not mcp_servers:
         return
-
-    for mcp_server in mcp_servers:
-        if not mcp_server.enabled:
-            continue
-
-        # Track if mcp_config_id is provided (from marketplace selection)
-        if hasattr(mcp_server, 'mcp_config_id') and mcp_server.mcp_config_id:
-            try:
-                MCPConfigService.increment_usage(mcp_server.mcp_config_id)
-                logger.debug(f"Incremented usage for MCP config: {mcp_server.mcp_config_id}")
-            except Exception as e:
-                logger.warning(f"Failed to increment usage for {mcp_server.mcp_config_id}: {e}")
+    config_ids = {s.mcp_config_id for s in mcp_servers if s.enabled and s.mcp_config_id}
+    try:
+        MCPConfigService.adjust_usage(increments=config_ids, decrements=set())
+    except Exception as e:
+        logger.warning(f"Failed to track MCP usage on create: {e}", exc_info=True)
 
 
-def _track_mcp_usage_on_delete(mcp_servers: list):
-    """
-    Track usage count when assistant is deleted with MCP servers.
-
-    Args:
-        mcp_servers: list of MCPServerDetails from the assistant being deleted
-    """
-    from codemie.service.mcp_config_service import MCPConfigService
-
+def _track_mcp_usage_on_delete(mcp_servers: list[MCPServerDetails]) -> None:
+    """Decrement usage counts for all catalog-ref servers on assistant delete."""
     if not mcp_servers:
         return
+    config_ids = {s.mcp_config_id for s in mcp_servers if s.mcp_config_id}
+    try:
+        MCPConfigService.adjust_usage(increments=set(), decrements=config_ids)
+    except Exception as e:
+        logger.warning(f"Failed to track MCP usage on delete: {e}", exc_info=True)
 
-    for mcp_server in mcp_servers:
-        if hasattr(mcp_server, 'mcp_config_id') and mcp_server.mcp_config_id:
-            try:
-                MCPConfigService.decrement_usage(mcp_server.mcp_config_id)
-                logger.debug(f"Decremented usage for deleted assistant MCP: {mcp_server.mcp_config_id}")
-            except Exception as e:
-                logger.warning(f"Failed to decrement usage for {mcp_server.mcp_config_id}: {e}")
+
+def _track_mcp_usage_changes(old_servers: list[MCPServerDetails], new_servers: list[MCPServerDetails]) -> None:
+    """Track usage count delta when assistant MCP servers are updated (BR-8.2)."""
+    old_ids = {s.mcp_config_id for s in old_servers if s.enabled and s.mcp_config_id}
+    new_ids = {s.mcp_config_id for s in new_servers if s.enabled and s.mcp_config_id}
+    try:
+        MCPConfigService.adjust_usage(increments=new_ids - old_ids, decrements=old_ids - new_ids)
+    except Exception as e:
+        logger.warning(f"Failed to track MCP usage changes: {e}", exc_info=True)
 
 
 def _index_marketplace_assistant(assistant_id: str, user: User, is_update: bool = False):

@@ -20,6 +20,7 @@ import pytest
 
 from codemie.core.exceptions import MCPAuthenticationRequiredException
 from codemie.rest_api.models.assistant import MCPServerDetails
+from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.service.mcp.client import MCPConnectClient
 from codemie.service.mcp.models import MCPExecutionContext, MCPServerConfig, MCPToolDefinition, MCPToolLoadException
 from codemie.rest_api.security.user import User
@@ -479,30 +480,33 @@ def test_get_mcp_server_tools_stops_listing_saml_server_after_reauth() -> None:
     with patch.object(MCPToolkitService, "get_instance", return_value=default_toolkit_service):
         with patch.object(MCPToolkitService, "_auth_resolvers", [resolver]):
             with patch.object(MCPToolkitService, "_create_context_aware_tools", side_effect=lambda tools, _: tools):
-                with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
-                    MCPToolkitService.get_mcp_server_tools([saml_server], user_id="user-1", assistant_id="assistant-1")
+                with patch.object(MCPAccessControlService, "resolve_catalog_config", side_effect=lambda s: s):
+                    with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+                        MCPToolkitService.get_mcp_server_tools(
+                            [saml_server], user_id="user-1", assistant_id="assistant-1"
+                        )
 
-                assert exc_info.value.payload["servers"] == [
-                    {
-                        "auth_config_id": "auth-2",
-                        "mcp_config_id": "mcp-2",
-                        "mcp_config_name": "saml-server",
-                        "mcp_server_name": "saml-server",
-                        "auth_type": "saml",
-                        "as_hostname": "idp.example.com",
-                        "status": "session_expired",
-                        "error_context": "SAML session expired",
-                        "initiate_url": "/v1/mcp-auth/saml/initiate",
-                    }
-                ]
+                    assert exc_info.value.payload["servers"] == [
+                        {
+                            "auth_config_id": "auth-2",
+                            "mcp_config_id": "mcp-2",
+                            "mcp_config_name": "saml-server",
+                            "mcp_server_name": "saml-server",
+                            "auth_type": "saml",
+                            "as_hostname": "idp.example.com",
+                            "status": "session_expired",
+                            "error_context": "SAML session expired",
+                            "initiate_url": "/v1/mcp-auth/saml/initiate",
+                        }
+                    ]
 
-                resolver.expired = False
+                    resolver.expired = False
 
-                tools = MCPToolkitService.get_mcp_server_tools(
-                    [saml_server],
-                    user_id="user-1",
-                    assistant_id="assistant-1",
-                )
+                    tools = MCPToolkitService.get_mcp_server_tools(
+                        [saml_server],
+                        user_id="user-1",
+                        assistant_id="assistant-1",
+                    )
 
     assert len(tools) == 1
 

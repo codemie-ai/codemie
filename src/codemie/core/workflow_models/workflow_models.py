@@ -69,11 +69,12 @@ class WorkflowAssistant(BaseModel):
                 # Check if at least one configuration method is provided
                 has_config = mcp_server.config is not None
                 has_command = mcp_server.command is not None
+                has_catalog_ref = mcp_server.mcp_config_id is not None
 
-                if not (has_config or has_command):
+                if not (has_config or has_command or has_catalog_ref):
                     raise ValueError(
                         f"MCP server '{mcp_server.name}' is enabled but missing configuration. "
-                        f"Please provide either 'config' or 'command'."
+                        f"Please provide 'config', 'command', or 'mcp_config_id'."
                     )
         return values
 

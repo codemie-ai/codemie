@@ -170,6 +170,12 @@ class MCPToolkitService:
         if not mcp_servers:
             return tools
 
+        from codemie.service.mcp.access_control import MCPAccessControlService
+
+        mcp_servers = MCPAccessControlService.filter_for_runtime(mcp_servers)
+        if not mcp_servers:
+            return tools
+
         # Create execution context
         execution_context = MCPExecutionContext(
             user_id=user_id,
@@ -294,6 +300,8 @@ class MCPToolkitService:
                 mcp_server_single_usage=mcp_server_single_usage,
                 execution_context=execution_context,
             )
+            if server_config is None:
+                return []
 
             toolkit = toolkit_service.get_toolkit(
                 server_config=server_config,
@@ -401,7 +409,7 @@ class MCPToolkitService:
         mcp_server_args_preprocessor: callable | None = None,
         mcp_server_single_usage: bool | None = False,
         execution_context: MCPExecutionContext | None = None,
-    ) -> MCPServerConfig:
+    ) -> MCPServerConfig | None:
         """
         Prepare the complete server configuration for an MCP server.
 
@@ -419,9 +427,11 @@ class MCPToolkitService:
             execution_context: Optional execution context for request-scoped auth delivery
 
         Returns:
-            Complete MCP server configuration
+            Complete MCP server configuration, or None if catalog entry is unavailable.
         """
         server_config = cls._build_mcp_server_config(mcp_server, user_id, project_name)
+        if server_config is None:
+            return None
 
         # Set single_usage
         server_config.single_usage = mcp_server.config and mcp_server.config.single_usage or mcp_server_single_usage
@@ -923,7 +933,7 @@ class MCPToolkitService:
     @classmethod
     def _build_mcp_server_config(
         cls, mcp_server: MCPServerDetails, user_id: str | None = None, project_name: str | None = None
-    ) -> MCPServerConfig:
+    ) -> MCPServerConfig | None:
         """
         Build the actual MCP server configuration from server details.
 
@@ -937,6 +947,14 @@ class MCPToolkitService:
         Returns:
             The built MCP server configuration
         """
+        from codemie.service.mcp.access_control import MCPAccessControlService
+
+        resolved = MCPAccessControlService.resolve_catalog_config(mcp_server)
+        if resolved is None:
+            logger.warning(f"MCP server '{mcp_server.name}': catalog entry unavailable at runtime, skipping.")
+            return None
+        mcp_server = resolved
+
         actual_config = (
             mcp_server.config.model_copy(deep=True)
             if mcp_server.config

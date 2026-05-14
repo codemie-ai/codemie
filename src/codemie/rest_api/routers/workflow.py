@@ -20,6 +20,8 @@ from fastapi import APIRouter, status, Depends, Query, BackgroundTasks
 
 from codemie.configs import logger
 from codemie.core.ability import Ability, Action
+from codemie.rest_api.models.assistant import MCPServerDetails
+from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.core.constants import MermaidMimeType
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import BaseResponse, BaseResponseWithData, CreatedByUser
@@ -54,6 +56,27 @@ workflow_monitoring_service = WorkflowMonitoringService()
 
 WORKFLOW_STARTED_BG_MSG = "Workflow has been triggered in the background"
 WORKFLOW_CONFIGURATION_ERROR = "Workflow Configuration error"
+
+
+def _collect_workflow_mcp_servers(workflow_config: WorkflowConfig) -> list[MCPServerDetails]:
+    """Collect all MCP server entries from workflow assistants and tools."""
+    servers: list[MCPServerDetails] = []
+    for assistant in workflow_config.assistants or []:
+        servers.extend(assistant.mcp_servers or [])
+    for tool in workflow_config.tools or []:
+        if tool.mcp_server:
+            servers.append(tool.mcp_server)
+    return servers
+
+
+def _strip_workflow_mcp_servers(workflow_config: WorkflowConfig) -> None:
+    """Strip inline config fields from catalog-ref MCP servers in-place."""
+    for assistant in workflow_config.assistants or []:
+        if assistant.mcp_servers:
+            assistant.mcp_servers = MCPAccessControlService.strip_inline_config(assistant.mcp_servers)
+    for tool in workflow_config.tools or []:
+        if tool.mcp_server:
+            tool.mcp_server = MCPAccessControlService._strip_one(tool.mcp_server)
 
 
 @router.get(
@@ -213,6 +236,8 @@ def create_workflow(
         )
     project_access_check(user, request.project)
     try:
+        MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(workflow_config))
+        _strip_workflow_mcp_servers(workflow_config)
         WorkflowExecutor.validate_workflow(workflow_config=workflow_config, user=user, error_format=error_format)
         workflow_config = workflow_service.create_workflow(workflow_config, user)
 
@@ -273,9 +298,12 @@ def update_workflow(
     if not Ability(user).can(Action.WRITE, workflow):
         raise_access_denied("update")
 
+    updated_config = WorkflowConfig(**request.model_dump())
+
     try:
+        MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(updated_config))
+        _strip_workflow_mcp_servers(updated_config)
         logger.debug(f"Update workflow. Request: {request}")
-        updated_config = WorkflowConfig(**request.model_dump())
 
         # Prevent updating workflows to autonomous mode
         if updated_config.mode == WorkflowMode.AUTONOMOUS:

@@ -24,6 +24,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import status
 from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, select
 
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
@@ -623,6 +624,34 @@ class MCPConfigService:
             mcp_config.usage_count -= 1
             mcp_config.update()
             logger.debug(f"Decremented usage count for MCP config: {config_id}")
+
+    @classmethod
+    def adjust_usage(cls, increments: set[str], decrements: set[str]) -> None:
+        """Bulk-adjust usage counts atomically using SELECT FOR UPDATE to prevent race conditions.
+
+        Args:
+            increments: config IDs whose usage_count should be incremented
+            decrements: config IDs whose usage_count should be decremented
+        """
+        all_ids = list(increments | decrements)
+        if not all_ids:
+            return
+
+        with Session(MCPConfig.get_engine()) as session:
+            stmt = select(MCPConfig).where(MCPConfig.id.in_(all_ids)).with_for_update()
+            configs = {c.id: c for c in session.exec(stmt).all() if c.id}
+
+            for config_id in increments:
+                if cfg := configs.get(config_id):
+                    cfg.usage_count += 1
+                    logger.debug(f"Incremented usage count for MCP config: {config_id}")
+
+            for config_id in decrements:
+                if cfg := configs.get(config_id):
+                    cfg.usage_count = max(0, cfg.usage_count - 1)
+                    logger.debug(f"Decremented usage count for MCP config: {config_id}")
+
+            session.commit()
 
     @classmethod
     def find_by_name(cls, name: str, user_id: str) -> Optional[MCPConfig]:

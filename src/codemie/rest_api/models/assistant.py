@@ -40,7 +40,6 @@ from codemie.rest_api.models.standard import PostResponse
 from codemie.core.models import BaseResponse
 from codemie.rest_api.security.user import User
 from codemie.service.mcp.models import MCPServerConfig
-from codemie.service.mcp_config_service import MCPConfigService
 from codemie.configs.logger import logger
 from codemie.service.guardrail.guardrail_service import GuardrailService
 
@@ -158,6 +157,13 @@ class MCPServerDetails(BaseModel):
     This class represents the configuration for an MCP (Model Context Protocol) server
     that can be used by an Assistant to provide tools and capabilities.
     """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_empty_config(cls, values: Any) -> Any:
+        if isinstance(values, dict) and isinstance(values.get("config"), dict) and not values["config"]:
+            values = {**values, "config": None}
+        return values
 
     name: str = Field(description="Name of the MCP server configuration")
     description: Optional[str] = Field(None, description="Optional description of the MCP server")
@@ -930,10 +936,6 @@ class Assistant(BaseModelWithSQLSupport, AssistantBase, table=True):
         # Update master record fields (only non-versioned fields like name, slug, etc.)
         self._map_assistant_request(request)
 
-        # Track MCP usage changes
-        old_mcp_servers = self.mcp_servers.copy() if self.mcp_servers else []
-        self._track_mcp_usage_changes(old_mcp_servers, self.mcp_servers)
-
         self.update()
 
         if AssistantVersionCompareService.has_configuration_changes(self.id, request):
@@ -941,43 +943,6 @@ class Assistant(BaseModelWithSQLSupport, AssistantBase, table=True):
             AssistantVersionService.create_new_version(
                 assistant=self, request=request, user=user, change_notes=change_notes
             )
-
-    @staticmethod
-    def _track_mcp_usage_changes(old_servers: list, new_servers: list):
-        """
-        Track MCP config usage count changes during assistant update.
-
-        Args:
-            old_servers: Previous list of MCPServerDetails
-            new_servers: Updated list of MCPServerDetails
-        """
-        # Extract config IDs from old and new servers
-        old_ids = {
-            s.mcp_config_id
-            for s in (old_servers or [])
-            if hasattr(s, 'mcp_config_id') and s.mcp_config_id and s.enabled
-        }
-        new_ids = {
-            s.mcp_config_id
-            for s in (new_servers or [])
-            if hasattr(s, 'mcp_config_id') and s.mcp_config_id and s.enabled
-        }
-
-        # Increment for newly added configs
-        for config_id in new_ids - old_ids:
-            try:
-                MCPConfigService.increment_usage(config_id)
-                logger.debug(f"Incremented usage for added MCP config: {config_id}")
-            except Exception as e:
-                logger.warning(f"Failed to increment usage for {config_id}: {e}")
-
-        # Decrement for removed configs
-        for config_id in old_ids - new_ids:
-            try:
-                MCPConfigService.decrement_usage(config_id)
-                logger.debug(f"Decremented usage for removed MCP config: {config_id}")
-            except Exception as e:
-                logger.warning(f"Failed to decrement usage for {config_id}: {e}")
 
     @classmethod
     def delete_assistant(cls, assistant_id: str):

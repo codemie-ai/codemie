@@ -152,7 +152,13 @@ components:
       enabled: false
       name: "Enriched User Dimensions"
       description: "Enable enriched user dimension widgets (country, job title, level) in CLI analytics dashboard"
-      
+
+  - id: "mcpCustomServersDisabled"
+    settings:
+      enabled: false
+      name: "MCP Custom Servers Disabled"
+      description: "When enabled, restricts users to catalog-referenced MCP servers only. Custom inline MCP server configuration is not permitted."
+
 preconfigured_assistants:
   - id: "codemie-onboarding"
     settings:

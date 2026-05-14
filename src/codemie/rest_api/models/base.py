@@ -374,7 +374,7 @@ class BaseModelWithSQLSupport(CommonBaseModel):
         return PostgresClient.get_engine()
 
     @classmethod
-    def get_by_id(cls, id_: str) -> BaseModelWithSQLSupport:
+    def get_by_id(cls, id_: str) -> Self:
         with Session(cls.get_engine()) as session:
             result = session.get(cls, id_)
             if not result:
@@ -382,14 +382,14 @@ class BaseModelWithSQLSupport(CommonBaseModel):
             return result
 
     @classmethod
-    def find_by_id(cls, id_: str) -> Optional[Self]:
+    def find_by_id(cls, id_: str) -> Self | None:
         try:
             return cls.get_by_id(id_)
         except KeyError:
             return None
 
     @classmethod
-    def get_by_ids(cls, ids: List[str]) -> List[BaseModelWithSQLSupport]:
+    def get_by_ids(cls, ids: List[str]) -> List[Self]:
         with Session(cls.get_engine()) as session:
             statement = select(cls).where(cls.id.in_(ids))
             return session.exec(statement).all()
