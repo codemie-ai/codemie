@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from codemie.service.settings.settings import SettingsService
 from codemie.rest_api.models.settings import Settings, SettingType, CredentialValues
@@ -449,3 +449,19 @@ def test_get_user_litellm_api_keys_handles_empty_settings(mock_get_by_project_na
     # Then: Empty lists are returned
     assert result["user_keys"] == []
     assert result["project_keys"] == []
+
+
+@patch.object(SettingsService, 'retrieve_setting')
+def test_get_azure_devops_creds_uses_setting_id_when_provided(mock_retrieve):
+    # Given: retrieve_setting returns a setting with string credential values
+    mock_setting = MagicMock()
+    mock_setting.credential.return_value = "test_value"
+    mock_retrieve.return_value = mock_setting
+
+    # When: get_azure_devops_creds is called with a setting_id
+    SettingsService.get_azure_devops_creds(user_id="u1", project_name="p1", setting_id="ado-id")
+
+    # Then: retrieve_setting is called with setting_id as the third positional argument
+    call_args = mock_retrieve.call_args[0]
+    assert len(call_args) >= 3
+    assert call_args[2] == "ado-id"

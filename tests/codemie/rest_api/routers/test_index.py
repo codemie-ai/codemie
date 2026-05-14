@@ -609,3 +609,177 @@ class TestParseJwtExp:
         result = _parse_jwt_exp("")
 
         assert result >= int(time.time()) + 3590
+
+
+@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
+@pytest.mark.asyncio
+async def test_reindex_jira_uses_stored_setting_id_when_request_setting_id_is_none(
+    mock_get_guardrails, mock_filter, mock_worker, mock_creds, auth_headers
+):
+    kb_index_mock = MagicMock()
+    kb_index_mock.setting_id = "stored-jira-id"
+    mock_filter.return_value = [kb_index_mock]
+    mock_worker.return_value = MagicMock()
+    mock_get_guardrails.return_value = []
+
+    response = app_client.put(
+        "/v1/index/knowledge_base/jira?full_reindex=true",
+        json={"name": "test_index", "project_name": "test_project", "jql": "project=TEST", "description": ""},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    mock_creds.assert_called_once_with(
+        user_id="test_user",
+        project_name="test_project",
+        setting_id="stored-jira-id",
+    )
+
+
+@patch('codemie.rest_api.routers.index.SettingsService.get_confluence_creds')
+@patch('codemie.rest_api.routers.index.ConfluenceDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
+@pytest.mark.asyncio
+async def test_reindex_confluence_uses_stored_setting_id_when_request_setting_id_is_none(
+    mock_get_guardrails, mock_filter, mock_worker, mock_creds, auth_headers
+):
+    kb_index_mock = MagicMock()
+    kb_index_mock.setting_id = "stored-conf-id"
+    mock_filter.return_value = [kb_index_mock]
+    mock_worker.return_value = MagicMock()
+    mock_get_guardrails.return_value = []
+
+    response = app_client.put(
+        "/v1/index/knowledge_base/confluence?full_reindex=true",
+        json={"name": "test_index", "project_name": "test_project"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    mock_creds.assert_called_once_with(
+        user_id="test_user",
+        project_name="test_project",
+        setting_id="stored-conf-id",
+    )
+
+
+@patch('codemie.rest_api.routers.index.SettingsService.get_xray_creds')
+@patch('codemie.rest_api.routers.index.XrayDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
+@pytest.mark.asyncio
+async def test_reindex_xray_uses_stored_setting_id_when_request_setting_id_is_none(
+    mock_get_guardrails, mock_filter, mock_worker, mock_creds, auth_headers
+):
+    kb_index_mock = MagicMock()
+    kb_index_mock.setting_id = "stored-xray-id"
+    mock_filter.return_value = [kb_index_mock]
+    mock_worker.return_value = MagicMock()
+    mock_get_guardrails.return_value = []
+
+    response = app_client.put(
+        "/v1/index/knowledge_base/xray?full_reindex=true",
+        json={"name": "test_index", "project_name": "test_project", "jql": "project=TEST"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    mock_creds.assert_called_once_with(
+        user_id="test_user",
+        project_name="test_project",
+        setting_id="stored-xray-id",
+    )
+
+
+@patch('codemie.rest_api.routers.index.SettingsService.get_azure_devops_creds')
+@patch('codemie.rest_api.routers.index.AzureDevOpsWikiDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
+@pytest.mark.asyncio
+async def test_reindex_azure_devops_wiki_uses_stored_setting_id_when_request_setting_id_is_none(
+    mock_get_guardrails, mock_filter, mock_worker, mock_creds, auth_headers
+):
+    kb_index_mock = MagicMock()
+    kb_index_mock.setting_id = "stored-ado-id"
+    mock_filter.return_value = [kb_index_mock]
+    mock_worker.return_value = MagicMock()
+    mock_get_guardrails.return_value = []
+
+    response = app_client.put(
+        "/v1/index/knowledge_base/azure_devops_wiki?full_reindex=true",
+        json={"name": "test_index", "project_name": "test_project"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    mock_creds.assert_called_once_with(
+        user_id="test_user",
+        project_name="test_project",
+        setting_id="stored-ado-id",
+    )
+
+
+@patch('codemie.rest_api.routers.index.SettingsService.get_azure_devops_creds')
+@patch('codemie.rest_api.routers.index.AzureDevOpsWorkItemDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
+@pytest.mark.asyncio
+async def test_reindex_azure_devops_work_item_uses_stored_setting_id_when_request_setting_id_is_none(
+    mock_get_guardrails, mock_filter, mock_worker, mock_creds, auth_headers
+):
+    kb_index_mock = MagicMock()
+    kb_index_mock.setting_id = "stored-ado-wi-id"
+    mock_filter.return_value = [kb_index_mock]
+    mock_worker.return_value = MagicMock()
+    mock_get_guardrails.return_value = []
+
+    response = app_client.put(
+        "/v1/index/knowledge_base/azure_devops_work_item?full_reindex=true",
+        json={"name": "test_index", "project_name": "test_project"},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    mock_creds.assert_called_once_with(
+        user_id="test_user",
+        project_name="test_project",
+        setting_id="stored-ado-wi-id",
+    )
+
+
+@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
+@pytest.mark.asyncio
+async def test_reindex_jira_explicit_setting_id_takes_precedence_over_stored(
+    mock_get_guardrails, mock_filter, mock_worker, mock_creds, auth_headers
+):
+    kb_index_mock = MagicMock()
+    kb_index_mock.setting_id = "stored-id"
+    mock_filter.return_value = [kb_index_mock]
+    mock_worker.return_value = MagicMock()
+    mock_get_guardrails.return_value = []
+
+    response = app_client.put(
+        "/v1/index/knowledge_base/jira?full_reindex=true",
+        json={
+            "name": "test_index",
+            "project_name": "test_project",
+            "jql": "project=TEST",
+            "description": "",
+            "setting_id": "explicit-id",
+        },
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    mock_creds.assert_called_once_with(
+        user_id="test_user",
+        project_name="test_project",
+        setting_id="explicit-id",
+    )

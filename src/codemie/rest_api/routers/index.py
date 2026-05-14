@@ -1194,7 +1194,7 @@ def update_knowledge_base_confluence(
     confluence_creds = SettingsService.get_confluence_creds(
         user_id=user.id,
         project_name=request.project_name,
-        setting_id=request.setting_id,
+        setting_id=request.setting_id or kb_index[0].setting_id,
     )
 
     datasource_processor = ConfluenceDatasourceProcessor(
@@ -1265,7 +1265,7 @@ def update_knowledge_base_jira(
     jira_creds = SettingsService.get_jira_creds(
         user_id=user.id,
         project_name=request.project_name,
-        setting_id=request.setting_id,
+        setting_id=request.setting_id or kb_index.setting_id,
     )
     project_space_visible = (
         request.project_space_visible if request.project_space_visible is not None else kb_index.project_space_visible
@@ -1345,7 +1345,7 @@ def update_knowledge_base_xray(
     xray_creds = SettingsService.get_xray_creds(
         user_id=user.id,
         project_name=request.project_name,
-        setting_id=request.setting_id,
+        setting_id=request.setting_id or kb_index.setting_id,
     )
     project_space_visible = (
         request.project_space_visible if request.project_space_visible is not None else kb_index.project_space_visible
@@ -1425,6 +1425,7 @@ def update_knowledge_base_azure_devops_wiki(
     azure_devops_creds = SettingsService.get_azure_devops_creds(
         user_id=user.id,
         project_name=request.project_name,
+        setting_id=request.setting_id or kb_index.setting_id,
     )
     project_space_visible = (
         request.project_space_visible if request.project_space_visible is not None else kb_index.project_space_visible
@@ -1534,6 +1535,7 @@ def update_knowledge_base_azure_devops_work_item(
     azure_devops_creds = SettingsService.get_azure_devops_creds(
         user_id=user.id,
         project_name=request.project_name,
+        setting_id=request.setting_id or kb_index.setting_id,
     )
     project_space_visible = (
         request.project_space_visible if request.project_space_visible is not None else kb_index.project_space_visible

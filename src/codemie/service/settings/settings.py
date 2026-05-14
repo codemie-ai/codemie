@@ -1141,6 +1141,7 @@ class SettingsService(BaseSettingsService):
         creds: Optional[Credentials] = None,
         indexed_repo: Optional[Any] = None,
         tool_config: Optional[ToolConfig] = None,
+        setting_id: Optional[str] = None,
     ) -> AzureDevOpsCredentials:
         """
         Retrieve the Azure DevOps credentials for a given user and project.
@@ -1185,7 +1186,7 @@ class SettingsService(BaseSettingsService):
         }
 
         project_name, organization_name = extract_project_and_org_names(indexed_repo)
-        setting = cls.retrieve_setting(search_fields, assistant_id)
+        setting = cls.retrieve_setting(search_fields, assistant_id, setting_id)
 
         def get_credential(attr: str, default: str) -> str:
             return setting.credential(attr) if setting and setting.credential(attr) else default
