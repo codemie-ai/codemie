@@ -16,7 +16,7 @@ import logging
 from enum import Enum
 from typing import Optional, Type, Any, List, Union, Dict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.file_tool_mixin import FileToolMixin
@@ -40,7 +40,7 @@ class PDFToolInput(BaseModel):
     Defines the schema for the arguments required by PDFTool.
     """
 
-    pages: list[int] = Field(
+    pages: list[int] | None = Field(
         default_factory=list,
         description=(
             "List of page numbers of a PDF document to process. "
@@ -59,6 +59,17 @@ class PDFToolInput(BaseModel):
             "document."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_pages(cls, data: dict):
+        pages = data.get("pages")
+        if pages:
+            data["pages"] = pages
+            return data
+
+        data["pages"] = None
+        return data
 
 
 class PDFTool(CodeMieTool, FileToolMixin):
