@@ -885,11 +885,15 @@ class TestToolkitService:
         # Assertions
         assert "Invalid IDE request" in str(exc_info.value)
 
+    @patch("codemie.service.tools.toolkit_service.EmailAnalysisTool")
+    @patch("codemie.service.tools.toolkit_service.FileAnalysisConfig")
     @patch("codemie.service.tools.toolkit_service.FileAnalysisToolkit")
     @patch("codemie.service.tools.toolkit_service.llm_service")
     @patch("codemie.service.tools.toolkit_service.get_llm_by_credentials")
-    def test_add_file_tools(self, mock_get_llm, mock_llm_service, mock_file_toolkit, mock_assistant):
-        """Test add_file_tools adds file analysis tools."""
+    def test_add_file_tools(
+        self, mock_get_llm, mock_llm_service, mock_file_toolkit, mock_file_config, mock_email_tool, mock_assistant
+    ):
+        """Test add_file_tools adds file analysis tools including EmailAnalysisTool."""
         # Setup
         mock_file_object = Mock(spec=FileObject)
         mock_file_object.is_image.return_value = False
@@ -903,18 +907,76 @@ class TestToolkitService:
         mock_tool = Mock(spec=BaseTool)
         mock_file_toolkit.get_toolkit.return_value.get_tools.return_value = [mock_tool]
 
-        # Call method with already constructed FileObject - no need to mock FileService.get_file_object
-        # since we're passing the file_objects directly
+        mock_email_instance = Mock(spec=BaseTool)
+        mock_email_instance.name = "email_analysis_tool"
+        mock_email_tool.return_value = mock_email_instance
+
         result = ToolkitService.add_file_tools(mock_assistant, [mock_file_object], "test-uuid")
 
-        # Assertions
-        assert len(result) == 1
+        # EmailAnalysisTool is always appended in addition to the file toolkit tool
+        assert len(result) == 2
+        tool_names = [getattr(t, "name", None) for t in result]
+        assert "email_analysis_tool" in tool_names
 
+    @patch("codemie.service.tools.toolkit_service.EmailAnalysisTool")
+    @patch("codemie.service.tools.toolkit_service.FileAnalysisConfig")
+    @patch("codemie.service.tools.toolkit_service.FileAnalysisToolkit")
+    @patch("codemie.service.tools.toolkit_service.llm_service")
+    @patch("codemie.service.tools.toolkit_service.get_llm_by_credentials")
+    def test_add_file_tools_always_includes_email_tool_without_files(
+        self, mock_get_llm, mock_llm_service, mock_file_toolkit, mock_file_config, mock_email_tool, mock_assistant
+    ):
+        """EmailAnalysisTool is included even when no files are uploaded."""
+        mock_llm = Mock()
+        mock_get_llm.return_value = mock_llm
+        mock_llm_service.get_llm_deployment_name.return_value = "gpt-4"
+        mock_llm_service.get_multimodal_llms.return_value = ["gpt-4-vision"]
+
+        mock_email_instance = Mock(spec=BaseTool)
+        mock_email_instance.name = "email_analysis_tool"
+        mock_email_tool.return_value = mock_email_instance
+
+        result = ToolkitService.add_file_tools(mock_assistant, [], "test-uuid")
+
+        assert any(getattr(t, "name", None) == "email_analysis_tool" for t in result)
+        mock_file_toolkit.get_toolkit.assert_not_called()
+
+    @patch("codemie.service.tools.toolkit_service.EmailAnalysisTool")
+    @patch("codemie.service.tools.toolkit_service.FileAnalysisToolkit")
+    @patch("codemie.service.tools.toolkit_service.llm_service")
+    @patch("codemie.service.tools.toolkit_service.get_llm_by_credentials")
+    def test_add_file_tools_no_duplicate_email_tool_when_already_provided(
+        self, mock_get_llm, mock_llm_service, mock_file_toolkit, mock_email_tool, mock_assistant
+    ):
+        """EmailAnalysisTool is not duplicated if FileAnalysisToolkit already returned one."""
+        mock_file_object = Mock(spec=FileObject)
+        mock_file_object.is_image.return_value = False
+
+        mock_llm = Mock()
+        mock_get_llm.return_value = mock_llm
+        mock_llm_service.get_llm_deployment_name.return_value = "gpt-4"
+        mock_llm_service.get_multimodal_llms.return_value = ["gpt-4-vision"]
+
+        # FileAnalysisToolkit already returns an EmailAnalysisTool-like tool
+        existing_email_tool = Mock(spec=BaseTool)
+        existing_email_tool.name = "email_analysis_tool"
+        mock_file_toolkit.get_toolkit.return_value.get_tools.return_value = [existing_email_tool]
+
+        result = ToolkitService.add_file_tools(mock_assistant, [mock_file_object], "test-uuid")
+
+        email_tools = [t for t in result if getattr(t, "name", None) == "email_analysis_tool"]
+        assert len(email_tools) == 1
+        mock_email_tool.assert_not_called()
+
+    @patch("codemie.service.tools.toolkit_service.EmailAnalysisTool")
+    @patch("codemie.service.tools.toolkit_service.FileAnalysisConfig")
     @patch("codemie.service.tools.toolkit_service.VisionToolkit")
     @patch("codemie.service.tools.toolkit_service.llm_service")
     @patch("codemie.service.tools.toolkit_service.get_llm_by_credentials")
-    def test_add_file_tools_with_images(self, mock_get_llm, mock_llm_service, mock_vision_toolkit, mock_assistant):
-        """Test add_file_tools processes image files."""
+    def test_add_file_tools_with_images(
+        self, mock_get_llm, mock_llm_service, mock_vision_toolkit, mock_file_config, mock_email_tool, mock_assistant
+    ):
+        """Test add_file_tools processes image files and still includes EmailAnalysisTool."""
         # Setup
         mock_file_object = Mock(spec=FileObject)
         mock_file_object.is_image.return_value = True
@@ -928,15 +990,18 @@ class TestToolkitService:
         mock_tool = Mock(spec=BaseTool)
         mock_vision_toolkit.get_toolkit.return_value.get_tools.return_value = [mock_tool]
 
+        mock_email_instance = Mock(spec=BaseTool)
+        mock_email_instance.name = "email_analysis_tool"
+        mock_email_tool.return_value = mock_email_instance
+
         # Mock FileService - need to patch where it's actually used, not imported
         with patch(
             "codemie.service.file_service.file_service.FileService.get_file_object", return_value=mock_file_object
         ):
-            # Call method
             result = ToolkitService.add_file_tools(mock_assistant, [mock_file_object], "test-uuid")
 
         # Assertions
-        assert len(result) == 1
+        assert len(result) == 2  # vision tool + EmailAnalysisTool
         mock_vision_toolkit.get_toolkit.assert_called_once()
 
     @patch("codemie.service.tools.toolkit_service.llm_service")

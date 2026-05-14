@@ -40,7 +40,26 @@ EMAIL_TOOL = ToolMetadata(
     To analyze one or more attachments, provide their filenames in the `attachment_names`
     parameter; the tool will then extract and return the content of each requested attachment
     using the appropriate specialized file-analysis tool (PDF, DOCX, XLSX, PPTX, or generic).
-    Use this tool whenever the user uploads or references an EML or MSG file.
+
+    IMPORTANT — trigger conditions (use this tool, do NOT use a web scraper or refuse):
+    - The user uploads or references an EML or MSG file.
+    - The user provides a URL that ends with .eml or points to a raw email file
+      (e.g. "summarize this email: https://raw.githubusercontent.com/.../email.eml").
+      Pass the URL directly to the `url` parameter — this tool fetches the file internally.
+      Never attempt to scrape such a URL with a web browser/scraper tool.
+    - The user pastes raw email text or a Base64-encoded email into the message.
+      Pass it to the `inline_content` parameter.
+
+    Input sources (at least one required):
+    - Uploaded .eml/.msg file attachment (default, injected automatically by the platform).
+    - `url` parameter: a publicly accessible URL pointing directly to a .eml file
+      (e.g. https://raw.githubusercontent.com/.../email.eml). Only http/https are accepted;
+      private or internal addresses are blocked for security.
+    - `inline_content` parameter: the raw .eml content provided as a Base64-encoded string
+      or as plain RFC-5322 text. Useful when email data is available in memory or via API.
+
+    Multiple sources can be combined; the tool analyzes all of them and returns their results
+    separated by horizontal rules.
     """,
     label="Email Analysis Tool",
 )

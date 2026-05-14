@@ -14,23 +14,34 @@
 
 """Unit tests for EmailAnalysisTool."""
 
+import base64
+import concurrent.futures
 import email.mime.base
 import email.mime.multipart
 import email.mime.text
+import ipaddress
 import struct
 from email import encoders as email_encoders
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.file_analysis.email.tools import (
     EmailAnalysisTool,
+    _MAX_REMOTE_SIZE_BYTES,
     _MSG_BODY_HTML,
     _MSG_BODY_RTF,
     _MSG_DATE,
     _MSG_INTERNET_CPID,
     _MSG_TRANSPORT_HEADERS,
+    _assert_redirect_safe,
+    _decode_inline_content,
+    _fetch_url_content,
+    _is_private_address,
+    _normalize_github_url,
+    _normalize_ip,
 )
 from codemie_tools.file_analysis.models import FileAnalysisConfig
 
@@ -89,7 +100,7 @@ def test_supported_extensions_includes_msg():
 def test_execute_raises_when_no_email_files():
     file_obj = FileObject(name="doc.pdf", mime_type="application/pdf", owner="test", content=b"data")
     tool = EmailAnalysisTool(config=FileAnalysisConfig(input_files=[file_obj]))
-    with pytest.raises(ValueError, match="requires at least one EML or MSG file"):
+    with pytest.raises(ValueError, match="requires at least one email source"):
         tool.execute()
 
 
@@ -551,3 +562,434 @@ def test_process_msg_body_falls_back_to_html_when_no_plain_text():
     with patch.object(EmailAnalysisTool, "_read_msg_html_body", return_value="HTML body content"):
         result = _run_process_msg(tool, ole)
     assert "HTML body content" in result
+
+
+# ---------------------------------------------------------------------------
+# _normalize_github_url tests
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_github_url_converts_blob_to_raw():
+    url = "https://github.com/owner/repo/blob/main/emails/test.eml"
+    assert _normalize_github_url(url) == "https://raw.githubusercontent.com/owner/repo/main/emails/test.eml"
+
+
+def test_normalize_github_url_converts_blob_with_deep_path():
+    url = "https://github.com/owner/repo/blob/feature/branch/sub/dir/email.eml"
+    expected = "https://raw.githubusercontent.com/owner/repo/feature/branch/sub/dir/email.eml"
+    assert _normalize_github_url(url) == expected
+
+
+def test_normalize_github_url_preserves_raw_githubusercontent_url():
+    url = "https://raw.githubusercontent.com/owner/repo/main/test.eml"
+    assert _normalize_github_url(url) == url
+
+
+def test_normalize_github_url_preserves_non_github_url():
+    url = "https://example.com/path/to/email.eml"
+    assert _normalize_github_url(url) == url
+
+
+def test_normalize_github_url_handles_http_scheme():
+    url = "http://github.com/owner/repo/blob/main/test.eml"
+    assert _normalize_github_url(url) == "https://raw.githubusercontent.com/owner/repo/main/test.eml"
+
+
+# ---------------------------------------------------------------------------
+# _fetch_url_content tests
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_url_content_raises_on_unsupported_scheme():
+    with pytest.raises(ValueError, match="Unsupported URL scheme"):
+        _fetch_url_content("ftp://example.com/email.eml")
+
+
+def test_fetch_url_content_raises_on_empty_host():
+    with pytest.raises(ValueError, match="valid hostname"):
+        _fetch_url_content("https:///email.eml")
+
+
+def test_fetch_url_content_raises_on_loopback():
+    with pytest.raises(ValueError, match="private or loopback"):
+        _fetch_url_content("http://127.0.0.1/email.eml")
+
+
+def test_fetch_url_content_raises_on_private_ip():
+    with pytest.raises(ValueError, match="private or loopback"):
+        _fetch_url_content("http://192.168.1.1/email.eml")
+
+
+def test_fetch_url_content_normalizes_github_blob_url():
+    eml_bytes = b"From: a@b.com\r\nSubject: test\r\n\r\nbody"
+    blob_url = "https://github.com/owner/repo/blob/main/test.eml"
+    raw_url = "https://raw.githubusercontent.com/owner/repo/main/test.eml"
+
+    with patch("codemie_tools.file_analysis.email.tools.httpx.Client") as mock_cls:
+        mock_client = MagicMock()
+        mock_cls.return_value.__enter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_bytes.return_value = [eml_bytes]
+        mock_stream = MagicMock()
+        mock_stream.__enter__.return_value = mock_response
+        mock_client.stream.return_value = mock_stream
+
+        result = _fetch_url_content(blob_url)
+
+    assert result == eml_bytes
+    called_url = mock_client.stream.call_args[0][1]
+    assert called_url == raw_url
+
+
+def test_fetch_url_content_returns_bytes_on_success():
+    eml_bytes = b"From: a@b.com\r\nSubject: hi\r\n\r\nbody"
+
+    with patch("codemie_tools.file_analysis.email.tools.httpx.Client") as mock_cls:
+        mock_client = MagicMock()
+        mock_cls.return_value.__enter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_bytes.return_value = [eml_bytes]
+        mock_stream = MagicMock()
+        mock_stream.__enter__.return_value = mock_response
+        mock_client.stream.return_value = mock_stream
+
+        result = _fetch_url_content("https://example.com/test.eml")
+
+    assert result == eml_bytes
+
+
+def test_fetch_url_content_raises_on_404():
+    with patch("codemie_tools.file_analysis.email.tools.httpx.Client") as mock_cls:
+        mock_client = MagicMock()
+        mock_cls.return_value.__enter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_stream = MagicMock()
+        mock_stream.__enter__.return_value = mock_response
+        mock_client.stream.return_value = mock_stream
+
+        with pytest.raises(IOError, match="404"):
+            _fetch_url_content("https://example.com/missing.eml")
+
+
+# ---------------------------------------------------------------------------
+# _decode_inline_content tests
+# ---------------------------------------------------------------------------
+
+
+def test_decode_inline_content_from_base64():
+    eml = _build_eml(subject="Base64 Email")
+    encoded = base64.b64encode(eml).decode()
+    result = _decode_inline_content(encoded)
+    assert result == eml
+
+
+def test_decode_inline_content_from_raw_rfc5322_text():
+    raw = "From: alice@example.com\r\nSubject: Raw Test\r\n\r\nBody"
+    result = _decode_inline_content(raw)
+    assert b"Raw Test" in result
+
+
+def test_decode_inline_content_raises_when_no_recognisable_headers():
+    with pytest.raises(ValueError, match="does not appear to be a valid email"):
+        _decode_inline_content("this is not an email message at all")
+
+
+# ---------------------------------------------------------------------------
+# execute(url=...) tests
+# ---------------------------------------------------------------------------
+
+
+def test_execute_with_url_returns_email_headers():
+    eml = _build_eml(subject="URL Fetched Email", sender="sender@example.com")
+    tool = EmailAnalysisTool(config=FileAnalysisConfig(input_files=[]))
+
+    with patch("codemie_tools.file_analysis.email.tools._fetch_url_content", return_value=eml):
+        result = tool.execute(url="https://example.com/test.eml")
+
+    assert "URL Fetched Email" in result
+    assert "sender@example.com" in result
+
+
+def test_execute_with_url_uses_filename_from_url():
+    eml = _build_eml(subject="Filename Test")
+    tool = EmailAnalysisTool(config=FileAnalysisConfig(input_files=[]))
+
+    with patch("codemie_tools.file_analysis.email.tools._fetch_url_content", return_value=eml):
+        result = tool.execute(url="https://example.com/my_email.eml")
+
+    assert "my_email.eml" in result
+
+
+def test_execute_with_url_appends_eml_when_no_extension():
+    eml = _build_eml(subject="No Extension")
+    tool = EmailAnalysisTool(config=FileAnalysisConfig(input_files=[]))
+
+    with patch("codemie_tools.file_analysis.email.tools._fetch_url_content", return_value=eml):
+        result = tool.execute(url="https://example.com/raw_email_token")
+
+    assert "No Extension" in result
+
+
+def test_execute_with_url_raises_on_fetch_failure():
+    tool = EmailAnalysisTool(config=FileAnalysisConfig(input_files=[]))
+
+    with patch(
+        "codemie_tools.file_analysis.email.tools._fetch_url_content",
+        side_effect=IOError("connection refused"),
+    ):
+        with pytest.raises(ValueError, match="Failed to fetch email from URL"):
+            tool.execute(url="https://example.com/test.eml")
+
+
+# ---------------------------------------------------------------------------
+# execute(inline_content=...) tests
+# ---------------------------------------------------------------------------
+
+
+def test_execute_with_inline_base64_content_returns_email_headers():
+    eml = _build_eml(subject="Inline Base64 Email", sender="inline@example.com")
+    encoded = base64.b64encode(eml).decode()
+    tool = EmailAnalysisTool(config=FileAnalysisConfig(input_files=[]))
+
+    result = tool.execute(inline_content=encoded)
+
+    assert "Inline Base64 Email" in result
+    assert "inline@example.com" in result
+
+
+def test_execute_with_inline_raw_text_returns_email_headers():
+    raw = "From: raw@example.com\r\nSubject: Raw Inline\r\n\r\nBody text"
+    tool = EmailAnalysisTool(config=FileAnalysisConfig(input_files=[]))
+
+    result = tool.execute(inline_content=raw)
+
+    assert "raw@example.com" in result
+
+
+def test_execute_with_inline_content_raises_on_invalid_content():
+    tool = EmailAnalysisTool(config=FileAnalysisConfig(input_files=[]))
+
+    with pytest.raises(ValueError, match="Failed to decode inline email content"):
+        tool.execute(inline_content="not a valid email")
+
+
+# ---------------------------------------------------------------------------
+# execute() no-source error test
+# ---------------------------------------------------------------------------
+
+
+def test_execute_raises_when_no_source_at_all():
+    tool = EmailAnalysisTool(config=FileAnalysisConfig(input_files=[]))
+    with pytest.raises(ValueError, match="requires at least one email source"):
+        tool.execute()
+
+
+def test_execute_combines_url_and_uploaded_file():
+    uploaded_eml = _build_eml(subject="Uploaded Email")
+    url_eml = _build_eml(subject="URL Email")
+    file_obj = FileObject(name="uploaded.eml", mime_type="message/rfc822", owner="test", content=uploaded_eml)
+    tool = EmailAnalysisTool(config=FileAnalysisConfig(input_files=[file_obj]))
+
+    with patch("codemie_tools.file_analysis.email.tools._fetch_url_content", return_value=url_eml):
+        result = tool.execute(url="https://example.com/remote.eml")
+
+    assert "Uploaded Email" in result
+    assert "URL Email" in result
+    assert "---" in result
+
+
+# ---------------------------------------------------------------------------
+# _normalize_ip tests
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_ip_unwraps_ipv4_mapped_loopback():
+    addr = ipaddress.ip_address("::ffff:127.0.0.1")
+    assert _normalize_ip(addr) == ipaddress.ip_address("127.0.0.1")
+
+
+def test_normalize_ip_unwraps_ipv4_mapped_private():
+    addr = ipaddress.ip_address("::ffff:192.168.1.1")
+    assert _normalize_ip(addr) == ipaddress.ip_address("192.168.1.1")
+
+
+def test_normalize_ip_passes_through_plain_ipv4():
+    addr = ipaddress.ip_address("8.8.8.8")
+    assert _normalize_ip(addr) == addr
+
+
+def test_normalize_ip_passes_through_non_mapped_ipv6():
+    addr = ipaddress.ip_address("2001:db8::1")
+    assert _normalize_ip(addr) == addr
+
+
+# ---------------------------------------------------------------------------
+# _is_private_address — IPv4-mapped IPv6 SSRF bypass tests
+# ---------------------------------------------------------------------------
+
+
+def test_is_private_address_ipv4_mapped_loopback_detected():
+    assert _is_private_address("::ffff:127.0.0.1") is True
+
+
+def test_is_private_address_ipv4_mapped_private_network_detected():
+    assert _is_private_address("::ffff:192.168.1.1") is True
+
+
+def test_is_private_address_ipv4_mapped_link_local_detected():
+    assert _is_private_address("::ffff:169.254.0.1") is True
+
+
+def test_is_private_address_ipv4_mapped_public_allowed():
+    assert _is_private_address("::ffff:8.8.8.8") is False
+
+
+# ---------------------------------------------------------------------------
+# _is_private_address — fail-closed DNS behaviour
+# ---------------------------------------------------------------------------
+
+
+def test_is_private_address_returns_true_on_empty_getaddrinfo_result():
+    with patch("codemie_tools.file_analysis.email.tools.socket.getaddrinfo", return_value=[]):
+        assert _is_private_address("some-host.example.com") is True
+
+
+def test_is_private_address_returns_true_on_oserror():
+    with patch("codemie_tools.file_analysis.email.tools.socket.getaddrinfo", side_effect=OSError("DNS failure")):
+        assert _is_private_address("unresolvable.example.com") is True
+
+
+def test_is_private_address_returns_true_on_dns_timeout():
+    mock_future = MagicMock()
+    mock_future.result.side_effect = concurrent.futures.TimeoutError()
+    mock_executor = MagicMock()
+    mock_executor.__enter__ = lambda s: s
+    mock_executor.__exit__ = MagicMock(return_value=False)
+    mock_executor.submit.return_value = mock_future
+
+    with patch(
+        "codemie_tools.file_analysis.email.tools.concurrent.futures.ThreadPoolExecutor",
+        return_value=mock_executor,
+    ):
+        assert _is_private_address("slow-dns.example.com") is True
+
+
+def test_is_private_address_returns_false_for_hostname_resolving_to_public_ip():
+    mock_result = [(None, None, None, None, ("93.184.216.34", 0))]
+    with patch("codemie_tools.file_analysis.email.tools.socket.getaddrinfo", return_value=mock_result):
+        assert _is_private_address("example.com") is False
+
+
+def test_is_private_address_returns_true_for_hostname_resolving_to_private_ip():
+    mock_result = [(None, None, None, None, ("10.0.0.1", 0))]
+    with patch("codemie_tools.file_analysis.email.tools.socket.getaddrinfo", return_value=mock_result):
+        assert _is_private_address("internal.corp") is True
+
+
+def test_is_private_address_returns_true_when_any_resolved_addr_is_private():
+    mock_result = [
+        (None, None, None, None, ("93.184.216.34", 0)),
+        (None, None, None, None, ("192.168.1.1", 0)),
+    ]
+    with patch("codemie_tools.file_analysis.email.tools.socket.getaddrinfo", return_value=mock_result):
+        assert _is_private_address("mixed-host.example.com") is True
+
+
+# ---------------------------------------------------------------------------
+# _assert_redirect_safe tests
+# ---------------------------------------------------------------------------
+
+
+def test_assert_redirect_safe_passes_non_redirect_response():
+    response = MagicMock(spec=httpx.Response)
+    response.is_redirect = False
+    _assert_redirect_safe(response)  # must not raise
+
+
+def test_assert_redirect_safe_blocks_redirect_to_loopback():
+    response = MagicMock(spec=httpx.Response)
+    response.is_redirect = True
+    response.headers = {"location": "http://127.0.0.1/internal"}
+    with pytest.raises(ValueError, match="private or loopback"):
+        _assert_redirect_safe(response)
+
+
+def test_assert_redirect_safe_blocks_redirect_to_private_network():
+    response = MagicMock(spec=httpx.Response)
+    response.is_redirect = True
+    response.headers = {"location": "http://10.0.0.1/secret"}
+    with pytest.raises(ValueError, match="private or loopback"):
+        _assert_redirect_safe(response)
+
+
+def test_assert_redirect_safe_blocks_redirect_to_link_local():
+    response = MagicMock(spec=httpx.Response)
+    response.is_redirect = True
+    response.headers = {"location": "http://169.254.169.254/latest/meta-data/"}
+    with pytest.raises(ValueError, match="private or loopback"):
+        _assert_redirect_safe(response)
+
+
+def test_assert_redirect_safe_blocks_unsupported_scheme_in_redirect():
+    response = MagicMock(spec=httpx.Response)
+    response.is_redirect = True
+    response.headers = {"location": "file:///etc/passwd"}
+    with pytest.raises(ValueError, match="unsupported scheme"):
+        _assert_redirect_safe(response)
+
+
+def test_assert_redirect_safe_blocks_redirect_with_no_hostname():
+    response = MagicMock(spec=httpx.Response)
+    response.is_redirect = True
+    response.headers = {"location": "https:///no-host/path"}
+    with pytest.raises(ValueError, match="no valid hostname"):
+        _assert_redirect_safe(response)
+
+
+def test_assert_redirect_safe_allows_redirect_to_public_address():
+    response = MagicMock(spec=httpx.Response)
+    response.is_redirect = True
+    response.headers = {"location": "https://cdn.example.com/email.eml"}
+    mock_result = [(None, None, None, None, ("93.184.216.34", 0))]
+    with patch("codemie_tools.file_analysis.email.tools.socket.getaddrinfo", return_value=mock_result):
+        _assert_redirect_safe(response)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# _decode_inline_content — URL-safe Base64 padding correctness
+# ---------------------------------------------------------------------------
+
+
+def test_decode_inline_content_urlsafe_base64_without_padding():
+    eml = _build_eml(subject="URL-safe No Padding")
+    encoded = base64.urlsafe_b64encode(eml).decode().rstrip("=")
+    assert _decode_inline_content(encoded) == eml
+
+
+def test_decode_inline_content_urlsafe_base64_already_padded():
+    eml = _build_eml(subject="URL-safe Pre-padded")
+    encoded = base64.urlsafe_b64encode(eml).decode()  # retains trailing '='
+    assert _decode_inline_content(encoded) == eml
+
+
+# ---------------------------------------------------------------------------
+# execute — inline_content size limit tests
+# ---------------------------------------------------------------------------
+
+
+def test_execute_inline_content_rejects_oversized_input():
+    tool = EmailAnalysisTool(config=FileAnalysisConfig(input_files=[]))
+    oversized = "A" * (int(_MAX_REMOTE_SIZE_BYTES * 4 / 3) + 10)
+    with pytest.raises(ValueError, match="exceeds the maximum allowed size"):
+        tool.execute(inline_content=oversized)
+
+
+def test_execute_inline_content_accepts_input_within_limit():
+    eml = _build_eml(subject="Within Limit")
+    encoded = base64.b64encode(eml).decode()
+    tool = EmailAnalysisTool(config=FileAnalysisConfig(input_files=[]))
+    result = tool.execute(inline_content=encoded)
+    assert "Within Limit" in result

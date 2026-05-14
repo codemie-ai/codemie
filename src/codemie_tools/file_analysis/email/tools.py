@@ -16,17 +16,24 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import concurrent.futures
 import contextlib
 import datetime
 import email as _email_lib
 import email.message
+import ipaddress
 import logging
 import os
 import re
+import socket
 import struct
 import tempfile
 from typing import Any, List, Optional, Type
+from urllib.parse import urlparse
 
+import httpx
 from markitdown import MarkItDown
 from pydantic import BaseModel, Field
 
@@ -80,12 +87,203 @@ _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp"}
 _CPID_MAP: dict[int, str] = {1200: "utf-16-le", 1201: "utf-16-be", 65001: "utf-8", 28591: "iso-8859-1"}
 
 
+_MAX_REMOTE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB hard cap for remote .eml files
+_DNS_TIMEOUT_SECONDS = 5  # max time to wait for getaddrinfo before treating host as unsafe
+_ALLOWED_URL_SCHEMES = {"http", "https"}
+# RFC-1918 + loopback private networks — must not be reachable via user-supplied URLs (SSRF)
+_PRIVATE_NETWORKS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+]
+
+
+def _normalize_ip(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """Unwrap IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1 → 127.0.0.1).
+
+    Without this, ipaddress.ip_address("::ffff:127.0.0.1") in ip_network("127.0.0.0/8")
+    returns False because they are different address families.
+    """
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        return addr.ipv4_mapped
+    return addr
+
+
+def _is_private_address(host: str) -> bool:
+    """Return True if *host* resolves to a private/loopback address.
+
+    Fails closed: unresolvable or empty-result hostnames are treated as private
+    to prevent SSRF via DNS tricks (empty getaddrinfo result or resolution failure).
+    """
+    try:
+        addr = _normalize_ip(ipaddress.ip_address(host))
+        return any(addr in net for net in _PRIVATE_NETWORKS)
+    except ValueError:
+        pass
+    try:
+        # socket.getaddrinfo has no built-in timeout — run it in a thread so we can
+        # enforce _DNS_TIMEOUT_SECONDS and avoid hanging indefinitely on slow resolvers.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(socket.getaddrinfo, host, None)
+            resolved = future.result(timeout=_DNS_TIMEOUT_SECONDS)
+        if not resolved:
+            # Empty result — treat as unsafe to prevent bypass via unresolvable hostnames
+            return True
+        for _, _, _, _, sockaddr in resolved:
+            addr = _normalize_ip(ipaddress.ip_address(sockaddr[0]))
+            if any(addr in net for net in _PRIVATE_NETWORKS):
+                return True
+    except (OSError, concurrent.futures.TimeoutError):
+        # DNS resolution failed or timed out — fail closed to prevent SSRF
+        return True
+    return False
+
+
+def _normalize_github_url(url: str) -> str:
+    """Convert a GitHub blob viewer URL to its raw.githubusercontent.com equivalent."""
+    match = re.match(
+        r"https?://github\.com/([^/]+/[^/]+)/blob/(.+)",
+        url,
+    )
+    if match:
+        return f"https://raw.githubusercontent.com/{match.group(1)}/{match.group(2)}"
+    return url
+
+
+def _assert_redirect_safe(response: httpx.Response) -> None:
+    """Event hook called by httpx before following each redirect.
+
+    Raises ValueError if the redirect target is a private/loopback address,
+    preventing SSRF via open-redirect chains (e.g. public URL → 127.0.0.1).
+    """
+    if response.is_redirect:
+        location = response.headers.get("location", "")
+        parsed = urlparse(location)
+        if parsed.scheme not in _ALLOWED_URL_SCHEMES:
+            raise ValueError(f"Redirect to unsupported scheme '{parsed.scheme}' is not allowed.")
+        redirect_host = parsed.hostname or ""
+        if not redirect_host:
+            raise ValueError("Redirect location contains no valid hostname.")
+        if _is_private_address(redirect_host):
+            raise ValueError(
+                f"Redirect to '{redirect_host}' resolves to a private or loopback address and is not allowed."
+            )
+
+
+def _fetch_url_content(url: str) -> bytes:
+    """Fetch raw bytes from a public URL pointing to an .eml file.
+
+    Raises ValueError for invalid/unsafe URLs and IOError for network failures.
+    """
+    url = _normalize_github_url(url)
+    parsed = urlparse(url)
+    if parsed.scheme not in _ALLOWED_URL_SCHEMES:
+        raise ValueError(f"Unsupported URL scheme '{parsed.scheme}'. Only http and https are allowed.")
+    host = parsed.hostname or ""
+    if not host:
+        raise ValueError("URL must contain a valid hostname.")
+    if _is_private_address(host):
+        raise ValueError(f"URL hostname '{host}' resolves to a private or loopback address and is not allowed.")
+
+    try:
+        with (
+            httpx.Client(
+                follow_redirects=True,
+                timeout=30,
+                event_hooks={"response": [_assert_redirect_safe]},
+            ) as client,
+            client.stream("GET", url) as response,
+        ):
+            if response.status_code == 404:
+                raise IOError(f"Remote resource not found (HTTP 404): {url}")
+            if response.status_code != 200:
+                raise IOError(f"Failed to fetch URL (HTTP {response.status_code}): {url}")
+
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_bytes(chunk_size=65536):
+                total += len(chunk)
+                if total > _MAX_REMOTE_SIZE_BYTES:
+                    raise ValueError(
+                        f"Remote file exceeds the maximum allowed size of "
+                        f"{_MAX_REMOTE_SIZE_BYTES // (1024 * 1024)} MB."
+                    )
+                chunks.append(chunk)
+            return b"".join(chunks)
+    except httpx.TimeoutException as exc:
+        raise IOError(f"Request timed out while fetching URL: {url}") from exc
+    except httpx.RequestError as exc:
+        raise IOError(f"Network error while fetching URL '{url}': {exc}") from exc
+
+
+def _decode_inline_content(inline_content: str) -> bytes:
+    """Decode Base64-encoded or raw .eml text provided as an inline string.
+
+    Tries Base64 first; falls back to treating the input as raw RFC-5322 text.
+    Raises ValueError if the result cannot be parsed as a valid email message.
+    """
+    raw: bytes | None = None
+
+    # Try strict Base64 decode
+    with contextlib.suppress(binascii.Error, ValueError):
+        raw = base64.b64decode(inline_content, validate=True)
+
+    # Fall back to URL-safe Base64
+    if raw is None:
+        try:
+            # Strip existing padding before computing the correct amount — blindly
+            # appending "==" produces invalid padding when the input is already padded.
+            stripped = inline_content.rstrip("=")
+            padding = (4 - len(stripped) % 4) % 4
+            raw = base64.urlsafe_b64decode(stripped + "=" * padding)
+            # Quick sanity check: decoded bytes should be printable-ish (ASCII range)
+            if not raw or raw[0] > 0x7F:
+                raw = None
+        except (binascii.Error, ValueError):
+            raw = None
+
+    # Fall back to treating the input as raw RFC-5322 text
+    if raw is None:
+        raw = inline_content.encode("utf-8", errors="replace")
+
+    # Validate that the bytes parse as a recognisable email message
+    try:
+        msg = _email_lib.message_from_bytes(raw)
+        if not any(msg.get(h) for h in ("From", "To", "Subject", "Date", "Message-ID")):
+            raise ValueError("Content does not appear to be a valid email message (no recognisable headers found).")
+    except Exception as exc:
+        raise ValueError(f"Inline content could not be parsed as a valid .eml: {exc}") from exc
+
+    return raw
+
+
 class EmailToolInput(BaseModel):
     attachment_names: list[str] = Field(
         default_factory=list,
         description=(
             "Filenames of attachments to analyze. "
             "Leave empty to receive only email metadata and the list of attached files."
+        ),
+    )
+    url: str | None = Field(
+        default=None,
+        description=(
+            "Publicly accessible URL pointing directly to a .eml file "
+            "(e.g. https://raw.githubusercontent.com/.../email.eml). "
+            "The tool fetches and analyzes the file as if it were uploaded. "
+            "Only http and https schemes are accepted; private/internal addresses are blocked."
+        ),
+    )
+    inline_content: str | None = Field(
+        default=None,
+        description=(
+            "Inline .eml content provided as a Base64-encoded string or as raw RFC-5322 text. "
+            "The tool detects the encoding automatically. "
+            "Use this when the email data is available in memory rather than as a file or URL."
         ),
     )
 
@@ -99,8 +297,8 @@ class EmailAnalysisTool(CodeMieTool, FileToolMixin):
     FileAnalysisTool for other formats).
     """
 
-    name: str = EMAIL_TOOL.name or "email_analysis_tool"
-    label: str = EMAIL_TOOL.label or "Email Analysis Tool"
+    name: str = EMAIL_TOOL.name
+    label: str = EMAIL_TOOL.label or ""
     description: str = EMAIL_TOOL.description or ""
     args_schema: Type[BaseModel] = EmailToolInput
 
@@ -115,10 +313,45 @@ class EmailAnalysisTool(CodeMieTool, FileToolMixin):
     def _get_supported_extensions(self) -> Optional[List[str]]:
         return [".eml", ".msg"]
 
-    def execute(self, attachment_names: list[str] | None = None) -> str:
-        files = self._get_supported_files()
+    def execute(
+        self,
+        attachment_names: list[str] | None = None,
+        url: str | None = None,
+        inline_content: str | None = None,
+    ) -> str:
+        files: list[FileObject] = list(self._get_supported_files() or [])
+
+        if url:
+            try:
+                raw = _fetch_url_content(url)
+            except (ValueError, IOError) as exc:
+                raise ValueError(f"Failed to fetch email from URL: {exc}") from exc
+            filename = os.path.basename(urlparse(url).path) or "remote_email.eml"
+            if not filename.lower().endswith((".eml", ".msg")):
+                filename = filename + ".eml"
+            files.append(FileObject(name=filename, mime_type="message/rfc822", owner="url", content=raw))
+
+        if inline_content:
+            # Base64 encodes 3 bytes as 4 chars, so the max encoded length for a
+            # _MAX_REMOTE_SIZE_BYTES payload is ceil(limit * 4/3). Reject before
+            # decoding to prevent memory exhaustion via oversized inline content.
+            _max_encoded = int(_MAX_REMOTE_SIZE_BYTES * 4 / 3) + 4  # +4 for padding
+            if len(inline_content) > _max_encoded:
+                raise ValueError(
+                    f"Inline content exceeds the maximum allowed size of "
+                    f"{_MAX_REMOTE_SIZE_BYTES // (1024 * 1024)} MB (decoded equivalent)."
+                )
+            try:
+                raw = _decode_inline_content(inline_content)
+            except ValueError as exc:
+                raise ValueError(f"Failed to decode inline email content: {exc}") from exc
+            files.append(FileObject(name="inline_email.eml", mime_type="message/rfc822", owner="inline", content=raw))
+
         if not files:
-            raise ValueError(f"{self.name} requires at least one EML or MSG file.")
+            raise ValueError(
+                f"{self.name} requires at least one email source: "
+                "upload a .eml/.msg file, supply a 'url', or provide 'inline_content'."
+            )
 
         results = []
         for file_obj in files:

@@ -16,6 +16,8 @@ from typing import Any, List, Optional, Type
 
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.base.models import Tool, ToolKit, ToolSet
+from codemie_tools.file_analysis.email.tools import EmailAnalysisTool
+from codemie_tools.file_analysis.models import FileAnalysisConfig
 from codemie_tools.file_analysis.toolkit import FileAnalysisToolkit
 from codemie_tools.research.toolkit import ResearchConfig, ResearchToolkit
 from codemie_tools.vision.toolkit import VisionToolkit
@@ -463,7 +465,8 @@ class ToolkitService:
             logger.debug(f"Initialized skill file tool for assistant `{assistant.name}`. Total tools: {len(tools)}")
 
         # File tools
-        if file_objects:
+        file_analysis_configured = any(tk.toolkit == ToolSet.FILE_ANALYSIS for tk in selected_toolkits)
+        if file_objects or file_analysis_configured:
             tools.extend(cls.add_file_tools(assistant, file_objects, request_uuid))
             logger.debug(f"Initialized file tools for assistant `{assistant.name}`. Total tools: {len(tools)}")
 
@@ -1007,6 +1010,11 @@ class ToolkitService:
         # Process non-image files with FileAnalysisToolkit
         if non_image_files:
             tools.extend(FileAnalysisToolkit.get_toolkit(files=non_image_files, chat_model=llm).get_tools())
+
+        # EmailAnalysisTool is always included: handles uploaded .eml/.msg files
+        # but also accepts `url` and `inline_content` without any uploaded file.
+        if not any(getattr(t, "name", "") == "email_analysis_tool" for t in tools):
+            tools.append(EmailAnalysisTool(config=FileAnalysisConfig(input_files=[], chat_model=llm)))
 
         return tools
 

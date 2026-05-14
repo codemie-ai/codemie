@@ -19,6 +19,7 @@ from codemie_tools.base.models import ToolSet
 from codemie_tools.base import toolkit_provider
 from codemie_tools.data_management.file_system.toolkit import FileSystemToolkit
 from codemie_tools.data_management.workspace.toolkit import AgentWorkspaceToolkit
+from codemie_tools.file_analysis.toolkit import FileAnalysisToolkit
 from codemie_tools.git.toolkit import GitToolkit
 from codemie_tools.research.toolkit import ResearchToolkit
 
@@ -57,6 +58,7 @@ class ToolsInfoService:
             ResearchToolkit.get_tools_ui_info(),
             FileSystemToolkit.get_tools_ui_info(show_admin_tools),
             AgentWorkspaceToolkit.get_tools_ui_info(),
+            FileAnalysisToolkit.get_tools_ui_info(),
         ]
 
         # Add plugin toolkit if available (enterprise dependency pattern)

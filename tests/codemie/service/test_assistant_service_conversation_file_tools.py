@@ -143,12 +143,12 @@ def test_add_conversation_file_tools():
             request_uuid=request_uuid,
         )
 
-        # Verify results
+        # Verify results — filter out always-included EmailAnalysisTool (not a string)
         # In the new implementation, the unmentioned file might also get processed
         expected_tools = set(
             current_file_tools + ["file_analysis_tool_2"]
         )  # Use explicit value instead of removed variable
-        assert set(tools).issubset(expected_tools)
+        assert {t for t in tools if isinstance(t, str)}.issubset(expected_tools)
 
         # We no longer need to verify _build_unique_file_objects as we're passing file_objects directly
 
@@ -193,9 +193,10 @@ def test_add_conversation_file_tools_empty_history():
             assistant=assistant, file_objects=[mock_current_file], request_uuid=request_uuid
         )
 
-        # Only the current file should be processed
-        assert len(tools) == len(current_file_tools)
-        assert tools == current_file_tools
+        # Only the current file should be processed — filter out always-included EmailAnalysisTool
+        str_tools = [t for t in tools if isinstance(t, str)]
+        assert len(str_tools) == len(current_file_tools)
+        assert str_tools == current_file_tools
         # No longer need to verify _build_unique_file_objects
         # Check that the file toolkit was called
         assert mock_file_toolkit.call_count >= 1
@@ -240,9 +241,10 @@ def test_add_conversation_file_tools_no_file_references():
             assistant=assistant, file_objects=[mock_current_file], request_uuid=request_uuid
         )
 
-        # Only the current file should be processed
-        assert len(tools) == len(current_file_tools)
-        assert tools == current_file_tools
+        # Only the current file should be processed — filter out always-included EmailAnalysisTool
+        str_tools = [t for t in tools if isinstance(t, str)]
+        assert len(str_tools) == len(current_file_tools)
+        assert str_tools == current_file_tools
         # No longer need to verify _build_unique_file_objects
         # Check that the file toolkit was called
         assert mock_file_toolkit.call_count >= 1
@@ -300,8 +302,10 @@ def test_add_conversation_file_tools_no_mentions_in_request():
         )
 
         # With the new implementation, we expect the current file to be processed
-        assert len(tools) == len(current_file_tools)
-        assert tools == current_file_tools
+        # Filter out always-included EmailAnalysisTool (not a string)
+        str_tools = [t for t in tools if isinstance(t, str)]
+        assert len(str_tools) == len(current_file_tools)
+        assert str_tools == current_file_tools
         # No longer need to verify _build_unique_file_objects
 
 
@@ -370,7 +374,9 @@ def test_add_conversation_file_tools_duplicate_mentions():
 
         # With the updated implementation, file objects are uniquely identified by name
         # Each unique file will be processed only once, regardless of duplicates in history
-        assert tools == current_file_tools
+        # Filter out always-included EmailAnalysisTool (not a string)
+        str_tools = [t for t in tools if isinstance(t, str)]
+        assert str_tools == current_file_tools
 
         # Verify that FileAnalysisToolkit was called
         assert mock_file_toolkit.call_count >= 1
@@ -408,9 +414,10 @@ def test_add_conversation_file_tools_missing_conversation_id():
             assistant=assistant, file_objects=[mock_current_file], request_uuid=request_uuid
         )
 
-        # Only the current file should be processed
-        assert len(tools) == len(current_file_tools)
-        assert tools == current_file_tools
+        # Only the current file should be processed — filter out always-included EmailAnalysisTool
+        str_tools = [t for t in tools if isinstance(t, str)]
+        assert len(str_tools) == len(current_file_tools)
+        assert str_tools == current_file_tools
         mock_find_by_id.assert_not_called()  # find_by_id should not be called
         # Check that the file toolkit was called
         assert mock_file_toolkit.call_count >= 1
