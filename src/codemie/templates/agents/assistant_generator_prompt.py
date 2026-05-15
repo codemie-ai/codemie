@@ -114,7 +114,7 @@ class AssistantDetails(BaseModel):
     )
     categories: list[str] = Field(
         default_factory=list,
-        description="A list of classifications that define the assistant's primary areas of focus or domain use cases.",
+        description="Select ONLY category IDs that exist in the provided categories list below. Do not invent or guess category IDs. Use [] if no categories section is present or no category matches.",
     )
     conversation_starters: list[str] = Field(
         description="Four engaging conversation starters that showcase different aspects of the assistant's capabilities"
@@ -165,7 +165,7 @@ When composing the `system_prompt`, always include these standardized sections:
 AssistantDetails(
     name="Presentation Pro",
     description="A specialized assistant that supports users in designing professional, persuasive, and data-driven business presentations. It offers expertise in storytelling, data visualization, structuring slides, and tailoring messages for varied audiences.",
-    categories=["business-analysis", "data-analytics", "presales"],
+    categories=[],  # IDs must come from the categories list provided below — do not invent values
     conversation_starters=[
         "Can you help me transform my sales data into an engaging slide deck?",
         "What are best practices for visualizing complex business metrics?",
@@ -237,7 +237,7 @@ class AssistantDetails(BaseModel):
     )
     categories: list[str] = Field(
         default_factory=list,
-        description="A list of classifications that define the assistant's primary areas of focus or domain use cases.",
+        description="Select ONLY category IDs that exist in the provided categories list below. Do not invent or guess category IDs. Use [] if no categories section is present or no category matches.",
     )
     conversation_starters: list[str] = Field(
         description="Four engaging conversation starters that showcase different aspects of the assistant's capabilities"
@@ -302,7 +302,7 @@ When composing the `system_prompt`, always include these standardized sections:
 AssistantDetails(
     name="Presentation Pro",
     description="A specialized assistant that supports users in designing professional, persuasive, and data-driven business presentations. It offers expertise in storytelling, data visualization, structuring slides, and tailoring messages for varied audiences.",
-    categories=["business-analysis", "data-analytics", "presales"],
+    categories=[],  # IDs must come from the categories list provided below — do not invent values
     conversation_starters=[
         "Can you help me transform my sales data into an engaging slide deck?",
         "What are best practices for visualizing complex business metrics?",

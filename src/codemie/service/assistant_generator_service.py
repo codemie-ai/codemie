@@ -83,7 +83,7 @@ class AssistantDetails(BaseModel):
     )
     categories: list[str] = Field(
         default_factory=list,
-        description="A list of classifications that define the assistant's primary areas of focus or domain use cases.",
+        description="Select ONLY category IDs from the provided categories list. Do not invent IDs. Use [] if none match.",  # noqa: E501
     )
     conversation_starters: list[str] = Field(
         description="Four engaging conversation starters that "
@@ -155,7 +155,7 @@ class AssistantGeneratorService:
             # Ensure we have exactly 4 conversation starters
             conversation_starters = cls._validate_conversation_starters(response.conversation_starters)
 
-            categories = cls._validate_categories(response.categories) if response.categories else []
+            categories = cls._validate_categories_for_refine(response.categories) if response.categories else []
 
             # Send metrics for successful generation
             send_log_metric(
