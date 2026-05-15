@@ -400,7 +400,7 @@ class ProjectSpendTrackingRepository:
                     ]
                 )
                 .on_conflict_do_update(
-                    index_elements=["project_name", "budget_id", "spend_date"],
+                    index_elements=["project_name", "budget_id", "budget_category", "spend_date"],
                     index_where=(ProjectSpendTracking.spend_subject_type == "budget"),
                     set_={
                         "daily_spend": insert(ProjectSpendTracking).excluded.daily_spend,
