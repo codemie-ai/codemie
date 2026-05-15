@@ -58,7 +58,7 @@ class State(TransactionElasticSupport):
         try:
             self.elastic_client.delete_by_query(
                 index=self._index,
-                body={"query": {"range": {"update_date": {"lt": "now-11s"}}}},
+                body={"query": {"range": {"update_date": {"lt": "now-30s"}}}},
             )
         except ConflictError as e:
             logger.warning("ConflictError while invalidating lock by timeout: %s", e)

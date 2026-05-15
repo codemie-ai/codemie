@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from elasticsearch import NotFoundError
-
 from codemie.configs import logger
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.index import IndexInfo
@@ -23,13 +21,12 @@ from codemie.triggers.trigger_exceptions import DatasourceNotValidated, NotImple
 
 def validate_assistant(assistant_id):
     """Validate assistant"""
-    try:
-        assistant = Assistant.get_by_id(id_=assistant_id)
-        logger.debug("Assistant validated: %s", assistant_id)
-        return assistant
-    except NotFoundError:
+    assistant = Assistant.find_by_id(id_=assistant_id)
+    if not assistant:
         logger.error("Assistant not found: %s", assistant_id)
         return None
+    logger.debug("Assistant validated: %s", assistant_id)
+    return assistant
 
 
 DATASOURCE_WITHOUT_SETTING_ID = [
@@ -40,32 +37,27 @@ DATASOURCE_WITHOUT_SETTING_ID = [
 
 def validate_datasource(datasource_id) -> IndexInfo | None:
     """Validate datasource"""
-    try:
-        ds: IndexInfo | None = IndexInfo.get_by_id(id_=datasource_id)
-        if not ds:
-            return None
-
-        if ds.is_code_index() or ds.index_type in [
-            FullDatasourceTypes.CONFLUENCE,
-            FullDatasourceTypes.JIRA,
-            FullDatasourceTypes.GOOGLE,
-            FullDatasourceTypes.AZURE_DEVOPS_WIKI,
-            FullDatasourceTypes.AZURE_DEVOPS_WORK_ITEM,
-            FullDatasourceTypes.PROVIDER,
-        ]:
-            logger.debug("Datasource validated: %s", datasource_id)
-
-            if not ds.setting_id and ds.index_type not in DATASOURCE_WITHOUT_SETTING_ID:
-                logger.error("Datasource require setting_id: %s", datasource_id)
-                raise DatasourceNotValidated(
-                    f"Datasource '{datasource_id}' is missing repository or setting ID.",
-                )
-
-            return ds
-        elif ds:
-            raise NotImplementedDatasource(f"Datasource type '{ds.index_type}' is not supported via webhook.")
-
-        return None
-    except NotFoundError:
+    ds = IndexInfo.find_by_id(id_=datasource_id)
+    if not ds:
         logger.error("Datasource not found: %s", datasource_id)
         return None
+
+    if ds.is_code_index() or ds.index_type in [
+        FullDatasourceTypes.CONFLUENCE,
+        FullDatasourceTypes.JIRA,
+        FullDatasourceTypes.GOOGLE,
+        FullDatasourceTypes.AZURE_DEVOPS_WIKI,
+        FullDatasourceTypes.AZURE_DEVOPS_WORK_ITEM,
+        FullDatasourceTypes.PROVIDER,
+    ]:
+        logger.debug("Datasource validated: %s", datasource_id)
+
+        if not ds.setting_id and ds.index_type not in DATASOURCE_WITHOUT_SETTING_ID:
+            logger.error("Datasource require setting_id: %s", datasource_id)
+            raise DatasourceNotValidated(
+                f"Datasource '{datasource_id}' is missing repository or setting ID.",
+            )
+
+        return ds
+
+    raise NotImplementedDatasource(f"Datasource type '{ds.index_type}' is not supported via webhook.")
