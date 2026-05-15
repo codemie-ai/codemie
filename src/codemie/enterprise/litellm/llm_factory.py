@@ -276,6 +276,39 @@ def _apply_project_runtime_overrides(
         request_params["model_kwargs"] = {"user": runtime_user}
 
 
+def _mirror_platform_budget_assignment(*, user_id: str | None) -> None:
+    """Best-effort: mirror the PLATFORM budget assignment into user_budget_assignments.
+
+    Called from the synchronous direct-runtime path after check_user_budget() creates
+    the LiteLLM customer.  Dispatches to the main event loop without blocking so that
+    the model-creation call-site is not affected if the DB write is slow or fails.
+    """
+    if not user_id:
+        return
+    import asyncio
+
+    from .budget_categories import BudgetCategory as LiteLLMBudgetCategory
+    from .dependencies import get_category_budget_id
+    from .project_member_runtime_sync import _main_event_loop
+    from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
+    from codemie.service.budget.budget_service import budget_service
+
+    platform_budget_id = get_category_budget_id(LiteLLMBudgetCategory.PLATFORM)
+    if not platform_budget_id:
+        return
+    loop = _main_event_loop
+    if loop is None or not loop.is_running():
+        return
+    asyncio.run_coroutine_threadsafe(
+        budget_service.track_proxy_budget_assignment_for_request(
+            user_id=user_id,
+            category=CoreBudgetCategory.PLATFORM,
+            budget_id=platform_budget_id,
+        ),
+        loop,
+    )
+
+
 def _configure_direct_runtime_overrides(
     *,
     llm_model_details: "LLMModel",
@@ -355,6 +388,7 @@ def _configure_direct_runtime_overrides(
     )
     check_user_budget(user_email=user_email, user_id=user_id)
     request_params["model_kwargs"] = {"user": user_email}
+    _mirror_platform_budget_assignment(user_id=user_id)
 
 
 def _get_direct_request_category_budget_id(user_id: str, category: str) -> str | None:
