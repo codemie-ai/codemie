@@ -117,14 +117,8 @@ def _build_budget_usage_rows(
     assignments: list,
     budgets_map: dict,
     spend_map: dict,
-    member_allocations: list,
 ) -> tuple[list[dict], list[dict]]:
-    """Build tabular budget usage data from DB objects.
-
-    Produces (columns, rows) where personal budget rows appear first (one per
-    active category assignment), followed by one row per active project member
-    allocation.
-    """
+    """Build tabular budget usage data from personal budget assignments."""
     rows = []
 
     category_labels = {
@@ -143,23 +137,6 @@ def _build_budget_usage_rows(
             "total_spend": float(spend_row.budget_period_spend) if spend_row else 0.0,
             "max_budget": budget.max_budget,
             "budget_reset_at": budget.budget_reset_at,
-        }
-        rows.append(_build_spending_row(label, spending))
-
-    project_category_labels = {
-        "platform": "{}",
-        "cli": "{} (cli)",
-        "premium_models": "{} (premium)",
-    }
-
-    for pmba in member_allocations:
-        template = project_category_labels.get(pmba.budget_category, "{} (" + pmba.budget_category + ")")
-        label = template.format(pmba.project_name)
-        spending = {
-            "total_spend": pmba.spend or 0.0,
-            "max_budget": pmba.allocated_max_budget,
-            "budget_reset_at": pmba.budget_reset_at,
-            "project_name": pmba.project_name,
         }
         rows.append(_build_spending_row(label, spending))
 
@@ -185,7 +162,7 @@ class BudgetUsageService:
         Performs a lazy refresh from LiteLLM if spend data is older than
         config.BUDGET_USAGE_STALENESS_THRESHOLD_MS milliseconds.
         """
-        assignments, budgets_map, spend_map, member_allocations = await self._load_from_db(session, subject_user_id)
+        assignments, budgets_map, spend_map = await self._load_from_db(session, subject_user_id)
 
         needs_refresh = self._needs_refresh(spend_map) and self._is_litellm_enabled()
         if needs_refresh:
@@ -197,14 +174,16 @@ class BudgetUsageService:
                 f"Returning cached budget spend from DB for subject={subject_user_id} subject_label={subject_label}"
             )
         if needs_refresh and assignments:
-            spend_map = await self._refresh_from_litellm(session, subject_user_id, subject_label, assignments)
+            spend_map = await self._refresh_from_litellm(
+                session, subject_user_id, subject_label, assignments, spend_map
+            )
             # session.commit() inside insert_budget_entries expires all previously
             # loaded ORM objects; rollback clears any error state from a failed
             # insert, then reload fresh objects for _build_budget_usage_rows.
             await session.rollback()
-            assignments, budgets_map, _, member_allocations = await self._load_from_db(session, subject_user_id)
+            assignments, budgets_map, _ = await self._load_from_db(session, subject_user_id)
 
-        return _build_budget_usage_rows(subject_label, assignments, budgets_map, spend_map, member_allocations)
+        return _build_budget_usage_rows(subject_label, assignments, budgets_map, spend_map)
 
     def _needs_refresh(self, spend_map: dict) -> bool:
         """Return True if spend_map is empty or the most recent row is older than the threshold."""
@@ -231,25 +210,23 @@ class BudgetUsageService:
         self,
         session: AsyncSession,
         subject_user_id: str,
-    ) -> tuple[list, dict, dict, list]:
+    ) -> tuple[list, dict, dict]:
         """Load all DB data needed for budget usage in parallel.
 
-        Returns (assignments, budgets_map, spend_map, member_allocations).
+        Returns (assignments, budgets_map, spend_map).
         """
         from codemie.repository.budget_repository import budget_repository
-        from codemie.repository.project_budget_repository import project_member_budget_assignment_repository
         from codemie.repository.project_spend_tracking_repository import ProjectSpendTrackingRepository
 
         tracking_repo = ProjectSpendTrackingRepository()
         assignments = await budget_repository.get_user_category_assignments(session, subject_user_id)
         budget_ids = [a.budget_id for a in assignments]
 
-        budgets_map, spend_map, member_allocations = await asyncio.gather(
+        budgets_map, spend_map = await asyncio.gather(
             budget_repository.get_by_ids(session, budget_ids),
             tracking_repo.get_latest_by_budget_ids(session, budget_ids, subject_user_id),
-            project_member_budget_assignment_repository.get_active_by_user(session, subject_user_id),
         )
-        return assignments, budgets_map, spend_map, member_allocations
+        return assignments, budgets_map, spend_map
 
     async def _refresh_from_litellm(
         self,
@@ -257,6 +234,7 @@ class BudgetUsageService:
         subject_user_id: str,
         subject_label: str,
         assignments: list,
+        current_spend_map: dict,
     ) -> dict:
         """Fetch fresh spend from LiteLLM, persist to DB, and return updated spend_map.
 
@@ -304,12 +282,20 @@ class BudgetUsageService:
                     continue
                 if result is None:
                     continue
+                fresh_spend = Decimal(str(result.get("total_spend", 0.0)))
+                existing = current_spend_map.get(assignment.budget_id)
+                if existing is not None and existing.budget_period_spend == fresh_spend:
+                    logger.debug(
+                        f"Spend unchanged for budget_id={assignment.budget_id} "
+                        f"category={assignment.category} spend={fresh_spend}, skipping insert."
+                    )
+                    continue
                 rows_to_insert.append(
                     ProjectSpendTracking(
                         id=uuid.uuid4(),
                         project_name=subject_user_id,
                         spend_date=now,
-                        budget_period_spend=Decimal(str(result.get("total_spend", 0.0))),
+                        budget_period_spend=fresh_spend,
                         budget_id=assignment.budget_id,
                         budget_category=assignment.category,
                         spend_subject_type="budget",
@@ -318,30 +304,41 @@ class BudgetUsageService:
                     )
                 )
 
-            if rows_to_insert:
-                try:
-                    await tracking_repo.insert_budget_entries(session, rows_to_insert)
-                    categories = [r.budget_category for r in rows_to_insert]
-                    logger.info(
-                        f"LiteLLM refresh persisted {len(rows_to_insert)} row(s) for "
-                        f"subject={subject_user_id} categories={categories}"
-                    )
-                except Exception as db_err:
-                    logger.warning(
-                        f"DB write failed after LiteLLM fetch for subject={subject_user_id}: {db_err}. "
-                        "Returning fresh LiteLLM data without persisting."
-                    )
-                    # Return in-memory spend_map from fresh data without DB re-read
-                    return {row.budget_id: row for row in rows_to_insert}
-            else:
-                logger.info(f"LiteLLM refresh returned no data for subject={subject_user_id}, nothing persisted.")
+            fallback = await self._persist_tracking_rows(session, tracking_repo, subject_user_id, rows_to_insert)
+            if fallback is not None:
+                return fallback
 
             return await tracking_repo.get_latest_by_budget_ids(session, budget_ids, subject_user_id)
 
         except Exception as e:
             logger.warning(f"LiteLLM refresh failed for subject={subject_user_id}: {e}. Returning stale DB data.")
-            # Re-read original spend_map from DB (already loaded before refresh attempt)
             return await tracking_repo.get_latest_by_budget_ids(session, budget_ids, subject_user_id)
+
+    @staticmethod
+    async def _persist_tracking_rows(
+        session: AsyncSession,
+        tracking_repo: Any,
+        subject_user_id: str,
+        rows_to_insert: list,
+    ) -> dict | None:
+        """Persist spend rows to DB. Returns an in-memory fallback map on DB error, None on success."""
+        if not rows_to_insert:
+            logger.info(f"LiteLLM refresh returned no data for subject={subject_user_id}, nothing persisted.")
+            return None
+        try:
+            await tracking_repo.insert_budget_entries(session, rows_to_insert)
+            categories = [r.budget_category for r in rows_to_insert]
+            logger.info(
+                f"LiteLLM refresh persisted {len(rows_to_insert)} row(s) for "
+                f"subject={subject_user_id} categories={categories}"
+            )
+            return None
+        except Exception as db_err:
+            logger.warning(
+                f"DB write failed after LiteLLM fetch for subject={subject_user_id}: {db_err}. "
+                "Returning fresh LiteLLM data without persisting."
+            )
+            return {row.budget_id: row for row in rows_to_insert}
 
 
 budget_usage_service = BudgetUsageService()

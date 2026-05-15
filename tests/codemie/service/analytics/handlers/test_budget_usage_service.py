@@ -122,90 +122,49 @@ class TestBuildBudgetUsageRows:
     def _spend_row(self, amount: float):
         return SimpleNamespace(budget_period_spend=Decimal(str(amount)))
 
-    def _member(self, project_name: str, spend: float, limit, reset_at=None, budget_category: str = "platform"):
-        return SimpleNamespace(
-            project_name=project_name,
-            spend=spend,
-            allocated_max_budget=limit,
-            budget_reset_at=reset_at,
-            budget_category=budget_category,
-        )
-
     def test_returns_correct_columns(self):
-        columns, _ = _build_budget_usage_rows("user@example.com", [], {}, {}, [])
+        columns, _ = _build_budget_usage_rows("user@example.com", [], {}, {})
         assert columns == _get_key_spending_columns()
 
     def test_empty_inputs_return_empty_rows(self):
-        _, rows = _build_budget_usage_rows("user@example.com", [], {}, {}, [])
+        _, rows = _build_budget_usage_rows("user@example.com", [], {}, {})
         assert rows == []
 
     def test_platform_category_uses_user_label(self):
         a = self._assignment("b1", "platform")
-        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b1": self._budget(100.0)}, {}, [])
+        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b1": self._budget(100.0)}, {})
         assert rows[0]["project_name"] == "user@example.com"
 
     def test_cli_category_appends_cli_suffix(self):
         a = self._assignment("b2", "cli")
-        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b2": self._budget(50.0)}, {}, [])
+        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b2": self._budget(50.0)}, {})
         assert rows[0]["project_name"] == "user@example.com (cli)"
 
     def test_premium_models_category_appends_premium_suffix(self):
         a = self._assignment("b3", "premium_models")
-        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b3": self._budget(10.0)}, {}, [])
+        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b3": self._budget(10.0)}, {})
         assert rows[0]["project_name"] == "user@example.com (premium)"
 
     def test_unknown_category_appends_category_name(self):
         a = self._assignment("b4", "custom_cat")
-        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b4": self._budget(10.0)}, {}, [])
+        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b4": self._budget(10.0)}, {})
         assert rows[0]["project_name"] == "user@example.com (custom_cat)"
-
-    def test_project_platform_category_uses_project_name(self):
-        member = self._member("my-project", 5.0, 100.0, budget_category="platform")
-        _, rows = _build_budget_usage_rows("user@example.com", [], {}, {}, [member])
-        assert rows[0]["project_name"] == "my-project"
-
-    def test_project_cli_category_appends_cli_suffix(self):
-        member = self._member("my-project", 5.0, 100.0, budget_category="cli")
-        _, rows = _build_budget_usage_rows("user@example.com", [], {}, {}, [member])
-        assert rows[0]["project_name"] == "my-project (cli)"
-
-    def test_project_premium_models_category_appends_premium_suffix(self):
-        member = self._member("my-project", 5.0, 100.0, budget_category="premium_models")
-        _, rows = _build_budget_usage_rows("user@example.com", [], {}, {}, [member])
-        assert rows[0]["project_name"] == "my-project (premium)"
-
-    def test_project_unknown_category_appends_category_name(self):
-        member = self._member("my-project", 5.0, 100.0, budget_category="custom_cat")
-        _, rows = _build_budget_usage_rows("user@example.com", [], {}, {}, [member])
-        assert rows[0]["project_name"] == "my-project (custom_cat)"
 
     def test_assignment_with_missing_budget_is_skipped(self):
         a = self._assignment("unknown-id", "platform")
-        _, rows = _build_budget_usage_rows("user@example.com", [a], {}, {}, [])
+        _, rows = _build_budget_usage_rows("user@example.com", [a], {}, {})
         assert rows == []
-
-    def test_personal_rows_appear_before_member_allocation_rows(self):
-        a = self._assignment("b1", "platform")
-        member = self._member("my-project", 15.0, 50.0)
-        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b1": self._budget(100.0)}, {}, [member])
-        assert rows[0]["project_name"] == "user@example.com"
-        assert rows[1]["project_name"] == "my-project"
 
     def test_spend_defaults_to_zero_when_no_spend_row(self):
         a = self._assignment("b1", "platform")
-        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b1": self._budget(100.0)}, {}, [])
+        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b1": self._budget(100.0)}, {})
         assert rows[0]["current_spending"] == 0.0
 
     def test_spend_row_value_used_when_present(self):
         a = self._assignment("b1", "platform")
         spend = self._spend_row(42.5)
-        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b1": self._budget(100.0)}, {"b1": spend}, [])
+        _, rows = _build_budget_usage_rows("user@example.com", [a], {"b1": self._budget(100.0)}, {"b1": spend})
         assert rows[0]["current_spending"] == 42.5
-
-    def test_member_allocation_spend_falls_back_to_zero_when_none(self):
-        member = self._member("proj", None, 100.0)
-        _, rows = _build_budget_usage_rows("user@example.com", [], {}, {}, [member])
-        assert rows[0]["current_spending"] == 0.0
 
 
 class TestBudgetUsageServiceNeedsRefresh:
@@ -287,9 +246,7 @@ class TestBudgetUsageServiceGetBudgetUsage:
         mock_session = AsyncMock()
         fresh_row = SimpleNamespace(spend_date=datetime.now(timezone.utc))
 
-        with patch.object(
-            service, "_load_from_db", new_callable=AsyncMock, return_value=([], {}, {"b1": fresh_row}, [])
-        ):
+        with patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([], {}, {"b1": fresh_row})):
             with patch.object(service, "_needs_refresh", return_value=False):
                 columns, rows = await service.get_budget_usage(mock_session, "user-1", "user@test.com")
 
@@ -304,7 +261,7 @@ class TestBudgetUsageServiceGetBudgetUsage:
         mock_session = AsyncMock()
         assignment = SimpleNamespace(budget_id="b1", category="platform")
 
-        with patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([assignment], {}, {}, [])):
+        with patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([assignment], {}, {})):
             with patch.object(service, "_needs_refresh", return_value=True):
                 with patch.object(service, "_is_litellm_enabled", return_value=False):
                     columns, rows = await service.get_budget_usage(mock_session, "user-1", "user@test.com")
@@ -322,8 +279,8 @@ class TestBudgetUsageServiceGetBudgetUsage:
         fresh_spend = {"b1": SimpleNamespace(budget_period_spend=Decimal("10"), spend_date=datetime.now(timezone.utc))}
 
         load_calls = [
-            ([assignment], {"b1": budget}, {}, []),
-            ([assignment], {"b1": budget}, fresh_spend, []),
+            ([assignment], {"b1": budget}, {}),
+            ([assignment], {"b1": budget}, fresh_spend),
         ]
 
         with patch.object(service, "_load_from_db", new_callable=AsyncMock, side_effect=load_calls):
@@ -344,13 +301,113 @@ class TestBudgetUsageServiceGetBudgetUsage:
         mock_session = AsyncMock()
         refresh_mock = AsyncMock()
 
-        with patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([], {}, {}, [])):
+        with patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([], {}, {})):
             with patch.object(service, "_needs_refresh", return_value=True):
                 with patch.object(service, "_is_litellm_enabled", return_value=True):
                     with patch.object(service, "_refresh_from_litellm", refresh_mock):
                         await service.get_budget_usage(mock_session, "user-1", "user@test.com")
 
         refresh_mock.assert_not_called()
+
+
+class TestRefreshFromLitellmSpendDedup:
+    """Tests that _refresh_from_litellm skips DB insert when spend is unchanged."""
+
+    def _assignment(self, budget_id: str, category: str = "platform"):
+        return SimpleNamespace(budget_id=budget_id, category=category)
+
+    @pytest.mark.asyncio
+    async def test_skips_insert_when_spend_unchanged(self):
+        assignment = self._assignment("b1")
+        existing_spend = SimpleNamespace(budget_period_spend=Decimal("42.0"), spend_date=datetime.now(timezone.utc))
+        current_spend_map = {"b1": existing_spend}
+
+        mock_tracking = MagicMock()
+        mock_tracking.insert_budget_entries = AsyncMock()
+        mock_tracking.get_latest_by_budget_ids = AsyncMock(return_value=current_spend_map)
+
+        litellm_result = {"total_spend": 42.0}
+
+        with patch(
+            "codemie.repository.project_spend_tracking_repository.ProjectSpendTrackingRepository",
+            return_value=mock_tracking,
+        ):
+            with patch(
+                "codemie.service.analytics.handlers.budget_usage_service.asyncio.gather",
+                new_callable=AsyncMock,
+                return_value=[litellm_result],
+            ):
+                await BudgetUsageService()._refresh_from_litellm(
+                    AsyncMock(), "user-1", "user@test.com", [assignment], current_spend_map
+                )
+
+        mock_tracking.insert_budget_entries.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_inserts_when_spend_changed(self):
+        """Only rows whose spend changed since last DB read are inserted."""
+        service = BudgetUsageService()
+        mock_session = AsyncMock()
+        assignment = self._assignment("b1")
+        existing_spend = SimpleNamespace(budget_period_spend=Decimal("10.0"), spend_date=datetime.now(timezone.utc))
+        current_spend_map = {"b1": existing_spend}
+
+        mock_tracking = MagicMock()
+        mock_tracking.insert_budget_entries = AsyncMock()
+        refreshed_map = {
+            "b1": SimpleNamespace(budget_period_spend=Decimal("55.0"), spend_date=datetime.now(timezone.utc))
+        }
+        mock_tracking.get_latest_by_budget_ids = AsyncMock(return_value=refreshed_map)
+
+        litellm_result = {"total_spend": 55.0}
+
+        with patch("codemie.enterprise.litellm.dependencies.get_customer_spending", return_value=litellm_result):
+            with patch(
+                "codemie.repository.project_spend_tracking_repository.ProjectSpendTrackingRepository",
+                return_value=mock_tracking,
+            ):
+                with patch(
+                    "codemie.service.analytics.handlers.budget_usage_service.asyncio.gather",
+                    new_callable=AsyncMock,
+                    return_value=[litellm_result],
+                ):
+                    result = await service._refresh_from_litellm(
+                        mock_session, "user-1", "user@test.com", [assignment], current_spend_map
+                    )
+
+        mock_tracking.insert_budget_entries.assert_called_once()
+        assert result == refreshed_map
+
+    @pytest.mark.asyncio
+    async def test_inserts_when_no_existing_spend(self):
+        """Row is inserted when there is no previous spend record for that budget."""
+        service = BudgetUsageService()
+        mock_session = AsyncMock()
+        assignment = self._assignment("b1")
+        current_spend_map: dict = {}
+
+        mock_tracking = MagicMock()
+        mock_tracking.insert_budget_entries = AsyncMock()
+        new_map = {"b1": SimpleNamespace(budget_period_spend=Decimal("20.0"), spend_date=datetime.now(timezone.utc))}
+        mock_tracking.get_latest_by_budget_ids = AsyncMock(return_value=new_map)
+
+        litellm_result = {"total_spend": 20.0}
+
+        with patch(
+            "codemie.repository.project_spend_tracking_repository.ProjectSpendTrackingRepository",
+            return_value=mock_tracking,
+        ):
+            with patch(
+                "codemie.service.analytics.handlers.budget_usage_service.asyncio.gather",
+                new_callable=AsyncMock,
+                return_value=[litellm_result],
+            ):
+                result = await service._refresh_from_litellm(
+                    mock_session, "user-1", "user@test.com", [assignment], current_spend_map
+                )
+
+        mock_tracking.insert_budget_entries.assert_called_once()
+        assert result == new_map
 
 
 class TestBudgetUsageServiceLoadFromDb:
@@ -364,7 +421,6 @@ class TestBudgetUsageServiceLoadFromDb:
         assignment = SimpleNamespace(budget_id="b1")
         budgets_map = {"b1": MagicMock()}
         spend_map = {"b1": MagicMock()}
-        member_allocs = [MagicMock()]
 
         mock_budget_repo = MagicMock()
         mock_budget_repo.get_user_category_assignments = AsyncMock(return_value=[assignment])
@@ -373,24 +429,16 @@ class TestBudgetUsageServiceLoadFromDb:
         mock_tracking = MagicMock()
         mock_tracking.get_latest_by_budget_ids = AsyncMock(return_value=spend_map)
 
-        mock_pmba_repo = MagicMock()
-        mock_pmba_repo.get_active_by_user = AsyncMock(return_value=member_allocs)
-
         with patch("codemie.repository.budget_repository.budget_repository", mock_budget_repo):
             with patch(
                 "codemie.repository.project_spend_tracking_repository.ProjectSpendTrackingRepository",
                 return_value=mock_tracking,
             ):
-                with patch(
-                    "codemie.repository.project_budget_repository.project_member_budget_assignment_repository",
-                    mock_pmba_repo,
-                ):
-                    assignments, bmap, smap, mallocs = await service._load_from_db(mock_session, "user-1")
+                assignments, bmap, smap = await service._load_from_db(mock_session, "user-1")
 
         assert assignments == [assignment]
         assert bmap == budgets_map
         assert smap == spend_map
-        assert mallocs == member_allocs
 
     @pytest.mark.asyncio
     async def test_returns_empty_data_when_no_assignments(self):
@@ -404,19 +452,12 @@ class TestBudgetUsageServiceLoadFromDb:
         mock_tracking = MagicMock()
         mock_tracking.get_latest_by_budget_ids = AsyncMock(return_value={})
 
-        mock_pmba_repo = MagicMock()
-        mock_pmba_repo.get_active_by_user = AsyncMock(return_value=[])
-
         with patch("codemie.repository.budget_repository.budget_repository", mock_budget_repo):
             with patch(
                 "codemie.repository.project_spend_tracking_repository.ProjectSpendTrackingRepository",
                 return_value=mock_tracking,
             ):
-                with patch(
-                    "codemie.repository.project_budget_repository.project_member_budget_assignment_repository",
-                    mock_pmba_repo,
-                ):
-                    assignments, bmap, smap, mallocs = await service._load_from_db(mock_session, "user-1")
+                assignments, bmap, smap = await service._load_from_db(mock_session, "user-1")
 
         assert assignments == []
         assert bmap == {}
