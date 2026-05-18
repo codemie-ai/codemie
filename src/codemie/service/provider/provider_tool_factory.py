@@ -48,7 +48,7 @@ class ProviderToolBase(CodeMieTool):
 
 class ProviderToolFactory:
     CLASSNAME_POSTFIX = "Tool"
-    ARG_SCHEMA_TYPE_MAPPING = {"String": str, "Number": int, "List": list[str]}
+    ARG_SCHEMA_TYPE_MAPPING = {"String": str, "Number": int, "List": list[str], "Text": str}
     CONNECTION_ERROR_MSG = "Failed to establish a connection with a tool provider: host: {host}"
     CONFIGURATION_TYPE = "tool_invocation"
 

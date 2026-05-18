@@ -55,6 +55,7 @@ class ProviderToolkitConfigParameter(BaseModel):
         SECRET = auto()
         URL = "URL"
         UUID = "UUID"
+        TEXT = auto()
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -73,6 +74,7 @@ class ProviderToolArgument(BaseModel):
         NUMBER = auto()
         BOOLEAN = auto()
         INTEGER = auto()
+        TEXT = auto()
 
     model_config = ConfigDict(populate_by_name=True)
 
