@@ -15,8 +15,11 @@
 import smtplib
 import socket
 import base64
+import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 from typing import List, Type, Optional
 
 from langchain_core.tools import ToolException
@@ -39,6 +42,10 @@ class EmailToolInput(BaseModel):
     from_email: Optional[str] = Field(
         default=None,
         description="Sender email address. If not specified, the configured SMTP username will be used as the sender.",
+    )
+    file_paths: Optional[List[str]] = Field(
+        default=None,
+        description="A list of absolute file paths to attach to the email (e.g., ['/tmp/report.pdf', '/tmp/data.xlsx'])",
     )
     timeout: Optional[float] = Field(
         default=30.0,
@@ -124,6 +131,7 @@ class EmailTool(CodeMieTool):
         cc_emails: Optional[List[str]] = None,
         bcc_emails: Optional[List[str]] = None,
         from_email: Optional[str] = None,
+        file_paths: Optional[List[str]] = None,
         timeout: Optional[float] = 30.0,
     ) -> str:
         """
@@ -136,6 +144,7 @@ class EmailTool(CodeMieTool):
             cc_emails: Optional list of CC email addresses
             bcc_emails: Optional list of BCC email addresses
             from_email: Optional sender email address (overrides config if provided)
+            file_paths: Optional list of file paths to attach
             timeout: Optional timeout in seconds for SMTP operations (default: 30 seconds)
 
         Returns:
@@ -151,7 +160,7 @@ class EmailTool(CodeMieTool):
         from_email = self._determine_from_email(from_email)
 
         try:
-            msg = MIMEMultipart("alternative")
+            msg = MIMEMultipart("mixed")
             msg["Subject"] = subject
             msg["From"] = from_email
             msg["To"] = ", ".join(recipient_emails)
@@ -161,6 +170,18 @@ class EmailTool(CodeMieTool):
 
             part = MIMEText(body, "html")
             msg.attach(part)
+
+            if file_paths:
+                for file_path in file_paths:
+                    if not os.path.isfile(file_path):
+                        continue
+                    with open(file_path, "rb") as f:
+                        attachment = MIMEBase("application", "octet-stream")
+                        attachment.set_payload(f.read())
+                    encoders.encode_base64(attachment)
+                    filename = os.path.basename(file_path)
+                    attachment.add_header("Content-Disposition", f"attachment; filename={filename}")
+                    msg.attach(attachment)
 
             with smtplib.SMTP(host, int(port), timeout=timeout) as server:
                 server.starttls()
