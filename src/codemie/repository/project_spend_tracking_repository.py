@@ -518,6 +518,8 @@ class ProjectSpendTrackingRepository:
             .where(ProjectSpendTracking.spend_subject_type == "budget")
             .where(ProjectSpendTracking.budget_id.in_(budget_ids))
             .where(ProjectSpendTracking.spend_date == latest_subq.c.max_spend_date)
+            .where(ProjectSpendTracking.budget_id == latest_subq.c.budget_id)
+            .where(ProjectSpendTracking.spend_date != now)
             .values(spend_date=now)
         )
 
