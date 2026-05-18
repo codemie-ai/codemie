@@ -246,7 +246,9 @@ class TestBudgetUsageServiceGetBudgetUsage:
         mock_session = AsyncMock()
         fresh_row = SimpleNamespace(spend_date=datetime.now(timezone.utc))
 
-        with patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([], {}, {"b1": fresh_row})):
+        with patch.object(
+            service, "_load_from_db", new_callable=AsyncMock, return_value=([], {}, {"b1": fresh_row}, {})
+        ):
             with patch.object(service, "_needs_refresh", return_value=False):
                 columns, rows = await service.get_budget_usage(mock_session, "user-1", "user@test.com")
 
@@ -261,7 +263,7 @@ class TestBudgetUsageServiceGetBudgetUsage:
         mock_session = AsyncMock()
         assignment = SimpleNamespace(budget_id="b1", category="platform")
 
-        with patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([assignment], {}, {})):
+        with patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([assignment], {}, {}, {})):
             with patch.object(service, "_needs_refresh", return_value=True):
                 with patch.object(service, "_is_litellm_enabled", return_value=False):
                     columns, rows = await service.get_budget_usage(mock_session, "user-1", "user@test.com")
@@ -279,8 +281,8 @@ class TestBudgetUsageServiceGetBudgetUsage:
         fresh_spend = {"b1": SimpleNamespace(budget_period_spend=Decimal("10"), spend_date=datetime.now(timezone.utc))}
 
         load_calls = [
-            ([assignment], {"b1": budget}, {}),
-            ([assignment], {"b1": budget}, fresh_spend),
+            ([assignment], {"b1": budget}, {}, {}),
+            ([assignment], {"b1": budget}, fresh_spend, {}),
         ]
 
         with patch.object(service, "_load_from_db", new_callable=AsyncMock, side_effect=load_calls):
@@ -301,7 +303,7 @@ class TestBudgetUsageServiceGetBudgetUsage:
         mock_session = AsyncMock()
         refresh_mock = AsyncMock()
 
-        with patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([], {}, {})):
+        with patch.object(service, "_load_from_db", new_callable=AsyncMock, return_value=([], {}, {}, {})):
             with patch.object(service, "_needs_refresh", return_value=True):
                 with patch.object(service, "_is_litellm_enabled", return_value=True):
                     with patch.object(service, "_refresh_from_litellm", refresh_mock):
@@ -338,7 +340,7 @@ class TestRefreshFromLitellmSpendDedup:
                 return_value=[litellm_result],
             ):
                 await BudgetUsageService()._refresh_from_litellm(
-                    AsyncMock(), "user-1", "user@test.com", [assignment], current_spend_map
+                    AsyncMock(), "user-1", "user@test.com", [assignment], current_spend_map, {}, {}
                 )
 
         mock_tracking.insert_budget_entries.assert_not_called()
@@ -372,7 +374,7 @@ class TestRefreshFromLitellmSpendDedup:
                     return_value=[litellm_result],
                 ):
                     result = await service._refresh_from_litellm(
-                        mock_session, "user-1", "user@test.com", [assignment], current_spend_map
+                        mock_session, "user-1", "user@test.com", [assignment], current_spend_map, {}, {}
                     )
 
         mock_tracking.insert_budget_entries.assert_called_once()
@@ -403,7 +405,7 @@ class TestRefreshFromLitellmSpendDedup:
                 return_value=[litellm_result],
             ):
                 result = await service._refresh_from_litellm(
-                    mock_session, "user-1", "user@test.com", [assignment], current_spend_map
+                    mock_session, "user-1", "user@test.com", [assignment], current_spend_map, {}, {}
                 )
 
         mock_tracking.insert_budget_entries.assert_called_once()
@@ -428,13 +430,14 @@ class TestBudgetUsageServiceLoadFromDb:
 
         mock_tracking = MagicMock()
         mock_tracking.get_latest_by_budget_ids = AsyncMock(return_value=spend_map)
+        mock_tracking.get_latest_before_today_by_budget_ids = AsyncMock(return_value={})
 
         with patch("codemie.repository.budget_repository.budget_repository", mock_budget_repo):
             with patch(
                 "codemie.repository.project_spend_tracking_repository.ProjectSpendTrackingRepository",
                 return_value=mock_tracking,
             ):
-                assignments, bmap, smap = await service._load_from_db(mock_session, "user-1", "user@test.com")
+                assignments, bmap, smap, prev_day = await service._load_from_db(mock_session, "user-1", "user@test.com")
 
         assert assignments == [assignment]
         assert bmap == budgets_map
@@ -451,13 +454,14 @@ class TestBudgetUsageServiceLoadFromDb:
 
         mock_tracking = MagicMock()
         mock_tracking.get_latest_by_budget_ids = AsyncMock(return_value={})
+        mock_tracking.get_latest_before_today_by_budget_ids = AsyncMock(return_value={})
 
         with patch("codemie.repository.budget_repository.budget_repository", mock_budget_repo):
             with patch(
                 "codemie.repository.project_spend_tracking_repository.ProjectSpendTrackingRepository",
                 return_value=mock_tracking,
             ):
-                assignments, bmap, smap = await service._load_from_db(mock_session, "user-1", "user@test.com")
+                assignments, bmap, smap, prev_day = await service._load_from_db(mock_session, "user-1", "user@test.com")
 
         assert assignments == []
         assert bmap == {}

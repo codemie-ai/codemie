@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import func, update
 from sqlalchemy.dialects.postgresql import insert
@@ -567,6 +567,52 @@ class ProjectSpendTrackingRepository:
             .where(ProjectSpendTracking.project_name == project_name)
             .where(ProjectSpendTracking.budget_id.in_(budget_ids))
             .where(ProjectSpendTracking.spend_subject_type == "budget")
+            .group_by(ProjectSpendTracking.budget_id)
+            .subquery()
+        )
+
+        stmt = (
+            select(ProjectSpendTracking)
+            .join(
+                latest_subq,
+                (ProjectSpendTracking.budget_id == latest_subq.c.budget_id)
+                & (ProjectSpendTracking.spend_date == latest_subq.c.max_spend_date)
+                & (ProjectSpendTracking.created_at == latest_subq.c.max_created_at),
+            )
+            .where(ProjectSpendTracking.project_name == project_name)
+            .where(ProjectSpendTracking.spend_subject_type == "budget")
+        )
+
+        result = await session.execute(stmt)
+        return {row.budget_id: row for row in result.scalars().all()}
+
+    async def get_latest_before_today_by_budget_ids(
+        self,
+        session: AsyncSession,
+        budget_ids: list[str],
+        project_name: str,
+    ) -> dict[str, "ProjectSpendTracking"]:
+        """Return the most recent budget-type row per budget_id strictly before today (UTC).
+
+        Used as the ``prev_row`` baseline for daily delta computation in the lazy-refresh
+        path: computing against yesterday's row ensures ``daily_spend`` always represents
+        the full day's accumulated spend regardless of how many intra-day refreshes occur.
+        """
+        if not budget_ids:
+            return {}
+
+        start_of_today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+        latest_subq = (
+            select(
+                ProjectSpendTracking.budget_id,
+                func.max(ProjectSpendTracking.spend_date).label("max_spend_date"),
+                func.max(ProjectSpendTracking.created_at).label("max_created_at"),
+            )
+            .where(ProjectSpendTracking.project_name == project_name)
+            .where(ProjectSpendTracking.budget_id.in_(budget_ids))
+            .where(ProjectSpendTracking.spend_subject_type == "budget")
+            .where(ProjectSpendTracking.spend_date < start_of_today)
             .group_by(ProjectSpendTracking.budget_id)
             .subquery()
         )
