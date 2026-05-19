@@ -159,17 +159,26 @@ class CommandLineTool(CodeMieTool):
 
         command_start_time = int(round(time.time() * 1000))
 
-        # Add activate command before the command
+        # Validate user-supplied inputs independently before combining
+        CommandLineTool.sanitize_command(command)
         activate_command = self.activate_command.strip()
+        if activate_command:
+            CommandLineTool.sanitize_command(activate_command)
+
         full_command = f"{activate_command} && {command}" if activate_command else command
 
-        CommandLineTool.sanitize_command(full_command)
-
+        # shell=False with explicit bash invocation avoids implicit shell wrapping while
+        # preserving shell features (pipes, &&, redirections) required by agents.
+        # Defense-in-depth: sanitize_command blocks the highest-risk injection vectors.
         result = subprocess.run(
-            full_command, cwd=work_dir, shell=True, text=True, capture_output=True, timeout=float(self.timeout)
+            ["/bin/bash", "-c", full_command],
+            cwd=work_dir,
+            shell=False,
+            text=True,
+            capture_output=True,
+            timeout=float(self.timeout),
         )
 
-        # Return a dictionary with the desired information
         return result.stdout, result.stderr, result.returncode, command_start_time
 
     @staticmethod
@@ -188,6 +197,24 @@ class CommandLineTool(CodeMieTool):
             (r"\bdd\b", "Use of 'dd' command is not allowed."),
             (r">\s*/dev/sd[a-z][1-9]?", "Overwriting disk blocks directly is not allowed."),
             (r":\(\)\{\s*:\|\:&\s*\};:", "Fork bombs are not allowed."),
+            # Command substitution — arbitrary execution in any context
+            (r"`[^`]*`", "Backtick command substitution is not allowed."),
+            (r"\$\(", "Command substitution `$(...)` is not allowed."),
+            # Pipes to network exfiltration tools
+            (r"\|\s*(curl|wget|nc|netcat|ncat|socat)\b", "Piping to network commands is not allowed."),
+            # Chaining into shell interpreters via ;, &&, ||
+            (
+                r";\s*(bash|sh|zsh|python|python3|perl|ruby|node|php)\b",
+                "Semicolon chaining into interpreter is not allowed.",
+            ),
+            (
+                r"&&\s*(bash|sh|zsh|python|python3|perl|ruby|node|php)\b",
+                "Chaining into interpreter via && is not allowed.",
+            ),
+            (
+                r"\|\|\s*(bash|sh|zsh|python|python3|perl|ruby|node|php)\b",
+                "Chaining into interpreter via || is not allowed.",
+            ),
         ]
         for pattern, message in dangerous_patterns:
             if re.search(pattern, command):
