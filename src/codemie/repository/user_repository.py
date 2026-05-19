@@ -12,15 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import itertools
 import uuid
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, UTC
-from typing import Optional
+from typing import Iterator, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import and_
+from sqlalchemy import Result, Row, and_
 from sqlmodel import Session, select, func, or_
 
+from codemie.core.constants import MAX_POSTGRES_QUERY_ARGUMENTS
 from codemie.core.db_utils import escape_like_wildcards
 from codemie.rest_api.models.user_management import (
     UserDB,
@@ -450,8 +453,89 @@ class UserRepository:
     # Async methods (AsyncSession)
     # ===========================================
 
+    async def query_users_by_uuid(self, session: AsyncSession, uuids: list[str]) -> Result:
+        """Query users by UUID list.
+
+        Args:
+            session: Async database session
+            uuids: List of user UUIDs to query
+
+        Returns:
+            SQLAlchemy Result with id, email, username, name columns
+        """
+        stmt = select(UserDB.id, UserDB.email, UserDB.username, UserDB.name).where(UserDB.id.in_(uuids))
+        return await session.execute(stmt)
+
+    async def query_users_by_uuid_batched(
+        self, session: AsyncSession, uuids: set[str], batch_size: int
+    ) -> Iterator[Row[tuple[str, str, str, str | None]]]:
+        """Query users by UUID set in batches to avoid query size limits.
+
+        Args:
+            session: Async database session
+            uuids: Set of user UUIDs to query
+            batch_size: Max UUIDs per batch
+
+        Returns:
+            Chain of Result objects from all batches
+        """
+        uuid_list = list(uuids)
+        batches = [uuid_list[i : i + batch_size] for i in range(0, len(uuid_list), batch_size)]
+        return itertools.chain(
+            *await asyncio.gather(*[self.query_users_by_uuid(session, uuid_batch) for uuid_batch in batches])
+        )
+
+    async def query_users_by_name(self, session: AsyncSession, names: list[str], lower_names: list[str]) -> Result:
+        """Query users by username, display name, or email (case-insensitive).
+
+        Args:
+            session: Async database session
+            names: List of exact names (username/display name) to match
+            lower_names: List of lowercase emails to match
+
+        Returns:
+            SQLAlchemy Result with id, email, username, name columns
+        """
+        stmt = select(UserDB.id, UserDB.email, UserDB.username, UserDB.name).where(
+            or_(
+                UserDB.username.in_(names),
+                UserDB.name.in_(names),
+                func.lower(UserDB.email).in_(lower_names),
+            )
+        )
+        return await session.execute(stmt)
+
+    async def query_users_by_name_batched(
+        self, session: AsyncSession, names: set[str], lower_names: set[str], batch_size: int
+    ) -> Iterator[Row[tuple[str, str, str, str | None]]]:
+        """Query users by name/email in batches to avoid query size limits.
+
+        Args:
+            session: Async database session
+            names: Set of exact names (username/display name) to match
+            lower_names: Set of lowercase emails to match
+            batch_size: Max identifiers per batch
+
+        Returns:
+            Chain of Result objects from all batches
+        """
+        names_list = list(names)
+        lower_names_list = list(lower_names)
+        batches = [
+            (names_list[i : i + batch_size], lower_names_list[i : i + batch_size])
+            for i in range(0, max(len(names_list), len(lower_names_list)), batch_size)
+        ]
+        return itertools.chain(
+            *await asyncio.gather(
+                *[
+                    self.query_users_by_name(session, names_batch, lower_names_batch)
+                    for names_batch, lower_names_batch in batches
+                ]
+            )
+        )
+
     async def afind_users_by_identifiers(
-        self, session: AsyncSession, identifiers: set[str]
+        self, session: AsyncSession, identifiers: set[str], batch_size: int = MAX_POSTGRES_QUERY_ARGUMENTS
     ) -> dict[str, "_UserFields"]:
         """Bulk-lookup full user records for a set of raw identifiers (UUIDs, usernames, display names).
 
@@ -463,23 +547,13 @@ class UserRepository:
         mapping: dict[str, _UserFields] = {}
 
         if uuids:
-            rows = await session.execute(
-                select(UserDB.id, UserDB.email, UserDB.username, UserDB.name).where(UserDB.id.in_(uuids))
-            )
+            rows = await self.query_users_by_uuid_batched(session, uuids, batch_size)
             for r in rows:
                 rec = _UserFields(id=r.id, email=r.email, username=r.username, name=r.name)
                 mapping[r.id] = rec
         if names:
             lower_names = {n.lower() for n in names}
-            rows = await session.execute(
-                select(UserDB.id, UserDB.email, UserDB.username, UserDB.name).where(
-                    or_(
-                        UserDB.username.in_(names),
-                        UserDB.name.in_(names),
-                        func.lower(UserDB.email).in_(lower_names),
-                    )
-                )
-            )
+            rows = await self.query_users_by_name_batched(session, names, lower_names, batch_size)
             for r in rows:
                 rec = _UserFields(id=r.id, email=r.email, username=r.username, name=r.name)
                 if r.username in names:

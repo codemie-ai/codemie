@@ -73,6 +73,10 @@ SUPERVISOR_HANDOFF_TOOL_PREFIX = "transfer_to"
 MAX_TOOL_NAME_LENGTH = 64
 
 
+# Max amount of Posgres query arguments
+MAX_POSTGRES_QUERY_ARGUMENTS = 32000
+
+
 ModelTypes = LLMService(llm_config).create_model_types_enum()
 
 
