@@ -35,6 +35,7 @@ from codemie.service.mcp.models import (
 )
 from codemie.service.mcp.client import _hash_remainder
 from codemie.configs import config
+from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 
 
 @pytest.fixture
@@ -210,6 +211,32 @@ class TestMCPConnectClientListTools:
 
             with pytest.raises(ValueError, match="Test error message"):
                 await client.list_tools(server_config)
+
+    @pytest.mark.asyncio
+    async def test_list_tools_401_raises_broker_auth_required(self, server_config):
+        """A 401 from the bridge must raise BrokerAuthRequiredException, not ValueError."""
+        client = MCPConnectClient()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.reason_phrase = "Unauthorized"
+        mock_response.text = '{"error": "Unauthorized"}'
+        mock_response.json.return_value = {"error": "Unauthorized"}
+
+        mock_request = MagicMock()
+        http_error = httpx.HTTPStatusError("Error", request=mock_request, response=mock_response)
+
+        mock_http_response = MagicMock()
+        mock_http_response.raise_for_status.side_effect = http_error
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_http_response)
+
+            with pytest.raises(BrokerAuthRequiredException) as exc_info:
+                await client.list_tools(server_config)
+
+        assert exc_info.value.message == "Authentication required. Please log in to access the MCP server."
+        assert exc_info.value.details == "HTTP 401"
 
     @pytest.mark.asyncio
     async def test_list_tools_json_error(self, server_config):
@@ -684,6 +711,49 @@ class TestMCPConnectClientListTools:
 
             with pytest.raises(httpx.HTTPStatusError):
                 await client.invoke_tool(server_config, tool_name, tool_args)
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_401_raises_broker_auth_required(self, server_config):
+        """A 401 from the bridge during tool invocation must raise BrokerAuthRequiredException."""
+        client = MCPConnectClient()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.reason_phrase = "Unauthorized"
+
+        http_error = httpx.HTTPStatusError("Error", request=MagicMock(), response=mock_response)
+        mock_http_response = MagicMock()
+        mock_http_response.raise_for_status.side_effect = http_error
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_http_response)
+
+            with pytest.raises(BrokerAuthRequiredException) as exc_info:
+                await client.invoke_tool(server_config, "test_tool", {"param": "value"})
+
+        assert exc_info.value.message == "Authentication required. Please log in to access the MCP server."
+        assert exc_info.value.details == "HTTP 401"
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_non_401_http_error_still_raises_http_status_error(self, server_config):
+        """Non-401 HTTP errors from invoke_tool must still raise httpx.HTTPStatusError."""
+        client = MCPConnectClient()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.reason_phrase = "Internal Server Error"
+
+        http_error = httpx.HTTPStatusError("Error", request=MagicMock(), response=mock_response)
+        mock_http_response = MagicMock()
+        mock_http_response.raise_for_status.side_effect = http_error
+
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_http_response)
+
+            with pytest.raises(httpx.HTTPStatusError) as exc_info:
+                await client.invoke_tool(server_config, "test_tool", {"param": "value"})
+
+        assert exc_info.value is http_error
 
     @pytest.mark.asyncio
     async def test_invoke_tool_validation_error(self, server_config):

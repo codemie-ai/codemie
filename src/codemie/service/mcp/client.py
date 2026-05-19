@@ -33,6 +33,7 @@ from pydantic import ValidationError
 
 from codemie.configs import config
 from codemie.configs.logger import logger
+from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 from codemie.service.mcp.models import (
     MCPServerConfig,
     MCPListToolsResponse,
@@ -153,13 +154,13 @@ class MCPConnectClient:
                 # Handle HTTP error status codes
                 logger.error(f"HTTP error: {e.response.status_code} - {e.response.reason_phrase}")
                 logger.error(f"Response content: {e.response.text[:1000]}")
-                # Try to extract error message from JSON response
-                try:
-                    error_json = e.response.json()
-                    error_message = error_json.get('error', e.response.text[:500])
-                except Exception:
-                    error_message = e.response.text[:500]
-                raise ValueError(error_message) from e
+                if e.response.status_code == 401:
+                    raise BrokerAuthRequiredException(
+                        message="Authentication required. Please log in to access the MCP server.",
+                        auth_location=config.BROKER_AUTH_LOCATION_URL,
+                        details=f"HTTP {e.response.status_code}",
+                    ) from e
+                raise ValueError(_extract_error_message(e.response)) from e
 
             except json.JSONDecodeError as e:
                 # Specific handling for JSON parsing failures
@@ -168,10 +169,8 @@ class MCPConnectClient:
                 raise ValueError(f"Invalid JSON response from MCP-Connect: {e}")
 
             except httpx.ConnectError as e:
-                # Specific handling for connection errors
                 logger.error(f"Connection error when connecting to MCP server: {e}")
-                # Get more details about the connection error
-                details = str(e.__context__) if hasattr(e, '__context__') else 'No details'
+                details = str(e.__context__) if e.__context__ else 'No details'
                 logger.error(f"Connection error details: {details}")
                 raise
 
@@ -236,7 +235,17 @@ class MCPConnectClient:
             logger.info(f"tools/call: Using MCP-Connect URL: {mcp_url}")
             post_body = request.model_dump(exclude_none=True)
             response = await client.post(mcp_url, json=post_body, headers=headers)
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error: {e.response.status_code} - {e.response.reason_phrase}")
+                if e.response.status_code == 401:
+                    raise BrokerAuthRequiredException(
+                        message="Authentication required. Please log in to access the MCP server.",
+                        auth_location=config.BROKER_AUTH_LOCATION_URL,
+                        details=f"HTTP {e.response.status_code}",
+                    ) from e
+                raise
 
             try:
                 response_json = response.json()
@@ -247,6 +256,14 @@ class MCPConnectClient:
             except ValidationError as e:
                 logger.error(f"Failed to parse tool invocation response: {e}")
                 raise ValueError(f"Invalid response from MCP-Connect: {e}")
+
+
+def _extract_error_message(response: httpx.Response) -> str:
+    try:
+        error_json = response.json()
+        return error_json.get('error', response.text[:500])
+    except Exception:
+        return response.text[:500]
 
 
 def _merge_mcp_headers(
