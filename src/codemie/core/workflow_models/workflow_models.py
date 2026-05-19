@@ -390,6 +390,6 @@ class UpdateWorkflowRequest(BaseModel):
     icon_url: Optional[str] = None
     shared: bool = True
     yaml_config: Optional[str] = None
-    supervisor_prompt: str = ""
+    supervisor_prompt: Optional[str] = None
     meta_config: Optional[str] = None
     guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None

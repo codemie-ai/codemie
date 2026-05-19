@@ -641,7 +641,7 @@ class WorkflowService:
 
         for attr_name in self._editable_non_boolean_fields:
             new_value = getattr(updated_workflow_config, attr_name)
-            if new_value:
+            if new_value is not None:
                 if attr_name == "yaml_config":
                     yaml_config_updated = True
                 setattr(stored_config, attr_name, new_value)

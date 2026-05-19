@@ -262,6 +262,53 @@ def test_update_workflow_nothing_to_update(
     assert workflow_config.supervisor_prompt is None
 
 
+@patch('codemie.core.workflow_models.WorkflowConfig.update')
+@patch('codemie.core.workflow_models.WorkflowConfig.refresh')
+def test_update_workflow_clears_description_with_empty_string(
+    mock_refresh: MagicMock,
+    mock_update: MagicMock,
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+    user: User,
+) -> None:
+    """An empty string description must be applied, not silently skipped."""
+    assert workflow_config.description == "A test workflow"
+
+    updated = WorkflowConfig(
+        name=workflow_config.name,
+        description="",
+        project="demo",
+        mode=WorkflowMode.SEQUENTIAL,
+    )
+    workflow_service.update_workflow(workflow_config, updated, user)
+
+    assert workflow_config.description == ""
+
+
+@patch('codemie.core.workflow_models.WorkflowConfig.update')
+@patch('codemie.core.workflow_models.WorkflowConfig.refresh')
+def test_update_workflow_skips_none_fields(
+    mock_refresh: MagicMock,
+    mock_update: MagicMock,
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+    user: User,
+) -> None:
+    """Optional fields set to None must not overwrite existing values."""
+    workflow_config.icon_url = "http://example.com/icon.png"
+
+    updated = WorkflowConfig(
+        name=workflow_config.name,
+        description=workflow_config.description,
+        project="demo",
+        mode=WorkflowMode.SEQUENTIAL,
+        icon_url=None,
+    )
+    workflow_service.update_workflow(workflow_config, updated, user)
+
+    assert workflow_config.icon_url == "http://example.com/icon.png"
+
+
 @pytest.mark.parametrize(
     "user_input, expected_prompt",
     [("Test input", "Test input"), ("", ""), (None, None)],
