@@ -783,3 +783,112 @@ async def test_reindex_jira_explicit_setting_id_takes_precedence_over_stored(
         project_name="test_project",
         setting_id="explicit-id",
     )
+
+
+# ---------------------------------------------------------------------------
+# Azure DevOps Work Item PUT endpoint — wiql_query fallback logic
+# ---------------------------------------------------------------------------
+
+_ADO_WORK_ITEM_PUT_URL = "/v1/index/knowledge_base/azure_devops_work_item"
+_ADO_UPDATE_REQUEST = {
+    "name": "work-item-ds",
+    "project_name": "test-project",
+    "wiql_query": "",
+}
+_STORED_WIQL = "SELECT [System.Id] FROM WorkItems WHERE [System.State] = 'Active'"
+_DEFAULT_WIQL = "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project"
+
+
+def _make_kb_index(wiql_query: str) -> MagicMock:
+    kb = MagicMock()
+    kb.azure_devops_work_item = MagicMock()
+    kb.azure_devops_work_item.wiql_query = wiql_query
+    kb.project_space_visible = False
+    return kb
+
+
+@patch("codemie.rest_api.routers.index.AzureDevOpsWorkItemDatasourceProcessor")
+@patch("codemie.rest_api.routers.index.SettingsService.get_azure_devops_creds")
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
+@patch("codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@pytest.mark.asyncio
+async def test_put_reindex_uses_stored_wiql_when_request_is_empty(
+    mock_filter, mock_guardrails, mock_creds, mock_processor_cls, auth_headers
+):
+    kb_index = _make_kb_index(_STORED_WIQL)
+    mock_filter.return_value = [kb_index]
+    mock_guardrails.return_value = []
+
+    mock_processor = MagicMock()
+    mock_processor.started_message = "Indexing started"
+    mock_processor_cls.return_value = mock_processor
+
+    response = app_client.put(
+        f"{_ADO_WORK_ITEM_PUT_URL}?full_reindex=true",
+        json=_ADO_UPDATE_REQUEST,
+        headers={**auth_headers, "X-Request-ID": "test-uuid"},
+    )
+
+    assert response.status_code == 200
+    _, kwargs = mock_processor_cls.call_args
+    assert kwargs["wiql_query"] == _STORED_WIQL
+
+
+@patch("codemie.rest_api.routers.index.AzureDevOpsWorkItemDatasourceProcessor")
+@patch("codemie.rest_api.routers.index.SettingsService.get_azure_devops_creds")
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
+@patch("codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@pytest.mark.asyncio
+async def test_put_reindex_uses_request_wiql_when_provided(
+    mock_filter, mock_guardrails, mock_creds, mock_processor_cls, auth_headers
+):
+    kb_index = _make_kb_index(_STORED_WIQL)
+    mock_filter.return_value = [kb_index]
+    mock_guardrails.return_value = []
+
+    mock_processor = MagicMock()
+    mock_processor.started_message = "Indexing started"
+    mock_processor_cls.return_value = mock_processor
+
+    custom_wiql = "SELECT [System.Id] FROM WorkItems WHERE [System.AreaPath] = 'Team'"
+    request_with_custom_wiql = {**_ADO_UPDATE_REQUEST, "wiql_query": custom_wiql}
+
+    response = app_client.put(
+        f"{_ADO_WORK_ITEM_PUT_URL}?full_reindex=true",
+        json=request_with_custom_wiql,
+        headers={**auth_headers, "X-Request-ID": "test-uuid"},
+    )
+
+    assert response.status_code == 200
+    _, kwargs = mock_processor_cls.call_args
+    assert kwargs["wiql_query"] == custom_wiql
+
+
+@patch("codemie.rest_api.routers.index.AzureDevOpsWorkItemDatasourceProcessor")
+@patch("codemie.rest_api.routers.index.SettingsService.get_azure_devops_creds")
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_effective_guardrails")
+@patch("codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo")
+@pytest.mark.asyncio
+async def test_put_reindex_uses_none_when_no_stored_wiql(
+    mock_filter, mock_guardrails, mock_creds, mock_processor_cls, auth_headers
+):
+    kb_index = MagicMock()
+    kb_index.azure_devops_work_item = None
+    kb_index.project_space_visible = False
+    mock_filter.return_value = [kb_index]
+    mock_guardrails.return_value = []
+
+    mock_processor = MagicMock()
+    mock_processor.started_message = "Indexing started"
+    mock_processor_cls.return_value = mock_processor
+
+    response = app_client.put(
+        f"{_ADO_WORK_ITEM_PUT_URL}?full_reindex=true",
+        json=_ADO_UPDATE_REQUEST,
+        headers={**auth_headers, "X-Request-ID": "test-uuid"},
+    )
+
+    assert response.status_code == 200
+    _, kwargs = mock_processor_cls.call_args
+    # None — processor's own default will apply
+    assert kwargs["wiql_query"] is None

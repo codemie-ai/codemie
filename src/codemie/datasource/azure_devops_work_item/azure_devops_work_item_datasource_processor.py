@@ -33,6 +33,8 @@ from codemie.rest_api.models.settings import AzureDevOpsCredentials
 from codemie.rest_api.security.user import User
 from codemie.service.llm_service.llm_service import llm_service
 
+_DEFAULT_WIQL_QUERY = "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project"
+
 
 class AzureDevOpsWorkItemDatasourceProcessor(BaseDatasourceProcessor):
     INDEX_TYPE = "knowledge_base_azure_devops_work_item"
@@ -44,7 +46,7 @@ class AzureDevOpsWorkItemDatasourceProcessor(BaseDatasourceProcessor):
         user: User | None,
         project_name: str,
         credentials: AzureDevOpsCredentials,
-        wiql_query: str,
+        wiql_query: str | None,
         description: str = "",
         project_space_visible: bool = False,
         index_info: Optional[IndexInfo] = None,
@@ -56,7 +58,7 @@ class AzureDevOpsWorkItemDatasourceProcessor(BaseDatasourceProcessor):
         self.project_name = project_name
         self.description = description
         self.credentials = credentials
-        self.wiql_query = wiql_query
+        self.wiql_query = wiql_query or _DEFAULT_WIQL_QUERY
         self.project_space_visible = project_space_visible
         self.setting_id = kwargs.get("setting_id")
         self.embedding_model = kwargs.get("embedding_model")

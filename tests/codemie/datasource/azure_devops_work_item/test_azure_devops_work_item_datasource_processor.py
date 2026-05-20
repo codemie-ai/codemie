@@ -22,6 +22,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from codemie.datasource.azure_devops_work_item.azure_devops_work_item_datasource_processor import (
     AzureDevOpsWorkItemDatasourceProcessor,
+    _DEFAULT_WIQL_QUERY,
 )
 from codemie.rest_api.models.index import AzureDevOpsWorkItemIndexInfo
 from codemie.core.models import CreatedByUser
@@ -91,6 +92,42 @@ def test_init(azure_devops_work_item_processor_fixture):
     assert processor.credentials.project == "test-project"
     assert processor.credentials.access_token == "fake-token"
     assert processor.index.repo_name == "test_work_item_ds"
+
+
+# ---------------------------------------------------------------------------
+# wiql_query default logic
+# ---------------------------------------------------------------------------
+
+
+def _make_processor(wiql_query: str) -> AzureDevOpsWorkItemDatasourceProcessor:
+    credentials = AzureDevOpsCredentials(
+        base_url="https://dev.azure.com",
+        organization="test-org",
+        project="test-project",
+        access_token="fake-token",
+    )
+    return AzureDevOpsWorkItemDatasourceProcessor(
+        datasource_name="ds",
+        user=User(id="1", username="u"),
+        project_name="proj",
+        credentials=credentials,
+        wiql_query=wiql_query,
+    )
+
+
+def test_wiql_query_custom_value_is_preserved():
+    custom = "SELECT [System.Id] FROM WorkItems WHERE [System.State] = 'Active'"
+    processor = _make_processor(custom)
+    assert processor.wiql_query == custom
+
+
+def test_wiql_query_empty_string_uses_default():
+    processor = _make_processor("")
+    assert processor.wiql_query == _DEFAULT_WIQL_QUERY
+
+
+def test_wiql_query_default_constant_value():
+    assert _DEFAULT_WIQL_QUERY == "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project"
 
 
 def test_index_name_property(azure_devops_work_item_processor_fixture):

@@ -1546,7 +1546,8 @@ def update_knowledge_base_azure_devops_work_item(
         user=user,
         project_name=request.project_name,
         credentials=azure_devops_creds,
-        wiql_query=request.wiql_query,
+        wiql_query=request.wiql_query
+        or (kb_index.azure_devops_work_item.wiql_query if kb_index.azure_devops_work_item else None),
         description=request.description,
         project_space_visible=project_space_visible,
         setting_id=request.setting_id,
