@@ -250,7 +250,7 @@ class BaseDatasourceProcessor(ABC):
             set_logging_info(
                 uuid=self.request_uuid,
                 user_id=self.user.id,
-                user_email=self.user.email or self.user.username or self.user.id,
+                user_email=getattr(self.user, 'email', None) or self.user.username or self.user.id,
             )
 
     def _notify_callbacks_on_complete(self, result) -> None:
