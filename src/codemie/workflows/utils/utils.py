@@ -358,7 +358,15 @@ def evaluate_conditional_route(
     state_schema: AgentMessages, workflow_state: WorkflowState, enable_summarization_node: bool
 ) -> str:
     messages = get_messages_from_state_schema(state_schema=state_schema)
-    next_candidate = state_schema.get(NEXT_KEY, workflow_state.next.state_id)[-1]
+    # For condition/switch nodes, evaluate_next_candidate stores the evaluated result in
+    # NEXT_KEY, so we read it back here. For simple state_id transitions, use the fixed
+    # next state directly — the accumulated NEXT_KEY list may contain stale values from
+    # prior conditional nodes, causing KeyError when the stale value is not in the
+    # transition_nodes map for the current node.
+    if workflow_state.next.condition or workflow_state.next.switch:
+        next_candidate = state_schema.get(NEXT_KEY, workflow_state.next.state_id)[-1]
+    else:
+        next_candidate = workflow_state.next.state_id or state_schema.get(NEXT_KEY, [END_NODE])[-1]
     logger.info(f"Evaluate conditional route. Started. State: {workflow_state.id}, NextCandidate: {next_candidate}")
 
     if messages and isinstance(messages[-1], AIMessage):

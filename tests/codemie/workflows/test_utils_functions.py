@@ -29,6 +29,7 @@ This module tests the following functionality:
 from langchain_core.messages import HumanMessage, AIMessage, RemoveMessage
 
 from codemie.workflows.utils import (
+    evaluate_conditional_route,
     exclude_prior_messages,
     get_context_store_from_state_schema,
     parse_from_string_representation,
@@ -36,7 +37,7 @@ from codemie.workflows.utils import (
     evaluate_next_candidate,
     get_messages_from_state_schema,
 )
-from codemie.workflows.constants import MESSAGES_VARIABLE, CONTEXT_STORE_VARIABLE
+from codemie.workflows.constants import MESSAGES_VARIABLE, CONTEXT_STORE_VARIABLE, NEXT_KEY
 from codemie.core.workflow_models import WorkflowState, WorkflowNextState
 from codemie.core.workflow_models.workflow_models import (
     WorkflowStateCondition,
@@ -382,6 +383,92 @@ def test_evaluate_next_candidate_with_failed_condition():
 
     # Assert
     assert result == "failure_node"
+
+
+def test_evaluate_conditional_route_simple_transition_ignores_stale_next_key():
+    """
+    TC_ECR_001: evaluate_conditional_route simple transition ignores stale NEXT_KEY
+
+    When workflow_state uses a simple state_id (no condition/switch), the router
+    must use workflow_state.next.state_id directly and NOT read NEXT_KEY[-1] from
+    state — which may contain a stale value set by a prior conditional node.
+
+    Reproduces the bug: in a loop with summarization enabled, assistant_2 (simple
+    state_id → assistant_3) was evaluated after assistant_3 set NEXT_KEY[-1] =
+    '2_items_generator'. evaluate_conditional_route returned '2_items_generator',
+    which is absent from assistant_2's transition_nodes → KeyError at runtime.
+    """
+    workflow_state = WorkflowState(
+        id="assistant_2",
+        task="double it",
+        assistant_id="assistant_2",
+        next=WorkflowNextState(state_id="assistant_3"),
+    )
+    stale_next_key = ["assistant_2", "assistant_3", "assistant_3", "assistant_3", "assistant_3", "2_items_generator"]
+    state_schema = {
+        MESSAGES_VARIABLE: [AIMessage(content='{"result": 12}', response_metadata={"success": True})],
+        NEXT_KEY: stale_next_key,
+    }
+
+    result = evaluate_conditional_route(state_schema, workflow_state, enable_summarization_node=False)
+
+    assert result == "assistant_3", (
+        f"Expected 'assistant_3' (from workflow_state.next.state_id) but got '{result}'. "
+        "evaluate_conditional_route must not use stale NEXT_KEY[-1] for simple transitions."
+    )
+
+
+def test_evaluate_conditional_route_simple_transition_with_summarization_ignores_stale_next_key():
+    """
+    TC_ECR_002: evaluate_conditional_route simple transition with summarization enabled
+
+    Same stale NEXT_KEY scenario with enable_summarization_node=True.
+    The router must still use workflow_state.next.state_id, not NEXT_KEY[-1].
+    """
+    workflow_state = WorkflowState(
+        id="assistant_2",
+        task="double it",
+        assistant_id="assistant_2",
+        next=WorkflowNextState(state_id="assistant_3"),
+    )
+    state_schema = {
+        MESSAGES_VARIABLE: [AIMessage(content='{"result": 12}', response_metadata={"success": True})],
+        NEXT_KEY: ["assistant_2", "assistant_3", "assistant_3", "2_items_generator"],
+    }
+
+    result = evaluate_conditional_route(state_schema, workflow_state, enable_summarization_node=True)
+
+    assert result == "assistant_3"
+
+
+def test_evaluate_conditional_route_condition_node_uses_next_key():
+    """
+    TC_ECR_003: evaluate_conditional_route condition node still reads NEXT_KEY[-1]
+
+    For conditional nodes, evaluate_next_candidate has already evaluated the
+    expression and stored the result in NEXT_KEY. The router must read that result.
+    """
+    workflow_state = WorkflowState(
+        id="assistant_3",
+        task="sum",
+        assistant_id="assistant_3",
+        next=WorkflowNextState(
+            condition=WorkflowStateCondition(
+                expression="sum > 35",
+                then="end",
+                otherwise="2_items_generator",
+            )
+        ),
+    )
+    # evaluate_next_candidate already ran and stored '2_items_generator' in NEXT_KEY
+    state_schema = {
+        MESSAGES_VARIABLE: [AIMessage(content='{"sum": 23}', response_metadata={"success": True})],
+        NEXT_KEY: ["assistant_2", "assistant_3", "2_items_generator"],
+    }
+
+    result = evaluate_conditional_route(state_schema, workflow_state, enable_summarization_node=False)
+
+    assert result == "2_items_generator"
 
 
 def test_evaluate_next_candidate_with_switch_default():
