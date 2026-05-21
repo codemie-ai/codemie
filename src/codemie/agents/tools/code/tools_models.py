@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import ast
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from codemie.core.utils import unpack_json_strings
 
 
 class GetRepoTreeInput(BaseModel):
@@ -49,22 +52,26 @@ class SearchInput(BaseModel):
         default=[],
     )
 
+    @field_validator("keywords_list", "file_path", mode="before")
+    @classmethod
+    def parse_string_to_list(cls, v):
+        if v is None or isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            result = unpack_json_strings(v)
+            if isinstance(result, list):
+                return result
+            try:
+                parsed = ast.literal_eval(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except (ValueError, SyntaxError):
+                pass
+            return []
+        return v
 
-class SearchInputByPaths(BaseModel):
-    query: str = Field(
-        description="""Detailed user query based on user task which will be used to find and filter relevant context.
-        It must be detailed, not a short one, because it requires context for searching documents."""
-    )
-    file_path: Optional[List[str]] = Field(
-        description="""List of file paths from repository tree which might be relevant to user input and used by
-        additional filtration.""",
-        default=[],
-    )
-    keywords_list: Optional[List[str]] = Field(
-        description="""Relevant keywords based on the user query to enhance search results; if no additional
-        filtering is needed, return an empty list.""",
-        default=[],
-    )
+
+class SearchInputByPaths(SearchInput):
     limit_docs_count: Optional[int] = Field(
         description="""Limit returned count of relevant documents to specific number.""",
         default=None,
