@@ -15,5 +15,8 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "sdlc-factory@sdlc-factory": true
   }
 }
