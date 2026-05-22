@@ -406,7 +406,7 @@ class TestCLIRepositories:
 
         # Level 3: User (nested in branch)
         user_agg = branch_agg["aggs"]["users"]
-        assert user_agg["terms"]["field"] == "attributes.user_email.keyword"
+        assert user_agg["terms"]["field"] == "attributes.user_id.keyword"
         assert user_agg["terms"]["size"] == 20  # Capped at 20 users
 
         # Verify metrics are organized in two buckets: token_data and session_data

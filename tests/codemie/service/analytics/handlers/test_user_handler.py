@@ -288,13 +288,13 @@ class TestGetUsersActivity:
         # Assert — query is wrapped with placeholder filter
         assert agg_body["query"]["bool"]["must"] == [query]
         assert agg_body["query"]["bool"]["must_not"] == [
-            {"terms": {"attributes.user_email.keyword": ["system", "unknown"]}}
+            {"terms": {"attributes.user_id.keyword": ["unknown", "00000000-0000-0000-0000-000000000000"]}}
         ]
         assert agg_body["size"] == 0
 
         # Verify paginated_results structure
         users_agg = agg_body["aggs"]["paginated_results"]
-        assert users_agg["terms"]["field"] == "attributes.user_email.keyword"
+        assert users_agg["terms"]["field"] == "attributes.user_id.keyword"
         assert users_agg["terms"]["size"] == 20
         assert users_agg["terms"]["order"] == {"1-bucket>1-metric": "desc"}
 

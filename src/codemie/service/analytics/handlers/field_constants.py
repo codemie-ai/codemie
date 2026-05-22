@@ -20,6 +20,7 @@ from __future__ import annotations
 METRIC_NAME_KEYWORD_FIELD = "metric_name.keyword"
 USER_NAME_KEYWORD_FIELD = "attributes.user_name.keyword"
 USER_EMAIL_KEYWORD_FIELD = "attributes.user_email.keyword"
+USER_ID_KEYWORD_FIELD = "attributes.user_id.keyword"
 PROJECT_KEYWORD_FIELD = "attributes.project.keyword"
 
 # Placeholder user IDs that carry no real user context and always have zero spending.

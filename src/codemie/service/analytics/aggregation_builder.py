@@ -32,6 +32,7 @@ class AggregationBuilder:
         fetch_size: int,
         order: dict[str, str],
         sub_aggs: dict[str, Any],
+        script: str | None = None,
     ) -> dict[str, Any]:
         """Build terms aggregation structure with sorting support.
 
@@ -40,6 +41,8 @@ class AggregationBuilder:
             fetch_size: Number of buckets to fetch (page+1) * per_page
             order: Sort order dict (e.g., {"total_cost": "desc"})
             sub_aggs: Sub-aggregations (metrics) to include
+            script: Optional Painless script source; when provided, replaces the field-based
+                grouping (e.g. to normalise bucket keys before aggregation)
 
         Returns:
             Terms aggregation structure
@@ -54,9 +57,13 @@ class AggregationBuilder:
                 "Please refine filters to reduce result set size."
             )
 
+        group_by: dict[str, Any] = (
+            {"script": {"source": script, "lang": "painless"}} if script else {"field": group_by_field}
+        )
+
         return {
             "terms": {
-                "field": group_by_field,
+                **group_by,
                 "size": fetch_size,
                 "order": order,
             },

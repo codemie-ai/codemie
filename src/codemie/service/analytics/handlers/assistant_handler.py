@@ -21,7 +21,13 @@ from datetime import datetime
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
-from codemie.service.analytics.handlers.field_constants import METRIC_NAME_KEYWORD_FIELD, USER_EMAIL_KEYWORD_FIELD
+from codemie.service.analytics.handlers.field_constants import (
+    METRIC_NAME_KEYWORD_FIELD,
+    PLACEHOLDER_USER_IDS,
+    USER_EMAIL_KEYWORD_FIELD,
+    USER_ID_KEYWORD_FIELD,
+)
+from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
 
@@ -647,11 +653,11 @@ FROM codemie_metrics_logs
         """Get published to marketplace analytics: assistants published per user."""
         logger.info("Requesting published-to-marketplace analytics")
 
-        return await self._pipeline.execute_tabular_query(
+        result = await self._pipeline.execute_tabular_query(
             agg_builder=self._build_published_to_marketplace_aggregation,
             result_parser=self._parse_published_to_marketplace_result,
             columns=self._get_published_to_marketplace_columns(),
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             metric_filters=[MetricName.PUBLISH_TO_MARKETPLACE.value],
             time_period=time_period,
             start_date=start_date,
@@ -661,6 +667,8 @@ FROM codemie_metrics_logs
             page=page,
             per_page=per_page,
         )
+        await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_email")
+        return result
 
     def _build_published_to_marketplace_aggregation(self, query: dict, fetch_size: int) -> dict:
         """Build terms aggregation for published-to-marketplace analytics."""
@@ -719,14 +727,19 @@ FROM codemie_metrics_logs
         }
 
         terms_agg = AggregationBuilder.build_terms_agg(
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             fetch_size=fetch_size,
             order={"3-bucket": "desc"},
             sub_aggs=sub_aggs,
         )
 
         return {
-            "query": query,
+            "query": {
+                "bool": {
+                    "must": [query],
+                    "must_not": [{"terms": {USER_ID_KEYWORD_FIELD: PLACEHOLDER_USER_IDS}}],
+                }
+            },
             "size": 0,
             "aggs": {"paginated_results": terms_agg},
         }

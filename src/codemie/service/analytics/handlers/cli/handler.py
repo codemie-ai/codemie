@@ -24,8 +24,8 @@ from codemie.repository.metrics_elastic_repository import MetricsElasticReposito
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.field_constants import (
     METRIC_NAME_KEYWORD_FIELD,
+    PLACEHOLDER_USER_IDS,
     PROJECT_KEYWORD_FIELD,
-    USER_EMAIL_KEYWORD_FIELD,
 )
 from codemie.service.analytics.handlers.llm_handler import _combine_model_names
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
@@ -560,7 +560,7 @@ class CLIHandler(CLIBaseHandler):
             agg_builder=lambda query, fetch_size: self._build_cli_users_aggregation(query, fetch_size),
             result_parser=self._parse_cli_users_result,
             columns=self._get_cli_users_columns(),
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value],
             time_period=time_period,
             start_date=start_date,
@@ -607,7 +607,7 @@ class CLIHandler(CLIBaseHandler):
 
         # Build terms aggregation using helper
         terms_agg = AggregationBuilder.build_terms_agg(
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             fetch_size=fetch_size,
             order={"_count": "desc"},
             sub_aggs=sub_aggs,
@@ -615,7 +615,12 @@ class CLIHandler(CLIBaseHandler):
 
         # Construct full aggregation body
         agg_body = {
-            "query": query,
+            "query": {
+                "bool": {
+                    "must": [query],
+                    "must_not": [{"terms": {USER_ID_KEYWORD_FIELD: PLACEHOLDER_USER_IDS}}],
+                }
+            },
             "size": 0,
             "aggs": {
                 "paginated_results": terms_agg,
@@ -819,7 +824,7 @@ class CLIHandler(CLIBaseHandler):
 
         # Level 3: Build user aggregation using AggregationBuilder (optimize size)
         user_agg = AggregationBuilder.build_terms_agg(
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             fetch_size=20,  # Reasonable cap: max 20 users per branch (not fetch_size which could be 100+)
             order={"_count": "desc"},
             sub_aggs=user_metrics,
@@ -843,7 +848,12 @@ class CLIHandler(CLIBaseHandler):
 
         # Construct full aggregation body
         agg_body = {
-            "query": query,
+            "query": {
+                "bool": {
+                    "must": [query],
+                    "must_not": [{"terms": {USER_ID_KEYWORD_FIELD: PLACEHOLDER_USER_IDS}}],
+                }
+            },
             "size": 0,
             "aggs": {
                 "paginated_results": repository_agg,
@@ -936,7 +946,7 @@ class CLIHandler(CLIBaseHandler):
             agg_builder=lambda query, fetch_size: self._build_cli_top_performers_aggregation(query, fetch_size),
             result_parser=self._parse_cli_top_performers_result,
             columns=self._get_cli_top_performers_columns(),
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value],
             time_period=time_period,
             start_date=start_date,
@@ -972,7 +982,7 @@ class CLIHandler(CLIBaseHandler):
 
         # Build terms aggregation using helper, ordered by total_lines_added
         terms_agg = AggregationBuilder.build_terms_agg(
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             fetch_size=fetch_size,
             order={"total_lines_added": "desc"},
             sub_aggs=sub_aggs,
@@ -980,7 +990,12 @@ class CLIHandler(CLIBaseHandler):
 
         # Construct full aggregation body
         agg_body = {
-            "query": query,
+            "query": {
+                "bool": {
+                    "must": [query],
+                    "must_not": [{"terms": {USER_ID_KEYWORD_FIELD: PLACEHOLDER_USER_IDS}}],
+                }
+            },
             "size": 0,
             "aggs": {
                 "paginated_results": terms_agg,

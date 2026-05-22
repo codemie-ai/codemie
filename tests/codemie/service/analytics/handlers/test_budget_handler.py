@@ -93,12 +93,13 @@ class TestBudgetSoftLimit:
         agg_body = handler._build_budget_soft_limit_aggregation(query, fetch_size=20)
 
         # Assert
-        assert agg_body["query"] == query
+        assert agg_body["query"]["bool"]["must"] == [query]
+        assert "must_not" in agg_body["query"]["bool"]
         assert agg_body["size"] == 0
 
         # Verify paginated_results structure
         users_agg = agg_body["aggs"]["paginated_results"]
-        assert users_agg["terms"]["field"] == "attributes.user_email.keyword"
+        assert users_agg["terms"]["field"] == "attributes.user_id.keyword"
         assert users_agg["terms"]["size"] == 20
         assert users_agg["terms"]["order"] == {"max_spent": "desc"}
 
@@ -151,12 +152,13 @@ class TestBudgetHardLimit:
         agg_body = handler._build_budget_hard_limit_aggregation(query, fetch_size=20)
 
         # Assert
-        assert agg_body["query"] == query
+        assert agg_body["query"]["bool"]["must"] == [query]
+        assert "must_not" in agg_body["query"]["bool"]
         assert agg_body["size"] == 0
 
         # Verify paginated_results structure
         users_agg = agg_body["aggs"]["paginated_results"]
-        assert users_agg["terms"]["field"] == "attributes.user_email.keyword"
+        assert users_agg["terms"]["field"] == "attributes.user_id.keyword"
         assert users_agg["terms"]["size"] == 20
         assert users_agg["terms"]["order"] == {"max_spent": "desc"}
 
@@ -230,7 +232,7 @@ class TestBudgetLimitParser:
 
         # Assert
         assert len(columns) == 2
-        assert columns[0]["id"] == "user_name"
+        assert columns[0]["id"] == "user_email"
         assert columns[0]["type"] == "string"
         assert columns[1]["id"] == "max_spent"
         assert columns[1]["type"] == "number"

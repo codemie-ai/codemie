@@ -24,7 +24,6 @@ from codemie.repository.metrics_elastic_repository import MetricsElasticReposito
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.field_constants import (
     METRIC_NAME_KEYWORD_FIELD,
-    PLACEHOLDER_USER_EMAILS,
     PLACEHOLDER_USER_IDS,
     PROJECT_KEYWORD_FIELD,
     USER_NAME_KEYWORD_FIELD,
@@ -391,11 +390,11 @@ class UserHandler(CLICostAdjustmentMixin):
 
         result = await self._pipeline.execute_tabular_query(
             agg_builder=lambda query, fetch_size: self._build_simple_spending_aggregation(
-                query, fetch_size, USER_EMAIL_KEYWORD_FIELD
+                query, fetch_size, USER_ID_KEYWORD_FIELD
             ),
             result_parser=parse_platform,
             columns=self._get_users_spending_columns(),
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             metric_filters=platform_metrics,
             time_period=time_period,
             start_date=start_date,
@@ -474,7 +473,12 @@ class UserHandler(CLICostAdjustmentMixin):
         )
 
         return {
-            "query": query,
+            "query": {
+                "bool": {
+                    "must": [query],
+                    "must_not": [{"terms": {USER_ID_KEYWORD_FIELD: PLACEHOLDER_USER_IDS}}],
+                }
+            },
             "size": 0,
             "aggs": {"paginated_results": terms_agg},
         }
@@ -592,7 +596,7 @@ class UserHandler(CLICostAdjustmentMixin):
             agg_builder=lambda query, fetch_size: self._build_users_activity_aggregation(query, fetch_size),
             result_parser=self._parse_users_activity_result,
             columns=self._get_users_activity_columns(),
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             metric_filters=MetricName.to_list_from_group(MetricName.ACTIVITY_METRICS),
             time_period=time_period,
             start_date=start_date,
@@ -713,7 +717,7 @@ class UserHandler(CLICostAdjustmentMixin):
 
         # Build terms aggregation using helper
         terms_agg = AggregationBuilder.build_terms_agg(
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             fetch_size=fetch_size,
             order={"1-bucket>1-metric": "desc"},
             sub_aggs=sub_aggs,
@@ -724,7 +728,7 @@ class UserHandler(CLICostAdjustmentMixin):
             "query": {
                 "bool": {
                     "must": [query],
-                    "must_not": [{"terms": {USER_EMAIL_KEYWORD_FIELD: PLACEHOLDER_USER_EMAILS}}],
+                    "must_not": [{"terms": {USER_ID_KEYWORD_FIELD: PLACEHOLDER_USER_IDS}}],
                 }
             },
             "size": 0,
@@ -992,7 +996,7 @@ class UserHandler(CLICostAdjustmentMixin):
             agg_builder=self._build_power_users_aggregation,
             result_parser=self._parse_power_users_result,
             columns=self._get_power_users_columns(),
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             metric_filters=None,
             time_period=time_period,
             start_date=start_date,
@@ -1035,7 +1039,7 @@ class UserHandler(CLICostAdjustmentMixin):
         }
 
         terms_agg = AggregationBuilder.build_terms_agg(
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             fetch_size=fetch_size,
             order={"1-bucket": "desc"},
             sub_aggs=sub_aggs,
@@ -1045,7 +1049,7 @@ class UserHandler(CLICostAdjustmentMixin):
             "query": {
                 "bool": {
                     "must": [query],
-                    "must_not": [{"terms": {USER_EMAIL_KEYWORD_FIELD: PLACEHOLDER_USER_EMAILS}}],
+                    "must_not": [{"terms": {USER_ID_KEYWORD_FIELD: PLACEHOLDER_USER_IDS}}],
                 }
             },
             "size": 0,
@@ -1103,7 +1107,7 @@ class UserHandler(CLICostAdjustmentMixin):
             agg_builder=self._build_knowledge_sharing_aggregation,
             result_parser=self._parse_knowledge_sharing_result,
             columns=self._get_knowledge_sharing_columns(),
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             metric_filters=None,
             time_period=time_period,
             start_date=start_date,
@@ -1146,14 +1150,19 @@ class UserHandler(CLICostAdjustmentMixin):
         }
 
         terms_agg = AggregationBuilder.build_terms_agg(
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             fetch_size=fetch_size,
             order={"1-bucket": "desc"},
             sub_aggs=sub_aggs,
         )
 
         return {
-            "query": query,
+            "query": {
+                "bool": {
+                    "must": [query],
+                    "must_not": [{"terms": {USER_ID_KEYWORD_FIELD: PLACEHOLDER_USER_IDS}}],
+                }
+            },
             "size": 0,
             "aggs": {"paginated_results": terms_agg},
         }

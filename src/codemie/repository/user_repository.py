@@ -553,7 +553,10 @@ class UserRepository:
                 mapping[r.id] = rec
         if names:
             lower_names = {n.lower() for n in names}
-            rows = await self.query_users_by_name_batched(session, names, lower_names, batch_size)
+            # Each name batch produces 3× bind params (username IN, name IN, email IN),
+            # so divide by 3 to stay under asyncpg's 32767 hard limit.
+            name_batch_size = max(1, batch_size // 3)
+            rows = await self.query_users_by_name_batched(session, names, lower_names, name_batch_size)
             for r in rows:
                 rec = _UserFields(id=r.id, email=r.email, username=r.username, name=r.name)
                 if r.username in names:

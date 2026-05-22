@@ -132,12 +132,21 @@ class ProjectHandler(CLICostAdjustmentMixin):
             },
         }
 
+        # Normalise empty project name to "epm-cdme" at aggregation time so that
+        # pagination totals and sort order remain accurate.
+        normalize_script = (
+            f"def v = doc['{PROJECT_KEYWORD_FIELD}'].size() == 0 ? '' "
+            f": doc['{PROJECT_KEYWORD_FIELD}'].value; "
+            "return v == '' ? 'epm-cdme' : v;"
+        )
+
         # Build terms aggregation using helper
         terms_agg = AggregationBuilder.build_terms_agg(
             group_by_field=PROJECT_KEYWORD_FIELD,
             fetch_size=fetch_size,
             order={"total_cost>sum": "desc"},
             sub_aggs=sub_aggs,
+            script=normalize_script,
         )
 
         # Construct full aggregation body

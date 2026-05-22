@@ -21,13 +21,12 @@ from datetime import datetime
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
+from codemie.service.analytics.handlers.field_constants import PLACEHOLDER_USER_IDS, USER_ID_KEYWORD_FIELD
+from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
 
 logger = logging.getLogger(__name__)
-
-# Elasticsearch field constants
-USER_EMAIL_KEYWORD_FIELD = "attributes.user_email.keyword"
 
 
 class BudgetHandler:
@@ -50,11 +49,11 @@ class BudgetHandler:
         """Get budget soft limit warnings by user with maximum spending amounts."""
         logger.info("Requesting budget-soft-limit analytics")
 
-        return await self._pipeline.execute_tabular_query(
+        result = await self._pipeline.execute_tabular_query(
             agg_builder=lambda query, fetch_size: self._build_budget_soft_limit_aggregation(query, fetch_size),
             result_parser=self._parse_budget_limit_result,
             columns=self._get_budget_limit_columns(),
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             metric_filters=[MetricName.BUDGET_SOFT_LIMIT_WARNING.value],
             time_period=time_period,
             start_date=start_date,
@@ -64,6 +63,8 @@ class BudgetHandler:
             page=page,
             per_page=per_page,
         )
+        await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_email")
+        return result
 
     def _build_budget_soft_limit_aggregation(self, query: dict, fetch_size: int) -> dict:
         """Build terms aggregation for budget soft limit with fetch-and-slice."""
@@ -76,7 +77,7 @@ class BudgetHandler:
 
         # Build terms aggregation using helper
         terms_agg = AggregationBuilder.build_terms_agg(
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             fetch_size=fetch_size,
             order={"max_spent": "desc"},
             sub_aggs=sub_aggs,
@@ -84,7 +85,12 @@ class BudgetHandler:
 
         # Construct full aggregation body
         agg_body = {
-            "query": query,
+            "query": {
+                "bool": {
+                    "must": [query],
+                    "must_not": [{"terms": {USER_ID_KEYWORD_FIELD: PLACEHOLDER_USER_IDS}}],
+                }
+            },
             "size": 0,
             "aggs": {
                 "paginated_results": terms_agg,
@@ -106,11 +112,11 @@ class BudgetHandler:
         """Get budget hard limit violations by user with maximum spending amounts."""
         logger.info("Requesting budget-hard-limit analytics")
 
-        return await self._pipeline.execute_tabular_query(
+        result = await self._pipeline.execute_tabular_query(
             agg_builder=lambda query, fetch_size: self._build_budget_hard_limit_aggregation(query, fetch_size),
             result_parser=self._parse_budget_limit_result,
             columns=self._get_budget_limit_columns(),
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             metric_filters=[MetricName.BUDGET_HARD_LIMIT_VIOLATION.value],
             time_period=time_period,
             start_date=start_date,
@@ -120,6 +126,8 @@ class BudgetHandler:
             page=page,
             per_page=per_page,
         )
+        await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_email")
+        return result
 
     def _build_budget_hard_limit_aggregation(self, query: dict, fetch_size: int) -> dict:
         """Build terms aggregation for budget hard limit with fetch-and-slice."""
@@ -132,7 +140,7 @@ class BudgetHandler:
 
         # Build terms aggregation using helper
         terms_agg = AggregationBuilder.build_terms_agg(
-            group_by_field=USER_EMAIL_KEYWORD_FIELD,
+            group_by_field=USER_ID_KEYWORD_FIELD,
             fetch_size=fetch_size,
             order={"max_spent": "desc"},
             sub_aggs=sub_aggs,
@@ -140,7 +148,12 @@ class BudgetHandler:
 
         # Construct full aggregation body
         agg_body = {
-            "query": query,
+            "query": {
+                "bool": {
+                    "must": [query],
+                    "must_not": [{"terms": {USER_ID_KEYWORD_FIELD: PLACEHOLDER_USER_IDS}}],
+                }
+            },
             "size": 0,
             "aggs": {
                 "paginated_results": terms_agg,
@@ -170,6 +183,6 @@ class BudgetHandler:
     def _get_budget_limit_columns(self) -> list[dict]:
         """Get column definitions for budget limit (used by both soft and hard limit)."""
         return [
-            {"id": "user_name", "label": "User", "type": "string"},
+            {"id": "user_email", "label": "User", "type": "string"},
             {"id": "max_spent", "label": "Max Spent ($)", "type": "number", "format": "currency"},
         ]
