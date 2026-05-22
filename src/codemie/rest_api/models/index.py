@@ -79,6 +79,7 @@ class IndexInfoType(str, Enum):
 class IndexTypeByContextTypeMapping(Enum):
     CODE = ("code", "summary", "chunk-summary")
     KNOWLEDGE_BASE = (
+        "knowledge_base_bedrock",
         "knowledge_base_confluence",
         "knowledge_base_jira",
         "knowledge_base_xray",
