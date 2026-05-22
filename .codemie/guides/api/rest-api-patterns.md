@@ -512,6 +512,22 @@ async def ask_assistant_by_id(
 - `await asyncio.to_thread()` for sync code in async context
 - `asyncio.create_task()` for concurrent tasks
 
+### Anti-Pattern: `async def` Without `await`
+
+```python
+# WRONG: async def with no await blocks the event loop
+@router.get("/preferences/{user_id}")
+async def get_profile(user_id: str, user: User = Depends(authenticate)):
+    return sync_service.get_profile(user_id)  # blocks event loop!
+
+# RIGHT: plain def — FastAPI runs it in a thread pool automatically
+@router.get("/preferences/{user_id}")
+def get_profile(user_id: str, user: User = Depends(authenticate)):
+    return sync_service.get_profile(user_id)
+```
+
+**Rule**: Only use `async def` on an endpoint if the body contains at least one `await` call. If the service layer is synchronous, use plain `def` — FastAPI will execute it in a thread pool, preventing event loop blocking.
+
 ### Background Tasks
 
 ```python

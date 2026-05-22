@@ -205,6 +205,7 @@ All guides in `.codemie/guides/<category>/`. **Complexity**: Simple (1 file) →
 | **Async** | `time.sleep()` in async | `asyncio.sleep()` | .codemie/guides/development/performance-patterns.md |
 | **Async** | Forget `await` | Always await coroutines | .codemie/guides/development/performance-patterns.md |
 | **Async** | Blocking I/O in async | Use async libraries | .codemie/guides/development/performance-patterns.md |
+| **Async** | `async def` endpoint with no `await` | Use plain `def` — FastAPI runs it in a thread pool | .codemie/guides/api/rest-api-patterns.md |
 | **Database** | SQL string interpolation | Parameterized queries | .codemie/guides/data/database-patterns.md |
 | **Database** | N+1 queries | Eager loading/batch queries | .codemie/guides/data/database-optimization.md |
 | **Database** | Load all data | Use pagination | .codemie/guides/data/database-patterns.md |

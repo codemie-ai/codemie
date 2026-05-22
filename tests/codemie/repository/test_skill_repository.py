@@ -400,7 +400,7 @@ class TestApplySkillFilters:
 
 
 # =============================================================================
-# Tests: _get_assistants_count_for_skills (Aggregation Logic)
+# Tests: get_assistants_count_for_skills (Aggregation Logic)
 # =============================================================================
 
 
@@ -415,7 +415,7 @@ class TestGetAssistantsCountForSkills:
         mock_session_cls.return_value.__enter__.return_value = mock_session
 
         # Act
-        result = SkillRepository._get_assistants_count_for_skills(mock_session, [])
+        result = SkillRepository.get_assistants_count_for_skills(mock_session, [])
 
         # Assert
         assert result == {}
@@ -432,7 +432,7 @@ class TestGetAssistantsCountForSkills:
         skill_ids = ["skill-1", "skill-2"]
 
         # Act
-        SkillRepository._get_assistants_count_for_skills(mock_session, skill_ids)
+        SkillRepository.get_assistants_count_for_skills(mock_session, skill_ids)
 
         # Assert
         # Get the query that was executed
@@ -459,7 +459,7 @@ class TestGetAssistantsCountForSkills:
         requested_skills = ["skill-1", "skill-2"]
 
         # Act
-        result = SkillRepository._get_assistants_count_for_skills(mock_session, requested_skills)
+        result = SkillRepository.get_assistants_count_for_skills(mock_session, requested_skills)
 
         # Assert
         assert len(result) == 2
@@ -481,7 +481,7 @@ class TestGetAssistantsCountForSkills:
         requested_skills = ["skill-1", "skill-2", "skill-3"]
 
         # Act
-        result = SkillRepository._get_assistants_count_for_skills(mock_session, requested_skills)
+        result = SkillRepository.get_assistants_count_for_skills(mock_session, requested_skills)
 
         # Assert
         assert len(result) == 1
@@ -991,7 +991,7 @@ class TestListAccessibleToUser:
 
         # Assert
         assert skill_id in result.assistants_count_map
-        # Note: _get_assistants_count_for_skills filters results, so we can't assert exact count
+        # Note: get_assistants_count_for_skills filters results, so we can't assert exact count
         # The important thing is the map is populated
 
     @patch("codemie.repository.skill_repository.Session")

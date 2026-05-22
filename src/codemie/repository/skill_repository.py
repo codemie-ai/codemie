@@ -305,7 +305,7 @@ class SkillRepository:
         return query
 
     @staticmethod
-    def _get_assistants_count_for_skills(session: Session, skill_ids: list[str]) -> dict[str, int]:
+    def get_assistants_count_for_skills(session: Session, skill_ids: list[str]) -> dict[str, int]:
         """
         Get count of assistants using each skill.
 
@@ -616,7 +616,7 @@ class SkillRepository:
 
             # Get assistants count for fetched skills
             skill_ids = [skill.id for skill in skills]
-            assistants_count_map = SkillRepository._get_assistants_count_for_skills(session, skill_ids)
+            assistants_count_map = SkillRepository.get_assistants_count_for_skills(session, skill_ids)
 
             # Calculate total pages
             pages = math.ceil(total / per_page) if per_page > 0 else 1

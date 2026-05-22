@@ -98,6 +98,7 @@ from codemie.rest_api.routers import sharepoint_oauth
 from codemie.rest_api.routers import local_auth_router
 from codemie.rest_api.routers import user_management_router
 from codemie.rest_api.routers import user_profile_router
+from codemie.rest_api.routers import user_preferences_router
 from codemie.rest_api.utils.state_import import StateImportService
 from codemie.rest_api.utils.default_applications import create_default_applications
 from codemie.triggers.node_controller import NodeController
@@ -702,6 +703,7 @@ if is_litellm_enabled() and config.LLM_PROXY_BUDGET_CHECK_ENABLED:
     app.include_router(budget_router.router)
 app.include_router(project_budget_router.router)
 app.include_router(sharepoint_oauth.router)
+app.include_router(user_preferences_router.router)
 
 # User management routers (EPMCDME-10160)
 if config.ENABLE_USER_MANAGEMENT:

@@ -153,6 +153,24 @@ components:
       name: "Enriched User Dimensions"
       description: "Enable enriched user dimension widgets (country, job title, level) in CLI analytics dashboard"
 
+  - id: "features:favorites"
+    settings:
+      enabled: true
+      name: "Favorites"
+      description: "Enable favorite/unfavorite actions for assistants, skills, and workflows"
+
+  - id: "features:pinnedAssistants"
+    settings:
+      enabled: true
+      name: "Pinned Assistants"
+      description: "Enable pin/unpin actions for assistants and the pinned assistants sidebar section"
+
+  - id: "features:favoritesPage"
+    settings:
+      enabled: false
+      name: "Favorites Page"
+      description: "Enable the dedicated Favorites page and its navigation link"
+      
   - id: "mcpCustomServersDisabled"
     settings:
       enabled: false
