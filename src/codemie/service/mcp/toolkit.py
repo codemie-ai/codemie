@@ -39,6 +39,7 @@ from codemie_tools.base.utils import get_encoding
 from codemie.agents.utils import sanitize_tool_name
 from codemie.configs.config import config
 from codemie.configs.logger import logger
+from codemie.core.exceptions import MCPAuthenticationRequiredException
 from codemie.core.constants import TOOL_TYPE, ToolType, MCP_IMAGES_SUBDIR
 from codemie.core.json_schema_utils import json_schema_to_model
 from codemie.repository.repository_factory import FileRepositoryFactory
@@ -172,6 +173,8 @@ class MCPTool(CodeMieTool):
             if isinstance(e, MCPToolExecutionError):
                 # Re-raise known error types without modification
                 logger.error(str(e))
+                raise
+            if isinstance(e, MCPAuthenticationRequiredException):
                 raise
             error_message = (
                 "\n**This is not an AI/Run CodeMie error**.\n"
@@ -811,6 +814,7 @@ class MCPToolkitFactory:
             "command": server_config.url if server_config.url else server_config.command,
             "args": server_config.args,
             "env": server_config.env,
+            "bucket_key": getattr(server_config, "bucket_key", None),
         }
 
         # Convert to a stable JSON string (sorted keys for determinism)

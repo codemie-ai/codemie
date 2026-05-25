@@ -31,21 +31,24 @@ Key Components:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import ClassVar, Any, Tuple
+from urllib.parse import urlsplit
 
 from cachetools import TTLCache
+import httpx
 
 from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie.core.exceptions import MCPAuthenticationRequiredException
-from codemie.enterprise.mcp_auth.dependencies import derive_as_hostname, derive_initiate_url
 from codemie.core.models import ToolConfig
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.rest_api.models.settings import SettingsBase
-from codemie.rest_api.security.user_context import get_current_user
-from codemie.service.mcp.client import MCPConnectClient, BUCKET_KEY
+from codemie.rest_api.security.user_context import get_current_auth_token, get_current_user
+from codemie.service.mcp.auth_warnings import clear_mcp_auth_warnings, record_mcp_auth_warnings
+from codemie.service.mcp.client import MCPConnectClient
 from codemie.service.mcp.auth_protocol import AuthResolverProtocol
 from codemie.service.security.token_exchange_service import token_exchange_service
 from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
@@ -66,6 +69,50 @@ TOOLKIT_CACHE_MISS_MSG = "Cache miss for MCP toolkit with server config: {}"
 NORMALIZED_LEGACY_TOKEN_PLACEHOLDER = "{{user.token}}"
 LEGACY_TOKEN_PLACEHOLDER_PATTERNS = (NORMALIZED_LEGACY_TOKEN_PLACEHOLDER, "[user.token]", "$user.token")
 LEGACY_TOKEN_PLACEHOLDER_SENTINEL = "__CODEMIE_LEGACY_USER_TOKEN__"
+REDACTED_LOG_VALUE = "<redacted>"
+PRESENT_LOG_VALUE = "<present>"
+SENSITIVE_HEADER_PARTS = ("authorization", "cookie", "token", "secret", "key", "password", "session")
+
+
+def derive_as_hostname(auth_type: str | None, auth_config: dict[str, Any] | None) -> str | None:
+    """Call enterprise auth helper lazily so core toolkit import does not load enterprise discovery code."""
+    from codemie.enterprise.mcp_auth.dependencies import derive_as_hostname as _derive_as_hostname
+
+    return _derive_as_hostname(auth_type, auth_config)
+
+
+def derive_initiate_url(auth_type: str | None) -> str | None:
+    """Call enterprise auth helper lazily so core toolkit import does not load enterprise discovery code."""
+    from codemie.enterprise.mcp_auth.dependencies import derive_initiate_url as _derive_initiate_url
+
+    return _derive_initiate_url(auth_type)
+
+
+async def run_mcp_auth_parallel_discovery_probe(
+    candidates: list[dict[str, Any]],
+    *,
+    allowed_private_networks: tuple[str, ...],
+    trust_policy_service: Any,
+) -> list[Any]:
+    """Call enterprise discovery probe lazily so core toolkit import stays enterprise-light."""
+    from codemie.enterprise.mcp_auth.dependencies import (
+        run_mcp_auth_parallel_discovery_probe as _run_mcp_auth_parallel_discovery_probe,
+    )
+
+    return await _run_mcp_auth_parallel_discovery_probe(
+        candidates,
+        allowed_private_networks=allowed_private_networks,
+        trust_policy_service=trust_policy_service,
+    )
+
+
+async def build_mcp_auth_discovered_auth_gate_payloads(**kwargs: Any) -> list[dict[str, Any]]:
+    """Call enterprise discovered auth-gate helper lazily so core toolkit remains enterprise-light."""
+    from codemie.enterprise.mcp_auth.dependencies import (
+        build_mcp_auth_discovered_auth_gate_payloads as _build_discovered_payloads,
+    )
+
+    return await _build_discovered_payloads(**kwargs)
 
 
 class LegacyTokenResolver:
@@ -96,7 +143,10 @@ class LegacyTokenResolver:
             env_vars_with_user,
             None,
         )
-        logger.debug(f"Resolved legacy token placeholders via resolver chain: {server_config.headers}")
+        logger.debug(
+            "Resolved legacy token placeholders via resolver chain: "
+            f"{MCPToolkitService._sanitize_headers_for_log(server_config.headers)}"
+        )
 
 
 class MCPToolkitService:
@@ -165,8 +215,11 @@ class MCPToolkitService:
         Returns:
             List of MCP tools from all successfully processed servers
         """
-        tools = []
+        tools: list[MCPTool] = []
         auth_failures: list[dict[str, Any]] = []
+        discovery_candidates: list[dict[str, Any]] = []
+        discovery_warnings: list[dict[str, Any]] = []
+        clear_mcp_auth_warnings()
         if not mcp_servers:
             return tools
 
@@ -176,15 +229,15 @@ class MCPToolkitService:
         if not mcp_servers:
             return tools
 
-        # Create execution context
         execution_context = MCPExecutionContext(
             user_id=user_id,
             assistant_id=assistant_id,
             project_name=project_name,
             workflow_execution_id=workflow_execution_id,
+            conversation_id=conversation_id,
+            session_binding_hash=cls._get_current_session_binding_hash(),
             request_headers=request_headers,
         )
-
         default_mcp_toolkit_service = cls.get_instance()
 
         for mcp_server in mcp_servers:
@@ -192,42 +245,374 @@ class MCPToolkitService:
                 logger.debug(f"Skipping disabled MCP server: {mcp_server.name}")
                 continue
 
-            # Per-server execution context: clone the request-scoped parent and
-            # reset auth_headers so credentials written by one server's resolver
-            # cannot leak into another server's request via _merge_mcp_headers
-            # (auth_headers wins on collision; HeaderTokenDelivery.key is always
-            # "Authorization"). Also ensures ContextAwareMCPTool wrappers carry
-            # a context bound to their own server at invocation time.
+            # Per-server context: reset auth_headers to prevent credential leakage
+            # between servers via _merge_mcp_headers (auth_headers wins on collision).
             per_server_context = execution_context.model_copy(update={"auth_headers": None})
+            server_tools, auth_failure, disc_candidate = cls._process_single_server_for_tools(
+                mcp_server=mcp_server,
+                per_server_context=per_server_context,
+                default_toolkit_service=default_mcp_toolkit_service,
+                user_id=user_id,
+                project_name=project_name,
+                conversation_id=conversation_id,
+                tools_config=tools_config,
+                mcp_server_args_preprocessor=mcp_server_args_preprocessor,
+                mcp_server_single_usage=mcp_server_single_usage,
+            )
+            if auth_failure is not None:
+                auth_failures.append(auth_failure)
+            elif disc_candidate is not None:
+                discovery_candidates.append(disc_candidate)
+            else:
+                tools.extend(server_tools)
 
-            try:
-                server_tools = cls._process_single_mcp_server(
-                    mcp_server=mcp_server,
-                    default_toolkit_service=default_mcp_toolkit_service,
-                    user_id=user_id,
-                    project_name=project_name,
-                    conversation_id=conversation_id,
-                    tools_config=tools_config,
-                    mcp_server_args_preprocessor=mcp_server_args_preprocessor,
-                    mcp_server_single_usage=mcp_server_single_usage,
-                    execution_context=per_server_context,
-                )
-            except MCPAuthenticationRequiredException as exc:
-                auth_failures.append(
-                    cls._build_auth_required_server_payload(
-                        caught_payload=exc.payload,
-                        mcp_server=mcp_server,
-                        execution_context=per_server_context,
-                    )
-                )
-                continue
-
-            tools.extend(server_tools)
+        if discovery_candidates:
+            disc_auth_failures, discovery_warnings = cls._run_discovery_probe_and_collect_failures(
+                discovery_candidates=discovery_candidates,
+                user_id=user_id,
+                session_binding_hash=cls._get_current_session_binding_hash(),
+                workflow_execution_id=execution_context.workflow_execution_id,
+            )
+            auth_failures.extend(disc_auth_failures)
+            record_mcp_auth_warnings(discovery_warnings)
 
         if auth_failures:
-            raise MCPAuthenticationRequiredException({"error": "authentication_required", "servers": auth_failures})
+            payload: dict[str, Any] = {"error": "authentication_required", "servers": auth_failures}
+            if discovery_warnings:
+                payload["warnings"] = discovery_warnings
+            raise MCPAuthenticationRequiredException(payload)
 
         return tools
+
+    @classmethod
+    def _process_single_server_for_tools(
+        cls,
+        *,
+        mcp_server: MCPServerDetails,
+        per_server_context: MCPExecutionContext,
+        default_toolkit_service: MCPToolkitService,
+        user_id: str | None,
+        project_name: str | None,
+        conversation_id: str | None,
+        tools_config: list[ToolConfig] | None,
+        mcp_server_args_preprocessor: callable | None,
+        mcp_server_single_usage: bool | None,
+    ) -> tuple[list[MCPTool] | None, dict[str, Any] | None, dict[str, Any] | None]:
+        """Process one enabled server. Returns (tools, auth_failure, discovery_candidate).
+
+        Raises MCPToolLoadException when no auth failure or discovery candidate is resolvable.
+        """
+        try:
+            server_tools = cls._process_single_mcp_server(
+                mcp_server=mcp_server,
+                default_toolkit_service=default_toolkit_service,
+                user_id=user_id,
+                project_name=project_name,
+                conversation_id=conversation_id,
+                tools_config=tools_config,
+                mcp_server_args_preprocessor=mcp_server_args_preprocessor,
+                mcp_server_single_usage=mcp_server_single_usage,
+                execution_context=per_server_context,
+            )
+            return server_tools, None, None
+        except MCPAuthenticationRequiredException as exc:
+            auth_payload = cls._build_auth_required_server_payload(
+                caught_payload=exc.payload,
+                mcp_server=mcp_server,
+                execution_context=per_server_context,
+            )
+            return None, auth_payload, None
+        except MCPToolLoadException as exc:
+            auth_payload = cls._build_auth_configured_tool_challenge_payload(
+                mcp_server=mcp_server,
+                exc=exc,
+                execution_context=per_server_context,
+            )
+            if auth_payload is not None:
+                return None, auth_payload, None
+            disc_candidate = cls._build_discovery_candidate_from_challenge(mcp_server, exc)
+            if disc_candidate is None:
+                raise
+            return None, None, disc_candidate
+
+    @classmethod
+    def _run_discovery_probe_and_collect_failures(
+        cls,
+        *,
+        discovery_candidates: list[dict[str, Any]],
+        user_id: str | None,
+        session_binding_hash: str | None,
+        workflow_execution_id: str | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Run discovery probe and return (auth_failures, discovery_warnings)."""
+        try:
+            allowed_private_networks, trust_policy_service = cls._resolve_discovery_probe_runtime_config()
+        except Exception as exc:
+            logger.warning(f"MCP auth discovery probe runtime config unavailable: {type(exc).__name__}")
+            return cls._build_discovery_bridge_unavailable_results(discovery_candidates), []
+
+        try:
+            probe_results = cls._run_coroutine_sync(
+                run_mcp_auth_parallel_discovery_probe(
+                    discovery_candidates,
+                    allowed_private_networks=allowed_private_networks,
+                    trust_policy_service=trust_policy_service,
+                )
+            )
+        except Exception as exc:
+            logger.warning("MCP auth discovery bridge call failed; " f"returning warning results: {type(exc).__name__}")
+            probe_results = cls._build_discovery_bridge_unavailable_results(discovery_candidates)
+        discovery_results = list(probe_results or [])
+        auth_failures = cls._run_coroutine_sync(
+            build_mcp_auth_discovered_auth_gate_payloads(
+                discovery_candidates=discovery_candidates,
+                discovery_results=discovery_results,
+                user_id=user_id,
+                session_binding_hash=session_binding_hash,
+                workflow_execution_id=workflow_execution_id,
+                allowed_private_networks=allowed_private_networks,
+            )
+        )
+        warnings = cls._build_discovery_warning_payloads(discovery_candidates, discovery_results)
+        return auth_failures, warnings
+
+    @staticmethod
+    def _resolve_discovery_probe_runtime_config() -> tuple[tuple[str, ...], Any]:
+        """Resolve DB-backed discovery config on the caller's loop.
+
+        The probe runs inside a fresh asyncio.run loop in a worker thread (see
+        _run_coroutine_sync). The application's SQLAlchemy async engine and the
+        cached AuthorizationServerTrustPolicyService are bound to the main loop,
+        so awaiting them from the worker loop raises "Future attached to a
+        different loop". Reading both inputs synchronously here lets the bridged
+        coroutine perform pure-CPU lookups instead.
+        """
+        from codemie.enterprise.mcp_auth.dependencies import (
+            build_static_trust_policy_service,
+            read_mcp_auth_discovery_private_network_allowlist_config_sync,
+            read_mcp_auth_trusted_as_domains_config_sync,
+        )
+
+        allowed_private_networks = read_mcp_auth_discovery_private_network_allowlist_config_sync()
+        trust_policy_service = build_static_trust_policy_service(read_mcp_auth_trusted_as_domains_config_sync())
+        return allowed_private_networks, trust_policy_service
+
+    @staticmethod
+    def _run_coroutine_sync(coroutine: Any) -> Any:
+        try:
+            asyncio.get_running_loop()
+            in_running_loop = True
+        except RuntimeError:
+            in_running_loop = False
+
+        if in_running_loop:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                return executor.submit(lambda: asyncio.run(coroutine)).result()
+        return asyncio.run(coroutine)
+
+    @staticmethod
+    def _get_current_session_binding_hash() -> str | None:
+        current_token = get_current_auth_token()
+        if not current_token:
+            current_user = get_current_user()
+            current_token = getattr(current_user, "auth_token", None) if current_user is not None else None
+        if not isinstance(current_token, str) or not current_token:
+            return None
+        return hashlib.sha256(current_token.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _sanitize_url_for_log(url: str | None) -> str | None:
+        if not url:
+            return None
+        try:
+            parsed_url = urlsplit(url)
+        except ValueError:
+            return REDACTED_LOG_VALUE
+        if not parsed_url.scheme or not parsed_url.hostname:
+            return REDACTED_LOG_VALUE
+        host = parsed_url.hostname
+        if parsed_url.port:
+            host = f"{host}:{parsed_url.port}"
+        return f"{parsed_url.scheme}://{host}/..."
+
+    @staticmethod
+    def _is_sensitive_header_name(header_name: str) -> bool:
+        normalized_name = header_name.lower()
+        return any(part in normalized_name for part in SENSITIVE_HEADER_PARTS)
+
+    @classmethod
+    def _sanitize_headers_for_log(cls, headers: dict[str, str] | None) -> dict[str, Any]:
+        if not headers:
+            return {"count": 0, "sensitive_count": 0, "non_sensitive_headers": []}
+
+        non_sensitive_headers = sorted(
+            header_name for header_name in headers if not cls._is_sensitive_header_name(header_name)
+        )
+        return {
+            "count": len(headers),
+            "sensitive_count": len(headers) - len(non_sensitive_headers),
+            "non_sensitive_headers": {header_name: PRESENT_LOG_VALUE for header_name in non_sensitive_headers},
+        }
+
+    @classmethod
+    def _sanitize_server_config_for_log(cls, server_config: MCPServerConfig) -> dict[str, Any]:
+        server_type = cls._get_server_config_attr(server_config, "type")
+        server_url = cls._get_server_config_attr(server_config, "url")
+        server_command = cls._get_server_config_attr(server_config, "command")
+        server_args = cls._get_server_config_attr(server_config, "args", [])
+        server_env = cls._get_server_config_attr(server_config, "env", {})
+        server_headers = cls._get_server_config_attr(server_config, "headers", {})
+        server_auth_config = cls._get_server_config_attr(server_config, "auth_config")
+        server_single_usage = cls._get_server_config_attr(server_config, "single_usage", False)
+
+        return {
+            "transport": server_type,
+            "url": cls._sanitize_url_for_log(server_url if isinstance(server_url, str) else None),
+            "command_configured": bool(server_command),
+            "args_count": len(server_args) if isinstance(server_args, (list, tuple)) else 0,
+            "env_key_count": len(server_env) if isinstance(server_env, dict) else 0,
+            "headers": cls._sanitize_headers_for_log(server_headers if isinstance(server_headers, dict) else None),
+            "auth_configured": server_auth_config is not None,
+            "single_usage": bool(server_single_usage),
+        }
+
+    @staticmethod
+    def _get_server_config_attr(server_config: MCPServerConfig, attr_name: str, default: Any = None) -> Any:
+        try:
+            return getattr(server_config, attr_name)
+        except AttributeError:
+            return default
+
+    @classmethod
+    def _build_auth_configured_tool_challenge_payload(
+        cls,
+        mcp_server: MCPServerDetails,
+        exc: MCPToolLoadException,
+        execution_context: MCPExecutionContext | None,
+    ) -> dict[str, Any] | None:
+        server_config = mcp_server.config
+        if server_config is None or server_config.auth_config is None:
+            return None
+
+        cause = cls._find_http_status_error(exc)
+        if cause is None or cause.response.status_code != 401:
+            return None
+
+        return cls._build_auth_required_server_payload(
+            caught_payload={
+                "status": "authentication_required",
+                "error_context": "MCP server rejected configured authentication.",
+            },
+            mcp_server=mcp_server,
+            execution_context=execution_context,
+        )
+
+    @classmethod
+    def _build_discovery_candidate_from_challenge(
+        cls,
+        mcp_server: MCPServerDetails,
+        exc: MCPToolLoadException,
+    ) -> dict[str, Any] | None:
+        server_config = mcp_server.config
+        if server_config is None or server_config.auth_config is not None or not server_config.url:
+            return None
+
+        cause = exc.__cause__
+        if not isinstance(cause, httpx.HTTPStatusError):
+            return None
+
+        response = cause.response
+        www_authenticate = response.headers.get("WWW-Authenticate")
+        if response.status_code != 401 or not www_authenticate:
+            return None
+
+        return {
+            "server_name": mcp_server.name,
+            "mcp_server_name": mcp_server.name,
+            "mcp_config_name": mcp_server.name,
+            "mcp_config_id": mcp_server.mcp_config_id,
+            "mcp_resource_url": server_config.url,
+            "www_authenticate_header": www_authenticate,
+        }
+
+    @classmethod
+    def _build_discovery_warning_payloads(
+        cls,
+        discovery_candidates: list[dict[str, Any]],
+        discovery_results: list[Any],
+    ) -> list[dict[str, Any]]:
+        warnings: list[dict[str, Any]] = []
+        for index, candidate in enumerate(discovery_candidates):
+            result = (
+                discovery_results[index]
+                if index < len(discovery_results)
+                else {"status": "discovery_failed", "failure_reason": "missing_probe_result"}
+            )
+            if cls._get_result_field(result, "status") != "discovery_failed":
+                continue
+            warnings.append(
+                {
+                    "status": "discovery_failed",
+                    "mcp_config_id": candidate.get("mcp_config_id"),
+                    "mcp_config_name": candidate.get("mcp_config_name") or candidate.get("server_name"),
+                    "mcp_server_name": candidate.get("mcp_server_name") or candidate.get("server_name"),
+                    "error_context": cls._sanitize_discovery_error_context(result),
+                }
+            )
+        return warnings
+
+    @staticmethod
+    def _find_http_status_error(exc: BaseException | None) -> httpx.HTTPStatusError | None:
+        seen: set[int] = set()
+        current = exc
+        while current is not None and id(current) not in seen:
+            if isinstance(current, httpx.HTTPStatusError):
+                return current
+            seen.add(id(current))
+            current = current.__cause__ or current.__context__
+        return None
+
+    @staticmethod
+    def _build_discovery_bridge_unavailable_results(discovery_candidates: list[dict[str, Any]]) -> list[dict[str, str]]:
+        return [
+            {"status": "discovery_failed", "failure_reason": "discovery_bridge_unavailable"}
+            for _ in discovery_candidates
+        ]
+
+    @staticmethod
+    def _get_result_field(result: Any, field_name: str) -> Any:
+        if isinstance(result, dict):
+            return result.get(field_name)
+        return getattr(result, field_name, None)
+
+    @classmethod
+    def _sanitize_discovery_error_context(cls, result: Any) -> str:
+        failure_reason = cls._get_result_field(result, "failure_reason") or "discovery_failed"
+        safe_reason = re.sub(r"[^A-Za-z0-9_. -]", "_", str(failure_reason))[:120]
+        if cls._is_trust_rejection_failure(safe_reason):
+            action = "Add the AS domain to the trust allowlist or configure auth_config manually for this server."
+        else:
+            action = "Configure auth_config manually for this server."
+        return f"Discovery failed: {safe_reason}. {action}"
+
+    @staticmethod
+    def _is_trust_rejection_failure(safe_reason: str) -> bool:
+        return safe_reason in {
+            "no_trusted_authorization_server",
+            "trust_policy_failed",
+            "authorization_server_not_trusted",
+        }
+
+    @classmethod
+    def _sanitize_exception_for_log(cls, exc: Exception) -> str:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return (
+                f"{type(exc).__name__}: status_code={exc.response.status_code}, "
+                f"url={cls._sanitize_url_for_log(str(exc.request.url))}"
+            )
+        if isinstance(exc, httpx.RequestError):
+            return f"{type(exc).__name__}: url={cls._sanitize_url_for_log(str(exc.request.url))}"
+        return type(exc).__name__
 
     @classmethod
     def _build_auth_required_server_payload(
@@ -333,7 +718,7 @@ class MCPToolkitService:
         except BrokerAuthRequiredException:
             raise
         except Exception as e:
-            err_msg = f"Failed to load MCP tools from {mcp_server.name}: {type(e).__name__}: {e}"
+            err_msg = f"Failed to load MCP tools from {mcp_server.name}: {cls._sanitize_exception_for_log(e)}"
             logger.error(err_msg)
             raise MCPToolLoadException(mcp_server.name, e) from e
 
@@ -444,9 +829,9 @@ class MCPToolkitService:
         # Set single_usage
         server_config.single_usage = mcp_server.config and mcp_server.config.single_usage or mcp_server_single_usage
 
-        # For persistent servers (not single-use), use conversation_id for caching
+        # For persistent servers (not single-use), keep conversation routing local-only.
         if not mcp_server_single_usage and conversation_id:
-            server_config.env[BUCKET_KEY] = conversation_id
+            server_config.bucket_key = conversation_id
 
         cls._apply_server_tools_config(server_config, mcp_server, tools_config, user_id)
         cls._process_server_args(server_config, mcp_server_args_preprocessor)
@@ -463,12 +848,21 @@ class MCPToolkitService:
         execution_context: MCPExecutionContext | None = None,
     ) -> None:
         """Run registered enterprise resolvers first, then the inline LegacyTokenResolver fallback."""
-        if server_config.auth_config:
+        if server_config.auth_config is not None:
             cls._strip_legacy_token_placeholder_headers(server_config)
+            if not server_config.auth_config:
+                raise MCPAuthenticationRequiredException(
+                    {
+                        "status": "config_error",
+                        "error_context": "MCP auth configuration is empty.",
+                    }
+                )
 
         for resolver in cls._auth_resolvers:
             if resolver.can_handle(server_config):
-                resolver.resolve(server_config, user_id, execution_context)
+                handled = resolver.resolve(server_config, user_id, execution_context)
+                if handled is False:
+                    continue
                 return
 
         if cls._legacy_token_resolver.can_handle(server_config):
@@ -625,10 +1019,10 @@ class MCPToolkitService:
         if use_cache:
             cached_toolkit = self.toolkit_factory.get_toolkit(server_config)
             if cached_toolkit:
-                logger.info(TOOLKIT_CACHE_HIT_MSG.format(server_config))
+                logger.info(TOOLKIT_CACHE_HIT_MSG.format(self._sanitize_server_config_for_log(server_config)))
                 return cached_toolkit
             else:
-                logger.info(TOOLKIT_CACHE_MISS_MSG.format(server_config))
+                logger.info(TOOLKIT_CACHE_MISS_MSG.format(self._sanitize_server_config_for_log(server_config)))
 
         # Create a new toolkit
         try:
@@ -643,7 +1037,7 @@ class MCPToolkitService:
 
             return toolkit
         except Exception as e:
-            logger.error(f"Failed to get MCP toolkit: {str(e)}")
+            logger.error(f"Failed to get MCP toolkit: {type(e).__name__}")
             raise
 
     def get_toolkit(
@@ -985,6 +1379,8 @@ class MCPToolkitService:
         env_vars.update(resolved_env_vars)
 
         actual_config.env = env_vars
+        actual_config.mcp_config_id = mcp_server.mcp_config_id
+        actual_config.mcp_config_name = mcp_server.name
         return actual_config
 
     @classmethod
@@ -1103,7 +1499,7 @@ class MCPToolkitService:
             mcp_server_args_preprocessor,
             preserve_legacy_token_placeholder=True,
         )
-        logger.debug(f"Processed headers with placeholders: {server_config.headers}")
+        logger.debug(f"Processed headers with placeholders: {cls._sanitize_headers_for_log(server_config.headers)}")
 
     @classmethod
     def _build_env_with_user_context(cls, server_config: MCPServerConfig) -> dict[str, Any]:
@@ -1204,14 +1600,14 @@ class MCPToolkitService:
 
             if token:
                 env_vars_with_user['user']['token'] = token
-                logger.debug(f"Added user token to placeholder environment for user={current_user.username}")
+                logger.debug("Added user token to placeholder environment for current user")
             else:
-                logger.warning(f"Token placeholder detected but no token available for user={current_user.username}")
+                logger.warning("Token placeholder detected but no token available for current user")
         except BrokerAuthRequiredException:
             raise
         except Exception as e:
             # SECURITY: Never log the token or exception details that might expose it
-            logger.error(f"Failed to retrieve token for placeholder resolution: {type(e).__name__}", exc_info=True)
+            logger.error(f"Failed to retrieve token for placeholder resolution: {type(e).__name__}")
             # Continue without token - let placeholder resolution fail naturally
 
     @classmethod

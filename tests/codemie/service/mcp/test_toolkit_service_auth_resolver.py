@@ -14,17 +14,41 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import math
+import time
+from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from codemie.core.exceptions import MCPAuthenticationRequiredException
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.service.mcp.access_control import MCPAccessControlService
-from codemie.service.mcp.client import MCPConnectClient
+from codemie.service.mcp.client import BUCKET_KEY, MCPConnectClient
 from codemie.service.mcp.models import MCPExecutionContext, MCPServerConfig, MCPToolDefinition, MCPToolLoadException
 from codemie.rest_api.security.user import User
 from codemie.service.mcp.toolkit_service import LegacyTokenResolver, MCPToolkitService
+
+
+@pytest.fixture(autouse=True)
+def _stub_discovery_probe_runtime_config():
+    """Bypass DB-backed discovery config resolution for tests in this module.
+
+    MCPToolkitService._resolve_discovery_probe_runtime_config reads dynamic config
+    via the synchronous engine before crossing into the discovery bridge. Tests in
+    this module patch the bridge directly and never reach the DB, so we stub the
+    resolution with safe defaults.
+    """
+    with patch.object(
+        MCPToolkitService,
+        "_resolve_discovery_probe_runtime_config",
+        return_value=((), object()),
+    ):
+        yield
 
 
 def _build_mcp_server(
@@ -34,16 +58,22 @@ def _build_mcp_server(
     auth_config: dict[str, str] | None = None,
     audience: str | None = None,
     mcp_config_id: str | None = None,
+    url: str | None = None,
+    transport_type: str | None = None,
 ) -> MCPServerDetails:
+    command = None if url else "uvx"
+    args = [] if url else ["example-server"]
     return MCPServerDetails(
         name=name,
         enabled=True,
         mcp_config_id=mcp_config_id,
         config=MCPServerConfig(
-            command="uvx",
-            args=["example-server"],
+            command=command,
+            url=url,
+            args=args,
             env={},
             headers=headers or {},
+            type=transport_type,
             auth_config=auth_config,
             audience=audience,
         ),
@@ -58,12 +88,199 @@ def _build_tool_definition() -> MCPToolDefinition:
     )
 
 
+def _http_status_error(status_code: int, www_authenticate: str | None = None) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "https://bridge.example.com/bridge")
+    headers = {"WWW-Authenticate": www_authenticate} if www_authenticate is not None else {}
+    response = httpx.Response(status_code, headers=headers, request=request)
+    return httpx.HTTPStatusError("auth challenge", request=request, response=response)
+
+
+def _http_status_error_with_raw_url() -> httpx.HTTPStatusError:
+    request = httpx.Request(
+        "POST",
+        "https://bridge.example.com/bridge?token=secret-token&user=user@example.com",
+    )
+    response = httpx.Response(
+        401,
+        headers={"WWW-Authenticate": 'Bearer resource_metadata="https://mcp.example.com/.well-known"'},
+        request=request,
+    )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return exc
+    raise AssertionError("response.raise_for_status() must raise HTTPStatusError")
+
+
+def _wrapped_tool_load_error(
+    server_name: str,
+    status_code: int,
+    www_authenticate: str
+    | None = 'Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"',
+) -> MCPToolLoadException:
+    http_error = _http_status_error(status_code, www_authenticate)
+    tool_error = MCPToolLoadException(server_name, RuntimeError("generic wrapper"))
+    tool_error.__cause__ = http_error
+    return tool_error
+
+
+def _wrapped_client_value_error_tool_load_error(server_name: str, status_code: int) -> MCPToolLoadException:
+    http_error = _http_status_error(status_code, www_authenticate=None)
+    client_error = ValueError("unauthorized")
+    client_error.__cause__ = http_error
+    tool_error = MCPToolLoadException(server_name, RuntimeError("generic wrapper"))
+    tool_error.__cause__ = client_error
+    return tool_error
+
+
 def _build_user() -> User:
     user = MagicMock(spec=User)
     user.id = "user-1"
     user.name = "Test User"
     user.username = "test.user"
     return user
+
+
+def test_mcp_server_config_repr_redacts_discovery_sensitive_fields() -> None:
+    server_config = MCPServerConfig(
+        url="https://mcp.example.com/api/mcp?token=secret-token&user=user@example.com",
+        type="streamable-http",
+        headers={"Authorization": "Bearer secret-token", "Cookie": "sid=session-secret"},
+        env={"ACCESS_TOKEN": "secret-token"},
+        auth_token="secret-token",
+        auth_config={"id": "auth-secret", "auth_type": "oauth2"},
+    )
+
+    config_repr = repr(server_config)
+
+    assert "secret-token" not in config_repr
+    assert "session-secret" not in config_repr
+    assert "user@example.com" not in config_repr
+    assert "token=" not in config_repr
+    assert "Authorization" not in config_repr
+    assert "Cookie" not in config_repr
+
+
+def test_header_placeholder_processing_logs_sanitized_metadata() -> None:
+    server_config = MCPServerConfig(
+        url="https://mcp.example.com/api/mcp",
+        type="streamable-http",
+        headers={
+            "Authorization": "Bearer {{ACCESS_TOKEN}}",
+            "Cookie": "sid={{SESSION_SECRET}}",
+            "X-Trace": "{{TRACE_ID}}",
+        },
+        env={
+            "ACCESS_TOKEN": "secret-token",
+            "SESSION_SECRET": "session-secret",
+            "TRACE_ID": "trace-123",
+        },
+    )
+
+    with patch("codemie.service.mcp.toolkit_service.logger.debug") as mock_debug:
+        MCPToolkitService._process_headers_placeholders(server_config, None)
+
+    log_text = " ".join(str(call.args[0]) for call in mock_debug.call_args_list)
+    assert "secret-token" not in log_text
+    assert "session-secret" not in log_text
+    assert "trace-123" not in log_text
+    assert "Bearer" not in log_text
+    assert "sid=" not in log_text
+
+
+def test_legacy_token_resolver_logs_no_token_or_user_identifier() -> None:
+    server_config = MCPServerConfig(
+        url="https://mcp.example.com/api/mcp",
+        type="streamable-http",
+        headers={"Authorization": "Bearer {{user.token}}"},
+    )
+
+    current_user = SimpleNamespace(name="User Name", username="user@example.com")
+    with patch("codemie.service.mcp.toolkit_service.get_current_user", return_value=current_user):
+        with patch(
+            "codemie.service.mcp.toolkit_service.token_exchange_service.get_token_for_current_user",
+            return_value="secret-token",
+        ):
+            with patch("codemie.service.mcp.toolkit_service.logger.debug") as mock_debug:
+                LegacyTokenResolver().resolve(server_config, user_id="user-1")
+
+    log_text = " ".join(str(call.args[0]) for call in mock_debug.call_args_list)
+    assert "secret-token" not in log_text
+    assert "user@example.com" not in log_text
+    assert "Bearer" not in log_text
+
+
+def test_token_placeholder_resolution_error_log_omits_exception_details() -> None:
+    headers = {"Authorization": "Bearer {{user.token}}"}
+    env_vars: dict[str, object] = {}
+    current_user = SimpleNamespace(name="User Name", username="user@example.com")
+
+    with patch("codemie.service.mcp.toolkit_service.get_current_user", return_value=current_user):
+        with patch(
+            "codemie.service.mcp.toolkit_service.token_exchange_service.get_token_for_current_user",
+            side_effect=RuntimeError("secret-token"),
+        ):
+            with patch("codemie.service.mcp.toolkit_service.logger.error") as mock_error:
+                MCPToolkitService._add_user_token_if_needed(headers, env_vars, audience=None)
+
+    assert mock_error.call_count == 1
+    assert mock_error.call_args.kwargs == {}
+    assert "secret-token" not in mock_error.call_args.args[0]
+    assert "user@example.com" not in mock_error.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_toolkit_cache_logs_sanitized_server_config() -> None:
+    server_config = MCPServerConfig(
+        url="https://mcp.example.com/api/mcp?token=secret-token&user=user@example.com",
+        type="streamable-http",
+        headers={"Authorization": "Bearer secret-token", "Cookie": "sid=session-secret"},
+        env={"ACCESS_TOKEN": "secret-token"},
+    )
+    cached_toolkit = MagicMock(name="cached-toolkit")
+    created_toolkit = MagicMock(name="created-toolkit")
+    service = MCPToolkitService(MagicMock(spec=MCPConnectClient))
+    service.toolkit_factory = MagicMock()
+    service.toolkit_factory.get_toolkit.side_effect = [cached_toolkit, None]
+    service.toolkit_factory.create_toolkit = AsyncMock(return_value=created_toolkit)
+
+    with patch("codemie.service.mcp.toolkit_service.logger.info") as mock_info:
+        assert await service.get_toolkit_async(server_config) is cached_toolkit
+        assert await service.get_toolkit_async(server_config) is created_toolkit
+
+    log_text = " ".join(str(call.args[0]) for call in mock_info.call_args_list)
+    assert "secret-token" not in log_text
+    assert "session-secret" not in log_text
+    assert "user@example.com" not in log_text
+    assert "token=" not in log_text
+    assert "Authorization" not in log_text
+    assert "Cookie" not in log_text
+
+
+def test_process_single_mcp_server_sanitizes_http_status_error_log() -> None:
+    http_error = _http_status_error_with_raw_url()
+    toolkit_service = MagicMock(spec=MCPToolkitService)
+    toolkit_service.get_toolkit.side_effect = http_error
+    mcp_server = _build_mcp_server(
+        name="challenged-server",
+        url="https://mcp.example.com/api/mcp?token=secret-token&user=user@example.com",
+        transport_type="streamable-http",
+    )
+
+    with patch("codemie.service.mcp.toolkit_service.logger.error") as mock_error:
+        with pytest.raises(MCPToolLoadException):
+            MCPToolkitService._process_single_mcp_server(
+                mcp_server=mcp_server,
+                default_toolkit_service=toolkit_service,
+            )
+
+    log_text = " ".join(str(call.args[0]) for call in mock_error.call_args_list)
+    assert "HTTPStatusError" in log_text
+    assert "status_code=401" in log_text
+    assert "secret-token" not in log_text
+    assert "user@example.com" not in log_text
+    assert "?token=" not in log_text
+    assert "https://bridge.example.com/..." in log_text
 
 
 class _RecordingResolver:
@@ -182,6 +399,18 @@ def test_prepare_server_config_invokes_only_first_matching_auth_resolver(
     assert server_config.env["ACCESS_TOKEN"] == "Bearer user-1"
 
 
+def test_prepare_server_config_keeps_conversation_id_out_of_bridge_env() -> None:
+    server_config = MCPToolkitService._prepare_server_config(
+        mcp_server=_build_mcp_server(),
+        conversation_id="conversation-1",
+    )
+
+    assert server_config is not None
+    assert server_config.env is not None
+    assert BUCKET_KEY not in server_config.env
+    assert getattr(server_config, "bucket_key", None) == "conversation-1"
+
+
 def test_process_single_mcp_server_reraises_mcp_authentication_required_exception() -> None:
     auth_error = MCPAuthenticationRequiredException({"auth_config_id": "cfg-1", "status": "authentication_required"})
     default_toolkit_service = MagicMock()
@@ -270,12 +499,897 @@ def test_get_mcp_server_tools_discards_auth_accumulator_when_non_auth_failure_oc
         return [MagicMock(name="unreached-tool")]
 
     with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
-        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server) as mock_process:
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
             with pytest.raises(MCPToolLoadException) as exc_info:
                 MCPToolkitService.get_mcp_server_tools(mcp_servers, user_id="user-1")
 
     assert exc_info.value is tool_load_error
-    assert mock_process.call_count == 2
+
+
+def test_get_mcp_server_tools_batches_initial_401_http_discovery_challenges() -> None:
+    mcp_servers = [
+        _build_mcp_server(
+            name=f"http-{index}",
+            mcp_config_id=f"cfg-{index}",
+            url=f"https://mcp{index}.example.com/api/mcp",
+            transport_type="streamable-http",
+        )
+        for index in range(5)
+    ]
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        raise _wrapped_tool_load_error(mcp_server.name, 401)
+
+    captured_candidates: list[dict[str, str]] = []
+
+    async def _probe(candidates: list[dict[str, str]], **_kwargs: object) -> list[object]:
+        captured_candidates.extend(candidates)
+        return []
+
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe", side_effect=_probe):
+                tools = MCPToolkitService.get_mcp_server_tools(mcp_servers, user_id="user-1")
+
+    assert tools == []
+    assert [candidate["server_name"] for candidate in captured_candidates] == [server.name for server in mcp_servers]
+    assert [candidate["mcp_resource_url"] for candidate in captured_candidates] == [
+        server.config.url for server in mcp_servers
+    ]
+
+
+def test_get_mcp_server_tools_does_not_discover_auth_configured_or_403_challenges() -> None:
+    auth_configured = _build_mcp_server(
+        name="auth-configured",
+        auth_config={"id": "auth-1", "auth_type": "oauth2"},
+        url="https://auth-configured.example.com/api/mcp",
+        transport_type="streamable-http",
+    )
+    insufficient_scope = _build_mcp_server(
+        name="insufficient-scope",
+        url="https://mcp.example.com/api/mcp",
+        transport_type="streamable-http",
+    )
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        if mcp_server.name == "auth-configured":
+            raise _wrapped_tool_load_error(mcp_server.name, 401)
+        raise _wrapped_tool_load_error(mcp_server.name, 403)
+
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe") as mock_probe:
+                with pytest.raises(MCPToolLoadException):
+                    MCPToolkitService.get_mcp_server_tools([auth_configured, insufficient_scope], user_id="user-1")
+
+    mock_probe.assert_not_called()
+
+
+def test_get_mcp_server_tools_does_not_discover_401_without_www_authenticate() -> None:
+    challenged = _build_mcp_server(
+        name="missing-www-authenticate",
+        url="https://mcp.example.com/api/mcp",
+        transport_type="streamable-http",
+    )
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        raise _wrapped_tool_load_error(mcp_server.name, 401, www_authenticate=None)
+
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe") as mock_probe:
+                with pytest.raises(MCPToolLoadException):
+                    MCPToolkitService.get_mcp_server_tools([challenged], user_id="user-1")
+
+    mock_probe.assert_not_called()
+
+
+def test_get_mcp_server_tools_does_not_discover_url_less_http_metadata() -> None:
+    url_less_http = _build_mcp_server(
+        name="url-less-http",
+        transport_type="streamable-http",
+    )
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        raise _wrapped_tool_load_error(mcp_server.name, 401)
+
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe") as mock_probe:
+                with pytest.raises(MCPToolLoadException):
+                    MCPToolkitService.get_mcp_server_tools([url_less_http], user_id="user-1")
+
+    mock_probe.assert_not_called()
+
+
+def test_get_mcp_server_tools_auth_configured_401_is_fail_closed_not_discovery() -> None:
+    auth_configured = _build_mcp_server(
+        name="auth-configured",
+        mcp_config_id="mcp-auth",
+        auth_config={"id": "auth-1", "auth_type": "oauth2"},
+        url="https://auth-configured.example.com/api/mcp",
+        transport_type="streamable-http",
+    )
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        raise _wrapped_tool_load_error(mcp_server.name, 401)
+
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe") as mock_probe:
+                with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+                    MCPToolkitService.get_mcp_server_tools([auth_configured], user_id="user-1")
+
+    payload = exc_info.value.payload
+    assert payload["error"] == "authentication_required"
+    assert payload["servers"] == [
+        {
+            "auth_config_id": "auth-1",
+            "mcp_config_id": "mcp-auth",
+            "mcp_config_name": "auth-configured",
+            "mcp_server_name": "auth-configured",
+            "auth_type": "oauth2",
+            "as_hostname": None,
+            "status": "authentication_required",
+            "error_context": "MCP server rejected configured authentication.",
+            "initiate_url": "/v1/mcp-auth/oauth2/initiate",
+        }
+    ]
+    assert "warnings" not in payload
+    mock_probe.assert_not_called()
+
+
+def test_get_mcp_server_tools_auth_configured_401_without_www_authenticate_is_fail_closed() -> None:
+    auth_configured = _build_mcp_server(
+        name="auth-configured",
+        mcp_config_id="mcp-auth",
+        auth_config={"id": "auth-1", "auth_type": "oauth2"},
+        url="https://auth-configured.example.com/api/mcp",
+        transport_type="streamable-http",
+    )
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        raise _wrapped_client_value_error_tool_load_error(mcp_server.name, 401)
+
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe") as mock_probe:
+                with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+                    MCPToolkitService.get_mcp_server_tools([auth_configured], user_id="user-1")
+
+    payload = exc_info.value.payload
+    assert payload["servers"][0]["status"] == "authentication_required"
+    assert payload["servers"][0]["auth_config_id"] == "auth-1"
+    assert "warnings" not in payload
+    mock_probe.assert_not_called()
+
+
+def test_get_mcp_server_tools_empty_auth_config_is_config_error_not_discovery() -> None:
+    auth_configured = _build_mcp_server(
+        name="empty-auth-config",
+        mcp_config_id="mcp-auth-empty",
+        auth_config={},
+        url="https://auth-configured.example.com/api/mcp",
+        transport_type="streamable-http",
+    )
+
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPAccessControlService, "resolve_catalog_config", side_effect=lambda s: s):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe") as mock_probe:
+                with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+                    MCPToolkitService.get_mcp_server_tools([auth_configured], user_id="user-1")
+
+    payload = exc_info.value.payload
+    assert payload["servers"][0]["status"] == "config_error"
+    assert payload["servers"][0]["mcp_config_id"] == "mcp-auth-empty"
+    assert "warnings" not in payload
+    mock_probe.assert_not_called()
+
+
+def test_get_mcp_server_tools_discards_discovery_batch_when_non_auth_failure_occurs() -> None:
+    challenged = _build_mcp_server(
+        name="challenged",
+        url="https://mcp.example.com/api/mcp",
+        transport_type="streamable-http",
+    )
+    broken = _build_mcp_server(name="broken")
+    non_auth_error = MCPToolLoadException("broken", RuntimeError("boom"))
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        if mcp_server.name == "challenged":
+            raise _wrapped_tool_load_error(mcp_server.name, 401)
+        raise non_auth_error
+
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe") as mock_probe:
+                with pytest.raises(MCPToolLoadException) as exc_info:
+                    MCPToolkitService.get_mcp_server_tools([challenged, broken], user_id="user-1")
+
+    assert exc_info.value is non_auth_error
+    mock_probe.assert_not_called()
+
+
+def test_get_mcp_server_tools_preserves_healthy_and_legacy_tools_with_discovery_warnings() -> None:
+    healthy_tool = MagicMock(name="healthy-tool")
+    legacy_tool = MagicMock(name="legacy-tool")
+    challenged = _build_mcp_server(
+        name="challenged",
+        url="https://mcp.example.com/api/mcp",
+        transport_type="streamable-http",
+    )
+    healthy = _build_mcp_server(name="healthy")
+    legacy = _build_mcp_server(name="legacy", headers={"Authorization": "{{user.token}}"})
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        if mcp_server.name == "challenged":
+            raise _wrapped_tool_load_error(mcp_server.name, 401)
+        if mcp_server.name == "healthy":
+            return [healthy_tool]
+        return [legacy_tool]
+
+    async def _probe(candidates: list[dict[str, str]], **_kwargs: object) -> list[object]:
+        return []
+
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe", side_effect=_probe):
+                tools = MCPToolkitService.get_mcp_server_tools([challenged, healthy, legacy], user_id="user-1")
+
+    assert tools == [healthy_tool, legacy_tool]
+
+
+def test_get_mcp_server_tools_records_discovery_failed_warning_for_missing_probe_result() -> None:
+    from codemie.service.mcp.auth_warnings import get_mcp_auth_warnings
+
+    healthy_tool = MagicMock(name="healthy-tool")
+    challenged = _build_mcp_server(
+        name="challenged",
+        mcp_config_id="mcp-discovery",
+        url="https://mcp.example.com/api/mcp",
+        transport_type="streamable-http",
+    )
+    healthy = _build_mcp_server(name="healthy")
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        if mcp_server.name == "challenged":
+            raise _wrapped_tool_load_error(mcp_server.name, 401)
+        return [healthy_tool]
+
+    async def _probe(candidates: list[dict[str, str]], **_kwargs: object) -> list[object]:
+        del candidates
+        return []
+
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe", side_effect=_probe):
+                tools = MCPToolkitService.get_mcp_server_tools([challenged, healthy], user_id="user-1")
+
+    warnings = get_mcp_auth_warnings(clear=True)
+    assert tools == [healthy_tool]
+    assert warnings == [
+        {
+            "status": "discovery_failed",
+            "mcp_config_id": "mcp-discovery",
+            "mcp_config_name": "challenged",
+            "mcp_server_name": "challenged",
+            "error_context": "Discovery failed: missing_probe_result. Configure auth_config manually for this server.",
+        }
+    ]
+
+
+def test_get_mcp_server_tools_records_per_candidate_warnings_when_probe_bridge_raises() -> None:
+    from codemie.service.mcp.auth_warnings import get_mcp_auth_warnings
+
+    healthy_tool = MagicMock(name="healthy-tool")
+    challenged_servers = [
+        _build_mcp_server(
+            name=f"challenged-{index}",
+            mcp_config_id=f"mcp-discovery-{index}",
+            url=f"https://mcp{index}.example.com/api/mcp",
+            transport_type="streamable-http",
+        )
+        for index in range(2)
+    ]
+    healthy = _build_mcp_server(name="healthy")
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        if mcp_server.name.startswith("challenged-"):
+            raise _wrapped_tool_load_error(mcp_server.name, 401)
+        return [healthy_tool]
+
+    async def _probe(candidates: list[dict[str, str]], **_kwargs: object) -> list[object]:
+        del candidates
+        raise RuntimeError("Authorization: Bearer secret-token Cookie=sid")
+
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe", side_effect=_probe):
+                with patch("codemie.service.mcp.toolkit_service.logger.warning") as mock_warning:
+                    tools = MCPToolkitService.get_mcp_server_tools(
+                        [*challenged_servers, healthy],
+                        user_id="user-1",
+                    )
+
+    warnings = get_mcp_auth_warnings(clear=True)
+    warning_text = str(warnings)
+    log_text = " ".join(str(call.args[0]) for call in mock_warning.call_args_list)
+    assert tools == [healthy_tool]
+    assert [warning["mcp_config_id"] for warning in warnings] == ["mcp-discovery-0", "mcp-discovery-1"]
+    assert [warning["error_context"] for warning in warnings] == [
+        "Discovery failed: discovery_bridge_unavailable. Configure auth_config manually for this server.",
+        "Discovery failed: discovery_bridge_unavailable. Configure auth_config manually for this server.",
+    ]
+    for sensitive_text in ("secret-token", "Authorization", "Cookie", "sid"):
+        assert sensitive_text not in warning_text
+        assert sensitive_text not in log_text
+
+
+def test_get_mcp_server_tools_batches_401_challenges_under_10s_p95_with_fake_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from codemie.configs import config as runtime_config
+    from codemie.enterprise.mcp_auth import dependencies
+
+    mcp_servers = [
+        _build_mcp_server(
+            name=f"http-{index}",
+            url=f"https://mcp{index}.example.com/api/mcp",
+            transport_type="streamable-http",
+        )
+        for index in range(5)
+    ]
+    captured_counts: list[int] = []
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        raise _wrapped_tool_load_error(mcp_server.name, 401)
+
+    class FakeDiscoveryProbeCandidate:
+        def __init__(self, **kwargs: object) -> None:
+            self.server_name = str(kwargs["server_name"])
+
+    async def _probe(**kwargs: object) -> list[dict[str, str]]:
+        candidates = list(kwargs["candidates"])
+        captured_counts.append(len(candidates))
+        captured_limits.append(kwargs["concurrency_limit"])
+        active = 0
+        max_active = 0
+        semaphore = asyncio.Semaphore(int(kwargs["concurrency_limit"]))
+
+        async def _probe_one(candidate: FakeDiscoveryProbeCandidate) -> dict[str, str]:
+            nonlocal active, max_active
+            async with semaphore:
+                active += 1
+                max_active = max(max_active, active)
+                await asyncio.sleep(0.02)
+                active -= 1
+            return {
+                "server_name": candidate.server_name,
+                "status": "discovery_failed",
+                "failure_reason": "timeout",
+            }
+
+        results = await asyncio.gather(*(_probe_one(candidate) for candidate in candidates))
+        captured_max_active.append(max_active)
+        return results
+
+    durations = []
+    sample_count = 8
+    captured_limits: list[object] = []
+    captured_max_active: list[int] = []
+    fake_discovery_module = SimpleNamespace(
+        DiscoveryProbeCandidate=FakeDiscoveryProbeCandidate,
+        probe_discovery_eligible_servers=_probe,
+    )
+    monkeypatch.setattr(dependencies, "HAS_MCP_AUTH", True)
+    monkeypatch.setattr(runtime_config, "MCP_AUTH_ENABLED", True)
+    monkeypatch.setattr(runtime_config, "MCP_AUTH_DISCOVERY_CONCURRENCY_LIMIT", 5)
+    monkeypatch.setattr(dependencies, "_mcp_auth_discovery_cache", object())
+    monkeypatch.setattr(
+        dependencies,
+        "_mcp_auth_service",
+        SimpleNamespace(
+            config=SimpleNamespace(
+                discovery_probe_overall_timeout_seconds=30.0,
+                enforce_https=True,
+                resource_metadata_discovery_timeout_seconds=10.0,
+                as_metadata_discovery_timeout_seconds=10.0,
+            )
+        ),
+    )
+    monkeypatch.setattr(dependencies, "import_module", lambda _: fake_discovery_module)
+    monkeypatch.setattr(
+        dependencies,
+        "read_mcp_auth_discovery_private_network_allowlist_config",
+        AsyncMock(return_value=()),
+    )
+    for _ in range(sample_count):
+        start = time.perf_counter()
+        with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+            with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+                MCPToolkitService.get_mcp_server_tools(mcp_servers, user_id="user-1")
+        durations.append(time.perf_counter() - start)
+
+    p95_index = math.ceil(0.95 * len(durations)) - 1
+    p95_duration = sorted(durations)[p95_index]
+
+    assert captured_counts == [5] * sample_count
+    assert captured_limits == [5] * sample_count
+    assert captured_max_active == [5] * sample_count
+    assert p95_duration < 10
+
+
+def test_get_mcp_server_tools_records_warning_only_discovery_failed_payload() -> None:
+    from codemie.service.mcp.auth_warnings import get_mcp_auth_warnings
+
+    healthy_tool = MagicMock(name="healthy-tool")
+    legacy_tool = MagicMock(name="legacy-tool")
+    challenged = _build_mcp_server(
+        name="challenged",
+        mcp_config_id="mcp-discovery",
+        url="https://mcp.example.com/api/mcp",
+        transport_type="streamable-http",
+    )
+    healthy = _build_mcp_server(name="healthy")
+    legacy = _build_mcp_server(name="legacy", headers={"Authorization": "{{user.token}}"})
+    discovery_result = SimpleNamespace(
+        server_name="challenged",
+        status="discovery_failed",
+        failure_reason="timeout",
+        error_context={
+            "source_url": "https://mcp.example.com/api?token=abc",
+            "WWW-Authenticate": "Bearer secret-token",
+            "Cookie": "session=secret",
+            "user": "user@example.com",
+        },
+    )
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        if mcp_server.name == "challenged":
+            raise _wrapped_tool_load_error(
+                mcp_server.name,
+                401,
+                'Bearer resource_metadata="https://mcp.example.com/prm?token=abc"',
+            )
+        if mcp_server.name == "healthy":
+            return [healthy_tool]
+        return [legacy_tool]
+
+    async def _probe(candidates: list[dict[str, str]], **_kwargs: object) -> list[object]:
+        return [discovery_result]
+
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe", side_effect=_probe):
+                tools = MCPToolkitService.get_mcp_server_tools([challenged, healthy, legacy], user_id="user-1")
+
+    warnings = get_mcp_auth_warnings(clear=True)
+    warning_text = str(warnings)
+    assert tools == [healthy_tool, legacy_tool]
+    assert warnings == [
+        {
+            "status": "discovery_failed",
+            "mcp_config_id": "mcp-discovery",
+            "mcp_config_name": "challenged",
+            "mcp_server_name": "challenged",
+            "error_context": "Discovery failed: timeout. Configure auth_config manually for this server.",
+        }
+    ]
+    assert "auth_config_id" not in warnings[0]
+    assert "initiate_url" not in warnings[0]
+    assert "secret-token" not in warning_text
+    assert "Cookie" not in warning_text
+    assert "token=abc" not in warning_text
+    assert "user@example.com" not in warning_text
+
+
+def test_discovery_failed_warning_for_trust_rejection_includes_allowlist_guidance() -> None:
+    payloads = MCPToolkitService._build_discovery_warning_payloads(
+        [
+            {
+                "server_name": "challenged",
+                "mcp_server_name": "challenged",
+                "mcp_config_name": "challenged",
+                "mcp_config_id": "mcp-discovery",
+            }
+        ],
+        [
+            SimpleNamespace(
+                status="discovery_failed",
+                failure_reason="no_trusted_authorization_server",
+            )
+        ],
+    )
+
+    assert payloads == [
+        {
+            "status": "discovery_failed",
+            "mcp_config_id": "mcp-discovery",
+            "mcp_config_name": "challenged",
+            "mcp_server_name": "challenged",
+            "error_context": (
+                "Discovery failed: no_trusted_authorization_server. "
+                "Add the AS domain to the trust allowlist or configure auth_config manually for this server."
+            ),
+        }
+    ]
+    assert "auth_config_id" not in payloads[0]
+    assert "initiate_url" not in payloads[0]
+
+
+def test_get_mcp_server_tools_successful_discovery_becomes_blocking_auth_gate_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    challenged = _build_mcp_server(
+        name="challenged",
+        mcp_config_id="mcp-discovery",
+        url="https://mcp.example.com/api/mcp",
+        transport_type="streamable-http",
+    )
+    discovery_result = SimpleNamespace(
+        server_name="challenged",
+        canonical_resource_uri="https://mcp.example.com/api/mcp",
+        status="discovered",
+        protected_resource_metadata={},
+        authorization_server_metadata={"issuer": "https://auth.example.com"},
+    )
+    expected_session_hash = hashlib.sha256(b"Bearer session-token").hexdigest()
+    captured: dict[str, object] = {}
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        raise _wrapped_tool_load_error(
+            mcp_server.name,
+            401,
+            'Bearer resource_metadata="https://mcp.example.com/prm", scope="fresh.read"',
+        )
+
+    async def _probe(candidates: list[dict[str, str]], **_kwargs: object) -> list[object]:
+        return [discovery_result]
+
+    async def _build_gate_payloads(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return [
+            {
+                "auth_config_id": "discovered:" + "a" * 64,
+                "discovered_flow_id": "flow-1",
+                "mcp_config_id": "mcp-discovery",
+                "mcp_config_name": "challenged",
+                "mcp_server_name": "challenged",
+                "auth_type": "oauth2",
+                "as_hostname": "auth.example.com",
+                "status": "authentication_required",
+                "error_context": None,
+                "initiate_url": "/v1/mcp-auth/oauth2/initiate?discovered_flow_id=flow-1",
+            }
+        ]
+
+    monkeypatch.setattr("codemie.service.mcp.toolkit_service.get_current_auth_token", lambda: "Bearer session-token")
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe", side_effect=_probe):
+                with patch(
+                    "codemie.service.mcp.toolkit_service.build_mcp_auth_discovered_auth_gate_payloads",
+                    side_effect=_build_gate_payloads,
+                ):
+                    with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+                        MCPToolkitService.get_mcp_server_tools([challenged], user_id="user-1")
+
+    payload = exc_info.value.payload
+    assert payload["servers"][0]["status"] == "authentication_required"
+    assert payload["servers"][0]["discovered_flow_id"] == "flow-1"
+    assert payload["servers"][0]["auth_config_id"].startswith("discovered:")
+    assert "warnings" not in payload
+    assert captured["user_id"] == "user-1"
+    assert captured["session_binding_hash"] == expected_session_hash
+    assert captured["discovery_results"] == [discovery_result]
+
+
+@pytest.mark.asyncio
+async def test_nfr23_discovered_pipeline_preserves_current_scope_and_invokes_tool_with_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from codemie.configs import config as runtime_config
+    from codemie.enterprise.mcp_auth import dependencies
+    from codemie_enterprise.mcp_auth.discovery import DiscoveryProbeCandidate, probe_discovery_eligible_servers
+    from codemie_enterprise.mcp_auth.models import OAuth2TokenData
+    from codemie_enterprise.mcp_auth.resolver import MCPAuthResolver
+    from codemie_enterprise.mcp_auth.tms_mock import MockTokenManagementSystem
+
+    class InMemoryDiscoveryCache:
+        def __init__(self) -> None:
+            self.entries: dict[str, object] = {}
+
+        def get(self, resource: str) -> object | None:
+            return self.entries.get(resource)
+
+        def set(self, resource: str, entry: object, cache_control_header: str | None = None) -> None:
+            _ = cache_control_header
+            self.entries[resource] = entry
+
+    class InMemoryDiscoveredFlowStore:
+        def __init__(self) -> None:
+            self.snapshots: dict[str, object] = {}
+
+        def store(self, snapshot: object) -> None:
+            self.snapshots[getattr(snapshot, "discovered_flow_id")] = snapshot
+
+        def get(self, discovered_flow_id: str) -> object | None:
+            return self.snapshots.get(discovered_flow_id)
+
+        def get_for_binding(self, user_id: str, session_binding_hash: str, mcp_config_id: str) -> object | None:
+            for snapshot in self.snapshots.values():
+                if (
+                    getattr(snapshot, "user_id") == user_id
+                    and getattr(snapshot, "session_binding_hash") == session_binding_hash
+                    and getattr(snapshot, "mcp_config_id") == mcp_config_id
+                ):
+                    return snapshot
+            return None
+
+    class FakePKCEStore:
+        def __init__(self) -> None:
+            self.states: dict[str, object] = {}
+
+        def store(self, state: str, data: object) -> None:
+            self.states[state] = data
+
+    class TrustAllAuthExample:
+        async def is_authorization_server_trusted(self, issuer_url: str, server_name: str) -> bool:
+            _ = server_name
+            return issuer_url == "https://auth.example.com"
+
+    canonical_resource = "https://mcp.example.com/api/mcp"
+    issuer = "https://auth.example.com"
+    session_hash = hashlib.sha256(b"Bearer session-token").hexdigest()
+    discovery_cache = InMemoryDiscoveryCache()
+    flow_store = InMemoryDiscoveredFlowStore()
+    pkce_store = FakePKCEStore()
+    fetched_urls: list[str] = []
+
+    async def fake_metadata_fetcher(source_url: str, **kwargs: object) -> httpx.Response:
+        _ = kwargs
+        fetched_urls.append(source_url)
+        if source_url == "https://mcp.example.com/prm":
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "application/json"},
+                json={
+                    "resource": canonical_resource,
+                    "authorization_servers": [issuer],
+                    "scopes_supported": ["fallback.read"],
+                },
+            )
+        if source_url == f"{issuer}/.well-known/oauth-authorization-server":
+            return httpx.Response(
+                200,
+                headers={"Content-Type": "application/json"},
+                json={
+                    "issuer": issuer,
+                    "authorization_endpoint": f"{issuer}/oauth2/authorize",
+                    "token_endpoint": f"{issuer}/oauth2/token",
+                    "response_types_supported": ["code"],
+                    "code_challenge_methods_supported": ["S256"],
+                    "scopes_supported": ["as.read"],
+                    "client_id_metadata_document_supported": True,
+                },
+            )
+        return httpx.Response(404, headers={"Content-Type": "application/json"}, json={})
+
+    discovery_result = (
+        await probe_discovery_eligible_servers(
+            candidates=[
+                DiscoveryProbeCandidate(
+                    server_name="Catalog",
+                    mcp_resource_url="https://mcp.example.com/api/mcp",
+                    www_authenticate_header=(
+                        'Bearer resource_metadata="https://mcp.example.com/prm", scope="stale.read"'
+                    ),
+                )
+            ],
+            discovery_cache=discovery_cache,
+            trust_policy_service=TrustAllAuthExample(),
+            overall_timeout_seconds=30.0,
+            protected_resource_discovery_kwargs={"fetcher": fake_metadata_fetcher, "discovery_timeout_seconds": 10.0},
+            authorization_server_discovery_kwargs={"fetcher": fake_metadata_fetcher, "discovery_timeout_seconds": 10.0},
+        )
+    )[0]
+    monkeypatch.setattr(dependencies, "HAS_MCP_AUTH", True)
+    monkeypatch.setattr(runtime_config, "MCP_AUTH_ENABLED", True)
+    monkeypatch.setattr(dependencies.config, "CALLBACK_API_BASE_URL", "https://codemie.example.com")
+    monkeypatch.setattr(dependencies, "_mcp_auth_discovered_flow_store", flow_store)
+    monkeypatch.setattr(dependencies, "_mcp_auth_dcr_credentials_cache", object())
+    monkeypatch.setattr(dependencies, "_pkce_store", pkce_store)
+    monkeypatch.setattr(dependencies, "_redis_encryption", SimpleNamespace(signing_key=b"s" * 32))
+    monkeypatch.setattr(
+        dependencies,
+        "_mcp_auth_service",
+        SimpleNamespace(
+            config=SimpleNamespace(
+                allow_local_client_metadata_document_url=False,
+                enforce_https=True,
+                dcr_registration_timeout_seconds=10.0,
+            )
+        ),
+    )
+
+    gate_payloads = await dependencies.build_mcp_auth_discovered_auth_gate_payloads(
+        discovery_candidates=[
+            {
+                "server_name": "Catalog",
+                "mcp_server_name": "Catalog",
+                "mcp_config_name": "Catalog",
+                "mcp_config_id": "mcp-config-1",
+                "www_authenticate_header": (
+                    'Bearer resource_metadata="https://mcp.example.com/prm", scope="fresh.read fresh.write"'
+                ),
+            }
+        ],
+        discovery_results=[discovery_result],
+        user_id="user-1",
+        session_binding_hash=session_hash,
+        allowed_private_networks=(),
+    )
+    discovered_flow_id = gate_payloads[0]["discovered_flow_id"]
+    snapshot = flow_store.get(discovered_flow_id)
+
+    initiate_response = dependencies.build_discovered_oauth2_initiate_response(
+        mcp_config=SimpleNamespace(id="mcp-config-1", config=SimpleNamespace(auth_config=None)),
+        user=SimpleNamespace(id="user-1", auth_token="Bearer session-token"),
+        discovered_flow_id=discovered_flow_id,
+    )
+    query = parse_qs(urlsplit(initiate_response.auth_url).query)
+    tms = MockTokenManagementSystem()
+    tms.store(
+        "user-1",
+        getattr(snapshot, "discovered_auth_id"),
+        OAuth2TokenData(
+            access_token="stored-token",
+            token_type="Bearer",
+            resource=canonical_resource,
+            issuer=issuer,
+            flow_source="discovered",
+        ),
+    )
+    discovery_cache.entries.clear()
+    resolver = MCPAuthResolver(
+        tms,
+        lambda auth_config_id, **kwargs: RuntimeError(f"auth-required:{auth_config_id}:{kwargs}"),
+        discovery_cache=discovery_cache,
+        discovered_flow_store=flow_store,
+    )
+    server_config = MCPServerConfig(
+        url="https://MCP.Example.Com:443/api/mcp?ignored=1#fragment",
+        type="streamable-http",
+        headers={"X-Workspace": "catalog"},
+        env={},
+        mcp_config_id="mcp-config-1",
+    )
+    execution_context = MCPExecutionContext(user_id="user-1", auth_headers={}, session_binding_hash=session_hash)
+    resolver.resolve(server_config, "user-1", execution_context)
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"content": [{"type": "text", "text": "ok"}], "isError": False}
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+        mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+        invocation = await MCPConnectClient().invoke_tool(
+            server_config,
+            "search_catalog",
+            {"q": "widget"},
+            execution_context,
+        )
+
+    post_payload = mock_client.return_value.__aenter__.return_value.post.call_args.kwargs["json"]
+    assert gate_payloads[0]["status"] == "authentication_required"
+    assert gate_payloads[0]["as_hostname"] == "auth.example.com"
+    assert discovery_result.status == "discovered"
+    assert discovery_result.from_cache is False
+    assert fetched_urls == [
+        "https://mcp.example.com/prm",
+        "https://auth.example.com/.well-known/oauth-authorization-server",
+    ]
+    assert getattr(snapshot, "registration_method") == "client_id_metadata_document"
+    assert getattr(snapshot, "flow_config").client_id == "https://codemie.example.com/oauth/client-metadata.json"
+    assert query["scope"] == ["fresh.read fresh.write"]
+    assert query["resource"] == [canonical_resource]
+    assert "stale.read" not in initiate_response.auth_url
+    assert "fallback.read" not in initiate_response.auth_url
+    assert execution_context.auth_headers == {"Authorization": "Bearer stored-token"}
+    assert post_payload["mcp_headers"] == {"X-Workspace": "catalog", "Authorization": "Bearer stored-token"}
+    assert invocation.content[0].text == "ok"
+    assert invocation.isError is False
+
+
+def test_get_mcp_server_tools_mixed_auth_required_and_discovery_warning_payloads(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("DEBUG")
+    auth_required_error = MCPAuthenticationRequiredException(
+        {
+            "auth_config_id": "auth-1",
+            "mcp_server_name": "auth-configured",
+            "status": "authentication_required",
+            "auth_type": "oauth2",
+        }
+    )
+    auth_configured = _build_mcp_server(
+        name="auth-configured",
+        mcp_config_id="mcp-auth",
+        auth_config={"id": "auth-1", "auth_type": "oauth2"},
+    )
+    challenged = _build_mcp_server(
+        name="challenged",
+        mcp_config_id="mcp-discovery",
+        url="https://mcp.example.com/api/mcp",
+        transport_type="streamable-http",
+    )
+    healthy_tool = MagicMock(name="healthy-tool")
+    healthy = _build_mcp_server(name="healthy")
+    sensitive_challenge = (
+        'Bearer resource_metadata="https://mcp.example.com/prm?token=secret-token&user=user@example.com", '
+        'error_description="Authorization: Bearer secret-token Cookie=sid=secret user_id=user-123"'
+    )
+    captured_candidates: list[dict[str, str]] = []
+
+    def _process_server(*, mcp_server: MCPServerDetails, **_: object) -> list[MagicMock]:
+        if mcp_server.name == "auth-configured":
+            raise auth_required_error
+        if mcp_server.name == "challenged":
+            raise _wrapped_tool_load_error(mcp_server.name, 401, sensitive_challenge)
+        return [healthy_tool]
+
+    async def _probe(candidates: list[dict[str, str]], **_kwargs: object) -> list[object]:
+        captured_candidates.extend(candidates)
+        return [
+            SimpleNamespace(
+                server_name="challenged",
+                status="discovery_failed",
+                failure_reason="unexpected_error",
+                error_context={
+                    "authorization": "Bearer secret-token",
+                    "cookie": "sid=secret",
+                    "source_url": "https://mcp.example.com?secret=1&user=user@example.com",
+                    "user_id": "user-123",
+                },
+            )
+        ]
+
+    with patch.object(MCPToolkitService, "get_instance", return_value=MagicMock()):
+        with patch.object(MCPToolkitService, "_process_single_mcp_server", side_effect=_process_server):
+            with patch("codemie.service.mcp.toolkit_service.run_mcp_auth_parallel_discovery_probe", side_effect=_probe):
+                with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+                    MCPToolkitService.get_mcp_server_tools([auth_configured, challenged, healthy], user_id="user-1")
+
+    payload = exc_info.value.payload
+    assert payload["error"] == "authentication_required"
+    assert payload["servers"][0]["mcp_server_name"] == "auth-configured"
+    assert payload["servers"][0]["status"] == "authentication_required"
+    assert captured_candidates[0]["www_authenticate_header"] == sensitive_challenge
+    assert payload["warnings"] == [
+        {
+            "status": "discovery_failed",
+            "mcp_config_id": "mcp-discovery",
+            "mcp_config_name": "challenged",
+            "mcp_server_name": "challenged",
+            "error_context": "Discovery failed: unexpected_error. Configure auth_config manually for this server.",
+        }
+    ]
+    assert "auth_config_id" not in payload["warnings"][0]
+    assert "initiate_url" not in payload["warnings"][0]
+
+    warning_text = str(payload["warnings"])
+    log_text = caplog.text
+    for sensitive_text in (
+        "secret-token",
+        "Authorization",
+        "Cookie",
+        "sid=secret",
+        "token=",
+        "user@example.com",
+        "user-123",
+    ):
+        assert sensitive_text not in warning_text
+        assert sensitive_text not in log_text
 
 
 def test_get_mcp_server_tools_aggregates_all_auth_blocked_servers_in_input_order() -> None:
@@ -716,6 +1830,47 @@ def test_prepare_server_config_falls_back_to_legacy_after_registered_resolvers_d
 
     mock_factory.get_token_for_current_user.assert_called_once()
     assert resolver.calls == []
+    assert server_config.headers == {"Authorization": "Bearer legacy-token"}
+
+
+def test_prepare_server_config_falls_back_to_legacy_when_discovered_token_missing() -> None:
+    from codemie_enterprise.mcp_auth.models import DiscoveryMetadataCacheEntry
+    from codemie_enterprise.mcp_auth.resolver import MCPAuthResolver
+    from codemie_enterprise.mcp_auth.tms_mock import MockTokenManagementSystem
+
+    canonical_resource = "https://mcp.example.com/api/mcp"
+    discovery_cache = SimpleNamespace(
+        get=lambda resource: DiscoveryMetadataCacheEntry(
+            protected_resource_metadata={},
+            authorization_server_metadata={"issuer": "https://auth.example.com"},
+        )
+        if resource == canonical_resource
+        else None
+    )
+    resolver = MCPAuthResolver(
+        MockTokenManagementSystem(),
+        lambda auth_config_id, **kwargs: RuntimeError(f"auth-required:{auth_config_id}:{kwargs}"),
+        discovery_cache=discovery_cache,
+    )
+
+    with patch.object(MCPToolkitService, "_auth_resolvers", [resolver]):
+        with patch.object(MCPAccessControlService, "resolve_catalog_config", side_effect=lambda s: s):
+            with patch("codemie.service.mcp.toolkit_service.get_current_user", return_value=_build_user()):
+                with patch("codemie.service.mcp.toolkit_service.token_exchange_service") as mock_factory:
+                    mock_factory.get_token_for_current_user.return_value = "legacy-token"
+
+                    server_config = MCPToolkitService._prepare_server_config(
+                        mcp_server=_build_mcp_server(
+                            mcp_config_id="mcp-config-1",
+                            url="https://MCP.Example.Com:443/api/mcp?v=1#section",
+                            transport_type="streamable-http",
+                            headers={"Authorization": "Bearer [user.token]"},
+                        ),
+                        user_id="user-1",
+                        execution_context=MCPExecutionContext(user_id="user-1"),
+                    )
+
+    mock_factory.get_token_for_current_user.assert_called_once()
     assert server_config.headers == {"Authorization": "Bearer legacy-token"}
 
 

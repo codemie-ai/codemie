@@ -36,12 +36,15 @@ class AuthResolverProtocol(Protocol):
         server_config: "MCPServerConfig",
         user_id: str | None,
         execution_context: "MCPExecutionContext | None" = None,
-    ) -> None:
+    ) -> bool | None:
         """Resolve auth credentials by mutating target auth fields in place.
 
         Retrieves credentials via `user_id`, then mutates `server_config.env`
         or `execution_context.auth_headers` in place. Does not return a new
         execution context.
+        Returning False explicitly declines handling after inspection, allowing
+        later resolvers to run. Returning None preserves the historical handled
+        behavior.
 
         Args:
             server_config: MCP server configuration; resolver may mutate

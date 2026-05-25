@@ -80,7 +80,7 @@ from codemie.service.file_service.image_service import ImageService
 from codemie.service.llm_service.llm_service import LLMService
 from codemie.service.llm_service.utils import set_llm_context
 from codemie.templates.agents.assistant_base import markdown_response_prompt
-from codemie.core.exceptions import TokenLimitExceededException
+from codemie.core.exceptions import MCPAuthenticationRequiredException, TokenLimitExceededException
 from codemie.core.otel_tracing import get_otel_context_for_thread, propagated_span, record_exception_on_span, traced
 
 # LangGraph supervisor agent adds wrong params to our LLM in tools binding stage
@@ -514,6 +514,8 @@ class LangGraphAgent(WorkspaceAwareAgent):
             inputs.update(args)
             output = self._invoke_agent(inputs).generated
             return output
+        except MCPAuthenticationRequiredException:
+            raise
         except Exception as e:
             error_response: ErrorResponse = handle_agent_exception(e)
             if config.HIDE_AGENT_STREAMING_EXCEPTIONS:
@@ -549,6 +551,8 @@ class LangGraphAgent(WorkspaceAwareAgent):
             agent_response = self._invoke_agent(inputs)
 
             return TaskResult.from_agent_response(agent_response)
+        except MCPAuthenticationRequiredException:
+            raise
         except Exception as e:
             record_exception_on_span(e)
             error_response: ErrorResponse = handle_agent_exception(e)
@@ -605,6 +609,8 @@ class LangGraphAgent(WorkspaceAwareAgent):
                 agent_error=None,
                 tool_errors=self.tool_error_callback.tool_errors if self.tool_error_callback.has_errors() else None,
             )
+        except MCPAuthenticationRequiredException:
+            raise
         except Exception as e:
             record_exception_on_span(e)
             time_elapsed = time() - start_time
@@ -659,6 +665,7 @@ class LangGraphAgent(WorkspaceAwareAgent):
             execution_start = time()
             chunks_collector = []
 
+            auth_required_error: MCPAuthenticationRequiredException | None = None
             try:
                 logger.info(f"Starting {self.agent_name} agent for task: {self._task}")
                 result = self._agent_streaming(chunks_collector)
@@ -677,6 +684,10 @@ class LangGraphAgent(WorkspaceAwareAgent):
                         context=self.thread_context,
                     ).model_dump_json()
                 )
+            except MCPAuthenticationRequiredException as e:
+                auth_required_error = e
+                self.thread_generator.close(e)
+                raise
             except Exception as e:
                 record_exception_on_span(e)
                 time_elapsed = time() - execution_start
@@ -701,7 +712,8 @@ class LangGraphAgent(WorkspaceAwareAgent):
                     ).model_dump_json()
                 )
             finally:
-                self.thread_generator.close()
+                if auth_required_error is None:
+                    self.thread_generator.close()
 
     def _process_chunks(
         self,
@@ -867,6 +879,8 @@ class LangGraphAgent(WorkspaceAwareAgent):
                 f"Invoking task. Agent={self.agent_name}. Response={self._serialize_response_for_log(response)}"
             )
             return response
+        except MCPAuthenticationRequiredException:
+            raise
         except Exception as e:
             error_response: ErrorResponse = handle_agent_exception(e)
             if config.HIDE_AGENT_STREAMING_EXCEPTIONS:

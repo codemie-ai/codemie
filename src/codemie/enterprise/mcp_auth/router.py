@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from typing import Any, Literal, cast
 
-from fastapi import APIRouter, Depends, Form, Query, status
-from fastapi.responses import HTMLResponse, Response
+from fastapi import APIRouter, Depends, Form, Query, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from codemie.core.exceptions import ExtendedHTTPException
@@ -25,29 +25,41 @@ from codemie.enterprise.mcp_auth.dependencies import (
     SUPPORTED_AUTH_TYPES,
     _INVALID_MCP_AUTH_CONFIG_MESSAGE,
     _require_initialized_tms,
+    build_client_metadata_document_response,
+    build_discovered_auth_status_response,
+    build_discovered_oauth2_initiate_response,
     build_oauth2_callback_response,
     build_oauth2_callback_page_script_response,
     build_oauth2_initiate_response,
+    build_recovery_oauth2_initiate_response,
     build_saml_callback_response,
     build_saml_initiate_response,
     build_saml_metadata_response,
     derive_as_hostname,
     derive_initiate_url,
+    ensure_client_metadata_document_available,
     is_mcp_auth_enabled,
+    MCPAuthEnterpriseUnavailableError,
 )
 from codemie.rest_api.models.mcp_config import MCPConfig
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 
+_MCP_AUTH_ROUTER_TAG = "MCP Auth"
+
 router = APIRouter(
-    tags=["MCP Auth"],
+    tags=[_MCP_AUTH_ROUTER_TAG],
     prefix="/v1/mcp-auth",
 )
 
 enabled_router = APIRouter(
-    tags=["MCP Auth"],
+    tags=[_MCP_AUTH_ROUTER_TAG],
     prefix="/v1/mcp-auth",
 )
+
+cimd_router = APIRouter(tags=[_MCP_AUTH_ROUTER_TAG])
+
+enabled_cimd_router = APIRouter(tags=[_MCP_AUTH_ROUTER_TAG])
 
 
 class MCPAuthDisabledResponse(BaseModel):
@@ -58,6 +70,8 @@ class MCPAuthDisabledResponse(BaseModel):
 
 class OAuth2InitiateRequest(BaseModel):
     mcp_config_id: str = Field(min_length=1)
+    discovered_flow_id: str | None = Field(default=None, min_length=1)
+    recovery_flow_id: str | None = Field(default=None, min_length=1)
 
 
 class OAuth2InitiateResponse(BaseModel):
@@ -78,12 +92,12 @@ class MCPAuthStatusResponse(BaseModel):
     mcp_config_id: str
     mcp_config_name: str
     mcp_server_name: str
-    auth_config_id: str
+    auth_config_id: str | None
     auth_type: Literal["oauth2", "saml"]
     as_hostname: str | None
     status: Literal["authenticated", "authentication_required", "session_expired", "config_error"]
-    error_context: str | None
-    initiate_url: str
+    error_context: str | dict[str, Any] | None
+    initiate_url: str | None
 
 
 _DISABLED_RESPONSE = MCPAuthDisabledResponse(
@@ -91,6 +105,19 @@ _DISABLED_RESPONSE = MCPAuthDisabledResponse(
     state="inactive — enterprise package not installed or MCP_AUTH_ENABLED not set",
     action="Enable MCP_AUTH_ENABLED and install the enterprise package",
 )
+
+_CLIENT_METADATA_DOCUMENT_PATH = "/oauth/client-metadata.json"
+_CLIENT_METADATA_QUERY_REJECTED_MESSAGE = "Invalid client metadata document request"
+_CLIENT_METADATA_QUERY_REJECTED_DETAILS = "Query strings are not allowed for this endpoint."
+_CLIENT_METADATA_CONFIG_ERROR_DETAILS = "Client metadata document configuration is invalid."
+_CLIENT_METADATA_CONFIG_ERROR_HELP = "Review CALLBACK_API_BASE_URL and OAuth2 callback configuration."
+
+
+def _disabled_json_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content=_DISABLED_RESPONSE.model_dump(),
+    )
 
 
 @router.post(
@@ -100,6 +127,44 @@ _DISABLED_RESPONSE = MCPAuthDisabledResponse(
 )
 def initiate_oauth2() -> MCPAuthDisabledResponse:
     return _DISABLED_RESPONSE
+
+
+@cimd_router.get(
+    _CLIENT_METADATA_DOCUMENT_PATH,
+    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+    response_model=MCPAuthDisabledResponse,
+)
+def client_metadata_document() -> MCPAuthDisabledResponse:
+    return _DISABLED_RESPONSE
+
+
+@enabled_cimd_router.get(
+    _CLIENT_METADATA_DOCUMENT_PATH,
+    response_class=Response,
+)
+def client_metadata_document_enabled(request: Request) -> Response:
+    try:
+        ensure_client_metadata_document_available()
+    except MCPAuthEnterpriseUnavailableError:
+        return _disabled_json_response()
+    if request.url.query:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message=_CLIENT_METADATA_QUERY_REJECTED_MESSAGE,
+            details=_CLIENT_METADATA_QUERY_REJECTED_DETAILS,
+            help="Request the metadata document URL without query parameters.",
+        )
+    try:
+        return build_client_metadata_document_response()
+    except MCPAuthEnterpriseUnavailableError:
+        return _disabled_json_response()
+    except ExtendedHTTPException:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message=_INVALID_MCP_AUTH_CONFIG_MESSAGE,
+            details=_CLIENT_METADATA_CONFIG_ERROR_DETAILS,
+            help=_CLIENT_METADATA_CONFIG_ERROR_HELP,
+        ) from None
 
 
 def _get_mcp_config_or_raise(config_id: str) -> MCPConfig:
@@ -212,10 +277,43 @@ def _evaluate_auth_status(
 )
 def initiate_oauth2_enabled(
     payload: OAuth2InitiateRequest,
+    discovered_flow_id: str | None = Query(default=None),
+    recovery_flow_id: str | None = Query(default=None),
     user: User = Depends(authenticate),
 ) -> OAuth2InitiateResponse:
     mcp_config = _get_mcp_config_or_raise(payload.mcp_config_id)
     _check_mcp_config_access(user, mcp_config)
+    resolved_recovery_flow_id = _resolve_recovery_flow_id(payload.recovery_flow_id, recovery_flow_id)
+    if resolved_recovery_flow_id and (payload.discovered_flow_id or discovered_flow_id):
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message=_INVALID_MCP_AUTH_CONFIG_MESSAGE,
+            details="recovery_flow_id cannot be combined with discovered_flow_id.",
+            help="Retry with only recovery_flow_id for insufficient-scope recovery.",
+        )
+    if resolved_recovery_flow_id:
+        response_data = build_recovery_oauth2_initiate_response(
+            mcp_config=mcp_config,
+            user=user,
+            recovery_flow_id=resolved_recovery_flow_id,
+        )
+        return OAuth2InitiateResponse.model_validate(response_data.model_dump())
+    resolved_discovered_flow_id = payload.discovered_flow_id or discovered_flow_id
+    if resolved_discovered_flow_id:
+        response_data = build_discovered_oauth2_initiate_response(
+            mcp_config=mcp_config,
+            user=user,
+            discovered_flow_id=resolved_discovered_flow_id,
+        )
+        return OAuth2InitiateResponse.model_validate(response_data.model_dump())
+    raw_mcp_auth_config = getattr(getattr(mcp_config, "config", None), "auth_config", None)
+    if raw_mcp_auth_config is None:
+        response_data = build_discovered_oauth2_initiate_response(
+            mcp_config=mcp_config,
+            user=user,
+            discovered_flow_id=None,
+        )
+        return OAuth2InitiateResponse.model_validate(response_data.model_dump())
     raw_auth_config, auth_config_id = _get_raw_oauth_config_or_raise(mcp_config)
     response_data = build_oauth2_initiate_response(
         raw_auth_config=raw_auth_config,
@@ -224,6 +322,17 @@ def initiate_oauth2_enabled(
         mcp_server_url=mcp_config.config.url,
     )
     return OAuth2InitiateResponse.model_validate(response_data.model_dump())
+
+
+def _resolve_recovery_flow_id(body_value: str | None, query_value: str | None) -> str | None:
+    if body_value and query_value and body_value != query_value:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message=_INVALID_MCP_AUTH_CONFIG_MESSAGE,
+            details="Body and query recovery_flow_id values must match.",
+            help="Retry with a single recovery_flow_id value.",
+        )
+    return body_value or query_value
 
 
 @router.get(
@@ -355,6 +464,10 @@ def mcp_auth_status_enabled(
 ) -> MCPAuthStatusResponse:
     mcp_config = _get_mcp_config_or_raise(mcp_config_id)
     _check_mcp_config_access(user, mcp_config)
+    raw_mcp_auth_config = getattr(getattr(mcp_config, "config", None), "auth_config", None)
+    if not isinstance(raw_mcp_auth_config, dict):
+        discovered_status = build_discovered_auth_status_response(mcp_config=mcp_config, user=user)
+        return MCPAuthStatusResponse.model_validate(discovered_status)
     raw_auth_config, auth_config_id, auth_type = _get_raw_supported_auth_config_or_raise(mcp_config)
     tms = _require_initialized_tms()
     status_value, resolved_auth_type, error_context = _evaluate_auth_status(
@@ -384,3 +497,9 @@ def get_mcp_auth_router() -> APIRouter:
     if not is_mcp_auth_enabled():
         return router
     return enabled_router
+
+
+def get_cimd_router() -> APIRouter:
+    if not is_mcp_auth_enabled():
+        return cimd_router
+    return enabled_cimd_router

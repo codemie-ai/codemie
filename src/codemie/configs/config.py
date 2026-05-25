@@ -412,6 +412,14 @@ class Config(BaseSettings):
     MCP_AUTH_TMS_ALLOW_MOCK: bool = False
     # Redis key namespace prefix for all MCP auth stores; must not end with ':'.
     MCP_AUTH_REDIS_KEY_NAMESPACE: str = "codemie:mcp_auth"
+    # Enforce HTTPS for all MCP auth redirect/callback URLs.
+    MCP_AUTH_ENFORCE_HTTPS: bool = True
+    MCP_AUTH_ALLOW_LOCAL_CLIENT_METADATA_URL: bool = False
+    MCP_AUTH_DISCOVERY_CONCURRENCY_LIMIT: int = 5
+    MCP_AUTH_AS_METADATA_DISCOVERY_TIMEOUT_SECONDS: float = 30.0
+    MCP_AUTH_DCR_REGISTRATION_TIMEOUT_SECONDS: float = 30.0
+    MCP_AUTH_DISCOVERY_PROBE_OVERALL_TIMEOUT_SECONDS: float = 30.0
+    MCP_AUTH_RESOURCE_METADATA_DISCOVERY_TIMEOUT_SECONDS: float = 30.0
     MCP_CONNECT_ENABLED: bool = True
     MCP_CONNECT_URL: str = "http://localhost:3000"
     MCP_CONNECT_BUCKETS_COUNT: int = 10

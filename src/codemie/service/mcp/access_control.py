@@ -37,13 +37,6 @@ _CATALOG_REF_ALLOWED_FIELDS = frozenset(
     }
 )
 
-# Fields stripped from catalog-ref servers before persisting (derived from the allowlist).
-_STRIP_WHEN_CATALOG_REF = tuple(
-    f
-    for f in ("config", "command", "arguments", "mcp_connect_url", "mcp_connect_auth_token")
-    if f not in _CATALOG_REF_ALLOWED_FIELDS
-)
-
 
 def _build_catalog_map(mcp_servers: list[MCPServerDetails]) -> dict[str, MCPConfig]:
     catalog_ids = list({s.mcp_config_id for s in mcp_servers if s.mcp_config_id is not None})
@@ -122,21 +115,19 @@ class MCPAccessControlService:
 
     @staticmethod
     def _strip_one(server: MCPServerDetails) -> MCPServerDetails:
-        if server.mcp_config_id:
-            return server.model_copy(update={f: None for f in _STRIP_WHEN_CATALOG_REF})
         return server
 
     @classmethod
     def strip_inline_config(cls, mcp_servers: list[MCPServerDetails]) -> list[MCPServerDetails]:
-        """When mcp_config_id is set, strip connection fields — they are resolved at runtime."""
-        return [cls._strip_one(s) for s in mcp_servers]
+        """No-op preserved for callers; inline overrides are kept and win over the catalog at runtime."""
+        return list(mcp_servers)
 
     @classmethod
     def sanitize_for_save(cls, mcp_servers: list[MCPServerDetails] | None) -> list[MCPServerDetails]:
-        """Validate and strip inline config. Single call for all save paths."""
+        """Validate; inline overrides are preserved and win over the catalog at runtime."""
         servers = mcp_servers or []
         cls.validate_on_save(servers)
-        return cls.strip_inline_config(servers)
+        return list(servers)
 
     @staticmethod
     def filter_for_runtime(mcp_servers: list[MCPServerDetails]) -> list[MCPServerDetails]:
@@ -165,14 +156,17 @@ class MCPAccessControlService:
 
     @staticmethod
     def resolve_catalog_config(mcp_server: MCPServerDetails) -> MCPServerDetails | None:
-        """When mcp_config_id is set, fetch the connection config from the catalog at runtime.
+        """When mcp_config_id is set and no inline override exists, fetch the connection config from the catalog.
 
-        Returns mcp_server unchanged if no mcp_config_id.
+        Returns mcp_server unchanged if no mcp_config_id, or if the server already carries an
+        inline `config` override (inline wins wholesale over the catalog).
         Returns None if the catalog entry is unavailable or cannot be resolved — the caller
         must skip the server in that case.
         """
         config_id = mcp_server.mcp_config_id
         if not config_id:
+            return mcp_server
+        if mcp_server.config is not None:
             return mcp_server
 
         entry = MCPConfig.find_by_id(config_id)

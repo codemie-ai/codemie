@@ -40,16 +40,49 @@ class MCPExecutionContext(BaseModel):
     between concurrent requests.
     """
 
-    user_id: str | None = Field(None, description="Identifier for the user making the request")
-    assistant_id: str | None = Field(None, description="Identifier for the assistant making the request")
-    project_name: str | None = Field(None, description="The project name the request is associated with")
-    workflow_execution_id: str | None = Field(None, description="Identifier for the workflow execution")
+    user_id: str | None = Field(None, repr=False, description="Identifier for the user making the request")
+    assistant_id: str | None = Field(None, repr=False, description="Identifier for the assistant making the request")
+    project_name: str | None = Field(None, repr=False, description="The project name the request is associated with")
+    workflow_execution_id: str | None = Field(None, repr=False, description="Identifier for the workflow execution")
+    conversation_id: str | None = Field(
+        None,
+        exclude=True,
+        repr=False,
+        description="Local-only assistant conversation identifier for auth recovery retry scoping.",
+    )
+    oauth2_token_data: Any | None = Field(
+        None,
+        exclude=True,
+        repr=False,
+        description="Local-only OAuth2 token metadata for auth recovery decisions.",
+    )
+    oauth2_auth_config_id: str | None = Field(
+        None,
+        exclude=True,
+        repr=False,
+        description="Local-only OAuth2 token storage identity for auth recovery decisions.",
+    )
+    oauth2_auth_config: Any | None = Field(
+        None,
+        exclude=True,
+        repr=False,
+        description="Local-only OAuth2 flow config for auth recovery decisions.",
+    )
+    session_binding_hash: str | None = Field(
+        None,
+        exclude=True,
+        repr=False,
+        description="Hash of the current bearer token used only for request-scoped discovered auth binding lookup.",
+    )
     request_headers: dict[str, str] | None = Field(
-        None, description="Custom HTTP headers from the original request to propagate to MCP servers"
+        None,
+        repr=False,
+        description="Custom HTTP headers from the original request to propagate to MCP servers",
     )
     auth_headers: dict[str, str] | None = Field(
         None,
         exclude=True,
+        repr=False,
         description="Per-user auth headers to inject into MCP server requests. "
         "Excluded from ALL model serialization (model_dump / model_dump_json) via "
         "Field(exclude=True) to prevent credential leakage. "
@@ -64,7 +97,15 @@ class MCPExecutionContext(BaseModel):
             Dictionary with context fields ready to be unpacked into
             MCPToolInvocationRequest constructor
         """
-        return self.model_dump(exclude={"auth_headers"})
+        return self.model_dump(
+            exclude={
+                "auth_headers",
+                "conversation_id",
+                "oauth2_token_data",
+                "oauth2_auth_config_id",
+                "oauth2_auth_config",
+            }
+        )
 
 
 class MCPServerConfig(BaseModel):
@@ -87,27 +128,31 @@ class MCPServerConfig(BaseModel):
     )
     url: str | None = Field(
         None,
+        repr=False,
         description="The HTTP URL of a remote MCP server (use when connecting over HTTP/streamable-http).",
     )
     args: list[str] | None = Field(
-        default_factory=list, description="List of arguments to pass to the MCP server command"
+        default_factory=list, repr=False, description="List of arguments to pass to the MCP server command"
     )
     headers: dict[str, str] | None = Field(
         default_factory=dict,
+        repr=False,
         description="HTTP headers to include when connecting to an MCP server via `url`. "
         "Supports variable substitution using {{variable_name}} syntax, "
         "where variables are resolved from the environment variables (env field) "
         "or integration credentials.",
     )
     env: dict[str, Any] | None = Field(
-        default_factory=dict, description="Environment variables to be set for the MCP server process"
+        default_factory=dict,
+        repr=False,
+        description="Environment variables to be set for the MCP server process",
     )
     type: str | None = Field(
         None,
         description="Transport type. Set to 'streamable-http' to use a streamable HTTP transport; "
         "leave null for stdio/sse command transports.",
     )
-    auth_token: str | None = Field(None, description="Authentication token for the MCP-Connect server")
+    auth_token: str | None = Field(None, repr=False, description="Authentication token for the MCP-Connect server")
     single_usage: bool | None = Field(
         default=False, description="Whether server is single-use (True) or persistent/cached (False)"
     )
@@ -125,8 +170,26 @@ class MCPServerConfig(BaseModel):
     )
     auth_config: dict[str, Any] | None = Field(
         None,
+        repr=False,
         description="Authentication configuration for this MCP server. Stored as raw dict; "
         "typed models (OAuth2AuthConfig / SAMLAuthConfig) live in enterprise only.",
+    )
+    mcp_config_id: str | None = Field(
+        None,
+        repr=False,
+        description="Catalog MCP config id used for discovered-auth token correlation.",
+    )
+    mcp_config_name: str | None = Field(
+        None,
+        exclude=True,
+        repr=False,
+        description="Local-only catalog MCP config display name for auth-required payloads.",
+    )
+    bucket_key: str | None = Field(
+        None,
+        exclude=True,
+        repr=False,
+        description="Local-only MCP-Connect routing/cache key; never serialized into bridge env.",
     )
 
     @model_validator(mode="after")

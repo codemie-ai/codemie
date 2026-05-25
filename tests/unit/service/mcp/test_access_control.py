@@ -205,30 +205,33 @@ class TestValidateOnSaveRestrictedMode:
 
 
 class TestStripInlineConfig:
-    def test_strips_fields_when_mcp_config_id_present(self):
-        server = _server("s1", mcp_config_id="cat-1", command="uvx", mcp_connect_url="http://x")
+    def test_preserves_inline_fields_when_mcp_config_id_present(self):
+        # Inline overrides are kept and win over the catalog at runtime.
+        inline_cfg = MCPServerConfig(command="uvx")
+        server = _server(
+            "s1",
+            mcp_config_id="cat-1",
+            config=inline_cfg,
+            command="uvx",
+            mcp_connect_url="http://x",
+        )
         result = MCPAccessControlService.strip_inline_config([server])
         assert len(result) == 1
-        assert result[0].command is None
-        assert result[0].mcp_connect_url is None
-        assert result[0].config is None
-        assert result[0].arguments is None
+        assert result[0].command == "uvx"
+        assert result[0].mcp_connect_url == "http://x"
+        assert result[0].config is inline_cfg
+        assert result[0].mcp_config_id == "cat-1"
 
     def test_preserves_fields_when_no_mcp_config_id(self):
         server = _server("s1", command="uvx")
         result = MCPAccessControlService.strip_inline_config([server])
         assert result[0].command == "uvx"
 
-    def test_preserves_mcp_config_id_after_strip(self):
-        server = _server("s1", mcp_config_id="cat-1", command="uvx")
-        result = MCPAccessControlService.strip_inline_config([server])
-        assert result[0].mcp_config_id == "cat-1"
-
     def test_mixed_servers_handled_correctly(self):
         s1 = _server("s1", mcp_config_id="cat-1", command="uvx")
         s2 = _server("s2", command="npx")
         result = MCPAccessControlService.strip_inline_config([s1, s2])
-        assert result[0].command is None
+        assert result[0].command == "uvx"
         assert result[1].command == "npx"
 
 
@@ -321,6 +324,15 @@ class TestResolveCatalogConfig:
         assert result is not server
         assert result.config is not None
         assert result.config.command == "uvx"
+
+    def test_inline_config_wins_over_catalog(self):
+        inline_cfg = MCPServerConfig(command="inline-cmd")
+        server = _server("s1", mcp_config_id="cat-1", config=inline_cfg)
+        with patch(_FIND_BY_ID) as find_by_id:
+            result = MCPAccessControlService.resolve_catalog_config(server)
+        assert result is server
+        assert result.config is inline_cfg
+        find_by_id.assert_not_called()
 
     def test_returns_none_when_config_conversion_fails(self):
         catalog_config = MagicMock()

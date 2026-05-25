@@ -276,6 +276,43 @@ async def test_create_config_duplicate_key_returns_409(
 
 
 @pytest.mark.anyio
+@patch("codemie.rest_api.routers.dynamic_config.invalidate_mcp_auth_trust_policy_cache")
+@patch("codemie.rest_api.routers.dynamic_config.DynamicConfigService")
+async def test_create_trusted_as_domains_config_invalidates_trust_policy_cache(
+    mock_service, mock_invalidate_cache, override_auth_dependency
+):
+    """POST for MCP_AUTH_TRUSTED_AS_DOMAINS stores a string and invalidates trust cache."""
+    mock_service.get_by_key.return_value = None
+    created_config = DynamicConfig(
+        id="config-trust",
+        key="MCP_AUTH_TRUSTED_AS_DOMAINS",
+        value='["login.microsoftonline.com"]',
+        value_type=ConfigValueType.STRING,
+        date=datetime.now(),
+        update_date=datetime.now(),
+        updated_by="admin-123",
+    )
+    mock_service.set.return_value = created_config
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            "/v1/dynamic-config/",
+            json={
+                "key": "MCP_AUTH_TRUSTED_AS_DOMAINS",
+                "value": '["login.microsoftonline.com"]',
+                "value_type": "string",
+            },
+        )
+
+    assert response.status_code == status.HTTP_201_CREATED
+    assert response.json()["value_type"] == "string"
+    mock_service.set.assert_called_once()
+    assert mock_service.set.call_args.kwargs["value_type"] == ConfigValueType.STRING
+    mock_invalidate_cache.assert_called_once_with()
+
+
+@pytest.mark.anyio
 @patch("codemie.rest_api.routers.dynamic_config.DynamicConfigService")
 async def test_create_config_invalid_key_format_returns_400(mock_service, override_auth_dependency, mock_admin_user):
     """Test creating config with invalid key format returns 400."""
@@ -552,6 +589,46 @@ async def test_update_config_not_found_returns_404(mock_service, override_auth_d
     assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
+@pytest.mark.anyio
+@patch("codemie.rest_api.routers.dynamic_config.invalidate_mcp_auth_trust_policy_cache")
+@patch("codemie.rest_api.routers.dynamic_config.DynamicConfigService")
+async def test_update_trusted_as_domains_config_invalidates_trust_policy_cache(
+    mock_service, mock_invalidate_cache, override_auth_dependency
+):
+    """PUT for MCP_AUTH_TRUSTED_AS_DOMAINS invalidates trust cache after successful update."""
+    existing_config = DynamicConfig(
+        id="config-trust",
+        key="MCP_AUTH_TRUSTED_AS_DOMAINS",
+        value='["accounts.google.com"]',
+        value_type=ConfigValueType.STRING,
+        date=datetime.now(),
+        update_date=datetime.now(),
+        updated_by="admin-123",
+    )
+    updated_config = DynamicConfig(
+        id="config-trust",
+        key="MCP_AUTH_TRUSTED_AS_DOMAINS",
+        value='["login.microsoftonline.com"]',
+        value_type=ConfigValueType.STRING,
+        date=datetime.now(),
+        update_date=datetime.now(),
+        updated_by="admin-123",
+    )
+    mock_service.get_by_key.return_value = existing_config
+    mock_service.convert_value.return_value = '["login.microsoftonline.com"]'
+    mock_service.set.return_value = updated_config
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.put(
+            "/v1/dynamic-config/MCP_AUTH_TRUSTED_AS_DOMAINS",
+            json={"value": '["login.microsoftonline.com"]'},
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    mock_invalidate_cache.assert_called_once_with()
+
+
 # =============================================================================
 # Test DELETE /v1/dynamic-config/{key} (Delete)
 # =============================================================================
@@ -571,6 +648,23 @@ async def test_delete_config(mock_service, override_auth_dependency, mock_admin_
 
     # Then: Config deleted successfully
     assert response.status_code == status.HTTP_204_NO_CONTENT
+
+
+@pytest.mark.anyio
+@patch("codemie.rest_api.routers.dynamic_config.invalidate_mcp_auth_trust_policy_cache")
+@patch("codemie.rest_api.routers.dynamic_config.DynamicConfigService")
+async def test_delete_trusted_as_domains_config_invalidates_trust_policy_cache(
+    mock_service, mock_invalidate_cache, override_auth_dependency
+):
+    """DELETE for MCP_AUTH_TRUSTED_AS_DOMAINS invalidates trust cache after successful deletion."""
+    mock_service.delete.return_value = None
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.delete("/v1/dynamic-config/MCP_AUTH_TRUSTED_AS_DOMAINS")
+
+    assert response.status_code == status.HTTP_204_NO_CONTENT
+    mock_invalidate_cache.assert_called_once_with()
 
 
 @pytest.mark.anyio

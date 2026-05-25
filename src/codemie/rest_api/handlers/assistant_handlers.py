@@ -33,7 +33,7 @@ from codemie.configs import config, logger
 from codemie.core.ability import Ability, Action
 from codemie.core.dependecies import set_disable_prompt_cache
 from codemie.core.errors import ErrorDetailLevel
-from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException
 from codemie.core.models import BaseModelResponse, AssistantChatRequest, BackgroundTaskRequest, AssistantDetails
 from codemie.core.thread import ThreadedGenerator
 from codemie.rest_api.a2a.client.remote_agent_connection import RemoteAgentConnections, TaskCallbackArg
@@ -539,12 +539,21 @@ class StandardAssistantHandler(AssistantRequestHandler):
         include_tool_errors: bool = False,
         error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
     ):
-        thread = threading.Thread(target=stream)
+        def run_stream() -> None:
+            try:
+                stream()
+            except MCPAuthenticationRequiredException as exc:
+                generator_queue.close(exc)
+
+        thread = threading.Thread(target=run_stream)
         thread.start()
         # We pass an empty string to avoid sending the default None value in the chat history.
         response = StreamedGenerationResult(generated="")
         while True:
             value = generator_queue.queue.get()
+            if isinstance(value, BaseException):
+                generator_queue.queue.task_done()
+                raise value
             if value is not StopIteration:
                 generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
                 if generation_result.generated is not None:

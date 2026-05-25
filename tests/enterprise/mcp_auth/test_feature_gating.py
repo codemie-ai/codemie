@@ -197,11 +197,14 @@ def test_no_side_effects_on_import():
     enterprise __init__ — so that other tests' monkeypatched HAS_* flags
     are not clobbered by a fresh loader re-import.
     """
+    import codemie.enterprise as _enterprise_pkg
+
     mcp_auth_modules = [
         "codemie.enterprise.mcp_auth.dependencies",
         "codemie.enterprise.mcp_auth",
     ]
     original_modules = {name: sys.modules.get(name) for name in mcp_auth_modules}
+    original_mcp_auth_attr = getattr(_enterprise_pkg, "mcp_auth", None)
 
     try:
         for name in mcp_auth_modules:
@@ -218,6 +221,13 @@ def test_no_side_effects_on_import():
         for name, module in original_modules.items():
             if module is not None:
                 sys.modules[name] = module
+        # Restore the mcp_auth attribute on the parent package so that
+        # `from codemie.enterprise import mcp_auth` in subsequent tests
+        # returns the original module, not the fresh one loaded here.
+        if original_mcp_auth_attr is not None:
+            _enterprise_pkg.mcp_auth = original_mcp_auth_attr
+        elif hasattr(_enterprise_pkg, "mcp_auth"):
+            delattr(_enterprise_pkg, "mcp_auth")
 
 
 def test_is_mcp_auth_enabled_returns_false_cleanly_without_enterprise():

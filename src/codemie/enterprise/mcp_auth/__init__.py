@@ -14,8 +14,28 @@
 
 from __future__ import annotations
 
-from .dependencies import is_mcp_auth_enabled
+from .dependencies import (
+    MCP_AUTH_DISCOVERY_PRIVATE_NETWORK_ALLOWLIST,
+    MCP_AUTH_DISCOVERY_PRIVATE_NETWORK_ALLOWLIST_MAX_LENGTH,
+    build_static_trust_policy_service,
+    get_mcp_auth_trust_policy_service,
+    invalidate_mcp_auth_trust_policy_cache,
+    is_mcp_auth_enabled,
+    read_mcp_auth_discovery_private_network_allowlist_config,
+    read_mcp_auth_discovery_private_network_allowlist_config_sync,
+    read_mcp_auth_trusted_as_domains_config,
+    read_mcp_auth_trusted_as_domains_config_sync,
+)
 
 __all__ = [
+    "MCP_AUTH_DISCOVERY_PRIVATE_NETWORK_ALLOWLIST",
+    "MCP_AUTH_DISCOVERY_PRIVATE_NETWORK_ALLOWLIST_MAX_LENGTH",
+    "build_static_trust_policy_service",
+    "get_mcp_auth_trust_policy_service",
+    "invalidate_mcp_auth_trust_policy_cache",
     "is_mcp_auth_enabled",
+    "read_mcp_auth_discovery_private_network_allowlist_config",
+    "read_mcp_auth_discovery_private_network_allowlist_config_sync",
+    "read_mcp_auth_trusted_as_domains_config",
+    "read_mcp_auth_trusted_as_domains_config_sync",
 ]

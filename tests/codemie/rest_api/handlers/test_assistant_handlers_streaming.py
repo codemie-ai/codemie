@@ -28,6 +28,9 @@ import pytest
 
 from codemie.chains.base import GenerationResult, StreamedGenerationResult
 from codemie.core.errors import AgentErrorDetails, ErrorCode, ErrorDetailLevel, ToolErrorDetails
+from codemie.core.exceptions import MCPAuthenticationRequiredException
+from codemie.core.models import AssistantChatRequest
+from codemie.core.thread import ThreadedGenerator
 from codemie.rest_api.handlers.assistant_handlers import StandardAssistantHandler
 from codemie.rest_api.security.user import User
 
@@ -294,6 +297,74 @@ class TestStreamingErrorIntegration:
         assert parsed["agent_error"] is not None
         assert parsed["agent_error"]["error_code"] == "agent_token_limit"
         assert "Token limit exceeded" in parsed["agent_error"]["message"]
+
+    def test_serve_data_reraises_mcp_auth_required_from_worker_queue(self, mock_user, mock_assistant):
+        handler = StandardAssistantHandler(assistant=mock_assistant, user=mock_user, request_uuid="test-uuid")
+        generator_queue = ThreadedGenerator()
+        auth_error = MCPAuthenticationRequiredException(
+            {
+                "error": "authentication_required",
+                "servers": [
+                    {
+                        "mcp_config_id": "mcp-config-1",
+                        "status": "authentication_required",
+                        "error": "insufficient_scope",
+                        "recovery_flow_id": "rf-story-7-1",
+                    }
+                ],
+            }
+        )
+
+        def stream() -> None:
+            generator_queue.queue.put(auth_error)
+            generator_queue.queue.put(StopIteration)
+
+        with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+            list(
+                handler._serve_data(
+                    stream=stream,
+                    generator_queue=generator_queue,
+                    request=AssistantChatRequest(text="run", stream=True),
+                    execution_start=0.0,
+                )
+            )
+
+        assert exc_info.value is auth_error
+
+    def test_serve_data_reraises_story_7_2_post_auth_401_payload(self, mock_user, mock_assistant):
+        handler = StandardAssistantHandler(assistant=mock_assistant, user=mock_user, request_uuid="test-uuid")
+        generator_queue = ThreadedGenerator()
+        auth_payload = {
+            "error": "authentication_required",
+            "servers": [
+                {
+                    "mcp_config_id": "mcp-config-1",
+                    "mcp_config_name": "OneHub",
+                    "status": "session_expired",
+                    "error": "post_auth_401",
+                    "reason": "retry_401_after_refresh",
+                    "action": "reauthenticate",
+                    "action_label": "Re-authenticate",
+                }
+            ],
+        }
+        auth_error = MCPAuthenticationRequiredException(auth_payload)
+
+        def stream() -> None:
+            generator_queue.queue.put(auth_error)
+            generator_queue.queue.put(StopIteration)
+
+        with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+            list(
+                handler._serve_data(
+                    stream=stream,
+                    generator_queue=generator_queue,
+                    request=AssistantChatRequest(text="run", stream=True),
+                    execution_start=0.0,
+                )
+            )
+
+        assert exc_info.value.payload == auth_payload
 
     def test_multiple_tool_errors_preserve_order(self, mock_user, mock_assistant):
         """Test that multiple tool errors preserve their order during formatting."""

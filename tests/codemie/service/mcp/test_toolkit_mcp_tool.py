@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from pydantic import create_model
 
 from codemie.configs.config import config
+from codemie.core.exceptions import MCPAuthenticationRequiredException
 from codemie.service.mcp.client import MCPConnectClient
 from codemie.service.mcp.models import (
     MCPServerConfig,
@@ -228,6 +229,51 @@ class TestMCPTool(unittest.TestCase):
     def test_aexecute_client_exception(self):
         """Test _aexecute method when client raises exception."""
         asyncio.run(self._async_test_aexecute_client_exception())
+
+    async def _async_test_aexecute_propagates_auth_required_exception(self):
+        """Recoverable auth exceptions must bypass MCPToolExecutionError wrapping."""
+        auth_error = MCPAuthenticationRequiredException(
+            {"error": "authentication_required", "servers": [{"error": "insufficient_scope"}]}
+        )
+        self.mock_client.invoke_tool = AsyncMock(side_effect=auth_error)
+
+        with self.assertRaises(MCPAuthenticationRequiredException) as context:
+            await self.tool._aexecute_with_context(execution_context=None, test_param="value")
+
+        self.assertIs(context.exception, auth_error)
+
+    def test_aexecute_propagates_auth_required_exception(self):
+        asyncio.run(self._async_test_aexecute_propagates_auth_required_exception())
+
+    async def _async_test_aexecute_propagates_post_auth_401_exception(self):
+        """Story 7.2 session-expired payload must bypass MCPToolExecutionError wrapping."""
+        auth_error = MCPAuthenticationRequiredException(
+            {
+                "error": "authentication_required",
+                "servers": [
+                    {
+                        "mcp_config_id": "mcp-config-1",
+                        "mcp_config_name": "OneHub",
+                        "status": "session_expired",
+                        "error": "post_auth_401",
+                        "reason": "unsupported_bearer_error",
+                        "action": "reauthenticate",
+                    }
+                ],
+            }
+        )
+        self.mock_client.invoke_tool = AsyncMock(side_effect=auth_error)
+
+        with self.assertRaises(MCPAuthenticationRequiredException) as context:
+            await self.tool._aexecute_with_context(
+                execution_context=MCPExecutionContext(user_id="user-1"), test_param="value"
+            )
+
+        self.assertIs(context.exception, auth_error)
+        self.assertEqual(context.exception.payload["servers"][0]["error"], "post_auth_401")
+
+    def test_aexecute_propagates_post_auth_401_exception(self):
+        asyncio.run(self._async_test_aexecute_propagates_post_auth_401_exception())
 
     async def _async_test_aexecute_logs_errors(self, mock_logger):
         """Async test that _aexecute logs errors properly."""

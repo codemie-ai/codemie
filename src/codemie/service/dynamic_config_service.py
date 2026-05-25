@@ -29,6 +29,11 @@ from codemie.rest_api.security.user import User
 
 from codemie.configs.logger import logger
 
+_REDACTED_DELETE_AUDIT_KEYS = {
+    "MCP_AUTH_DISCOVERY_PRIVATE_NETWORK_ALLOWLIST",
+    "MCP_AUTH_TRUSTED_AS_DOMAINS",
+}
+
 
 class DynamicConfigService:
     """
@@ -445,10 +450,12 @@ class DynamicConfigService:
                     code=404, message="Config not found", details=f"Configuration key '{key}' does not exist"
                 )
 
-            # Audit log before deletion (config details preserved in logs)
+            audit_value = "<redacted>" if config.key in _REDACTED_DELETE_AUDIT_KEYS else config.value
+
+            # Audit log before deletion (sensitive config values redacted)
             logger.warning(
                 f"CONFIG DELETION AUDIT: {key=}, config_id={config.id}, "
-                f"value={config.value}, value_type={config.value_type.value}, "
+                f"value={audit_value}, value_type={config.value_type.value}, "
                 f"deleted_by={user.id}, user_name={user.name}"
             )
 

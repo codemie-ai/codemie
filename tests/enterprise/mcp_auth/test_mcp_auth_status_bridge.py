@@ -145,6 +145,189 @@ def test_status_route_returns_authenticated_payload_with_required_fields(monkeyp
     }
 
 
+def test_status_route_resolves_discovered_server_without_persisted_auth_config(monkeypatch, app_client) -> None:
+    from codemie.enterprise.mcp_auth import router as mcp_auth_router
+
+    app, client = app_client
+    user = _build_user()
+    mcp_config = _build_mcp_config(auth_config=None)
+    captured: dict[str, object] = {}
+
+    def fake_build_discovered_auth_status_response(**kwargs):
+        captured.update(kwargs)
+        return mcp_auth_router.MCPAuthStatusResponse(
+            mcp_config_id="mcp-config-1",
+            mcp_config_name="Catalog Server",
+            mcp_server_name="Catalog Server",
+            auth_config_id="discovered:" + "a" * 64,
+            auth_type="oauth2",
+            as_hostname="auth.example.com",
+            status="authentication_required",
+            error_context=None,
+            initiate_url="/v1/mcp-auth/oauth2/initiate?discovered_flow_id=flow-1",
+        )
+
+    app.dependency_overrides[router_authenticate] = lambda: user
+    monkeypatch.setattr(mcp_auth_router.MCPConfig, "find_by_id", lambda config_id: mcp_config)
+    monkeypatch.setattr(
+        mcp_auth_router,
+        "build_discovered_auth_status_response",
+        fake_build_discovered_auth_status_response,
+    )
+
+    response = client.get("/v1/mcp-auth/status", params={"mcp_config_id": mcp_config.id})
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["auth_config_id"].startswith("discovered:")
+    assert response.json()["status"] == "authentication_required"
+    assert captured["mcp_config"] == mcp_config
+    assert captured["user"] == user
+
+
+class _InMemoryDiscoveredFlowStore:
+    def __init__(self, snapshot: object) -> None:
+        self.snapshot = snapshot
+
+    def get_for_binding(self, user_id: str, session_binding_hash: str, mcp_config_id: str) -> object | None:
+        if (
+            getattr(self.snapshot, "user_id") == user_id
+            and getattr(self.snapshot, "session_binding_hash") == session_binding_hash
+            and getattr(self.snapshot, "mcp_config_id") == mcp_config_id
+        ):
+            return self.snapshot
+        return None
+
+
+def _build_discovered_snapshot(
+    *,
+    status_value: str = "authentication_required",
+    session_binding_hash: str,
+    auth_config_id: str = "discovered:" + "a" * 64,
+    error_context: dict[str, object] | None = None,
+) -> object:
+    from codemie_enterprise.mcp_auth.discovered_flow import DiscoveredOAuth2FlowSnapshot
+    from codemie_enterprise.mcp_auth.models import DiscoveredOAuth2FlowConfig
+
+    flow_config = None
+    if status_value == "authentication_required":
+        flow_config = DiscoveredOAuth2FlowConfig(
+            authorization_url="https://auth.example.com/oauth2/authorize",
+            token_url="https://auth.example.com/oauth2/token",
+            client_id="https://codemie.example.com/oauth/client-metadata.json",
+            client_type="public",
+            client_auth_method="none",
+            issuer="https://auth.example.com",
+            resource="https://mcp.example.com/server",
+            scopes=("catalog.read",),
+        )
+    return DiscoveredOAuth2FlowSnapshot(
+        status=status_value,
+        discovered_flow_id="flow-1",
+        discovered_auth_id=auth_config_id if status_value == "authentication_required" else None,
+        mcp_config_id="mcp-config-1",
+        mcp_config_name="Catalog Server",
+        user_id="user-1",
+        session_binding_hash=session_binding_hash,
+        canonical_resource="https://mcp.example.com/server",
+        redirect_uri="https://codemie.example.com/v1/mcp-auth/oauth2/callback",
+        issuer="https://auth.example.com",
+        selected_authorization_server="https://auth.example.com",
+        as_hostname="auth.example.com",
+        registration_method="client_id_metadata_document",
+        registration_reason_code="cimd_supported",
+        registration_profile_fingerprint="f" * 64,
+        current_challenge_scope="catalog.read",
+        flow_config=flow_config,
+        error_context=error_context or {},
+    )
+
+
+@pytest.mark.parametrize(
+    ("store_token", "expected_status"),
+    [
+        (False, "authentication_required"),
+        (True, "authenticated"),
+    ],
+)
+def test_build_discovered_auth_status_response_uses_flow_store_and_tms(
+    monkeypatch,
+    store_token: bool,
+    expected_status: str,
+) -> None:
+    from codemie.enterprise.mcp_auth import dependencies as mcp_auth_dependencies
+    from codemie_enterprise.mcp_auth.models import OAuth2TokenData
+    from codemie_enterprise.mcp_auth.tms_mock import MockTokenManagementSystem
+
+    user = _build_user()
+    session_binding_hash = mcp_auth_dependencies._get_authenticated_bearer_token_hash(user)
+    auth_config_id = "discovered:" + "a" * 64
+    snapshot = _build_discovered_snapshot(session_binding_hash=session_binding_hash, auth_config_id=auth_config_id)
+    tms = MockTokenManagementSystem()
+    if store_token:
+        tms.store(
+            user.id,
+            auth_config_id,
+            OAuth2TokenData(
+                access_token="stored-token",
+                token_type="Bearer",
+                resource="https://mcp.example.com/server",
+                issuer="https://auth.example.com",
+                flow_source="discovered",
+            ),
+        )
+
+    monkeypatch.setattr(
+        mcp_auth_dependencies,
+        "_mcp_auth_discovered_flow_store",
+        _InMemoryDiscoveredFlowStore(snapshot),
+    )
+    monkeypatch.setattr(mcp_auth_dependencies, "_tms", tms)
+
+    response = mcp_auth_dependencies.build_discovered_auth_status_response(
+        mcp_config=_build_mcp_config(auth_config=None),
+        user=user,
+    )
+
+    assert response["auth_config_id"] == auth_config_id
+    assert response["status"] == expected_status
+    assert response["auth_type"] == "oauth2"
+    assert response["as_hostname"] == "auth.example.com"
+    assert response["initiate_url"] == "/v1/mcp-auth/oauth2/initiate?discovered_flow_id=flow-1"
+
+
+def test_build_discovered_auth_status_response_returns_config_error_snapshot(monkeypatch) -> None:
+    from codemie.enterprise.mcp_auth import dependencies as mcp_auth_dependencies
+
+    user = _build_user()
+    session_binding_hash = mcp_auth_dependencies._get_authenticated_bearer_token_hash(user)
+    snapshot = _build_discovered_snapshot(
+        status_value="config_error",
+        session_binding_hash=session_binding_hash,
+        error_context={
+            "server_name": "Catalog Server",
+            "failure_reasons": ("dcr_timeout",),
+            "action": "Configure auth_config with pre-registered credentials for this server",
+        },
+    )
+    monkeypatch.setattr(
+        mcp_auth_dependencies,
+        "_mcp_auth_discovered_flow_store",
+        _InMemoryDiscoveredFlowStore(snapshot),
+    )
+    monkeypatch.setattr(mcp_auth_dependencies, "_tms", object())
+
+    response = mcp_auth_dependencies.build_discovered_auth_status_response(
+        mcp_config=_build_mcp_config(auth_config=None),
+        user=user,
+    )
+
+    assert response["auth_config_id"] is None
+    assert response["status"] == "config_error"
+    assert response["as_hostname"] == "auth.example.com"
+    assert response["error_context"]["failure_reasons"] == ("dcr_timeout",)
+    assert response["initiate_url"] is None
+
+
 @pytest.mark.parametrize(
     ("status_value", "error_context"),
     [

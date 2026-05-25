@@ -26,7 +26,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
-from codemie.service.mcp.client import MCPConnectClient, MCP_CONNECT_BUCKET_PLACEHOLDER
+from codemie.core.exceptions import MCPAuthenticationRequiredException
+from codemie.enterprise.mcp_auth.dependencies import MCPPostAuth401Result
+from codemie.service.mcp.client import BUCKET_KEY, MCPConnectClient, MCP_CONNECT_BUCKET_PLACEHOLDER
 from codemie.service.mcp.models import (
     MCPServerConfig,
     MCPToolDefinition,
@@ -143,6 +145,17 @@ class TestMCPConnectClientHeaders:
         assert "X-MCP-Connect-Bucket" in headers
         assert headers["X-MCP-Connect-Bucket"] == str(bucket_no)
 
+    def test_get_bucket_no_uses_local_bucket_key_without_env_serialization(self, server_config):
+        """Test bucket routing can use local context without bridge env leakage."""
+        from codemie.service.mcp.client import _get_bucket_no
+
+        server_config.env[BUCKET_KEY] = "legacy-conversation"
+        legacy_bucket = _get_bucket_no(server_config)
+        server_config.env.pop(BUCKET_KEY)
+        object.__setattr__(server_config, "bucket_key", "legacy-conversation")
+
+        assert _get_bucket_no(server_config) == legacy_bucket
+
 
 class TestMCPConnectClientListTools:
     """Tests for the list_tools method."""
@@ -156,7 +169,7 @@ class TestMCPConnectClientListTools:
         mock_response.json.return_value = sample_tools_response
         mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             tools = await client.list_tools(server_config)
@@ -206,37 +219,69 @@ class TestMCPConnectClientListTools:
         mock_http_response = MagicMock()
         mock_http_response.raise_for_status.side_effect = http_error
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_http_response)
 
             with pytest.raises(ValueError, match="Test error message"):
                 await client.list_tools(server_config)
 
     @pytest.mark.asyncio
-    async def test_list_tools_401_raises_broker_auth_required(self, server_config):
-        """A 401 from the bridge must raise BrokerAuthRequiredException, not ValueError."""
+    @pytest.mark.parametrize(
+        ("status_code", "challenge"),
+        [
+            (401, 'Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"'),
+            (
+                403,
+                'Bearer error="insufficient_scope", scope="tools:list", '
+                'resource_metadata="https://mcp.example.com/meta"',
+            ),
+        ],
+    )
+    async def test_list_tools_auth_challenge_http_error_preserves_response(
+        self,
+        server_config,
+        status_code,
+        challenge,
+    ):
+        """Test auth-challenge bridge errors keep the original HTTPX response."""
         client = MCPConnectClient()
+        request = httpx.Request("POST", client.bridge_endpoint)
+        mock_response = httpx.Response(
+            status_code,
+            headers={"WWW-Authenticate": challenge},
+            json={"error": "authentication required"},
+            request=request,
+        )
 
-        mock_response = MagicMock()
-        mock_response.status_code = 401
-        mock_response.reason_phrase = "Unauthorized"
-        mock_response.text = '{"error": "Unauthorized"}'
-        mock_response.json.return_value = {"error": "Unauthorized"}
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-        mock_request = MagicMock()
-        http_error = httpx.HTTPStatusError("Error", request=mock_request, response=mock_response)
+            with pytest.raises(httpx.HTTPStatusError) as exc_info:
+                await client.list_tools(server_config)
 
-        mock_http_response = MagicMock()
-        mock_http_response.raise_for_status.side_effect = http_error
+        assert exc_info.value.response.status_code == status_code
+        assert exc_info.value.response.headers["WWW-Authenticate"] == challenge
 
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_http_response)
+    @pytest.mark.asyncio
+    async def test_list_tools_bare_401_raises_broker_auth_required(self, server_config):
+        """A 401 from MCP-Connect without WWW-Authenticate signals broker auth, not server challenge."""
+        client = MCPConnectClient()
+        request = httpx.Request("POST", client.bridge_endpoint)
+        mock_response = httpx.Response(
+            401,
+            json={"error": "session expired"},
+            request=request,
+        )
+
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             with pytest.raises(BrokerAuthRequiredException) as exc_info:
                 await client.list_tools(server_config)
 
         assert exc_info.value.message == "Authentication required. Please log in to access the MCP server."
         assert exc_info.value.details == "HTTP 401"
+        assert exc_info.value.auth_location == config.BROKER_AUTH_LOCATION_URL
 
     @pytest.mark.asyncio
     async def test_list_tools_json_error(self, server_config):
@@ -248,7 +293,7 @@ class TestMCPConnectClientListTools:
         mock_response.raise_for_status = MagicMock()
         mock_response.text = "Not valid JSON"
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             with pytest.raises(ValueError, match="Invalid JSON response"):
@@ -263,7 +308,7 @@ class TestMCPConnectClientListTools:
         mock_response.json.return_value = sample_tools_response
         mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             await client.list_tools(server_config_with_auth)
@@ -291,6 +336,28 @@ class TestMCPConnectClientListTools:
                     "X-MCP-Connect-Bucket": str(bucket_no),
                 },
             )
+
+    @pytest.mark.asyncio
+    async def test_list_tools_does_not_send_local_bucket_key_in_env(self, server_config, sample_tools_response):
+        """Test conversation routing key is local-only and not sent to MCP-Connect."""
+        client = MCPConnectClient()
+        object.__setattr__(server_config, "bucket_key", "conversation-1")
+        server_config.env[BUCKET_KEY] = "legacy-leak"
+        server_config.env.pop(BUCKET_KEY)
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = sample_tools_response
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+            await client.list_tools(server_config)
+
+            post_kwargs = mock_client.return_value.__aenter__.return_value.post.call_args.kwargs
+
+        assert post_kwargs["json"]["env"] == {"GITHUB_PERSONAL_ACCESS_TOKEN": "test-token"}
+        assert BUCKET_KEY not in post_kwargs["json"]["env"]
 
     @pytest.mark.asyncio
     async def test_list_tools_merges_request_scoped_auth_headers_without_mutating_server_config(
@@ -408,7 +475,7 @@ class TestMCPConnectClientListTools:
         mock_response.json.return_value = sample_tool_invocation_response
         mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             response = await client.invoke_tool(server_config, tool_name, tool_args, execution_context)
@@ -564,7 +631,7 @@ class TestMCPConnectClientListTools:
         mock_response.json.return_value = sample_tool_invocation_response
         mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             response = await client.invoke_tool(server_config, tool_name, tool_args, execution_context)
@@ -604,7 +671,7 @@ class TestMCPConnectClientListTools:
         mock_response.json.return_value = sample_tool_invocation_response
         mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             response = await client.invoke_tool(server_config, tool_name, tool_args)
@@ -642,7 +709,7 @@ class TestMCPConnectClientListTools:
         mock_response.json.return_value = sample_tool_invocation_response
         mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             response = await client.invoke_tool(server_config, tool_name, tool_args)
@@ -684,7 +751,7 @@ class TestMCPConnectClientListTools:
         mock_response.json.return_value = sample_tool_error_response
         mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             response = await client.invoke_tool(server_config, tool_name, tool_args)
@@ -706,54 +773,336 @@ class TestMCPConnectClientListTools:
             "Error", request=MagicMock(), response=MagicMock()
         )
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             with pytest.raises(httpx.HTTPStatusError):
                 await client.invoke_tool(server_config, tool_name, tool_args)
 
-    @pytest.mark.asyncio
-    async def test_invoke_tool_401_raises_broker_auth_required(self, server_config):
-        """A 401 from the bridge during tool invocation must raise BrokerAuthRequiredException."""
+    async def test_invoke_tool_raises_auth_required_for_recoverable_insufficient_scope(self, server_config):
+        """Post-auth 403 insufficient_scope is converted to auth-required recovery before generic wrapping."""
         client = MCPConnectClient()
+        server_config.url = "https://mcp.example.com/mcp"
+        server_config.command = None
+        server_config.auth_config = {
+            "id": "auth-config-1",
+            "auth_type": "oauth2",
+            "authorization_url": "https://auth.example.com/oauth2/authorize",
+            "token_url": "https://auth.example.com/oauth2/token",
+            "client_id": "client-1",
+            "client_type": "public",
+            "scopes": ["read"],
+            "token_delivery": {"method": "header", "key": "Authorization"},
+        }
+        server_config.mcp_config_id = "mcp-config-1"
+        server_config.mcp_config_name = "OneHub"
+        execution_context = MCPExecutionContext(
+            user_id="user-1",
+            conversation_id="conversation-1",
+            oauth2_token_data={"scope": "read", "scopes": ["ignored"]},
+        )
+        mock_response = httpx.Response(
+            403,
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer error="insufficient_scope", scope="read write admin", '
+                    'resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource?tenant=secret"'
+                )
+            },
+            request=httpx.Request("POST", "https://mcp-connect.example.com/bridge"),
+        )
 
-        mock_response = MagicMock()
-        mock_response.status_code = 401
-        mock_response.reason_phrase = "Unauthorized"
+        with patch(
+            "codemie.service.mcp.client.build_mcp_insufficient_scope_auth_exception", return_value=None
+        ) as bridge:
+            bridge.return_value = MCPAuthenticationRequiredException(
+                {
+                    "error": "authentication_required",
+                    "servers": [
+                        {
+                            "mcp_config_id": "mcp-config-1",
+                            "mcp_config_name": "OneHub",
+                            "status": "authentication_required",
+                            "error": "insufficient_scope",
+                            "action": "reauthenticate",
+                        }
+                    ],
+                }
+            )
+            with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+                mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
-        http_error = httpx.HTTPStatusError("Error", request=MagicMock(), response=mock_response)
-        mock_http_response = MagicMock()
-        mock_http_response.raise_for_status.side_effect = http_error
+                with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+                    await client.invoke_tool(server_config, "test_tool", {}, execution_context)
 
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_http_response)
+        assert exc_info.value.payload["servers"][0]["error"] == "insufficient_scope"
+        bridge.assert_called_once()
+        assert bridge.call_args.kwargs["www_authenticate_header"].startswith("Bearer ")
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_retries_once_after_successful_post_auth_refresh(self, server_config):
+        """Post-auth 401 invalid_token refreshes token and retries tools/call once with refreshed header."""
+        client = MCPConnectClient()
+        server_config.url = "https://mcp.example.com/mcp"
+        server_config.command = None
+        server_config.type = "streamable-http"
+        server_config.auth_config = {"id": "auth-config-1", "auth_type": "oauth2"}
+        execution_context = MCPExecutionContext(
+            user_id="user-1",
+            conversation_id="conversation-1",
+            auth_headers={"Authorization": "Bearer old-access", "X-Request-Auth-Context": "ctx-1"},
+        )
+        server_config.headers = {"X-Static-MCP-Header": "static-1", "Authorization": "Bearer static-old-access"}
+        first_response = httpx.Response(
+            401,
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+            request=httpx.Request("POST", "https://mcp-connect.example.com/bridge"),
+        )
+        second_response = httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "ok"}], "isError": False},
+            request=httpx.Request("POST", "https://mcp-connect.example.com/bridge"),
+        )
+
+        with patch(
+            "codemie.service.mcp.client.build_mcp_post_auth_401_result",
+            return_value=MCPPostAuth401Result(retry_auth_headers={"Authorization": "Bearer fresh-access"}),
+        ) as bridge:
+            with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+                post = AsyncMock(side_effect=[first_response, second_response])
+                mock_client.return_value.__aenter__.return_value.post = post
+
+                response = await client.invoke_tool(server_config, "test_tool", {"a": 1}, execution_context)
+
+        assert response.content[0].text == "ok"
+        assert post.call_count == 2
+        retry_body = post.call_args_list[1].kwargs["json"]
+        assert retry_body["mcp_headers"]["Authorization"] == "Bearer fresh-access"
+        assert retry_body["mcp_headers"]["Authorization"] != execution_context.auth_headers["Authorization"]
+        assert retry_body["mcp_headers"]["X-Request-Auth-Context"] == "ctx-1"
+        assert retry_body["mcp_headers"]["X-Static-MCP-Header"] == "static-1"
+        bridge.assert_called_once()
+        assert bridge.call_args.kwargs["status_code"] == 401
+        assert bridge.call_args.kwargs["www_authenticate_header"] == 'Bearer error="invalid_token"'
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_second_401_after_refresh_prompts_without_second_refresh(self, server_config):
+        """A retry 401 is converted to auth-required and does not enter a refresh loop."""
+        client = MCPConnectClient()
+        server_config.url = "https://mcp.example.com/mcp"
+        server_config.command = None
+        server_config.type = "streamable-http"
+        server_config.auth_config = {"id": "auth-config-1", "auth_type": "oauth2"}
+        execution_context = MCPExecutionContext(user_id="user-1", conversation_id="conversation-1")
+        auth_exception = MCPAuthenticationRequiredException(
+            {
+                "error": "authentication_required",
+                "servers": [{"status": "session_expired", "reason": "retry_401_after_refresh"}],
+            }
+        )
+        first_response = httpx.Response(
+            401,
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+            request=httpx.Request("POST", "https://mcp-connect.example.com/bridge"),
+        )
+        retry_response = httpx.Response(
+            401,
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+            request=httpx.Request("POST", "https://mcp-connect.example.com/bridge"),
+        )
+
+        with patch(
+            "codemie.service.mcp.client.build_mcp_post_auth_401_result",
+            side_effect=[
+                MCPPostAuth401Result(retry_auth_headers={"Authorization": "Bearer fresh-access"}),
+                MCPPostAuth401Result(auth_exception=auth_exception),
+            ],
+        ) as bridge:
+            with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+                mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+                    side_effect=[first_response, retry_response]
+                )
+
+                with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+                    await client.invoke_tool(server_config, "test_tool", {}, execution_context)
+
+        assert exc_info.value.payload["servers"][0]["reason"] == "retry_401_after_refresh"
+        assert bridge.call_count == 2
+        assert bridge.call_args_list[1].kwargs["refresh_allowed"] is False
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_401_without_challenge_prompts_for_authenticated_http_call(self, server_config):
+        """Authenticated HTTP tools/call 401 without WWW-Authenticate prompts directly before generic wrapping."""
+        client = MCPConnectClient()
+        server_config.url = "https://mcp.example.com/mcp"
+        server_config.command = None
+        server_config.type = "streamable-http"
+        server_config.auth_config = {"id": "auth-config-1", "auth_type": "oauth2"}
+        auth_exception = MCPAuthenticationRequiredException(
+            {
+                "error": "authentication_required",
+                "servers": [{"status": "session_expired", "reason": "missing_www_authenticate"}],
+            }
+        )
+        mock_response = httpx.Response(401, request=httpx.Request("POST", "https://mcp-connect.example.com/bridge"))
+
+        with patch(
+            "codemie.service.mcp.client.build_mcp_post_auth_401_result",
+            return_value=MCPPostAuth401Result(auth_exception=auth_exception),
+        ) as bridge:
+            with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+                mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+                with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+                    await client.invoke_tool(server_config, "test_tool", {})
+
+        assert exc_info.value.payload["servers"][0]["reason"] == "missing_www_authenticate"
+        bridge.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_static_authorization_401_prompts_for_authenticated_http_call(self, server_config):
+        """Static Authorization headers count as authenticated post-auth HTTP calls."""
+        client = MCPConnectClient()
+        server_config.url = "https://mcp.example.com/mcp"
+        server_config.command = None
+        server_config.type = "streamable-http"
+        server_config.headers = {"Authorization": "Bearer static-access"}
+        auth_exception = MCPAuthenticationRequiredException(
+            {
+                "error": "authentication_required",
+                "servers": [{"status": "session_expired", "reason": "missing_www_authenticate"}],
+            }
+        )
+        mock_response = httpx.Response(401, request=httpx.Request("POST", "https://mcp-connect.example.com/bridge"))
+
+        with patch(
+            "codemie.service.mcp.client.build_mcp_post_auth_401_result",
+            return_value=MCPPostAuth401Result(auth_exception=auth_exception),
+        ) as bridge:
+            with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+                mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+                with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+                    await client.invoke_tool(server_config, "test_tool", {})
+
+        assert exc_info.value.payload["servers"][0]["reason"] == "missing_www_authenticate"
+        bridge.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_bearer_non_invalid_token_prompts_without_refresh(self, server_config):
+        """Bearer non-invalid_token 401 is handled at client boundary without retry."""
+        client = MCPConnectClient()
+        server_config.url = "https://mcp.example.com/mcp"
+        server_config.command = None
+        server_config.type = "streamable-http"
+        server_config.auth_config = {"id": "auth-config-1", "auth_type": "oauth2"}
+        auth_exception = MCPAuthenticationRequiredException(
+            {
+                "error": "authentication_required",
+                "servers": [{"status": "session_expired", "reason": "unsupported_bearer_error"}],
+            }
+        )
+        mock_response = httpx.Response(
+            401,
+            headers={"WWW-Authenticate": 'Bearer error="invalid_request"'},
+            request=httpx.Request("POST", "https://mcp-connect.example.com/bridge"),
+        )
+
+        with patch(
+            "codemie.service.mcp.client.build_mcp_post_auth_401_result",
+            return_value=MCPPostAuth401Result(auth_exception=auth_exception),
+        ) as bridge:
+            with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+                post = AsyncMock(return_value=mock_response)
+                mock_client.return_value.__aenter__.return_value.post = post
+
+                with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+                    await client.invoke_tool(server_config, "test_tool", {})
+
+        assert exc_info.value.payload["servers"][0]["reason"] == "unsupported_bearer_error"
+        assert post.call_count == 1
+        bridge.assert_called_once()
+        assert bridge.call_args.kwargs["www_authenticate_header"] == 'Bearer error="invalid_request"'
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_keeps_unsupported_403_on_generic_path(self, server_config):
+        """Unsupported 403 challenges still raise HTTPStatusError instead of auth-required recovery."""
+        client = MCPConnectClient()
+        mock_response = httpx.Response(
+            403,
+            headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
+            request=httpx.Request("POST", "https://mcp-connect.example.com/bridge"),
+        )
+
+        with patch("codemie.service.mcp.client.build_mcp_insufficient_scope_auth_exception", return_value=None):
+            with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+                mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+                with pytest.raises(httpx.HTTPStatusError):
+                    await client.invoke_tool(server_config, "test_tool", {})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("headers", [{}, {"WWW-Authenticate": "Basic realm=example"}])
+    async def test_invoke_tool_keeps_missing_or_non_bearer_403_on_generic_path(self, server_config, headers):
+        """Non-auth 403 and missing/unsupported auth challenges remain generic MCP failures."""
+        client = MCPConnectClient()
+        mock_response = httpx.Response(
+            403,
+            headers=headers,
+            request=httpx.Request("POST", "https://mcp-connect.example.com/bridge"),
+        )
+
+        with patch(
+            "codemie.service.mcp.client.build_mcp_insufficient_scope_auth_exception", return_value=None
+        ) as bridge:
+            with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+                mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
+
+                with pytest.raises(httpx.HTTPStatusError):
+                    await client.invoke_tool(server_config, "test_tool", {})
+
+        if "WWW-Authenticate" in headers:
+            bridge.assert_called_once()
+        else:
+            bridge.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_invoke_tool_bare_401_raises_broker_auth_required(self, server_config):
+        """A bare 401 (no WWW-Authenticate, no auth context) signals broker auth required."""
+        client = MCPConnectClient()
+        mock_response = httpx.Response(
+            401,
+            json={"error": "session expired"},
+            request=httpx.Request("POST", "https://mcp-connect.example.com/bridge"),
+        )
+
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             with pytest.raises(BrokerAuthRequiredException) as exc_info:
                 await client.invoke_tool(server_config, "test_tool", {"param": "value"})
 
         assert exc_info.value.message == "Authentication required. Please log in to access the MCP server."
         assert exc_info.value.details == "HTTP 401"
+        assert exc_info.value.auth_location == config.BROKER_AUTH_LOCATION_URL
 
     @pytest.mark.asyncio
     async def test_invoke_tool_non_401_http_error_still_raises_http_status_error(self, server_config):
         """Non-401 HTTP errors from invoke_tool must still raise httpx.HTTPStatusError."""
         client = MCPConnectClient()
+        mock_response = httpx.Response(
+            500,
+            json={"error": "internal"},
+            request=httpx.Request("POST", "https://mcp-connect.example.com/bridge"),
+        )
 
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-        mock_response.reason_phrase = "Internal Server Error"
-
-        http_error = httpx.HTTPStatusError("Error", request=MagicMock(), response=mock_response)
-        mock_http_response = MagicMock()
-        mock_http_response.raise_for_status.side_effect = http_error
-
-        with patch("httpx.AsyncClient") as mock_client:
-            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_http_response)
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             with pytest.raises(httpx.HTTPStatusError) as exc_info:
                 await client.invoke_tool(server_config, "test_tool", {"param": "value"})
 
-        assert exc_info.value is http_error
+        assert exc_info.value.response.status_code == 500
 
     @pytest.mark.asyncio
     async def test_invoke_tool_validation_error(self, server_config):
@@ -766,7 +1115,7 @@ class TestMCPConnectClientListTools:
         mock_response.json.return_value = {"invalid": "response"}
         mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             with pytest.raises(ValueError, match="Invalid response from MCP-Connect"):
@@ -783,7 +1132,7 @@ class TestMCPConnectClientListTools:
         mock_response.json.return_value = sample_tool_invocation_response
         mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
 
             await client.invoke_tool(server_config_with_auth, tool_name, tool_args)
@@ -827,7 +1176,7 @@ class TestMCPConnectClientTimeout:
         """Test behavior when list_tools request times out."""
         client = MCPConnectClient()
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(
                 side_effect=httpx.TimeoutException("Request timed out")
             )
@@ -842,7 +1191,7 @@ class TestMCPConnectClientTimeout:
         tool_name = "test_tool"
         tool_args = {"param1": "value1", "param2": 42}
 
-        with patch("httpx.AsyncClient") as mock_client:
+        with patch("codemie.service.mcp.client.httpx.AsyncClient") as mock_client:
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(
                 side_effect=httpx.TimeoutException("Request timed out")
             )
@@ -932,6 +1281,28 @@ class TestMCPConnectClientBucketNumber:
         bucket_no_other = _get_bucket_no(server_config_other)
         assert isinstance(bucket_no_other, int)
         assert 0 <= bucket_no_other < config.MCP_CONNECT_BUCKETS_COUNT
+
+    def test_get_bucket_no_hashes_repr_hidden_config_fields(self, monkeypatch):
+        """Test bucket key generation keeps using fields hidden from MCPServerConfig repr."""
+        from codemie.service.mcp import client
+
+        captured_bucket_keys: list[str] = []
+
+        def fake_hash_remainder(bucket_key: str) -> int:
+            captured_bucket_keys.append(bucket_key)
+            return 0
+
+        monkeypatch.setattr(client, "_hash_remainder", fake_hash_remainder)
+        server_config = MCPServerConfig(
+            url="https://mcp-a.example.com/api/mcp",
+            type="streamable-http",
+            headers={"X-Trace": "trace-a"},
+            env={},
+        )
+
+        assert client._get_bucket_no(server_config) == 0
+        assert "https://mcp-a.example.com/api/mcp" in captured_bucket_keys[0]
+        assert "X-Trace" in captured_bucket_keys[0]
 
     def test_bucket_number_range(self):
         """Test that bucket numbers are always within valid range."""

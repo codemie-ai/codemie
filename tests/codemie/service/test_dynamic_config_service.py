@@ -564,6 +564,77 @@ def test_delete_not_found(mock_session_cls, mock_config, mock_user):
     assert "Config not found" in exc_info.value.message
 
 
+@patch("codemie.service.dynamic_config_service.logger.warning")
+@patch("codemie.rest_api.security.user.config")
+@patch("codemie.service.dynamic_config_service.Session")
+def test_delete_trusted_as_domains_redacts_raw_value_in_audit_log(
+    mock_session_cls,
+    mock_config,
+    mock_warning,
+    mock_user,
+):
+    """Deleting MCP_AUTH_TRUSTED_AS_DOMAINS must not log the raw allowlist value."""
+    mock_config.ENV = "production"
+    mock_config.ENABLE_USER_MANAGEMENT = True
+    trust_config = DynamicConfig(
+        id="config-trust",
+        key="MCP_AUTH_TRUSTED_AS_DOMAINS",
+        value='["secret-idp.example.com"]',
+        value_type=ConfigValueType.STRING,
+        description="Trusted AS domains",
+        date=datetime.now(UTC).replace(tzinfo=None),
+        update_date=datetime.now(UTC).replace(tzinfo=None),
+        updated_by="admin-123",
+    )
+    mock_session = MagicMock()
+    mock_session_cls.return_value.__enter__.return_value = mock_session
+    mock_exec_result = MagicMock()
+    mock_exec_result.first.return_value = trust_config
+    mock_session.exec.return_value = mock_exec_result
+
+    DynamicConfigService.delete("MCP_AUTH_TRUSTED_AS_DOMAINS", mock_user)
+
+    audit_message = mock_warning.call_args.args[0]
+    assert "secret-idp.example.com" not in audit_message
+    assert "value=<redacted>" in audit_message
+
+
+@patch("codemie.service.dynamic_config_service.logger.warning")
+@patch("codemie.rest_api.security.user.config")
+@patch("codemie.service.dynamic_config_service.Session")
+def test_delete_private_network_allowlist_redacts_raw_value_in_audit_log(
+    mock_session_cls,
+    mock_config,
+    mock_warning,
+    mock_user,
+):
+    """Deleting MCP_AUTH_DISCOVERY_PRIVATE_NETWORK_ALLOWLIST must not log internal CIDR/IP topology."""
+    mock_config.ENV = "production"
+    mock_config.ENABLE_USER_MANAGEMENT = True
+    trust_config = DynamicConfig(
+        id="config-private-network",
+        key="MCP_AUTH_DISCOVERY_PRIVATE_NETWORK_ALLOWLIST",
+        value='["10.0.0.0/8", "192.168.1.10"]',
+        value_type=ConfigValueType.STRING,
+        description="Discovery private-network allowlist",
+        date=datetime.now(UTC).replace(tzinfo=None),
+        update_date=datetime.now(UTC).replace(tzinfo=None),
+        updated_by="admin-123",
+    )
+    mock_session = MagicMock()
+    mock_session_cls.return_value.__enter__.return_value = mock_session
+    mock_exec_result = MagicMock()
+    mock_exec_result.first.return_value = trust_config
+    mock_session.exec.return_value = mock_exec_result
+
+    DynamicConfigService.delete("MCP_AUTH_DISCOVERY_PRIVATE_NETWORK_ALLOWLIST", mock_user)
+
+    audit_message = mock_warning.call_args.args[0]
+    assert "10.0.0.0/8" not in audit_message
+    assert "192.168.1.10" not in audit_message
+    assert "value=<redacted>" in audit_message
+
+
 @patch("codemie.rest_api.security.user.config")
 def test_delete_not_admin(mock_config, mock_regular_user):
     """Delete raises 403 when user is not super admin"""

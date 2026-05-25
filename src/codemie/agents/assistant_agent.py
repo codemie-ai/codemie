@@ -66,6 +66,7 @@ from codemie.core.constants import (
     OUTPUT_FORMAT,
 )
 from codemie.core.dependecies import get_llm_by_credentials
+from codemie.core.exceptions import MCPAuthenticationRequiredException
 from codemie.core.models import ChatMessage, AssistantChatRequest
 from codemie.core.thread import ThreadedGenerator
 from codemie.core.utils import extract_text_from_llm_output, calculate_tokens
@@ -392,6 +393,8 @@ class AIToolsAgent(WorkspaceAwareAgent):
                 inputs = self._get_inputs(query)
                 response = self._invoke_agent(inputs).get('output', '')
             return {"is_task_complete": True, "require_user_input": False, "content": response}
+        except MCPAuthenticationRequiredException:
+            raise
         except Exception as e:
             logger.error(f"Invoking agent. Agent={self.agent_name}. Result=Failed", exc_info=True)
             return {"is_task_complete": False, "require_user_input": True, "content": str(e)}
@@ -415,6 +418,8 @@ class AIToolsAgent(WorkspaceAwareAgent):
                 request_file_names=self.request.file_names,
             )
             return response.get("output", "")
+        except MCPAuthenticationRequiredException:
+            raise
         except Exception:
             stacktrace = traceback.format_exc()
             logger.error(f"AI Agent run failed with error: {stacktrace}", exc_info=True)
@@ -446,6 +451,8 @@ class AIToolsAgent(WorkspaceAwareAgent):
                 request_file_names=self.request.file_names,
             )
             return TaskResult.from_agent_response(response)
+        except MCPAuthenticationRequiredException:
+            raise
         except Exception as e:
             error_message = f"Invoking workflow task. Agent={self.agent_name}. Result=Failed"
             logger.error(error_message, exc_info=True)
@@ -579,6 +586,8 @@ class AIToolsAgent(WorkspaceAwareAgent):
                 success=True,
                 tool_errors=self._get_tool_errors(),
             )
+        except MCPAuthenticationRequiredException:
+            raise
         except Exception:
             stacktrace = traceback.format_exc()
             error_output = f"AI Agent run failed with error: {stacktrace}"
@@ -613,6 +622,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
         execution_start = time()
         chunks_collector = []
 
+        auth_required_error: MCPAuthenticationRequiredException | None = None
         try:
             logger.info(f"Starting {self.agent_name} agent for task: {self._task}")
             self._agent_streaming(chunks_collector)
@@ -629,13 +639,18 @@ class AIToolsAgent(WorkspaceAwareAgent):
                     context=self.thread_context,
                 ).model_dump_json()
             )
+        except MCPAuthenticationRequiredException as exception:
+            auth_required_error = exception
+            self.thread_generator.close(exception)
+            raise
         except Exception as exception:
             self.send_error_response(
                 self.thread_generator, self.thread_context, exception, execution_start, chunks_collector
             )
 
         finally:
-            self.thread_generator.close()
+            if auth_required_error is None:
+                self.thread_generator.close()
 
     def _agent_streaming(self, chunks_collector: List[str]):
         if self.assistant and BedrockOrchestratorService.is_bedrock_assistant(self.assistant):

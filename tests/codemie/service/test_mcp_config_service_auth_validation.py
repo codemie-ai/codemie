@@ -229,6 +229,21 @@ class TestMCPConfigServiceAuthValidation:
         mock_mcp_config_class.return_value.save.assert_not_called()
 
     @patch("codemie.service.mcp_config_service.MCPConfig")
+    def test_create_rejects_reserved_discovered_auth_config_id(self, mock_mcp_config_class: MagicMock) -> None:
+        mock_mcp_config_class.get_by_fields.return_value = None
+        request = _build_create_request(
+            MCPServerConfigData(auth_config=_build_valid_oauth2_auth_config(id="discovered:" + "a" * 64))
+        )
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            MCPConfigService.create(request, _make_user())
+
+        assert exc_info.value.code == 422
+        assert exc_info.value.message == "Invalid auth_config"
+        assert exc_info.value.details == "auth_config.id cannot use reserved 'discovered:' prefix"
+        mock_mcp_config_class.return_value.save.assert_not_called()
+
+    @patch("codemie.service.mcp_config_service.MCPConfig")
     def test_update_rejects_missing_auth_type_before_update(self, mock_mcp_config_class: MagicMock) -> None:
         existing = _make_existing_config()
         mock_mcp_config_class.find_by_id.return_value = existing
@@ -335,6 +350,22 @@ class TestMCPConfigServiceAuthValidation:
             )
 
         assert exc_info.value.details == "Unsupported auth_type: basic"
+        existing.update.assert_not_called()
+
+    @patch("codemie.service.mcp_config_service.MCPConfig")
+    def test_update_rejects_reserved_discovered_auth_config_id(self, mock_mcp_config_class: MagicMock) -> None:
+        existing = _make_existing_config()
+        mock_mcp_config_class.find_by_id.return_value = existing
+        request = _build_update_request(
+            MCPServerConfigData(auth_config=_build_valid_oauth2_auth_config(id="discovered:" + "b" * 64))
+        )
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            MCPConfigService.update("cfg-1", request)
+
+        assert exc_info.value.code == 422
+        assert exc_info.value.message == "Invalid auth_config"
+        assert exc_info.value.details == "auth_config.id cannot use reserved 'discovered:' prefix"
         existing.update.assert_not_called()
 
     @patch(

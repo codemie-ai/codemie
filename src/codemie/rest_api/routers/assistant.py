@@ -2073,6 +2073,8 @@ def _ask_virtual_assistant(
         )
         _save_error(request_uuid, request, error, user, assistant)
         raise error from mce
+    except MCPAuthenticationRequiredException:
+        raise
     except BrokerAuthRequiredException:
         raise
     except Exception as e:

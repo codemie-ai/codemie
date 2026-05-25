@@ -41,7 +41,7 @@ from codemie.enterprise.plugin import (
     set_global_plugin_service,
     get_global_plugin_service,
 )
-from codemie.enterprise.mcp_auth.router import get_mcp_auth_router
+from codemie.enterprise.mcp_auth.router import get_mcp_auth_router, get_cimd_router
 from codemie.enterprise.mcp_auth.dependencies import initialize_mcp_auth, shutdown_mcp_auth
 from codemie.configs.logger import set_logging_info, logger
 from codemie.core.constants import APP_DESCRIPTION
@@ -713,6 +713,7 @@ if config.ENABLE_USER_MANAGEMENT:
         app.include_router(local_auth_router.router)
 
 app.include_router(get_mcp_auth_router())
+app.include_router(get_cimd_router())
 
 
 @app.middleware("http")

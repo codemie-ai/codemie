@@ -67,6 +67,7 @@ from codemie.rest_api.models.index import (
 )
 from codemie.rest_api.security.user import User
 from codemie.service.llm_service.llm_service import llm_service
+from codemie.service.mcp.auth_warnings import get_mcp_auth_warnings
 from codemie.service.mcp.toolkit_service import MCPToolkitService
 from codemie.service.provider import ProviderToolkitsFactory
 from codemie.service.tools.plugin_tools_delegate import PluginToolsDelegate
@@ -80,6 +81,8 @@ from codemie.agents.tools.skill.skill_tool import (
     create_skill_tool_if_needed,
 )
 from codemie_tools.data_management.workspace.tools_vars import AGENT_WORKSPACE_TOOLKIT
+
+MCP_AUTH_WARNINGS_METADATA_KEY = "mcp_auth_warnings"
 
 
 class ToolkitService:
@@ -849,7 +852,18 @@ class ToolkitService:
                     request_headers=request_headers,
                 )
             )
+            cls._forward_mcp_auth_warnings_to_request(request)
         return cls._process_final_tools_traditional(tools, llm_model, assistant, request_uuid)
+
+    @classmethod
+    def _forward_mcp_auth_warnings_to_request(cls, request: AssistantChatRequest) -> None:
+        warnings = get_mcp_auth_warnings(clear=True)
+        if not warnings:
+            return
+
+        metadata = dict(request.metadata or {})
+        metadata[MCP_AUTH_WARNINGS_METADATA_KEY] = warnings
+        request.metadata = metadata
 
     @classmethod
     def _process_final_tools_traditional(

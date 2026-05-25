@@ -23,6 +23,10 @@ from codemie.rest_api.models.dynamic_config import (
 )
 from codemie.rest_api.security.authentication import authenticate, admin_access_only
 from codemie.rest_api.security.user import User
+from codemie.enterprise.mcp_auth.dependencies import (
+    MCP_AUTH_TRUSTED_AS_DOMAINS_KEY,
+    invalidate_mcp_auth_trust_policy_cache,
+)
 from codemie.service.dynamic_config_service import DynamicConfigService
 from codemie.core.exceptions import ExtendedHTTPException
 
@@ -31,6 +35,11 @@ router = APIRouter(
     prefix="/v1/dynamic-config",
     dependencies=[Depends(authenticate), Depends(admin_access_only)],
 )
+
+
+def _invalidate_trust_policy_cache_if_needed(key: str) -> None:
+    if key == MCP_AUTH_TRUSTED_AS_DOMAINS_KEY:
+        invalidate_mcp_auth_trust_policy_cache()
 
 
 @router.get("/", status_code=status.HTTP_200_OK, response_model=list[DynamicConfigResponse])
@@ -132,6 +141,7 @@ def create_config(
         description=request.description,
         user=current_user,
     )
+    _invalidate_trust_policy_cache_if_needed(request.key)
 
     return DynamicConfigResponse(
         id=config.id,
@@ -188,6 +198,7 @@ def update_config(
         description=request.description if request.description is not None else existing.description,
         user=current_user,
     )
+    _invalidate_trust_policy_cache_if_needed(key)
 
     return DynamicConfigResponse(
         id=config.id,
@@ -215,3 +226,4 @@ def delete_config(key: str, current_user: User = Depends(authenticate)):
         404: Configuration key not found
     """
     DynamicConfigService.delete(key=key, user=current_user)
+    _invalidate_trust_policy_cache_if_needed(key)

@@ -20,7 +20,7 @@ from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequ
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.guardrail import GuardrailEntity, GuardrailSource
-from codemie.rest_api.routers.assistant import _ask_assistant
+from codemie.rest_api.routers.assistant import _ask_assistant, _ask_virtual_assistant
 from codemie.rest_api.security.user import User
 
 
@@ -300,6 +300,57 @@ class TestAskAssistantWithGuardrails:
             _ask_assistant(mock_assistant, raw_request, request, mock_user, background_tasks)
 
         assert exc_info.value.payload == auth_payload
+        mock_save_error.assert_not_called()
+
+    @patch("codemie.rest_api.routers.assistant._save_error")
+    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant._validate_assistant_supports_model_change_and_raise")
+    @patch("codemie.rest_api.routers.assistant._validate_assistant_supports_files_and_raise")
+    @patch("codemie.rest_api.routers.assistant._validate_remote_entities_and_raise")
+    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    def test_virtual_assistant_reraises_mcp_authentication_required_without_wrapping(
+        self,
+        mock_get_handler,
+        mock_validate_remote,
+        mock_validate_files,
+        mock_validate_model,
+        mock_request_summary,
+        mock_save_error,
+        mock_user,
+        mock_assistant,
+    ):
+        auth_payload = {
+            "error": "authentication_required",
+            "servers": [
+                {
+                    "mcp_config_id": "mcp-1",
+                    "mcp_config_name": "OneHub",
+                    "auth_type": "oauth2",
+                    "status": "authentication_required",
+                    "error": "insufficient_scope",
+                    "recovery_flow_id": "rf-story-7-1",
+                    "initiate_url": "/v1/mcp-auth/oauth2/initiate?recovery_flow_id=rf-story-7-1",
+                }
+            ],
+        }
+        auth_error = MCPAuthenticationRequiredException(auth_payload)
+        mock_handler = MagicMock()
+        mock_handler.process_request.side_effect = auth_error
+        mock_get_handler.return_value = mock_handler
+        mock_assistant.id = None
+
+        request = AssistantChatRequest(text="run")
+        raw_request = MagicMock()
+        raw_request.state.uuid = "test-uuid"
+        background_tasks = MagicMock()
+
+        with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+            _ask_virtual_assistant(mock_assistant, raw_request, request, mock_user, background_tasks)
+
+        assert exc_info.value.payload == auth_payload
+        mock_validate_remote.assert_called_once_with(mock_assistant)
+        mock_validate_files.assert_called_once_with(mock_assistant, request.file_names)
+        mock_validate_model.assert_called_once_with(mock_assistant, request.llm_model)
         mock_save_error.assert_not_called()
 
 

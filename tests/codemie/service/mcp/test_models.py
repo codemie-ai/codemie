@@ -50,11 +50,13 @@ class TestMCPExecutionContext:
             assistant_id="assistant-456",
             project_name="test-project",
             workflow_execution_id="workflow-789",
+            conversation_id="conversation-123",
         )
         assert context.user_id == "user-123"
         assert context.assistant_id == "assistant-456"
         assert context.project_name == "test-project"
         assert context.workflow_execution_id == "workflow-789"
+        assert context.conversation_id == "conversation-123"
 
     def test_partial_instantiation(self):
         """Test that only some fields can be set."""
@@ -87,6 +89,7 @@ class TestMCPExecutionContext:
             assistant_id="assistant-456",
             project_name="test-project",
             workflow_execution_id="workflow-789",
+            conversation_id="conversation-123",
         )
         fields = context.to_request_fields()
         expected = {
@@ -97,6 +100,22 @@ class TestMCPExecutionContext:
             "request_headers": None,
         }
         assert fields == expected
+
+    def test_conversation_id_is_local_only_retry_context(self):
+        """conversation_id remains local-only and never enters MCP-Connect request fields."""
+        context = MCPExecutionContext(
+            user_id="user-123",
+            assistant_id="assistant-456",
+            project_name="test-project",
+            conversation_id="conversation-123",
+            auth_headers={"Authorization": "Bearer secret"},
+        )
+
+        assert context.conversation_id == "conversation-123"
+        assert "conversation_id" not in context.to_request_fields()
+        assert "conversation_id" not in context.model_dump()
+        assert "auth_headers" not in context.to_request_fields()
+        assert "auth_headers" not in context.model_dump()
 
     def test_to_request_fields_partial(self):
         """Test to_request_fields() with partial values set."""

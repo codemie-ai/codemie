@@ -26,6 +26,7 @@ import pytest
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
+from codemie.service.mcp.auth_warnings import record_mcp_auth_warnings
 from codemie.service.tools.toolkit_service import ToolkitService
 
 
@@ -439,3 +440,61 @@ class TestToolkitServiceGetToolsWithHeaders:
         call_kwargs = mock_get_mcp_tools.call_args[1]
         assert 'request_headers' in call_kwargs
         assert call_kwargs['request_headers'] is None
+
+    @patch('codemie.service.tools.toolkit_service.ToolkitService._process_final_tools_traditional')
+    @patch('codemie.service.tools.toolkit_service.ToolkitService.add_tools_with_creds')
+    @patch('codemie.service.tools.toolkit_service.config')
+    @patch('codemie.service.tools.toolkit_service.MCPToolkitService.get_mcp_server_tools')
+    def test_get_tools_forwards_warning_only_mcp_auth_metadata_to_request(
+        self,
+        mock_get_mcp_tools,
+        mock_config,
+        mock_add_tools_with_creds,
+        mock_process_final_tools,
+    ):
+        _setup_mock_config(mock_config)
+        mock_config.MCP_CONNECT_ENABLED = True
+        mock_add_tools_with_creds.return_value = []
+        mock_process_final_tools.side_effect = lambda tools, *_: tools
+        warning_payload = {
+            "status": "discovery_failed",
+            "mcp_config_id": "mcp-discovery",
+            "mcp_config_name": "challenged",
+            "mcp_server_name": "challenged",
+            "error_context": "Discovery failed: timeout",
+        }
+        mcp_tool = Mock()
+        mcp_tool.name = "healthy_mcp_tool"
+
+        def _get_mcp_tools(*args, **kwargs):
+            record_mcp_auth_warnings([warning_payload])
+            return [mcp_tool]
+
+        mock_get_mcp_tools.side_effect = _get_mcp_tools
+        assistant = Mock(spec=Assistant)
+        assistant.id = 'asst-123'
+        assistant.name = 'Test Assistant'
+        assistant.project = 'test-project'
+        assistant.toolkits = []
+        assistant.context = []
+        assistant.mcp_servers = [{'name': 'test-server', 'command': 'test-command', 'args': []}]
+        assistant.assistant_ids = None
+        assistant.skill_ids = []
+        request = AssistantChatRequest(text='Hello', conversation_id='conv-123', tools_config=None)
+        user = Mock(spec=User)
+        user.id = 'user-123'
+        user.name = 'Test User'
+        user.is_admin = False
+
+        tools = ToolkitService._get_tools(
+            assistant=assistant,
+            request=request,
+            user=user,
+            llm_model='claude-sonnet-4',
+            request_uuid='req-123',
+            thread_generator=None,
+            mcp_server_args_preprocessor=None,
+        )
+
+        assert tools == [mcp_tool]
+        assert request.metadata == {"mcp_auth_warnings": [warning_payload]}

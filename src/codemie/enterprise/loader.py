@@ -22,6 +22,9 @@ CRITICAL: This loader ONLY handles imports and flags. NO business logic.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+from importlib.metadata import PackageNotFoundError, version
+
 # LangFuse imports
 try:
     from codemie_enterprise.langfuse import (
@@ -172,11 +175,18 @@ def has_migration() -> bool:
 
 # MCP Auth imports
 try:
-    import codemie_enterprise.mcp_auth as enterprise_mcp_auth
-
+    version("codemie-enterprise")
     HAS_MCP_AUTH = True
-    enterprise_mcp_auth_alembic_locations = getattr(enterprise_mcp_auth, "enterprise_alembic_locations", None)
-except ImportError:
+
+    def enterprise_mcp_auth_alembic_locations():
+        try:
+            from codemie_enterprise.mcp_auth import enterprise_alembic_locations
+        except ImportError:
+            return nullcontext(())
+
+        return enterprise_alembic_locations()
+
+except PackageNotFoundError:
     enterprise_mcp_auth_alembic_locations = None  # type: ignore
     HAS_MCP_AUTH = False
 

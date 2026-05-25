@@ -17,6 +17,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi import FastAPI, status
 from fastapi.testclient import TestClient
 
@@ -55,13 +56,16 @@ def _build_auth_config(*, client_type: str = "public") -> dict[str, object]:
 
 
 def _build_mcp_config(
-    *, name: str = "Demo MCP Server", auth_config: dict[str, object] | None = None
+    *,
+    name: str = "Demo MCP Server",
+    auth_config: dict[str, object] | None = None,
+    url: str = "https://mcp.example.com/server",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id="mcp-config-1",
         name=name,
         config=SimpleNamespace(
-            url="https://mcp.example.com/server",
+            url=url,
             auth_config=auth_config or _build_auth_config(),
         ),
     )
@@ -345,6 +349,267 @@ def test_enabled_callback_uses_reverse_lookup_and_core_secret_decryption(monkeyp
     tms.store.assert_called_once()
 
 
+def test_enabled_callback_uses_discovered_snapshot_without_mcp_config_reverse_lookup(monkeypatch) -> None:
+    client = _build_enabled_client()
+    pkce_store, tms, exchange, decrypt, reverse_lookup = _set_default_bridge_state(monkeypatch)
+    discovered_auth_id = "discovered:" + "a" * 64
+    flow_config = SimpleNamespace(
+        authorization_url="https://auth.example.com/oauth2/authorize",
+        token_url="https://auth.example.com/oauth2/token",
+        client_id="client-1",
+        client_type="public",
+        client_auth_method="none",
+        client_secret=None,
+        issuer="https://auth.example.com",
+        resource="https://mcp.example.com/api/mcp",
+        scopes=("read",),
+    )
+    snapshot = SimpleNamespace(
+        status="authentication_required",
+        discovered_flow_id="flow-1",
+        discovered_auth_id=discovered_auth_id,
+        mcp_config_id="mcp-config-1",
+        mcp_config_name="Discovered MCP",
+        user_id="user-1",
+        session_binding_hash="a" * 64,
+        canonical_resource="https://mcp.example.com/api/mcp",
+        redirect_uri="https://codemie.example.com/v1/mcp-auth/oauth2/callback",
+        flow_config=flow_config,
+    )
+    pkce_store.consume.return_value = _build_pkce_state(auth_config_id=discovered_auth_id, discovered_flow_id="flow-1")
+    monkeypatch.setattr(
+        mcp_auth_dependencies,
+        "_decode_and_verify_oauth2_callback_state",
+        lambda state, signing_key: SimpleNamespace(
+            auth_config_id=discovered_auth_id,
+            user_id="user-1",
+            session_binding_hash="a" * 64,
+            ts=4_102_444_800,
+            discovered_flow_id="flow-1",
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_auth_dependencies,
+        "_load_discovered_flow_snapshot_or_error",
+        MagicMock(return_value=snapshot),
+    )
+    monkeypatch.setattr(mcp_auth_dependencies.config, "CALLBACK_API_BASE_URL", "https://changed.example.com")
+    reverse_lookup.side_effect = AssertionError("persisted auth_config lookup must not run for discovered callback")
+
+    response = client.get(
+        "/v1/mcp-auth/oauth2/callback",
+        params={"code": "auth-code", "state": "opaque-state"},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert "Discovered MCP" in response.text
+    assert exchange.call_args.kwargs["auth_config"] == flow_config
+    assert exchange.call_args.kwargs["auth_config_id"] == discovered_auth_id
+    assert exchange.call_args.kwargs["redirect_uri"] == "https://codemie.example.com/v1/mcp-auth/oauth2/callback"
+    assert exchange.call_args.kwargs["resource"] == "https://mcp.example.com/api/mcp"
+    assert exchange.call_args.kwargs["client_secret"] is None
+    assert decrypt.call_count == 0
+    tms.store.assert_called_once()
+    assert tms.store.call_args.args[1] == discovered_auth_id
+
+
+def test_enabled_callback_uses_recovery_snapshot_before_persisted_fallback(monkeypatch) -> None:
+    client = _build_enabled_client()
+    pkce_store, tms, exchange, decrypt, reverse_lookup = _set_default_bridge_state(monkeypatch)
+    recovery_auth_config = SimpleNamespace(
+        authorization_url="https://auth.example.com/oauth2/authorize",
+        token_url="https://auth.example.com/oauth2/token",
+        client_id="client-1",
+        client_type="public",
+        scopes=("read", "write", "admin"),
+    )
+    snapshot = SimpleNamespace(
+        recovery_flow_id="rf-1",
+        mcp_config_id="mcp-config-1",
+        mcp_config_name="Recovered MCP",
+        user_id="user-1",
+        session_binding_hash="a" * 64,
+        auth_config_id="auth-config-1",
+        token_storage_auth_config_id="auth-config-1",
+        auth_config=recovery_auth_config,
+        resource=None,
+        resource_metadata_url_internal="https://mcp.example.com/.well-known/oauth-protected-resource?tenant=secret",
+    )
+    pkce_store.consume.return_value = _build_pkce_state(recovery_flow_id="rf-1")
+    monkeypatch.setattr(
+        mcp_auth_dependencies,
+        "_decode_and_verify_oauth2_callback_state",
+        lambda state, signing_key: SimpleNamespace(
+            auth_config_id="auth-config-1",
+            user_id="user-1",
+            session_binding_hash="a" * 64,
+            ts=4_102_444_800,
+            recovery_flow_id="rf-1",
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_auth_dependencies,
+        "_load_recovery_snapshot_or_error",
+        MagicMock(return_value=snapshot),
+    )
+    reverse_lookup.side_effect = AssertionError("persisted auth_config lookup must not run for recovery callback")
+
+    response = client.get(
+        "/v1/mcp-auth/oauth2/callback",
+        params={"code": "auth-code", "state": "opaque-state"},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert "Recovered MCP" in response.text
+    assert exchange.call_args.kwargs["auth_config"] == recovery_auth_config
+    assert exchange.call_args.kwargs["auth_config_id"] == "auth-config-1"
+    assert exchange.call_args.kwargs["resource"] == (
+        "https://mcp.example.com/.well-known/oauth-protected-resource?tenant=secret"
+    )
+    assert decrypt.call_count == 0
+    tms.store.assert_called_once()
+    assert tms.store.call_args.args[1] == "auth-config-1"
+
+
+@pytest.mark.parametrize(
+    ("state_recovery_flow_id", "pkce_recovery_flow_id"),
+    [
+        ("rf-1", None),
+        (None, "rf-1"),
+        ("rf-1", "rf-other"),
+    ],
+)
+def test_recovery_callback_rejects_missing_or_mismatched_flow_binding(
+    monkeypatch,
+    state_recovery_flow_id: str | None,
+    pkce_recovery_flow_id: str | None,
+) -> None:
+    client = _build_enabled_client()
+    pkce_store, tms, exchange, _, _ = _set_default_bridge_state(monkeypatch)
+    recovery_auth_config = SimpleNamespace(
+        authorization_url="https://auth.example.com/oauth2/authorize",
+        token_url="https://auth.example.com/oauth2/token",
+        client_id="client-1",
+        client_type="public",
+        scopes=("read", "write", "admin"),
+    )
+    snapshot = SimpleNamespace(
+        recovery_flow_id="rf-1",
+        mcp_config_id="mcp-config-1",
+        mcp_config_name="Recovered MCP",
+        user_id="user-1",
+        session_binding_hash="a" * 64,
+        auth_config_id="auth-config-1",
+        token_storage_auth_config_id="auth-config-1",
+        auth_config=recovery_auth_config,
+        resource="https://mcp.example.com/mcp",
+        resource_metadata_url_internal=None,
+    )
+    pkce_overrides = {}
+    if pkce_recovery_flow_id is not None:
+        pkce_overrides["recovery_flow_id"] = pkce_recovery_flow_id
+    pkce_store.consume.return_value = _build_pkce_state(**pkce_overrides)
+
+    def decode_state(state, signing_key):
+        payload = SimpleNamespace(
+            auth_config_id="auth-config-1",
+            user_id="user-1",
+            session_binding_hash="a" * 64,
+            ts=4_102_444_800,
+        )
+        if state_recovery_flow_id is not None:
+            payload.recovery_flow_id = state_recovery_flow_id
+        return payload
+
+    monkeypatch.setattr(mcp_auth_dependencies, "_decode_and_verify_oauth2_callback_state", decode_state)
+    monkeypatch.setattr(
+        mcp_auth_dependencies,
+        "_load_recovery_snapshot_or_error",
+        MagicMock(return_value=snapshot),
+    )
+
+    response = client.get(
+        "/v1/mcp-auth/oauth2/callback",
+        params={"code": "auth-code", "state": "opaque-state"},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert "Authentication session could not be verified. Return to CodeMie and try again." in response.text
+    assert 'data-callback-result="error"' in response.text
+    assert exchange.call_count == 0
+    assert tms.store.call_count == 0
+
+
+def test_recovery_callback_uses_discovered_confidential_snapshot_secret_without_persisted_lookup(monkeypatch) -> None:
+    client = _build_enabled_client()
+    pkce_store, tms, exchange, decrypt, reverse_lookup = _set_default_bridge_state(monkeypatch)
+    discovered_auth_id = "discovered:" + "f" * 64
+    recovery_auth_config = SimpleNamespace(
+        authorization_url="https://auth.example.com/oauth2/authorize",
+        token_url="https://auth.example.com/oauth2/token",
+        client_id="client-1",
+        client_type="confidential",
+        client_auth_method="client_secret_basic",
+        client_secret="inline-secret",
+        scopes=("read", "write", "admin"),
+    )
+    snapshot = SimpleNamespace(
+        recovery_flow_id="rf-discovered-confidential",
+        mcp_config_id="mcp-config-1",
+        mcp_config_name="Recovered Discovered MCP",
+        user_id="user-1",
+        session_binding_hash="a" * 64,
+        auth_config_id=discovered_auth_id,
+        token_storage_auth_config_id=discovered_auth_id,
+        auth_config=recovery_auth_config,
+        resource="https://mcp.example.com/mcp",
+        resource_metadata_url_internal="https://mcp.example.com/.well-known/oauth-protected-resource?tenant=secret",
+    )
+    pkce_store.consume.return_value = _build_pkce_state(
+        auth_config_id=discovered_auth_id,
+        recovery_flow_id="rf-discovered-confidential",
+    )
+    monkeypatch.setattr(
+        mcp_auth_dependencies,
+        "_decode_and_verify_oauth2_callback_state",
+        lambda state, signing_key: SimpleNamespace(
+            auth_config_id=discovered_auth_id,
+            user_id="user-1",
+            session_binding_hash="a" * 64,
+            ts=4_102_444_800,
+            recovery_flow_id="rf-discovered-confidential",
+        ),
+    )
+    monkeypatch.setattr(
+        mcp_auth_dependencies,
+        "_load_recovery_snapshot_or_error",
+        MagicMock(return_value=snapshot),
+    )
+    reverse_lookup.side_effect = AssertionError("persisted auth_config lookup must not run for discovered recovery")
+    assert (
+        mcp_auth_dependencies._recovery_callback_client_secret(
+            recovery_auth_config,
+            discovered_auth_id,
+            "Recovered Discovered MCP",
+        )
+        is None
+    )
+
+    response = client.get(
+        "/v1/mcp-auth/oauth2/callback",
+        params={"code": "auth-code", "state": "opaque-state"},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert "Recovered Discovered MCP" in response.text
+    assert exchange.call_args.kwargs["auth_config"] == recovery_auth_config
+    assert exchange.call_args.kwargs["auth_config_id"] == discovered_auth_id
+    assert exchange.call_args.kwargs["client_secret"] is None
+    assert decrypt.call_count == 0
+    tms.store.assert_called_once()
+    assert tms.store.call_args.args[1] == discovered_auth_id
+
+
 def test_enabled_callback_skips_core_secret_decryption_for_public_clients(monkeypatch) -> None:
     client = _build_enabled_client()
     pkce_store, tms, exchange, decrypt, reverse_lookup = _set_default_bridge_state(monkeypatch)
@@ -362,6 +627,48 @@ def test_enabled_callback_skips_core_secret_decryption_for_public_clients(monkey
     assert decrypt.call_count == 0
     assert exchange.call_args.kwargs["client_secret"] is None
     tms.store.assert_called_once()
+
+
+def test_enabled_callback_passes_canonical_resource_to_exchange(monkeypatch) -> None:
+    client = _build_enabled_client()
+    pkce_store, _, exchange, _, reverse_lookup = _set_default_bridge_state(monkeypatch)
+    pkce_store.consume.return_value = _build_pkce_state()
+    reverse_lookup.return_value = _build_mcp_config(
+        url="https://MCP.Example.Com:443/api/mcp?v=1#section",
+    )
+
+    response = client.get(
+        "/v1/mcp-auth/oauth2/callback",
+        params={"code": "auth-code", "state": "opaque-state"},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert exchange.call_args.kwargs["resource"] == "https://mcp.example.com/api/mcp"
+
+
+def test_enabled_callback_invalid_resource_url_does_not_render_or_log_tainted_values(monkeypatch, caplog) -> None:
+    client = _build_enabled_client()
+    pkce_store, _, exchange, _, reverse_lookup = _set_default_bridge_state(monkeypatch)
+    pkce_store.consume.return_value = _build_pkce_state()
+    reverse_lookup.return_value = _build_mcp_config(
+        url=("https://user:secret-sentinel@mcp.example.com/api/mcp" "?access_token=token-sentinel#fragment-sentinel"),
+    )
+
+    with caplog.at_level("WARNING"):
+        response = client.get(
+            "/v1/mcp-auth/oauth2/callback",
+            params={"code": "auth-code", "state": "opaque-state"},
+        )
+
+    rendered = f"{response.text} {caplog.text}"
+    assert response.status_code == status.HTTP_200_OK
+    assert "Authentication could not be completed because the MCP server configuration is invalid." in response.text
+    assert exchange.call_count == 0
+    assert "secret-sentinel" not in rendered
+    assert "token-sentinel" not in rendered
+    assert "fragment-sentinel" not in rendered
+    assert "access_token" not in rendered
+    assert "user:" not in rendered
 
 
 def test_enabled_callback_uses_frontend_url_origin_for_target_origin(monkeypatch) -> None:
