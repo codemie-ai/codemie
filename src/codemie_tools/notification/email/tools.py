@@ -12,23 +12,28 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import smtplib
 import socket
 import base64
-import os
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
-from typing import List, Type, Optional
+from typing import Dict, List, Tuple, Type, Optional
 
 from langchain_core.tools import ToolException
 from msal import ConfidentialClientApplication
 from pydantic import BaseModel, Field
 
 from codemie_tools.base.codemie_tool import CodeMieTool
+from codemie_tools.base.file_tool_mixin import FileToolMixin
 from codemie_tools.notification.email.models import EmailToolConfig, EmailAuthType
 from codemie_tools.notification.email.tools_vars import EMAIL_TOOL
+
+logger = logging.getLogger(__name__)
+
+MAX_ATTACHMENT_SIZE = 19 * 1024 * 1024  # 19MB
 
 
 class EmailToolInput(BaseModel):
@@ -43,9 +48,9 @@ class EmailToolInput(BaseModel):
         default=None,
         description="Sender email address. If not specified, the configured SMTP username will be used as the sender.",
     )
-    file_paths: Optional[List[str]] = Field(
+    files: Optional[List[str]] = Field(
         default=None,
-        description="A list of absolute file paths to attach to the email (e.g., ['/tmp/report.pdf', '/tmp/data.xlsx'])",
+        description="A list of filenames to attach to the email from the uploaded input_files (e.g., ['report.pdf', 'data.xlsx']). If not specified, all uploaded files will be attached.",
     )
     timeout: Optional[float] = Field(
         default=30.0,
@@ -53,10 +58,10 @@ class EmailToolInput(BaseModel):
     )
 
 
-class EmailTool(CodeMieTool):
+class EmailTool(CodeMieTool, FileToolMixin):
     config: EmailToolConfig
     name: str = EMAIL_TOOL.name
-    description: str = "Use this tool when you need to send an email notification via SMTP. Supports TO, CC, BCC, and custom FROM address."
+    description: str = "Use this tool when you need to send an email notification via SMTP. Supports TO, CC, BCC, custom FROM address, and file attachments."
     args_schema: Type[BaseModel] = EmailToolInput
 
     def _get_oauth_token_azure(self) -> str:
@@ -123,6 +128,44 @@ class EmailTool(CodeMieTool):
             auth_string_encoded = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
             server.docmd("AUTH", "XOAUTH2 " + auth_string_encoded)
 
+    def _validate_files(self, files: Dict[str, Tuple[bytes, str]]) -> Dict[str, Tuple[bytes, str]]:
+        if not files:
+            raise ToolException("No files provided for attachment. Please provide files via input_files configuration.")
+
+        validated = {}
+        for filename, (content, mime_type) in files.items():
+            file_size = len(content)
+            if file_size > MAX_ATTACHMENT_SIZE:
+                size_mb = file_size / (1024 * 1024)
+                max_size_mb = MAX_ATTACHMENT_SIZE / (1024 * 1024)
+                raise ToolException(
+                    f"File '{filename}' ({size_mb:.2f}MB) exceeds maximum attachment size of {max_size_mb:.0f}MB"
+                )
+            validated[filename] = (content, mime_type)
+        return validated
+
+    def _get_attachments(self, files: Optional[List[str]]) -> Dict[str, Tuple[bytes, str]]:
+        all_files = self._resolve_files()
+        if not all_files:
+            return {}
+
+        if files:
+            requested = {}
+            missing = []
+            for name in files:
+                if name in all_files:
+                    requested[name] = all_files[name]
+                else:
+                    missing.append(name)
+            if missing:
+                raise ToolException(
+                    f"Requested files not found in input_files: {missing}. "
+                    f"Available files: {list(all_files.keys())}"
+                )
+            return self._validate_files(requested)
+
+        return self._validate_files(all_files)
+
     def execute(
         self,
         recipient_emails: List[str],
@@ -131,32 +174,14 @@ class EmailTool(CodeMieTool):
         cc_emails: Optional[List[str]] = None,
         bcc_emails: Optional[List[str]] = None,
         from_email: Optional[str] = None,
-        file_paths: Optional[List[str]] = None,
+        files: Optional[List[str]] = None,
         timeout: Optional[float] = 30.0,
     ) -> str:
-        """
-        Send an email via SMTP with a configurable timeout.
-
-        Args:
-            recipient_emails: List of recipient email addresses
-            subject: Email subject
-            body: Email body content (can include HTML)
-            cc_emails: Optional list of CC email addresses
-            bcc_emails: Optional list of BCC email addresses
-            from_email: Optional sender email address (overrides config if provided)
-            file_paths: Optional list of file paths to attach
-            timeout: Optional timeout in seconds for SMTP operations (default: 30 seconds)
-
-        Returns:
-            Confirmation message on success
-        """
-        # Additional URL format validation
         try:
             host, port = self.config.url.split(":")
         except Exception:
             raise ValueError("SMTP URL must be in format 'host:port' (e.g., 'smtp.gmail.com:587').")
 
-        # Determine FROM email based on auth type
         from_email = self._determine_from_email(from_email)
 
         try:
@@ -166,40 +191,31 @@ class EmailTool(CodeMieTool):
             msg["To"] = ", ".join(recipient_emails)
             if cc_emails:
                 msg["Cc"] = ", ".join(cc_emails)
-            # BCC is handled in sendmail recipients but not added as a header
 
             part = MIMEText(body, "html")
             msg.attach(part)
 
-            if file_paths:
-                for file_path in file_paths:
-                    if not os.path.isfile(file_path):
-                        continue
-                    with open(file_path, "rb") as f:
-                        attachment = MIMEBase("application", "octet-stream")
-                        attachment.set_payload(f.read())
-                    encoders.encode_base64(attachment)
-                    filename = os.path.basename(file_path)
-                    attachment.add_header("Content-Disposition", f"attachment; filename={filename}")
-                    msg.attach(attachment)
+            files_content = self._get_attachments(files)
+            for filename, (content, mime_type) in files_content.items():
+                attachment = MIMEBase("application", "octet-stream")
+                attachment.set_payload(content)
+                encoders.encode_base64(attachment)
+                attachment.add_header("Content-Disposition", "attachment", filename=filename)
+                msg.attach(attachment)
 
             with smtplib.SMTP(host, int(port), timeout=timeout) as server:
                 server.starttls()
                 server.ehlo()
 
-                # Authenticate with SMTP server
                 self._authenticate_smtp_server(server, from_email)
 
-                # Combine all recipients for sendmail (to, cc, bcc)
                 all_recipients_emails = (
                     recipient_emails + (cc_emails if cc_emails else []) + (bcc_emails if bcc_emails else [])
                 )
-                # Use the from_email if provided, otherwise use the configured SMTP username
                 sender = from_email if from_email else self.config.smtp_username
                 server.sendmail(sender, all_recipients_emails, msg.as_string())
                 server.quit()
 
-            # Don't expose BCC recipients in the success message
             visible_recipients = recipient_emails + (cc_emails if cc_emails else [])
             bcc_count = len(bcc_emails) if bcc_emails else 0
             bcc_suffix = 's' if bcc_count != 1 else ''
@@ -209,6 +225,8 @@ class EmailTool(CodeMieTool):
             return f"Failed to send email due to server disconnection (possibly timeout): {e}"
         except socket.timeout as e:
             return f"Failed to send email due to timeout ({timeout}s): {e}"
+        except ToolException:
+            raise
         except Exception as e:
             return f"Failed to send email: {e}"
 

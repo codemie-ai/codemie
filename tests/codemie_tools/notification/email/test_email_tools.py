@@ -16,9 +16,11 @@ import smtplib
 import unittest
 from unittest.mock import patch
 
+from langchain_core.tools import ToolException
 
+from codemie_tools.base.file_object import FileObject
 from codemie_tools.notification.email.models import EmailToolConfig, EmailAuthType
-from codemie_tools.notification.email.tools import EmailTool
+from codemie_tools.notification.email.tools import EmailTool, MAX_ATTACHMENT_SIZE
 
 
 class TestEmailTool(unittest.TestCase):
@@ -237,3 +239,133 @@ class TestEmailTool(unittest.TestCase):
         self.assertEqual(config_oauth.auth_type, EmailAuthType.OAUTH_AZURE)
         self.assertEqual(config_oauth.oauth_client_id, "id")
         self.assertEqual(config_oauth.oauth_from_email, "sender@example.com")
+
+    @patch("smtplib.SMTP")
+    def test_execute_with_file_attachments(self, mock_smtp):
+        file_obj = FileObject(name="report.pdf", mime_type="application/pdf", owner="test", content=b"pdf-content")
+        config = EmailToolConfig(
+            url="smtp.testserver.com:587",
+            smtp_username="test@test.com",
+            smtp_password="password",
+            input_files=[file_obj],
+        )
+        email_tool = EmailTool(config=config)
+        mock_server = mock_smtp.return_value.__enter__.return_value
+
+        result = email_tool.execute(
+            recipient_emails=["user@example.com"],
+            subject="Report",
+            body="<p>See attached</p>",
+        )
+
+        self.assertIn("Email sent successfully", result)
+        call_args = mock_server.sendmail.call_args
+        msg_str = call_args[0][2]
+        self.assertIn("report.pdf", msg_str)
+
+    @patch("smtplib.SMTP")
+    def test_execute_with_selected_files(self, mock_smtp):
+        file1 = FileObject(name="report.pdf", mime_type="application/pdf", owner="test", content=b"pdf-content")
+        file2 = FileObject(name="data.xlsx", mime_type="application/vnd.ms-excel", owner="test", content=b"xlsx-content")
+        config = EmailToolConfig(
+            url="smtp.testserver.com:587",
+            smtp_username="test@test.com",
+            smtp_password="password",
+            input_files=[file1, file2],
+        )
+        email_tool = EmailTool(config=config)
+        mock_server = mock_smtp.return_value.__enter__.return_value
+
+        result = email_tool.execute(
+            recipient_emails=["user@example.com"],
+            subject="Report",
+            body="<p>See attached</p>",
+            files=["report.pdf"],
+        )
+
+        self.assertIn("Email sent successfully", result)
+        call_args = mock_server.sendmail.call_args
+        msg_str = call_args[0][2]
+        self.assertIn("report.pdf", msg_str)
+        self.assertNotIn("data.xlsx", msg_str)
+
+    def test_execute_with_missing_file_raises_error(self):
+        file_obj = FileObject(name="report.pdf", mime_type="application/pdf", owner="test", content=b"pdf-content")
+        config = EmailToolConfig(
+            url="smtp.testserver.com:587",
+            smtp_username="test@test.com",
+            smtp_password="password",
+            input_files=[file_obj],
+        )
+        email_tool = EmailTool(config=config)
+
+        with self.assertRaises(ToolException) as ctx:
+            email_tool.execute(
+                recipient_emails=["user@example.com"],
+                subject="Report",
+                body="<p>See attached</p>",
+                files=["nonexistent.pdf"],
+            )
+        self.assertIn("nonexistent.pdf", str(ctx.exception))
+
+    def test_execute_with_oversized_file_raises_error(self):
+        oversized_content = b"x" * (MAX_ATTACHMENT_SIZE + 1)
+        file_obj = FileObject(name="huge.bin", mime_type="application/octet-stream", owner="test", content=oversized_content)
+        config = EmailToolConfig(
+            url="smtp.testserver.com:587",
+            smtp_username="test@test.com",
+            smtp_password="password",
+            input_files=[file_obj],
+        )
+        email_tool = EmailTool(config=config)
+
+        with self.assertRaises(ToolException) as ctx:
+            email_tool.execute(
+                recipient_emails=["user@example.com"],
+                subject="Big File",
+                body="<p>Too large</p>",
+            )
+        self.assertIn("exceeds maximum attachment size", str(ctx.exception))
+
+    @patch("smtplib.SMTP")
+    def test_execute_no_input_files_sends_without_attachments(self, mock_smtp):
+        config = EmailToolConfig(
+            url="smtp.testserver.com:587",
+            smtp_username="test@test.com",
+            smtp_password="password",
+        )
+        email_tool = EmailTool(config=config)
+        mock_server = mock_smtp.return_value.__enter__.return_value
+
+        result = email_tool.execute(
+            recipient_emails=["user@example.com"],
+            subject="No Attachments",
+            body="<p>Plain email</p>",
+        )
+
+        self.assertIn("Email sent successfully", result)
+
+    @patch("smtplib.SMTP")
+    def test_content_disposition_header_quotes_filename(self, mock_smtp):
+        file_obj = FileObject(
+            name="my report (final).pdf", mime_type="application/pdf", owner="test", content=b"pdf-content"
+        )
+        config = EmailToolConfig(
+            url="smtp.testserver.com:587",
+            smtp_username="test@test.com",
+            smtp_password="password",
+            input_files=[file_obj],
+        )
+        email_tool = EmailTool(config=config)
+        mock_server = mock_smtp.return_value.__enter__.return_value
+
+        result = email_tool.execute(
+            recipient_emails=["user@example.com"],
+            subject="Report",
+            body="<p>See attached</p>",
+        )
+
+        self.assertIn("Email sent successfully", result)
+        call_args = mock_server.sendmail.call_args
+        msg_str = call_args[0][2]
+        self.assertIn("my report (final).pdf", msg_str)
