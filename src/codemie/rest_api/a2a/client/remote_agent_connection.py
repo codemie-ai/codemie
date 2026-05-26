@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import uuid
-from typing import Callable
+from typing import Callable, Optional
 
 from codemie.rest_api.a2a.client.client import A2AClient
 from codemie.rest_api.a2a.types import (
@@ -25,6 +25,7 @@ from codemie.rest_api.a2a.types import (
     TaskStatus,
     TaskState,
     Message,
+    TextPart,
 )
 
 TaskCallbackArg = Task | TaskStatusUpdateEvent | TaskArtifactUpdateEvent
@@ -34,8 +35,14 @@ TaskUpdateCallback = Callable[[TaskCallbackArg, AgentCard], Task]
 class RemoteAgentConnections:
     """A class to hold the connections to the remote agents."""
 
-    def __init__(self, agent_card: AgentCard):
-        self.agent_client = A2AClient(agent_card)
+    def __init__(self, agent_card: AgentCard, protocol_version: Optional[str] = None):
+        """
+        Args:
+            agent_card: The remote agent's card
+            protocol_version: Optional explicit protocol version override.
+                Resolution: explicit > AgentCard.version auto-detect > default (v0.2)
+        """
+        self.agent_client = A2AClient(agent_card, protocol_version=protocol_version)
         self.card = agent_card
 
         self.conversation_name = None
@@ -57,6 +64,7 @@ class RemoteAgentConnections:
                     Task(
                         id=request.id,
                         sessionId=request.sessionId,
+                        contextId=request.contextId,
                         status=TaskStatus(
                             state=TaskState.SUBMITTED,
                             message=request.message,
@@ -71,7 +79,7 @@ class RemoteAgentConnections:
                     break
             return task
         else:  # Non-streaming
-            response = await self.agent_client.send_task(request.model_dump())
+            response = await self.agent_client.send_message(request.model_dump())
             if response.result:
                 await self._process_task_response(request, response, task_callback)
                 return response.result
@@ -81,8 +89,6 @@ class RemoteAgentConnections:
 
     async def _process_task_response(self, request, response, task_callback):
         merge_metadata(response.result, request)
-        # For task status updates, we need to propagate metadata and provide
-        # a unique message id.
         if (
             hasattr(response.result, 'status')
             and hasattr(response.result.status, 'message')
@@ -99,10 +105,11 @@ class RemoteAgentConnections:
             task_callback(response.result, self.card)
 
     def _process_error_response(self, request, response, task_callback):
-        parts = [{"type": "text", "text": response.error.message}]
+        parts = [TextPart(text=response.error.message)]
         task = Task(
             id=request.id,
             sessionId=request.sessionId,
+            contextId=request.contextId,
             status=TaskStatus(state=TaskState.FAILED, message=Message(role="agent", parts=parts)),
         )
         if task_callback:

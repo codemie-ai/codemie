@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ from codemie.rest_api.a2a.types import (
     Artifact,
     TaskStatusUpdateEvent,
     TaskStatus,
+    MessageStreamRequest,
     SendTaskStreamingRequest,
     TaskSendParams,
 )
@@ -33,7 +34,7 @@ class BaseAdapter:
         return raw
 
     def make_streaming_request(self, payload: dict[str, Any]):
-        return SendTaskStreamingRequest(params=(TaskSendParams.model_validate(payload)))
+        return MessageStreamRequest(params=(TaskSendParams.model_validate(payload)))
 
 
 class BedrockAdapter(BaseAdapter):
@@ -52,7 +53,7 @@ class BedrockAdapter(BaseAdapter):
             status = result.get("status", {})
             message = status.get("message")
             if message:
-                message["parts"] = self._convert_parts(message.get("parts", []))
+                message["parts"] = self._normalize_parts(message.get("parts", []))
 
             return {
                 "result": TaskStatusUpdateEvent(
@@ -64,7 +65,7 @@ class BedrockAdapter(BaseAdapter):
 
         elif kind == "artifact-update":
             artifact_info = result.get("artifact", {})
-            artifact_info["parts"] = self._convert_parts(artifact_info.get("parts", []))
+            artifact_info["parts"] = self._normalize_parts(artifact_info.get("parts", []))
 
             return {
                 "result": TaskArtifactUpdateEvent(
@@ -76,13 +77,14 @@ class BedrockAdapter(BaseAdapter):
         return {"result": None}
 
     @staticmethod
-    def _convert_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Convert parts by changing "kind" to "type"."""
+    def _normalize_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Normalize parts — Bedrock already uses 'kind', which is now our primary field.
+        For backward compat with older Bedrock responses that might use 'type', convert to 'kind'."""
         for part in parts:
-            if "kind" in part:
-                part["type"] = part.pop("kind")
+            if "type" in part and "kind" not in part:
+                part["kind"] = part.pop("type")
         return parts
 
     def make_streaming_request(self, payload: dict[str, Any]):
         payload['message']['messageId'] = payload['id']
-        return SendTaskStreamingRequest(method="message/stream", params=(TaskSendParams.model_validate(payload)))
+        return MessageStreamRequest(method="message/stream", params=(TaskSendParams.model_validate(payload)))

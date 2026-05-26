@@ -33,6 +33,8 @@ from codemie.rest_api.a2a.types import (
     AgentSkill,
     Message,
     TaskSendParams,
+    MessageSendRequest,
+    MessageStreamRequest,
     SendTaskRequest,
     SendTaskStreamingRequest,
     TextPart,
@@ -43,30 +45,28 @@ from codemie.rest_api.models.assistant import Assistant, ToolKitDetails, ToolDet
 
 def convert_to_task_request(
     chat_request: AssistantChatRequest, raw_request: Request
-) -> SendTaskRequest | SendTaskStreamingRequest:
+) -> MessageSendRequest | MessageStreamRequest:
     """
-    Convert an AssistantChatRequest to either SendTaskRequest or SendTaskStreamingRequest.
+    Convert an AssistantChatRequest to either MessageSendRequest or MessageStreamRequest.
 
     Args:
         chat_request: The AssistantChatRequest to convert
         raw_request: The raw FastAPI request object
 
     Returns:
-        Either SendTaskRequest or SendTaskStreamingRequest depending on request's stream flag
+        Either MessageSendRequest or MessageStreamRequest depending on request's stream flag
     """
-    # Create Message object from chat request text and content
     message = Message(role="user", parts=[TextPart(text=chat_request.text)])
 
-    # Create TaskSendParams
     params = TaskSendParams(
         id=raw_request.state.uuid,
         sessionId=chat_request.conversation_id,
+        contextId=getattr(chat_request, 'context_id', None),
         message=message,
         historyLength=chat_request.history_index or 0,
     )
 
-    # Choose request type based on request.stream flag
-    request_cls = SendTaskStreamingRequest if chat_request.stream else SendTaskRequest
+    request_cls = MessageStreamRequest if chat_request.stream else MessageSendRequest
     return request_cls(params=params)
 
 
@@ -102,22 +102,17 @@ def convert_messages_to_chat_messages(messages: List[Message]) -> List[ChatMessa
     chat_messages = []
 
     for message in messages:
-        # Convert role from "user"/"agent" to ChatRole.USER/ChatRole.ASSISTANT
         role = ChatRole.USER if message.role == "user" else ChatRole.ASSISTANT
 
-        # Extract text content from parts
         message_text = ""
         for part in message.parts:
-            if part.type == "text":
+            if part.kind == "text":
                 message_text += part.text
-            elif part.type == "file":
-                # For file parts, we might want to include a placeholder or reference
+            elif part.kind == "file":
                 message_text += f"[File: {part.file.name or 'unnamed'}]"
-            elif part.type == "data":
-                # For data parts, we might want to include a summary or representation
+            elif part.kind == "data":
                 message_text += "[Data object]"
 
-        # Create ChatMessage object
         chat_message = ChatMessage(role=role, message=message_text)
         chat_messages.append(chat_message)
 
@@ -245,14 +240,13 @@ def assistant_to_agent_card(
             )
         ]
 
-    # Create the agent card
     return AgentCard(
         name=assistant.name,
         description=assistant.description,
         url=f"{request.base_url.scheme}://{request.base_url.netloc}{config.API_ROOT_PATH}/v1/a2a/assistants/{assistant.id}",
-        version="1.0.0",  # Default version
+        version="0.2.0",
         provider=AgentProvider(organization=config.A2A_PROVIDER_ORGANIZATION, url=config.A2A_PROVIDER_URL),
-        capabilities=AgentCapabilities(streaming=False, pushNotifications=False, stateTransitionHistory=True),
+        capabilities=AgentCapabilities(streaming=True, pushNotifications=False, stateTransitionHistory=True),
         authentication=_get_agent_authentication(),
         skills=skills,
     )

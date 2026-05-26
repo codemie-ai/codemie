@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -22,26 +22,31 @@ from codemie.rest_api.a2a.server.task_manager import TaskManager
 from codemie.rest_api.a2a.server.utils import (
     are_modalities_compatible,
     new_incompatible_types_error,
-    new_not_implemented_error,
 )
 from codemie.rest_api.a2a.utils import convert_messages_to_chat_messages
 from codemie.rest_api.a2a.types import (
-    SendTaskRequest,
-    SendTaskResponse,
-    TaskStatus,
-    TaskState,
-    Message,
-    TextPart,
+    MessageSendRequest,
+    MessageSendResponse,
+    MessageStreamRequest,
+    SendTaskStreamingResponse,
     GetTaskRequest,
     GetTaskResponse,
+    CancelTaskRequest,
+    CancelTaskResponse,
+    TaskResubscribeRequest,
+    TaskStatus,
+    TaskState,
+    TaskStatusUpdateEvent,
+    TaskArtifactUpdateEvent,
+    Message,
+    TextPart,
     TaskQueryParams,
     TaskNotFoundError,
+    TaskNotCancelableError,
     Task,
     Artifact,
     TaskSendParams,
-    SendTaskStreamingRequest,
     JSONRPCResponse,
-    SendTaskStreamingResponse,
 )
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
@@ -68,19 +73,70 @@ class CodemieTaskManager(TaskManager):
 
         return GetTaskResponse(id=request.id, result=task_result)
 
-    async def on_send_task(self, request: SendTaskRequest) -> SendTaskResponse:
-        """Handles the 'send task' request."""
+    async def on_message_send(self, request: MessageSendRequest) -> MessageSendResponse:
+        """Handles the 'message/send' (v0.2) / 'tasks/send' (v0.1) request."""
         validation_error = self._validate_request(request)
         if validation_error:
-            return SendTaskResponse(id=request.id, error=validation_error.error)
+            return MessageSendResponse(id=request.id, error=validation_error.error)
 
         task = self.upsert_task(request.params)
         return self._invoke_agent(request, task)
 
+    async def on_message_stream(
+        self, request: MessageStreamRequest
+    ) -> AsyncIterable[SendTaskStreamingResponse]:
+        """Handles 'message/stream' with full SSE streaming."""
+        validation_error = self._validate_request(request)
+        if validation_error:
+            yield SendTaskStreamingResponse(id=request.id, error=validation_error.error)
+            return
+
+        task = self.upsert_task(request.params)
+
+        async for event in self._handle_a2a_stream(request, task):
+            yield event
+
+    async def on_cancel_task(self, request: CancelTaskRequest) -> CancelTaskResponse:
+        """Handles 'tasks/cancel' request."""
+        task = Task.find_by_id(request.params.id)
+        if task is None:
+            return CancelTaskResponse(id=request.id, error=TaskNotFoundError())
+
+        if task.status.state in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED):
+            return CancelTaskResponse(id=request.id, error=TaskNotCancelableError())
+
+        task_status = TaskStatus(state=TaskState.CANCELED)
+        task = self.update_store(task.id, task_status, None)
+        return CancelTaskResponse(id=request.id, result=task)
+
+    async def on_task_resubscribe(
+        self, request: TaskResubscribeRequest
+    ) -> AsyncIterable[SendTaskStreamingResponse]:
+        """Handles 'tasks/resubscribe' — reconnect to an in-progress task's event stream."""
+        task = Task.find_by_id(request.params.id)
+        if task is None:
+            yield SendTaskStreamingResponse(id=request.id, error=TaskNotFoundError())
+            return
+
+        # Emit current state as a status event
+        yield SendTaskStreamingResponse(
+            id=request.id,
+            result=TaskStatusUpdateEvent(
+                id=task.id,
+                status=task.status,
+                final=task.status.state in (TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED),
+            ),
+        )
+
+    # Backward-compat aliases
+    async def on_send_task(self, request: MessageSendRequest) -> MessageSendResponse:
+        return await self.on_message_send(request)
+
     async def on_send_task_subscribe(
-        self, request: SendTaskStreamingRequest
+        self, request: MessageStreamRequest
     ) -> AsyncIterable[SendTaskStreamingResponse] | JSONRPCResponse:
-        raise new_not_implemented_error(request.id)
+        async for event in self.on_message_stream(request):
+            yield event
 
     @staticmethod
     def upsert_task(task_send_params: TaskSendParams) -> Task:
@@ -90,18 +146,21 @@ class CodemieTaskManager(TaskManager):
             task = Task(
                 id=task_send_params.id,
                 sessionId=task_send_params.sessionId,
+                contextId=task_send_params.contextId,
                 status=TaskStatus(state=TaskState.SUBMITTED),
                 history=[task_send_params.message],
             )
             task.save(refresh=True)
         else:
             task.history.append(task_send_params.message)
+            if task_send_params.contextId and not task.contextId:
+                task.contextId = task_send_params.contextId
             task.update(refresh=True)
 
         return task
 
     @staticmethod
-    def _validate_request(request: SendTaskRequest | SendTaskStreamingRequest) -> JSONRPCResponse | None:
+    def _validate_request(request: MessageSendRequest | MessageStreamRequest) -> JSONRPCResponse | None:
         task_send_params: TaskSendParams = request.params
         if not are_modalities_compatible(task_send_params.acceptedOutputModes, SUPPORTED_CONTENT_TYPES):
             logger.warning(
@@ -114,7 +173,7 @@ class CodemieTaskManager(TaskManager):
         return None
 
     @staticmethod
-    def update_store(task_id: str, status: TaskStatus, artifacts: list[Artifact]) -> Task:
+    def update_store(task_id: str, status: TaskStatus, artifacts: list[Artifact] | None) -> Task:
         task = Task.find_by_id(task_id)
         if not task:
             logger.error(f"Task {task_id} not found for updating the task")
@@ -142,7 +201,7 @@ class CodemieTaskManager(TaskManager):
             new_task.history = []
         return new_task
 
-    def _invoke_agent(self, request: SendTaskRequest, task: Task) -> SendTaskResponse:
+    def _invoke_agent(self, request: MessageSendRequest, task: Task) -> MessageSendResponse:
         agent, assistant_request = self._setup_agent(request, task)
         self.update_store(task_id=request.params.id, status=TaskStatus(state=TaskState.WORKING), artifacts=[])
         try:
@@ -151,7 +210,7 @@ class CodemieTaskManager(TaskManager):
         except Exception as e:
             return self._process_error_response(request, e)
 
-    def _setup_agent(self, request: SendTaskRequest | SendTaskStreamingRequest, task: Task):
+    def _setup_agent(self, request: MessageSendRequest | MessageStreamRequest, task: Task):
         """Set up the agent and assistant request for task processing."""
         task_send_params = request.params
         query = self._get_user_query(task_send_params)
@@ -165,66 +224,88 @@ class CodemieTaskManager(TaskManager):
         return agent, assistant_request
 
     async def _handle_a2a_stream(
-        self, request: SendTaskStreamingRequest, task: Task
+        self, request: MessageStreamRequest, task: Task
     ) -> AsyncIterable[SendTaskStreamingResponse]:
-        """Handle streaming A2A requests."""
+        """Handle streaming A2A requests with full SSE event lifecycle."""
         try:
-            # Mark task as working
             self.update_store(task_id=request.params.id, status=TaskStatus(state=TaskState.WORKING), artifacts=[])
 
-            # Setup agent
             agent, assistant_request = self._setup_agent(request, task)
 
-            # Initial response
-            yield self._create_streaming_response(request.id, task, TaskState.WORKING)
+            # Emit WORKING status event
+            yield SendTaskStreamingResponse(
+                id=request.id,
+                result=TaskStatusUpdateEvent(
+                    id=request.params.id,
+                    status=TaskStatus(state=TaskState.WORKING),
+                    final=False,
+                ),
+            )
 
-            # For now, just use the non-streaming implementation
+            # Invoke agent
             agent_response = agent.invoke_with_a2a_output(assistant_request.text)
 
             # Process response
-            parts = self._create_response_parts(agent_response.get("content"))
+            parts = [TextPart(text=agent_response.get("content", ""))]
             state = TaskState.INPUT_REQUIRED if agent_response.get("require_user_input") else TaskState.COMPLETED
 
-            # Update task with final state
-            artifact = None if state == TaskState.INPUT_REQUIRED else Artifact(parts=parts)
-            task_status = TaskStatus(state=state, message=Message(role="agent", parts=parts))
-            task = self.update_store(request.params.id, task_status, None if artifact is None else [artifact])
+            # Emit artifact event for completed tasks
+            if state == TaskState.COMPLETED:
+                artifact = Artifact(artifactId=uuid4().hex, parts=parts, lastChunk=True)
+                yield SendTaskStreamingResponse(
+                    id=request.id,
+                    result=TaskArtifactUpdateEvent(
+                        id=request.params.id,
+                        artifact=artifact,
+                    ),
+                )
+                task_status = TaskStatus(state=state)
+                self.update_store(request.params.id, task_status, [artifact])
+            else:
+                task_status = TaskStatus(state=state, message=Message(role="agent", parts=parts))
+                self.update_store(request.params.id, task_status, None)
 
-            # Send final response
-            yield self._create_streaming_response(request.id, task, state)
+            # Emit final status event
+            yield SendTaskStreamingResponse(
+                id=request.id,
+                result=TaskStatusUpdateEvent(
+                    id=request.params.id,
+                    status=task_status,
+                    final=True,
+                ),
+            )
 
         except Exception as e:
             logger.error(f"Error in streaming agent invocation: {e}")
-            parts = self._create_response_parts(f"Error: {str(e)}")
+            parts = [TextPart(text=f"Error: {str(e)}")]
             task_status = TaskStatus(state=TaskState.FAILED, message=Message(role="agent", parts=parts))
-            task = self.update_store(request.params.id, task_status, [])
-            yield self._create_streaming_response(request.id, task, TaskState.FAILED)
+            self.update_store(request.params.id, task_status, [])
 
-    def _create_streaming_response(self, request_id: str, task: Task, state: TaskState) -> SendTaskStreamingResponse:
-        """Create a streaming response object."""
-        task_result = self._append_task_history(task, task.history_length if hasattr(task, 'history_length') else None)
-        return SendTaskStreamingResponse(id=request_id, result=task_result)
+            yield SendTaskStreamingResponse(
+                id=request.id,
+                result=TaskStatusUpdateEvent(
+                    id=request.params.id,
+                    status=task_status,
+                    final=True,
+                ),
+            )
 
-    def _create_response_parts(self, content: str) -> list[dict]:
-        """Create response parts from content."""
-        return [{"type": "text", "text": content}]
-
-    def _process_error_response(self, request, e) -> SendTaskResponse:
+    def _process_error_response(self, request, e) -> MessageSendResponse:
         logger.error(f"Error invoking agent: {e}")
-        parts = self._create_response_parts(f"Error: {str(e)}")
+        parts = [TextPart(text=f"Error: {str(e)}")]
         task_status = TaskStatus(state=TaskState.FAILED, message=Message(role="agent", parts=parts))
         task = self.update_store(request.params.id, task_status, [])
         task_result = self._append_task_history(task, request.params.historyLength)
-        return SendTaskResponse(id=request.id, result=task_result)
+        return MessageSendResponse(id=request.id, result=task_result)
 
-    def _process_agent_response(self, request: SendTaskRequest, agent_response: dict) -> SendTaskResponse:
+    def _process_agent_response(self, request: MessageSendRequest, agent_response: dict) -> MessageSendResponse:
         """Processes the agent's response and updates the task store."""
         logger.debug(f"Received response. {agent_response}")
         task_send_params: TaskSendParams = request.params
         task_id = task_send_params.id
         history_length = task_send_params.historyLength
 
-        parts = self._create_response_parts(agent_response.get("content"))
+        parts = [TextPart(text=agent_response.get("content", ""))]
         artifact = None
         if agent_response.get("require_user_input"):
             task_status = TaskStatus(
@@ -233,11 +314,11 @@ class CodemieTaskManager(TaskManager):
             )
         else:
             task_status = TaskStatus(state=TaskState.COMPLETED)
-            artifact = Artifact(parts=parts)
+            artifact = Artifact(artifactId=uuid4().hex, parts=parts)
 
         task = self.update_store(task_id, task_status, None if artifact is None else [artifact])
         task_result = self._append_task_history(task, history_length)
-        return SendTaskResponse(id=request.id, result=task_result)
+        return MessageSendResponse(id=request.id, result=task_result)
 
     @staticmethod
     def _get_user_query(task_send_params: TaskSendParams) -> str:

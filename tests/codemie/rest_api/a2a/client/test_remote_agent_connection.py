@@ -30,6 +30,7 @@ from codemie.rest_api.a2a.types import (
     TaskStatus,
     TaskStatusUpdateEvent,
     TextPart,
+    ProtocolVersion,
 )
 
 
@@ -99,7 +100,7 @@ class TestRemoteAgentConnectionsInitialization:
         assert connection.conversation is None
         assert isinstance(connection.pending_tasks, set)
         assert len(connection.pending_tasks) == 0
-        mock_a2a_client.assert_called_once_with(agent_card_streaming)
+        mock_a2a_client.assert_called_once_with(agent_card_streaming, protocol_version=None)
 
     @patch('codemie.rest_api.a2a.client.remote_agent_connection.A2AClient')
     def test_get_agent(self, mock_a2a_client, agent_card_streaming):
@@ -214,7 +215,7 @@ class TestRemoteAgentConnectionsSendTaskNonStreaming:
 
         with patch('codemie.rest_api.a2a.client.remote_agent_connection.A2AClient') as mock_a2a_client:
             mock_client_instance = MagicMock()
-            mock_client_instance.send_task = AsyncMock(return_value=mock_response)
+            mock_client_instance.send_message = AsyncMock(return_value=mock_response)
             mock_a2a_client.return_value = mock_client_instance
 
             # Arrange
@@ -244,7 +245,7 @@ class TestRemoteAgentConnectionsSendTaskNonStreaming:
 
         with patch('codemie.rest_api.a2a.client.remote_agent_connection.A2AClient') as mock_a2a_client:
             mock_client_instance = MagicMock()
-            mock_client_instance.send_task = AsyncMock(return_value=mock_response)
+            mock_client_instance.send_message = AsyncMock(return_value=mock_response)
             mock_a2a_client.return_value = mock_client_instance
 
             # Arrange
@@ -273,7 +274,7 @@ class TestRemoteAgentConnectionsSendTaskNonStreaming:
 
         with patch('codemie.rest_api.a2a.client.remote_agent_connection.A2AClient') as mock_a2a_client:
             mock_client_instance = MagicMock()
-            mock_client_instance.send_task = AsyncMock(return_value=mock_response)
+            mock_client_instance.send_message = AsyncMock(return_value=mock_response)
             mock_a2a_client.return_value = mock_client_instance
 
             # Arrange

@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, status, Depends, Request, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
 from codemie.configs import logger
@@ -27,14 +27,19 @@ from codemie.rest_api.a2a.server.codemie_task_manager import CodemieTaskManager
 from codemie.rest_api.a2a.types import (
     A2ARequest,
     AgentCard,
-    SendTaskRequest,
+    MessageSendRequest,
+    MessageStreamRequest,
     A2ARequestBody,
     JSONRPCResponse,
     InvalidRequestError,
     JSONParseError,
     InternalError,
     GetTaskRequest,
-    SendTaskStreamingRequest,
+    CancelTaskRequest,
+    TaskResubscribeRequest,
+    SetTaskPushNotificationConfigRequest,
+    GetTaskPushNotificationConfigRequest,
+    SendTaskStreamingResponse,
 )
 from codemie.rest_api.a2a.utils import assistant_to_agent_card
 from codemie.rest_api.models.assistant import Assistant
@@ -57,7 +62,7 @@ router = APIRouter(
 def get_assistant_agent_card(assistant_id: str, request: Request):
     """
     Returns A2A agent card for a specific assistant.
-    Follows the A2A specification for agent discovery.
+    Follows the A2A v0.2 specification for agent discovery.
     """
     # Get assistant by ID first
     assistant = Assistant.find_by_id(assistant_id)
@@ -74,17 +79,15 @@ def get_assistant_agent_card(assistant_id: str, request: Request):
     "/assistants/{assistant_id}",
     status_code=status.HTTP_200_OK,
     summary="Execute A2A Request",
-    description="Endpoint to process requests to assistant",
+    description="Endpoint to process A2A v0.2 JSON-RPC requests (also accepts v0.1 method names)",
 )
 async def execute_a2a_request(assistant_id: str, request_body: A2ARequestBody, user: User = Depends(authenticate)):
     """
     Process A2A request with explicit request body model.
-    This is an alternative to the main endpoint that provides better Swagger UI integration.
+    Supports both v0.1 and v0.2 method names.
     """
-    # Convert request body to dict
     body = request_body.model_dump()
 
-    # Get assistant by ID first
     assistant = Assistant.find_by_id(assistant_id)
 
     if not assistant:
@@ -92,7 +95,6 @@ async def execute_a2a_request(assistant_id: str, request_body: A2ARequestBody, u
             code=status.HTTP_404_NOT_FOUND, message=f"Assistant with id {assistant_id} wasn't found"
         )
 
-    # Check access permissions
     if not Ability(user).can(Action.READ, assistant):
         raise ExtendedHTTPException(
             code=status.HTTP_403_FORBIDDEN,
@@ -102,23 +104,42 @@ async def execute_a2a_request(assistant_id: str, request_body: A2ARequestBody, u
         )
 
     try:
-        # Parse the request body as an A2A request
         json_rpc_request = A2ARequest.validate_python(body)
-
-        # Initialize task manager
         task_manager = CodemieTaskManager(assistant=assistant, user=user)
 
-        # Currently we only support SendTaskRequest, other request types will be added later
         if isinstance(json_rpc_request, GetTaskRequest):
             response = await task_manager.on_get_task(json_rpc_request)
-        elif isinstance(json_rpc_request, SendTaskRequest):
-            response = await task_manager.on_send_task(json_rpc_request)
-        elif isinstance(json_rpc_request, SendTaskStreamingRequest):
-            response = await task_manager.on_send_task_subscribe(json_rpc_request)
+            return JSONResponse(response.model_dump(exclude_none=True))
+
+        elif isinstance(json_rpc_request, MessageSendRequest):
+            response = await task_manager.on_message_send(json_rpc_request)
+            return JSONResponse(response.model_dump(exclude_none=True))
+
+        elif isinstance(json_rpc_request, MessageStreamRequest):
+            return StreamingResponse(
+                _sse_generator(task_manager.on_message_stream(json_rpc_request)),
+                media_type="text/event-stream",
+            )
+
+        elif isinstance(json_rpc_request, CancelTaskRequest):
+            response = await task_manager.on_cancel_task(json_rpc_request)
+            return JSONResponse(response.model_dump(exclude_none=True))
+
+        elif isinstance(json_rpc_request, TaskResubscribeRequest):
+            return StreamingResponse(
+                _sse_generator(task_manager.on_task_resubscribe(json_rpc_request)),
+                media_type="text/event-stream",
+            )
+
+        elif isinstance(json_rpc_request, (SetTaskPushNotificationConfigRequest, GetTaskPushNotificationConfigRequest)):
+            logger.warning(f"Push notification methods not yet implemented: {json_rpc_request.method}")
+            from codemie.rest_api.a2a.types import PushNotificationNotSupportedError
+            response = JSONRPCResponse(id=json_rpc_request.id, error=PushNotificationNotSupportedError())
+            return JSONResponse(response.model_dump(exclude_none=True))
+
         else:
             logger.warning(f"Unexpected request type: {type(json_rpc_request)}")
-            raise ValueError(f"Unexpected request type: {type(request_body.model_dump())}")
-        return JSONResponse(response.model_dump(exclude_none=True))
+            raise ValueError(f"Unexpected request type: {type(json_rpc_request)}")
 
     except Exception as e:
         return _handle_exception(e)
@@ -161,6 +182,13 @@ async def fetch_remote_assistant(
         )
 
     return agent_card
+
+
+async def _sse_generator(event_stream) -> str:
+    """Convert an async iterable of SendTaskStreamingResponse to SSE format."""
+    async for event in event_stream:
+        data = event.model_dump(exclude_none=True)
+        yield f"data: {json.dumps(data)}\n\n"
 
 
 def _handle_exception(e: Exception) -> JSONResponse:
