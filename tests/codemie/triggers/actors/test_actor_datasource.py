@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -157,12 +158,14 @@ def test_reindex_code(
 
     mock_git_repo_get_by_fields.assert_called_once_with({"id": repo_id, "setting_id": mock_code_index_info.setting_id})
 
-    mock_code_processor_class.create_processor.assert_called_once_with(
-        git_repo=mock_git_repo_get_by_fields.return_value,
-        user=mock_user,
-        index=mock_code_index_info,
-        request_uuid=resource_id,
-    )
+    mock_code_processor_class.create_processor.assert_called_once()
+    _, create_kwargs = mock_code_processor_class.create_processor.call_args
+    assert create_kwargs["git_repo"] == mock_git_repo_get_by_fields.return_value
+    assert create_kwargs["user"] == mock_user
+    assert create_kwargs["index"] == mock_code_index_info
+    # Fresh UUID generated per run — must not reuse the permanent resource_id
+    assert create_kwargs["request_uuid"] != resource_id
+    uuid.UUID(create_kwargs["request_uuid"])  # raises if not a valid UUID
 
     mock_processor_instance.reprocess.assert_called_once()
 
@@ -233,7 +236,9 @@ def test_reindex_jira(
     assert kwargs["project_name"] == project_name
     assert kwargs["credentials"] == patch_settings_service_get_jira_creds.return_value
     assert kwargs["jql"] == jql
-    assert kwargs["request_uuid"] == resource_id
+    # Fresh UUID generated per run — must not reuse the permanent resource_id
+    assert kwargs["request_uuid"] != resource_id
+    uuid.UUID(kwargs["request_uuid"])  # raises if not a valid UUID
     assert kwargs["index_info"] == mock_jira_index_info
     assert kwargs["description"] == mock_jira_index_info.description
     assert kwargs["project_space_visible"] == mock_jira_index_info.project_space_visible
@@ -314,7 +319,9 @@ def test_reindex_confluence(
     assert kwargs["description"] == mock_confluence_index_info_full.description
     assert kwargs["project_space_visible"] is mock_confluence_index_info_full.project_space_visible
     assert kwargs["index"] == mock_confluence_index_info_full
-    assert kwargs["request_uuid"] == resource_id
+    # Fresh UUID generated per run — must not reuse the permanent resource_id
+    assert kwargs["request_uuid"] != resource_id
+    uuid.UUID(kwargs["request_uuid"])  # raises if not a valid UUID
     assert kwargs["embedding_model"] == mock_confluence_index_info_full.embeddings_model
 
     mock_processor_instance.reprocess.assert_called_once()
@@ -376,8 +383,10 @@ def test_reindex_google(
     assert kwargs["user"] == mock_user
     assert kwargs["project_name"] == mock_google_index_info.project_name
     assert kwargs["google_doc"] == mock_google_index_info.google_doc_link
-    assert kwargs["description"] == mock_google_index_info.description  # Use mock_google_index_info.description
-    assert kwargs["request_uuid"] == resource_id
+    assert kwargs["description"] == mock_google_index_info.description
+    # Fresh UUID generated per run — must not reuse the permanent resource_id
+    assert kwargs["request_uuid"] != resource_id
+    uuid.UUID(kwargs["request_uuid"])  # raises if not a valid UUID
     assert kwargs["index_info"] == mock_google_index_info
     assert kwargs["embedding_model"] == mock_google_index_info.embeddings_model
 

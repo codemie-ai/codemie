@@ -120,7 +120,9 @@ class AzureDevOpsWorkItemDatasourceProcessor(BaseDatasourceProcessor):
 
             multimodal_llms = llm_service.get_multimodal_llms()
             if multimodal_llms:
-                chat_model = get_llm_by_credentials(llm_model=multimodal_llms[0], streaming=False)
+                chat_model = get_llm_by_credentials(
+                    llm_model=multimodal_llms[0], streaming=False, request_id=self.request_uuid
+                )
         except Exception as e:
             logger.warning(f"Could not initialise vision model for work item attachment indexing: {e}")
 

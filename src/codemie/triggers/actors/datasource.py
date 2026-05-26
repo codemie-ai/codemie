@@ -98,7 +98,7 @@ def reindex_code(payload: CodeReindexTask):
         git_repo=app_repo,
         user=payload.user,
         index=payload.index_info,
-        request_uuid=payload.resource_id,
+        request_uuid=str(uuid4()),
     )
 
     datasource_concurrency_manager.run(processor.reprocess, processor.index)
@@ -156,7 +156,7 @@ def reindex_jira(payload: JiraReindexTask):
         description=payload.index_info.description or "",
         project_space_visible=payload.index_info.project_space_visible or False,
         index_info=payload.index_info,
-        request_uuid=payload.resource_id,
+        request_uuid=str(uuid4()),
         embedding_model=payload.index_info.embeddings_model,
     )
 
@@ -233,7 +233,7 @@ def reindex_confluence(payload: ConfluenceReindexTask):
         description=payload.index_info.description or "",
         project_space_visible=payload.index_info.project_space_visible or False,
         index=payload.index_info,
-        request_uuid=payload.resource_id,
+        request_uuid=str(uuid4()),
         embedding_model=payload.index_info.embeddings_model,
     )
 
@@ -288,7 +288,7 @@ def reindex_google(payload: GoogleReindexTask):
         project_name=payload.index_info.project_name,
         google_doc=payload.index_info.google_doc_link,
         description=payload.index_info.description or "",
-        request_uuid=payload.resource_id,
+        request_uuid=str(uuid4()),
         index_info=payload.index_info,
         embedding_model=payload.index_info.embeddings_model,
     )
@@ -365,7 +365,7 @@ def reindex_azure_devops_wiki(payload: AzureDevOpsWikiReindexTask):
         description=payload.index_info.description or "",
         project_space_visible=payload.index_info.project_space_visible or False,
         index_info=payload.index_info,
-        request_uuid=payload.resource_id,
+        request_uuid=str(uuid4()),
         embedding_model=payload.index_info.embeddings_model,
     )
 
@@ -438,7 +438,7 @@ def reindex_azure_devops_work_item(payload: AzureDevOpsWorkItemReindexTask):
         description=payload.index_info.description or "",
         project_space_visible=payload.index_info.project_space_visible or False,
         index_info=payload.index_info,
-        request_uuid=payload.resource_id,
+        request_uuid=str(uuid4()),
         embedding_model=payload.index_info.embeddings_model,
     )
 

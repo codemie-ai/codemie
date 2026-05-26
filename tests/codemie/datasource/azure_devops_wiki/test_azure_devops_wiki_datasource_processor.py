@@ -414,12 +414,14 @@ def test_init_loader_with_multimodal_llm(mock_llm_service, azure_devops_wiki_pro
         with patch(
             "codemie.core.dependecies.get_llm_by_credentials",
             return_value=mock_chat_model,
-        ):
+        ) as mock_get_llm:
             processor._init_loader()
 
     _, kwargs = mock_loader_class.call_args
     assert "chat_model" in kwargs
-    # chat_model should not be None (it's either the mock or fell back to None)
+    # request_id must be propagated so TokensCalculationCallback is attached
+    _, llm_kwargs = mock_get_llm.call_args
+    assert llm_kwargs.get("request_id") == processor.request_uuid
 
 
 @patch("codemie.datasource.azure_devops_wiki.azure_devops_wiki_datasource_processor.llm_service")
