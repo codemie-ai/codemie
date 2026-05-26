@@ -33,7 +33,6 @@ from codemie.core.models import GitRepo
 from codemie.rest_api.models.index import IndexInfo
 from codemie_tools.base.models import CredentialTypes
 from codemie.rest_api.models.settings import Settings
-from codemie.rest_api.security.user import User
 from codemie.service.constants import FullDatasourceTypes
 from codemie.service.settings.base_settings import SearchFields
 from codemie.triggers.actors.assistant import invoke_assistant
@@ -49,7 +48,7 @@ from codemie.triggers.actors.datasource import (
 )
 from codemie.triggers.actors.workflow import invoke_workflow
 from codemie.triggers.bindings.cache_manager import CacheManager
-from codemie.triggers.bindings.utils import validate_assistant, validate_datasource
+from codemie.triggers.bindings.utils import resolve_trigger_user, validate_assistant, validate_datasource
 from codemie.triggers.trigger_models import (
     AzureDevOpsWikiReindexTask,
     AzureDevOpsWorkItemReindexTask,
@@ -488,7 +487,7 @@ class Cron:
         self, index_type, cron_trigger, job_id, resource_id, user_id, project_name, resource_name, jql
     ):
         """Schedule datasource job based on index type"""
-        user = User(id=user_id)
+        user = resolve_trigger_user(user_id)
         if not user:
             logger.error("User not found: %s", user_id)
             return None

@@ -15,8 +15,29 @@
 from codemie.configs import logger
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.index import IndexInfo
+from codemie.rest_api.security.user import User
 from codemie.service.constants import FullDatasourceTypes
 from codemie.triggers.trigger_exceptions import DatasourceNotValidated, NotImplementedDatasource
+
+
+def resolve_trigger_user(user_id: str) -> User:
+    from codemie.clients.postgres import get_session
+    from codemie.repository.user_repository import user_repository
+
+    try:
+        with get_session() as session:
+            db_user = user_repository.get_active_by_id(session, user_id)
+        if db_user:
+            return User(
+                id=db_user.id,
+                username=db_user.username,
+                name=db_user.name or "",
+                email=db_user.email,
+            )
+    except Exception:
+        logger.warning("resolve_trigger_user: DB lookup failed for user_id=%r, using stub", user_id)
+
+    return User(id=user_id)
 
 
 def validate_assistant(assistant_id):

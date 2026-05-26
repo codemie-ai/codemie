@@ -30,7 +30,7 @@ from codemie.triggers.actors.assistant import invoke_assistant
 from codemie.triggers.actors.datasource import reindex_code, reindex_confluence, reindex_google, reindex_jira
 from codemie.triggers.actors.workflow import invoke_workflow
 from codemie.triggers.bindings.github_webhook_security import GitHubWebhookSecurity
-from codemie.triggers.bindings.utils import validate_assistant, validate_datasource
+from codemie.triggers.bindings.utils import resolve_trigger_user, validate_assistant, validate_datasource
 from codemie.triggers.trigger_exceptions import NotImplementedDatasource
 from codemie.triggers.trigger_models import (
     CodeReindexTask,
@@ -425,7 +425,7 @@ class WebhookService:
                 + f" to the webhook project '{project_name}'.",
             )
 
-        user = User(id=setting.user_id)
+        user = resolve_trigger_user(setting.user_id)
         resource_name = datasource.repo_name
         index_type = datasource.index_type
 
