@@ -17,6 +17,7 @@ from typing import List, Optional
 from fastapi import APIRouter, status, Request, Depends
 from fastapi.responses import JSONResponse
 
+from codemie.configs.customer_config import customer_config
 from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import BaseResponse
@@ -46,6 +47,24 @@ INVALID_SETTING_DATA_MSG = (
     "Invalid setting data. Please provide a non-empty, unique alias for the setting "
     "and ensure all required fields are filled correctly. If the problem persists, contact support."
 )
+PERSONAL_LITELLM_FEATURE = "personalLiteLLMIntegrations"
+PERSONAL_LITELLM_DISABLED_DETAILS = "Personal LiteLLM integrations are not enabled for this customer."
+PERSONAL_LITELLM_DISABLED_HELP = "Please contact your system administrator to enable personal LiteLLM integrations."
+
+
+def _validate_litellm_user_setting_access(user: User) -> None:
+    if user.is_admin_or_maintainer:
+        return
+
+    if customer_config.is_feature_enabled(PERSONAL_LITELLM_FEATURE):
+        return
+
+    raise ExtendedHTTPException(
+        code=status.HTTP_403_FORBIDDEN,
+        message="Access denied",
+        details=PERSONAL_LITELLM_DISABLED_DETAILS,
+        help=PERSONAL_LITELLM_DISABLED_HELP,
+    )
 
 
 @router.get(
@@ -105,13 +124,7 @@ def create_user_setting(request: SettingRequest, user: User = Depends(authentica
     if request.credential_type == CredentialTypes.SCHEDULER:
         validate_scheduler_request(request)
     elif request.credential_type == CredentialTypes.LITE_LLM:
-        if not user.is_admin_or_maintainer:
-            raise ExtendedHTTPException(
-                code=status.HTTP_403_FORBIDDEN,
-                message="Access denied",
-                details="LiteLLM integrations can only be created by admin users.",
-                help="Please contact your system administrator to configure LiteLLM integrations.",
-            )
+        _validate_litellm_user_setting_access(user)
         # Check if LiteLLM enterprise is available before allowing credential creation
         from codemie.enterprise.litellm import require_litellm_enabled
 
@@ -150,13 +163,7 @@ def update_user_setting(request: SettingRequest, setting_id: str, user: User = D
     if request.credential_type == CredentialTypes.SCHEDULER:
         validate_scheduler_request(request)
     elif request.credential_type == CredentialTypes.LITE_LLM:
-        if not user.is_admin_or_maintainer:
-            raise ExtendedHTTPException(
-                code=status.HTTP_403_FORBIDDEN,
-                message="Access denied",
-                details="LiteLLM integrations can only be updated by admin users.",
-                help="Please contact your system administrator to configure LiteLLM integrations.",
-            )
+        _validate_litellm_user_setting_access(user)
         # Check if LiteLLM enterprise is available before allowing credential update
         from codemie.enterprise.litellm import require_litellm_enabled
 

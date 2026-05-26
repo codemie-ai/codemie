@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -22,9 +24,9 @@ from starlette.responses import StreamingResponse
 
 from codemie.configs import config, logger
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.core.thread import ThreadedGenerator
 
 if TYPE_CHECKING:
+    from codemie.core.thread import ThreadedGenerator
     from codemie.workflows.workflow import WorkflowExecutor
 
 NDJSON_MEDIA_TYPE = "application/x-ndjson"
