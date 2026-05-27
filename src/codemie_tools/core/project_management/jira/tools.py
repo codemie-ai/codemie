@@ -386,7 +386,7 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin):
             ), token_count
         return super()._limit_output_content(output)
 
-    def _post_process_output_content(self, output: Any, *args, **kwargs) -> Any:
+    def _post_process_output_content(self, mcp_tool_output: Any, *args, **kwargs) -> Any:
         """Return a ``(content, artifact)`` tuple for ``content_and_artifact``.
 
         When image attachments are present the artifact carries the
@@ -394,12 +394,12 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin):
         will inject them into the LLM context as ``HumanMessage`` content
         blocks.
         """
-        if isinstance(output, JiraMultimodalResponse) and output.image_attachments:
-            text = super()._post_process_output_content(output.text, *args, **kwargs)
-            artifacts = self._download_image_artifacts(output.image_attachments)
+        if isinstance(mcp_tool_output, JiraMultimodalResponse) and mcp_tool_output.image_attachments:
+            text = super()._post_process_output_content(mcp_tool_output.text, *args, **kwargs)
+            artifacts = self._download_image_artifacts(mcp_tool_output.image_attachments)
             return text, artifacts
-        if isinstance(output, JiraMultimodalResponse):
-            text = super()._post_process_output_content(output.text, *args, **kwargs)
+        if isinstance(mcp_tool_output, JiraMultimodalResponse):
+            text = super()._post_process_output_content(mcp_tool_output.text, *args, **kwargs)
             return text, None
-        text = super()._post_process_output_content(output, *args, **kwargs)
+        text = super()._post_process_output_content(mcp_tool_output, *args, **kwargs)
         return text, None

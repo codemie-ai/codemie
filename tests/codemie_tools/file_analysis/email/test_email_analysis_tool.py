@@ -624,8 +624,12 @@ def test_fetch_url_content_normalizes_github_blob_url():
     eml_bytes = b"From: a@b.com\r\nSubject: test\r\n\r\nbody"
     blob_url = "https://github.com/owner/repo/blob/main/test.eml"
     raw_url = "https://raw.githubusercontent.com/owner/repo/main/test.eml"
+    mock_dns = [(None, None, None, None, ("185.199.108.133", 0))]
 
-    with patch("codemie_tools.file_analysis.email.tools.httpx.Client") as mock_cls:
+    with (
+        patch("codemie_tools.file_analysis.email.tools.httpx.Client") as mock_cls,
+        patch("codemie_tools.file_analysis.email.tools.socket.getaddrinfo", return_value=mock_dns),
+    ):
         mock_client = MagicMock()
         mock_cls.return_value.__enter__.return_value = mock_client
         mock_response = MagicMock()

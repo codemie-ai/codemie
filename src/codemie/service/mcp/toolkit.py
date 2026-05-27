@@ -299,10 +299,10 @@ class MCPTool(CodeMieTool):
         return truncated_output, token_count
 
     @override
-    def _post_process_output_content(self, output: Any, *args, **kwargs) -> Any:
-        if isinstance(output, MCPToolInvocationResponse) and output.content:
-            return _convert_mcp_response_to_tool_message(output)
-        return super()._post_process_output_content(output, *args, **kwargs)
+    def _post_process_output_content(self, mcp_tool_output: Any, *args, **kwargs) -> Any:
+        if isinstance(mcp_tool_output, MCPToolInvocationResponse) and mcp_tool_output.content:
+            return _convert_mcp_response_to_tool_message(mcp_tool_output)
+        return super()._post_process_output_content(mcp_tool_output, *args, **kwargs)
 
 
 class ContextAwareMCPTool(MCPTool):

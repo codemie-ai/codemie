@@ -184,7 +184,7 @@ class CodeMieTool(BaseTool):
 
         return truncated_output, token_count
 
-    def _post_process_output_content(self, output: Any, *args, **kwargs) -> Any:
+    def _post_process_output_content(self, mcp_tool_output: Any, *args, **kwargs) -> Any:
         """Convert tool output to a string suitable for LLM consumption.
 
         Non-string outputs (dicts, lists) are JSON-serialized to prevent them from
@@ -193,9 +193,9 @@ class CodeMieTool(BaseTool):
         be treated as an OpenAI content block with ``type="file"``, which Azure
         OpenAI does not support.
         """
-        if isinstance(output, str):
-            return output
+        if isinstance(mcp_tool_output, str):
+            return mcp_tool_output
         try:
-            return json.dumps(output, ensure_ascii=False)
+            return json.dumps(mcp_tool_output, ensure_ascii=False)
         except Exception:
-            return str(output)
+            return str(mcp_tool_output)
