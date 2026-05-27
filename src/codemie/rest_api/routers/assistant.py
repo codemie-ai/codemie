@@ -2885,7 +2885,7 @@ def _llm_validate_on_marketplace_publish(
     request_id = raw_request.state.uuid if hasattr(raw_request.state, "uuid") else None
 
     # Set user context for LLM budget tracking during validation workflow
-    user_email = user.email or user.username or None
+    user_email = user.username or user.email or None
     set_logging_info(
         uuid=request_id or "unknown",
         user_id=user.id,
