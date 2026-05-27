@@ -33,7 +33,7 @@ from codemie_tools.notification.email.tools_vars import EMAIL_TOOL
 
 logger = logging.getLogger(__name__)
 
-MAX_ATTACHMENT_SIZE = 19 * 1024 * 1024  # 19MB
+MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024  # 25MB
 
 
 class EmailToolInput(BaseModel):
@@ -129,9 +129,6 @@ class EmailTool(CodeMieTool, FileToolMixin):
             server.docmd("AUTH", "XOAUTH2 " + auth_string_encoded)
 
     def _validate_files(self, files: Dict[str, Tuple[bytes, str]]) -> Dict[str, Tuple[bytes, str]]:
-        if not files:
-            raise ToolException("No files provided for attachment. Please provide files via input_files configuration.")
-
         validated = {}
         for filename, (content, mime_type) in files.items():
             file_size = len(content)
@@ -142,29 +139,28 @@ class EmailTool(CodeMieTool, FileToolMixin):
                     f"File '{filename}' ({size_mb:.2f}MB) exceeds maximum attachment size of {max_size_mb:.0f}MB"
                 )
             validated[filename] = (content, mime_type)
+
+        total_size = sum(len(content) for content, _ in validated.values())
+        if total_size > MAX_ATTACHMENT_SIZE:
+            raise ToolException(
+                f"Total attachment size {total_size / 1024**2:.1f}MB exceeds "
+                f"{MAX_ATTACHMENT_SIZE / 1024**2:.0f}MB limit."
+            )
+
         return validated
 
     def _get_attachments(self, files: Optional[List[str]]) -> Dict[str, Tuple[bytes, str]]:
         all_files = self._resolve_files()
         if not all_files:
+            if files:
+                raise ToolException(
+                    f"Requested files {files} not found: no input_files configured."
+                )
             return {}
 
-        if files:
-            requested = {}
-            missing = []
-            for name in files:
-                if name in all_files:
-                    requested[name] = all_files[name]
-                else:
-                    missing.append(name)
-            if missing:
-                raise ToolException(
-                    f"Requested files not found in input_files: {missing}. "
-                    f"Available files: {list(all_files.keys())}"
-                )
-            return self._validate_files(requested)
-
-        return self._validate_files(all_files)
+        params_dict = {"files": files} if files else {}
+        selected = self._filter_requested_files(all_files, params_dict)
+        return self._validate_files(selected)
 
     def execute(
         self,
@@ -192,12 +188,14 @@ class EmailTool(CodeMieTool, FileToolMixin):
             if cc_emails:
                 msg["Cc"] = ", ".join(cc_emails)
 
-            part = MIMEText(body, "html")
-            msg.attach(part)
+            body_container = MIMEMultipart("alternative")
+            body_container.attach(MIMEText(body, "html"))
+            msg.attach(body_container)
 
             files_content = self._get_attachments(files)
             for filename, (content, mime_type) in files_content.items():
-                attachment = MIMEBase("application", "octet-stream")
+                main_type, sub_type = mime_type.split("/", 1) if "/" in mime_type else ("application", "octet-stream")
+                attachment = MIMEBase(main_type, sub_type)
                 attachment.set_payload(content)
                 encoders.encode_base64(attachment)
                 attachment.add_header("Content-Disposition", "attachment", filename=filename)

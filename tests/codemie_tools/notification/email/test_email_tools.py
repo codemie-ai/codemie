@@ -14,6 +14,7 @@
 
 import smtplib
 import unittest
+from email import message_from_string
 from unittest.mock import patch
 
 from langchain_core.tools import ToolException
@@ -368,4 +369,7 @@ class TestEmailTool(unittest.TestCase):
         self.assertIn("Email sent successfully", result)
         call_args = mock_server.sendmail.call_args
         msg_str = call_args[0][2]
-        self.assertIn("my report (final).pdf", msg_str)
+        parsed = message_from_string(msg_str)
+        attachments = [p for p in parsed.walk() if p.get_content_disposition() == "attachment"]
+        self.assertEqual(len(attachments), 1)
+        self.assertEqual(attachments[0].get_filename(), "my report (final).pdf")

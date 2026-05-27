@@ -17,6 +17,8 @@
 import logging
 from typing import Dict, Tuple, Optional, List, TYPE_CHECKING
 
+from langchain_core.tools import ToolException
+
 if TYPE_CHECKING:
     from codemie_tools.base.file_object import FileObject
 
@@ -171,14 +173,13 @@ class FileToolMixin:
             logger.debug("No specific files requested, returning all files")
             return all_files
 
-        filtered_files = {}
-        for file_name in requested_file_names:
-            if file_name in all_files:
-                filtered_files[file_name] = all_files[file_name]
-                logger.debug(f"Matched requested file: {file_name}")
-            else:
-                logger.warning(f"Requested file '{file_name}' not found in available files: {list(all_files.keys())}")
+        missing = [f for f in requested_file_names if f not in all_files]
+        if missing:
+            raise ToolException(
+                f"Requested files not found: {missing}. "
+                f"Available files: {list(all_files.keys())}"
+            )
 
-        result = filtered_files if filtered_files else all_files
-        logger.debug(f"Filtered result: {len(result)} files - {list(result.keys())}")
-        return result
+        filtered_files = {name: all_files[name] for name in requested_file_names}
+        logger.debug(f"Filtered result: {len(filtered_files)} files - {list(filtered_files.keys())}")
+        return filtered_files
