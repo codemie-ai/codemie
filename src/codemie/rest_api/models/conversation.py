@@ -328,11 +328,14 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             assistant_id=assistant_id,
         )
 
-        self.history = [
-            *(self.history or []),
-            user_message,
-            assistant_message,
+        existing_history = list(self.history or [])
+        retained_history = [
+            message
+            for message in existing_history
+            if not (message.history_index == history_index and message.role in {ChatRole.USER, ChatRole.ASSISTANT})
         ]
+
+        self.history = [*retained_history, user_message, assistant_message]
         self.project = project
 
     def update_conversation_assistants(self, active_assistant_id: str = None):

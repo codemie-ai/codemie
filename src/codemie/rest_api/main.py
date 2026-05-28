@@ -544,14 +544,30 @@ async def lifespan(app: FastAPI):
         from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
         from codemie.clients.postgres import PostgresClient
         from codemie.configs.otel_config import enrich_sqlalchemy_spans
+        from sqlalchemy.engine import Engine
+        from sqlalchemy.ext.asyncio import AsyncEngine
 
         sync_engine = PostgresClient.get_engine()
         async_engine = PostgresClient.get_async_engine()
-        engines = [sync_engine, async_engine.sync_engine]
-        SQLAlchemyInstrumentor().instrument(engines=engines)
-        # Enrich span names from "SELECT" to "SELECT <table>" for better visibility.
-        # Must be called after instrument() so our listener runs after OTel's.
-        enrich_sqlalchemy_spans(engines)
+        engines: list[Engine] = []
+
+        if isinstance(sync_engine, Engine):
+            engines.append(sync_engine)
+        else:
+            logger.debug(f"Skipping SQLAlchemy OTel instrumentation for non-engine sync target: {type(sync_engine)!r}")
+
+        if isinstance(async_engine, AsyncEngine):
+            engines.append(async_engine.sync_engine)
+        else:
+            logger.debug(
+                f"Skipping SQLAlchemy OTel instrumentation for non-engine async target: {type(async_engine)!r}"
+            )
+
+        if engines:
+            SQLAlchemyInstrumentor().instrument(engines=engines)
+            # Enrich span names from "SELECT" to "SELECT <table>" for better visibility.
+            # Must be called after instrument() so our listener runs after OTel's.
+            enrich_sqlalchemy_spans(engines)
 
     # Initialize JWT keys and SuperAdmin for user management (EPMCDME-10160)
     _initialize_jwt_keys()

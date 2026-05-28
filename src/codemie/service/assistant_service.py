@@ -43,6 +43,7 @@ from codemie.rest_api.models.assistant import (
 from codemie.rest_api.models.conversation import Conversation
 from codemie.rest_api.security.user import User
 from codemie.service.assistant import VirtualAssistantService
+from codemie.service.assistant.assistant_engine_builder import LangGraphAssistantBuilder
 from codemie.service.assistant.assistant_user_mapping_service import assistant_user_mapping_service
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
 from codemie.service.llm_service.llm_service import llm_service
@@ -286,62 +287,18 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         thread_generator: MessageQueue,
         llm_model: str,
     ) -> list[CompiledStateGraph[Any, Any, Any, Any]]:
-        """Create subagent executors for assistants with sub-assistants.
-
-        Args:
-            assistant: The parent assistant with sub-assistant IDs
-            user: Current user
-            request: Chat request
-            request_uuid: Unique request identifier
-            thread_generator: Message queue for streaming
-            llm_model: LLM model to use for subagents
-
-        Returns:
-            dict: Dictionary of subagent executors keyed by assistant ID
-        """
-        if not assistant.assistant_ids:
-            return []
-
-        from codemie.service.tools.assistant_factory import create_assistant_executors
-
-        logger.debug(f"Creating subagent executors for {len(assistant.assistant_ids)} sub-assistants")
-        subagents = create_assistant_executors(
-            assistant_ids=assistant.assistant_ids,
+        return LangGraphAssistantBuilder.create_subagent_executors(
+            assistant=assistant,
             user=user,
             request=request,
             request_uuid=request_uuid,
             thread_generator=thread_generator,
             llm_model=llm_model,
-            parent_assistant=assistant,
         )
-        logger.debug(f"Created {len(subagents)} subagent executors")
-        return subagents
 
     @staticmethod
     def _get_subagent_descriptions(assistant: Assistant, user: User) -> dict[str, str]:
-        """Fetch assistant descriptions for handoff tool creation.
-
-        Args:
-            assistant: The parent assistant with sub-assistant IDs
-            user: Current user
-
-        Returns:
-            Dictionary mapping assistant names to descriptions
-        """
-        if not assistant.assistant_ids:
-            return {}
-
-        try:
-            sub_assistants = Assistant.get_by_ids(user, assistant.assistant_ids, parent_assistant=assistant)
-            descriptions = {
-                sub_assistant.name: sub_assistant.description or f"Assistant {sub_assistant.name}"
-                for sub_assistant in sub_assistants
-            }
-            logger.debug(f"Fetched descriptions for {len(descriptions)} subagents")
-            return descriptions
-        except Exception as e:
-            logger.error(f"Failed to fetch subagent descriptions: {str(e)}")
-            return {}
+        return LangGraphAssistantBuilder.get_subagent_descriptions(assistant, user)
 
     @classmethod
     def _build_bedrock_agent(
@@ -452,21 +409,18 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         llm_model: str,
         smart_tool_selection_enabled: bool,
     ) -> None:
-        """Configure LangGraph-specific agent parameters (modifies agent_kwargs in place)."""
-        agent_kwargs["smart_tool_selection_enabled"] = smart_tool_selection_enabled
-
-        # Create subagent executors if assistant has sub-assistants
-        subagents = cls._create_subagent_executors(
+        LangGraphAssistantBuilder.configure_agent_kwargs(
+            agent_kwargs=agent_kwargs,
             assistant=assistant,
             user=user,
             request=request,
             request_uuid=request_uuid,
             thread_generator=thread_generator,
             llm_model=llm_model,
+            smart_tool_selection_enabled=smart_tool_selection_enabled,
+            create_subagent_executors=cls._create_subagent_executors,
+            get_subagent_descriptions=cls._get_subagent_descriptions,
         )
-        if subagents:
-            agent_kwargs["subagents"] = subagents
-            agent_kwargs["subagent_descriptions"] = cls._get_subagent_descriptions(assistant, user)
 
     @classmethod
     def build_agent(

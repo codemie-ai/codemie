@@ -1,0 +1,4 @@
+METADATA_KEY_HANDOFF_DESTINATION = "__handoff_destination"
+METADATA_KEY_HANDOFF_BACK = "__is_handoff_back"
+METADATA_KEY_PARALLEL_SUBAGENT_PARENT_HANDOFF = "__parallel_subagent_parent_handoff"
+METADATA_KEY_SUBAGENT_TASK = "__subagent_task"

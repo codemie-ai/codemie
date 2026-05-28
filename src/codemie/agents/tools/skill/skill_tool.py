@@ -41,11 +41,13 @@ Example: skill: 'api-testing' to get REST API testing patterns.
 For a task requiring both API testing and code review, load each skill separately in sequence.
 """
 
-_COMPANION_FILE_TOOL_DESCRIPTION = """Load a bundled companion file for an attached skill.
+_COMPANION_FILE_TOOL_DESCRIPTION = """Load a specific file from a skill.
 
-Use this after the main skill tool when the loaded skill advertises companion files such as
+Use this after the main skill tool when the loaded skill advertises files such as
 references or assets. Provide both the skill name and the relative file path to load only the
 single file you need.
+
+Content of skill files do not change - if you load it once no need to load it again.
 """
 
 _NO_SKILLS_MESSAGE = "No skills attached to this assistant."
@@ -70,8 +72,8 @@ class SkillInput(BaseModel):
 class SkillCompanionFileInput(BaseModel):
     """Input schema for SkillCompanionFileTool."""
 
-    skill: str = Field(description="The name of the skill that owns the companion file")
-    path: str = Field(description="Relative companion file path, e.g. 'references/writing-guidelines.md'")
+    skill: str = Field(description="The name of the skill that owns the requested file")
+    path: str = Field(description="Relative file path, e.g. 'references/writing-guidelines.md'")
 
 
 class SkillBaseTool(CodeMieTool):

@@ -27,13 +27,15 @@ from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie.core.constants import MAX_TOOL_NAME_LENGTH, ChatRole
 from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
+from codemie.service.constants import (
+    SKILL_TOOL_NAME,
+    TOOL_REPLAY_TYPE,
+    TOOL_STATUS_COMPLETED,
+    TOOL_STATUS_ERROR,
+    TOOL_STATUS_INTERRUPTED,
+    TOOL_STATUS_RUNNING,
+)
 
-SKILL_TOOL_NAME = "skill"
-TOOL_REPLAY_TYPE = "tool"
-TOOL_STATUS_RUNNING = "running"
-TOOL_STATUS_COMPLETED = "completed"
-TOOL_STATUS_ERROR = "error"
-TOOL_STATUS_INTERRUPTED = "interrupted"
 TEXT_LEDGER_MODE = "text_ledger"
 NATIVE_TOOLS_MODE = "native_tools"
 PLAIN_CHAT_MODE = "plain_chat"
@@ -71,6 +73,8 @@ class ConversationHistoryProjectionService:
         mode: str,
         max_full_tool_turns: int | None = None,
         max_summarized_tool_turns: int | None = None,
+        current_assistant_id: str | None = None,
+        available_tool_names: set[str] | None = None,
     ) -> list[BaseMessage]:
         if max_full_tool_turns is None:
             max_full_tool_turns = config.AI_AGENT_HISTORY_REPLAY_FULL_TOOL_TURNS
@@ -103,6 +107,8 @@ class ConversationHistoryProjectionService:
                     mode=mode,
                     use_full_results=turn.index in full_indexes,
                     use_summaries=turn.index in summarized_indexes,
+                    current_assistant_id=current_assistant_id,
+                    available_tool_names=available_tool_names,
                 )
             )
 
@@ -183,7 +189,30 @@ class ConversationHistoryProjectionService:
                 )
             )
 
-        return tool_records
+        return cls._deduplicate_tool_records(tool_records)
+
+    @classmethod
+    def _deduplicate_tool_records(cls, tool_records: list[ToolReplayRecord]) -> list[ToolReplayRecord]:
+        deduplicated_records: list[ToolReplayRecord] = []
+        index_by_call_id: dict[str, int] = {}
+
+        for record in tool_records:
+            if not record.call_id:
+                deduplicated_records.append(record)
+                continue
+
+            existing_index = index_by_call_id.get(record.call_id)
+            if existing_index is None:
+                index_by_call_id[record.call_id] = len(deduplicated_records)
+                deduplicated_records.append(record)
+                continue
+
+            logger.info(
+                "Skipping duplicate replay tool record. " f"ToolCallId={record.call_id}, ToolName={record.tool_name}"
+            )
+            deduplicated_records[existing_index] = record
+
+        return deduplicated_records
 
     @classmethod
     def _is_replayable_tool(cls, author_name: str | None, author_type: str | None, metadata: dict[str, Any]) -> bool:
@@ -225,6 +254,8 @@ class ConversationHistoryProjectionService:
         mode: str,
         use_full_results: bool,
         use_summaries: bool,
+        current_assistant_id: str | None,
+        available_tool_names: set[str] | None,
     ) -> list[BaseMessage]:
         messages: list[BaseMessage] = []
 
@@ -240,10 +271,13 @@ class ConversationHistoryProjectionService:
         tool_messages = cls._render_tool_replay_messages(
             mode=mode,
             assistant_text=assistant_text,
+            assistant_id=turn.assistant_message.assistant_id,
             tool_records=tool_records,
             use_full_results=use_full_results,
             use_summaries=use_summaries,
             should_replay_tools=should_replay_tools,
+            current_assistant_id=current_assistant_id,
+            available_tool_names=available_tool_names,
         )
         if tool_messages is not None:
             messages.extend(tool_messages)
@@ -259,35 +293,78 @@ class ConversationHistoryProjectionService:
         cls,
         mode: str,
         assistant_text: str,
+        assistant_id: str | None,
         tool_records: list[ToolReplayRecord],
         use_full_results: bool,
         use_summaries: bool,
         should_replay_tools: bool,
+        current_assistant_id: str | None,
+        available_tool_names: set[str] | None,
     ) -> list[BaseMessage] | None:
         if not tool_records or not should_replay_tools:
             return None
 
+        assistant_text_for_followup = (
+            assistant_text if cls._should_append_assistant_message(assistant_text, tool_records) else ""
+        )
+
         if mode == NATIVE_TOOLS_MODE:
-            return cls._render_native_tool_turn(
-                assistant_text=assistant_text,
-                tool_records=tool_records,
-                use_full_results=use_full_results,
-                use_summaries=use_summaries,
-            )
+            messages: list[BaseMessage] = []
+            for record in tool_records:
+                if cls._should_render_native_tool_replay(
+                    assistant_id=assistant_id,
+                    tool_name=record.tool_name,
+                    current_assistant_id=current_assistant_id,
+                    available_tool_names=available_tool_names,
+                ):
+                    messages.extend(cls._render_native_tool_messages([record], use_full_results, use_summaries))
+                    continue
+
+                messages.extend(
+                    cls._render_text_ledger_messages(
+                        assistant_text="",
+                        tool_records=[record],
+                        use_full_results=use_full_results,
+                        use_summaries=use_summaries,
+                    )
+                )
+
+            if assistant_text_for_followup:
+                messages.append(AIMessage(content=assistant_text_for_followup))
+            return messages
 
         if mode != TEXT_LEDGER_MODE:
             return None
 
-        content = cls._render_text_ledger_turn(
-            assistant_text=assistant_text,
+        return cls._render_text_ledger_messages(
+            assistant_text=assistant_text_for_followup,
             tool_records=tool_records,
             use_full_results=use_full_results,
             use_summaries=use_summaries,
         )
-        if not content:
-            return []
 
-        return [AIMessage(content=content)]
+    @classmethod
+    def _should_render_native_tool_replay(
+        cls,
+        *,
+        assistant_id: str | None,
+        tool_name: str,
+        current_assistant_id: str | None,
+        available_tool_names: set[str] | None,
+    ) -> bool:
+        if current_assistant_id is not None and (not assistant_id or assistant_id != current_assistant_id):
+            return False
+
+        if available_tool_names is None:
+            return True
+
+        normalized_available_tool_names = {
+            cls._normalize_tool_name(tool_name) for tool_name in available_tool_names if tool_name
+        }
+        if not normalized_available_tool_names:
+            return False
+
+        return cls._normalize_tool_name(tool_name) in normalized_available_tool_names
 
     @classmethod
     def _render_native_tool_turn(
@@ -358,23 +435,38 @@ class ConversationHistoryProjectionService:
         return messages
 
     @classmethod
-    def _render_text_ledger_turn(
+    def _render_text_ledger_messages(
         cls,
         assistant_text: str,
         tool_records: list[ToolReplayRecord],
         use_full_results: bool,
         use_summaries: bool,
-    ) -> str:
-        ledger_lines = ["Previous tool activity:"]
+    ) -> list[BaseMessage]:
+        messages: list[BaseMessage] = []
         for record in tool_records:
-            result = cls._render_tool_result_content(record, use_full_results, use_summaries)
-            ledger_lines.append(f"- {record.tool_name}({record.args_text or record.args}) -> {record.status}: {result}")
+            content = cls._render_text_ledger_record(record, use_full_results, use_summaries)
+            if content:
+                messages.append(AIMessage(content=content))
 
-        sections = ["\n".join(ledger_lines)]
         if assistant_text:
-            sections.append(f"Assistant response:\n{assistant_text}")
+            messages.append(AIMessage(content=assistant_text))
 
-        return "\n\n".join(section for section in sections if section)
+        return messages
+
+    @classmethod
+    def _render_text_ledger_record(
+        cls,
+        record: ToolReplayRecord,
+        use_full_results: bool,
+        use_summaries: bool,
+    ) -> str:
+        result = cls._render_tool_result_content(record, use_full_results, use_summaries)
+        return "\n".join(
+            [
+                "Previous tool activity:",
+                f"- {record.tool_name}({record.args_text or record.args}) -> {record.status}: {result}",
+            ]
+        )
 
     @classmethod
     def _render_tool_result_content(

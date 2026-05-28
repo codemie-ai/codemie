@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import uuid
+
 import pytest
 from codemie.chains.base import Thought
 from codemie.agents.callbacks.agent_invoke_callback import AgentInvokeCallback
@@ -115,3 +117,51 @@ def test_escape_message(callback):
     message = "test}{message"
     escaped = callback._escape_message(message)
     assert escaped == "test}_{message"
+
+
+def test_overlapping_tool_activity_for_same_author_keeps_distinct_parents(callback):
+    author = "analyst:instance-2"
+    first_run_id = uuid.uuid4()
+    second_run_id = uuid.uuid4()
+
+    callback.set_context({}, "handoff-1", author=author)
+    callback.on_tool_start({"name": "lookup_repo"}, "task one", run_id=first_run_id, author=author)
+
+    callback.set_context({}, "handoff-2", author=author)
+    callback.on_tool_start({"name": "lookup_repo"}, "task two", run_id=second_run_id, author=author)
+
+    callback.on_tool_end("done one", run_id=first_run_id, author=author)
+    callback.on_tool_end("done two", run_id=second_run_id, author=author)
+
+    thought_by_input = {thought["input_text"]: thought for thought in callback.thoughts}
+
+    assert thought_by_input["task one"]["parent_id"] == "handoff-1"
+    assert thought_by_input["task one"]["message"] == "done one \n\n"
+    assert thought_by_input["task one"]["in_progress"] is False
+    assert thought_by_input["task two"]["parent_id"] == "handoff-2"
+    assert thought_by_input["task two"]["message"] == "done two \n\n"
+    assert thought_by_input["task two"]["in_progress"] is False
+
+
+def test_overlapping_llm_activity_for_same_author_keeps_distinct_parents(callback):
+    author = "analyst:instance-2"
+    first_run_id = uuid.uuid4()
+    second_run_id = uuid.uuid4()
+
+    callback.set_context({}, "handoff-1", author=author)
+    callback.on_llm_start({}, [], run_id=first_run_id, author=author)
+    callback.on_llm_new_token("task one reasoning", run_id=first_run_id, author=author)
+
+    callback.set_context({}, "handoff-2", author=author)
+    callback.on_llm_start({}, [], run_id=second_run_id, author=author)
+    callback.on_llm_new_token("task two reasoning", run_id=second_run_id, author=author)
+
+    callback.on_llm_end(None, run_id=first_run_id, author=author)
+    callback.on_llm_end(None, run_id=second_run_id, author=author)
+
+    thoughts_by_parent = {thought["parent_id"]: thought for thought in callback.thoughts}
+
+    assert thoughts_by_parent["handoff-1"]["message"] == "task one reasoning"
+    assert thoughts_by_parent["handoff-1"]["in_progress"] is False
+    assert thoughts_by_parent["handoff-2"]["message"] == "task two reasoning"
+    assert thoughts_by_parent["handoff-2"]["in_progress"] is False

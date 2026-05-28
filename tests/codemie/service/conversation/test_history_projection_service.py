@@ -36,6 +36,7 @@ def _build_conversation_with_tool_turn(
     tool_output: str,
     status: str = TOOL_STATUS_COMPLETED,
     thought_error: bool = False,
+    assistant_id: str = "assistant-a",
 ) -> Conversation:
     thought = Thought(
         id="tool-call-1",
@@ -66,6 +67,7 @@ def _build_conversation_with_tool_turn(
                 role=ChatRole.ASSISTANT,
                 message=assistant_message,
                 history_index=0,
+                assistant_id=assistant_id,
                 thoughts=[thought],
             ),
         ],
@@ -127,6 +129,323 @@ def test_build_for_request_replays_error_tool_even_when_windows_are_disabled():
     assert messages[1].tool_calls[0]["name"] == "search_tool"
     assert messages[2].content == "tool execution failed with timeout"
     assert messages[3].content == "The tool failed, so I need a fallback approach."
+
+
+def test_build_for_request_downgrades_tool_replay_from_different_assistant_to_text_summary():
+    conversation = _build_conversation_with_tool_turn(
+        assistant_message="Here are the release notes highlights.",
+        tool_output="release notes tool output",
+        assistant_id="assistant-a",
+    )
+
+    messages = ConversationHistoryProjectionService.build_for_request(
+        conversation=conversation,
+        mode=NATIVE_TOOLS_MODE,
+        max_full_tool_turns=1,
+        max_summarized_tool_turns=0,
+        current_assistant_id="assistant-b",
+        available_tool_names={"search_tool"},
+    )
+
+    assert [type(message) for message in messages] == [HumanMessage, AIMessage, AIMessage]
+    assert messages[0].content == "Find the latest release notes"
+    assert "Previous tool activity:" in messages[1].content
+    assert "search_tool" in messages[1].content
+    assert messages[2].content == "Here are the release notes highlights."
+
+
+def test_build_for_request_keeps_native_tool_replay_for_same_assistant_with_available_tool():
+    conversation = _build_conversation_with_tool_turn(
+        assistant_message="Here are the release notes highlights.",
+        tool_output="release notes tool output",
+        assistant_id="assistant-a",
+    )
+
+    messages = ConversationHistoryProjectionService.build_for_request(
+        conversation=conversation,
+        mode=NATIVE_TOOLS_MODE,
+        max_full_tool_turns=1,
+        max_summarized_tool_turns=0,
+        current_assistant_id="assistant-a",
+        available_tool_names={"search_tool"},
+    )
+
+    assert [type(message) for message in messages] == [HumanMessage, AIMessage, ToolMessage, AIMessage]
+    assert messages[1].tool_calls[0]["name"] == "search_tool"
+    assert messages[2].content == "release notes tool output"
+    assert messages[3].content == "Here are the release notes highlights."
+
+
+def test_build_for_request_downgrades_same_assistant_tool_replay_when_tool_is_unavailable():
+    conversation = _build_conversation_with_tool_turn(
+        assistant_message="Here are the release notes highlights.",
+        tool_output="release notes tool output",
+        assistant_id="assistant-a",
+    )
+
+    messages = ConversationHistoryProjectionService.build_for_request(
+        conversation=conversation,
+        mode=NATIVE_TOOLS_MODE,
+        max_full_tool_turns=1,
+        max_summarized_tool_turns=0,
+        current_assistant_id="assistant-a",
+        available_tool_names={"other_tool"},
+    )
+
+    assert [type(message) for message in messages] == [HumanMessage, AIMessage, AIMessage]
+    assert messages[0].content == "Find the latest release notes"
+    assert "Previous tool activity:" in messages[1].content
+    assert "search_tool" in messages[1].content
+    assert messages[2].content == "Here are the release notes highlights."
+
+
+def test_build_for_request_keeps_supported_native_tool_replay_when_turn_mixes_supported_and_unavailable_tools():
+    supported_tool_thought = Thought(
+        id="tool-call-1",
+        author_name="Search Tool",
+        author_type=ThoughtAuthorType.Tool.value,
+        input_text='{"query": "release notes"}',
+        message="release notes tool output",
+        metadata={
+            "replay_type": TOOL_REPLAY_TYPE,
+            "tool_name": "search_tool",
+            "tool_args": {"query": "release notes"},
+            "tool_args_text": '{"query": "release notes"}',
+            "status": TOOL_STATUS_COMPLETED,
+            "result_summary": "summary::release notes tool output",
+        },
+    )
+    subagent_handoff_thought = Thought(
+        id="handoff-call-1",
+        author_name="Analyst #1",
+        author_type=ThoughtAuthorType.Tool.value,
+        input_text="Analyze the release notes",
+        message="Subassistant completed the release notes analysis",
+        metadata={
+            "replay_type": TOOL_REPLAY_TYPE,
+            "tool_name": "analyst_1",
+            "tool_args_text": "Analyze the release notes",
+            "status": TOOL_STATUS_COMPLETED,
+            "result_summary": "summary::Subassistant completed the release notes analysis",
+        },
+    )
+
+    conversation = Conversation(
+        conversation_id="conv-123",
+        history=[
+            GeneratedMessage(
+                role=ChatRole.USER,
+                message="Find the latest release notes",
+                history_index=0,
+            ),
+            GeneratedMessage(
+                role=ChatRole.ASSISTANT,
+                message="Here are the release notes highlights.",
+                history_index=0,
+                assistant_id="assistant-a",
+                thoughts=[supported_tool_thought, subagent_handoff_thought],
+            ),
+        ],
+    )
+
+    messages = ConversationHistoryProjectionService.build_for_request(
+        conversation=conversation,
+        mode=NATIVE_TOOLS_MODE,
+        max_full_tool_turns=1,
+        max_summarized_tool_turns=0,
+        current_assistant_id="assistant-a",
+        available_tool_names={"search_tool"},
+    )
+
+    assert [type(message) for message in messages] == [HumanMessage, AIMessage, ToolMessage, AIMessage, AIMessage]
+    assert messages[1].tool_calls[0]["name"] == "search_tool"
+    assert messages[2].content == "release notes tool output"
+    assert "Previous tool activity:" in messages[3].content
+    assert "analyst_1" in messages[3].content
+    assert messages[4].content == "Here are the release notes highlights."
+
+
+def test_build_for_request_preserves_original_order_when_native_and_downgraded_tools_mix():
+    unsupported_handoff_thought = Thought(
+        id="handoff-call-1",
+        author_name="Analyst #1",
+        author_type=ThoughtAuthorType.Tool.value,
+        input_text="Analyze the release notes",
+        message="Subassistant completed the release notes analysis",
+        metadata={
+            "replay_type": TOOL_REPLAY_TYPE,
+            "tool_name": "analyst_1",
+            "tool_args_text": "Analyze the release notes",
+            "status": TOOL_STATUS_COMPLETED,
+            "result_summary": "summary::Subassistant completed the release notes analysis",
+        },
+    )
+    supported_tool_thought = Thought(
+        id="tool-call-1",
+        author_name="Search Tool",
+        author_type=ThoughtAuthorType.Tool.value,
+        input_text='{"query": "release notes"}',
+        message="release notes tool output",
+        metadata={
+            "replay_type": TOOL_REPLAY_TYPE,
+            "tool_name": "search_tool",
+            "tool_args": {"query": "release notes"},
+            "tool_args_text": '{"query": "release notes"}',
+            "status": TOOL_STATUS_COMPLETED,
+            "result_summary": "summary::release notes tool output",
+        },
+    )
+
+    conversation = Conversation(
+        conversation_id="conv-123",
+        history=[
+            GeneratedMessage(
+                role=ChatRole.USER,
+                message="Find the latest release notes",
+                history_index=0,
+            ),
+            GeneratedMessage(
+                role=ChatRole.ASSISTANT,
+                message="Here are the release notes highlights.",
+                history_index=0,
+                assistant_id="assistant-a",
+                thoughts=[unsupported_handoff_thought, supported_tool_thought],
+            ),
+        ],
+    )
+
+    messages = ConversationHistoryProjectionService.build_for_request(
+        conversation=conversation,
+        mode=NATIVE_TOOLS_MODE,
+        max_full_tool_turns=1,
+        max_summarized_tool_turns=0,
+        current_assistant_id="assistant-a",
+        available_tool_names={"search_tool"},
+    )
+
+    assert [type(message) for message in messages] == [HumanMessage, AIMessage, AIMessage, ToolMessage, AIMessage]
+    assert "analyst_1" in messages[1].content
+    assert messages[2].tool_calls[0]["name"] == "search_tool"
+    assert messages[3].content == "release notes tool output"
+    assert messages[4].content == "Here are the release notes highlights."
+
+
+def test_build_for_request_downgrades_each_tool_to_a_separate_text_message():
+    first_tool_thought = Thought(
+        id="tool-call-1",
+        author_name="Search Tool",
+        author_type=ThoughtAuthorType.Tool.value,
+        input_text='{"query": "release notes"}',
+        message="release notes tool output",
+        metadata={
+            "replay_type": TOOL_REPLAY_TYPE,
+            "tool_name": "search_tool",
+            "tool_args": {"query": "release notes"},
+            "tool_args_text": '{"query": "release notes"}',
+            "status": TOOL_STATUS_COMPLETED,
+            "result_summary": "summary::release notes tool output",
+        },
+    )
+    second_tool_thought = Thought(
+        id="tool-call-2",
+        author_name="Repo Lookup",
+        author_type=ThoughtAuthorType.Tool.value,
+        input_text='{"repo": "codemie"}',
+        message="repo lookup output",
+        metadata={
+            "replay_type": TOOL_REPLAY_TYPE,
+            "tool_name": "lookup_repo",
+            "tool_args": {"repo": "codemie"},
+            "tool_args_text": '{"repo": "codemie"}',
+            "status": TOOL_STATUS_COMPLETED,
+            "result_summary": "summary::repo lookup output",
+        },
+    )
+
+    conversation = Conversation(
+        conversation_id="conv-123",
+        history=[
+            GeneratedMessage(
+                role=ChatRole.USER,
+                message="Find the latest release notes",
+                history_index=0,
+            ),
+            GeneratedMessage(
+                role=ChatRole.ASSISTANT,
+                message="Here are the release notes highlights.",
+                history_index=0,
+                assistant_id="assistant-a",
+                thoughts=[first_tool_thought, second_tool_thought],
+            ),
+        ],
+    )
+
+    messages = ConversationHistoryProjectionService.build_for_request(
+        conversation=conversation,
+        mode=NATIVE_TOOLS_MODE,
+        max_full_tool_turns=1,
+        max_summarized_tool_turns=0,
+        current_assistant_id="assistant-b",
+        available_tool_names={"search_tool", "lookup_repo"},
+    )
+
+    assert [type(message) for message in messages] == [HumanMessage, AIMessage, AIMessage, AIMessage]
+    assert "search_tool" in messages[1].content
+    assert "lookup_repo" not in messages[1].content
+    assert "lookup_repo" in messages[2].content
+    assert "search_tool" not in messages[2].content
+    assert messages[3].content == "Here are the release notes highlights."
+
+
+def test_build_for_request_deduplicates_duplicate_subagent_tool_replay_by_call_id():
+    duplicated_handoff_thought = Thought(
+        id="handoff-call-1",
+        author_name="Presentation Copy Builder",
+        author_type=ThoughtAuthorType.Tool.value,
+        input_text='Create presentation copy for "EPAM overview"',
+        message="Presentation copy has been created and saved to presentation.copy",
+        metadata={
+            "replay_type": TOOL_REPLAY_TYPE,
+            "tool_name": "transfer_to_presentation_copy_builder",
+            "tool_args_text": 'Create presentation copy for "EPAM overview"',
+            "status": TOOL_STATUS_COMPLETED,
+            "result_summary": "summary::Presentation copy has been created and saved to presentation.copy",
+        },
+    )
+
+    conversation = Conversation(
+        conversation_id="conv-123",
+        history=[
+            GeneratedMessage(
+                role=ChatRole.USER,
+                message="Build an EPAM overview deck",
+                history_index=0,
+            ),
+            GeneratedMessage(
+                role=ChatRole.ASSISTANT,
+                message="I'll prepare the deck assets.",
+                history_index=0,
+                assistant_id="assistant-a",
+                thoughts=[duplicated_handoff_thought, duplicated_handoff_thought.model_copy(deep=True)],
+            ),
+        ],
+    )
+
+    messages = ConversationHistoryProjectionService.build_for_request(
+        conversation=conversation,
+        mode=NATIVE_TOOLS_MODE,
+        max_full_tool_turns=1,
+        max_summarized_tool_turns=0,
+        current_assistant_id="assistant-a",
+        available_tool_names={"transfer_to_presentation_copy_builder"},
+    )
+
+    assert [type(message) for message in messages] == [HumanMessage, AIMessage, ToolMessage, AIMessage]
+    assert messages[1].tool_calls[0]["id"] == "handoff-call-1"
+    assert messages[1].tool_calls[0]["name"] == "transfer_to_presentation_copy_builder"
+    assert messages[2].tool_call_id == "handoff-call-1"
+    assert messages[2].content == "Presentation copy has been created and saved to presentation.copy"
+    assert messages[3].content == "I'll prepare the deck assets."
 
 
 def test_normalize_tool_name_removes_invalid_characters():

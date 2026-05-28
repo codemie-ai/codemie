@@ -567,10 +567,58 @@ def test_populate_conversation_history_uses_legacy_chat_history_when_feature_fla
     assert request.history == legacy_history
 
 
+def test_populate_conversation_history_passes_active_assistant_context_to_projection():
+    user = Mock(spec=User)
+    user.id = "user-123"
+    user.username = "testuser"
+    user.name = "Test User"
+
+    assistant = Mock()
+    assistant.id = "assistant-123"
+    assistant.llm_model_type = "test-model"
+    first_tool = Mock()
+    first_tool.name = "search_tool"
+    second_tool = Mock()
+    second_tool.name = "lookup_repo"
+    assistant.toolkits = [Mock(tools=[first_tool, second_tool])]
+    assistant.mcp_servers = []
+
+    handler = StandardAssistantHandler(assistant=assistant, user=user, request_uuid="test-uuid")
+    request = AssistantChatRequest(conversation_id="conv-123", history=[], text="hello")
+
+    conversation = Mock()
+    conversation.user_id = "user-123"
+    projected_history = [Mock(message="projected")]
+
+    with (
+        patch(
+            "codemie.rest_api.handlers.assistant_handlers.DynamicConfigService.get_typed_value",
+            return_value=True,
+        ),
+        patch.object(handler, "_resolve_history_projection_mode", return_value="native_tools"),
+        patch("codemie.rest_api.handlers.assistant_handlers.Conversation.find_by_id", return_value=conversation),
+        patch("codemie.rest_api.handlers.assistant_handlers.Ability.can", return_value=True),
+        patch(
+            "codemie.rest_api.handlers.assistant_handlers.ConversationHistoryProjectionService.build_for_request",
+            return_value=projected_history,
+        ) as projection_mock,
+    ):
+        handler._populate_conversation_history(request)
+
+    projection_mock.assert_called_once_with(
+        conversation=conversation,
+        mode="native_tools",
+        current_assistant_id="assistant-123",
+        available_tool_names={"search_tool", "lookup_repo"},
+    )
+    assert request.history == projected_history
+
+
 def test_filter_thoughts_drops_replay_only_entries_when_feature_flag_disabled():
     thoughts = [
         {
             "id": "tool-thought",
+            "parent_id": "handoff-1",
             "message": "",
             "author_name": "Search Tool",
             "author_type": "tool",
@@ -580,6 +628,7 @@ def test_filter_thoughts_drops_replay_only_entries_when_feature_flag_disabled():
         },
         {
             "id": "assistant-thought",
+            "parent_id": "handoff-2",
             "message": "visible message",
             "author_name": "Assistant",
             "author_type": "assistant",
@@ -596,4 +645,33 @@ def test_filter_thoughts_drops_replay_only_entries_when_feature_flag_disabled():
 
     assert len(filtered) == 1
     assert filtered[0].id == "assistant-thought"
+    assert filtered[0].parent_id == "handoff-2"
     assert filtered[0].message == "visible message"
+
+
+def test_filter_thoughts_preserves_parent_id_when_feature_flag_enabled():
+    thoughts = [
+        {
+            "id": "child-thought",
+            "parent_id": "handoff-42",
+            "message": "tool result",
+            "author_name": "Lookup Repo",
+            "author_type": "tool",
+            "input_text": '{"query": "parallel branch"}',
+            "error": False,
+            "metadata": {"replay_type": "tool_replay"},
+            "output_format": "markdown",
+            "in_progress": False,
+        }
+    ]
+
+    with patch(
+        "codemie.rest_api.handlers.assistant_handlers.DynamicConfigService.get_typed_value",
+        return_value=True,
+    ):
+        filtered = StandardAssistantHandler._filter_thoughts(thoughts)
+
+    assert len(filtered) == 1
+    assert filtered[0].id == "child-thought"
+    assert filtered[0].parent_id == "handoff-42"
+    assert filtered[0].message == "tool result"

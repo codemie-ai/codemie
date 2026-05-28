@@ -16,8 +16,8 @@ from typing import Any
 
 from langchain_core.callbacks import StreamingStdOutCallbackHandler
 
+from codemie.agents.callbacks.callback_utils import _escape_callback_message
 from codemie.chains.base import StreamedGenerationResult
-from codemie.core.utils import extract_text_from_llm_output
 
 
 class ChainStreamingCallback(StreamingStdOutCallbackHandler):
@@ -29,6 +29,4 @@ class ChainStreamingCallback(StreamingStdOutCallbackHandler):
         self.gen.send(StreamedGenerationResult(generated_chunk=self._escape_message(token)).model_dump_json())
 
     def _escape_message(self, message: str) -> str:
-        """Replace '}{', with '}{\u2002' so frontend can split it properly"""
-        text = extract_text_from_llm_output(message)
-        return text.replace("}{", "}_{")
+        return _escape_callback_message(message)

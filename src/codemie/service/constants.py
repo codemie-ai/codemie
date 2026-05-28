@@ -45,3 +45,11 @@ DEFAULT_HISTORY_ITEMS_PER_PAGE = 20
 
 # Dynamic config keys
 AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY = "AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED"
+
+# Conversation replay metadata keys and statuses
+SKILL_TOOL_NAME = "skill"
+TOOL_REPLAY_TYPE = "tool"
+TOOL_STATUS_RUNNING = "running"
+TOOL_STATUS_COMPLETED = "completed"
+TOOL_STATUS_ERROR = "error"
+TOOL_STATUS_INTERRUPTED = "interrupted"

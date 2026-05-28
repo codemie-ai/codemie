@@ -34,20 +34,24 @@ from langchain_core.prompts import (
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
-from codemie.agents.agent_log_utils import (
-    serialize_messages_for_log,
-    serialize_tool_calls_for_log,
-    truncate_log_content,
+from codemie.agents.agent_runtime_utils import (
+    filter_history,
+    is_unique_callback,
+    preprocess_output_schema,
+    serialize_inputs,
+    serialize_messages,
+    serialize_response,
+    serialize_tool_calls,
+    transform_history,
+    truncate_log_value,
 )
-from codemie.agents.callbacks.agent_invoke_callback import AgentInvokeCallback
+from codemie.agents.agent_callback_factory import build_tool_callbacks
 from codemie.agents.callbacks.agent_streaming_callback import AgentStreamingCallback
-from codemie.agents.callbacks.monitoring_callback import MonitoringCallback
 from codemie.agents.callbacks.tool_error_capture_callback import ToolErrorCaptureCallback
 from codemie.agents.structured_tool_agent import create_structured_tool_calling_agent
 from codemie.agents.tools.agent import WorkspaceAwareAgent
 from codemie.agents.utils import (
     render_text_description_and_args,
-    validate_json_schema,
     get_run_config,
 )
 from codemie.chains.base import StreamedGenerationResult, GenerationResult
@@ -55,7 +59,6 @@ from codemie.chains.pure_chat_chain import PureChatChain
 from codemie.configs import config
 from codemie.configs.logger import logger, set_logging_info
 from codemie.core.constants import (
-    ChatRole,
     BackgroundTaskStatus,
     REQUEST_ID,
     USER_ID,
@@ -199,33 +202,19 @@ class AIToolsAgent(WorkspaceAwareAgent):
 
     def _is_unique_callback(self, callbacks: List[BaseCallbackHandler], candidate) -> bool:
         """Check if callback of this type doesn't exist in the list."""
-        return not any(isinstance(cb, type(candidate)) for cb in callbacks)
+        return is_unique_callback(callbacks, candidate)
 
     @staticmethod
     def _preprocess_output_schema(output_schema: dict | BaseModel) -> dict | BaseModel:
-        if isinstance(output_schema, dict):
-            check = validate_json_schema(output_schema)
-            if not check:
-                raise ValueError(f"Wrong JSON Schema was put in agent: {output_schema}")
-            # If title doesn't exist, we manually add it
-            output_schema["title"] = output_schema.get("title", "StructuredOutput")
-        return output_schema
+        return preprocess_output_schema(output_schema)
 
     def configure_callbacks(self, llm) -> List[BaseCallbackHandler]:
-        # Initialize and prepare callbacks
-        callbacks = list(self.callbacks or [])
-        default_callbacks = [
-            MonitoringCallback(),
-            *(
-                [AgentStreamingCallback(self.thread_generator)]
-                if self.stream_steps and self.thread_generator
-                else [AgentInvokeCallback()]
-            ),
-            *([self.tool_error_callback] if self.tool_error_callback else []),
-        ]
-
-        # Add unique default callbacks
-        callbacks.extend(callback for callback in default_callbacks if self._is_unique_callback(callbacks, callback))
+        callbacks = build_tool_callbacks(
+            self.callbacks,
+            thread_generator=self.thread_generator,
+            stream_steps=self.stream_steps,
+            tool_error_callback=self.tool_error_callback,
+        )
 
         # Update LLM callbacks
         if hasattr(llm, 'callbacks') and llm.callbacks is not None:
@@ -515,29 +504,23 @@ class AIToolsAgent(WorkspaceAwareAgent):
 
     @staticmethod
     def _serialize_messages_for_log(messages: list[Any]) -> str:
-        return serialize_messages_for_log(messages)
+        return serialize_messages(messages)
 
     @staticmethod
     def _serialize_tool_calls_for_log(tool_calls: list[dict[str, Any]]) -> list[dict[str, str | None]]:
-        return serialize_tool_calls_for_log(tool_calls)
+        return serialize_tool_calls(tool_calls)
 
     @staticmethod
     def _truncate_log_content(content: Any) -> str:
-        return truncate_log_content(content)
+        return truncate_log_value(content)
 
     @classmethod
     def _serialize_inputs_for_log(cls, inputs: dict[str, Any]) -> str:
-        payload: dict[str, Any] = {}
-        for key, value in inputs.items():
-            if key == "chat_history" and isinstance(value, list):
-                payload[key] = json.loads(serialize_messages_for_log(value))
-                continue
-            payload[key] = truncate_log_content(str(value))
-        return json.dumps(payload, ensure_ascii=True, default=str)
+        return serialize_inputs(inputs, messages_key="chat_history")
 
     @classmethod
     def _serialize_response_for_log(cls, response: Any) -> str:
-        return cls._truncate_log_content(str(response))
+        return serialize_response(response)
 
     def generate(self, background_task_id: str = "") -> GenerationResult:
         start_time = time()
@@ -708,35 +691,14 @@ class AIToolsAgent(WorkspaceAwareAgent):
     @staticmethod
     def _transform_history(history: List[ChatMessage]) -> list:
         """Convert history to list of chain-compatible messages"""
-        transformed_history = []
-        supports_rich_history = AIToolsAgent._is_conversation_replay_v2_enabled()
-
-        for item in history:
-            if supports_rich_history and isinstance(item, BaseMessage):
-                transformed_history.append(item)
-            elif item.role == ChatRole.USER:
-                transformed_history.append(HumanMessage(content=item.message))
-            elif item.role == ChatRole.ASSISTANT:
-                transformed_history.append(AIMessage(content=item.message))
-
-        return transformed_history
+        return transform_history(
+            history,
+            supports_rich_history=AIToolsAgent._is_conversation_replay_v2_enabled(),
+        )
 
     @classmethod
     def _filter_history(cls, history: list) -> list:
-        if not cls._is_conversation_replay_v2_enabled():
-            return [item for item in history if item.content]
-
-        filtered_history = []
-        for item in history:
-            if getattr(item, "content", None):
-                filtered_history.append(item)
-                continue
-            if isinstance(item, ToolMessage):
-                filtered_history.append(item)
-                continue
-            if isinstance(item, AIMessage) and getattr(item, "tool_calls", None):
-                filtered_history.append(item)
-        return filtered_history
+        return filter_history(history, supports_rich_history=cls._is_conversation_replay_v2_enabled())
 
     def set_thread_context(self, context: dict, parent_thought_id: str):
         self.thread_context = context

@@ -23,7 +23,9 @@ from codemie.service.monitoring.agent_monitoring_service import AgentMonitoringS
 
 
 class MonitoringCallback(StreamingStdOutCallbackHandler):
-    tools_run_map = {}
+    def __init__(self) -> None:
+        super().__init__()
+        self.tools_run_map: dict[str, dict[str, Any]] = {}
 
     def on_tool_start(
         self,

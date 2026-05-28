@@ -17,10 +17,13 @@ from ast import literal_eval
 from typing import Any
 
 from codemie.configs import config
-from codemie.service.constants import AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY
-from codemie.service.conversation.history_projection_service import (
+from codemie.core.utils import extract_text_from_llm_output
+from codemie.service.constants import (
+    AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY,
     SKILL_TOOL_NAME,
     TOOL_REPLAY_TYPE,
+    TOOL_STATUS_COMPLETED,
+    TOOL_STATUS_ERROR,
     TOOL_STATUS_RUNNING,
 )
 from codemie.service.dynamic_config_service import DynamicConfigService
@@ -83,3 +86,27 @@ def _truncate_for_log(value: str, limit: int = config.AI_AGENT_HISTORY_REPLAY_LO
     if len(value) <= limit:
         return value
     return f"{value[:limit].rstrip()}...[truncated]"
+
+
+def _escape_callback_message(message: str) -> str:
+    """Replace '}{' with '}_{' so frontend splitting remains stable."""
+    text = extract_text_from_llm_output(message)
+    return text.replace("}{", "}_{")
+
+
+def _classify_execution_error(error: BaseException | str) -> str:
+    error_text = str(error).lower()
+    return "guardrails" if "content blocked" in error_text else "stacktrace"
+
+
+def _build_tool_message(output: Any) -> str:
+    return f"{output} \n\n"
+
+
+def _update_tool_replay_metadata(metadata: dict[str, Any] | None, output: Any, *, is_error: bool) -> None:
+    if not metadata:
+        return
+
+    tool_name = metadata.get("tool_name", "").lower()
+    metadata["status"] = TOOL_STATUS_ERROR if is_error else TOOL_STATUS_COMPLETED
+    metadata["result_summary"] = _summarize_tool_output(tool_name, str(output))

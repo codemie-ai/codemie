@@ -169,6 +169,7 @@ class ConversationService:
                 if message.history_index is not None and message.history_index > max_index:
                     max_index = message.history_index
             history_index = max_index + 1
+            request.history_index = history_index
 
         conversation.update_chat_history(
             user_query=request.text,

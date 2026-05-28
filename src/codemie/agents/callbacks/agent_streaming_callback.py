@@ -25,23 +25,22 @@ from codemie.agents.callbacks.utils.name_resolver import (
     NoOpNameResolver,
     resolve_tool_display_name,
 )
+from codemie.agents.callbacks.utils.parent_context import CallbackParentTracker
 from codemie.agents.callbacks.callback_utils import (
     _build_tool_metadata,
-    _summarize_tool_output,
+    _build_tool_message,
+    _classify_execution_error,
+    _escape_callback_message,
     _truncate_for_log,
+    _update_tool_replay_metadata,
 )
 from codemie.chains.base import StreamedGenerationResult, Thought, ThoughtOutputFormat, ThoughtAuthorType
 from codemie.core.constants import OUTPUT_FORMAT, ToolNamePrefix
 from codemie.configs import logger
 from codemie.configs.logger import current_user_email, set_logging_info
 from codemie.core.thread import ThreadedGenerator
-from codemie.core.utils import extract_text_from_llm_output
 from codemie.core.thought_queue import ThoughtQueue
 from codemie.service.mcp.models import MCPToolInvocationResponse
-from codemie.service.conversation.history_projection_service import (
-    TOOL_STATUS_COMPLETED,
-    TOOL_STATUS_ERROR,
-)
 
 
 class ThoughtInMemoryStorage(dict[str, Thought]):
@@ -104,15 +103,26 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         super().__init__()
         self.gen = gen
         self.name_resolver: NameResolver = name_resolver or NoOpNameResolver()
-        self.parent_id = None
         self.context = None
+        self._parent_tracker = CallbackParentTracker()
         # Per-author storage: None key is the default (no author).
-        self._storages: dict[str | None, ThoughtInMemoryStorage] = {None: ThoughtInMemoryStorage()}
+        self._storages: dict[str | None, ThoughtInMemoryStorage] = {
+            None: ThoughtInMemoryStorage(parent_id=self._parent_tracker.get())
+        }
+
+    @property
+    def parent_id(self) -> str | None:
+        return self._parent_tracker.default_parent_id
+
+    @parent_id.setter
+    def parent_id(self, value: str | UUID | None) -> None:
+        parent_thought_id = str(value) if value is not None else None
+        self._parent_tracker.default_parent_id = parent_thought_id
 
     def _get_storage(self, author: str | None = None) -> ThoughtInMemoryStorage:
         """Return (lazily creating) the ThoughtInMemoryStorage for *author*."""
         if author not in self._storages:
-            self._storages[author] = ThoughtInMemoryStorage(parent_id=self.parent_id)
+            self._storages[author] = ThoughtInMemoryStorage(parent_id=self._parent_tracker.get(author))
         return self._storages[author]
 
     @property
@@ -158,7 +168,7 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         storage = self._get_storage(author)
         if not storage.get(str(run_id)):
             storage.create_thought(run_id=run_id, tool_name=self.GENERIC_TOOL_NAME)
-        execution_error: str = "guardrails" if "content blocked" in str(error).lower() else "stacktrace"
+        execution_error = _classify_execution_error(error)
         thought = storage.update_thought(
             run_id,
             message=self._escape_message(str(error)),
@@ -226,16 +236,14 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         if thought is None:
             return
 
-        message = f"{output} \n\n"
+        message = _build_tool_message(output)
         thought = storage.update_thought(
             run_id,
             message=self._escape_message(message),
             in_progress=False,
         )
-        if thought and thought.metadata:
-            tool_name = thought.metadata.get("tool_name", "").lower()
-            thought.metadata["status"] = TOOL_STATUS_COMPLETED
-            thought.metadata["result_summary"] = _summarize_tool_output(tool_name, str(output))
+        if thought:
+            _update_tool_replay_metadata(thought.metadata, output, is_error=False)
         logger.debug(
             f"Streaming callback tool end. Tool={getattr(thought, 'author_name', None)}, "
             f"Output={_truncate_for_log(str(output))}, ReplayMetadata={getattr(thought, 'metadata', None)}"
@@ -257,17 +265,15 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         if thought is None:
             return
         message = self._escape_message(str(error))
-        execution_error: str = "guardrails" if "content blocked" in str(error).lower() else "stacktrace"
+        execution_error = _classify_execution_error(error)
         thought = storage.update_thought(
             run_id,
             message=message,
             in_progress=False,
             error=True,
         )
-        if thought and thought.metadata:
-            tool_name = thought.metadata.get("tool_name", "").lower()
-            thought.metadata["status"] = TOOL_STATUS_ERROR
-            thought.metadata["result_summary"] = _summarize_tool_output(tool_name, str(error))
+        if thought:
+            _update_tool_replay_metadata(thought.metadata, error, is_error=True)
         logger.debug(
             f"Streaming callback tool error. Tool={getattr(thought, 'author_name', None)}, "
             f"Error={_truncate_for_log(str(error))}, ReplayMetadata={getattr(thought, 'metadata', None)}"
@@ -296,9 +302,7 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         logger.debug(msg)
 
     def _escape_message(self, message: str) -> str:
-        """Replace '}{' with '}_{' so frontend can split it properly."""
-        text = extract_text_from_llm_output(message)
-        return text.replace("}{", "}_{")
+        return _escape_callback_message(message)
 
     def _tool_result_preprocessing(self, tool_result: Any) -> Any:
         """Preprocess the tool result before sending it to the generator."""
@@ -313,9 +317,10 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         # and the UI fails to recognise the closing event as belonging to the same thought.
         if author is None:
             self.context = context
-            self.parent_id = parent_thought_id
+        normalized_parent_id = str(parent_thought_id) if parent_thought_id is not None else None
+        self._parent_tracker.set(normalized_parent_id, author=author)
         if author in self._storages:
             # Update parent_id in-place so thoughts already in this storage are preserved.
-            self._storages[author].parent_id = parent_thought_id
+            self._storages[author].parent_id = self._parent_tracker.get(author)
         else:
-            self._storages[author] = ThoughtInMemoryStorage(parent_id=parent_thought_id)
+            self._storages[author] = ThoughtInMemoryStorage(parent_id=self._parent_tracker.get(author))
