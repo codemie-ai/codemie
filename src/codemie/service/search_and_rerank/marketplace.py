@@ -19,6 +19,7 @@ from typing import Optional
 
 from langchain_core.documents import Document
 
+from codemie.core.models import sanitize_es_index_name
 from codemie.service.search_and_rerank.kb import SearchAndRerankKB
 
 
@@ -35,6 +36,15 @@ class SearchAndRerankMarketplace(SearchAndRerankKB):
     Popular and well-liked assistants will rank higher in search results.
     """
 
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        # If the resolved index does not exist in ES (e.g. new naming was computed but
+        # the actual index uses legacy repo_name-only naming), fall back automatically.
+        if not self.es.indices.exists(index=self.index_name):
+            legacy_name = sanitize_es_index_name(self.kb_index.repo_name)
+            if legacy_name != self.index_name and self.es.indices.exists(index=legacy_name):
+                self.index_name = legacy_name
+
     def execute(self, routing_field_name: Optional[str] = None) -> list[Document]:
         """
         Execute search and rerank with popularity boost.
@@ -45,10 +55,10 @@ class SearchAndRerankMarketplace(SearchAndRerankKB):
         Returns:
             List of reranked documents with popularity boost applied.
         """
-        documents, _doc_paths = super().execute(routing_field_name)
+        results, _ = super().execute(routing_field_name)
 
         results_with_scores = []
-        for doc in documents:
+        for doc in results:
             # popularity_score is already normalized to [0, 1] range by AssistantLoader
             popularity_score = doc.metadata.get('popularity_score', 0.0)
             results_with_scores.append((doc, popularity_score))

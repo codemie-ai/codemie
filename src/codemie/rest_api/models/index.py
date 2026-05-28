@@ -1005,7 +1005,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         return self.index_type.startswith("platform")
 
     def get_index_identifier(self) -> str:
-        if self.index_type.startswith("knowledge_base") or self.is_google_doc_index():
+        if self.index_type.startswith("knowledge_base") or self.is_google_doc_index() or self.is_platform_index():
             # Check legacy naming flag for backward compatibility
             if self.uses_legacy_es_naming:
                 # OLD naming: repo_name only (pre-naming-update datasources)
@@ -1015,7 +1015,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
                 kb_name = f"{self.project_name}-{self.repo_name}"
                 return KnowledgeBase(name=kb_name, type=self.index_type).get_identifier()
         else:
-            # Non-KB types (code, platform, etc.) always use project-scoped naming
+            # Non-KB types (code, etc.) always use project-scoped naming
             return sanitize_es_index_name('-'.join((self.project_name, self.repo_name, self.index_type)))
 
     def get_completed_chunks(self, chunks: List[str]) -> List[str]:

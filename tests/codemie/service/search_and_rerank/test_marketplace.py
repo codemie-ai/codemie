@@ -33,13 +33,16 @@ class TestSearchAndRerankMarketplace:
 
     @pytest.fixture
     def instance(self, kb_index_mock):
-        return SearchAndRerankMarketplace(
-            query="what is codemie",
-            kb_index=kb_index_mock,
-            llm_model="test-model",
-            top_k=10,
-            request_id="req-1",
-        )
+        mock_es = MagicMock()
+        mock_es.indices.exists.return_value = True
+        with patch("codemie.service.search_and_rerank.base.ElasticSearchClient.get_client", return_value=mock_es):
+            yield SearchAndRerankMarketplace(
+                query="what is codemie",
+                kb_index=kb_index_mock,
+                llm_model="test-model",
+                top_k=10,
+                request_id="req-1",
+            )
 
     def test_execute_returns_documents_sorted_by_popularity(self, instance):
         doc_low = Document(page_content="low", metadata={"popularity_score": 0.1})
