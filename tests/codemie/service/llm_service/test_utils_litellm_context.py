@@ -18,8 +18,18 @@ Tests for LiteLLM context functionality in llm_service utils module.
 
 from unittest.mock import patch, MagicMock
 
-from codemie.service.llm_service.utils import set_llm_context
+from codemie.service.llm_service.utils import _resolve_effective_project, set_llm_context
 from codemie.rest_api.models.settings import LiteLLMCredentials, LiteLLMContext
+
+
+def _make_user(email: str = "user@test.com") -> MagicMock:
+    user = MagicMock()
+    user.email = email
+    user.project_names = []
+    user.admin_project_names = []
+    user.id = "user-123"
+    user.username = email
+    return user
 
 
 class TestSetLLMContext:
@@ -282,3 +292,138 @@ class TestSetLLMContext:
         assert f"project={project_name!r}" in warning_message
         assert user_id in warning_message
         assert "Context setting error" in warning_message
+
+
+class TestResolveEffectiveProjectSharing:
+    def test_shared_assistant_returns_project(self):
+        asset = MagicMock()
+        asset.project = "proj-a"
+        asset.shared = True
+        asset.is_global = False
+        user = _make_user()
+
+        result = _resolve_effective_project(asset, None, user)
+
+        assert result == "proj-a"
+
+    def test_private_assistant_returns_none(self):
+        asset = MagicMock()
+        asset.project = "proj-a"
+        asset.shared = False
+        asset.is_global = False
+        user = _make_user()
+
+        result = _resolve_effective_project(asset, None, user)
+
+        assert result is None
+
+    def test_shared_workflow_config_returns_project(self):
+        asset = MagicMock()
+        asset.project = "proj-b"
+        asset.shared = True
+        asset.is_global = False
+        user = _make_user()
+
+        result = _resolve_effective_project(asset, None, user)
+
+        assert result == "proj-b"
+
+    def test_private_workflow_config_returns_none(self):
+        asset = MagicMock()
+        asset.project = "proj-b"
+        asset.shared = False
+        asset.is_global = False
+        user = _make_user()
+
+        result = _resolve_effective_project(asset, None, user)
+
+        assert result is None
+
+    def test_shared_index_info_returns_project_name(self):
+        # IndexInfo has project_name (not project) and project_space_visible (not shared).
+        # Use spec to ensure getattr(asset, 'shared', None) returns None (not a MagicMock).
+        asset = MagicMock(spec=['id', 'project_name', 'project_space_visible'])
+        asset.project_name = "proj-c"
+        asset.project_space_visible = True
+        user = _make_user()
+
+        result = _resolve_effective_project(asset, None, user)
+
+        assert result == "proj-c"
+
+    def test_private_index_info_returns_none(self):
+        asset = MagicMock(spec=['id', 'project_name', 'project_space_visible'])
+        asset.project_name = "proj-c"
+        asset.project_space_visible = False
+        user = _make_user()
+
+        result = _resolve_effective_project(asset, None, user)
+
+        assert result is None
+
+    def test_flag_disabled_private_asset_still_returns_project(self):
+        asset = MagicMock()
+        asset.project = "proj-d"
+        asset.shared = False
+        asset.is_global = False
+        user = _make_user()
+
+        with patch('codemie.service.llm_service.utils.config') as mock_config:
+            mock_config.LLM_PROXY_SHARED_ASSET_PROJECT_BUDGET_ROUTING_ENABLED = False
+            result = _resolve_effective_project(asset, None, user)
+
+        assert result == "proj-d"
+
+    def test_none_asset_returns_fallback_project_name(self):
+        user = _make_user()
+
+        result = _resolve_effective_project(None, "fallback-proj", user)
+
+        assert result == "fallback-proj"
+
+    def test_none_asset_none_fallback_returns_none(self):
+        user = _make_user()
+
+        result = _resolve_effective_project(None, None, user)
+
+        assert result is None
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_set_llm_context_private_asset_current_project_is_none(self, mock_settings, mock_dial, mock_set_litellm):
+        mock_settings.get_litellm_creds.return_value = None
+        mock_settings.get_dial_creds.return_value = None
+
+        asset = MagicMock()
+        asset.project = "proj-a"
+        asset.shared = False
+        asset.is_global = False
+        user = _make_user()
+
+        set_llm_context(asset, None, user)
+
+        mock_set_litellm.assert_called_once()
+        ctx = mock_set_litellm.call_args[0][0]
+        assert isinstance(ctx, LiteLLMContext)
+        assert ctx.current_project is None
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_set_llm_context_shared_asset_current_project_is_set(self, mock_settings, mock_dial, mock_set_litellm):
+        mock_settings.get_litellm_creds.return_value = None
+        mock_settings.get_dial_creds.return_value = None
+
+        asset = MagicMock()
+        asset.project = "proj-a"
+        asset.shared = True
+        asset.is_global = False
+        user = _make_user()
+
+        set_llm_context(asset, None, user)
+
+        mock_set_litellm.assert_called_once()
+        ctx = mock_set_litellm.call_args[0][0]
+        assert isinstance(ctx, LiteLLMContext)
+        assert ctx.current_project == "proj-a"

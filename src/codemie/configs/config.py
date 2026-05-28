@@ -516,6 +516,7 @@ class Config(BaseSettings):
     LLM_PROXY_BUDGET_CHECK_ENABLED: bool = False
     LLM_PROXY_BUDGET_RECONCILIATION_ENABLED: bool = False  # Run budget reconciliation after app readiness
     LLM_PROXY_BUDGET_RECONCILIATION_TIMEOUT_SECONDS: int = 600  # Timeout for a single reconciliation run
+    LLM_PROXY_SHARED_ASSET_PROJECT_BUDGET_ROUTING_ENABLED: bool = True  # Route shared assets to project budget
     LLM_PROXY_EMBEDDINGS_DISABLED: bool = False  # Bypass LiteLLM for embeddings, use native providers
     LITE_LLM_URL: str = ""
     LITE_LLM_APP_KEY: str = ""

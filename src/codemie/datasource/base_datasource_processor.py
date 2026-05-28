@@ -248,7 +248,7 @@ class BaseDatasourceProcessor(ABC):
             )
         )
         if self.user:
-            set_llm_context(None, self.index.project_name, self.user)
+            set_llm_context(self.index, None, self.user)
             set_logging_info(
                 uuid=self.request_uuid,
                 user_id=self.user.id,

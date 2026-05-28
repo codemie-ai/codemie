@@ -173,7 +173,7 @@ class LiteLLMCredentials(BaseModel):
 
 class LiteLLMContext(BaseModel):
     credentials: Optional[LiteLLMCredentials]
-    current_project: str
+    current_project: str | None
 
 
 class AzureDevOpsCredentials(BaseModel):

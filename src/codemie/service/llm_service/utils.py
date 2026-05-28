@@ -12,9 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from fastapi import status
 
-from codemie.configs import logger
+from codemie.configs import config, logger
 from codemie.core.dependecies import set_dial_credentials, set_litellm_context
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.assistant import AssistantBase
@@ -22,36 +26,53 @@ from codemie.rest_api.models.settings import LiteLLMContext
 from codemie.rest_api.security.user import User
 from codemie.service.settings.settings import SettingsService
 
+if TYPE_CHECKING:
+    from codemie.core.workflow_models.workflow_config import WorkflowConfigBase
+    from codemie.rest_api.models.index import IndexInfo
+
 
 def _resolve_effective_project(
-    assistant: AssistantBase | None, fallback_project_name: str | None, user: User
+    asset: AssistantBase | WorkflowConfigBase | IndexInfo | None,
+    fallback_project_name: str | None,
+    user: User,
 ) -> str | None:
-    if assistant is None:
+    if asset is None:
         return fallback_project_name
 
-    if not assistant.project:
+    project = getattr(asset, 'project', None) or getattr(asset, 'project_name', None)
+    if not project:
         raise ExtendedHTTPException(
             code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            message="Assistant project is not set",
-            details=f"Assistant {assistant.id} has no project assigned.",
+            message="Asset project is not set",
+            details=f"Asset {getattr(asset, 'id', None)} has no project assigned.",
         )
 
-    if not assistant.is_global:
-        return assistant.project
+    if config.LLM_PROXY_SHARED_ASSET_PROJECT_BUDGET_ROUTING_ENABLED:
+        is_shared = getattr(asset, 'shared', None)
+        if is_shared is None:
+            is_shared = getattr(asset, 'project_space_visible', True)
+        if not is_shared:
+            return None  # private asset → BudgetResolutionService falls back to GLOBAL_OR_PERSONAL
 
-    user_projects = set(user.project_names or []) | set(user.admin_project_names or [])
-    if assistant.project in user_projects or not user.email:
-        return assistant.project
+    if getattr(asset, 'is_global', False):
+        user_projects = set(user.project_names or []) | set(user.admin_project_names or [])
+        if project in user_projects or not user.email:
+            return project
+        return user.email
 
-    return user.email
+    return project
 
 
-def set_llm_context(assistant: AssistantBase | None, fallback_project_name: str | None, user: User):
+def set_llm_context(
+    asset: AssistantBase | WorkflowConfigBase | IndexInfo | None,
+    fallback_project_name: str | None,
+    user: User,
+):
     from codemie.rest_api.models.settings import SettingType
     from codemie.service.settings.base_settings import SearchFields
     from codemie_tools.base.models import CredentialTypes
 
-    effective_project = _resolve_effective_project(assistant, fallback_project_name, user)
+    effective_project = _resolve_effective_project(asset, fallback_project_name, user)
 
     try:
         litellm_creds = SettingsService.get_litellm_creds(project_name=effective_project, user_id=user.id)

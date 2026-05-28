@@ -86,19 +86,18 @@ class TestLiteLLMContext:
 
     def test_create_context_missing_required_fields(self):
         """Test creating LiteLLMContext without required fields."""
-        # Test missing current_project
+        # Test missing current_project (omitted entirely) — still required, must raise
         with pytest.raises(ValidationError) as exc_info:
             LiteLLMContext(credentials=None)
 
         assert "current_project" in str(exc_info.value)
         assert "Field required" in str(exc_info.value)
 
-        # Test with None for current_project (should fail since it expects str)
+    def test_create_context_none_current_project_is_allowed(self):
+        """Test that current_project=None is valid for private-asset budget routing."""
         credentials = LiteLLMCredentials(api_key="key", url="https://test.com")
-        with pytest.raises(ValidationError) as exc_info:
-            LiteLLMContext(credentials=credentials, current_project=None)
-
-        assert "current_project" in str(exc_info.value)
+        context = LiteLLMContext(credentials=credentials, current_project=None)
+        assert context.current_project is None
 
     def test_context_serialization(self):
         """Test serialization of LiteLLMContext."""

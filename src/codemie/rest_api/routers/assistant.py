@@ -1260,7 +1260,7 @@ def publish_assistant_to_marketplace(
     # Set LiteLLM context with user's credentials
     from codemie.service.llm_service.utils import set_llm_context
 
-    set_llm_context(None, user.current_project, user)
+    set_llm_context(assistant, None, user)
 
     # Track if user bypassed recommendations (for ES analytics)
     published_with_bypass = False
