@@ -102,7 +102,7 @@ def configure_opentelemetry(app: FastAPI) -> None:
     # Covers LiteLLM outbound calls and any other httpx usage in the codebase.
     HTTPXClientInstrumentor().instrument()
     # SQLAlchemy instrumentation is done in main.py lifespan after engines are created,
-    # because PostgresClient uses from-imports that bypass module-level monkey-patching.
+    # because PostgresClient uses from-imports that bypass module-level monkey-patching
 
 
 def _configure_tracing(resource: Resource) -> None:

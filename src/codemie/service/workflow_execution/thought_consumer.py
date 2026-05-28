@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import threading
 
 from codemie.chains.base import Thought
 from codemie.configs import logger
@@ -20,6 +19,7 @@ from codemie.core.otel_tracing import get_otel_context_for_thread, propagated_sp
 from codemie.core.thought_queue import ThoughtContext, ThoughtQueueItem
 from codemie.core.thread import ThreadedGenerator
 from codemie.core.workflow_models import WorkflowExecutionStateThought
+from codemie.rest_api.routers.utils import run_consumer_in_thread_pool
 
 
 class ThoughtConsumer:
@@ -29,8 +29,7 @@ class ThoughtConsumer:
     def run(execution_id: str, message_queue: ThreadedGenerator):
         instance = ThoughtConsumer(workflow_execution_id=execution_id, message_queue=message_queue)
 
-        thread = threading.Thread(target=instance.consume)
-        thread.start()
+        run_consumer_in_thread_pool(instance.consume)
 
     def __init__(self, workflow_execution_id: str, message_queue: ThreadedGenerator) -> None:
         self.workflow_execution_id = workflow_execution_id

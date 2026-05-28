@@ -14,7 +14,6 @@
 
 import asyncio
 import json
-import threading
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -42,7 +41,7 @@ from codemie.rest_api.a2a.utils import convert_to_task_request, convert_to_base_
 from codemie.rest_api.models.assistant import Assistant, AssistantType
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.conversation import Conversation
-from codemie.rest_api.routers.utils import run_in_thread_pool
+from codemie.rest_api.routers.utils import run_assistant_in_thread_pool
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.request_utils import extract_custom_headers
 from codemie.service.assistant_service import AssistantService
@@ -545,8 +544,10 @@ class StandardAssistantHandler(AssistantRequestHandler):
             except MCPAuthenticationRequiredException as exc:
                 generator_queue.close(exc)
 
-        thread = threading.Thread(target=run_stream)
-        thread.start()
+        # Assistant execution runs in a separate pool so assistant streams and
+        # background generation do not contend with workflow producers/consumers.
+        run_assistant_in_thread_pool(run_stream)
+
         # We pass an empty string to avoid sending the default None value in the chat history.
         response = StreamedGenerationResult(generated="")
         while True:
@@ -663,7 +664,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
             )
         )
         background_tasks.add_task(
-            run_in_thread_pool,
+            run_assistant_in_thread_pool,
             self._background_generate,
             request,
             background_task_id,

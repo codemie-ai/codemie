@@ -171,14 +171,12 @@ EXECUTION_ID = "exec-test"
 
 def _run_stream(workflow, generator_queue, producer_fn):
     """
-    Helper: patches threading.Thread so that thread.start() runs producer_fn
+    Helper: patches the module-level thread pool submit call so producer_fn runs
     synchronously (puts items on the queue before the generator loop runs),
     then drains the generator and returns all yielded lines.
     """
-    with patch("codemie.rest_api.routers.utils.threading.Thread") as mock_thread_cls:
-        mock_thread = MagicMock()
-        mock_thread_cls.return_value = mock_thread
-        mock_thread.start.side_effect = lambda: producer_fn()
+    with patch("codemie.rest_api.routers.utils.ThreadPoolExecutor.submit") as mock_submit:
+        mock_submit.side_effect = lambda func, *args, **kwargs: producer_fn()
         return list(_serve_workflow_stream(workflow, generator_queue, EXECUTION_ID))
 
 
@@ -261,21 +259,3 @@ def test_serve_workflow_stream_zero_thoughts_final_chunk_generated_empty(generat
     last_chunk = json.loads(lines[0])
     assert last_chunk["last"] is True
     assert last_chunk["generated"] == ""
-
-
-def test_serve_workflow_stream_starts_and_joins_thread(generator_queue, mock_workflow):
-    """Background thread is created with stream_to_client as target and joined with timeout=1."""
-
-    def _produce():
-        generator_queue.close()
-
-    with patch("codemie.rest_api.routers.utils.threading.Thread") as mock_thread_cls:
-        mock_thread = MagicMock()
-        mock_thread_cls.return_value = mock_thread
-        mock_thread.start.side_effect = lambda: _produce()
-
-        list(_serve_workflow_stream(mock_workflow, generator_queue, EXECUTION_ID))
-
-    mock_thread_cls.assert_called_once_with(target=mock_workflow.stream_to_client)
-    mock_thread.start.assert_called_once()
-    mock_thread.join.assert_called_once_with(timeout=1)

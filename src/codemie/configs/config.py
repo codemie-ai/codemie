@@ -354,7 +354,7 @@ class Config(BaseSettings):
     STATE_IMPORT_DIR: str = "./state_import"
     STATE_IMPORT_ENABLED: bool = False
     CODEMIE_EXPORT_ROOT: str = "/app"
-    THREAD_POOL_MAX_WORKERS: int = 5
+    THREAD_POOL_MAX_WORKERS: int = 20
     CODEMIE_STORAGE_BUCKET_NAME: str = "codemie-global-storage"
     AZURE_SPEECH_REGION: str = ""
     AZURE_SPEECH_SERVICE_KEY: str = ""

@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import json
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
@@ -33,7 +32,22 @@ NDJSON_MEDIA_TYPE = "application/x-ndjson"
 WORKFLOW_EXECUTION_ID_KEY = "workflow_execution_id"
 
 
-executor = ThreadPoolExecutor(max_workers=config.THREAD_POOL_MAX_WORKERS)
+# Keep a general-purpose pool for unrelated background work. Workflow streaming producers,
+# assistant execution, and ThoughtConsumer readers must not share a pool because they can
+# block one another under load; separate pools prevent cross-role starvation.
+executor = ThreadPoolExecutor(max_workers=config.THREAD_POOL_MAX_WORKERS, thread_name_prefix="default")
+producer_executor = ThreadPoolExecutor(
+    max_workers=config.THREAD_POOL_MAX_WORKERS,
+    thread_name_prefix="producer",
+)
+assistant_executor = ThreadPoolExecutor(
+    max_workers=config.THREAD_POOL_MAX_WORKERS,
+    thread_name_prefix="assistant",
+)
+consumer_executor = ThreadPoolExecutor(
+    max_workers=config.THREAD_POOL_MAX_WORKERS,
+    thread_name_prefix="consumer",
+)
 
 
 def raise_access_denied(action: str):
@@ -76,6 +90,21 @@ def raise_not_found(resource_id: str, resource_type: str):
 
 def run_in_thread_pool(func, *args):
     future = executor.submit(func, *args)
+    return future
+
+
+def run_producer_in_thread_pool(func, *args):
+    future = producer_executor.submit(func, *args)
+    return future
+
+
+def run_assistant_in_thread_pool(func, *args):
+    future = assistant_executor.submit(func, *args)
+    return future
+
+
+def run_consumer_in_thread_pool(func, *args):
+    future = consumer_executor.submit(func, *args)
     return future
 
 
@@ -145,39 +174,35 @@ def _serve_workflow_stream(workflow: "WorkflowExecutor", generator_queue: Thread
 
     execution_start = time()
 
-    thread = threading.Thread(target=workflow.stream_to_client)
-    thread.start()
+    run_producer_in_thread_pool(workflow.stream_to_client)
 
-    try:
-        generation_result = None
-        while True:
-            value = generator_queue.queue.get()
-            if value is not StopIteration:
-                generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
+    generation_result = None
+    while True:
+        value = generator_queue.queue.get()
+        if value is not StopIteration:
+            generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
 
-                chunk = json.loads(value)
-                chunk[WORKFLOW_EXECUTION_ID_KEY] = execution_id
-                yield f"{json.dumps(chunk)}\n"
-                generator_queue.queue.task_done()
-            else:
-                # Skip if the last chunk already carries last=True (e.g. state_interrupted).
-                if getattr(generation_result, 'last', False):
-                    break
-
-                # Always send the final chunk so clients can reliably detect stream completion.
-                # We intentionally avoid querying the DB here: when delete_on_completion=True,
-                # the execution record may already be deleted by _auto_delete_execution() which
-                # races with this consumer after thought_queue.close() signals StopIteration.
-                # The generated text comes from the local generation_result, not the DB.
-                thought = getattr(generation_result, 'thought', None)
-                final_message = StreamedGenerationResult(
-                    generated=thought.message if thought else "",
-                    time_elapsed=time() - execution_start,
-                    generated_chunk="",
-                    last=True,
-                    workflow_execution_id=execution_id,
-                )
-                yield f"{final_message.model_dump_json()}\n"
+            chunk = json.loads(value)
+            chunk[WORKFLOW_EXECUTION_ID_KEY] = execution_id
+            yield f"{json.dumps(chunk)}\n"
+            generator_queue.queue.task_done()
+        else:
+            # Skip if the last chunk already carries last=True (e.g. state_interrupted).
+            if getattr(generation_result, 'last', False):
                 break
-    finally:
-        thread.join(timeout=1)
+
+            # Always send the final chunk so clients can reliably detect stream completion.
+            # We intentionally avoid querying the DB here: when delete_on_completion=True,
+            # the execution record may already be deleted by _auto_delete_execution() which
+            # races with this consumer after thought_queue.close() signals StopIteration.
+            # The generated text comes from the local generation_result, not the DB.
+            thought = getattr(generation_result, 'thought', None)
+            final_message = StreamedGenerationResult(
+                generated=thought.message if thought else "",
+                time_elapsed=time() - execution_start,
+                generated_chunk="",
+                last=True,
+                workflow_execution_id=execution_id,
+            )
+            yield f"{final_message.model_dump_json()}\n"
+            break
