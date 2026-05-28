@@ -19,7 +19,6 @@ from operator import itemgetter
 from typing import Type, Dict, Union, Optional
 
 from gitlab.exceptions import GitlabGetError
-from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import ToolException
@@ -34,6 +33,8 @@ from codemie_tools.git.prompts import UPDATE_CONTENT_PROMPT
 from codemie_tools.git.tools import UpdateFileGitTool
 from codemie_tools.git.tools_models import ListBranchesToolInput
 from codemie_tools.git.utils import validate_gitlab_wrapper, GitCredentials
+from codemie.core.constants import REQUEST_ID
+from codemie.core.dependecies import get_llm_by_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +200,7 @@ class OpenAIUpdateFileWholeTool(UpdateFileGitLabTool):
 
     name: str = UPDATE_FILE_TOOL.name
     description: str = UPDATE_FILE_TOOL.description
-    llm_model: BaseChatModel = Field(exclude=True)
+    llm_model: Optional[str] = Field(default=None, exclude=True)
     update_prompt: PromptTemplate = UPDATE_CONTENT_PROMPT
 
     def update_content(self, legacy_content, task_details):
@@ -227,13 +228,17 @@ class OpenAIUpdateFileWholeTool(UpdateFileGitLabTool):
 
     @property
     def _chain(self):
+        if self.llm_model is None:
+            raise ValueError("LLM model is required for this tool but was not configured")
+        request_id = self.metadata.get(REQUEST_ID) if self.metadata else None
+        llm = get_llm_by_credentials(llm_model=self.llm_model, request_id=request_id, streaming=False)
         chain = (
             {
                 "question": itemgetter("question"),
                 "context": itemgetter("context"),
             }
             | self.update_prompt
-            | self.llm_model
+            | llm
             | StrOutputParser()
         )
         return chain
@@ -244,10 +249,14 @@ class OpenAIUpdateFileDiffTool(UpdateFileGitLabTool):
 
     name: str = UPDATE_FILE_DIFF_TOOL.name
     description: str = UPDATE_FILE_DIFF_TOOL.description
-    llm_model: BaseChatModel = Field(exclude=True)
+    llm_model: Optional[str] = Field(default=None, exclude=True)
 
     def update_content(self, legacy_content, task_details):
-        return update_content_by_task(legacy_content, task_details, self.llm_model)
+        if self.llm_model is None:
+            raise ValueError("LLM model is required for this tool but was not configured")
+        request_id = self.metadata.get(REQUEST_ID) if self.metadata else None
+        llm = get_llm_by_credentials(llm_model=self.llm_model, request_id=request_id, streaming=False)
+        return update_content_by_task(legacy_content, task_details, llm)
 
 
 def get_position(line_number, file_path, mr):
