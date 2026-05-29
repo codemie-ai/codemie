@@ -306,7 +306,7 @@ class TestResolveEffectiveProjectSharing:
 
         assert result == "proj-a"
 
-    def test_private_assistant_returns_none(self):
+    def test_private_assistant_returns_project(self):
         asset = MagicMock()
         asset.project = "proj-a"
         asset.shared = False
@@ -315,7 +315,7 @@ class TestResolveEffectiveProjectSharing:
 
         result = _resolve_effective_project(asset, None, user)
 
-        assert result is None
+        assert result == "proj-a"
 
     def test_shared_workflow_config_returns_project(self):
         asset = MagicMock()
@@ -328,7 +328,7 @@ class TestResolveEffectiveProjectSharing:
 
         assert result == "proj-b"
 
-    def test_private_workflow_config_returns_none(self):
+    def test_private_workflow_config_returns_project(self):
         asset = MagicMock()
         asset.project = "proj-b"
         asset.shared = False
@@ -337,7 +337,7 @@ class TestResolveEffectiveProjectSharing:
 
         result = _resolve_effective_project(asset, None, user)
 
-        assert result is None
+        assert result == "proj-b"
 
     def test_shared_index_info_returns_project_name(self):
         # IndexInfo has project_name (not project) and project_space_visible (not shared).
@@ -351,7 +351,7 @@ class TestResolveEffectiveProjectSharing:
 
         assert result == "proj-c"
 
-    def test_private_index_info_returns_none(self):
+    def test_private_index_info_returns_project_name(self):
         asset = MagicMock(spec=['id', 'project_name', 'project_space_visible'])
         asset.project_name = "proj-c"
         asset.project_space_visible = False
@@ -359,7 +359,7 @@ class TestResolveEffectiveProjectSharing:
 
         result = _resolve_effective_project(asset, None, user)
 
-        assert result is None
+        assert result == "proj-c"
 
     def test_flag_disabled_private_asset_still_returns_project(self):
         asset = MagicMock()
@@ -391,7 +391,7 @@ class TestResolveEffectiveProjectSharing:
     @patch('codemie.service.llm_service.utils.set_litellm_context')
     @patch('codemie.service.llm_service.utils.set_dial_credentials')
     @patch('codemie.service.llm_service.utils.SettingsService')
-    def test_set_llm_context_private_asset_current_project_is_none(self, mock_settings, mock_dial, mock_set_litellm):
+    def test_set_llm_context_private_asset_current_project_is_set(self, mock_settings, mock_dial, mock_set_litellm):
         mock_settings.get_litellm_creds.return_value = None
         mock_settings.get_dial_creds.return_value = None
 
@@ -406,7 +406,61 @@ class TestResolveEffectiveProjectSharing:
         mock_set_litellm.assert_called_once()
         ctx = mock_set_litellm.call_args[0][0]
         assert isinstance(ctx, LiteLLMContext)
-        assert ctx.current_project is None
+        assert ctx.current_project == "proj-a"
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_set_llm_context_shared_asset_creds_are_nulled(self, mock_settings, mock_dial, mock_set_litellm):
+        """Shared asset + personal key → creds nulled; project budget wins."""
+        personal_creds = LiteLLMCredentials(api_key="personal-key", url="https://litellm.test.com")
+        mock_settings.get_litellm_creds.return_value = personal_creds
+
+        mock_setting = MagicMock()
+        mock_setting.setting_type = "user"  # not PROJECT — would normally allow bypass
+        mock_settings.retrieve_setting.return_value = mock_setting
+        mock_settings.get_dial_creds.return_value = None
+
+        asset = MagicMock()
+        asset.project = "proj-a"
+        asset.shared = True
+        asset.is_global = False
+        user = _make_user()
+
+        set_llm_context(asset, None, user)
+
+        mock_set_litellm.assert_called_once()
+        ctx = mock_set_litellm.call_args[0][0]
+        assert isinstance(ctx, LiteLLMContext)
+        assert ctx.credentials is None  # shared asset → key must not bypass project budget
+        assert ctx.current_project == "proj-a"
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_set_llm_context_private_asset_creds_are_kept(self, mock_settings, mock_dial, mock_set_litellm):
+        """Private asset + personal key → creds kept; USER_CREDENTIALS_BYPASS applies."""
+        personal_creds = LiteLLMCredentials(api_key="personal-key", url="https://litellm.test.com")
+        mock_settings.get_litellm_creds.return_value = personal_creds
+
+        mock_setting = MagicMock()
+        mock_setting.setting_type = "user"  # not PROJECT
+        mock_settings.retrieve_setting.return_value = mock_setting
+        mock_settings.get_dial_creds.return_value = None
+
+        asset = MagicMock()
+        asset.project = "proj-a"
+        asset.shared = False
+        asset.is_global = False
+        user = _make_user()
+
+        set_llm_context(asset, None, user)
+
+        mock_set_litellm.assert_called_once()
+        ctx = mock_set_litellm.call_args[0][0]
+        assert isinstance(ctx, LiteLLMContext)
+        assert ctx.credentials == personal_creds  # private asset → key triggers bypass
+        assert ctx.current_project == "proj-a"
 
     @patch('codemie.service.llm_service.utils.set_litellm_context')
     @patch('codemie.service.llm_service.utils.set_dial_credentials')

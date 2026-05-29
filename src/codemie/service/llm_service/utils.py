@@ -47,13 +47,6 @@ def _resolve_effective_project(
             details=f"Asset {getattr(asset, 'id', None)} has no project assigned.",
         )
 
-    if config.LLM_PROXY_SHARED_ASSET_PROJECT_BUDGET_ROUTING_ENABLED:
-        is_shared = getattr(asset, 'shared', None)
-        if is_shared is None:
-            is_shared = getattr(asset, 'project_space_visible', True)
-        if not is_shared:
-            return None  # private asset → BudgetResolutionService falls back to GLOBAL_OR_PERSONAL
-
     if getattr(asset, 'is_global', False):
         user_projects = set(user.project_names or []) | set(user.admin_project_names or [])
         if project in user_projects or not user.email:
@@ -88,6 +81,12 @@ def set_llm_context(
             # doing so would trigger USER_CREDENTIALS_BYPASS mode in llm_factory and skip override customer injection.
             if getattr(setting, "setting_type", None) == SettingType.PROJECT.value:
                 litellm_creds = None
+            elif asset is not None and config.LLM_PROXY_SHARED_ASSET_PROJECT_BUDGET_ROUTING_ENABLED:
+                is_shared = getattr(asset, 'shared', None)
+                if is_shared is None:
+                    is_shared = getattr(asset, 'project_space_visible', True)
+                if is_shared:
+                    litellm_creds = None  # shared asset → force project budget even when user has personal key
         litellm_context = LiteLLMContext(credentials=litellm_creds, current_project=effective_project)
         set_litellm_context(litellm_context)
         dial_creds = SettingsService.get_dial_creds(effective_project)
