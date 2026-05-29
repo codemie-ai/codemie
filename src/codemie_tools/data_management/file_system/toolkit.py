@@ -22,8 +22,7 @@ from codemie_tools.base.base_toolkit import BaseToolkit
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.base.models import ToolKit, ToolSet, Tool
 from codemie_tools.data_management.code_executor.code_executor_tool import CodeExecutorTool
-from codemie_tools.data_management.code_executor.local_code_executor_tool import LocalCodeExecutorTool
-from codemie_tools.data_management.code_executor.tools_vars import CODE_EXECUTOR_TOOL, PYTHON_RUN_CODE_TOOL
+from codemie_tools.data_management.code_executor.tools_vars import CODE_EXECUTOR_TOOL
 from codemie_tools.data_management.file_system.generate_image_tool import GenerateImageTool
 from codemie_tools.data_management.file_system.tools import (
     ListDirectoryTool,
@@ -54,7 +53,6 @@ class FileSystemToolkitUI(ToolKit):
         Tool.from_metadata(WRITE_FILE_TOOL),
         Tool.from_metadata(LIST_DIRECTORY_TOOL),
         Tool.from_metadata(COMMAND_LINE_TOOL),
-        Tool.from_metadata(PYTHON_RUN_CODE_TOOL),
         Tool.from_metadata(GENERATE_IMAGE_TOOL),
         Tool.from_metadata(DIFF_UPDATE_FILE_TOOL),
         Tool.from_metadata(REPLACE_STRING_TOOL),
@@ -93,19 +91,13 @@ class FileSystemToolkit(BaseToolkit):
         return ToolKit(
             toolkit=ToolSet.FILE_SYSTEM,
             tools=[
-                Tool.from_metadata(PYTHON_RUN_CODE_TOOL),
                 Tool.from_metadata(GENERATE_IMAGE_TOOL),
                 Tool.from_metadata(CODE_EXECUTOR_TOOL),
             ],
         ).model_dump()
 
     def get_tools(self) -> list:
-        # Always include these safe tools
         tools = [
-            LocalCodeExecutorTool(
-                file_repository=self.file_repository,
-                user_id=self.user_id,
-            ),
             GenerateImageTool(
                 image_generator=self.image_generator,
                 file_repository=self.file_repository,

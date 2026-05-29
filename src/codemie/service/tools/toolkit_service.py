@@ -38,10 +38,7 @@ from codemie_tools.research.tools_vars import (
     TAVILY_SEARCH_TOOL,
     WEB_SCRAPPER_TOOL,
 )
-from codemie_tools.data_management.code_executor.tools_vars import (
-    PYTHON_RUN_CODE_TOOL,
-    CODE_EXECUTOR_TOOL,
-)
+from codemie_tools.data_management.code_executor.tools_vars import CODE_EXECUTOR_TOOL
 from codemie.configs import config
 from codemie.configs.logger import logger
 from codemie.core.constants import CodeIndexType, ToolType
@@ -272,7 +269,6 @@ class ToolkitService:
             file_system_toolkit = ToolKit(
                 toolkit=ToolSet.FILE_SYSTEM,
                 tools=[
-                    Tool.from_metadata(PYTHON_RUN_CODE_TOOL),
                     Tool.from_metadata(CODE_EXECUTOR_TOOL),
                 ],
             )

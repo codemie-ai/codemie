@@ -500,8 +500,7 @@ class Config(BaseSettings):
     ]
 
     DYNAMIC_CODE_INTERPRETER_TOOLS: list[str] = [
-        "python_repl_code_interpreter",  # Python REPL Code Interpreter
-        "code_executor",  # Code Executor (with file upload support)
+        "code_executor",
     ]
     DISABLE_PARALLEL_TOOLS_CALLING_MODELS: list[str] = [
         "gpt-4.1",

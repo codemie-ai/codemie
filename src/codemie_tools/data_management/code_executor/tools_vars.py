@@ -54,28 +54,6 @@ COMMON_SANDBOX_LIBRARIES = [
 # Safe Python standard library modules that can be used
 SAFE_STDLIB_MODULES = "json, datetime, re, math, random, collections, itertools, functools, statistics, copy, csv, base64, hashlib, hmac, secrets, string, textwrap, unicodedata, difflib, heapq, bisect, array, enum, decimal, fractions, typing, dataclasses, time"
 
-PYTHON_RUN_CODE_TOOL = ToolMetadata(
-    name="python_repl_code_interpreter",
-    description="""
-    A Python shell. Use this to execute python commands when you need to perform calculations, computations.
-    Use this tool to generate diagrams, plots, charts and utilize available mermaid-py, matplotlib, python-mermaid libs
-    Input should be a valid python command.
-    """.strip(),
-    label="Code Interpreter",
-    user_description="""
-    Provides access to a Python shell, allowing the AI assistant to execute Python commands for various computational tasks, data analysis, and visualization purposes.
-    Usage Note:
-    Use this tool when you need to perform calculations, computations, or generate visual representations of data. It's particularly useful for:
-    - Complex mathematical operations
-    - Data manipulation and analysis
-    - Generating diagrams, plots, and charts
-    - Creating flowcharts and diagrams using mermaid-py
-    - Plotting graphs and visualizations with matplotlib
-    - Utilizing python-mermaid for sequence diagrams and flowcharts
-    The tool provides access to common Python libraries for these tasks.
-    """.strip(),
-)
-
 CODE_EXECUTOR_TOOL = ToolMetadata(
     name="code_executor",
     description=f"""

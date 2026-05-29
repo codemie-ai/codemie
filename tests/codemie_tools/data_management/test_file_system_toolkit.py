@@ -15,7 +15,6 @@
 import pytest
 
 from codemie_tools.data_management.code_executor.code_executor_tool import CodeExecutorTool
-from codemie_tools.data_management.code_executor.local_code_executor_tool import LocalCodeExecutorTool
 from codemie_tools.data_management.file_system.generate_image_tool import GenerateImageTool
 from codemie_tools.data_management.file_system.toolkit import FileSystemToolkit
 from codemie_tools.data_management.file_system.tools import (
@@ -34,36 +33,35 @@ class TestFileSystemToolkit:
         return FileSystemToolkit.get_toolkit(configs={})
 
     def test_get_tools_ui_info_admin_without_env_var(self, toolkit):
-        # Admin without env var should only see 3 tools in UI
+        # Admin without env var should only see 2 tools in UI
         result = toolkit.get_tools_ui_info(is_admin=True)
         assert 'tools' in result, "UI info does not contain 'tools'"
-        assert len(result['tools']) == 3, "Admin without env var should see only 3 tools in UI"
+        assert len(result['tools']) == 2, "Admin without env var should see only 2 tools in UI"
 
     def test_get_tools_ui_info_admin_with_env_var(self, toolkit, monkeypatch):
-        # Admin with env var should see all 9 tools in UI
+        # Admin with env var should see all 8 tools in UI
         monkeypatch.setenv("FILE_SYSTEM_TOOLS_ENABLED", "true")
         result = toolkit.get_tools_ui_info(is_admin=True)
         assert 'tools' in result, "UI info does not contain 'tools'"
-        assert len(result['tools']) == 9, "Admin with env var should see all 9 tools in UI"
+        assert len(result['tools']) == 8, "Admin with env var should see all 8 tools in UI"
 
     def test_get_tools_ui_info_non_admin(self, toolkit):
-        # Non-admin should only see 3 tools in UI
+        # Non-admin should only see 2 tools in UI
         result = toolkit.get_tools_ui_info(is_admin=False)
         assert 'tools' in result, "UI info does not contain 'tools'"
-        assert len(result['tools']) == 3, "Non-admin should see only 3 tools in UI"
+        assert len(result['tools']) == 2, "Non-admin should see only 2 tools in UI"
 
     def test_get_tools_ui_info_non_admin_with_env_var(self, toolkit, monkeypatch):
-        # Non-admin with env var should still only see 3 tools in UI
+        # Non-admin with env var should still only see 2 tools in UI
         monkeypatch.setenv("FILE_SYSTEM_TOOLS_ENABLED", "true")
         result = toolkit.get_tools_ui_info(is_admin=False)
         assert 'tools' in result, "UI info does not contain 'tools'"
-        assert len(result['tools']) == 3, "Non-admin should see only 3 tools in UI even with env var"
+        assert len(result['tools']) == 2, "Non-admin should see only 2 tools in UI even with env var"
 
     def test_get_tools_non_admin(self, toolkit):
-        # Non-admin users should only get safe tools (3 tools)
+        # Non-admin users should only get safe tools (2 tools)
         tools = toolkit.get_tools()
-        assert len(tools) == 3, "Non-admin should only get 3 safe tools"
-        assert any(isinstance(tool, LocalCodeExecutorTool) for tool in tools), "LocalCodeExecutor missing"
+        assert len(tools) == 2, "Non-admin should only get 2 safe tools"
         assert any(isinstance(tool, GenerateImageTool) for tool in tools), "GenerateImageTool missing"
         assert any(isinstance(tool, CodeExecutorTool) for tool in tools), "CodeExecutor missing"
         # Verify admin tools are NOT present
@@ -80,24 +78,22 @@ class TestFileSystemToolkit:
         # Without env var should only get safe tools
         toolkit = FileSystemToolkit.get_toolkit(configs={})
         tools = toolkit.get_tools()
-        assert len(tools) == 3, "Without env var should only get 3 safe tools"
-        assert any(isinstance(tool, LocalCodeExecutorTool) for tool in tools), "LocalCodeExecutor missing"
+        assert len(tools) == 2, "Without env var should only get 2 safe tools"
         assert any(isinstance(tool, GenerateImageTool) for tool in tools), "GenerateImageTool missing"
         assert any(isinstance(tool, CodeExecutorTool) for tool in tools), "CodeExecutor missing"
         # Verify file system tools are NOT present
         assert not any(isinstance(tool, ReadFileTool) for tool in tools), "ReadFileTool should not be present"
 
     def test_get_tools_with_env_var(self, monkeypatch):
-        # With env var set should get all 9 tools
+        # With env var set should get all 8 tools
         monkeypatch.setenv("FILE_SYSTEM_TOOLS_ENABLED", "true")
         toolkit = FileSystemToolkit.get_toolkit(configs={})
         tools = toolkit.get_tools()
-        assert len(tools) == 9, "With env var should get all 9 tools"
+        assert len(tools) == 8, "With env var should get all 8 tools"
         assert any(isinstance(tool, ReadFileTool) for tool in tools), "ReadFileTool missing"
         assert any(isinstance(tool, ListDirectoryTool) for tool in tools), "ListDirectoryTool missing"
         assert any(isinstance(tool, WriteFileTool) for tool in tools), "WriteFileTool missing"
         assert any(isinstance(tool, CommandLineTool) for tool in tools), "CommandLineTool missing"
-        assert any(isinstance(tool, LocalCodeExecutorTool) for tool in tools), "LocalCodeExecutor missing"
         assert any(isinstance(tool, DiffUpdateFileTool) for tool in tools), "DiffUpdateFileTool missing"
         assert any(isinstance(tool, GenerateImageTool) for tool in tools), "GenerateImageTool missing"
         assert any(isinstance(tool, ReplaceStringTool) for tool in tools), "ReplaceStringTool missing"
