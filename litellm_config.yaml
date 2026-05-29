@@ -141,10 +141,9 @@ model_list:
   - model_name: gpt-image-1.5
     litellm_params:
       model: azure/codemie-gpt-image-1.5-2025-12-16
-      api_base: https://codemie-swedencentral-0.openai.azure.com/
-      litellm_credential_name: default_azure_openai_credential
+      litellm_credential_name: azure_polandcentral_image_credential
     model_info:
-      id: gpt-image-1-5-2025-12-16-swedencentral-0
+      id: gpt-image-1-5-2025-12-16-polandcentral-0
       base_model: azure/gpt-image-1.5-2025-12-16
       label: "GPT Image 1.5"
       forbidden_for_web: true
@@ -153,10 +152,9 @@ model_list:
   - model_name: gpt-image-2
     litellm_params:
       model: azure/codemie-gpt-image-2-2026-04-21
-      api_base: https://codemie-swedencentral-0.openai.azure.com/
-      litellm_credential_name: default_azure_openai_credential
+      litellm_credential_name: azure_polandcentral_image_credential
     model_info:
-      id: gpt-image-2-2026-04-21-swedencentral-0
+      id: gpt-image-2-2026-04-21-polandcentral-0
       base_model: azure/gpt-image-2-2026-04-21
       label: "GPT Image 2"
       forbidden_for_web: true
@@ -455,3 +453,10 @@ credential_list:
       tenant_id: os.environ/AZURE_TENANT_ID
       client_id: os.environ/AZURE_CLIENT_ID
       client_secret: os.environ/AZURE_CLIENT_SECRET
+  - credential_name: azure_polandcentral_image_credential
+    credential_info:
+      description: "Production credentials for Azure OpenAI image models in Poland Central"
+    credential_values:
+      api_base: https://codemie-polandcentral-0.openai.azure.com/
+      api_key: os.environ/AZURE_POLANDCENTRAL_IMAGE_API_KEY
+      api_version: "2025-04-01-preview"

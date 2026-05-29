@@ -134,6 +134,7 @@ services:
       AZURE_TENANT_ID: ""
       AZURE_CLIENT_ID: ""
       AZURE_CLIENT_SECRET: ""
+      AZURE_POLANDCENTRAL_IMAGE_API_KEY: ""
     depends_on:
       - postgres  # Indicates that this service depends on the 'db' service, ensuring 'db' starts first
     healthcheck: # Defines the health check configuration for the container
