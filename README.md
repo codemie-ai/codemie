@@ -129,6 +129,7 @@ docker build -t codemie:latest .
 - **Run ALL checks + tests** (strictly needed before commit): `make verify` - Runs ruff, license-check, gitleaks, and tests
 - **Run local SonarQube scan**: `make sonar-local` - Generates `coverage.xml`, runs the official `sonar-scanner` using the shared `.sonarlint/connectedMode.json` binding, and prints branch Sonar details automatically if the scan fails
 - **Import AI Katas**: `make import-katas` - Clone and import AI katas from GitHub repository
+- **Run sanity tests**: `make test-harness` - Runs sanity checks via `uvx codemie-test-harness --sanity`
 
 ### Git Hooks (pre-commit)
 Hook toggle:
