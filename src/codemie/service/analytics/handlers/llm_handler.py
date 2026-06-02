@@ -21,6 +21,7 @@ from datetime import datetime
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
+from codemie.service.analytics.handlers.query_filters import build_error_filtering_query
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
 
@@ -150,28 +151,8 @@ class LLMHandler:
             sub_aggs=sub_aggs,
         )
 
-        # Add filter to query to exclude errors from LLM_PROXY_REQUESTS_TOTAL
-        modified_query = {
-            "bool": {
-                "must": [query],
-                "should": [
-                    {
-                        "bool": {
-                            "must_not": {"term": {"metric_name.keyword": MetricName.LLM_PROXY_REQUESTS_TOTAL.value}}
-                        }
-                    },
-                    {
-                        "bool": {
-                            "must": [
-                                {"term": {"metric_name.keyword": MetricName.LLM_PROXY_REQUESTS_TOTAL.value}},
-                                {"range": {"attributes.response_status": {"lt": 400}}},
-                            ]
-                        }
-                    },
-                ],
-                "minimum_should_match": 1,
-            }
-        }
+        # Add filter to query to exclude errors from LLM_PROXY_REQUESTS_TOTAL and CLI metrics with errors
+        modified_query = build_error_filtering_query(query)
 
         agg_body = {
             "query": modified_query,

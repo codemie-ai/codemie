@@ -28,6 +28,7 @@ from codemie.service.analytics.handlers.field_constants import (
     PROJECT_KEYWORD_FIELD,
 )
 from codemie.service.analytics.handlers.llm_handler import _combine_model_names
+from codemie.service.analytics.handlers.query_filters import build_error_filtering_query
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
 from codemie.service.analytics.time_parser import TimeParser
@@ -495,28 +496,8 @@ class CLIHandler(CLIBaseHandler):
             sub_aggs=sub_aggs,
         )
 
-        # Add filter to query to exclude errors from LLM_PROXY_REQUESTS_TOTAL
-        modified_query = {
-            "bool": {
-                "must": [query],
-                "should": [
-                    {
-                        "bool": {
-                            "must_not": {"term": {"metric_name.keyword": MetricName.LLM_PROXY_REQUESTS_TOTAL.value}}
-                        }
-                    },
-                    {
-                        "bool": {
-                            "must": [
-                                {"term": {"metric_name.keyword": MetricName.LLM_PROXY_REQUESTS_TOTAL.value}},
-                                {"range": {"attributes.response_status": {"lt": 400}}},
-                            ]
-                        }
-                    },
-                ],
-                "minimum_should_match": 1,
-            }
-        }
+        # Add filter to query to exclude errors from LLM_PROXY_REQUESTS_TOTAL and CLI metrics with errors
+        modified_query = build_error_filtering_query(query)
 
         agg_body = {
             "query": modified_query,
