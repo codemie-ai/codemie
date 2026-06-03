@@ -41,7 +41,7 @@ producer_executor = ThreadPoolExecutor(
     thread_name_prefix="producer",
 )
 assistant_executor = ThreadPoolExecutor(
-    max_workers=config.THREAD_POOL_MAX_WORKERS,
+    max_workers=config.ASSISTANT_THREAD_POOL_MAX_WORKERS,
     thread_name_prefix="assistant",
 )
 consumer_executor = ThreadPoolExecutor(
