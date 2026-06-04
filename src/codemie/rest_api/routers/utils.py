@@ -176,10 +176,12 @@ def _serve_workflow_stream(workflow: "WorkflowExecutor", generator_queue: Thread
     run_producer_in_thread_pool(workflow.stream_to_client)
 
     generation_result = None
+    accumulated_content = ""
     while True:
         value = generator_queue.queue.get()
         if value is not StopIteration:
             generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
+            accumulated_content += getattr(generation_result, 'generated_chunk', '') or ''
 
             chunk = json.loads(value)
             chunk[WORKFLOW_EXECUTION_ID_KEY] = execution_id
@@ -194,10 +196,11 @@ def _serve_workflow_stream(workflow: "WorkflowExecutor", generator_queue: Thread
             # We intentionally avoid querying the DB here: when delete_on_completion=True,
             # the execution record may already be deleted by _auto_delete_execution() which
             # races with this consumer after thought_queue.close() signals StopIteration.
-            # The generated text comes from the local generation_result, not the DB.
+            # The generated text comes from accumulated stream chunks; thought.message is the
+            # fallback for thought-only nodes that emit no generated_chunk deltas.
             thought = getattr(generation_result, 'thought', None)
             final_message = StreamedGenerationResult(
-                generated=thought.message if thought else "",
+                generated=accumulated_content or (thought.message if thought else ""),
                 time_elapsed=time() - execution_start,
                 generated_chunk="",
                 last=True,

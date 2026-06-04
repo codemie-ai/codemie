@@ -456,6 +456,17 @@ class WorkflowExecutionService:
         if not self.thought_queue:
             return
 
+        predecessor_output = None
+        if execution_state_id:
+            try:
+                predecessor_state = WorkflowExecutionState.get_by_id(id_=execution_state_id)
+                if predecessor_state:
+                    predecessor_output = predecessor_state.output
+            except Exception as e:
+                logger.warning(
+                    f"Failed to fetch predecessor state output for execution_state_id " f"{execution_state_id}: {e}"
+                )
+
         state_config = next((s for s in self.workflow_config.states if s.id == interrupted_state_id), None)
         state_event = WorkflowStateEvent(
             id=execution_state_id,
@@ -464,7 +475,13 @@ class WorkflowExecutionService:
             status=WorkflowExecutionStatusEnum.INTERRUPTED.value,
             event_type=WorkflowStateEventType.STATE_INTERRUPTED,
         )
-        self.thought_queue.send(StreamedGenerationResult(last=True, workflow_state=state_event).model_dump_json())
+        self.thought_queue.send(
+            StreamedGenerationResult(
+                last=True,
+                workflow_state=state_event,
+                generated=predecessor_output,
+            ).model_dump_json()
+        )
 
     def _get_thoughts_from_states(self):
         """
