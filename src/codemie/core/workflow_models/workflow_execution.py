@@ -304,6 +304,7 @@ class CreateWorkflowExecutionRequest(BaseModel):
 
 class ResumeWorkflowExecutionRequest(BaseModel):
     user_input: str | None = None
+    file_names: list[str] | None = None
 
 
 class WorkflowExecutionStateThoughtShort(BaseModel):

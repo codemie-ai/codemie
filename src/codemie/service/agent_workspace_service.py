@@ -19,7 +19,6 @@ import mimetypes
 from pathlib import PurePosixPath
 
 from codemie.core.exceptions import ValidationException
-from codemie.core.models import UserEntity
 from codemie.repository.agent_workspace_repository import AgentWorkspaceRepository
 from codemie.repository.repository_factory import FileRepositoryFactory
 from codemie.rest_api.models.agent_workspace import (
@@ -101,7 +100,7 @@ class AgentWorkspaceService:
         self,
         conversation_id: str,
         file_urls: list[str],
-        user: User | UserEntity,
+        user: User,
     ) -> list[WorkspaceFileItemResponse]:
         """Persist workspace metadata for uploaded chat files without copying blob content."""
         if not conversation_id or not file_urls:
@@ -584,14 +583,13 @@ class AgentWorkspaceService:
             file_urls.extend(message.file_names or [])
         return file_urls
 
-    def _get_or_create_workspace(self, conversation_id: str, user: User | UserEntity) -> AgentWorkspace:
-        user_id = user.user_id if isinstance(user, UserEntity) else user.id
-        workspace = self.repository.get_by_conversation_for_user(conversation_id, user_id)
+    def _get_or_create_workspace(self, conversation_id: str, user: User) -> AgentWorkspace:
+        workspace = self.repository.get_by_conversation_for_user(conversation_id, user.id)
         if workspace:
             return workspace
 
         self.create_workspace(CreateAgentWorkspaceRequest(conversation_id=conversation_id), user)
-        workspace = self.repository.get_by_conversation_for_user(conversation_id, user_id)
+        workspace = self.repository.get_by_conversation_for_user(conversation_id, user.id)
         if not workspace:
             raise ValidationException(f"Workspace for conversation '{conversation_id}' not found")
         return workspace

@@ -411,6 +411,8 @@ def resume_workflow_execution(
     if body and body.user_input:
         WorkflowService().append_user_message_on_resume(execution, body.user_input)
 
+    file_names = body.file_names if body and body.file_names else []
+
     request_headers = extract_custom_headers(raw_request) if propagate_headers else None
 
     # Set cache control flag for this request
@@ -436,6 +438,7 @@ def resume_workflow_execution(
             resume_execution=True,
             execution_id=execution.execution_id,
             request_headers=request_headers,
+            file_names=file_names,
             **extra_kwargs,
         )
 
