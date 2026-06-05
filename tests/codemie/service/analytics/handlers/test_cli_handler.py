@@ -1229,7 +1229,16 @@ class TestCLIInsightsHelpers:
         assert response["data"]["columns"][5]["id"] == "total_cost"
 
     @pytest.mark.asyncio
-    async def test_get_cli_insights_user_detail(self, handler, mock_repository):
+    @patch(
+        "codemie.service.analytics.handlers.cli.insights_handler.UserIdentityResolver.resolve_rows",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "codemie.service.analytics.handlers.cli.insights_handler.UserIdentityResolver.resolve",
+        new_callable=AsyncMock,
+        return_value="",
+    )
+    async def test_get_cli_insights_user_detail(self, mock_resolve, mock_resolve_rows, handler, mock_repository):
         mock_repository.execute_aggregation_query = AsyncMock(
             return_value={
                 "aggregations": {

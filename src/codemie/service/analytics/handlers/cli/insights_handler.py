@@ -512,11 +512,41 @@ class CLIInsightsHandler(CLIBaseHandler):
             start_dt, end_dt, users, projects, MetricName.to_list_from_group(MetricName.CLI_METRICS)
         )
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_identity_aggregation(query))
-        for b in result.get("aggregations", {}).get("users", {}).get("buckets", []):
+        buckets = result.get("aggregations", {}).get("users", {}).get("buckets", [])
+
+        return self._match_user_id_by_name(
+            buckets, normalized_entity_name
+        ) or await self._match_user_id_by_email_fallback(buckets, entity_name, normalized_entity_name)
+
+    def _match_user_id_by_name(self, buckets: list, normalized_entity_name: str) -> str | None:
+        """Match user_id from ES buckets by comparing normalized name or email."""
+        for b in buckets:
             user_id = b["key"]
             user_name = str(self._extract_top_metric(b, "user_name", USER_NAME_KEYWORD_FIELD) or "").strip().lower()
             user_email = str(self._extract_top_metric(b, "user_email", USER_EMAIL_KEYWORD_FIELD) or "").strip().lower()
             if normalized_entity_name in {user_name, user_email} and user_id:
+                return str(user_id)
+        return None
+
+    async def _match_user_id_by_email_fallback(
+        self, buckets: list, entity_name: str, normalized_entity_name: str
+    ) -> str | None:
+        """Resolve display name to canonical email via DB, then match against user_email in buckets.
+
+        CLI_LLM_USAGE_TOTAL docs store email in attributes.user_name, so top_metrics may return
+        an email when the entity_name is a display name — causing the primary match to miss.
+        user_email is consistently the real email across all CLI metric types.
+        """
+        resolved_email = await UserIdentityResolver.resolve(entity_name, target="email")
+        if not resolved_email:
+            return None
+        normalized_email = resolved_email.strip().lower()
+        if normalized_email == normalized_entity_name:
+            return None
+        for b in buckets:
+            user_id = b["key"]
+            user_email = str(self._extract_top_metric(b, "user_email", USER_EMAIL_KEYWORD_FIELD) or "").strip().lower()
+            if normalized_email == user_email and user_id:
                 return str(user_id)
         return None
 
