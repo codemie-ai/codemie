@@ -629,16 +629,24 @@ class UserRepository:
         await session.flush()
         return True
 
-    async def aquery_active_users(self, session: AsyncSession, search: Optional[str] = None) -> list["UserDB"]:
-        """Return all active, non-deleted users, optionally filtered by text search.
+    async def aquery_active_users(
+        self,
+        session: AsyncSession,
+        search: Optional[str] = None,
+        projects: Optional[list[str]] = None,
+    ) -> list["UserDB"]:
+        """Return all active, non-deleted users, optionally filtered by text search and/or projects.
 
         Args:
             session: Async database session
             search: Optional ILIKE pattern applied to email, username, and name
+            projects: Optional list of project names to filter by
 
         Returns:
             List of UserDB instances ordered by name then username
         """
+        from codemie.rest_api.models.user_management import UserProject
+
         stmt = select(UserDB).where(UserDB.is_active == True, UserDB.deleted_at.is_(None))  # noqa: E712
         if search:
             escaped = escape_like_wildcards(search)
@@ -650,6 +658,8 @@ class UserRepository:
                     UserDB.name.ilike(pattern, escape="\\"),
                 )
             )
+        if projects:
+            stmt = stmt.join(UserProject).where(UserProject.project_name.in_(projects)).distinct()
         stmt = stmt.order_by(UserDB.name, UserDB.username)
         result = await session.execute(stmt)
         return list(result.scalars().all())

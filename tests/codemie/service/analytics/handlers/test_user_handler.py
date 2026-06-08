@@ -633,6 +633,26 @@ class TestGetUsersList:
     @pytest.mark.asyncio
     @patch("codemie.service.analytics.handlers.user_handler.get_async_session")
     @patch("codemie.service.analytics.handlers.user_handler.user_repository")
+    async def test_get_users_list_superadmin_passes_projects_to_pg(
+        self, mock_pg_repo, mock_session_ctx, handler, mock_user
+    ):
+        """projects parameter is forwarded to aquery_active_users."""
+        mock_user.is_admin = True
+        mock_user.is_admin_or_maintainer = True
+
+        mock_pg_repo.aquery_active_users = AsyncMock(return_value=[])
+        mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        await handler.get_users_list(time_period="last_30_days", projects=["project-a", "project-b"])
+
+        mock_pg_repo.aquery_active_users.assert_called_once()
+        call_kwargs = mock_pg_repo.aquery_active_users.call_args
+        assert call_kwargs.kwargs.get("projects") == ["project-a", "project-b"]
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.analytics.handlers.user_handler.get_async_session")
+    @patch("codemie.service.analytics.handlers.user_handler.user_repository")
     async def test_get_users_list_superadmin_empty_result(self, mock_pg_repo, mock_session_ctx, handler, mock_user):
         """Empty PG result produces users=[] and total_count=0."""
         mock_user.is_admin = True

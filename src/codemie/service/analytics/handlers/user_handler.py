@@ -81,6 +81,7 @@ class UserHandler(CLICostAdjustmentMixin):
             end_date: Custom range end
             users: Filter by specific users (optional)
             projects: Filter by specific projects (optional)
+            search: Text search filter (optional)
 
         Returns:
             Response with users list, total count, and metadata
@@ -94,7 +95,7 @@ class UserHandler(CLICostAdjustmentMixin):
         if access_ctx.is_admin and config.ENABLE_USER_MANAGEMENT:
             start_time = time.monotonic()
             async with get_async_session() as session:
-                pg_users = await user_repository.aquery_active_users(session, search=search)
+                pg_users = await user_repository.aquery_active_users(session, search=search, projects=projects)
 
             users_list = [{"id": u.id, "name": u.name or u.username} for u in pg_users]
             total_count = len(users_list)
@@ -104,7 +105,9 @@ class UserHandler(CLICostAdjustmentMixin):
             filters_applied = self._pipeline._build_filters_applied(time_period, start_dt, end_dt, users, projects)
             metadata = ResponseFormatter.create_metadata(filters_applied, execution_time_ms)
 
-            logger.info(f"Super-user users list from PG: total_users={total_count}, search={search!r}")
+            logger.info(
+                f"Super-user users list from PG: total_users={total_count}, search={search!r}, projects={projects}"
+            )
             return {"data": {"users": users_list, "total_count": total_count}, "metadata": metadata}
 
         result = await self._pipeline.execute_composite_query(

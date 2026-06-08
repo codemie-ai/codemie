@@ -423,3 +423,23 @@ class TestAqueryActiveUsers:
 
         session_a.execute.assert_called_once()
         session_b.execute.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_projects_filter_triggers_join(self, repo):
+        """When projects are provided, join is applied to filter by project_name."""
+        session = self._make_session([])
+
+        result = await repo.aquery_active_users(session, projects=["project-a", "project-b"])
+
+        assert result == []
+        session.execute.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_search_and_projects_combined(self, repo):
+        """Both search and projects filters can be applied together."""
+        session = self._make_session([])
+
+        result = await repo.aquery_active_users(session, search="alice", projects=["project-a"])
+
+        assert result == []
+        session.execute.assert_called_once()
