@@ -81,6 +81,11 @@ class EmbeddingsHandler:
             projects=projects,
             page=page,
             per_page=per_page,
+            totals_aggs={
+                "total_input_tokens": {"sum": {"field": "attributes.input_tokens"}},
+                "total_cost_usd": {"sum": {"field": "attributes.money_spent"}},
+                "invocation_count": {"filter": {"match_all": {}}},
+            },
         )
 
     def _build_embeddings_usage_aggregation(self, query: dict, fetch_size: int) -> dict:

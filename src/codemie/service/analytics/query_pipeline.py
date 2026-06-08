@@ -72,6 +72,7 @@ class AnalyticsQueryPipeline:
         page: int = 0,
         per_page: int = 20,
         use_bucket_selector: bool = False,
+        totals_aggs: dict[str, dict] | None = None,
     ) -> dict:
         """Execute analytics query that returns tabular data with stateless pagination.
 
@@ -97,6 +98,12 @@ class AnalyticsQueryPipeline:
             use_bucket_selector: If True, aggregation uses bucket_selector which requires
                                 fetching more buckets and calculating total_count from
                                 filtered buckets (not cardinality)
+            totals_aggs: Optional mapping of column_id → ES metric agg spec.  When
+                         provided the specs are injected as sibling aggs alongside
+                         ``paginated_results`` so totals are computed in one document
+                         pass by Elasticsearch instead of iterating over all buckets
+                         in Python.  For ``use_bucket_selector=False`` handlers this
+                         also eliminates the second totals query entirely.
 
         Returns:
             Tabular response with rows, columns, metadata, and pagination
@@ -107,34 +114,39 @@ class AnalyticsQueryPipeline:
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
         query = self._build_query(start_dt, end_dt, users, projects, metric_filters)
 
-        # 2. Calculate fetch sizes for hybrid approach
-        # Data query: fetch only buckets needed for current page (efficient pagination)
-        # Totals query: fetch all buckets for accurate totals calculation
-        data_fetch_size = 10000 if use_bucket_selector else (page + 1) * per_page
-        totals_fetch_size = 10000  # Always fetch all buckets for accurate totals
-
-        # 3. Build TWO aggregation queries
-        data_agg_body = agg_builder(query, data_fetch_size)
-        totals_agg_body = agg_builder(query, totals_fetch_size)
-
-        # 4. Add sibling cardinality aggregation for accurate total_count to data query
-        # (only if not using bucket_selector)
-        if not use_bucket_selector:
+        # 2. Calculate fetch sizes and execute queries
+        if use_bucket_selector:
+            # Single query path: fetch all buckets, reuse result for totals
+            data_agg_body = agg_builder(query, 10000)
+            if totals_aggs:
+                AggregationBuilder.inject_global_totals(data_agg_body, totals_aggs)
+            data_result = await self._repository.execute_aggregation_query(data_agg_body)
+            totals_result = data_result
+        else:
+            # Dual query path: data query for current page, totals query for all buckets.
+            # When totals_aggs is provided, inject global metric aggs into the data query
+            # so totals are computed in the same request — eliminating the second query.
+            data_fetch_size = (page + 1) * per_page
+            data_agg_body = agg_builder(query, data_fetch_size)
             data_agg_body = AggregationBuilder.add_cardinality_for_total(
                 data_agg_body,
                 field=group_by_field,
             )
+            if totals_aggs:
+                AggregationBuilder.inject_global_totals(data_agg_body, totals_aggs)
+                data_result = await self._repository.execute_aggregation_query(data_agg_body)
+                totals_result = data_result
+            else:
+                totals_agg_body = agg_builder(query, 10000)
+                data_result, totals_result = await asyncio.gather(
+                    self._repository.execute_aggregation_query(data_agg_body),
+                    self._repository.execute_aggregation_query(totals_agg_body),
+                )
 
-        # 5. Execute BOTH queries in parallel for optimal performance
-        data_result, totals_result = await asyncio.gather(
-            self._repository.execute_aggregation_query(data_agg_body),
-            self._repository.execute_aggregation_query(totals_agg_body),
-        )
-
-        # 6. Extract buckets from data query (pre-sorted by Elasticsearch)
+        # 3. Extract buckets from data query (pre-sorted by Elasticsearch)
         data_buckets = data_result.get("aggregations", {}).get("paginated_results", {}).get("buckets", [])
 
-        # 7. Calculate total_count from data query
+        # 4. Calculate total_count from data query
         if use_bucket_selector:
             # When bucket_selector is used, count actual filtered buckets
             total_count = len(data_buckets)
@@ -142,20 +154,23 @@ class AnalyticsQueryPipeline:
             # Extract total_count from cardinality aggregation
             total_count = data_result.get("aggregations", {}).get("total_buckets", {}).get("value", 0)
 
-        # 8. Slice buckets for current page from data query
+        # 5. Slice buckets for current page from data query
         page_buckets = AggregationBuilder.slice_buckets_for_page(data_buckets, page, per_page)
 
-        # 9. Parse sliced buckets into rows for display
+        # 6. Parse sliced buckets into rows for display
         rows = result_parser({"aggregations": {"paginated_results": {"buckets": page_buckets}}})
 
-        # 9a. Calculate totals from ALL buckets (totals query) for accuracy
-        totals = self._calculate_totals_from_aggregation_result(
-            aggregation_result=totals_result,
-            result_parser=result_parser,
-            columns=columns,
-        )
+        # 7. Calculate totals: use global metric aggs when provided, else iterate buckets
+        if totals_aggs:
+            totals = AggregationBuilder.extract_global_totals(data_result, totals_aggs)
+        else:
+            totals = self._calculate_totals_from_aggregation_result(
+                aggregation_result=totals_result,
+                result_parser=result_parser,
+                columns=columns,
+            )
 
-        # 10. Determine if more pages exist
+        # 8. Determine if more pages exist
         if use_bucket_selector:
             # With bucket_selector, we have all buckets, so just check if there are more
             has_more = (page + 1) * per_page < total_count
@@ -163,7 +178,7 @@ class AnalyticsQueryPipeline:
             # Standard pagination check
             has_more = len(data_buckets) == data_fetch_size and (page + 1) * per_page < total_count
 
-        # 11. Format and return response
+        # 9. Format and return response
         execution_time_ms = (time.time() - start_time) * 1000
         filters_applied = self._build_filters_applied(time_period, start_dt, end_dt, users, projects)
 

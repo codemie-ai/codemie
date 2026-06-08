@@ -431,6 +431,7 @@ class UserHandler(CLICostAdjustmentMixin):
             page=page,
             per_page=per_page,
             use_bucket_selector=False,
+            totals_aggs={"total_cost_usd": {"sum": {"field": MONEY_SPENT_FIELD}}},
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_email")
         return result
@@ -480,6 +481,12 @@ class UserHandler(CLICostAdjustmentMixin):
             page=page,
             per_page=per_page,
             use_bucket_selector=True,
+            totals_aggs={
+                "total_cost_usd": {
+                    "filter": {"term": {CLI_REQUEST_FIELD: True}},
+                    "aggs": {"_v": {"sum": {"field": MONEY_SPENT_FIELD}}},
+                }
+            },
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_name")
         return result

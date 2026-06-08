@@ -95,6 +95,57 @@ class AggregationBuilder:
         return agg_body
 
     @staticmethod
+    def inject_global_totals(agg_body: dict[str, Any], totals_aggs: dict[str, dict]) -> dict[str, Any]:
+        """Inject global metric aggregations as siblings alongside paginated_results.
+
+        Adds top-level metric aggs (sum, filter+sum, etc.) that ES evaluates in a single
+        document pass — no per-bucket sorting overhead, unlike the terms agg.
+
+        Args:
+            agg_body: Aggregation body to modify (must have "aggs" key)
+            totals_aggs: Mapping of column_id → ES aggregation spec
+
+        Returns:
+            Modified aggregation body with global totals aggs injected
+        """
+        agg_body["aggs"].update(totals_aggs)
+        return agg_body
+
+    @staticmethod
+    def extract_global_totals(result: dict[str, Any], totals_aggs: dict[str, dict]) -> dict[str, float]:
+        """Extract global metric totals from aggregation result.
+
+        Handles three agg shapes:
+        - Direct metric (sum, cardinality, avg): ``{"sum": {...}}``
+          → ``result[col_id]["value"]``
+        - Filter with nested metric: ``{"filter": ..., "aggs": {"<sub>": ...}}``
+          → ``result[col_id]["<sub>"]["value"]``
+        - Plain filter (no nested agg): ``{"filter": ...}``
+          → ``result[col_id]["doc_count"]``
+
+        Args:
+            result: Elasticsearch aggregation result
+            totals_aggs: Same mapping passed to inject_global_totals
+
+        Returns:
+            Dict mapping column_id to total value (rounded to 2 decimals)
+        """
+        aggregations = result.get("aggregations", {})
+        totals: dict[str, float] = {}
+        for col_id, agg_spec in totals_aggs.items():
+            agg_result = aggregations.get(col_id, {})
+            if "filter" in agg_spec:
+                sub_aggs = agg_spec.get("aggs", {})
+                if sub_aggs:
+                    sub_key = next(iter(sub_aggs))
+                    totals[col_id] = round(agg_result.get(sub_key, {}).get("value", 0.0), 2)
+                else:
+                    totals[col_id] = float(agg_result.get("doc_count", 0))
+            else:
+                totals[col_id] = round(agg_result.get("value", 0.0), 2)
+        return totals
+
+    @staticmethod
     def slice_buckets_for_page(
         buckets: list[dict[str, Any]],
         page: int,

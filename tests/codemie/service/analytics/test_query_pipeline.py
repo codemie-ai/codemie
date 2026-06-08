@@ -146,7 +146,7 @@ class TestAnalyticsQueryPipeline:
         mock_query_builder_class.assert_called_once_with(pipeline._user)
         mock_builder.add_time_range.assert_called_once_with(sample_start_dt, sample_end_dt, "@timestamp")
         mock_builder.build.assert_called_once()
-        # Parallel queries: agg_builder called TWICE (data + totals) with fetch_size=10000
+        # Parallel queries: agg_builder called TWICE (data + totals)
         assert mock_agg_builder.call_count == 2
         mock_agg_builder.assert_called_with({"query": "built"}, 10000)
         # Check that the call includes the cardinality aggregation
@@ -378,7 +378,7 @@ class TestAnalyticsQueryPipeline:
             per_page=50,
         )
 
-        # Assert - Parallel queries: agg_builder called TWICE (data + totals) with fetch_size=10000
+        # Assert - Parallel queries: agg_builder called TWICE (data + totals)
         assert mock_agg_builder.call_count == 2
         mock_agg_builder.assert_called_with({"query": "built"}, 10000)
 
@@ -869,3 +869,100 @@ class TestAnalyticsQueryPipeline:
         assert filters["users"] is None
         assert filters["projects"] is None
         assert filters["time_period"] == "last_7_days"
+
+    @patch("codemie.service.analytics.query_pipeline.TotalsCalculator")
+    @patch("codemie.service.analytics.query_pipeline.ResponseFormatter")
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    @patch("codemie.service.analytics.query_pipeline.TimeParser")
+    @pytest.mark.asyncio
+    async def test_execute_tabular_query_bucket_selector_fires_single_es_query(
+        self,
+        mock_time_parser,
+        mock_query_builder_class,
+        mock_formatter,
+        mock_totals_calculator,
+        pipeline,
+        mock_repository,
+    ):
+        """When use_bucket_selector=True, only one ES query is fired."""
+        start_dt = datetime(2024, 1, 1)
+        end_dt = datetime(2024, 1, 31)
+
+        mock_agg_builder = MagicMock(
+            return_value={
+                "query": {"match_all": {}},
+                "size": 0,
+                "aggs": {"paginated_results": {"terms": {"field": "test", "size": 10000}}},
+            }
+        )
+        mock_result_parser = MagicMock(return_value=[])
+        mock_time_parser.parse.return_value = (start_dt, end_dt)
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = {"query": "built"}
+        mock_query_builder_class.return_value = mock_builder
+        mock_repository.execute_aggregation_query.return_value = {
+            "aggregations": {"paginated_results": {"buckets": []}}
+        }
+        mock_formatter.format_tabular_response.return_value = {}
+        mock_totals_calculator.calculate_totals.return_value = {}
+
+        await pipeline.execute_tabular_query(
+            agg_builder=mock_agg_builder,
+            result_parser=mock_result_parser,
+            columns=[],
+            group_by_field="test.keyword",
+            page=0,
+            per_page=20,
+            use_bucket_selector=True,
+        )
+
+        assert mock_repository.execute_aggregation_query.call_count == 1
+
+    @patch("codemie.service.analytics.query_pipeline.TotalsCalculator")
+    @patch("codemie.service.analytics.query_pipeline.ResponseFormatter")
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    @patch("codemie.service.analytics.query_pipeline.TimeParser")
+    @pytest.mark.asyncio
+    async def test_execute_tabular_query_bucket_selector_computes_totals_from_data_result(
+        self,
+        mock_time_parser,
+        mock_query_builder_class,
+        mock_formatter,
+        mock_totals_calculator,
+        pipeline,
+        mock_repository,
+    ):
+        """When use_bucket_selector=True, totals are computed from data_result rows."""
+        start_dt = datetime(2024, 1, 1)
+        end_dt = datetime(2024, 1, 31)
+
+        data_buckets = [{"key": "project_a", "doc_count": 5}, {"key": "project_b", "doc_count": 3}]
+        data_result = {"aggregations": {"paginated_results": {"buckets": data_buckets}}}
+
+        mock_agg_builder = MagicMock(
+            return_value={
+                "query": {},
+                "size": 0,
+                "aggs": {"paginated_results": {"terms": {"field": "test", "size": 10000}}},
+            }
+        )
+        parsed_rows = [{"project": "project_a", "total_cost": 10.0}, {"project": "project_b", "total_cost": 5.0}]
+        mock_result_parser = MagicMock(return_value=parsed_rows)
+        columns = [{"id": "total_cost", "type": "number"}]
+        mock_time_parser.parse.return_value = (start_dt, end_dt)
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = {}
+        mock_query_builder_class.return_value = mock_builder
+        mock_repository.execute_aggregation_query.return_value = data_result
+        mock_formatter.format_tabular_response.return_value = {}
+        mock_totals_calculator.calculate_totals.return_value = {"total_cost": 15.0}
+
+        await pipeline.execute_tabular_query(
+            agg_builder=mock_agg_builder,
+            result_parser=mock_result_parser,
+            columns=columns,
+            group_by_field="test.keyword",
+            use_bucket_selector=True,
+        )
+
+        mock_totals_calculator.calculate_totals.assert_called_once_with(columns=columns, rows=parsed_rows)
