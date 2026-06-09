@@ -21,7 +21,7 @@ from codemie.rest_api.security.user import User
 
 @pytest.fixture
 def mock_user():
-    return User(id='test_user_id', name='test_user_name')
+    return User(id='test_user_id', name='test_user_name', username='test@example.com')
 
 
 @patch.object(ProjectMonitoringService, "send_count_metric")
@@ -31,6 +31,7 @@ def test_send_project_creation_metric(mock_send_count_metric, mock_user):
     expected_attributes = {
         "user_id": mock_user.id,
         "user_name": mock_user.name,
+        "user_email": mock_user.username,
         "project": "Test Project",
     }
 

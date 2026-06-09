@@ -166,6 +166,7 @@ class ConversationMonitoringService(BaseMonitoringService):
         attributes = {
             MetricsAttributes.USER_ID: user.id,
             MetricsAttributes.USER_NAME: user.name,
+            MetricsAttributes.USER_EMAIL: user.username,
             MetricsAttributes.CONVERSATION_ID: conversation_id,
             MetricsAttributes.ASSISTANT_ID: assistant_id,
             "feedback_id": feedback_id,

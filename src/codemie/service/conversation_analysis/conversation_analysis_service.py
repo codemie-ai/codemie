@@ -423,6 +423,7 @@ class ConversationAnalysisService:
                 base_attributes={
                     MetricsAttributes.LLM_MODEL: llm_model,
                     MetricsAttributes.CONVERSATION_ID: conversation_id,
+                    MetricsAttributes.PROJECT: conversation.project or "-",
                 },
             )
             request_summary_manager.clear_summary(conversation_id)

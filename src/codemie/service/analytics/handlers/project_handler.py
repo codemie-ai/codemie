@@ -128,12 +128,15 @@ class ProjectHandler(CLICostAdjustmentMixin):
             },
         }
 
-        # Normalise empty project name to "epm-cdme" at aggregation time so that
+        # Normalise empty project name to "unknown" at aggregation time so that
         # pagination totals and sort order remain accurate.
         normalize_script = (
             f"def v = doc['{PROJECT_KEYWORD_FIELD}'].size() == 0 ? '' "
             f": doc['{PROJECT_KEYWORD_FIELD}'].value; "
-            "return v == '' ? 'epm-cdme' : v;"
+            f"if (v != '' && v != '-') return v; "
+            f"def email = doc['{USER_EMAIL_KEYWORD_FIELD}'].size() == 0 ? '' "
+            f": doc['{USER_EMAIL_KEYWORD_FIELD}'].value; "
+            f"return (email != '' && email != '-') ? email : 'unknown';"
         )
 
         # Build terms aggregation using helper

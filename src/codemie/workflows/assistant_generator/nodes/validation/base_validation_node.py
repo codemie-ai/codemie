@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from codemie.configs.logger import logger
-from codemie.core.dependecies import get_llm_by_credentials
+from codemie.core.dependecies import get_llm_by_credentials, get_project_for_metric
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.user import User
 from codemie.service.monitoring.base_monitoring_service import send_log_metric
@@ -133,6 +133,7 @@ class BaseValidationNode:
                     MetricsAttributes.USER_NAME: user.name if user else "-",
                     MetricsAttributes.USER_EMAIL: user.username if user else "-",
                     MetricsAttributes.STATUS: "success",
+                    MetricsAttributes.PROJECT: get_project_for_metric(),
                 },
             )
 
@@ -150,6 +151,7 @@ class BaseValidationNode:
                     MetricsAttributes.USER_EMAIL: user.username if user else "-",
                     MetricsAttributes.STATUS: "failed",
                     MetricsAttributes.ERROR: str(e)[:500],  # Limit error message length
+                    MetricsAttributes.PROJECT: get_project_for_metric(),
                 },
             )
 

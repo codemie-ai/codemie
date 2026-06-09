@@ -137,6 +137,7 @@ class ToolExecutionService:
                     base_attributes={
                         MetricsAttributes.LLM_MODEL: request.llm_model or "default",
                         MetricsAttributes.TOOL_NAME: tool_name,
+                        MetricsAttributes.PROJECT: request.project or "-",
                     },
                 )
                 request_summary_manager.clear_summary(request.request_id)
@@ -244,6 +245,7 @@ class ToolExecutionService:
                     base_attributes={
                         MetricsAttributes.LLM_MODEL: request.llm_model or "default",
                         MetricsAttributes.TOOL_NAME: tool_name,
+                        MetricsAttributes.PROJECT: request.project or "-",
                     },
                 )
                 request_summary_manager.clear_summary(request.request_id)
@@ -499,6 +501,7 @@ class ToolExecutionService:
                 base_attributes={
                     MetricsAttributes.LLM_MODEL: request.llm_model or "default",
                     MetricsAttributes.TOOL_NAME: tool_name,
+                    MetricsAttributes.PROJECT: request.project or "-",
                 },
             )
             return result

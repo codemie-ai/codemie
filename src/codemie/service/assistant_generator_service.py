@@ -24,7 +24,7 @@ from langchain_core.runnables.config import RunnableConfig
 from pydantic import BaseModel, Field
 
 from codemie.configs.logger import current_user_email, logger, logging_user_id
-from codemie.core.dependecies import get_llm_by_credentials
+from codemie.core.dependecies import get_llm_by_credentials, get_project_for_metric
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.assistant import Assistant, QualityValidationResult
 from codemie.rest_api.models.assistant_generator import (
@@ -166,6 +166,7 @@ class AssistantGeneratorService:
                     MetricsAttributes.LLM_MODEL: llm_model or "default",
                     MetricsAttributes.USER_ID: logging_user_id.get("-"),
                     MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                    MetricsAttributes.PROJECT: get_project_for_metric(),
                 },
             )
 
@@ -187,6 +188,7 @@ class AssistantGeneratorService:
                     MetricsAttributes.LLM_MODEL: llm_model or "default",
                     MetricsAttributes.USER_ID: logging_user_id.get("-"),
                     MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                    MetricsAttributes.PROJECT: get_project_for_metric(),
                 },
             )
             raise ExtendedHTTPException(
@@ -261,6 +263,7 @@ class AssistantGeneratorService:
                     MetricsAttributes.LLM_MODEL: llm_model or "default",
                     MetricsAttributes.USER_ID: logging_user_id.get("-"),
                     MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                    MetricsAttributes.PROJECT: get_project_for_metric(),
                 },
             )
 
@@ -277,6 +280,7 @@ class AssistantGeneratorService:
                     MetricsAttributes.LLM_MODEL: llm_model or "default",
                     MetricsAttributes.USER_ID: logging_user_id.get("-"),
                     MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                    MetricsAttributes.PROJECT: get_project_for_metric(),
                 },
             )
             raise ExtendedHTTPException(
@@ -332,6 +336,7 @@ class AssistantGeneratorService:
                     MetricsAttributes.LLM_MODEL: llm_model or "default",
                     MetricsAttributes.USER_ID: logging_user_id.get("-"),
                     MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                    MetricsAttributes.PROJECT: get_project_for_metric(),
                 },
             )
 
@@ -374,6 +379,7 @@ class AssistantGeneratorService:
                     MetricsAttributes.LLM_MODEL: llm_model or "default",
                     MetricsAttributes.USER_ID: logging_user_id.get("-"),
                     MetricsAttributes.USER_NAME: current_user_email.get("-"),
+                    MetricsAttributes.PROJECT: get_project_for_metric(),
                 },
             )
             raise ExtendedHTTPException(
@@ -439,6 +445,7 @@ class AssistantGeneratorService:
                         MetricsAttributes.USER_NAME: user.name,
                         MetricsAttributes.USER_EMAIL: user.username,
                         MetricsAttributes.ASSISTANT_ID: assistant.id,
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
                     },
                 )
             elif validation_result.decision == "reject":
@@ -450,6 +457,7 @@ class AssistantGeneratorService:
                         MetricsAttributes.USER_NAME: user.name,
                         MetricsAttributes.USER_EMAIL: user.username,
                         MetricsAttributes.ASSISTANT_ID: assistant.id,
+                        MetricsAttributes.PROJECT: get_project_for_metric(),
                     },
                 )
 
@@ -460,6 +468,7 @@ class AssistantGeneratorService:
                     MetricsAttributes.LLM_MODEL: llm_model,
                     MetricsAttributes.USER_ID: user.id,
                     MetricsAttributes.USER_NAME: user.name,
+                    MetricsAttributes.PROJECT: get_project_for_metric(),
                 },
             )
 
@@ -476,6 +485,7 @@ class AssistantGeneratorService:
                     MetricsAttributes.USER_NAME: user.name,
                     MetricsAttributes.USER_EMAIL: user.username,
                     MetricsAttributes.ASSISTANT_ID: assistant.id,
+                    MetricsAttributes.PROJECT: get_project_for_metric(),
                 },
             )
 

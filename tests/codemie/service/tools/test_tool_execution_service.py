@@ -143,6 +143,7 @@ def test_invoke_file_analysis_tool_with_image():
     mock_request.tool_attributes = None
     mock_request.llm_model = "gpt-4"
     mock_request.request_id = None
+    mock_request.project = None
 
     mock_file_object = Mock()
     mock_file_object.is_image = Mock(return_value=True)
@@ -182,6 +183,7 @@ def test_invoke_file_analysis_tool_with_document():
     mock_request.tool_attributes = None
     mock_request.llm_model = "gpt-4"
     mock_request.request_id = None
+    mock_request.project = None
 
     mock_file_object = Mock()
     mock_file_object.is_image = Mock(return_value=False)
@@ -222,6 +224,7 @@ def test_invoke_file_analysis_tool_with_attributes():
     mock_request.tool_attributes = {"attr1": "value1"}
     mock_request.llm_model = "gpt-4"
     mock_request.request_id = None
+    mock_request.project = None
 
     mock_file_object = Mock()
     mock_file_object.is_image = Mock(return_value=False)

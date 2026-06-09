@@ -110,6 +110,7 @@ class SkillMonitoringService(BaseMonitoringService):
             MetricsAttributes.PROJECT: get_current_project(fallback=skill.project),
             MetricsAttributes.USER_ID: user.id,
             MetricsAttributes.USER_NAME: user.name,
+            MetricsAttributes.USER_EMAIL: user.username,
             MetricsAttributes.OPERATION: operation,
         }
 
@@ -249,6 +250,7 @@ class SkillMonitoringService(BaseMonitoringService):
             MetricsAttributes.PROJECT: get_current_project(fallback=skill.project),
             MetricsAttributes.USER_ID: user.id,
             MetricsAttributes.USER_NAME: user.name,
+            MetricsAttributes.USER_EMAIL: user.username,
         }
 
         if additional_attributes:

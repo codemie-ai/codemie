@@ -69,13 +69,14 @@ class TestGenerateSkillDetailsTokenMetrics(unittest.TestCase):
         mock_response.toolkits = []
         return mock_response
 
+    @patch("codemie.service.skill_generator_service.get_project_for_metric", return_value="test-proj")
     @patch("codemie.service.skill_generator_service.request_summary_manager")
     @patch("codemie.service.monitoring.base_monitoring_service.send_log_metric")
     @patch("codemie.service.request_summary_manager.request_summary_manager")
     @patch("codemie.service.skill_generator_service.ToolsInfoService")
     @patch("codemie.service.skill_generator_service.get_llm_by_credentials")
     def test_emits_token_attrs_in_success_metric(
-        self, mock_get_llm, mock_tools, mock_rsm_singleton, mock_send_metric, mock_rsm
+        self, mock_get_llm, mock_tools, mock_rsm_singleton, mock_send_metric, mock_rsm, mock_get_project
     ):
         mock_rsm_singleton.get_summary.return_value = self.summary
 
@@ -103,6 +104,7 @@ class TestGenerateSkillDetailsTokenMetrics(unittest.TestCase):
         self.assertEqual(attrs[MetricsAttributes.MONEY_SPENT], self.tokens.money_spent)
         self.assertEqual(attrs[MetricsAttributes.INPUT_TOKENS], self.tokens.input_tokens)
         self.assertEqual(attrs[MetricsAttributes.OUTPUT_TOKENS], self.tokens.output_tokens)
+        self.assertEqual(attrs[MetricsAttributes.PROJECT], "test-proj")
 
     @patch("codemie.service.skill_generator_service.request_summary_manager")
     @patch("codemie.service.skill_generator_service.send_log_metric")
@@ -162,12 +164,13 @@ class TestRefineSkillDetailsTokenMetrics(unittest.TestCase):
         result.context = []
         return result
 
+    @patch("codemie.service.skill_generator_service.get_project_for_metric", return_value="test-proj")
     @patch("codemie.service.skill_generator_service.request_summary_manager")
     @patch("codemie.service.monitoring.base_monitoring_service.send_log_metric")
     @patch("codemie.service.request_summary_manager.request_summary_manager")
     @patch("codemie.service.assistant_generator_service.PromptGeneratorChain")
     def test_emits_success_metric_with_token_attrs(
-        self, mock_chain_cls, mock_rsm_singleton, mock_send_metric, mock_rsm
+        self, mock_chain_cls, mock_rsm_singleton, mock_send_metric, mock_rsm, mock_get_project
     ):
         mock_rsm_singleton.get_summary.return_value = self.summary
 
@@ -190,6 +193,7 @@ class TestRefineSkillDetailsTokenMetrics(unittest.TestCase):
         attrs = success_call[1]["attributes"]
         self.assertEqual(attrs[MetricsAttributes.MONEY_SPENT], self.tokens.money_spent)
         self.assertEqual(attrs[MetricsAttributes.INPUT_TOKENS], self.tokens.input_tokens)
+        self.assertEqual(attrs[MetricsAttributes.PROJECT], "test-proj")
 
     @patch("codemie.service.skill_generator_service.request_summary_manager")
     @patch("codemie.service.skill_generator_service.send_log_metric")

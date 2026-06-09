@@ -29,6 +29,7 @@ class ProjectMonitoringService(BaseMonitoringService):
         attributes = {
             MetricsAttributes.USER_ID: user.id,
             MetricsAttributes.USER_NAME: user.name,
+            MetricsAttributes.USER_EMAIL: user.username,
             MetricsAttributes.PROJECT: project_name,
         }
         cls.send_count_metric(name=f"create_{cls.PROJECT_BASE_METRIC}", attributes=attributes)

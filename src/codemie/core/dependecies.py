@@ -141,6 +141,14 @@ def get_current_project(fallback: str | None = None) -> str:
     return fallback or ""
 
 
+def get_project_for_metric() -> str:
+    """Return project for metric attribution. Falls back to user email when project is unknown."""
+    project = get_current_project()
+    if project:
+        return project
+    return current_user_email.get("-")
+
+
 def set_disable_prompt_cache(disable: bool):
     """Set prompt cache control flag for current context"""
     disable_prompt_cache.set(disable)

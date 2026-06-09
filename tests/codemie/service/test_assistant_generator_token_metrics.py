@@ -62,11 +62,14 @@ class TestGenerateAssistantDetailsTokenMetrics(unittest.TestCase):
         self.tokens = _make_tokens_usage()
         self.summary = _make_summary(self.request_id, self.tokens)
 
+    @patch("codemie.service.assistant_generator_service.get_project_for_metric", return_value="test-proj")
     @patch("codemie.service.assistant_generator_service.request_summary_manager")
     @patch("codemie.service.monitoring.base_monitoring_service.send_log_metric")
     @patch("codemie.service.request_summary_manager.request_summary_manager")
     @patch("codemie.service.assistant_generator_service.PromptGeneratorChain")
-    def test_emits_token_attrs_in_success_metric(self, mock_chain_cls, mock_rsm_singleton, mock_send_metric, mock_rsm):
+    def test_emits_token_attrs_in_success_metric(
+        self, mock_chain_cls, mock_rsm_singleton, mock_send_metric, mock_rsm, mock_get_project
+    ):
         mock_rsm_singleton.get_summary.return_value = self.summary
 
         mock_chain = MagicMock()
@@ -97,6 +100,7 @@ class TestGenerateAssistantDetailsTokenMetrics(unittest.TestCase):
             attrs[MetricsAttributes.CACHE_CREATION_TOKENS_MONEY_SPENT],
             self.tokens.cached_tokens_creation_money_spent,
         )
+        self.assertEqual(attrs[MetricsAttributes.PROJECT], "test-proj")
 
     @patch("codemie.service.assistant_generator_service.request_summary_manager")
     @patch("codemie.service.assistant_generator_service.send_log_metric")
@@ -153,11 +157,14 @@ class TestGenerateAssistantPromptTokenMetrics(unittest.TestCase):
         self.tokens = _make_tokens_usage()
         self.summary = _make_summary(self.request_id, self.tokens)
 
+    @patch("codemie.service.assistant_generator_service.get_project_for_metric", return_value="test-proj")
     @patch("codemie.service.assistant_generator_service.request_summary_manager")
     @patch("codemie.service.monitoring.base_monitoring_service.send_log_metric")
     @patch("codemie.service.request_summary_manager.request_summary_manager")
     @patch("codemie.service.assistant_generator_service.PromptGeneratorChain")
-    def test_emits_token_attrs_in_success_metric(self, mock_chain_cls, mock_rsm_singleton, mock_send_metric, mock_rsm):
+    def test_emits_token_attrs_in_success_metric(
+        self, mock_chain_cls, mock_rsm_singleton, mock_send_metric, mock_rsm, mock_get_project
+    ):
         mock_rsm_singleton.get_summary.return_value = self.summary
 
         mock_chain = MagicMock()
@@ -174,6 +181,7 @@ class TestGenerateAssistantPromptTokenMetrics(unittest.TestCase):
         attrs = success_call[1]["attributes"]
         self.assertEqual(attrs[MetricsAttributes.MONEY_SPENT], self.tokens.money_spent)
         self.assertEqual(attrs[MetricsAttributes.INPUT_TOKENS], self.tokens.input_tokens)
+        self.assertEqual(attrs[MetricsAttributes.PROJECT], "test-proj")
 
     @patch("codemie.service.assistant_generator_service.request_summary_manager")
     @patch("codemie.service.assistant_generator_service.send_log_metric")
@@ -236,11 +244,14 @@ class TestGenerateRefinePromptTokenMetrics(unittest.TestCase):
             context=[],
         )
 
+    @patch("codemie.service.assistant_generator_service.get_project_for_metric", return_value="test-proj")
     @patch("codemie.service.assistant_generator_service.request_summary_manager")
     @patch("codemie.service.monitoring.base_monitoring_service.send_log_metric")
     @patch("codemie.service.request_summary_manager.request_summary_manager")
     @patch("codemie.service.assistant_generator_service.PromptGeneratorChain")
-    def test_emits_token_attrs_in_success_metric(self, mock_chain_cls, mock_rsm_singleton, mock_send_metric, mock_rsm):
+    def test_emits_token_attrs_in_success_metric(
+        self, mock_chain_cls, mock_rsm_singleton, mock_send_metric, mock_rsm, mock_get_project
+    ):
         mock_rsm_singleton.get_summary.return_value = self.summary
 
         mock_chain = MagicMock()
@@ -262,6 +273,7 @@ class TestGenerateRefinePromptTokenMetrics(unittest.TestCase):
         self.assertEqual(attrs[MetricsAttributes.MONEY_SPENT], self.tokens.money_spent)
         self.assertEqual(attrs[MetricsAttributes.INPUT_TOKENS], self.tokens.input_tokens)
         self.assertEqual(attrs[MetricsAttributes.OUTPUT_TOKENS], self.tokens.output_tokens)
+        self.assertEqual(attrs[MetricsAttributes.PROJECT], "test-proj")
 
     @patch("codemie.service.assistant_generator_service.request_summary_manager")
     @patch("codemie.service.assistant_generator_service.send_log_metric")

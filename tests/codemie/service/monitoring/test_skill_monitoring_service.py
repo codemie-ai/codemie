@@ -139,6 +139,7 @@ def test_send_skill_attached_metric_success(mock_send_count_metric, mock_skill, 
         MetricsAttributes.PROJECT: mock_skill.project,
         MetricsAttributes.USER_ID: mock_user.id,
         MetricsAttributes.USER_NAME: mock_user.name,
+        MetricsAttributes.USER_EMAIL: mock_user.username,
         MetricsAttributes.OPERATION: "attach",
     }
 
@@ -171,6 +172,7 @@ def test_send_skill_attached_metric_detach(mock_send_count_metric, mock_skill, m
         MetricsAttributes.PROJECT: mock_skill.project,
         MetricsAttributes.USER_ID: mock_user.id,
         MetricsAttributes.USER_NAME: mock_user.name,
+        MetricsAttributes.USER_EMAIL: mock_user.username,
         MetricsAttributes.OPERATION: "detach",
     }
 
@@ -271,6 +273,7 @@ def test_send_skill_exported_metric_success(mock_send_count_metric, mock_skill, 
         MetricsAttributes.PROJECT: mock_skill.project,
         MetricsAttributes.USER_ID: mock_user.id,
         MetricsAttributes.USER_NAME: mock_user.name,
+        MetricsAttributes.USER_EMAIL: mock_user.username,
     }
 
     SkillMonitoringService.send_skill_exported_metric(
@@ -296,6 +299,7 @@ def test_send_skill_exported_metric_error(mock_send_count_metric, mock_skill, mo
         MetricsAttributes.PROJECT: mock_skill.project,
         MetricsAttributes.USER_ID: mock_user.id,
         MetricsAttributes.USER_NAME: mock_user.name,
+        MetricsAttributes.USER_EMAIL: mock_user.username,
         **additional_attributes,
     }
 
