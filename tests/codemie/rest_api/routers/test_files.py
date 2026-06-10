@@ -152,6 +152,7 @@ async def test_write_files_bulk_success(authenticated_user, auth_headers, mocker
     mocker.patch(
         "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository", return_value=mock_fs_repo
     )
+    mocker.patch("codemie.rest_api.routers.files.MarkdownCacheService")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -187,6 +188,7 @@ async def test_write_files_bulk_with_failures(authenticated_user, auth_headers, 
     mocker.patch(
         "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository", return_value=mock_fs_repo
     )
+    mocker.patch("codemie.rest_api.routers.files.MarkdownCacheService")
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -591,3 +593,64 @@ def test_check_and_sanitize_content_str_binary():
     data = "\u0000\u0001\u0002"
     resp = files.check_and_sanitize_content(data)
     assert resp.media_type == "application/octet-stream"
+
+
+@pytest.mark.anyio
+async def test_write_file_calls_cache_invalidate(authenticated_user, auth_headers, mocker):
+    """write_file invalidates the markdown cache before writing the new file."""
+    mock_file_object = mocker.Mock()
+    mock_file_object.to_encoded_url.return_value = "url"
+
+    mock_fs_repo = mocker.Mock()
+    mock_fs_repo.write_file.return_value = mock_file_object
+
+    mock_cache_svc = mocker.Mock()
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository", return_value=mock_fs_repo
+    )
+    mocker.patch("codemie.rest_api.routers.files.MarkdownCacheService", return_value=mock_cache_svc)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            "/v1/files/", files={"file": ("report.pdf", b"%PDF-fake", "application/pdf")}, headers=auth_headers
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    mock_cache_svc.invalidate.assert_called_once_with(owner="test_user", filename="report.pdf", repo=mock_fs_repo)
+
+
+@pytest.mark.anyio
+async def test_write_files_bulk_calls_cache_invalidate_per_file(authenticated_user, auth_headers, mocker):
+    """write_files_bulk invalidates cache for each uploaded file."""
+    mock_obj_1 = mocker.Mock()
+    mock_obj_1.to_encoded_url.return_value = "url1"
+    mock_obj_2 = mocker.Mock()
+    mock_obj_2.to_encoded_url.return_value = "url2"
+
+    mock_fs_repo = mocker.Mock()
+    mock_fs_repo.write_file.side_effect = [mock_obj_1, mock_obj_2]
+
+    mock_cache_svc = mocker.Mock()
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository", return_value=mock_fs_repo
+    )
+    mocker.patch("codemie.rest_api.routers.files.MarkdownCacheService", return_value=mock_cache_svc)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            "/v1/files/bulk",
+            files=[
+                ("files", ("a.pdf", b"data1", "application/pdf")),
+                ("files", ("b.html", b"data2", "text/html")),
+            ],
+            headers=auth_headers,
+        )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert mock_cache_svc.invalidate.call_count == 2
+    calls = mock_cache_svc.invalidate.call_args_list
+    filenames = {c.kwargs["filename"] for c in calls}
+    assert filenames == {"a.pdf", "b.html"}
+    assert all(c.kwargs["repo"] is mock_fs_repo for c in calls)

@@ -18,7 +18,10 @@ from unittest.mock import patch, MagicMock
 import pandas as pd
 import pytest
 
+from codemie_tools.base.file_object import FileObject
+from codemie_tools.file_analysis.models import FileAnalysisConfig
 from codemie_tools.file_analysis.xlsx.processor import XlsxProcessor
+from codemie_tools.file_analysis.xlsx.tools import XlsxTool
 
 
 @pytest.fixture
@@ -227,3 +230,47 @@ def test_load_visibility_error_handling(mock_load_workbook, mock_excel_bytes):
         mock_read_excel.assert_called_once()
         args, kwargs = mock_read_excel.call_args
         assert kwargs['sheet_name'] is None
+
+
+# --- preconverted_content cache tests ---
+
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+class TestXlsxToolPreconvertedCache:
+    def _make_tool(self, preconverted_content=None):
+        file_obj = FileObject(name="data.xlsx", content=b"fake", mime_type=XLSX_MIME, owner="u")
+        config = FileAnalysisConfig(
+            input_files=[file_obj],
+            preconverted_content=preconverted_content or {},
+        )
+        return XlsxTool(config=config), file_obj
+
+    def test_no_sheet_names_none_cache_hit(self):
+        tool, file_obj = self._make_tool({"data.xlsx": "# Cached"})
+        with patch("codemie_tools.file_analysis.xlsx.tools.maybe_pool_submit") as mock_proc:
+            result = tool._process_excel_file(file_obj, sheet_names=None)
+        assert result == "# Cached"
+        mock_proc.assert_not_called()
+
+    def test_empty_sheet_names_list_cache_hit(self):
+        """Empty list (LLM default for 'all sheets') must also hit cache."""
+        tool, file_obj = self._make_tool({"data.xlsx": "# Cached"})
+        with patch("codemie_tools.file_analysis.xlsx.tools.maybe_pool_submit") as mock_proc:
+            result = tool._process_excel_file(file_obj, sheet_names=[])
+        assert result == "# Cached"
+        mock_proc.assert_not_called()
+
+    def test_specific_sheet_names_bypass_cache(self):
+        tool, file_obj = self._make_tool({"data.xlsx": "# Cached"})
+        with patch("codemie_tools.file_analysis.xlsx.tools.maybe_pool_submit", return_value="sheet1") as mock_proc:
+            result = tool._process_excel_file(file_obj, sheet_names=["Sheet1"])
+        assert result == "sheet1"
+        mock_proc.assert_called_once()
+
+    def test_no_cache_entry_falls_through(self):
+        tool, file_obj = self._make_tool({})
+        with patch("codemie_tools.file_analysis.xlsx.tools.maybe_pool_submit", return_value="converted") as mock_proc:
+            result = tool._process_excel_file(file_obj, sheet_names=None)
+        assert result == "converted"
+        mock_proc.assert_called_once()

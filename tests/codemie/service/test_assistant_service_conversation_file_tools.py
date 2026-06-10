@@ -114,6 +114,7 @@ def test_add_conversation_file_tools():
             },
         ),
         patch.object(VisionToolkit, 'get_toolkit') as mock_vision_toolkit,
+        patch('codemie.service.tools.toolkit_service.MarkdownCacheService'),
         patch.object(FileAnalysisToolkit, 'get_toolkit') as mock_file_toolkit,
         patch.object(llm_service, 'get_llm_deployment_name', return_value='gpt-4.1'),  # no need to capture this mock
         patch.object(llm_service, 'get_multimodal_llms', return_value=[]),  # no need to capture this mock
@@ -180,6 +181,7 @@ def test_add_conversation_file_tools_empty_history():
             FileService, 'get_file_object', side_effect=lambda file_name: mock_current_file
         ),  # no need to capture this mock
         patch('codemie.core.utils.build_unique_file_objects', return_value={current_file_name: mock_current_file}),
+        patch('codemie.service.tools.toolkit_service.MarkdownCacheService'),
         patch.object(FileAnalysisToolkit, 'get_toolkit') as mock_file_toolkit,
         patch.object(llm_service, 'get_llm_deployment_name', return_value='gpt-4.1'),  # no need to capture this mock
         patch.object(llm_service, 'get_multimodal_llms', return_value=[]),  # no need to capture this mock
@@ -228,6 +230,7 @@ def test_add_conversation_file_tools_no_file_references():
             FileService, 'get_file_object', side_effect=lambda file_name: mock_current_file
         ),  # no need to capture this mock
         patch('codemie.core.utils.build_unique_file_objects', return_value={current_file_name: mock_current_file}),
+        patch('codemie.service.tools.toolkit_service.MarkdownCacheService'),
         patch.object(FileAnalysisToolkit, 'get_toolkit') as mock_file_toolkit,
         patch.object(llm_service, 'get_llm_deployment_name', return_value='gpt-4.1'),  # no need to capture this mock
         patch.object(llm_service, 'get_multimodal_llms', return_value=[]),  # no need to capture this mock
@@ -286,6 +289,7 @@ def test_add_conversation_file_tools_no_mentions_in_request():
             FileService, 'get_file_object', side_effect=lambda file_name: mock_current_file
         ),  # no need to capture this mock
         patch('codemie.core.utils.build_unique_file_objects', return_value={current_file_name: mock_current_file}),
+        patch('codemie.service.tools.toolkit_service.MarkdownCacheService'),
         patch.object(FileAnalysisToolkit, 'get_toolkit') as mock_file_toolkit,
         patch.object(llm_service, 'get_llm_deployment_name', return_value='gpt-4.1'),  # no need to capture this mock
         patch.object(llm_service, 'get_multimodal_llms', return_value=[]),  # no need to capture this mock
@@ -357,6 +361,7 @@ def test_add_conversation_file_tools_duplicate_mentions():
                 historical_file_name: mock_historical_file_object,
             },
         ),
+        patch('codemie.service.tools.toolkit_service.MarkdownCacheService'),
         patch.object(FileAnalysisToolkit, 'get_toolkit') as mock_file_toolkit,
         patch.object(llm_service, 'get_llm_deployment_name', return_value='gpt-4.1'),  # no need to capture this mock
         patch.object(llm_service, 'get_multimodal_llms', return_value=[]),  # no need to capture this mock
@@ -401,6 +406,7 @@ def test_add_conversation_file_tools_missing_conversation_id():
             FileService, 'get_file_object', side_effect=lambda file_name: mock_current_file
         ),  # no need to capture this mock
         patch('codemie.core.utils.build_unique_file_objects', return_value={current_file_name: mock_current_file}),
+        patch('codemie.service.tools.toolkit_service.MarkdownCacheService'),
         patch.object(FileAnalysisToolkit, 'get_toolkit') as mock_file_toolkit,
         patch.object(llm_service, 'get_llm_deployment_name', return_value='gpt-4.1'),  # no need to capture this mock
         patch.object(llm_service, 'get_multimodal_llms', return_value=[]),  # no need to capture this mock

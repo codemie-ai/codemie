@@ -35,6 +35,8 @@ class FileAnalysisConfig(CodeMieToolConfig, FileConfigMixin):
     Attributes:
         input_files: List of FileObject instances (inherited from FileConfigMixin)
         chat_model: Optional language model for AI-powered operations (OCR, analysis, etc.)
+        preconverted_content: Pre-computed markitdown output keyed by filename; bypasses markitdown in FileAnalysisTool
     """
 
     chat_model: Optional[BaseChatModel] = Field(default=None, exclude=True)
+    preconverted_content: dict[str, str] = Field(default_factory=dict)

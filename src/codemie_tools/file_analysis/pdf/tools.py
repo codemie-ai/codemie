@@ -141,6 +141,12 @@ class PDFTool(CodeMieTool, FileToolMixin):
 
         logger.info(f"Processing {len(files)} PDF files with query type: {query}")
 
+        if query == QueryType.TEXT and not pages:
+            cached = [self.config.preconverted_content.get(f.name) for f in files]
+            if all(v is not None for v in cached):
+                logger.debug("PDFTool: cache hit for %d file(s)", len(files))
+                return "\n".join(cached)
+
         if query == QueryType.TOTAL_PAGES:
             return self.pdf_processor.get_total_pages_from_files(files)
 

@@ -15,12 +15,13 @@
 import os
 import pathlib
 from io import BytesIO
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pptx import Presentation, presentation
 from pydantic import ValidationError
 
+from codemie_tools.base.file_object import FileObject
 from codemie_tools.file_analysis.models import FileAnalysisConfig
 from codemie_tools.file_analysis.pptx.processor import PptxProcessor
 from codemie_tools.file_analysis.pptx.tools import PPTXToolInput, PPTXTool, QueryType
@@ -523,3 +524,61 @@ def test_parse_text_frame_paragraph_with_none_run_text(mock_text_frame):
     assert result == [
         {"paragraph_index": 1, "runs": [{"run_index": 1, "text": None}]}
     ], "Expected run with None text to be handled."
+
+
+# --- preconverted_content cache tests ---
+
+PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+
+class TestPPTXToolPreconvertedCache:
+    def _make_tool(self, pptx_bytes, preconverted_content=None):
+        file_obj = FileObject(name="deck.pptx", content=pptx_bytes, mime_type=PPTX_MIME, owner="u")
+        config = FileAnalysisConfig(
+            input_files=[file_obj],
+            preconverted_content=preconverted_content or {},
+        )
+        return PPTXTool(config=config), file_obj
+
+    def _pptx_bytes(self, samples_dir):
+        with open(samples_dir / "test.pptx", "rb") as f:
+            return f.read()
+
+    def test_text_query_no_slides_cache_hit_skips_processor(self, samples_dir):
+        pptx_bytes = self._pptx_bytes(samples_dir)
+        tool, _ = self._make_tool(pptx_bytes, {"deck.pptx": "# Cached slides"})
+        with patch.object(tool.pptx_processor, "process_pptx_files") as mock_proc:
+            result = tool.execute(slides=[], query=QueryType.TEXT)
+        assert result == "# Cached slides"
+        mock_proc.assert_not_called()
+
+    def test_text_query_with_slides_bypasses_cache(self, samples_dir):
+        pptx_bytes = self._pptx_bytes(samples_dir)
+        tool, file_obj = self._make_tool(pptx_bytes, {"deck.pptx": "# Cached"})
+        with patch.object(tool.pptx_processor, "process_pptx_files", return_value="processor") as mock_proc:
+            result = tool.execute(slides=[1, 2], query=QueryType.TEXT)
+        assert result == "processor"
+        mock_proc.assert_called_once()
+
+    def test_text_with_metadata_bypasses_cache(self, samples_dir):
+        pptx_bytes = self._pptx_bytes(samples_dir)
+        tool, _ = self._make_tool(pptx_bytes, {"deck.pptx": "# Cached"})
+        with patch.object(tool.pptx_processor, "extract_text_as_json", return_value={"slides": []}) as mock_proc:
+            with patch.object(tool.pptx_processor, "open_pptx_document", return_value=MagicMock()):
+                result = tool.execute(slides=[], query=QueryType.TEXT_WITH_METADATA)
+        assert result == {"slides": []}
+        mock_proc.assert_called_once()
+
+    def test_partial_cache_miss_falls_through_to_processor(self, samples_dir):
+        pptx_bytes = self._pptx_bytes(samples_dir)
+        f1 = FileObject(name="a.pptx", content=pptx_bytes, mime_type=PPTX_MIME, owner="u")
+        f2 = FileObject(name="b.pptx", content=pptx_bytes, mime_type=PPTX_MIME, owner="u")
+        config = FileAnalysisConfig(
+            input_files=[f1, f2],
+            preconverted_content={"a.pptx": "# A"},  # b.pptx missing
+        )
+        tool = PPTXTool(config=config)
+        with patch.object(tool.pptx_processor, "process_pptx_files", return_value="proc") as mock_proc:
+            result = tool.execute(slides=[], query=QueryType.TEXT)
+        assert result == "proc"
+        mock_proc.assert_called_once()

@@ -20,6 +20,7 @@ from typing import Optional, List
 import pandas as pd
 from langchain_core.language_models import BaseChatModel
 from langchain_experimental.tools import PythonAstREPLTool
+from pydantic import Field
 
 from codemie_tools.base.base_toolkit import BaseToolkit
 from codemie_tools.base.file_object import FileObject
@@ -62,6 +63,7 @@ class FileAnalysisToolkit(BaseToolkit):
     files: Optional[List[FileObject]] = None
     chat_model: Optional[BaseChatModel] = None
     warnings_length_limit: int = 30
+    preconverted_content: dict[str, str] = Field(default_factory=dict)
 
     @classmethod
     def get_tools_ui_info(cls, *args, **kwargs):
@@ -121,7 +123,11 @@ class FileAnalysisToolkit(BaseToolkit):
         tools = []
 
         # Create config with all files - each tool will filter what it supports
-        config = FileAnalysisConfig(input_files=self.files, chat_model=self.chat_model)
+        config = FileAnalysisConfig(
+            input_files=self.files,
+            chat_model=self.chat_model,
+            preconverted_content=self.preconverted_content,
+        )
 
         # Use the module-level specialized tool classes + FileAnalysisTool
         tool_classes = SPECIALIZED_TOOL_CLASSES + [FileAnalysisTool]
@@ -142,8 +148,13 @@ class FileAnalysisToolkit(BaseToolkit):
         return tools
 
     @classmethod
-    def get_toolkit(cls, files: List[FileObject], chat_model: Optional[BaseChatModel] = None):
-        return cls(files=files, chat_model=chat_model)
+    def get_toolkit(
+        cls,
+        files: List[FileObject],
+        chat_model: Optional[BaseChatModel] = None,
+        preconverted_content: dict[str, str] | None = None,
+    ):
+        return cls(files=files, chat_model=chat_model, preconverted_content=preconverted_content or {})
 
     def _pre_process_csv_files(self, csv_files):
         """Process CSV files and return dataframes and tool description.

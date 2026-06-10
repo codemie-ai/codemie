@@ -113,6 +113,11 @@ class PPTXTool(CodeMieTool, FileToolMixin):
         if not files:
             raise ValueError(f"{self.name} requires at least one file to process.")
 
+        if query == QueryType.TEXT and not slides:
+            cached = [self.config.preconverted_content.get(f.name) for f in files]
+            if all(v is not None for v in cached):
+                return "\n".join(cached)
+
         if query == QueryType.TOTAL_SLIDES:
             return self.pptx_processor.get_total_slides_from_files(files)
         elif query == QueryType.TEXT:

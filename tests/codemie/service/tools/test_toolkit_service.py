@@ -986,13 +986,21 @@ class TestToolkitService:
         # Assertions
         assert "Invalid IDE request" in str(exc_info.value)
 
+    @patch("codemie.service.tools.toolkit_service.MarkdownCacheService")
     @patch("codemie.service.tools.toolkit_service.EmailAnalysisTool")
     @patch("codemie.service.tools.toolkit_service.FileAnalysisConfig")
     @patch("codemie.service.tools.toolkit_service.FileAnalysisToolkit")
     @patch("codemie.service.tools.toolkit_service.llm_service")
     @patch("codemie.service.tools.toolkit_service.get_llm_by_credentials")
     def test_add_file_tools(
-        self, mock_get_llm, mock_llm_service, mock_file_toolkit, mock_file_config, mock_email_tool, mock_assistant
+        self,
+        mock_get_llm,
+        mock_llm_service,
+        mock_file_toolkit,
+        mock_file_config,
+        mock_email_tool,
+        mock_cache_service,
+        mock_assistant,
     ):
         """Test add_file_tools adds file analysis tools including EmailAnalysisTool."""
         # Setup
@@ -1042,12 +1050,13 @@ class TestToolkitService:
         assert any(getattr(t, "name", None) == "email_analysis_tool" for t in result)
         mock_file_toolkit.get_toolkit.assert_not_called()
 
+    @patch("codemie.service.tools.toolkit_service.MarkdownCacheService")
     @patch("codemie.service.tools.toolkit_service.EmailAnalysisTool")
     @patch("codemie.service.tools.toolkit_service.FileAnalysisToolkit")
     @patch("codemie.service.tools.toolkit_service.llm_service")
     @patch("codemie.service.tools.toolkit_service.get_llm_by_credentials")
     def test_add_file_tools_no_duplicate_email_tool_when_already_provided(
-        self, mock_get_llm, mock_llm_service, mock_file_toolkit, mock_email_tool, mock_assistant
+        self, mock_get_llm, mock_llm_service, mock_file_toolkit, mock_email_tool, mock_cache_service, mock_assistant
     ):
         """EmailAnalysisTool is not duplicated if FileAnalysisToolkit already returned one."""
         mock_file_object = Mock(spec=FileObject)

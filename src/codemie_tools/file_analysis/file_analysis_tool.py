@@ -153,6 +153,8 @@ class FileAnalysisTool(CodeMieTool, FileToolMixin):
 
     def _process_single_file(self, file_object: FileObject) -> str:
         """Process a single file and return its content as markdown text"""
+        if file_object.name in self.config.preconverted_content:
+            return self.config.preconverted_content[file_object.name]
         try:
             # Use process pool if enabled, otherwise process inline
             return maybe_pool_submit(

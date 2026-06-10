@@ -235,3 +235,63 @@ class TestToolEdgeCases:
             assert isinstance(result, list)
             assert len(result) == 1
             assert "structure" in result[0]
+
+
+# --- preconverted_content cache tests ---
+
+
+class TestDocxToolPreconvertedCache:
+    MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+    def _make_tool(self, preconverted_content=None):
+        from codemie_tools.file_analysis.models import FileAnalysisConfig
+
+        file_obj = FileObject(name="doc.docx", content=b"fake", mime_type=self.MIME, owner="u")
+        config = FileAnalysisConfig(
+            input_files=[file_obj],
+            preconverted_content=preconverted_content or {},
+        )
+        return DocxTool(config=config), file_obj
+
+    def test_text_query_no_pages_cache_hit_skips_processor(self):
+        tool, _ = self._make_tool({"doc.docx": "# Cached"})
+        with patch.object(tool.docx_processor, "process_multiple_files") as mock_proc:
+            result = tool.execute(query=QueryType.TEXT)
+        assert result == "# Cached"
+        mock_proc.assert_not_called()
+
+    def test_text_query_with_pages_bypasses_cache(self):
+        tool, _ = self._make_tool({"doc.docx": "# Cached"})
+        with patch.object(tool.docx_processor, "process_multiple_files", return_value="processed") as mock_proc:
+            result = tool.execute(query=QueryType.TEXT, pages="1-3")
+        assert result == "processed"
+        mock_proc.assert_called_once()
+
+    def test_text_query_with_instructions_bypasses_cache(self):
+        tool, _ = self._make_tool({"doc.docx": "# Cached"})
+        with patch.object(tool.docx_processor, "process_multiple_files", return_value="processed") as mock_proc:
+            result = tool.execute(query=QueryType.TEXT, instructions="summarize")
+        assert result == "processed"
+        mock_proc.assert_called_once()
+
+    def test_non_text_query_bypasses_cache(self):
+        tool, _ = self._make_tool({"doc.docx": "# Cached"})
+        with patch.object(tool.docx_processor, "process_multiple_files", return_value=[{"rows": []}]) as mock_proc:
+            result = tool.execute(query=QueryType.TABLE_EXTRACTION)
+        assert result == [{"rows": []}]
+        mock_proc.assert_called_once()
+
+    def test_partial_cache_miss_falls_through(self):
+        from codemie_tools.file_analysis.models import FileAnalysisConfig
+
+        f1 = FileObject(name="a.docx", content=b"f", mime_type=self.MIME, owner="u")
+        f2 = FileObject(name="b.docx", content=b"f", mime_type=self.MIME, owner="u")
+        config = FileAnalysisConfig(
+            input_files=[f1, f2],
+            preconverted_content={"a.docx": "# A"},
+        )
+        tool = DocxTool(config=config)
+        with patch.object(tool.docx_processor, "process_multiple_files", return_value="proc") as mock_proc:
+            result = tool.execute(query=QueryType.TEXT)
+        assert result == "proc"
+        mock_proc.assert_called_once()

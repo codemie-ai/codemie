@@ -45,6 +45,7 @@ from codemie.core.constants import CodeIndexType, ToolType
 from codemie.core.dependecies import get_llm_by_credentials
 from codemie.core.models import AssistantChatRequest, CodeFields, IdeChatRequest, ToolConfig
 from codemie.core.thread import MessageQueue
+from codemie.service.file_service.markdown_cache_service import MarkdownCacheService
 from codemie.service.provider.provider_header_context import ProviderHeaderContext
 from codemie.core.utils import build_unique_file_objects_list
 from codemie.rest_api.models.assistant import (
@@ -1116,7 +1117,18 @@ class ToolkitService:
 
         # Process non-image files with FileAnalysisToolkit
         if non_image_files:
-            tools.extend(FileAnalysisToolkit.get_toolkit(files=non_image_files, chat_model=llm).get_tools())
+            cache_service = MarkdownCacheService()
+            # Eagerly warm the cache for all non-image files before the LLM is invoked.
+            # On a cache hit this is cheap (one storage read); on a miss we pay the conversion
+            # cost upfront so any subsequent tool call for the same file is instant.
+            preconverted = cache_service.get_preconverted(non_image_files)
+            tools.extend(
+                FileAnalysisToolkit.get_toolkit(
+                    files=non_image_files,
+                    chat_model=llm,
+                    preconverted_content=preconverted,
+                ).get_tools()
+            )
 
         # EmailAnalysisTool is always included: handles uploaded .eml/.msg files
         # but also accepts `url` and `inline_content` without any uploaded file.

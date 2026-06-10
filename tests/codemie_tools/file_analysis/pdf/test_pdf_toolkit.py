@@ -129,3 +129,71 @@ def test_pdf_tool_execute_text_with_ocr(mock_process, sample_pdf_path):
     # Assertions
     assert result == expected_result
     mock_process.assert_called_once_with([file_obj], [1])
+
+
+# --- preconverted_content cache tests ---
+
+
+class TestPDFToolPreconvertedCache:
+    def _make_tool(self, pdf_bytes, preconverted_content=None):
+        file_obj = FileObject(name="doc.pdf", content=pdf_bytes, mime_type="application/pdf", owner="u")
+        config = FileAnalysisConfig(
+            input_files=[file_obj],
+            preconverted_content=preconverted_content or {},
+        )
+        return PDFTool(config=config), file_obj
+
+    def test_text_query_no_pages_cache_hit_skips_processor(self, sample_pdf_path):
+        with open(sample_pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        tool, _ = self._make_tool(pdf_bytes, {"doc.pdf": "# Cached"})
+        with patch.object(tool.pdf_processor, "extract_text_as_markdown_from_files") as mock_proc:
+            result = tool.execute(pages=[], query=QueryType.TEXT)
+        assert result == "# Cached"
+        mock_proc.assert_not_called()
+
+    def test_text_with_metadata_query_no_pages_bypasses_cache(self, sample_pdf_path):
+        with open(sample_pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        tool, file_obj = self._make_tool(pdf_bytes, {"doc.pdf": "# Cached metadata"})
+        with patch.object(
+            tool.pdf_processor, "extract_text_as_markdown_from_files", return_value="structured"
+        ) as mock_proc:
+            result = tool.execute(pages=[], query=QueryType.TEXT_WITH_METADATA)
+        assert result == "structured"
+        mock_proc.assert_called_once_with(files=[file_obj], pages=[], page_chunks=True)
+
+    def test_text_query_with_pages_bypasses_cache(self, sample_pdf_path):
+        with open(sample_pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        tool, file_obj = self._make_tool(pdf_bytes, {"doc.pdf": "# Cached"})
+        with patch.object(
+            tool.pdf_processor, "extract_text_as_markdown_from_files", return_value="pdfplumber"
+        ) as mock_proc:
+            result = tool.execute(pages=[1], query=QueryType.TEXT)
+        assert result == "pdfplumber"
+        mock_proc.assert_called_once_with(files=[file_obj], pages=[1], page_chunks=False)
+
+    def test_ocr_query_always_bypasses_cache(self, sample_pdf_path):
+        with open(sample_pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        tool, file_obj = self._make_tool(pdf_bytes, {"doc.pdf": "# Cached"})
+        with patch.object(tool.pdf_processor, "process_pdf_files", return_value="ocr result") as mock_proc:
+            result = tool.execute(pages=[], query=QueryType.TEXT_WITH_OCR)
+        assert result == "ocr result"
+        mock_proc.assert_called_once()
+
+    def test_partial_cache_miss_falls_through_to_processor(self, sample_pdf_path):
+        with open(sample_pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        f1 = FileObject(name="a.pdf", content=pdf_bytes, mime_type="application/pdf", owner="u")
+        f2 = FileObject(name="b.pdf", content=pdf_bytes, mime_type="application/pdf", owner="u")
+        config = FileAnalysisConfig(
+            input_files=[f1, f2],
+            preconverted_content={"a.pdf": "# A cached"},  # b.pdf missing
+        )
+        tool = PDFTool(config=config)
+        with patch.object(tool.pdf_processor, "extract_text_as_markdown_from_files", return_value="proc") as mock_proc:
+            result = tool.execute(pages=[], query=QueryType.TEXT)
+        assert result == "proc"
+        mock_proc.assert_called_once()

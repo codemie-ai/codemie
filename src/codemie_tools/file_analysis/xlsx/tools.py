@@ -288,6 +288,9 @@ class XlsxTool(CodeMieTool, FileToolMixin):
         Returns:
             Markdown text representation of the Excel file
         """
+        if not sheet_names and file_object.name in self.config.preconverted_content:
+            return self.config.preconverted_content[file_object.name]
+
         try:
             return maybe_pool_submit(
                 process_xlsx_to_markdown,

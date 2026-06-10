@@ -199,6 +199,77 @@ class TestFileAnalysisTool:
             result = tool.execute(query="non_existent_file.txt")
             assert "File not found" in result
 
+    def test_process_single_file_uses_preconverted_content(self):
+        """FileAnalysisTool returns cached markdown without calling convert_file_to_markdown."""
+        from unittest.mock import patch
+        from codemie_tools.base.file_object import FileObject
+        from codemie_tools.file_analysis.file_analysis_tool import FileAnalysisTool
+        from codemie_tools.file_analysis.models import FileAnalysisConfig
+
+        file_obj = FileObject(name="report.pdf", content=b"%PDF-fake", mime_type="application/pdf", owner="user1")
+        config = FileAnalysisConfig(
+            input_files=[file_obj],
+            preconverted_content={"report.pdf": "# Cached markdown content"},
+        )
+        tool = FileAnalysisTool(config=config)
+
+        with patch("codemie_tools.file_analysis.file_analysis_tool.convert_file_to_markdown") as mock_convert:
+            result = tool._process_single_file(file_obj)
+
+        assert result == "# Cached markdown content"
+        mock_convert.assert_not_called()
+
+    def test_process_single_file_falls_back_to_markitdown_when_not_preconverted(self):
+        """FileAnalysisTool calls convert_file_to_markdown when file not in preconverted_content."""
+        from unittest.mock import patch
+        from codemie_tools.base.file_object import FileObject
+        from codemie_tools.file_analysis.file_analysis_tool import FileAnalysisTool
+        from codemie_tools.file_analysis.models import FileAnalysisConfig
+
+        file_obj = FileObject(name="report.pdf", content=b"%PDF-fake", mime_type="application/pdf", owner="user1")
+        config = FileAnalysisConfig(input_files=[file_obj], preconverted_content={})
+        tool = FileAnalysisTool(config=config)
+
+        with patch("codemie_tools.file_analysis.file_analysis_tool.maybe_pool_submit") as mock_pool:
+            mock_pool.side_effect = lambda fn, *args, **kwargs: fn(*args, **kwargs)
+            with patch("codemie_tools.file_analysis.file_analysis_tool.convert_file_to_markdown") as mock_convert:
+                mock_convert.return_value = "# Live markdown"
+                result = tool._process_single_file(file_obj)
+
+        assert result == "# Live markdown"
+        mock_convert.assert_called_once()
+
+    def test_get_toolkit_passes_preconverted_content_to_tools(self):
+        """FileAnalysisToolkit.get_toolkit propagates preconverted_content into tool configs."""
+        from codemie_tools.base.file_object import FileObject
+        from codemie_tools.file_analysis.file_analysis_tool import FileAnalysisTool
+        from codemie_tools.file_analysis.toolkit import FileAnalysisToolkit
+
+        file_obj = FileObject(
+            name="data.html",
+            content=b"<html><body>hello</body></html>",
+            mime_type="text/html",
+            owner="user1",
+        )
+        preconverted = {"data.html": "# Hello"}
+
+        toolkit = FileAnalysisToolkit.get_toolkit(
+            files=[file_obj],
+            preconverted_content=preconverted,
+        )
+        tools = toolkit.get_tools()
+
+        file_tool = next((t for t in tools if isinstance(t, FileAnalysisTool)), None)
+        assert file_tool is not None
+        assert file_tool.config.preconverted_content == preconverted
+
+    def test_file_analysis_config_has_preconverted_content_field(self):
+        from codemie_tools.file_analysis.models import FileAnalysisConfig
+
+        config = FileAnalysisConfig()
+        assert hasattr(config, "preconverted_content")
+        assert config.preconverted_content == {}
+
     def test_multiple_files_processing(self, samples_dir):
         """Test processing multiple files with separators.
         Note: FileAnalysisTool only processes files NOT handled by specialized tools.

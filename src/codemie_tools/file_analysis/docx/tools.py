@@ -196,6 +196,13 @@ class DocxTool(CodeMieTool, FileToolMixin):
         if pages:
             logger.info(f"Processing specific pages: {pages}")
 
+        if query == QueryType.TEXT and not pages and not instructions:
+            supported = self._get_supported_files()
+            cached = [self.config.preconverted_content.get(f.name) for f in supported]
+            if all(v is not None for v in cached):
+                logger.debug("DocxTool: cache hit for %d file(s)", len(supported))
+                return "\n".join(cached)
+
         try:
             # Handle queries using direct processor method calls
             if query in [

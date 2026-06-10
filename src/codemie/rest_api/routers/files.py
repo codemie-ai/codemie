@@ -27,6 +27,7 @@ from codemie.rest_api.models.files import WriteFileResponse, MermaidRequest, Bul
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.file_service.file_service import FileService
+from codemie.service.file_service.markdown_cache_service import MarkdownCacheService
 from codemie.service.file_service.mermaid_service import MermaidService
 
 router = APIRouter(
@@ -161,6 +162,7 @@ def write_file(file: UploadFile, user: User = Depends(authenticate)):
 
     fs_repo = FileRepositoryFactory().get_current_repository()
 
+    MarkdownCacheService().invalidate(owner=user.id, filename=file.filename, repo=fs_repo)
     result = fs_repo.write_file(name=file.filename, mime_type=file.content_type, owner=user.id, content=data)
 
     return WriteFileResponse(file_url=result.to_encoded_url())
@@ -197,6 +199,7 @@ def write_files_bulk(files: List[UploadFile] = File(...), user: User = Depends(a
             data = file.file.read()
 
             # Write file to repository
+            MarkdownCacheService().invalidate(owner=user.id, filename=file.filename, repo=fs_repo)
             result = fs_repo.write_file(name=file.filename, mime_type=file.content_type, owner=user.id, content=data)
 
             # Add to successful files list
