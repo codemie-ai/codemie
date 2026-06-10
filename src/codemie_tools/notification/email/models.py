@@ -15,7 +15,7 @@
 from enum import Enum
 from typing import Optional
 
-from codemie_tools.base.models import CodeMieToolConfig, RequiredField, CredentialTypes
+from codemie_tools.base.models import CodeMieToolConfig, FileConfigMixin, RequiredField, CredentialTypes
 
 from pydantic import Field
 
@@ -27,7 +27,7 @@ class EmailAuthType(str, Enum):
     OAUTH_AZURE = "oauth_azure"  # OAuth via Microsoft Entra ID Application
 
 
-class EmailToolConfig(CodeMieToolConfig):
+class EmailToolConfig(CodeMieToolConfig, FileConfigMixin):
     credential_type: CredentialTypes = Field(default=CredentialTypes.EMAIL, exclude=True, frozen=True)
 
     # Common field
