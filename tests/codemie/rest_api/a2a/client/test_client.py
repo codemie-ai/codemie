@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from codemie.rest_api.a2a.client.client import A2AClient
+from codemie.rest_api.a2a.client.client import A2AClient, _detect_protocol_version
 from codemie.rest_api.a2a.types import (
     A2AClientHTTPError,
     A2AClientJSONError,
@@ -30,8 +30,10 @@ from codemie.rest_api.a2a.types import (
     CancelTaskResponse,
     GetTaskResponse,
     Message,
+    MessageSendResponse,
     SendTaskResponse,
     SendTaskStreamingResponse,
+    ProtocolVersion,
     Task,
     TaskState,
     TaskStatus,
@@ -46,7 +48,7 @@ def agent_card():
         name="Test Agent",
         description="A test agent",
         url="https://test-agent.example.com/api/agent",
-        version="1.0.0",
+        version="0.2.0",
         capabilities=AgentCapabilities(streaming=True),
         provider=AgentProvider(organization="Test Org"),
         skills=[],
@@ -522,3 +524,43 @@ class TestA2AClientCallbacks:
         # Assert
         assert result.result is not None
         assert result.result.id == "task-123"
+
+
+class TestA2AClientProtocolVersion:
+    """Tests for protocol version detection and version-aware serialization."""
+
+    def test_detect_protocol_version_v02(self):
+        """Test auto-detection of v0.2 from agent card version."""
+        card = AgentCard(
+            name="Agent",
+            url="https://example.com",
+            version="0.2.0",
+            capabilities=AgentCapabilities(),
+            skills=[],
+        )
+        assert _detect_protocol_version(card) == ProtocolVersion.V02
+
+    def test_detect_protocol_version_v01(self):
+        """Test auto-detection of v0.1 from agent card version."""
+        card = AgentCard(
+            name="Agent",
+            url="https://example.com",
+            version="0.1.0",
+            capabilities=AgentCapabilities(),
+            skills=[],
+        )
+        assert _detect_protocol_version(card) == ProtocolVersion.V01
+
+    def test_detect_protocol_version_none_card(self):
+        """Test detection with no agent card defaults to v0.1."""
+        assert _detect_protocol_version(None) == ProtocolVersion.V01
+
+    def test_explicit_protocol_version_override(self, agent_card):
+        """Test explicit protocol_version parameter overrides auto-detect."""
+        client = A2AClient(agent_card=agent_card, protocol_version="0.1.0")
+        assert client.protocol_version == ProtocolVersion.V01
+
+    def test_auto_detect_from_card(self, agent_card):
+        """Test auto-detection from agent card version field."""
+        client = A2AClient(agent_card=agent_card)
+        assert client.protocol_version == ProtocolVersion.V02

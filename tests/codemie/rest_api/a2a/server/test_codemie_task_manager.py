@@ -24,6 +24,8 @@ from codemie.rest_api.a2a.server.utils import new_incompatible_types_error
 from codemie.rest_api.a2a.types import (
     GetTaskRequest,
     GetTaskResponse,
+    MessageSendRequest,
+    MessageSendResponse,
     SendTaskRequest,
     SendTaskResponse,
     TaskStatus,
@@ -35,7 +37,9 @@ from codemie.rest_api.a2a.types import (
     Task,
     Artifact,
     TaskSendParams,
+    MessageStreamRequest,
     SendTaskStreamingRequest,
+    SendTaskStreamingResponse,
     JSONRPCResponse,
     UnsupportedOperationError,
     ContentTypeNotSupportedError,
@@ -90,7 +94,7 @@ def task_send_params(text_message):
 
 @pytest.fixture
 def send_task_request(task_send_params):
-    return SendTaskRequest(id="request-123", method="tasks/send", params=task_send_params)
+    return SendTaskRequest(id="request-123", params=task_send_params)
 
 
 @pytest.fixture
@@ -100,7 +104,7 @@ def get_task_request():
 
 @pytest.fixture
 def send_task_streaming_request(task_send_params):
-    return SendTaskStreamingRequest(id="request-123", method="tasks/sendSubscribe", params=task_send_params)
+    return SendTaskStreamingRequest(id="request-123", params=task_send_params)
 
 
 class TestCodemieTaskManager:
@@ -165,18 +169,23 @@ class TestCodemieTaskManager:
                     assert response.result == mock_task
 
     @pytest.mark.asyncio
-    async def test_on_send_task_subscribe(self, task_manager, send_task_streaming_request):
-        """Test on_send_task_subscribe method."""
-        # Mock the implementation to avoid raising an exception
-        error = UnsupportedOperationError()
-        response = JSONRPCResponse(id=send_task_streaming_request.id, error=error)
+    async def test_on_message_stream(self, task_manager, send_task_streaming_request, mock_task):
+        """Test on_message_stream method yields streaming events."""
+        agent_mock = MagicMock()
+        agent_mock.invoke_with_a2a_output.return_value = {"content": "Streaming response"}
+        assistant_request = MagicMock()
+        assistant_request.text = "Test request"
 
-        with patch.object(CodemieTaskManager, 'on_send_task_subscribe', new_callable=AsyncMock, return_value=response):
-            result = await task_manager.on_send_task_subscribe(send_task_streaming_request)
+        with patch.object(task_manager, '_validate_request', return_value=None):
+            with patch.object(task_manager, 'upsert_task', return_value=mock_task):
+                with patch.object(task_manager, '_setup_agent', return_value=(agent_mock, assistant_request)):
+                    with patch.object(task_manager, 'update_store', return_value=mock_task):
+                        events = []
+                        async for event in task_manager.on_message_stream(send_task_streaming_request):
+                            events.append(event)
 
-            assert isinstance(result, JSONRPCResponse)
-            assert result.id == send_task_streaming_request.id
-            assert isinstance(result.error, UnsupportedOperationError)
+                        assert len(events) >= 2
+                        assert all(isinstance(e, SendTaskStreamingResponse) for e in events)
 
     def test_upsert_task_new_task(self, task_send_params):
         """Test upsert_task when task doesn't exist."""
@@ -372,7 +381,6 @@ class TestCodemieTaskManager:
         """Test _process_agent_response when input is required."""
         agent_response = {"content": "Test response", "require_user_input": True}
 
-        # Create a real Task object for the response
         response_task = Task(
             id="test-task-id",
             sessionId="test-session-id",
@@ -380,65 +388,51 @@ class TestCodemieTaskManager:
             history=[],
         )
 
-        with patch.object(
-            task_manager, '_create_response_parts', return_value=[{"type": "text", "text": "Test response"}]
-        ):
-            with patch.object(task_manager, 'update_store', return_value=mock_task):
-                with patch.object(task_manager, '_append_task_history', return_value=response_task):
-                    response = task_manager._process_agent_response(send_task_request, agent_response)
+        with patch.object(task_manager, 'update_store', return_value=mock_task):
+            with patch.object(task_manager, '_append_task_history', return_value=response_task):
+                response = task_manager._process_agent_response(send_task_request, agent_response)
 
-                    task_manager.update_store.assert_called_once()
-                    assert response.id == send_task_request.id
-                    assert response.result == response_task
-                    # Verify the status is INPUT_REQUIRED
-                    args, kwargs = task_manager.update_store.call_args
-                    assert args[1].state == TaskState.INPUT_REQUIRED
+                task_manager.update_store.assert_called_once()
+                assert response.id == send_task_request.id
+                assert response.result == response_task
+                args, kwargs = task_manager.update_store.call_args
+                assert args[1].state == TaskState.INPUT_REQUIRED
 
     def test_process_agent_response_completed(self, task_manager, send_task_request, mock_task):
         """Test _process_agent_response when task is completed."""
         agent_response = {"content": "Test response", "require_user_input": False}
 
-        # Create a real Task object for the response
         response_task = Task(
             id="test-task-id", sessionId="test-session-id", status=TaskStatus(state=TaskState.COMPLETED), history=[]
         )
 
-        with patch.object(
-            task_manager, '_create_response_parts', return_value=[{"type": "text", "text": "Test response"}]
-        ):
-            with patch.object(task_manager, 'update_store', return_value=mock_task):
-                with patch.object(task_manager, '_append_task_history', return_value=response_task):
-                    response = task_manager._process_agent_response(send_task_request, agent_response)
+        with patch.object(task_manager, 'update_store', return_value=mock_task):
+            with patch.object(task_manager, '_append_task_history', return_value=response_task):
+                response = task_manager._process_agent_response(send_task_request, agent_response)
 
-                    task_manager.update_store.assert_called_once()
-                    assert response.id == send_task_request.id
-                    assert response.result == response_task
-                    # Verify the status is COMPLETED
-                    args, kwargs = task_manager.update_store.call_args
-                    assert args[1].state == TaskState.COMPLETED
+                task_manager.update_store.assert_called_once()
+                assert response.id == send_task_request.id
+                assert response.result == response_task
+                args, kwargs = task_manager.update_store.call_args
+                assert args[1].state == TaskState.COMPLETED
 
     def test_process_error_response(self, task_manager, send_task_request, mock_task):
         """Test _process_error_response method."""
         exception = Exception("Test error")
 
-        # Create a real Task object for the response
         response_task = Task(
             id="test-task-id", sessionId="test-session-id", status=TaskStatus(state=TaskState.FAILED), history=[]
         )
 
-        with patch.object(
-            task_manager, '_create_response_parts', return_value=[{"type": "text", "text": "Error: Test error"}]
-        ):
-            with patch.object(task_manager, 'update_store', return_value=mock_task):
-                with patch.object(task_manager, '_append_task_history', return_value=response_task):
-                    response = task_manager._process_error_response(send_task_request, exception)
+        with patch.object(task_manager, 'update_store', return_value=mock_task):
+            with patch.object(task_manager, '_append_task_history', return_value=response_task):
+                response = task_manager._process_error_response(send_task_request, exception)
 
-                    task_manager.update_store.assert_called_once()
-                    assert response.id == send_task_request.id
-                    assert response.result == response_task
-                    # Verify the status is FAILED
-                    args, kwargs = task_manager.update_store.call_args
-                    assert args[1].state == TaskState.FAILED
+                task_manager.update_store.assert_called_once()
+                assert response.id == send_task_request.id
+                assert response.result == response_task
+                args, kwargs = task_manager.update_store.call_args
+                assert args[1].state == TaskState.FAILED
 
     def test_get_user_query_valid(self, task_send_params):
         """Test _get_user_query with valid text part."""
@@ -456,11 +450,19 @@ class TestCodemieTaskManager:
         with pytest.raises(ValueError, match="Only text parts are supported"):
             CodemieTaskManager._get_user_query(task_params)
 
-    def test_create_response_parts(self, task_manager):
-        """Test _create_response_parts method."""
-        content = "Test content"
-        parts = task_manager._create_response_parts(content)
+    def test_process_agent_response_returns_text_parts(self, task_manager, send_task_request, mock_task):
+        """Test that agent response produces TextPart objects with kind='text'."""
+        agent_response = {"content": "Test content", "require_user_input": False}
 
-        assert len(parts) == 1
-        assert parts[0]["type"] == "text"
-        assert parts[0]["text"] == content
+        with patch.object(task_manager, 'update_store', return_value=mock_task):
+            with patch.object(task_manager, '_append_task_history', return_value=mock_task):
+                response = task_manager._process_agent_response(send_task_request, agent_response)
+
+                # Verify update_store was called with an Artifact containing TextPart
+                args, kwargs = task_manager.update_store.call_args
+                artifacts = args[2]
+                assert artifacts is not None
+                assert len(artifacts) == 1
+                assert isinstance(artifacts[0].parts[0], TextPart)
+                assert artifacts[0].parts[0].kind == "text"
+                assert artifacts[0].parts[0].text == "Test content"

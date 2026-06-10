@@ -69,7 +69,7 @@ class TestA2AUtils(unittest.TestCase):
         self.assertEqual(result.params.sessionId, "test-conversation")
         self.assertEqual(result.params.message.parts[0].text, "Hello, assistant!")
         self.assertEqual(result.params.historyLength, 5)
-        self.assertEqual(result.method, "tasks/send")
+        self.assertEqual(result.method, "message/send")
 
     def test_convert_to_task_request_streaming(self):
         """Test converting AssistantChatRequest to SendTaskStreamingRequest."""
@@ -90,7 +90,7 @@ class TestA2AUtils(unittest.TestCase):
         self.assertEqual(result.params.sessionId, "test-conversation")
         self.assertEqual(result.params.message.parts[0].text, "Hello, assistant!")
         self.assertEqual(result.params.historyLength, 5)
-        self.assertEqual(result.method, "tasks/sendSubscribe")
+        self.assertEqual(result.method, "message/stream")
 
     def test_convert_to_base_model_response(self):
         """Test converting Task to BaseModelResponse."""
@@ -280,11 +280,11 @@ class TestA2AUtils(unittest.TestCase):
         self.assertEqual(result.name, "Test Assistant")
         self.assertEqual(result.description, "A test assistant")
         self.assertEqual(result.url, "https://example.com/v1/a2a/assistants/test-assistant-id")
-        self.assertEqual(result.version, "1.0.0")
+        self.assertEqual(result.version, "0.2.0")
         self.assertIsInstance(result.provider, AgentProvider)
         self.assertEqual(result.provider.organization, "")
         self.assertIsInstance(result.capabilities, AgentCapabilities)
-        self.assertFalse(result.capabilities.streaming)
+        self.assertTrue(result.capabilities.streaming)
         self.assertFalse(result.capabilities.pushNotifications)
         self.assertTrue(result.capabilities.stateTransitionHistory)
         self.assertIsInstance(result.authentication, AgentAuthentication)
