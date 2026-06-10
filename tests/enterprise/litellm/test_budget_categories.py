@@ -58,3 +58,18 @@ class TestBuildUserId:
         """Dots and plus signs in the local-part are preserved verbatim."""
         result = build_user_id("user.name+tag@example.com", BudgetCategory.CLI)
         assert result == "user.name+tag@example.com_codemie_cli"
+
+
+class TestBuildUserIdWithUsername:
+    def test_platform_returns_bare_username(self):
+        """PLATFORM returns the identifier verbatim — works with a plain username too."""
+        result = build_user_id("john_doe", BudgetCategory.PLATFORM)
+        assert result == "john_doe"
+
+    def test_cli_appends_stable_suffix_to_username(self):
+        result = build_user_id("john_doe", BudgetCategory.CLI)
+        assert result == "john_doe_codemie_cli"
+
+    def test_premium_models_appends_stable_suffix_to_username(self):
+        result = build_user_id("john_doe", BudgetCategory.PREMIUM_MODELS)
+        assert result == "john_doe_codemie_premium_models"

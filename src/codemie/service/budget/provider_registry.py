@@ -119,29 +119,29 @@ class _NoopBudgetEnforcementProvider:
     async def assign_user_budget(
         self,
         *,
-        user_email: str,
+        username: str,
         budget_category: BudgetCategory,
         budget_id: str,
     ) -> None:
-        return self._noop_result(user_email, budget_category, budget_id)
+        return self._noop_result(username, budget_category, budget_id)
 
     async def clear_user_budget(
         self,
         *,
-        user_email: str,
+        username: str,
         budget_category: BudgetCategory,
     ) -> None:
-        return self._noop_result(user_email, budget_category)
+        return self._noop_result(username, budget_category)
 
     async def reset_user_budget_spending(
         self,
         *,
-        user_email: str,
+        username: str,
         budget_category: BudgetCategory,
         budget_id: str,
     ) -> None:
         return await self.assign_user_budget(
-            user_email=user_email,
+            username=username,
             budget_category=budget_category,
             budget_id=budget_id,
         )
@@ -152,8 +152,8 @@ class _NoopBudgetEnforcementProvider:
     async def list_personal_budget_assignments(self) -> list[PersonalBudgetEntry] | None:
         return []
 
-    async def provision_global_user(self, *, user_id: str, user_email: str) -> None:
-        return self._noop_result(user_id, user_email)
+    async def provision_global_user(self, *, user_id: str, username: str) -> None:
+        return self._noop_result(user_id, username)
 
     # ── Project budget methods ───────────────────────────────────────────
 
@@ -290,3 +290,6 @@ class _NoopBudgetEnforcementProvider:
 
 
 _NOOP_PROVIDER: BudgetEnforcementProvider = _NoopBudgetEnforcementProvider()  # type: ignore[assignment]
+
+# Public alias for testing
+NoopBudgetProvider = _NoopBudgetEnforcementProvider

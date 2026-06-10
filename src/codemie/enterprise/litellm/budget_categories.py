@@ -23,18 +23,18 @@ class BudgetCategory(str, Enum):
     PREMIUM_MODELS = "premium_models"  # costly model spending via CLI
 
 
-def build_user_id(email: str, category: BudgetCategory) -> str:
-    """Build the canonical LiteLLM user_id for the given email and category.
+def build_user_id(user_identifier: str, category: BudgetCategory) -> str:
+    """Build the canonical LiteLLM user_id for the given user identifier and category.
 
-    For PLATFORM the user_id is just the email (no suffix).
-    For other categories: ``{email}_codemie_{category.value}``
-    e.g. ``{email}_codemie_cli``, ``{email}_codemie_premium_models``.
+    For PLATFORM the user_id is just the identifier (no suffix).
+    For other categories: ``{user_identifier}_codemie_{category.value}``
+    e.g. ``{user_identifier}_codemie_cli``, ``{user_identifier}_codemie_premium_models``.
 
     Suffixes are stable and must match existing LiteLLM customer entries.
     """
     if category == BudgetCategory.PLATFORM:
-        return email
-    return f"{email}_codemie_{category.value}"
+        return user_identifier
+    return f"{user_identifier}_codemie_{category.value}"
 
 
 def derive_category_from_user_id(user_id: str) -> BudgetCategory:

@@ -137,9 +137,8 @@ class LiteLLMBudgetEnforcementProvider:
     register_budget_enforcement_provider() when LiteLLM is enabled.
 
     Backward-compatibility guarantees:
-      - LiteLLM customer ids are built via build_user_id(email, category)
-        exactly as before:  {email} / {email}_codemie_cli /
-        {email}_codemie_premium_models.
+      - LiteLLM customer ids are built via build_user_id(username, category):
+        {username} / {username}_codemie_cli / {username}_codemie_premium_models.
       - Global LiteLLM budget_ids equal the Codemie budget_id (unchanged).
       - project-scoped LiteLLM identifiers are stored only in provider_metadata
         and must never collide with the global customer id namespace.
@@ -590,7 +589,7 @@ class LiteLLMBudgetEnforcementProvider:
     async def assign_user_budget(
         self,
         *,
-        user_email: str,
+        username: str,
         budget_category: BudgetCategory,
         budget_id: str,
     ) -> None:
@@ -598,10 +597,10 @@ class LiteLLMBudgetEnforcementProvider:
         from codemie.enterprise.litellm.budget_categories import build_user_id
         from codemie.enterprise.litellm.budget_helpers import update_customer_budget_in_litellm
 
-        litellm_user_id = build_user_id(user_email, budget_category)
+        litellm_user_id = build_user_id(username, budget_category)
         logger.debug(
             f"budget_event=provider_customer_budget_assignment_started component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} operation=assign username={user_email!r} "
+            f"provider={_PROVIDER_NAME!r} operation=assign username={username!r} "
             f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r} "
             f"budget_id={budget_id!r}"
         )
@@ -609,14 +608,14 @@ class LiteLLMBudgetEnforcementProvider:
         if not success:
             logger.warning(
                 f"budget_event=provider_customer_budget_assignment_failed component=litellm_budget_provider "
-                f"provider={_PROVIDER_NAME!r} operation=assign username={user_email!r} "
+                f"provider={_PROVIDER_NAME!r} operation=assign username={username!r} "
                 f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r} "
                 f"budget_id={budget_id!r}"
             )
             raise RuntimeError(f"Failed to assign budget {budget_id!r} for LiteLLM customer {litellm_user_id!r}")
         logger.debug(
             f"budget_event=provider_customer_budget_assignment_completed component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} operation=assign username={user_email!r} "
+            f"provider={_PROVIDER_NAME!r} operation=assign username={username!r} "
             f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r} "
             f"budget_id={budget_id!r}"
         )
@@ -624,37 +623,37 @@ class LiteLLMBudgetEnforcementProvider:
     async def clear_user_budget(
         self,
         *,
-        user_email: str,
+        username: str,
         budget_category: BudgetCategory,
     ) -> None:
         """Clear (set to None) the budget assignment for a LiteLLM customer."""
         from codemie.enterprise.litellm.budget_categories import build_user_id
         from codemie.enterprise.litellm.budget_helpers import update_customer_budget_in_litellm
 
-        litellm_user_id = build_user_id(user_email, budget_category)
+        litellm_user_id = build_user_id(username, budget_category)
         logger.debug(
             f"budget_event=provider_customer_budget_assignment_started component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} operation=clear username={user_email!r} "
+            f"provider={_PROVIDER_NAME!r} operation=clear username={username!r} "
             f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r}"
         )
         success = await asyncio.to_thread(update_customer_budget_in_litellm, litellm_user_id, None)
         if not success:
             logger.warning(
                 f"budget_event=provider_customer_budget_assignment_failed component=litellm_budget_provider "
-                f"provider={_PROVIDER_NAME!r} operation=clear username={user_email!r} "
+                f"provider={_PROVIDER_NAME!r} operation=clear username={username!r} "
                 f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r}"
             )
             raise RuntimeError(f"Failed to clear budget for LiteLLM customer {litellm_user_id!r}")
         logger.debug(
             f"budget_event=provider_customer_budget_assignment_completed component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} operation=clear username={user_email!r} "
+            f"provider={_PROVIDER_NAME!r} operation=clear username={username!r} "
             f"provider_member_ref={litellm_user_id!r} budget_category={budget_category.value!r}"
         )
 
     async def reset_user_budget_spending(
         self,
         *,
-        user_email: str,
+        username: str,
         budget_category: BudgetCategory,
         budget_id: str,
     ) -> None:
@@ -662,23 +661,23 @@ class LiteLLMBudgetEnforcementProvider:
         from codemie.enterprise.litellm.budget_categories import build_user_id
         from codemie.enterprise.litellm.budget_helpers import reset_customer_spending_in_litellm
 
-        litellm_user_id = build_user_id(user_email, budget_category)
+        litellm_user_id = build_user_id(username, budget_category)
         logger.debug(
             f"budget_event=provider_customer_spending_reset_started component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} username={user_email!r} provider_member_ref={litellm_user_id!r} "
+            f"provider={_PROVIDER_NAME!r} username={username!r} provider_member_ref={litellm_user_id!r} "
             f"budget_category={budget_category.value!r} budget_id={budget_id!r}"
         )
         success = await asyncio.to_thread(reset_customer_spending_in_litellm, litellm_user_id, budget_id)
         if not success:
             logger.warning(
                 f"budget_event=provider_customer_spending_reset_failed component=litellm_budget_provider "
-                f"provider={_PROVIDER_NAME!r} username={user_email!r} provider_member_ref={litellm_user_id!r} "
+                f"provider={_PROVIDER_NAME!r} username={username!r} provider_member_ref={litellm_user_id!r} "
                 f"budget_category={budget_category.value!r} budget_id={budget_id!r}"
             )
             raise RuntimeError(f"Failed to reset spending for LiteLLM customer {litellm_user_id!r}")
         logger.debug(
             f"budget_event=provider_customer_spending_reset_completed component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} username={user_email!r} provider_member_ref={litellm_user_id!r} "
+            f"provider={_PROVIDER_NAME!r} username={username!r} provider_member_ref={litellm_user_id!r} "
             f"budget_category={budget_category.value!r} budget_id={budget_id!r}"
         )
 
@@ -831,7 +830,7 @@ class LiteLLMBudgetEnforcementProvider:
 
         return BudgetResetReconciliationResult(items=items)
 
-    async def provision_global_user(self, *, user_id: str, user_email: str) -> None:
+    async def provision_global_user(self, *, user_id: str, username: str) -> None:
         """Ensure a LiteLLM customer record exists for a new Codemie user.
 
         Called at new-user creation time (SSO first login, admin create).
@@ -841,20 +840,20 @@ class LiteLLMBudgetEnforcementProvider:
 
         logger.debug(
             f"budget_event=provider_customer_provision_started component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={user_email!r}"
+            f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={username!r}"
         )
         service = get_litellm_service_or_none()
         if service is None:
             logger.debug(
                 f"budget_event=provider_customer_provision_skipped component=litellm_budget_provider "
-                f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={user_email!r} "
+                f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={username!r} "
                 f"reason=provider_unavailable"
             )
             return
-        await asyncio.to_thread(service.get_or_create_customer_with_budget, user_email)
+        await asyncio.to_thread(service.get_or_create_customer_with_budget, username)
         logger.debug(
             f"budget_event=provider_customer_provision_completed component=litellm_budget_provider "
-            f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={user_email!r}"
+            f"provider={_PROVIDER_NAME!r} user_id={user_id!r} username={username!r}"
         )
 
     # ── Project budget methods ───────────────────────────────────────────

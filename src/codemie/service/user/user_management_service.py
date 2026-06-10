@@ -558,7 +558,7 @@ class UserManagementService:
                 asyncio.run(
                     get_active_provider().provision_global_user(
                         user_id=new_user_id,
-                        user_email=email,
+                        username=username,
                     )
                 )
                 logger.debug(f"Budget provider provisioned new user: {new_user_id}")

@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,45 +20,27 @@ from codemie.rest_api.security.user import User
 
 
 @pytest.mark.asyncio
-async def test_budget_usage_falls_back_to_username_when_email_missing():
-    """Personal budget rows should still have a stable label when email is blank."""
+async def test_budget_usage_uses_username_as_subject_label():
+    """Budget stats always use username as the subject label, regardless of email."""
     from codemie.rest_api.routers.analytics import get_user_budget_usage
     from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
 
     mock_user = User(
         id="test-user-id",
-        username="maksim_yuzva@epam.com",
-        email="",
+        username="john_doe",
+        email="john.doe@corp.com",
         project_names=[],
         admin_project_names=[],
     )
 
-    # subject_label = email or username or id; email is blank so username is used
-    label = mock_user.username
     mock_rows = [
         {
-            "project_name": label,
+            "project_name": "john_doe",
             "current_spending": 15.5,
             "budget_reset_at": "2026-04-01T00:00:00Z",
             "time_until_reset": None,
             "budget_limit": 100.0,
             "total": 15.5,
-        },
-        {
-            "project_name": f"{label} (premium)",
-            "current_spending": 1.25,
-            "budget_reset_at": "2026-04-02T00:00:00Z",
-            "time_until_reset": None,
-            "budget_limit": 5.0,
-            "total": 25.0,
-        },
-        {
-            "project_name": f"{label} (cli)",
-            "current_spending": 3.75,
-            "budget_reset_at": "2026-04-03T00:00:00Z",
-            "time_until_reset": None,
-            "budget_limit": 20.0,
-            "total": 18.75,
         },
     ]
 
@@ -67,15 +49,56 @@ async def test_budget_usage_falls_back_to_username_when_email_missing():
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
 
+    captured_label = {}
+
+    async def capture_get_budget_usage(session, subject_user_id, subject_label):
+        captured_label["value"] = subject_label
+        return _get_key_spending_columns(), mock_rows
+
     with patch("codemie.clients.postgres.get_async_session", return_value=mock_ctx):
         with patch(
             "codemie.service.analytics.handlers.budget_usage_service.BudgetUsageService.get_budget_usage",
-            new_callable=AsyncMock,
-            return_value=(_get_key_spending_columns(), mock_rows),
+            side_effect=capture_get_budget_usage,
         ):
-            response = await get_user_budget_usage(user=mock_user, user_id=None)
+            await get_user_budget_usage(user=mock_user, user_id=None)
 
-    rows = response["data"]["rows"]
-    assert rows[0]["project_name"] == mock_user.username
-    assert rows[1]["project_name"] == f"{mock_user.username} (premium)"
-    assert rows[2]["project_name"] == f"{mock_user.username} (cli)"
+    assert (
+        captured_label["value"] == "john_doe"
+    ), f"Expected username 'john_doe' as subject_label, got {captured_label['value']!r}"
+
+
+@pytest.mark.asyncio
+async def test_budget_usage_uses_username_even_when_email_differs():
+    """When email != username (client deployment), username is still used — not email."""
+    from codemie.rest_api.routers.analytics import get_user_budget_usage
+    from codemie.service.analytics.handlers.budget_usage_service import _get_key_spending_columns
+
+    mock_user = User(
+        id="test-user-id",
+        username="jsmith",
+        email="john.smith@client.org",
+        project_names=[],
+        admin_project_names=[],
+    )
+
+    mock_rows = []
+    mock_session = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    captured_label = {}
+
+    async def capture_get_budget_usage(session, subject_user_id, subject_label):
+        captured_label["value"] = subject_label
+        return _get_key_spending_columns(), mock_rows
+
+    with patch("codemie.clients.postgres.get_async_session", return_value=mock_ctx):
+        with patch(
+            "codemie.service.analytics.handlers.budget_usage_service.BudgetUsageService.get_budget_usage",
+            side_effect=capture_get_budget_usage,
+        ):
+            await get_user_budget_usage(user=mock_user, user_id=None)
+
+    assert captured_label["value"] == "jsmith"
+    assert captured_label["value"] != "john.smith@client.org"

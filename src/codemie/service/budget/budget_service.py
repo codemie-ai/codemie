@@ -1056,7 +1056,7 @@ class BudgetService:
                 _budget_assignment_cache.pop((user_id, category.value), None)
                 try:
                     await provider.assign_user_budget(
-                        user_email=db_user.email, budget_category=category, budget_id=budget_id
+                        username=db_user.username, budget_category=category, budget_id=budget_id
                     )
                 except Exception as exc:
                     logger.warning(
@@ -1069,10 +1069,10 @@ class BudgetService:
                 try:
                     if default_budget_id:
                         await provider.assign_user_budget(
-                            user_email=db_user.email, budget_category=category, budget_id=default_budget_id
+                            username=db_user.username, budget_category=category, budget_id=default_budget_id
                         )
                     else:
-                        await provider.clear_user_budget(user_email=db_user.email, budget_category=category)
+                        await provider.clear_user_budget(username=db_user.username, budget_category=category)
                 except Exception as exc:
                     logger.warning(
                         f"Failed to reassign default budget for user {user_id!r} category {category.value!r}: {exc}"
@@ -1141,16 +1141,16 @@ class BudgetService:
                 try:
                     if budget_id is not None:
                         await provider.assign_user_budget(
-                            user_email=db_user.email, budget_category=category, budget_id=budget_id
+                            username=db_user.username, budget_category=category, budget_id=budget_id
                         )
                     else:
                         default_budget_id = self._default_budget_id_for_category(category)
                         if default_budget_id:
                             await provider.assign_user_budget(
-                                user_email=db_user.email, budget_category=category, budget_id=default_budget_id
+                                username=db_user.username, budget_category=category, budget_id=default_budget_id
                             )
                         else:
-                            await provider.clear_user_budget(user_email=db_user.email, budget_category=category)
+                            await provider.clear_user_budget(username=db_user.username, budget_category=category)
                 except Exception as exc:
                     logger.warning(
                         f"Failed to propagate bulk budget update for user {user_id!r} "
@@ -1199,7 +1199,7 @@ class BudgetService:
 
             try:
                 await provider.reset_user_budget_spending(
-                    user_email=db_user.email, budget_category=category, budget_id=budget_id
+                    username=db_user.username, budget_category=category, budget_id=budget_id
                 )
             except Exception as exc:
                 logger.warning(

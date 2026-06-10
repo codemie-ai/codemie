@@ -248,7 +248,7 @@ class BudgetEnforcementProvider(Protocol):
     async def assign_user_budget(
         self,
         *,
-        user_email: str,
+        username: str,
         budget_category: BudgetCategory,
         budget_id: str,
     ) -> None: ...
@@ -256,14 +256,14 @@ class BudgetEnforcementProvider(Protocol):
     async def clear_user_budget(
         self,
         *,
-        user_email: str,
+        username: str,
         budget_category: BudgetCategory,
     ) -> None: ...
 
     async def reset_user_budget_spending(
         self,
         *,
-        user_email: str,
+        username: str,
         budget_category: BudgetCategory,
         budget_id: str,
     ) -> None: ...
@@ -276,7 +276,7 @@ class BudgetEnforcementProvider(Protocol):
         self,
         *,
         user_id: str,
-        user_email: str,
+        username: str,
     ) -> None: ...
 
     # ── Project budget methods ───────────────────────────────────────────

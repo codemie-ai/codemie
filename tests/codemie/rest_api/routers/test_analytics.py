@@ -2091,7 +2091,7 @@ class TestGetUserKeySpending:
         target_db = MagicMock()
         target_db.id = "target-id"
         target_db.email = "target@example.com"
-        target_db.username = None
+        target_db.username = "target_user"
 
         mock_user.is_admin = True
 

@@ -53,20 +53,20 @@ async def test_noop_budget_provider_accepts_all_protocol_arguments(monkeypatch):
 
     await provider.delete_global_budget(budget_id="global-budget")
     await provider.assign_user_budget(
-        user_email="user@example.com",
+        username="user@example.com",
         budget_category=BudgetCategory.CLI,
         budget_id="global-budget",
     )
     await provider.clear_user_budget(
-        user_email="user@example.com",
+        username="user@example.com",
         budget_category=BudgetCategory.CLI,
     )
     await provider.reset_user_budget_spending(
-        user_email="user@example.com",
+        username="user@example.com",
         budget_category=BudgetCategory.CLI,
         budget_id="global-budget",
     )
-    await provider.provision_global_user(user_id="user-1", user_email="user@example.com")
+    await provider.provision_global_user(user_id="user-1", username="user@example.com")
     await provider.delete_project_budget(budget_state=project_state, project_name="proj-a")
     await provider.delete_member_allocation(allocation=SimpleNamespace(id="alloc-1"))
 
@@ -85,6 +85,43 @@ async def test_noop_budget_provider_accepts_all_protocol_arguments(monkeypatch):
     assert await provider.collect_member_budget_spend_for_refs({"ref-1"}) == []
     assert await provider.collect_personal_spend() == []
     assert await provider.get_project_budget_state_by_ref(provider_budget_ref="ref-1") is None
+
+
+@pytest.mark.asyncio
+async def test_noop_provider_accepts_username_kwarg_for_assign():
+    from codemie.service.budget.provider_registry import NoopBudgetProvider
+    from codemie.service.budget.budget_enums import BudgetCategory
+
+    provider = NoopBudgetProvider()
+    # Should not raise TypeError about unexpected keyword argument
+    await provider.assign_user_budget(
+        username="john_doe",
+        budget_category=BudgetCategory.CLI,
+        budget_id="budget-1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_noop_provider_accepts_username_kwarg_for_clear():
+    from codemie.service.budget.provider_registry import NoopBudgetProvider
+    from codemie.service.budget.budget_enums import BudgetCategory
+
+    provider = NoopBudgetProvider()
+    await provider.clear_user_budget(
+        username="john_doe",
+        budget_category=BudgetCategory.PLATFORM,
+    )
+
+
+@pytest.mark.asyncio
+async def test_noop_provider_accepts_username_kwarg_for_provision():
+    from codemie.service.budget.provider_registry import NoopBudgetProvider
+
+    provider = NoopBudgetProvider()
+    await provider.provision_global_user(
+        user_id="uid-1",
+        username="john_doe",
+    )
 
 
 def test_register_budget_enforcement_provider_overrides_noop(monkeypatch):

@@ -681,7 +681,7 @@ async def test_load_bulk_budget_users_raises_when_any_user_missing():
 @pytest.mark.asyncio
 async def test_propagate_bulk_budget_assignments_calls_assign_and_clear():
     service = _make_service()
-    db_users = {"user-1": SimpleNamespace(email="user1@example.com")}
+    db_users = {"user-1": SimpleNamespace(username="john_doe")}
     assignments = {
         BudgetCategory.CLI: "cli-budget",
         BudgetCategory.PLATFORM: None,
@@ -700,12 +700,12 @@ async def test_propagate_bulk_budget_assignments_calls_assign_and_clear():
         await service._propagate_bulk_budget_assignments(db_users, assignments)
 
     mock_provider.assign_user_budget.assert_awaited_once_with(
-        user_email="user1@example.com",
+        username="john_doe",
         budget_category=BudgetCategory.CLI,
         budget_id="cli-budget",
     )
     mock_provider.clear_user_budget.assert_awaited_once_with(
-        user_email="user1@example.com",
+        username="john_doe",
         budget_category=BudgetCategory.PLATFORM,
     )
 
@@ -713,7 +713,7 @@ async def test_propagate_bulk_budget_assignments_calls_assign_and_clear():
 @pytest.mark.asyncio
 async def test_propagate_bulk_budget_assignments_continues_when_clear_fails():
     service = _make_service()
-    db_users = {"user-1": SimpleNamespace(email="user1@example.com")}
+    db_users = {"user-1": SimpleNamespace(username="john_doe")}
     assignments = {BudgetCategory.PLATFORM: None}
 
     with (
@@ -737,7 +737,7 @@ async def test_propagate_bulk_budget_assignments_reassigns_default_when_none_and
     from codemie.configs.budget_config import PredefinedBudgetConfig
 
     service = _make_service()
-    db_users = {"user-1": SimpleNamespace(email="user1@example.com")}
+    db_users = {"user-1": SimpleNamespace(username="john_doe")}
     assignments = {BudgetCategory.PLATFORM: None}
     predefined = PredefinedBudgetConfig(
         budget_id="platform-default",
@@ -761,7 +761,7 @@ async def test_propagate_bulk_budget_assignments_reassigns_default_when_none_and
         await service._propagate_bulk_budget_assignments(db_users, assignments)
 
     mock_provider.assign_user_budget.assert_awaited_once_with(
-        user_email="user1@example.com",
+        username="john_doe",
         budget_category=BudgetCategory.PLATFORM,
         budget_id="platform-default",
     )
