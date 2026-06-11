@@ -444,6 +444,7 @@ class ToolkitService:
         mcp_server_args_preprocessor: Optional[callable] = None,
         smart_tool_selection_enabled: Optional[bool] = False,
         request_headers: dict[str, str] | None = None,
+        owner_user_id: str | None = None,
     ) -> list[BaseTool]:
         """Main method to collect all tools for an assistant.
 
@@ -493,7 +494,7 @@ class ToolkitService:
         tools.extend(
             cls.get_core_tools(
                 assistant_toolkits=selected_toolkits,
-                user_id=user.id,
+                user_id=owner_user_id or user.id,
                 project_name=assistant.project,
                 assistant_id=assistant.id,
                 tools_config=request.tools_config if request else None,
@@ -554,6 +555,7 @@ class ToolkitService:
                 mcp_server_args_preprocessor=mcp_server_args_preprocessor,
                 request_headers=request_headers,
                 augmented_toolkits=selected_toolkits,
+                owner_user_id=owner_user_id,
             )
         )
 
@@ -825,6 +827,7 @@ class ToolkitService:
         mcp_server_args_preprocessor: Optional[callable],
         request_headers: dict[str, str] | None = None,
         augmented_toolkits: Optional[list] = None,
+        owner_user_id: str | None = None,
     ) -> list[BaseTool]:
         """Traditional tool collection flow (used when tool search is disabled or fails).
 
@@ -866,7 +869,7 @@ class ToolkitService:
             tools.extend(
                 MCPToolkitService.get_mcp_server_tools(
                     cls._merge_skill_mcp_servers(assistant),
-                    user.id if user else None,
+                    owner_user_id or (user.id if user else None),
                     assistant.project,
                     request.conversation_id,
                     request.tools_config,

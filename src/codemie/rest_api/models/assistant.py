@@ -142,7 +142,7 @@ class ToolKitDetails(ToolKit):
     settings: Optional[SettingsBase] = None
     is_external: Optional[bool] = False
 
-    def get_tool_configs(self):
+    def get_tool_configs(self) -> list[ToolConfig]:
         return [
             ToolConfig(name=tool.settings.credential_type, integration_id=tool.settings.id)
             for tool in self.tools
@@ -373,13 +373,14 @@ class InlineCredential(BaseModel):
     tool: Optional[str] = None
     label: Optional[str] = None
     mcp_server: Optional[str] = None
+    integration_alias: str | None = Field(default=None, description="Integration alias reference")
     credential_type: str
-    env_vars: Optional[List[str]] = Field(None, description="List of environment variable names")
-    sub_assistant_name: Optional[str] = Field(
-        None, description="Name of the sub-assistant this credential belongs to (if applicable)"
+    env_vars: list[str] | None = Field(default=None, description="List of environment variable names")
+    sub_assistant_name: str | None = Field(
+        default=None, description="Name of the sub-assistant this credential belongs to (if applicable)"
     )
-    sub_assistant_id: Optional[str] = Field(
-        None, description="ID of the sub-assistant this credential belongs to (if applicable)"
+    sub_assistant_id: str | None = Field(
+        default=None, description="ID of the sub-assistant this credential belongs to (if applicable)"
     )
 
 

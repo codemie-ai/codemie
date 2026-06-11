@@ -57,6 +57,7 @@ def basic_workflow_config():
     config.assistants = []
     config.tools = []
     config.enable_summarization_node = False
+    config.is_global = False
     return config
 
 

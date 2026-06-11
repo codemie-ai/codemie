@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 from fastapi import Request, status
 from starlette.responses import StreamingResponse
@@ -50,7 +50,7 @@ consumer_executor = ThreadPoolExecutor(
 )
 
 
-def raise_access_denied(action: str):
+def raise_access_denied(action: str) -> NoReturn:
     raise ExtendedHTTPException(
         code=status.HTTP_401_UNAUTHORIZED,
         message="Access denied",
@@ -60,7 +60,7 @@ def raise_access_denied(action: str):
     )
 
 
-def raise_forbidden(action: str):
+def raise_forbidden(action: str) -> NoReturn:
     raise ExtendedHTTPException(
         code=status.HTTP_403_FORBIDDEN,
         message="Access denied",
@@ -70,7 +70,7 @@ def raise_forbidden(action: str):
     )
 
 
-def raise_unprocessable_entity(action: str, resource: str, exc: Exception):
+def raise_unprocessable_entity(action: str, resource: str, exc: Exception) -> NoReturn:
     raise ExtendedHTTPException(
         code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         message=f"Failed to {action} a {resource}",
@@ -79,7 +79,7 @@ def raise_unprocessable_entity(action: str, resource: str, exc: Exception):
     ) from exc
 
 
-def raise_not_found(resource_id: str, resource_type: str):
+def raise_not_found(resource_id: str, resource_type: str) -> NoReturn:
     raise ExtendedHTTPException(
         code=status.HTTP_404_NOT_FOUND,
         message=f"{resource_type} not found",

@@ -41,6 +41,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.monitoring.workflow_monitoring_service import WorkflowMonitoringService
 from codemie.service.guardrail.guardrail_service import GuardrailService
 from codemie.service.workflow_config import WorkflowConfigIndexService
+from codemie.service.workflow_config.workflow_config_index_service import WorkflowScope
 from codemie.service.workflow_service import WorkflowService
 from codemie.workflows.custom_node_info import CustomNodeInfoService
 from codemie.core.workflow_models import CustomNodeSchemaResponse
@@ -86,11 +87,13 @@ def _strip_workflow_mcp_servers(workflow_config: WorkflowConfig) -> None:
 )
 def get_workflow_users(
     user: User = Depends(authenticate),
+    scope: WorkflowScope | None = None,
 ) -> list[CreatedByUser]:
     """
-    Returns list of users who created workflows
+    Returns list of users who created workflows.
+    Pass scope=marketplace to return only creators of globally published workflows.
     """
-    result = WorkflowConfigIndexService.get_users(user=user)
+    result = WorkflowConfigIndexService.get_users(user=user, scope=scope)
     return result
 
 
@@ -107,6 +110,7 @@ def get_workflows(
     per_page: int = 10,
     filters: Optional[str] = None,
     minimal_response: bool = True,
+    scope: WorkflowScope | None = None,
 ):
     try:
         parsed_filters = json.loads(filters) if filters else None
@@ -125,6 +129,7 @@ def get_workflows(
         per_page=per_page,
         filters=parsed_filters,
         minimal_response=minimal_response,
+        scope=scope,
     )
 
 

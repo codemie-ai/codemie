@@ -45,11 +45,14 @@ class VirtualAssistantService:
         user: User,
         project_name: str,
         execution_id: str,
-    ):
+        owner_user_id: str | None = None,
+    ) -> "VirtualAssistant":
         """Create from WorkflowAssistant config"""
         return cls.create(
             name=config.name,
-            toolkits=ToolsService.get_toolkits_from_assistant_tool_config(config, user, project_name),
+            toolkits=ToolsService.get_toolkits_from_assistant_tool_config(
+                config, user, project_name, owner_user_id=owner_user_id
+            ),
             project=project_name,
             execution_id=execution_id,
             datasource_ids=config.datasource_ids,
@@ -58,8 +61,17 @@ class VirtualAssistantService:
         )
 
     @classmethod
-    def create_from_tool_config(cls, tool_config: WorkflowTool, user: User, project_name: str, execution_id: str):
-        toolkit_details = ToolsService.get_toolkit_from_workflow_tool_config(tool_config, user, project_name)
+    def create_from_tool_config(
+        cls,
+        tool_config: WorkflowTool,
+        user: User,
+        project_name: str,
+        execution_id: str,
+        owner_user_id: str | None = None,
+    ) -> "VirtualAssistant":
+        toolkit_details = ToolsService.get_toolkit_from_workflow_tool_config(
+            tool_config, user, project_name, owner_user_id=owner_user_id
+        )
 
         return VirtualAssistantService.create(
             toolkits=[toolkit_details], project=project_name, execution_id=execution_id

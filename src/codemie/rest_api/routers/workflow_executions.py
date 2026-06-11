@@ -50,6 +50,7 @@ from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.request_utils import extract_custom_headers
 from codemie.service.aws_bedrock.bedrock_flow_service import BedrockFlowService
+from codemie.service.workflow_config.workflow_marketplace_service import WorkflowMarketplaceService
 from codemie.service.request_summary_manager import request_summary_manager as request_summary_manager_module
 from codemie.service.agent_workspace_service import AgentWorkspaceService
 from codemie.service.workflow_execution import (
@@ -71,6 +72,8 @@ router = APIRouter(
 )
 
 WORKFLOW_STARTED_BG_MSG = "Workflow has been started"
+
+_marketplace_service = WorkflowMarketplaceService()
 
 
 def _validate_workflow_access(workflow_id: str, user: User):
@@ -282,6 +285,13 @@ def create_workflow_execution(
 
     # Set cache control flag for this request
     set_disable_prompt_cache(request.disable_cache or False)
+
+    if workflow_config.is_global:
+        background_tasks.add_task(
+            _marketplace_service.track_usage,
+            str(workflow_config.id),
+            str(user.id),
+        )
 
     try:
         # Handle streaming mode - create ThreadedGenerator and pass to executor

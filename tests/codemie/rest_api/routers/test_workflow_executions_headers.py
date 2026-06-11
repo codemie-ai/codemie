@@ -91,6 +91,7 @@ class TestWorkflowExecutionsRouterWithHeaders:
 
         raw_request = Mock(spec=Request)
         user = Mock(spec=User)
+        user.id = 'user-123'
         user.as_user_model.return_value = Mock()
         background_tasks = Mock(spec=BackgroundTasks)
 
@@ -167,6 +168,7 @@ class TestWorkflowExecutionsRouterWithHeaders:
 
         raw_request = Mock(spec=Request)
         user = Mock(spec=User)
+        user.id = 'user-123'
         user.as_user_model.return_value = Mock()
         background_tasks = Mock(spec=BackgroundTasks)
 
@@ -252,6 +254,7 @@ class TestWorkflowExecutionsRouterWithHeaders:
         }
 
         user = Mock(spec=User)
+        user.id = 'user-123'
         user.as_user_model.return_value = Mock()
         background_tasks = Mock(spec=BackgroundTasks)
 

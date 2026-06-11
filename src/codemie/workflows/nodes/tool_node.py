@@ -133,7 +133,7 @@ class ToolNode(BaseNode[AgentMessages]):
             dynamic_vals_context = get_context_store_from_state_schema(state_schema)
             mcp_tools = MCPToolkitService.get_mcp_server_tools(
                 mcp_servers=[mcp_server],
-                user_id=self.user.id,
+                user_id=self._owner_user_id or self.user.id,
                 project_name=self.workflow_config.project,
                 conversation_id=self.execution_id,
                 mcp_server_args_preprocessor=lambda arg, initial_dynamic_vals: process_string(
@@ -191,11 +191,14 @@ class ToolNode(BaseNode[AgentMessages]):
         Note:
             The temporary virtual assistant is automatically deleted after execution.
         """
+        owner_user_id = self._owner_user_id
+
         assistant = VirtualAssistantService.create_from_tool_config(
             tool_config=self._tool_config,
             user=self.user,
             project_name=self.workflow_config.project,
             execution_id=self.execution_id,
+            owner_user_id=owner_user_id,
         )
         toolkits = ToolkitService.get_toolkit_methods(request_headers=self.request_headers)
 
@@ -209,7 +212,12 @@ class ToolNode(BaseNode[AgentMessages]):
         )
 
         tool = ToolsService.find_tool_from_config(
-            self._tool_config, toolkits, assistant, self.user, self.workflow_config.project
+            self._tool_config,
+            toolkits,
+            assistant,
+            self.user,
+            self.workflow_config.project,
+            owner_user_id=owner_user_id,
         )
 
         # Direct assignment is required here: CodeExecutorTool.__init__ ignores the `config`
@@ -356,6 +364,17 @@ class ToolNode(BaseNode[AgentMessages]):
             raise ValueError(TOOL_NOT_FOUND_ERROR.format(tool_id=self.workflow_state.tool_id))
 
         return tool_config
+
+    @cached_property
+    def _owner_user_id(self) -> str | None:
+        """Resolve the workflow owner's user ID for credential lookup.
+
+        For global workflows, tool credentials are stored under the creator's user ID.
+        Non-global workflows use the executing user's credentials directly.
+        """
+        if self.workflow_config.is_global and self.workflow_config.created_by:
+            return self.workflow_config.created_by.user_id or None
+        return None
 
     def _get_tool_args(self, tool_args: dict, state_schema: Type[StateSchemaType]) -> dict:
         """Extract and process tool arguments from workflow state and input messages.

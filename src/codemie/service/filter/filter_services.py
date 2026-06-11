@@ -71,6 +71,15 @@ class WorkflowFilter(BaseFilterData):
             "field_name": SearchFields.SHARED.value,
             "filter_compose_func": fltr_func.compose_term_filter,
         },
+        "categories": {
+            "field_name": SearchFields.CATEGORIES.value,
+            "filter_compose_func": fltr_func.compose_json_array_filter,
+        },
+        "is_global": {
+            "field_name": "is_global",
+            "filter_compose_func": fltr_func.compose_term_filter,
+            "is_bool": True,
+        },
     }
 
 

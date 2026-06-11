@@ -523,6 +523,7 @@ def initialize_assistant(
     request_headers: dict[str, str] | None = None,
     trace_context=None,  # For workflow trace unification
     disable_cache: Optional[bool] = False,
+    owner_user_id: str | None = None,
 ) -> AIToolsAgent:
     return AssistantService.build_agent_for_workflow(
         workflow_assistant=workflow_assistant,
@@ -540,6 +541,7 @@ def initialize_assistant(
         request_headers=request_headers,
         trace_context=trace_context,  # Pass through to service
         disable_cache=disable_cache,
+        owner_user_id=owner_user_id,
     )
 
 

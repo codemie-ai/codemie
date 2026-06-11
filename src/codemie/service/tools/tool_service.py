@@ -33,21 +33,48 @@ TOOL_NOT_FOUND_ERROR = "Tool *{tool_name}* not found.\nAvailable:\n- {available_
 
 class ToolsService:
     @classmethod
-    def get_toolkits_from_assistant_tool_config(cls, config: WorkflowAssistant, user: User, project_name: str):
-        return [cls.get_toolkit(tool.name, user, project_name, tool.integration_alias) for tool in config.tools]
+    def get_toolkits_from_assistant_tool_config(
+        cls,
+        config: WorkflowAssistant,
+        user: User,
+        project_name: str,
+        owner_user_id: str | None = None,
+    ) -> list[ToolKitDetails]:
+        return [
+            cls.get_toolkit(tool.name, user, project_name, tool.integration_alias, owner_user_id=owner_user_id)
+            for tool in config.tools
+        ]
 
     @classmethod
-    def get_toolkit_from_workflow_tool_config(cls, tool_config: WorkflowTool, user: User, project_name: str):
-        return cls.get_toolkit(tool_config.tool, user, project_name, tool_config.integration_alias)
+    def get_toolkit_from_workflow_tool_config(
+        cls,
+        tool_config: WorkflowTool,
+        user: User,
+        project_name: str,
+        owner_user_id: str | None = None,
+    ) -> ToolKitDetails:
+        return cls.get_toolkit(
+            tool_config.tool, user, project_name, tool_config.integration_alias, owner_user_id=owner_user_id
+        )
 
     @classmethod
-    def get_toolkit(cls, tool_name: str, user: User, project_name: str, integration_alias: Optional[str] = None):
+    def get_toolkit(
+        cls,
+        tool_name: str,
+        user: User,
+        project_name: str,
+        integration_alias: Optional[str] = None,
+        owner_user_id: str | None = None,
+    ) -> ToolKitDetails:
         toolkit = cls.find_toolkit_for_tool(user=user, tool_name=tool_name)
         tool_attrs = {"name": tool_name}
         logger.debug(f"get_toolkit. ToolName: {tool_name}. Toolkit: {toolkit}")
         if integration_alias:
             tool_attrs["settings"] = cls.find_setting_for_tool(
-                user=user, project_name=project_name, integration_alias=integration_alias
+                user=user,
+                project_name=project_name,
+                integration_alias=integration_alias,
+                owner_user_id=owner_user_id,
             )
         toolkit_attrs = {**toolkit}
         toolkit_attrs.update({"tools": [ToolDetails(**tool_attrs)]})
@@ -55,15 +82,23 @@ class ToolsService:
 
     @classmethod
     def find_tool_from_config(
-        cls, tool_config: WorkflowTool, toolkits: Dict, assistant: Assistant, user: User, project_name: str
-    ):
-        toolkit = ToolsService.get_toolkit_from_workflow_tool_config(tool_config, user, project_name)
+        cls,
+        tool_config: WorkflowTool,
+        toolkits: Dict,
+        assistant: Assistant,
+        user: User,
+        project_name: str,
+        owner_user_id: str | None = None,
+    ) -> object:
+        toolkit = ToolsService.get_toolkit_from_workflow_tool_config(
+            tool_config, user, project_name, owner_user_id=owner_user_id
+        )
         config = toolkit.get_tool_configs()
         from codemie.service.tools import ToolkitService
 
         tools = ToolkitService.get_core_tools(
             assistant_toolkits=assistant.toolkits,
-            user_id=user.id,
+            user_id=owner_user_id or user.id,
             project_name=assistant.project,
             assistant_id=assistant.id,
             tools_config=toolkit.get_tool_configs(),
@@ -145,15 +180,22 @@ class ToolsService:
         return toolkit_found
 
     @staticmethod
-    def find_setting_for_tool(user: User, project_name: str, integration_alias: str) -> SettingsBase:
-        """Given integration alias, lookup for for setting"""
+    def find_setting_for_tool(
+        user: User,
+        project_name: str,
+        integration_alias: str,
+        owner_user_id: str | None = None,
+    ) -> SettingsBase:
+        """Given integration alias, lookup for setting. Uses owner_user_id when provided (marketplace workflows)."""
         # To prevent circular import error
         from codemie.service.settings.settings import SettingsService
         from codemie.service.settings.base_settings import SearchFields
 
+        lookup_user_id = owner_user_id or user.id
+
         setting = SettingsService.retrieve_setting(
             {
-                SearchFields.USER_ID: user.id,
+                SearchFields.USER_ID: lookup_user_id,
                 SearchFields.PROJECT_NAME: project_name,
                 SearchFields.ALIAS: integration_alias,
             }

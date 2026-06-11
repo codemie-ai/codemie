@@ -70,10 +70,24 @@ def test_workflow_config_index_service_all_for_user(mock_session_class, mock_use
 
     WorkflowConfigIndexService.run(user=mock_user, filter_by_user=False, page=0, per_page=20)
 
-    # Verify complex query for regular user
     actual_query = str(mock_session.exec.call_args[0][0])
-    expected_conditions = "WHERE (workflows.project IN (__[POSTCOMPILE_project_1]) AND workflows.shared OR workflows.project IN (__[POSTCOMPILE_project_2]) OR (workflows.created_by ->> :created_by_1) = :param_1) AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST\n LIMIT :param_2 OFFSET :param_3"
+    expected_conditions = "WHERE workflows.is_global = false AND (workflows.project IN (__[POSTCOMPILE_project_1]) AND workflows.shared OR workflows.project IN (__[POSTCOMPILE_project_2]) OR (workflows.created_by ->> :created_by_1) = :param_1) AND workflows.mode = :mode_1 ORDER BY workflows.update_date DESC NULLS LAST\n LIMIT :param_2 OFFSET :param_3"
     assert actual_query.endswith(expected_conditions)
+
+
+@patch('codemie.service.workflow_config.workflow_config_index_service.Session')
+def test_workflow_config_index_service_marketplace_scope(mock_session_class, mock_user):
+    mock_session = MagicMock()
+    mock_session_class.return_value.__enter__.return_value = mock_session
+    mock_session.exec.return_value.all.return_value = []
+    mock_session.exec.return_value.one.return_value = 0
+
+    WorkflowConfigIndexService.run(user=mock_user, filter_by_user=False, page=0, per_page=20, scope="marketplace")
+
+    actual_query = str(mock_session.exec.call_args[0][0])
+    expected_conditions = "WHERE workflows.mode = :mode_1 AND workflows.is_global = true ORDER BY workflows.update_date DESC NULLS LAST\n LIMIT :param_1 OFFSET :param_2"
+    assert actual_query.endswith(expected_conditions)
+    assert "is_global = false" not in actual_query
 
 
 @patch('codemie.service.workflow_config.workflow_config_index_service.Session')
@@ -183,3 +197,41 @@ def test_get_users_filters_out_empty_names(mock_session_class, mock_admin_user):
 
     # Should filter out None and users with empty names
     assert all(creator and creator.name for creator in result)
+
+
+@patch('codemie.service.workflow_config.workflow_config_index_service.Session')
+def test_get_users_marketplace_scope(mock_session_class, mock_user):
+    """Test get_users() with scope=marketplace returns only creators of globally published workflows"""
+    mock_session = MagicMock()
+    mock_session_class.return_value.__enter__.return_value = mock_session
+
+    mock_creator = MagicMock()
+    mock_creator.user_id = "user1"
+    mock_creator.username = "user1"
+    mock_creator.name = "User One"
+
+    mock_session.exec.return_value.all.return_value = [mock_creator]
+
+    result = WorkflowConfigIndexService.get_users(user=mock_user, scope="marketplace")
+
+    assert len(result) == 1
+    assert result[0].id == "user1"
+
+    actual_query = str(mock_session.exec.call_args[0][0])
+    assert "workflows.is_global = true" in actual_query
+    assert "is_global = false" not in actual_query
+    assert "workflows.project" not in actual_query
+
+
+@patch('codemie.service.workflow_config.workflow_config_index_service.Session')
+def test_get_users_no_scope_excludes_global_for_regular_user(mock_session_class, mock_user):
+    """Test get_users() without scope excludes globally published workflows for regular users"""
+    mock_session = MagicMock()
+    mock_session_class.return_value.__enter__.return_value = mock_session
+    mock_session.exec.return_value.all.return_value = []
+
+    WorkflowConfigIndexService.get_users(user=mock_user)
+
+    actual_query = str(mock_session.exec.call_args[0][0])
+    assert "workflows.is_global = false" in actual_query
+    assert "is_global = true" not in actual_query

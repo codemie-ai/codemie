@@ -60,6 +60,7 @@ from codemie.rest_api.routers import (
     category,
     vendor,
     workflow,
+    workflow_marketplace,
     workflow_executions,
     user_settings,
     project_settings,
@@ -699,6 +700,7 @@ app.include_router(conversation.router)
 app.include_router(conversation_analysis.router)
 app.include_router(user.router)
 app.include_router(workflow.router)
+app.include_router(workflow_marketplace.router)
 app.include_router(workflow_executions.router)
 app.include_router(user_settings.router)
 app.include_router(project_settings.router)

@@ -21,6 +21,10 @@ class ValidationException(ValueError):
     """Raised when request or domain validation fails."""
 
 
+class NotFoundException(Exception):
+    """Raised when a requested resource does not exist."""
+
+
 class ExtendedHTTPException(Exception):
     """
     A custom exception class that extends the built-in Exception class to provide more detailed HTTP error information.

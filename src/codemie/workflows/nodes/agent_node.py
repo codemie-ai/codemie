@@ -232,6 +232,10 @@ class AgentNode(BaseNode[AgentMessages]):
         if provider.is_enabled():
             trace_context = provider.get_workflow_trace_context(self.execution_id)
 
+        owner_user_id: str | None = None
+        if self.workflow_config and self.workflow_config.is_global and self.workflow_config.created_by:
+            owner_user_id = self.workflow_config.created_by.user_id or None
+
         return initialize_assistant(
             workflow_assistant=workflow_assistant,
             workflow_state=self.workflow_state,
@@ -246,6 +250,7 @@ class AgentNode(BaseNode[AgentMessages]):
             request_headers=self.request_headers,
             trace_context=trace_context,  # Pass trace context for nested traces
             disable_cache=self.disable_cache,
+            owner_user_id=owner_user_id,
         )
 
     def get_node_name(self, state_schema: Type[AgentMessages]):

@@ -262,6 +262,7 @@ class UserPreferencesService:
                     shared=w.shared,
                     created_by=w.created_by.model_dump() if w.created_by else None,
                     is_favorited=True,
+                    is_global=w.is_global,
                     user_abilities=[action.value for action in ability.list(w)],
                 )
                 for w in rows

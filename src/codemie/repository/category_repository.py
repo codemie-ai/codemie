@@ -91,6 +91,12 @@ class CategoryRepository:
         ]
 
     @staticmethod
+    def get_by_ids(ids: list[str]) -> list[Category]:
+        """Return Category objects whose IDs are in the given list."""
+        with Session(Category.get_engine()) as session:
+            return list(session.exec(select(Category).where(Category.id.in_(ids))).all())  # type: ignore[attr-defined]
+
+    @staticmethod
     def query(page: int = 0, per_page: int = 10) -> Dict[str, Any]:
         """
         Query categories with assistant counts, supporting pagination.

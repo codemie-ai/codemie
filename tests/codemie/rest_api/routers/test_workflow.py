@@ -189,7 +189,7 @@ async def test_list_workflows(mock_index_workflows, projects, request_header):
     assert response.json()['pagination'] == {"page": 1, "pages": 1, "total": 1, "per_page": 20}
 
     mock_index_workflows.assert_called_once_with(
-        user=user, filter_by_user=True, page=2, per_page=20, filters=None, minimal_response=True
+        user=user, filter_by_user=True, page=2, per_page=20, filters=None, minimal_response=True, scope=None
     )
 
     async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
@@ -694,4 +694,4 @@ async def test_get_workflow_users(mock_get_users, request_header):
     assert response.json()[0]["username"] == "user1"
     assert response.json()[0]["name"] == "User One"
     assert response.json()[1]["id"] == "user2"
-    mock_get_users.assert_called_once_with(user=user)
+    mock_get_users.assert_called_once_with(user=user, scope=None)

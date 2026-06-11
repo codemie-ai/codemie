@@ -12,20 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from math import ceil
-
-from codemie.core.workflow_models.workflow_config import WorkflowConfigBase
-from codemie.rest_api.security.user import User
-from codemie.core.workflow_models import WorkflowConfig, WorkflowMode, WorkflowConfigListResponse
-from codemie.core.ability import Ability
-from typing import Any, Dict, Optional, List
-from codemie.core.workflow_models import WorkflowListResponse
-from codemie.service.filter.filter_services import WorkflowFilter
-from codemie.rest_api.models.assistant import CreatedByUser
-from sqlmodel import select, or_, and_, Session, func
-from sqlalchemy.orm import defer
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from enum import StrEnum
+from math import ceil
+from typing import Any, Dict, List, Optional
+
+from sqlalchemy.orm import defer
+from sqlmodel import Session, and_, func, or_, select
+
+from codemie.core.ability import Ability
+from codemie.core.workflow_models import WorkflowConfig, WorkflowConfigListResponse, WorkflowListResponse, WorkflowMode
+from codemie.core.workflow_models.workflow_config import WorkflowConfigBase
+from codemie.rest_api.models.assistant import CreatedByUser
+from codemie.rest_api.security.user import User
+from codemie.service.filter.filter_services import WorkflowFilter
+
+
+class WorkflowScope(StrEnum):
+    MARKETPLACE = "marketplace"
 
 
 class QueryModifier(ABC):
@@ -44,10 +50,13 @@ class VisibleToUserModifierPostgres(QueryModifier):
             query = query.where(WorkflowConfig.created_by['user_id'] == self.user.id)
         elif not self.user.is_admin:
             query = query.where(
-                or_(
-                    and_(WorkflowConfig.project.in_(self.user.project_names), WorkflowConfig.shared),
-                    WorkflowConfig.project.in_(self.user.admin_project_names),
-                    WorkflowConfig.created_by['user_id'].astext == self.user.id,
+                and_(
+                    WorkflowConfig.is_global == False,  # noqa: E712
+                    or_(
+                        and_(WorkflowConfig.project.in_(self.user.project_names), WorkflowConfig.shared),
+                        WorkflowConfig.project.in_(self.user.admin_project_names),
+                        WorkflowConfig.created_by['user_id'].astext == self.user.id,
+                    ),
                 )
             )
         return query
@@ -57,8 +66,15 @@ class ExcludeAutonomousWorkflowsModifier(QueryModifier):
     """Filter to exclude autonomous workflows and keep only sequential ones"""
 
     def modify_query(self, query):
-        # Filter out autonomous workflows - keep only sequential workflows
         query = query.where(WorkflowConfig.mode == WorkflowMode.SEQUENTIAL)
+        return query
+
+
+class MarketplaceScopeModifier(QueryModifier):
+    """Filter to only include globally published (marketplace) workflows"""
+
+    def modify_query(self, query):
+        query = query.where(WorkflowConfig.is_global == True)  # noqa: E712
         return query
 
 
@@ -76,15 +92,24 @@ class WorkflowConfigIndexService:
         per_page: int,
         filters: Optional[Dict[str, Any]] = None,
         minimal_response: bool = False,
+        scope: WorkflowScope | None = None,
     ) -> WorkflowListResponse:
+        if scope == WorkflowScope.MARKETPLACE:
+            query_modifiers: list[QueryModifier] = [
+                ExcludeAutonomousWorkflowsModifier(),
+                MarketplaceScopeModifier(),
+            ]
+        else:
+            query_modifiers = [
+                VisibleToUserModifierPostgres(user, filter_by_user),
+                ExcludeAutonomousWorkflowsModifier(),
+            ]
+
         items, total = cls._query_postgres(
             page=page,
             per_page=per_page,
             filters=filters,
-            query_modifiers=[
-                VisibleToUserModifierPostgres(user, filter_by_user),
-                ExcludeAutonomousWorkflowsModifier(),
-            ],
+            query_modifiers=query_modifiers,
             minimal_response=minimal_response,
         )
 
@@ -115,6 +140,9 @@ class WorkflowConfigIndexService:
                         date=entry.date,
                         update_date=entry.update_date,
                         user_abilities=entry.user_abilities,
+                        is_global=entry.is_global,
+                        categories=entry.categories,
+                        unique_users_count=entry.unique_users_count,
                     )
                 )
             items = minimal_items
@@ -138,38 +166,40 @@ class WorkflowConfigIndexService:
         return items
 
     @classmethod
-    def get_users(cls, user: User) -> list[CreatedByUser]:
+    def get_users(cls, user: User, scope: WorkflowScope | None = None) -> list[CreatedByUser]:
         """
-        Get list of users who created workflows
+        Get list of users who created workflows.
 
         Args:
             user: The user making the request
+            scope: Optional scope filter; pass "marketplace" to return only
+                   creators of globally published workflows.
 
         Returns:
             List of unique users who created workflows,
-            excluding None values and users with empty names
+            excluding None values and users with empty names.
         """
         with Session(WorkflowConfig.get_engine()) as session:
-            # Use select expression with distinct to get unique created_by values
             query = select(WorkflowConfig.created_by).distinct()
 
-            # Apply visibility filters (same as regular workflow listing)
-            if not user.is_admin:
+            query = query.where(WorkflowConfig.mode == WorkflowMode.SEQUENTIAL)
+
+            if scope == WorkflowScope.MARKETPLACE:
+                query = query.where(WorkflowConfig.is_global == True)  # noqa: E712
+            elif not user.is_admin:
                 query = query.where(
-                    or_(
-                        and_(WorkflowConfig.project.in_(user.project_names), WorkflowConfig.shared),
-                        WorkflowConfig.project.in_(user.admin_project_names),
-                        WorkflowConfig.created_by['user_id'].astext == user.id,
+                    and_(
+                        WorkflowConfig.is_global == False,  # noqa: E712
+                        or_(
+                            and_(WorkflowConfig.project.in_(user.project_names), WorkflowConfig.shared),
+                            WorkflowConfig.project.in_(user.admin_project_names),
+                            WorkflowConfig.created_by['user_id'].astext == user.id,
+                        ),
                     )
                 )
 
-            # Exclude autonomous workflows
-            query = query.where(WorkflowConfig.mode == WorkflowMode.SEQUENTIAL)
-
-            # Execute the query and get results
             result = session.exec(query).all()
 
-            # Filter out None values and users with empty names, then convert to CreatedByUser
             return [
                 CreatedByUser(id=creator.user_id, username=creator.username, name=creator.name)
                 for creator in result

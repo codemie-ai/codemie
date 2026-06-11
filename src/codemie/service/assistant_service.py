@@ -593,6 +593,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         user: User,
         project_name: str,
         execution_id: str,
+        owner_user_id: str | None = None,
     ) -> Assistant:
         """Load assistant (database or virtual) and configure for workflow execution."""
         try:
@@ -603,7 +604,11 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
                     assistant.version = assistant.version_count if hasattr(assistant, "version_count") else 1
             else:
                 assistant = VirtualAssistantService.create_from_virtual_asst_config(
-                    user=user, config=workflow_assistant, project_name=project_name, execution_id=execution_id
+                    user=user,
+                    config=workflow_assistant,
+                    project_name=project_name,
+                    execution_id=execution_id,
+                    owner_user_id=owner_user_id,
                 )
                 # Virtual assistants already have version set to 1 in VirtualAssistantService.create()
         except (KeyError, NotFoundError):
@@ -691,9 +696,12 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         request_headers: dict[str, str] | None = None,
         trace_context=None,  # For workflow trace unification
         disable_cache: Optional[bool] = False,
+        owner_user_id: str | None = None,
     ):
         # Load and configure assistant for workflow execution
-        assistant = cls._load_and_configure_workflow_assistant(workflow_assistant, user, project_name, execution_id)
+        assistant = cls._load_and_configure_workflow_assistant(
+            workflow_assistant, user, project_name, execution_id, owner_user_id=owner_user_id
+        )
 
         llm_model = assistant.llm_model_type
         is_react = assistant.is_react
@@ -743,6 +751,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
                 mcp_server_args_preprocessor=mcp_server_args_preprocessor,
                 file_objects=file_objects,
                 request_headers=request_headers,
+                owner_user_id=owner_user_id,
             )
         except ToolException as exc:
             raise ValueError(exc)

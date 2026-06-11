@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from langgraph.pregel._retry import RetryPolicy
-from pydantic import BaseModel, ValidationError, computed_field
+from pydantic import BaseModel, Field, ValidationError, computed_field
 
 from codemie.configs import config, logger
 from codemie.core.ability import Owned, Action
@@ -104,6 +104,9 @@ class WorkflowConfigBase(CommonBaseModel, Owned):
     are_tools_migrated: Optional[bool] = None
     bedrock: Optional[BedrockFlowData] = SQLField(default=None, sa_column=Column(PydanticType(BedrockFlowData)))
     meta_config: Optional[str] = SQLField(default=None, sa_column=Column(Text))
+    is_global: bool = SQLField(default=False)
+    categories: list[str] = SQLField(default_factory=list, sa_column=Column(JSONB))
+    unique_users_count: int = SQLField(default=0)
 
     # Custom PostgreSQL indexes
     __table_args__ = (
@@ -133,6 +136,8 @@ class WorkflowConfigBase(CommonBaseModel, Owned):
                 "(bedrock->>'bedrock_flow_alias_id') IS NOT NULL"
             ),
         ),
+        Index("ix_workflows_is_global", "is_global"),
+        Index("ix_workflows_categories", "categories", postgresql_using="gin"),
     )
 
     def __init__(self, **data):
@@ -280,7 +285,9 @@ class WorkflowConfigBase(CommonBaseModel, Owned):
     def is_managed_by(self, user: User):
         return self.project in user.admin_project_names
 
-    def is_shared_with(self, user: User):
+    def is_shared_with(self, user: User) -> bool:
+        if self.is_global:
+            return True
         return self.project in user.project_names and self.shared
 
 
@@ -339,6 +346,9 @@ class WorkflowConfigListResponse(BaseModel):
     date: Optional[datetime] = None
     update_date: Optional[datetime] = None
     user_abilities: Optional[List[Action]] = None
+    is_global: bool = False
+    categories: List[str] = Field(default_factory=list)
+    unique_users_count: int = 0
 
 
 class WorkflowListResponse(BaseModel):

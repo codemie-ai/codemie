@@ -1176,3 +1176,194 @@ def test_tc_tnc_015_no_input_key_uses_root_context_store(
     call_context = mock_process_values.call_args[0][1]
     assert "arg1" in call_context
     assert "other" in call_context
+
+
+@patch("codemie.workflows.nodes.tool_node.VirtualAssistantService")
+@patch("codemie.workflows.nodes.tool_node.ToolkitService")
+@patch("codemie.workflows.nodes.tool_node.ToolsService")
+def test_tc_tnc_016_marketplace_workflow_passes_publisher_owner_user_id(
+    mock_tools_service: MagicMock,
+    mock_toolkit_service: MagicMock,
+    mock_virtual_assistant_service: MagicMock,
+    mock_workflow_execution_service: MagicMock,
+    mock_thought_queue: MagicMock,
+    mock_callbacks: list,
+    mock_user: MagicMock,
+    mock_workflow_config: MagicMock,
+) -> None:
+    """
+    TC_TNC_016: Marketplace workflow (is_global=True) passes publisher's user_id as owner_user_id.
+
+    Both VirtualAssistantService.create_from_tool_config and ToolsService.find_tool_from_config
+    must receive owner_user_id equal to workflow_config.created_by.user_id.
+    """
+    # Arrange
+    mock_workflow_config.is_global = True
+    publisher = Mock()
+    publisher.user_id = "publisher-user-id"
+    mock_workflow_config.created_by = publisher
+
+    mock_assistant = Mock()
+    mock_assistant.id = "assistant-123"
+    mock_virtual_assistant_service.create_from_tool_config.return_value = mock_assistant
+
+    mock_tool = Mock()
+    mock_tool.args_schema = {}
+    mock_tool.execute.return_value = "result"
+    mock_tools_service.find_tool_from_config.return_value = mock_tool
+    mock_toolkit_service.get_toolkit_methods.return_value = []
+
+    state_schema = {CONTEXT_STORE_VARIABLE: {}, MESSAGES_VARIABLE: []}
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    with patch("codemie.workflows.nodes.tool_node.process_values", return_value={}):
+        # Act
+        node._execute_regular_tool(state_schema)
+
+    # Assert — publisher's user_id propagated to both service calls
+    _, create_kwargs = mock_virtual_assistant_service.create_from_tool_config.call_args
+    assert create_kwargs["owner_user_id"] == "publisher-user-id"
+
+    _, find_kwargs = mock_tools_service.find_tool_from_config.call_args
+    assert find_kwargs["owner_user_id"] == "publisher-user-id"
+
+
+@patch("codemie.workflows.nodes.tool_node.VirtualAssistantService")
+@patch("codemie.workflows.nodes.tool_node.ToolkitService")
+@patch("codemie.workflows.nodes.tool_node.ToolsService")
+def test_tc_tnc_017_non_marketplace_workflow_passes_no_owner_user_id(
+    mock_tools_service: MagicMock,
+    mock_toolkit_service: MagicMock,
+    mock_virtual_assistant_service: MagicMock,
+    mock_workflow_execution_service: MagicMock,
+    mock_thought_queue: MagicMock,
+    mock_callbacks: list,
+    mock_user: MagicMock,
+    mock_workflow_config: MagicMock,
+) -> None:
+    """
+    TC_TNC_017: Non-marketplace workflow (is_global=False) passes owner_user_id=None.
+
+    Executor's own credentials must be used, not any publisher credentials.
+    """
+    # Arrange
+    mock_workflow_config.is_global = False
+
+    mock_assistant = Mock()
+    mock_assistant.id = "assistant-123"
+    mock_virtual_assistant_service.create_from_tool_config.return_value = mock_assistant
+
+    mock_tool = Mock()
+    mock_tool.args_schema = {}
+    mock_tool.execute.return_value = "result"
+    mock_tools_service.find_tool_from_config.return_value = mock_tool
+    mock_toolkit_service.get_toolkit_methods.return_value = []
+
+    state_schema = {CONTEXT_STORE_VARIABLE: {}, MESSAGES_VARIABLE: []}
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    with patch("codemie.workflows.nodes.tool_node.process_values", return_value={}):
+        # Act
+        node._execute_regular_tool(state_schema)
+
+    # Assert — None forwarded, no publisher leakage
+    _, create_kwargs = mock_virtual_assistant_service.create_from_tool_config.call_args
+    assert create_kwargs["owner_user_id"] is None
+
+    _, find_kwargs = mock_tools_service.find_tool_from_config.call_args
+    assert find_kwargs["owner_user_id"] is None
+
+
+@patch("codemie.workflows.nodes.tool_node.VirtualAssistantService")
+@patch("codemie.workflows.nodes.tool_node.ToolkitService")
+@patch("codemie.workflows.nodes.tool_node.ToolsService")
+def test_tc_tnc_018_marketplace_workflow_no_created_by_passes_no_owner_user_id(
+    mock_tools_service: MagicMock,
+    mock_toolkit_service: MagicMock,
+    mock_virtual_assistant_service: MagicMock,
+    mock_workflow_execution_service: MagicMock,
+    mock_thought_queue: MagicMock,
+    mock_callbacks: list,
+    mock_user: MagicMock,
+    mock_workflow_config: MagicMock,
+) -> None:
+    """
+    TC_TNC_018: is_global=True but created_by=None passes owner_user_id=None.
+
+    When a marketplace workflow has no creator recorded, fall back safely to None.
+    """
+    # Arrange
+    mock_workflow_config.is_global = True
+    mock_workflow_config.created_by = None
+
+    mock_assistant = Mock()
+    mock_assistant.id = "assistant-123"
+    mock_virtual_assistant_service.create_from_tool_config.return_value = mock_assistant
+
+    mock_tool = Mock()
+    mock_tool.args_schema = {}
+    mock_tool.execute.return_value = "result"
+    mock_tools_service.find_tool_from_config.return_value = mock_tool
+    mock_toolkit_service.get_toolkit_methods.return_value = []
+
+    state_schema = {CONTEXT_STORE_VARIABLE: {}, MESSAGES_VARIABLE: []}
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    with patch("codemie.workflows.nodes.tool_node.process_values", return_value={}):
+        # Act
+        node._execute_regular_tool(state_schema)
+
+    # Assert — None forwarded safely
+    _, create_kwargs = mock_virtual_assistant_service.create_from_tool_config.call_args
+    assert create_kwargs["owner_user_id"] is None
+
+    _, find_kwargs = mock_tools_service.find_tool_from_config.call_args
+    assert find_kwargs["owner_user_id"] is None
