@@ -238,6 +238,116 @@ def test_get_settings_masks_sensitive_fields(mock_get_by_user_id, regular_user_s
     mock_get_by_user_id.assert_called_once()
 
 
+# ---------------------------------------------------------------------------
+# update_settings: clearing sensitive fields
+# ---------------------------------------------------------------------------
+
+
+def _make_aws_setting_with_token():
+    """AWS setting that already has a session token stored."""
+    return Settings(
+        id="aws-setting-id",
+        user_id="user123",
+        project_name="test_project",
+        alias="my-aws",
+        credential_type=CredentialTypes.AWS,
+        credential_values=[
+            CredentialValues(key="aws_access_key_id", value="enc_access_key"),
+            CredentialValues(key="aws_secret_access_key", value="enc_secret_key"),
+            CredentialValues(key="aws_session_token", value="enc_session_token"),
+            CredentialValues(key="region", value="us-east-1"),
+        ],
+        setting_type=SettingType.USER,
+    )
+
+
+def _make_update_request(session_token_value):
+    """SettingRequest that submits the four AWS fields with the given session_token_value."""
+    from codemie.rest_api.models.settings import SettingRequest
+
+    return SettingRequest(
+        project_name="test_project",
+        alias="my-aws",
+        credential_type=CredentialTypes.AWS,
+        credential_values=[
+            CredentialValues(key="aws_access_key_id", value="enc_access_key"),
+            CredentialValues(key="aws_secret_access_key", value="enc_secret_key"),
+            CredentialValues(key="aws_session_token", value=session_token_value),
+            CredentialValues(key="region", value="us-east-1"),
+        ],
+    )
+
+
+@patch.object(SettingsService, '_clear_litellm_user_credentials_cache_if_needed')
+@patch.object(SettingsService, 'check_webhook_unique')
+@patch.object(Settings, 'check_alias_unique')
+@patch.object(SettingsService, '_encrypt_fields', side_effect=lambda creds, **_: creds)
+@patch.object(Settings, 'update')
+@patch.object(Settings, 'get_by_id')
+def test_update_settings_clears_sensitive_field_when_value_is_empty_string(
+    mock_get_by_id, mock_update, mock_encrypt, mock_alias, mock_webhook, mock_cache
+):
+    """Submitting empty string for a sensitive field removes it from stored credentials."""
+    mock_get_by_id.return_value = _make_aws_setting_with_token()
+
+    SettingsService.update_settings(
+        credential_id="aws-setting-id",
+        request=_make_update_request(""),
+        user_id="user123",
+    )
+
+    stored = mock_get_by_id.return_value
+    stored_keys = [c.key for c in stored.credential_values]
+    assert "aws_session_token" not in stored_keys
+
+
+@patch.object(SettingsService, '_clear_litellm_user_credentials_cache_if_needed')
+@patch.object(SettingsService, 'check_webhook_unique')
+@patch.object(Settings, 'check_alias_unique')
+@patch.object(SettingsService, '_encrypt_fields', side_effect=lambda creds, **_: creds)
+@patch.object(Settings, 'update')
+@patch.object(Settings, 'get_by_id')
+def test_update_settings_clears_sensitive_field_when_value_is_none(
+    mock_get_by_id, mock_update, mock_encrypt, mock_alias, mock_webhook, mock_cache
+):
+    """Submitting None for a sensitive field removes it from stored credentials."""
+    mock_get_by_id.return_value = _make_aws_setting_with_token()
+
+    SettingsService.update_settings(
+        credential_id="aws-setting-id",
+        request=_make_update_request(None),
+        user_id="user123",
+    )
+
+    stored = mock_get_by_id.return_value
+    stored_keys = [c.key for c in stored.credential_values]
+    assert "aws_session_token" not in stored_keys
+
+
+@patch.object(SettingsService, '_clear_litellm_user_credentials_cache_if_needed')
+@patch.object(SettingsService, 'check_webhook_unique')
+@patch.object(Settings, 'check_alias_unique')
+@patch.object(SettingsService, '_encrypt_fields', side_effect=lambda creds, **_: creds)
+@patch.object(Settings, 'update')
+@patch.object(Settings, 'get_by_id')
+def test_update_settings_preserves_existing_sensitive_field_when_masked(
+    mock_get_by_id, mock_update, mock_encrypt, mock_alias, mock_webhook, mock_cache
+):
+    """Submitting the masked sentinel preserves the existing encrypted value (no regression)."""
+    mock_get_by_id.return_value = _make_aws_setting_with_token()
+
+    SettingsService.update_settings(
+        credential_id="aws-setting-id",
+        request=_make_update_request("**********"),
+        user_id="user123",
+    )
+
+    stored = mock_get_by_id.return_value
+    token_cred = next((c for c in stored.credential_values if c.key == "aws_session_token"), None)
+    assert token_cred is not None
+    assert token_cred.value == "enc_session_token"
+
+
 @patch.object(Settings, 'get_by_user_id')
 def test_get_settings_with_empty_result(mock_get_by_user_id):
     """Test that empty list is handled correctly."""
@@ -465,3 +575,104 @@ def test_get_azure_devops_creds_uses_setting_id_when_provided(mock_retrieve):
     call_args = mock_retrieve.call_args[0]
     assert len(call_args) >= 3
     assert call_args[2] == "ado-id"
+
+
+# ---------------------------------------------------------------------------
+# hide_sensitive_fields: empty values must not be masked
+# ---------------------------------------------------------------------------
+
+
+def test_hide_sensitive_fields_does_not_mask_empty_string():
+    """An empty-string sensitive field must not be replaced with the masked sentinel."""
+    setting = Settings(
+        id="test-id",
+        user_id="user123",
+        project_name="test_project",
+        alias="test",
+        credential_type=CredentialTypes.AWS,
+        credential_values=[
+            CredentialValues(key="aws_session_token", value=""),
+        ],
+        setting_type=SettingType.USER,
+    )
+
+    result = SettingsService.hide_sensitive_fields(setting)
+
+    token_cred = next(c for c in result.credential_values if c.key == "aws_session_token")
+    assert token_cred.value == ""
+
+
+# ---------------------------------------------------------------------------
+# _filter_empty_sensitive_fields: unit tests for the extracted helper
+# ---------------------------------------------------------------------------
+
+
+def test_filter_empty_sensitive_fields_removes_blank_sensitive_value():
+    """Blank sensitive value is stripped from the list."""
+    creds = [
+        CredentialValues(key="aws_session_token", value=""),
+        CredentialValues(key="region", value="us-east-1"),
+    ]
+    result = SettingsService._filter_empty_sensitive_fields(creds)
+    keys = [c.key for c in result]
+    assert "aws_session_token" not in keys
+    assert "region" in keys
+
+
+def test_filter_empty_sensitive_fields_removes_whitespace_only_sensitive_value():
+    """Whitespace-only sensitive value is stripped."""
+    creds = [CredentialValues(key="aws_session_token", value="   ")]
+    result = SettingsService._filter_empty_sensitive_fields(creds)
+    assert result == []
+
+
+def test_filter_empty_sensitive_fields_removes_none_sensitive_value():
+    """None sensitive value is stripped."""
+    creds = [CredentialValues(key="aws_session_token", value=None)]
+    result = SettingsService._filter_empty_sensitive_fields(creds)
+    assert result == []
+
+
+def test_filter_empty_sensitive_fields_preserves_non_sensitive_blank():
+    """Blank value for a non-sensitive key is kept as-is."""
+    creds = [CredentialValues(key="region", value="")]
+    result = SettingsService._filter_empty_sensitive_fields(creds)
+    assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# create_setting: empty sensitive field must not be stored
+# ---------------------------------------------------------------------------
+
+
+@patch("codemie.service.settings.settings.ensure_application_exists")
+@patch.object(SettingsService, "_clear_litellm_user_credentials_cache_if_needed")
+@patch.object(SettingsService, "check_webhook_unique")
+@patch.object(Settings, "check_alias_unique")
+@patch.object(SettingsService, "_encrypt_fields", side_effect=lambda creds, **_: creds)
+@patch("codemie.service.settings.settings.Settings.save")
+def test_create_setting_does_not_store_empty_sensitive_field(
+    mock_save, mock_encrypt, mock_alias, mock_webhook, mock_cache, mock_ensure_app
+):
+    """create_setting must not persist a sensitive field submitted with an empty value."""
+    from codemie.rest_api.models.settings import SettingRequest
+
+    mock_save.return_value = MagicMock()
+
+    request = SettingRequest(
+        project_name="test_project",
+        alias="my-aws",
+        credential_type=CredentialTypes.AWS,
+        credential_values=[
+            CredentialValues(key="aws_access_key_id", value="AKID"),
+            CredentialValues(key="aws_secret_access_key", value="SECRET"),
+            CredentialValues(key="aws_session_token", value=""),
+            CredentialValues(key="region", value="us-east-1"),
+        ],
+    )
+
+    SettingsService.create_setting(user_id="user123", request=request)
+
+    stored_creds = mock_encrypt.call_args[0][0]
+    stored_keys = [c.key for c in stored_creds]
+    assert "aws_session_token" not in stored_keys

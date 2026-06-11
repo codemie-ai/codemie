@@ -77,10 +77,21 @@ class BaseSettingsService:
         return credential_values
 
     @classmethod
+    def _filter_empty_sensitive_fields(cls, credential_values: List[CredentialValues]) -> List[CredentialValues]:
+        """Remove sensitive credentials whose value is blank so they are treated as deleted."""
+        return [
+            c
+            for c in credential_values
+            if not (c.key in cls.LIST_OF_SENSITIVE_FIELDS and not (c.value and str(c.value).strip()))
+        ]
+
+    @classmethod
     def hide_sensitive_fields(cls, data: SettingsBase, force_all: bool = False):
         for cred in data.credential_values:
-            if (force_all or cred.key in cls.LIST_OF_SENSITIVE_FIELDS) and not any(
-                cred.value == as_is for as_is in PASSTHROUGH_PHRASES
+            if (
+                (force_all or cred.key in cls.LIST_OF_SENSITIVE_FIELDS)
+                and cred.value
+                and not any(cred.value == as_is for as_is in PASSTHROUGH_PHRASES)
             ):
                 cred.value = cls.MASKED_VALUE
         return data

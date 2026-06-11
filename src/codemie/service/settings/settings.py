@@ -365,6 +365,7 @@ class SettingsService(BaseSettingsService):
         cls.check_webhook_unique(request)
 
         prepared_creds = cls._prepare_cred_values(request.credential_type, request.credential_values)
+        prepared_creds = cls._filter_empty_sensitive_fields(prepared_creds)
 
         # --- Set setting_hash for PLUGIN ---
         setting_hash = None
@@ -437,6 +438,8 @@ class SettingsService(BaseSettingsService):
         user_setting = Settings.get_by_id(id_=credential_id)
 
         prepared_creds = cls._prepare_cred_values(request.credential_type, request.credential_values)
+
+        prepared_creds = cls._filter_empty_sensitive_fields(prepared_creds)
 
         # Remove credentials that are no longer in the prepared credentials
         prepared_cred_keys = [cred.key for cred in prepared_creds]
