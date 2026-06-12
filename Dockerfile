@@ -110,7 +110,8 @@ RUN apt-get update && \
     git=1:2.47.3-0+deb13u1 \
     procps=2:4.0.4-9 \
     libsqlite3-0=3.46.1-7+deb13u1 \
-    openssl=3.5.6-1~deb13u1 \
+    # Security (EPMCDME-12750): pin >=3.5.6-1~deb13u2 to fix CVE-2026-45447 (HIGH, OpenSSL)
+    openssl=3.5.6-1~deb13u2 \
     pandoc \
     texlive-latex-base \
     texlive-latex-extra \
@@ -119,10 +120,14 @@ RUN apt-get update && \
     apt-get purge -y linux-libc-dev && \
     # TODO: Remove once python:3.12.12-slim ships with libcap2 >= 1:2.75-10+deb13u1 (CVE-2026-4878)
     #       and libsystemd0/libudev1 >= 257.13-1~deb13u1 (CVE-2026-29111)
+    # Security (EPMCDME-12749): pin >=3.5.6-1~deb13u2 to fix CVE-2026-31789,CVE-2026-28387,CVE-2026-28388,CVE-2026-28389,CVE-2026-28390,CVE-2026-45447 (CRITICAL/HIGH, libssl3t64)
+    # Security (EPMCDME-12750): pin >=3.5.6-1~deb13u2 to fix CVE-2026-31789,CVE-2026-28387,CVE-2026-28388,CVE-2026-28389,CVE-2026-28390 (CRITICAL/HIGH, openssl-provider-legacy)
     apt-get install -y --no-install-recommends --only-upgrade \
         "libcap2=1:2.75-10+deb13u1+b1" \
         "libsystemd0=257.13-1~deb13u1" \
-        "libudev1=257.13-1~deb13u1" && \
+        "libudev1=257.13-1~deb13u1" \
+        "libssl3t64=3.5.6-1~deb13u2" \
+        "openssl-provider-legacy=3.5.6-1~deb13u2" && \
     rm -rf /var/lib/apt/lists/*
 
 # Prevent writing files into critical directories
