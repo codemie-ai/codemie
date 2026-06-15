@@ -12,12 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
+import hmac as _hmac
 import secrets
+import time
+import uuid as _uuid
 
 from fastapi import Depends, Request, status
 from fastapi.security import APIKeyHeader
 
-from codemie.configs import config as _app_config
 from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.idp.local import USER_ID_HEADER, LocalIdp
@@ -36,7 +39,7 @@ BIND_KEY_HEADER = "X-Bind-Key"
 user_id_header = APIKeyHeader(name=USER_ID_HEADER, auto_error=False, scheme_name=USER_ID_HEADER)
 bind_key_header = APIKeyHeader(name=BIND_KEY_HEADER, auto_error=False, scheme_name=BIND_KEY_HEADER)
 
-__bind_key: str = _app_config.INTERNAL_BIND_KEY if _app_config.INTERNAL_BIND_KEY else secrets.token_hex(32)
+__bind_key: str = secrets.token_hex(32)
 
 
 def _create_auth_error(details: str) -> ExtendedHTTPException:
@@ -54,6 +57,35 @@ def _create_auth_error(details: str) -> ExtendedHTTPException:
 
 def get_bind_key() -> str:
     return __bind_key
+
+
+def _make_canonical(nonce: str, timestamp: str, user_id: str) -> bytes:
+    return f"{nonce}\n{timestamp}\n{user_id}".encode()
+
+
+def sign_internal_request(user_id: str) -> dict[str, str]:
+    """Build signed headers for outbound loopback calls. Called by actors."""
+    nonce = str(_uuid.uuid4())
+    ts = str(int(time.time()))
+    sig = _hmac.new(__bind_key.encode(), _make_canonical(nonce, ts, user_id), hashlib.sha256).hexdigest()
+    return {
+        BIND_KEY_HEADER: sig,
+        "X-Bind-Nonce": nonce,
+        "X-Bind-Timestamp": ts,
+        USER_ID_HEADER: user_id,
+    }
+
+
+def _verify_internal_request(sig: str, nonce: str, timestamp: str, user_id: str) -> None:
+    try:
+        ts_int = int(timestamp)
+    except (ValueError, TypeError):
+        raise _create_auth_error("Invalid internal request timestamp.")
+    if abs(time.time() - ts_int) > 30:
+        raise _create_auth_error("Internal request timestamp expired.")
+    expected = _hmac.new(__bind_key.encode(), _make_canonical(nonce, str(ts_int), user_id), hashlib.sha256).hexdigest()
+    if not _hmac.compare_digest(sig, expected):
+        raise _create_auth_error("Invalid internal service signature.")
 
 
 async def authenticate(
@@ -79,11 +111,11 @@ async def authenticate(
     try:
         if bind_key is not None:
             # Internal service-to-service call (e.g. trigger actors calling loopback API)
-            if bind_key != get_bind_key():
-                raise _create_auth_error("Invalid internal service credentials.")
-            if not internal_user_id:
-                raise _create_auth_error("Missing user-id header for internal service authentication.")
-            # Valid bind key — authenticate using the user-id header via LocalIdp
+            nonce = request.headers.get("X-Bind-Nonce", "")
+            timestamp = request.headers.get("X-Bind-Timestamp", "")
+            if not internal_user_id or not nonce or not timestamp:
+                raise _create_auth_error("Missing required headers for internal auth.")
+            _verify_internal_request(bind_key, nonce, timestamp, internal_user_id)
             user = await LocalIdp().authenticate(request)
         else:
             # Standard external authentication flow

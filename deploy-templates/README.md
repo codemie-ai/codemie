@@ -106,7 +106,7 @@ A Helm chart for AI/Run API
 | readinessProbe.timeoutSeconds | int | `1` | Number of seconds after which the probe times out |
 | replicaCount | int | `1` | The number of AI/Run API pods to run |
 | resources | object | `{"limits":{"cpu":2,"memory":"2048Mi"},"requests":{"cpu":"100m","memory":"1024Mi"}}` | Resource limits and requests for the AI/Run API pods |
-| security.processAuthSecret.create | bool | `true` |  |
+| security.processAuthSecret.create | bool | `false` |  |
 | security.processAuthSecret.field | string | `""` |  |
 | security.processAuthSecret.name | string | `""` |  |
 | securityContext | object | `{}` | AI/Run API container-level security context |

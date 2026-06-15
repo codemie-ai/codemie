@@ -207,9 +207,9 @@ features:
 
 security:
   processAuthSecret:
-    create: true  # whether generate random secret, the secret must present in namespace if disabled. Has no effect if argoRollout enabled
-    name: ""  # the secret name to use, defaults to codemie-process-auth
-    field: ""  # the field name in secret, defaults to internal_bind_key
+    create: false  # no longer needed — HMAC key is pod-startup ephemeral
+    name: ""
+    field: ""
 
 serviceAccount:
   # -- Specifies whether a service account should be created

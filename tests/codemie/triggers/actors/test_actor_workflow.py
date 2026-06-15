@@ -27,12 +27,17 @@ JOB_ID = "test_job_id"
 WORKFLOW_ID = "test_workflow_id"
 URL = f"{BASE_API_URL}/v1/workflows/{WORKFLOW_ID}/executions"
 
-_MOCK_BIND_KEY = 'test-bind-key'
+_MOCK_SIGN_HEADERS = {
+    'X-Bind-Key': 'mock-sig',
+    'X-Bind-Nonce': 'mock-nonce',
+    'X-Bind-Timestamp': '1000000000',
+    'user-id': USER_ID,
+}
 
 
 @pytest.fixture
 def mock_bind_key():
-    with patch('codemie.triggers.actors.workflow.get_bind_key', return_value=_MOCK_BIND_KEY):
+    with patch('codemie.triggers.actors.workflow.sign_internal_request', return_value=_MOCK_SIGN_HEADERS):
         yield
 
 
@@ -76,6 +81,9 @@ async def test_invoke_workflow_success(httpx_mock, mock_bind_key, mock_logger) -
     assert len(requests_made) == 1
     assert str(requests_made[0].url) == URL
     assert requests_made[0].headers['user-id'] == USER_ID
+    assert requests_made[0].headers['X-Bind-Key'] == 'mock-sig'
+    assert requests_made[0].headers['X-Bind-Nonce'] == 'mock-nonce'
+    assert requests_made[0].headers['X-Bind-Timestamp'] == '1000000000'
     assert json.loads(requests_made[0].content)['user_input'] == 'Test Task'
     assert mock_logger.info.call_args_list == expected_calls
 

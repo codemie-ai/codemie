@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import time
+import uuid
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.authentication import (
@@ -21,6 +23,8 @@ from codemie.rest_api.security.authentication import (
     admin_access_only,
     admin_or_maintainer_access_only,
     get_bind_key,
+    sign_internal_request,
+    _verify_internal_request,
     maintainer_access_only,
     application_access_check,
     kb_access_check,
@@ -139,6 +143,105 @@ def test_get_bind_key_returns_non_empty_string():
 
     assert isinstance(bind_key, str)
     assert bind_key
+
+
+def test_sign_internal_request_returns_all_required_headers():
+    result = sign_internal_request("user-123")
+
+    assert "X-Bind-Key" in result
+    assert "X-Bind-Nonce" in result
+    assert "X-Bind-Timestamp" in result
+    assert "user-id" in result
+    assert result["user-id"] == "user-123"
+
+
+def test_sign_internal_request_nonce_is_uuid():
+    result = sign_internal_request("user-123")
+
+    uuid.UUID(result["X-Bind-Nonce"])  # raises if not valid UUID
+
+
+def test_sign_internal_request_timestamp_within_one_second():
+    before = int(time.time())
+    result = sign_internal_request("user-123")
+    after = int(time.time())
+
+    ts = int(result["X-Bind-Timestamp"])
+    assert before <= ts <= after + 1
+
+
+def test_verify_internal_request_valid_signature():
+    headers = sign_internal_request("user-abc")
+
+    _verify_internal_request(
+        sig=headers["X-Bind-Key"],
+        nonce=headers["X-Bind-Nonce"],
+        timestamp=headers["X-Bind-Timestamp"],
+        user_id="user-abc",
+    )
+
+
+def test_verify_internal_request_expired_timestamp():
+    headers = sign_internal_request("user-abc")
+    old_ts = str(int(time.time()) - 60)
+
+    with pytest.raises(ExtendedHTTPException) as exc:
+        _verify_internal_request(
+            sig=headers["X-Bind-Key"],
+            nonce=headers["X-Bind-Nonce"],
+            timestamp=old_ts,
+            user_id="user-abc",
+        )
+    assert exc.value.code == 401
+
+
+def test_verify_internal_request_tampered_user_id():
+    headers = sign_internal_request("user-abc")
+
+    with pytest.raises(ExtendedHTTPException) as exc:
+        _verify_internal_request(
+            sig=headers["X-Bind-Key"],
+            nonce=headers["X-Bind-Nonce"],
+            timestamp=headers["X-Bind-Timestamp"],
+            user_id="user-ATTACKER",
+        )
+    assert exc.value.code == 401
+
+
+def test_verify_internal_request_invalid_timestamp_string():
+    headers = sign_internal_request("user-abc")
+
+    with pytest.raises(ExtendedHTTPException) as exc:
+        _verify_internal_request(
+            sig=headers["X-Bind-Key"],
+            nonce=headers["X-Bind-Nonce"],
+            timestamp="not-a-number",
+            user_id="user-abc",
+        )
+    assert exc.value.code == 401
+
+
+@pytest.mark.anyio
+@patch.object(config, 'ENV', 'local')
+async def test_authenticate_with_valid_hmac_signature(mocker):
+    user_id = "test-user-hmac"
+    headers = sign_internal_request(user_id)
+
+    header_map = {
+        "X-Bind-Key": headers["X-Bind-Key"],
+        "X-Bind-Nonce": headers["X-Bind-Nonce"],
+        "X-Bind-Timestamp": headers["X-Bind-Timestamp"],
+        "user-id": user_id,
+    }
+    mock_request = MagicMock()
+    mock_request.headers.get = lambda key, default="": header_map.get(key, default)
+    mock_request.state = MagicMock()
+
+    mock_user = User(id=user_id, username=user_id, name=user_id)
+    with patch.object(LocalIdp, 'authenticate', new_callable=AsyncMock, return_value=mock_user):
+        user = await authenticate(mock_request, internal_user_id=user_id, bind_key=headers["X-Bind-Key"])
+
+    assert user.id == user_id
 
 
 @pytest.mark.anyio

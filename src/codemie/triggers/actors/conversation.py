@@ -16,8 +16,7 @@ import httpx
 
 from codemie.configs import logger
 from codemie.core.models import UpdateConversationRequest
-from codemie.rest_api.security.authentication import BIND_KEY_HEADER, get_bind_key
-from codemie.rest_api.security.user import USER_ID_HEADER
+from codemie.rest_api.security.authentication import sign_internal_request
 from codemie.triggers.config import BASE_API_URL
 
 CONTENT_TYPE_JSON = 'application/json'
@@ -29,8 +28,7 @@ async def create_conversation(
     """Create conversation."""
     headers = {
         'Content-Type': CONTENT_TYPE_JSON,
-        USER_ID_HEADER: user_id,
-        BIND_KEY_HEADER: get_bind_key(),
+        **sign_internal_request(user_id),
     }
     data = {
         'initial_assistant_id': assistant_id,
@@ -69,8 +67,7 @@ async def update_conversation(
     """Update conversation."""
     headers = {
         'Content-Type': CONTENT_TYPE_JSON,
-        USER_ID_HEADER: user_id,
-        BIND_KEY_HEADER: get_bind_key(),
+        **sign_internal_request(user_id),
     }
     data = update_request.model_dump()
 
@@ -96,8 +93,7 @@ async def delete_conversation(conversation_id: str, user_id: str, job_id: str, u
     """Delete conversation."""
     headers = {
         'Content-Type': CONTENT_TYPE_JSON,
-        USER_ID_HEADER: user_id,
-        BIND_KEY_HEADER: get_bind_key(),
+        **sign_internal_request(user_id),
     }
 
     logger.info(

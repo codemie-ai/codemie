@@ -18,8 +18,7 @@ from typing import Optional
 import httpx
 
 from codemie.configs import logger
-from codemie.rest_api.security.authentication import BIND_KEY_HEADER, get_bind_key
-from codemie.rest_api.security.user import USER_ID_HEADER
+from codemie.rest_api.security.authentication import sign_internal_request
 from codemie.triggers.actors.conversation import create_conversation, delete_conversation
 from codemie.triggers.config import BASE_API_URL
 
@@ -35,8 +34,7 @@ async def invoke_assistant(
     """Invoke assistant."""
     headers = {
         'Content-Type': 'application/json',
-        USER_ID_HEADER: user_id,
-        BIND_KEY_HEADER: get_bind_key(),
+        **sign_internal_request(user_id),
     }
     created_conversation_id = await create_conversation(
         assistant_id=assistant_id,

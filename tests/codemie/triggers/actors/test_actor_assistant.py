@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock
 
 from codemie.triggers.actors.assistant import invoke_assistant
 
-_MOCK_BIND_KEY = 'test-bind-key'
 _ASSISTANT_URL = 'http://mockserver:8080'
 _ASSISTANT_ID = 'assistant-id'
 _USER_ID = 'user-id'
@@ -26,10 +25,17 @@ _JOB_ID = 'job-id'
 _CONVERSATION_ID = 'conversation-id'
 _POST_URL = f'{_ASSISTANT_URL}/v1/assistants/{_ASSISTANT_ID}/model'
 
+_MOCK_SIGN_HEADERS = {
+    'X-Bind-Key': 'mock-sig',
+    'X-Bind-Nonce': 'mock-nonce',
+    'X-Bind-Timestamp': '1000000000',
+    'user-id': _USER_ID,
+}
+
 
 @pytest.mark.asyncio
 async def test_invoke_assistant_success(httpx_mock, mocker):
-    mocker.patch('codemie.triggers.actors.assistant.get_bind_key', return_value=_MOCK_BIND_KEY)
+    mocker.patch('codemie.triggers.actors.assistant.sign_internal_request', return_value=_MOCK_SIGN_HEADERS)
     mocker.patch(
         'codemie.triggers.actors.assistant.create_conversation',
         new_callable=AsyncMock,
@@ -49,7 +55,9 @@ async def test_invoke_assistant_success(httpx_mock, mocker):
     assert len(requests_made) == 1
     assert str(requests_made[0].url) == _POST_URL
     assert requests_made[0].headers['user-id'] == _USER_ID
-    assert requests_made[0].headers['X-Bind-Key'] == _MOCK_BIND_KEY
+    assert requests_made[0].headers['X-Bind-Key'] == 'mock-sig'
+    assert requests_made[0].headers['X-Bind-Nonce'] == 'mock-nonce'
+    assert requests_made[0].headers['X-Bind-Timestamp'] == '1000000000'
     assert json.loads(requests_made[0].content) == {
         'text': 'Do a task',
         'content_raw': '<p>Do a task</p>',
@@ -60,7 +68,7 @@ async def test_invoke_assistant_success(httpx_mock, mocker):
 
 @pytest.mark.asyncio
 async def test_invoke_assistant_uses_scheduler_prefix(httpx_mock, mocker):
-    mocker.patch('codemie.triggers.actors.assistant.get_bind_key', return_value=_MOCK_BIND_KEY)
+    mocker.patch('codemie.triggers.actors.assistant.sign_internal_request', return_value=_MOCK_SIGN_HEADERS)
     mock_create = mocker.patch(
         'codemie.triggers.actors.assistant.create_conversation',
         new_callable=AsyncMock,
@@ -88,7 +96,7 @@ async def test_invoke_assistant_uses_scheduler_prefix(httpx_mock, mocker):
 
 @pytest.mark.asyncio
 async def test_invoke_assistant_post_request_failure(httpx_mock, mocker):
-    mocker.patch('codemie.triggers.actors.assistant.get_bind_key', return_value=_MOCK_BIND_KEY)
+    mocker.patch('codemie.triggers.actors.assistant.sign_internal_request', return_value=_MOCK_SIGN_HEADERS)
     mocker.patch(
         'codemie.triggers.actors.assistant.create_conversation',
         new_callable=AsyncMock,
@@ -110,7 +118,7 @@ async def test_invoke_assistant_post_request_failure(httpx_mock, mocker):
 
 @pytest.mark.asyncio
 async def test_invoke_assistant_failure_no_cleanup_when_conversation_not_created(httpx_mock, mocker):
-    mocker.patch('codemie.triggers.actors.assistant.get_bind_key', return_value=_MOCK_BIND_KEY)
+    mocker.patch('codemie.triggers.actors.assistant.sign_internal_request', return_value=_MOCK_SIGN_HEADERS)
     mocker.patch(
         'codemie.triggers.actors.assistant.create_conversation',
         new_callable=AsyncMock,
