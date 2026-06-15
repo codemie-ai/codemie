@@ -428,6 +428,13 @@ def _exchange_callback_code(
                 http_client=http_client,
             )
     except MCPAuthTokenExchangeError as exc:
+        cause = exc.__cause__
+        cause_status = getattr(getattr(cause, "response", None), "status_code", None)
+        logger.warning(
+            "MCP OAuth2 callback token exchange failed for "
+            f"auth_config_id={auth_config_id} server_name={server_name}: "
+            f"{exc} (cause={type(cause).__name__ if cause else None} status={cause_status})"
+        )
         raise _build_trusted_callback_error(
             _CALLBACK_RUNTIME_ERROR_MESSAGE,
             auth_config_id=auth_config_id,
@@ -477,9 +484,18 @@ def build_oauth2_callback_response(
             error_uri=error_uri,
         )
     except CallbackPageError as exc:
+        logger.warning(
+            "MCP OAuth2 callback failed: "
+            f"bridge_error_code={exc.bridge_error_code} "
+            f"auth_config_id={exc.auth_config_id} "
+            f"server_name={exc.server_name}: {exc.message}"
+        )
         return _build_error_callback_response(exc)
     except ExtendedHTTPException as exc:
-        logger.warning(f"MCP OAuth2 callback bridge failed with HTTP exception: {exc.message}")
+        logger.warning(
+            "MCP OAuth2 callback bridge failed with HTTP exception: "
+            f"code={exc.code} {exc.message} details={exc.details}"
+        )
         return _build_error_callback_response(CallbackPageError(_CALLBACK_CONFIG_ERROR_MESSAGE))
     except Exception as exc:
         logger.exception(f"Unexpected MCP OAuth2 callback failure: {exc}")
@@ -496,6 +512,11 @@ def _build_oauth2_callback_response(
 ) -> HTMLResponse:
     if error:
         auth_config_id, server_name = _try_get_trusted_callback_context_from_state(state)
+        logger.warning(
+            "MCP OAuth2 callback received identity provider error: "
+            f"error={error!r} auth_config_id={auth_config_id} server_name={server_name} "
+            f"error_description={error_description!r} error_uri={error_uri!r}"
+        )
         return _build_error_callback_response(
             CallbackPageError(
                 _CALLBACK_RECOVERY_TEXT,
@@ -516,6 +537,10 @@ def _build_oauth2_callback_response(
     _validate_callback_state_age(state_payload)
     pkce_state = _deps._consume_callback_pkce_state(pkce_store, state, state_payload.auth_config_id)
     _validate_callback_state_matches_pkce(state_payload, pkce_state)
+    logger.info(
+        "MCP OAuth2 callback verified; resolving token exchange for "
+        f"auth_config_id={state_payload.auth_config_id} user_id={state_payload.user_id}"
+    )
     recovery_flow_id = _resolve_callback_recovery_flow_id(state_payload, pkce_state)
     if recovery_flow_id is not None:
         return _build_recovery_oauth2_callback_response(
