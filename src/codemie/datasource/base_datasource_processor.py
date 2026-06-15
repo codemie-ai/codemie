@@ -17,6 +17,7 @@ import json
 import logging
 import time
 from abc import ABC, abstractmethod
+from datetime import datetime
 from concurrent.futures import as_completed, ThreadPoolExecutor
 from typing import List, Optional
 from collections import defaultdict
@@ -210,6 +211,7 @@ class BaseDatasourceProcessor(ABC):
                     f"ExecutionTimeSeconds={execution_time}"
                 )
                 self._validate_indexing_result()
+                self.index.last_reindex_triggered_at = datetime.now()
                 self.index.complete_progress(self.index.current_state)
 
                 # Create scheduler if cron_expression was provided
@@ -232,6 +234,7 @@ class BaseDatasourceProcessor(ABC):
                     f"Stopping, index was blocked by guardrail for datasource {self.index.repo_name}", exc_info=True
                 )
                 self.client.indices.delete(index=self._index_name, ignore=[400, 404])
+                self.index.last_reindex_triggered_at = datetime.now()
                 self.index.set_error(str(ex))
                 self._on_process_end()
                 self._notify_callbacks_on_error(ex)
@@ -247,6 +250,7 @@ class BaseDatasourceProcessor(ABC):
                 logger.error(f"Error occurred while indexing repo {self.index.repo_name}", exc_info=True)
                 if not self._load_stats_persisted:
                     self._persist_load_stats()
+                self.index.last_reindex_triggered_at = datetime.now()
                 self.index.set_error(str(ex))
                 self._on_process_end()
                 self._notify_callbacks_on_error(ex)
