@@ -64,5 +64,21 @@
         }
       ]
     }
-  }
+  },
+  "codemieAssistants": [
+    {
+      "id": "f14e801a-1e6c-4d2a-ab70-f59795c11a1b",
+      "name": "BriAnnA",
+      "slug": "brianna",
+      "description": "Business Analyst Assistant - expert to work with Jira. Used for creating/getting/managing Jira tickets in EPM-CDME project (Epics, Stories, Tasks, and Bugs). Main role is to analyze requirements from the request, clarify additional questions if necessary, generate requirements with the description structure defined in the prompt and additional details from the request, and create tickets in EPM-CDME project Jira. The Assistant uses Generic Jira tool for Jira tickets creation.",
+      "project": "epm-cdme",
+      "registeredAt": "2026-06-16T12:45:16.811Z",
+      "registrationMode": "skill",
+      "agentTargets": [
+        "claude",
+        "codex",
+        "gemini"
+      ]
+    }
+  ]
 }

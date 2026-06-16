@@ -58,9 +58,9 @@ bmad/*
 /.mcp.json*
 /CLAUDE.local.md
 /.superpowers/
-/docs/superpowers/
 /docs/stories
 /.codex/config.toml
 /opencode.json
 /run_claude.sh
 .ai-run/runs
+/.codegraph/
