@@ -853,3 +853,52 @@ class TestGetUsersUniqueDaily:
         assert columns[1]["id"] == "unique_users"
         assert columns[1]["label"] == "Unique Users"
         assert columns[1]["type"] == "number"
+
+
+class TestGetUsersPlatformSpendingMetrics:
+    """Verify get_users_platform_spending uses PLATFORM_METRICS (9 items, no CLI)."""
+
+    @pytest.mark.asyncio
+    async def test_platform_spending_passes_platform_metrics_to_pipeline(self, handler):
+        mock_result = {
+            "data": {"rows": [], "columns": []},
+            "totals": {},
+            "pagination": {"page": 0, "per_page": 20, "total_count": 0, "has_more": False},
+        }
+        with (
+            patch.object(
+                handler._pipeline, "execute_tabular_query", new=AsyncMock(return_value=mock_result)
+            ) as mock_exec,
+            patch(
+                "codemie.service.analytics.handlers.user_handler.UserIdentityResolver.resolve_rows",
+                new=AsyncMock(),
+            ),
+        ):
+            await handler.get_users_platform_spending()
+
+        _, kwargs = mock_exec.call_args
+        metric_filters = kwargs.get("metric_filters", mock_exec.call_args[0][3] if mock_exec.call_args[0] else [])
+        expected = set(MetricName.to_list_from_group(MetricName.PLATFORM_METRICS))
+        assert set(metric_filters) == expected
+
+    @pytest.mark.asyncio
+    async def test_platform_spending_excludes_cli_metric(self, handler):
+        mock_result = {
+            "data": {"rows": [], "columns": []},
+            "totals": {},
+            "pagination": {"page": 0, "per_page": 20, "total_count": 0, "has_more": False},
+        }
+        with (
+            patch.object(
+                handler._pipeline, "execute_tabular_query", new=AsyncMock(return_value=mock_result)
+            ) as mock_exec,
+            patch(
+                "codemie.service.analytics.handlers.user_handler.UserIdentityResolver.resolve_rows",
+                new=AsyncMock(),
+            ),
+        ):
+            await handler.get_users_platform_spending()
+
+        _, kwargs = mock_exec.call_args
+        metric_filters = kwargs.get("metric_filters", [])
+        assert MetricName.CLI_LLM_USAGE_TOTAL.value not in metric_filters

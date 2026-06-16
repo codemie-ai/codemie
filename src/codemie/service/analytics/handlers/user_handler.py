@@ -409,11 +409,7 @@ class UserHandler(CLICostAdjustmentMixin):
         """
         logger.info("Requesting users-platform-spending analytics")
 
-        platform_metrics = MetricName.to_list(
-            MetricName.CONVERSATION_ASSISTANT_USAGE,
-            MetricName.WORKFLOW_EXECUTION_TOTAL,
-            MetricName.DATASOURCE_TOKENS_USAGE,
-        )
+        platform_metrics = MetricName.to_list_from_group(MetricName.PLATFORM_METRICS)
 
         def parse_platform(result: dict) -> list[dict]:
             return self._parse_simple_spending_result(result, "user_email")

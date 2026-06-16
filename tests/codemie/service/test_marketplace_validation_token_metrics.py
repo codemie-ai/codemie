@@ -35,7 +35,13 @@ class TestMarketplaceValidationTokensPlatformLlmCost(unittest.TestCase):
         import codemie.service.analytics.handlers.summary_handler as sh_module
 
         source = inspect.getsource(sh_module)
-        self.assertIn("MetricName.MARKETPLACE_ASSISTANT_VALIDATION_TOTAL.value", source)
+        # summary_handler uses PLATFORM_METRICS constant; verify the constant is referenced
+        # and that it includes MARKETPLACE_ASSISTANT_VALIDATION_TOTAL
+        self.assertIn("PLATFORM_METRICS", source)
+        self.assertIn(
+            MetricName.MARKETPLACE_ASSISTANT_VALIDATION_TOTAL,
+            MetricName.PLATFORM_METRICS,
+        )
 
 
 def _make_tokens_usage():

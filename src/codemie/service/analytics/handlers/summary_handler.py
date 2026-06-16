@@ -119,22 +119,10 @@ class SummaryHandler(CLICostAdjustmentMixin):
                         "sum": {"sum": {"field": MONEY_SPENT_FIELD}},
                     },
                 },
-                # Platform LLM cost (conversation + workflow + datasource, matches Kibana formula)
+                # Platform LLM cost — uses shared PLATFORM_METRICS to stay consistent with breakdown widgets.
                 "platform_llm_cost": {
                     "filter": {
-                        "terms": {
-                            METRIC_NAME_KEYWORD_FIELD: [
-                                MetricName.CONVERSATION_ASSISTANT_USAGE.value,
-                                MetricName.WORKFLOW_EXECUTION_TOTAL.value,
-                                MetricName.DATASOURCE_TOKENS_USAGE.value,
-                                MetricName.ASSISTANT_GENERATOR_TOTAL.value,
-                                MetricName.PROMPT_GENERATOR_TOTAL.value,
-                                MetricName.SKILL_GENERATOR_TOTAL.value,
-                                MetricName.WORKFLOW_OUTPUT_CHANGE_TOTAL.value,
-                                MetricName.CODEMIE_TOOLS_USAGE_TOKENS.value,
-                                MetricName.MARKETPLACE_ASSISTANT_VALIDATION_TOTAL.value,
-                            ]
-                        }
+                        "terms": {METRIC_NAME_KEYWORD_FIELD: MetricName.to_list_from_group(MetricName.PLATFORM_METRICS)}
                     },
                     "aggs": {
                         "money_spent": {"sum": {"field": MONEY_SPENT_FIELD}},

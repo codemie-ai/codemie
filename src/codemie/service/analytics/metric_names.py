@@ -165,11 +165,10 @@ MetricName.ACTIVITY_METRICS = [
     MetricName.DATASOURCE_TOKENS_USAGE,
 ]
 
-# Spending metrics - cost-bearing metrics only (excludes CLI session metrics).
-# CLI costs come exclusively from CLI_LLM_USAGE_TOTAL.
-MetricName.SPENDING_METRICS = [
+# Platform metrics - cost-bearing non-CLI metrics (conversation, workflow, datasource, generators, tools).
+# Used by both the summary platform_llm_cost widget and the Platform Spent by User breakdown.
+MetricName.PLATFORM_METRICS = [
     MetricName.CONVERSATION_ASSISTANT_USAGE,
-    MetricName.CLI_LLM_USAGE_TOTAL,  # Token/cost data from LiteLLM proxy (cli_request=true for CLI costs)
     MetricName.WORKFLOW_EXECUTION_TOTAL,
     MetricName.DATASOURCE_TOKENS_USAGE,
     MetricName.ASSISTANT_GENERATOR_TOTAL,
@@ -178,6 +177,11 @@ MetricName.SPENDING_METRICS = [
     MetricName.WORKFLOW_OUTPUT_CHANGE_TOTAL,
     MetricName.CODEMIE_TOOLS_USAGE_TOKENS,
     MetricName.MARKETPLACE_ASSISTANT_VALIDATION_TOTAL,
+]
+
+# Spending metrics - all cost-bearing metrics; PLATFORM_METRICS plus CLI LLM usage.
+MetricName.SPENDING_METRICS = MetricName.PLATFORM_METRICS + [
+    MetricName.CLI_LLM_USAGE_TOTAL,  # Token/cost data from LiteLLM proxy (cli_request=true for CLI costs)
 ]
 
 # CLI-only metrics - used to scope user/project aggregations to CLI documents only,

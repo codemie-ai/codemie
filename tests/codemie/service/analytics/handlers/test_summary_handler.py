@@ -832,3 +832,11 @@ class TestPlatformLLMCostIncludesGeneratorMetrics:
         agg_body = handler._build_summaries_aggregation({"bool": {"filter": []}})
         terms = agg_body["aggs"]["platform_llm_cost"]["filter"]["terms"]["metric_name.keyword"]
         assert MetricName.SKILL_GENERATOR_TOTAL.value in terms
+
+    def test_platform_llm_cost_terms_match_platform_metrics_constant(self, handler):
+        from codemie.service.analytics.metric_names import MetricName
+
+        agg_body = handler._build_summaries_aggregation({"bool": {"filter": []}})
+        terms = set(agg_body["aggs"]["platform_llm_cost"]["filter"]["terms"]["metric_name.keyword"])
+        expected = set(MetricName.to_list_from_group(MetricName.PLATFORM_METRICS))
+        assert terms == expected

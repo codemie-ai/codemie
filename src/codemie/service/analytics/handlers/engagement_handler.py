@@ -299,12 +299,28 @@ class EngagementHandler:
                     "aggs": {
                         "assistants_spent": {
                             "filter": {
-                                "term": {METRIC_NAME_KEYWORD_FIELD: MetricName.CONVERSATION_ASSISTANT_USAGE.value}
+                                "terms": {
+                                    METRIC_NAME_KEYWORD_FIELD: [
+                                        MetricName.CONVERSATION_ASSISTANT_USAGE.value,
+                                        MetricName.ASSISTANT_GENERATOR_TOTAL.value,
+                                        MetricName.PROMPT_GENERATOR_TOTAL.value,
+                                        MetricName.SKILL_GENERATOR_TOTAL.value,
+                                        MetricName.CODEMIE_TOOLS_USAGE_TOKENS.value,
+                                        MetricName.MARKETPLACE_ASSISTANT_VALIDATION_TOTAL.value,
+                                    ]
+                                }
                             },
                             "aggs": {"sum": {"sum": {"field": MONEY_SPENT_FIELD}}},
                         },
                         "workflows_spent": {
-                            "filter": {"term": {METRIC_NAME_KEYWORD_FIELD: MetricName.WORKFLOW_EXECUTION_TOTAL.value}},
+                            "filter": {
+                                "terms": {
+                                    METRIC_NAME_KEYWORD_FIELD: [
+                                        MetricName.WORKFLOW_EXECUTION_TOTAL.value,
+                                        MetricName.WORKFLOW_OUTPUT_CHANGE_TOTAL.value,
+                                    ]
+                                }
+                            },
                             "aggs": {"sum": {"sum": {"field": MONEY_SPENT_FIELD}}},
                         },
                         "datasources_spent": {
