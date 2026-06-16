@@ -98,6 +98,11 @@ class Config(BaseSettings):
     DB_INSERT_BATCH_SIZE: int = 1000  # Rows per INSERT batch (11 columns × 1000 = 11,000 params)
     DB_IN_CLAUSE_BATCH_SIZE: int = 500  # Items per IN clause in complex SELECT queries
 
+    # Cloud IAM authentication for PostgreSQL (replaces static POSTGRES_PASSWORD)
+    PG_IAM_AUTH_PROVIDER: Literal["", "gcp", "aws", "azure"] = ""
+    # AWS RDS: region for auth token generation; falls back to AWS_DEFAULT_REGION when empty
+    PG_AWS_RDS_REGION: str = ""
+
     PROJECT_ROOT: Path = Path(__file__).absolute().parents[1]
     LLM_TEMPLATES_ROOT: Path = Path(__file__).absolute().parents[3] / "config/llms"
     DATASOURCES_CONFIG_DIR: Path = Path(__file__).absolute().parents[3] / "config/datasources"

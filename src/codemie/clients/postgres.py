@@ -27,6 +27,58 @@ from urllib.parse import quote_plus
 from codemie.configs import config
 
 
+def _get_gcp_iam_token() -> str:
+    import google.auth
+    import google.auth.transport.requests
+
+    credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    credentials.refresh(google.auth.transport.requests.Request())
+    return credentials.token
+
+
+def _get_aws_rds_token() -> str:
+    import boto3
+
+    region = config.PG_AWS_RDS_REGION or config.AWS_DEFAULT_REGION
+    client = boto3.client("rds", region_name=region)
+    return client.generate_db_auth_token(
+        DBHostname=config.POSTGRES_HOST,
+        Port=config.POSTGRES_PORT,
+        DBUsername=config.POSTGRES_USER,
+        Region=region,
+    )
+
+
+def _get_azure_iam_token() -> str:
+    from azure.identity import DefaultAzureCredential
+
+    return DefaultAzureCredential().get_token("https://ossrdbms-aad.database.windows.net/.default").token
+
+
+_IAM_TOKEN_PROVIDERS = {
+    "gcp": _get_gcp_iam_token,
+    "aws": _get_aws_rds_token,
+    "azure": _get_azure_iam_token,
+}
+
+
+def _get_iam_token() -> str:
+    provider = config.PG_IAM_AUTH_PROVIDER
+    if provider not in _IAM_TOKEN_PROVIDERS:
+        raise ValueError(f"Unsupported PG_IAM_AUTH_PROVIDER: {provider!r}")
+    return _IAM_TOKEN_PROVIDERS[provider]()
+
+
+def _register_iam_token_event(engine) -> None:
+    from sqlalchemy import event
+
+    target = engine.sync_engine if hasattr(engine, "sync_engine") else engine
+
+    @event.listens_for(target, "do_connect")
+    def _inject_iam_token(dialect, conn_rec, cargs, cparams):
+        cparams["password"] = _get_iam_token()
+
+
 class PostgresClient:
     _engines = {}
     _async_engines = {}
@@ -53,12 +105,16 @@ class PostgresClient:
             return url
 
         user = quote_plus(config.POSTGRES_USER)
-        password = quote_plus(config.POSTGRES_PASSWORD)
         host = config.POSTGRES_HOST
         port = config.POSTGRES_PORT
         database = quote_plus(config.POSTGRES_DB)
-
         driver = "+asyncpg" if async_mode else ""
+
+        if config.PG_IAM_AUTH_PROVIDER:
+            ssl_mode = "ssl" if async_mode else "sslmode"
+            return f"postgresql{driver}://{user}@{host}:{port}/{database}?{ssl_mode}=require"
+
+        password = quote_plus(config.POSTGRES_PASSWORD)
         return f"postgresql{driver}://{user}:{password}@{host}:{port}/{database}"
 
     @classmethod
@@ -76,6 +132,8 @@ class PostgresClient:
                 json_serializer=lambda v: json.dumps(v, default=pydantic_encoder),
                 connect_args={"options": f"-c search_path={config.DEFAULT_DB_SCHEMA},public"},
             )
+            if config.PG_IAM_AUTH_PROVIDER:
+                _register_iam_token_event(cls._engines[pid])
             atexit.register(cls.cleanup_engine)
         return cls._engines[pid]
 
@@ -103,6 +161,8 @@ class PostgresClient:
                 json_serializer=lambda v: json.dumps(v, default=pydantic_encoder),
                 connect_args={"server_settings": {"search_path": f"{config.DEFAULT_DB_SCHEMA},public"}},
             )
+            if config.PG_IAM_AUTH_PROVIDER:
+                _register_iam_token_event(cls._async_engines[pid])
             atexit.register(cls.cleanup_async_engine)
         return cls._async_engines[pid]
 
