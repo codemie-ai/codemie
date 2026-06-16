@@ -49,6 +49,7 @@ from codemie.triggers.actors.datasource import (
 from codemie.triggers.actors.workflow import invoke_workflow
 from codemie.triggers.bindings.cache_manager import CacheManager
 from codemie.triggers.bindings.utils import resolve_trigger_user, validate_assistant, validate_datasource
+from codemie.triggers.trigger_exceptions import DatasourceNotValidated, NotImplementedDatasource
 from codemie.triggers.trigger_models import (
     AzureDevOpsWikiReindexTask,
     AzureDevOpsWorkItemReindexTask,
@@ -232,7 +233,16 @@ class Cron:
     def __actualize_jobs(self, settings):
         """Actualize triggers"""
         for setting in settings:
-            valid_setting = self.__valid_setting(setting)
+            try:
+                valid_setting = self.__valid_setting(setting)
+            except Exception as exc:
+                logger.error(
+                    "Unexpected error validating setting id=%s, skipping: %s",
+                    setting.id,
+                    exc,
+                    exc_info=True,
+                )
+                continue
             if valid_setting:
                 self.__actualize_cron_job(
                     cron_expression=valid_setting.get("schedule"),
@@ -274,10 +284,9 @@ class Cron:
         """Validate resource based on type and return resource details with caching"""
         cache_key = f"{resource_type}:{resource_id}"
 
-        # Check cache first
-        cached_result = self.cache.get(cache_key)
-        if cached_result is not None:
-            return cached_result
+        # Check cache first — use is_valid so a cached None also short-circuits
+        if self.cache.is_valid(cache_key):
+            return self.cache.get(cache_key)
 
         # Cache miss - perform validation
         result: dict | None = None
@@ -289,7 +298,15 @@ class Cron:
                 result = {"resource_name": assistant.name, "project_name": "", "index_type": "", "jql": ""}
 
         elif resource_type == "datasource":
-            ds_meta = validate_datasource(resource_id)
+            try:
+                ds_meta = validate_datasource(resource_id)
+            except (DatasourceNotValidated, NotImplementedDatasource) as exc:
+                logger.error(
+                    "Datasource validation error for resource_id=%s: %s",
+                    resource_id,
+                    exc,
+                )
+                ds_meta = None
             if not ds_meta:
                 logger.error(bad_resource_message)
             else:

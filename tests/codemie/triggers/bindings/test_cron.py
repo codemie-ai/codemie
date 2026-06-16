@@ -405,3 +405,84 @@ class TestRunResume:
             cron_watchdog._Cron__run_resume(index_info)
 
         mock_resume.assert_called_once_with(index_info)
+
+
+# ---------------------------------------------------------------------------
+# Tests for __validate_resource exception handling (EPMCDME-12780)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_resource_datasource_not_validated(cron_instance):
+    from codemie.triggers.trigger_exceptions import DatasourceNotValidated
+
+    with patch(
+        "codemie.triggers.bindings.cron.validate_datasource",
+        side_effect=DatasourceNotValidated("missing setting_id"),
+    ):
+        result = cron_instance._Cron__validate_resource("datasource", "ds-bad", "bad resource")
+
+    assert result is None
+
+
+def test_validate_resource_not_implemented_datasource(cron_instance):
+    from codemie.triggers.trigger_exceptions import NotImplementedDatasource
+
+    with patch(
+        "codemie.triggers.bindings.cron.validate_datasource",
+        side_effect=NotImplementedDatasource("unsupported index_type"),
+    ):
+        result = cron_instance._Cron__validate_resource("datasource", "ds-bad-type", "bad resource")
+
+    assert result is None
+
+
+def test_validate_resource_caches_none_skips_second_validation(cron_instance):
+    from codemie.triggers.trigger_exceptions import DatasourceNotValidated
+
+    with patch(
+        "codemie.triggers.bindings.cron.validate_datasource",
+        side_effect=DatasourceNotValidated("bad"),
+    ) as mock_vd:
+        cron_instance._Cron__validate_resource("datasource", "ds-cached", "bad resource")
+        cron_instance._Cron__validate_resource("datasource", "ds-cached", "bad resource")
+
+    mock_vd.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tests for __actualize_jobs per-setting isolation (EPMCDME-12780)
+# ---------------------------------------------------------------------------
+
+
+def test_actualize_jobs_bad_setting_does_not_block_others(cron_instance):
+    good_setting_1 = MagicMock()
+    good_setting_1.id = "s-good-1"
+    bad_setting = MagicMock()
+    bad_setting.id = "s-bad"
+    good_setting_2 = MagicMock()
+    good_setting_2.id = "s-good-2"
+
+    valid_result = {
+        "schedule": "0 8 * * *",
+        "resource_type": "workflow",
+        "resource_id": "wf-123",
+        "is_enabled": True,
+        "prompt": "Do it",
+        "resource_name": "Test",
+        "project_name": "",
+        "index_type": "",
+        "jql": "",
+    }
+
+    def fake_valid_setting(setting):
+        if setting.id == "s-bad":
+            raise RuntimeError("unexpected DB error")
+        return valid_result
+
+    with (
+        patch.object(cron_instance, "_Cron__valid_setting", side_effect=fake_valid_setting),
+        patch.object(cron_instance, "_Cron__actualize_cron_job") as mock_actualize,
+    ):
+        cron_instance._Cron__actualize_jobs([good_setting_1, bad_setting, good_setting_2])
+
+    assert mock_actualize.call_count == 2
