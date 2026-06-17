@@ -202,6 +202,7 @@ class TestApplyVersionToAssistant:
         config.llm_model_type = "gpt-4"
         config.temperature = 0.9
         config.top_p = 0.95
+        config.tools_tokens_size_limit = 5000
         config.context = []
         config.toolkits = []
         config.mcp_servers = []
@@ -218,6 +219,7 @@ class TestApplyVersionToAssistant:
         assert assistant.description == "New"
         assert assistant.system_prompt == "New prompt"
         assert assistant.temperature == 0.9
+        assert assistant.tools_tokens_size_limit == 5000
         assert assistant.custom_metadata == {'new': 'data'}
         assert assistant.conversation_starters == ["Hello"]
 

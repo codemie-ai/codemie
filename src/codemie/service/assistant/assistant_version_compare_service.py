@@ -60,6 +60,7 @@ class AssistantVersionCompareService:
             'image_generation_model': request.image_generation_model,
             'temperature': request.temperature,
             'top_p': request.top_p,
+            'tools_tokens_size_limit': request.tools_tokens_size_limit,
             'context': [ctx.model_dump() if hasattr(ctx, 'model_dump') else ctx for ctx in request.context],
             'toolkits': [tk.model_dump() if hasattr(tk, 'model_dump') else tk for tk in request.toolkits],
             'mcp_servers': [mcp.model_dump() if hasattr(mcp, 'model_dump') else mcp for mcp in request.mcp_servers],

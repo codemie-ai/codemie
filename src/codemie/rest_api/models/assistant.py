@@ -315,6 +315,9 @@ class AssistantRequest(BaseModel):
     slug: Optional[str] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
+    tools_tokens_size_limit: Optional[int] = Field(
+        default=None, gt=0, description="Max token size limit for tool outputs for this assistant"
+    )
     smart_tool_selection_enabled: Optional[bool] = False
     mcp_servers: list[MCPServerDetails] = Field(default_factory=list)
     assistant_ids: list[str] = Field(default_factory=list)
@@ -599,6 +602,7 @@ class AssistantBase(CommonBaseModel, Owned):
     slug: Optional[str] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
+    tools_tokens_size_limit: Optional[int] = None
     smart_tool_selection_enabled: Optional[bool] = False
     context: list[Context] = SQLField(default_factory=list, sa_column=Column(PydanticListType(Context)))
     user_abilities: Optional[list[Action]] = SQLField(default=None, sa_column=Column(JSONB))
@@ -1113,6 +1117,7 @@ class AssistantConfiguration(BaseModelWithSQLSupport, table=True):
     image_generation_model: Optional[str] = None
     temperature: Optional[float] = None
     top_p: Optional[float] = None
+    tools_tokens_size_limit: Optional[int] = None
 
     # Complex configuration (JSONB)
     context: list[Context] = SQLField(default_factory=list, sa_column=Column(PydanticListType(Context)))
@@ -1318,6 +1323,11 @@ class VirtualAssistantChatRequest(BaseModel):
         ge=0.0,
         le=1.0,
         description='Top-p nucleus sampling parameter.',
+    )
+    tools_tokens_size_limit: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description='Max token size limit for tool outputs for this virtual assistant.',
     )
     toolkits: list[ToolKitDetails] = Field(
         default_factory=list,

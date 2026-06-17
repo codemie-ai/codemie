@@ -74,6 +74,44 @@ def test_run_exception_sanitized(mock_tool):
         )
 
 
+def test_run_truncates_output_to_token_limit(mock_tool):
+    """End-to-end: a tool whose output exceeds tokens_size_limit is actually truncated
+    to that many tokens (uses the real tiktoken encoding, no mocks)."""
+    from codemie_tools.base.utils import get_encoding
+
+    large_output = "word " * 500
+    encoding = get_encoding(mock_tool.base_llm_model_name)
+    assert len(encoding.encode(large_output)) > 10  # sanity: there is something to truncate
+
+    mock_tool.throw_truncated_error = False
+    mock_tool.tokens_size_limit = 10
+
+    with patch.object(mock_tool.__class__, 'execute', return_value=large_output):
+        result = mock_tool._run()
+
+    assert "Tool output is truncated." in result
+    truncated_data = result.split("Tool output: ", 1)[1]
+    # the surfaced tool data is cut down to the configured limit
+    assert len(encoding.encode(truncated_data)) <= 10
+    assert len(truncated_data) < len(large_output)
+
+
+def test_run_does_not_truncate_when_within_limit(mock_tool):
+    """A tool whose output fits within tokens_size_limit passes through unchanged."""
+    from codemie_tools.base.utils import get_encoding
+
+    output = "short tool output"
+    encoding = get_encoding(mock_tool.base_llm_model_name)
+
+    mock_tool.throw_truncated_error = False
+    mock_tool.tokens_size_limit = len(encoding.encode(output)) + 50
+
+    with patch.object(mock_tool.__class__, 'execute', return_value=output):
+        result = mock_tool._run()
+
+    assert result == output
+
+
 @patch("codemie_tools.base.codemie_tool.get_encoding")
 def test_output_within_token_limit(mock_encoding, mock_tool):
     """Test case where output is within the token limit."""

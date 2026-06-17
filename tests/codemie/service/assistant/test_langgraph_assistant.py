@@ -95,6 +95,58 @@ class TestLangGraphAgent:
         assert agent.user == agent_config["user"]
         assert agent.llm_model == agent_config["llm_model"]
 
+    def _build_agent_with(self, mock_user, mock_request, tool, assistant):
+        config = {
+            "agent_name": "TestAgent",
+            "description": "Test agent description",
+            "tools": [tool],
+            "request": mock_request,
+            "system_prompt": "You are a test assistant.",
+            "request_uuid": "test_uuid",
+            "user": mock_user,
+            "llm_model": "gpt-3.5-turbo",
+            "assistant": assistant,
+        }
+        with (
+            patch("codemie.agents.langgraph_agent.create_smart_react_agent"),
+            patch("codemie.agents.langgraph_agent.get_llm_by_credentials"),
+        ):
+            return LangGraphAgent(**config)
+
+    def test_configure_tools_applies_assistant_token_limit(self, mock_user, mock_request):
+        """When the assistant sets tools_tokens_size_limit, it overrides per-tool defaults."""
+        tool = MagicMock()
+        tool.name = "tool_with_limit"
+        tool.metadata = {}
+        tool.tokens_size_limit = 999
+
+        assistant = MagicMock()
+        assistant.id = "assistant-1"
+        assistant.project = "test"
+        assistant.tools_tokens_size_limit = 10
+
+        agent = self._build_agent_with(mock_user, mock_request, tool, assistant)
+        agent._configure_tools()
+
+        assert tool.tokens_size_limit == 10
+
+    def test_configure_tools_keeps_default_when_limit_unset(self, mock_user, mock_request):
+        """When the assistant has no limit, the tool keeps its own tokens_size_limit."""
+        tool = MagicMock()
+        tool.name = "tool_with_limit"
+        tool.metadata = {}
+        tool.tokens_size_limit = 999
+
+        assistant = MagicMock()
+        assistant.id = "assistant-1"
+        assistant.project = "test"
+        assistant.tools_tokens_size_limit = None
+
+        agent = self._build_agent_with(mock_user, mock_request, tool, assistant)
+        agent._configure_tools()
+
+        assert tool.tokens_size_limit == 999
+
     @pytest.fixture
     def agent_for_parse_update(self, agent):
         # Patch methods used in __parse_update_type

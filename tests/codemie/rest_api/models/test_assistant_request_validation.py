@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import pytest
+from pydantic import ValidationError
 
 from codemie.rest_api.a2a.types import AgentCard, AgentCapabilities, AgentSkill
 from codemie.rest_api.models.assistant import AssistantRequest, AssistantType
@@ -118,3 +119,34 @@ def test_auto_set_type_from_agent_card():
     assert request.agent_card == agent_card
     assert request.system_prompt == ""
     assert request.description == "Test Agent Description"
+
+
+@pytest.mark.parametrize("value", [None, 1, 100, 30000])
+def test_tools_tokens_size_limit_accepts_none_and_positive_integers(value):
+    request = AssistantRequest(
+        name="Test Assistant",
+        system_prompt="Test System Prompt",
+        llm_model_type="gpt-4",
+        tools_tokens_size_limit=value,
+    )
+    assert request.tools_tokens_size_limit == value
+
+
+def test_tools_tokens_size_limit_defaults_to_none():
+    request = AssistantRequest(
+        name="Test Assistant",
+        system_prompt="Test System Prompt",
+        llm_model_type="gpt-4",
+    )
+    assert request.tools_tokens_size_limit is None
+
+
+@pytest.mark.parametrize("value", [0, -1, -100])
+def test_tools_tokens_size_limit_rejects_non_positive(value):
+    with pytest.raises(ValidationError):
+        AssistantRequest(
+            name="Test Assistant",
+            system_prompt="Test System Prompt",
+            llm_model_type="gpt-4",
+            tools_tokens_size_limit=value,
+        )

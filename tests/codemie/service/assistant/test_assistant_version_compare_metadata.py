@@ -171,6 +171,7 @@ class TestAssistantVersionCompareMetadata:
             'conversation_starters': [],
             'bedrock': None,
             'agent_card': None,
+            'tools_tokens_size_limit': None,
             'custom_metadata': {'key': 'value'},
             'created_date': None,
             'created_by': None,

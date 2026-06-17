@@ -1057,6 +1057,10 @@ class LangGraphAgent(WorkspaceAwareAgent):
             if hasattr(tool, 'throw_truncated_error'):
                 tool.throw_truncated_error = self.throw_truncated_error
 
+            # Assistant-level tool output token limit overrides per-tool defaults (incl. per-MCP-server) when set
+            if self.assistant and self.assistant.tools_tokens_size_limit and hasattr(tool, 'tokens_size_limit'):
+                tool.tokens_size_limit = self.assistant.tools_tokens_size_limit
+
             tool.handle_tool_error = self.handle_tool_error
 
     def _get_inputs(self, input_text: str = "", history=None):

@@ -245,6 +245,29 @@ class TestPrepareForComparison:
 
         assert AssistantVersionCompareService.has_configuration_changes("assistant-123", request) is True
 
+    @patch('codemie.service.assistant.assistant_version_compare_service.AssistantConfiguration')
+    def test_has_configuration_changes_detects_tools_tokens_size_limit(self, mock_config_class, mock_config_v1):
+        mock_config_class.get_current_version.return_value = mock_config_v1
+
+        request = AssistantRequest(
+            name="Assistant",
+            description=mock_config_v1.description,
+            system_prompt=mock_config_v1.system_prompt,
+            llm_model_type=mock_config_v1.llm_model_type,
+            enable_image_generation=mock_config_v1.enable_image_generation,
+            image_generation_model=mock_config_v1.image_generation_model,
+            temperature=mock_config_v1.temperature,
+            top_p=mock_config_v1.top_p,
+            tools_tokens_size_limit=500,
+            context=[],
+            toolkits=[],
+            mcp_servers=[],
+            assistant_ids=[],
+            conversation_starters=[],
+        )
+
+        assert AssistantVersionCompareService.has_configuration_changes("assistant-123", request) is True
+
 
 class TestGenerateSummary:
     """Tests for _generate_summary method"""
