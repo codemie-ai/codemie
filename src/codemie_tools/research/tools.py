@@ -51,6 +51,8 @@ class WebScrapperTool(CodeMieTool):
     args_schema: Type[BaseModel] = WebScrapperToolInput
 
     def execute(self, url: str, extract_images: bool = False, extract_links: bool = True) -> str:
+        from langchain_core.tools import ToolException
+
         try:
             headers = {'User-Agent': 'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:52.0) Gecko/20100101 Firefox/52.0'}
             response = requests.get(url, headers=headers, timeout=30)
@@ -96,8 +98,10 @@ class WebScrapperTool(CodeMieTool):
 
             return result
 
+        except requests.Timeout as e:
+            raise ToolException(f"Request timeout while scraping {url}: {e}") from e
         except Exception as e:
-            return f"Error scraping {url}: {str(e)}"
+            raise ToolException(f"Error scraping {url}: {e}") from e
 
     def _clean_markdown(self, content: str) -> str:
         """Clean up the markdown content for better readability."""

@@ -69,16 +69,49 @@ class TestWebScrapperTool:
         assert "Test Link" in result
         assert "http://example.com" not in result or self.test_url == "http://example.com"
 
-    @patch('requests.get')
-    def test_execute_error_handling(self, mock_get):
-        mock_get.side_effect = requests.RequestException("Test error")
-        result = self.tool.execute(self.test_url)
-
-        assert "Error scraping" in result
-        assert "Test error" in result
-
     def test_clean_markdown(self):
         content = "\n\n\nTest\n\n\n# Header\n\nText\n\n\n* Item\nText\n\n"
         result = self.tool._clean_markdown(content)
 
         assert result == "Test\n\n# Header\n\nText\n\n* Item\n\nText"
+
+    @patch('requests.get')
+    def test_execute_timeout_raises_exception(self, mock_get):
+        """Test that timeout errors raise ToolException instead of returning error string."""
+        from langchain_core.tools import ToolException
+
+        mock_get.side_effect = requests.Timeout("Read timed out. (read timeout=30)")
+
+        with pytest.raises(ToolException) as exc_info:
+            self.tool.execute(self.test_url)
+
+        # Verify exception message contains context
+        assert "timeout" in str(exc_info.value).lower()
+
+    @patch('requests.get')
+    def test_execute_http_error_raises_exception(self, mock_get):
+        """Test that HTTP errors raise ToolException instead of returning error string."""
+        from langchain_core.tools import ToolException
+
+        mock_response = Mock()
+        mock_response.raise_for_status.side_effect = requests.HTTPError("404 Client Error: Not Found")
+        mock_get.return_value = mock_response
+
+        with pytest.raises(ToolException) as exc_info:
+            self.tool.execute(self.test_url)
+
+        # Verify exception message contains HTTP error context
+        assert "404" in str(exc_info.value) or "not found" in str(exc_info.value).lower()
+
+    @patch('requests.get')
+    def test_execute_connection_error_raises_exception(self, mock_get):
+        """Test that connection errors raise ToolException instead of returning error string."""
+        from langchain_core.tools import ToolException
+
+        mock_get.side_effect = requests.ConnectionError("Failed to establish a new connection")
+
+        with pytest.raises(ToolException) as exc_info:
+            self.tool.execute(self.test_url)
+
+        # Verify exception message contains connection error context
+        assert "connection" in str(exc_info.value).lower()
