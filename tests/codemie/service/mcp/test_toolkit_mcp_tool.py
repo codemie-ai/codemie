@@ -42,9 +42,7 @@ class TestMCPTool(unittest.TestCase):
         """Set up test fixtures before each test method."""
         # Create mock objects
         self.mock_client = MagicMock(spec=MCPConnectClient)
-        self.mock_server_config = MCPServerConfig(
-            command="test_command", args=["arg1", "arg2"], env={"ENV_VAR": "value"}
-        )
+        self.mock_server_config = MCPServerConfig(command="npx", args=["arg1", "arg2"], env={"ENV_VAR": "value"})
 
         # Create a simple args schema for testing
         self.args_schema = create_model(
@@ -583,9 +581,7 @@ class TestContextAwareMCPTool(unittest.TestCase):
         """Set up test fixtures before each test method."""
         # Create mock objects
         self.mock_client = MagicMock(spec=MCPConnectClient)
-        self.mock_server_config = MCPServerConfig(
-            command="test_command", args=["arg1", "arg2"], env={"ENV_VAR": "value"}
-        )
+        self.mock_server_config = MCPServerConfig(command="npx", args=["arg1", "arg2"], env={"ENV_VAR": "value"})
 
         # Create a simple args schema for testing
         self.args_schema = create_model(

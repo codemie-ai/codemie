@@ -72,7 +72,7 @@ class TestWorkflowMCPServers:
             name="test-mcp-server",
             description="Test MCP Server",
             enabled=True,
-            config=MCPServerConfig(command="echo", args=["test"]),
+            config=MCPServerConfig(command="npx", args=["test"]),
         )
 
         workflow_assistant = WorkflowAssistant(name="Test Workflow Assistant", mcp_servers=[mcp_server])
@@ -95,12 +95,12 @@ class TestWorkflowMCPServers:
         mock_get_toolkits.return_value = []
 
         mcp_servers = [
-            MCPServerDetails(name="server-1", enabled=True, config=MCPServerConfig(command="echo", args=["server1"])),
-            MCPServerDetails(name="server-2", enabled=False, config=MCPServerConfig(command="echo", args=["server2"])),
+            MCPServerDetails(name="server-1", enabled=True, config=MCPServerConfig(command="npx", args=["server1"])),
+            MCPServerDetails(name="server-2", enabled=False, config=MCPServerConfig(command="npx", args=["server2"])),
             MCPServerDetails(
                 name="server-3",
                 enabled=True,
-                config=MCPServerConfig(command="test-command"),  # Required for validation
+                config=MCPServerConfig(command="npx"),  # Required for validation
                 mcp_connect_url="http://localhost:8080",
             ),
         ]
@@ -130,9 +130,7 @@ class TestWorkflowMCPServers:
 
     def test_virtual_assistant_service_create_with_mcp_servers(self):
         """Test VirtualAssistantService create method with MCP servers"""
-        mcp_servers = [
-            MCPServerDetails(name="direct-server", enabled=True, config=MCPServerConfig(command="test-command"))
-        ]
+        mcp_servers = [MCPServerDetails(name="direct-server", enabled=True, config=MCPServerConfig(command="npx"))]
 
         virtual_assistant = VirtualAssistantService.create(
             toolkits=[],

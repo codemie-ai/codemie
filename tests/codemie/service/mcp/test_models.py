@@ -350,7 +350,6 @@ class TestMCPServerConfigValidator:
         [
             ("  npx  ", "command"),
             ("  http://localhost:3000/mcp  ", "url"),
-            ("/usr/bin/node", "command"),
             ("https://api.example.com:8080/mcp?token=abc123&version=v1", "url"),
         ],
     )
@@ -362,6 +361,25 @@ class TestMCPServerConfigValidator:
         # Ensure the other field is None
         other_field = "url" if field_name == "command" else "command"
         assert getattr(config, other_field) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "bash",
+            "sh",
+            "python",
+            "python3",
+            "node",
+            "/usr/bin/node",
+            "/bin/bash",
+            "curl",
+            "wget",
+        ],
+    )
+    def test_disallowed_commands_rejected(self, command):
+        """Commands not in the allowlist must raise ValidationError (CVE: CM-C003 RCE prevention)."""
+        with pytest.raises(ValidationError, match="not allowed"):
+            MCPServerConfig(command=command)
 
     def test_serialization_deserialization_preserves_validation(self):
         """Test that serialized and deserialized configs maintain validation."""

@@ -1251,7 +1251,7 @@ class TestMCPConnectClientBucketNumber:
         from codemie.service.mcp.client import _get_bucket_no
         from codemie.configs import config
 
-        server_config = MCPServerConfig(command="test", args=["arg1"], env=None, auth_token=None)
+        server_config = MCPServerConfig(command="npx", args=["arg1"], env=None, auth_token=None)
 
         bucket_no = _get_bucket_no(server_config)
 
@@ -1269,14 +1269,14 @@ class TestMCPConnectClientBucketNumber:
         from codemie.configs import config
 
         # Test with empty env
-        server_config_empty = MCPServerConfig(command="test", args=["arg1"], env={}, auth_token=None)
+        server_config_empty = MCPServerConfig(command="npx", args=["arg1"], env={}, auth_token=None)
         bucket_no_empty = _get_bucket_no(server_config_empty)
         assert isinstance(bucket_no_empty, int)
         assert 0 <= bucket_no_empty < config.MCP_CONNECT_BUCKETS_COUNT
 
         # Test with env containing other keys
         server_config_other = MCPServerConfig(
-            command="test", args=["arg1"], env={"OTHER_KEY": "value", "ANOTHER_KEY": "test"}, auth_token=None
+            command="npx", args=["arg1"], env={"OTHER_KEY": "value", "ANOTHER_KEY": "test"}, auth_token=None
         )
         bucket_no_other = _get_bucket_no(server_config_other)
         assert isinstance(bucket_no_other, int)
@@ -1319,7 +1319,7 @@ class TestMCPConnectClientBucketNumber:
         ]
 
         for env in test_cases:
-            server_config = MCPServerConfig(command="test", args=["arg1"], env=env, auth_token=None)
+            server_config = MCPServerConfig(command="npx", args=["arg1"], env=env, auth_token=None)
 
             # First invocation
             bucket_no = _get_bucket_no(server_config)
@@ -1337,9 +1337,9 @@ class TestMCPConnectClientBucketNumber:
         env = {"BUCKET_KEY": "test_value"}
 
         # Create two identical configs
-        config1 = MCPServerConfig(command="test", args=["arg1"], env=env, auth_token=None)
+        config1 = MCPServerConfig(command="npx", args=["arg1"], env=env, auth_token=None)
 
-        config2 = MCPServerConfig(command="test", args=["arg1"], env=env, auth_token=None)
+        config2 = MCPServerConfig(command="npx", args=["arg1"], env=env, auth_token=None)
 
         # Both should map to the same bucket
         bucket1 = _get_bucket_no(config1)

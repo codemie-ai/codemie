@@ -132,10 +132,10 @@ class TestMCPServerDetails:
 
     def test_mcp_server_details_basic_creation(self):
         """Test basic MCPServerDetails creation with required fields."""
-        server = MCPServerDetails(name="test_server", command="python", arguments="-m test_module")
+        server = MCPServerDetails(name="test_server", command="uvx", arguments="-m test_module")
 
         assert server.name == "test_server"
-        assert server.command == "python"
+        assert server.command == "uvx"
         assert server.arguments == "-m test_module"
         # Check default values
         assert server.resolve_dynamic_values_in_arguments is False
@@ -145,14 +145,14 @@ class TestMCPServerDetails:
 
     def test_mcp_server_details_resolve_dynamic_values_in_arguments_default(self):
         """Test that resolve_dynamic_values_in_arguments defaults to False."""
-        server = MCPServerDetails(name="test_server", command="python", arguments="--help")
+        server = MCPServerDetails(name="test_server", command="uvx", arguments="--help")
 
         assert server.resolve_dynamic_values_in_arguments is False
 
     def test_mcp_server_details_resolve_dynamic_values_in_arguments_explicit_true(self):
         """Test setting resolve_dynamic_values_in_arguments to True."""
         server = MCPServerDetails(
-            name="test_server", command="python", arguments="--help", resolve_dynamic_values_in_arguments=True
+            name="test_server", command="uvx", arguments="--help", resolve_dynamic_values_in_arguments=True
         )
 
         assert server.resolve_dynamic_values_in_arguments is True
@@ -160,7 +160,7 @@ class TestMCPServerDetails:
     def test_mcp_server_details_resolve_dynamic_values_in_arguments_explicit_false(self):
         """Test setting resolve_dynamic_values_in_arguments to False."""
         server = MCPServerDetails(
-            name="test_server", command="python", arguments="--help", resolve_dynamic_values_in_arguments=False
+            name="test_server", command="uvx", arguments="--help", resolve_dynamic_values_in_arguments=False
         )
 
         assert server.resolve_dynamic_values_in_arguments is False
@@ -168,7 +168,7 @@ class TestMCPServerDetails:
     def test_mcp_server_details_serialization_includes_new_field(self):
         """Test that serialization includes the new field."""
         server = MCPServerDetails(
-            name="test_server", command="python", arguments="--help", resolve_dynamic_values_in_arguments=True
+            name="test_server", command="uvx", arguments="--help", resolve_dynamic_values_in_arguments=True
         )
 
         # Test model_dump includes the field
@@ -181,7 +181,7 @@ class TestMCPServerDetails:
         # Test with field present
         data_with_field = {
             "name": "test_server",
-            "command": "python",
+            "command": "uvx",
             "arguments": "--help",
             "resolve_dynamic_values_in_arguments": True,
         }
@@ -190,7 +190,7 @@ class TestMCPServerDetails:
         assert server.resolve_dynamic_values_in_arguments is True
 
         # Test without field (should use default)
-        data_without_field = {"name": "test_server", "command": "python", "arguments": "--help"}
+        data_without_field = {"name": "test_server", "command": "uvx", "arguments": "--help"}
 
         server = MCPServerDetails(**data_without_field)
         assert server.resolve_dynamic_values_in_arguments is False
@@ -205,7 +205,7 @@ class TestMCPServerDetails:
         server = MCPServerDetails(
             name="test_server",
             description="Test server description",
-            command="python",
+            command="uvx",
             arguments="-m test_module --config={{config_path}}",
             settings=settings,
             integration_alias="test_alias",
@@ -215,7 +215,7 @@ class TestMCPServerDetails:
 
         assert server.name == "test_server"
         assert server.description == "Test server description"
-        assert server.command == "python"
+        assert server.command == "uvx"
         assert server.arguments == "-m test_module --config={{config_path}}"
         assert server.settings is not None
         assert server.integration_alias == "test_alias"
@@ -226,13 +226,13 @@ class TestMCPServerDetails:
         """Test MCPServerDetails with dynamic arguments for template resolution."""
         server = MCPServerDetails(
             name="dynamic_server",
-            command="node",
+            command="npx",
             arguments="server.js --port={{port}} --env={{environment}}",
             resolve_dynamic_values_in_arguments=True,
         )
 
         assert server.name == "dynamic_server"
-        assert server.command == "node"
+        assert server.command == "npx"
         assert server.arguments == "server.js --port={{port}} --env={{environment}}"
         assert server.resolve_dynamic_values_in_arguments is True
 

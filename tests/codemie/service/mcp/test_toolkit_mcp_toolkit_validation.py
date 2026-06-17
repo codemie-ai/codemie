@@ -40,7 +40,7 @@ class TestMCPToolkitValidation(unittest.TestCase):
         self.mcp_client = MagicMock(spec=MCPConnectClient)
 
         # Create server config
-        self.server_config = MCPServerConfig(command="test_command", args=["arg1", "arg2"], env={"ENV_VAR": "value"})
+        self.server_config = MCPServerConfig(command="npx", args=["arg1", "arg2"], env={"ENV_VAR": "value"})
 
         # Create basic tool definition
         self.basic_tool_def = MCPToolDefinition(
@@ -333,7 +333,7 @@ class TestMCPToolkitFactory(unittest.TestCase):
         self.mcp_client = MagicMock(spec=MCPConnectClient)
 
         # Create server config
-        self.server_config = MCPServerConfig(command="test_command", args=["arg1", "arg2"], env={"ENV_VAR": "value"})
+        self.server_config = MCPServerConfig(command="npx", args=["arg1", "arg2"], env={"ENV_VAR": "value"})
 
         # Create a basic tool definition
         self.basic_tool_def = MCPToolDefinition(
@@ -445,9 +445,9 @@ class TestMCPToolkitFactory(unittest.TestCase):
     def test_generate_cache_key(self):
         """Test generation of cache keys."""
         # Create two different server configs
-        config1 = MCPServerConfig(command="command1", args=["arg1", "arg2"], env={"ENV_VAR": "value1"})
+        config1 = MCPServerConfig(command="npx", args=["arg1", "arg2"], env={"ENV_VAR": "value1"})
 
-        config2 = MCPServerConfig(command="command2", args=["arg1", "arg2"], env={"ENV_VAR": "value2"})
+        config2 = MCPServerConfig(command="uvx", args=["arg1", "arg2"], env={"ENV_VAR": "value2"})
 
         # Create factory
         factory = MCPToolkitFactory(mcp_client=self.mcp_client)

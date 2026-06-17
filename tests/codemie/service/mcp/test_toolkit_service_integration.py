@@ -105,7 +105,7 @@ class TestMCPToolkitServiceCacheManagement(unittest.TestCase):
         service = MCPToolkitService(mock_client)
 
         # Create a server config for testing
-        server_config = MCPServerConfig(command="test_command", args=["--arg1", "--arg2"])
+        server_config = MCPServerConfig(command="npx", args=["--arg1", "--arg2"])
 
         # Create a spy on the create_toolkit method to track calls
         original_create_toolkit = service.toolkit_factory.create_toolkit

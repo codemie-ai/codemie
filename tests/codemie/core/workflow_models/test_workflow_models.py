@@ -275,7 +275,7 @@ class TestWorkflowTool:
         """Test WorkflowTool with all optional fields set."""
         from codemie.rest_api.models.assistant import MCPServerDetails
 
-        mcp_server = MCPServerDetails(name="test_server", command="test_command", args=["--arg1", "--arg2"])
+        mcp_server = MCPServerDetails(name="test_server", command="npx", args=["--arg1", "--arg2"])
 
         tool = WorkflowTool(
             id="test_tool",

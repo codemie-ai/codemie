@@ -208,7 +208,7 @@ class TestFilterToolsByConfig:
 
         # Create MCP server with config that has tools filter
         server_config = MCPServerConfig(
-            command="test-command",
+            command="npx",
             tools=["read_file", "write_file"],
         )
 
@@ -241,7 +241,7 @@ class TestFilterToolsByConfig:
 
         # Create MCP server with both tools fields set
         server_config = MCPServerConfig(
-            command="test-command",
+            command="npx",
             tools=["read_file"],  # This should be ignored
         )
 

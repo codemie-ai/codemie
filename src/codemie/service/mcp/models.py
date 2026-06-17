@@ -23,9 +23,10 @@ All models in this module are based on Pydantic's BaseModel for automatic valida
 and serialization/deserialization of data.
 """
 
+import os
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class MCPExecutionContext(BaseModel):
@@ -106,6 +107,29 @@ class MCPExecutionContext(BaseModel):
                 "oauth2_auth_config",
             }
         )
+
+
+_ALLOWED_MCP_COMMANDS: frozenset[str] = frozenset(
+    {
+        # Package runners (user-configured)
+        "npx",
+        "uvx",
+        # Pre-installed MCP server binaries in the mcp-connect-service container
+        "mcp-server-filesystem",
+        "mcp-server-memory",
+        "mcp-server-sequential-thinking",
+        "mcp-server-postgres",
+        "mcp-server-puppeteer",
+        "mcp-mermaid",
+    }
+)
+
+# Pre-approved absolute-path binaries installed in the container image.
+_ALLOWED_MCP_PATHS: frozenset[str] = frozenset(
+    {
+        "/codemie/additional-tools/github-mcp-server/github-mcp-server",
+    }
+)
 
 
 class MCPServerConfig(BaseModel):
@@ -198,6 +222,29 @@ class MCPServerConfig(BaseModel):
         repr=False,
         description="Local-only MCP-Connect routing/cache key; never serialized into bridge env.",
     )
+
+    @field_validator("command")
+    @classmethod
+    def validate_command(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        normalized = v.strip()
+        if not normalized:
+            # Empty/whitespace — defer to _ensure_command_xor_url for the error message.
+            return v
+        if normalized in _ALLOWED_MCP_PATHS:
+            return v
+        binary = os.path.basename(normalized)
+        if binary not in _ALLOWED_MCP_COMMANDS:
+            raise ValueError(
+                f"MCP server command '{binary}' is not allowed. Permitted: {sorted(_ALLOWED_MCP_COMMANDS)}"
+            )
+        if normalized != binary:
+            raise ValueError(
+                f"MCP server command '{normalized}' must be a plain binary name, not a path. "
+                f"Permitted: {sorted(_ALLOWED_MCP_COMMANDS)}"
+            )
+        return v
 
     @model_validator(mode="after")
     def _ensure_command_xor_url(self):

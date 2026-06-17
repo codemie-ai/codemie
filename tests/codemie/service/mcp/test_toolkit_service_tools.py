@@ -38,7 +38,7 @@ class TestMCPToolkitServiceGetTools:
 
         # Create a server config
         self.server_config = MCPServerConfig(
-            command="test-command",  # Adding required command field
+            command="npx",  # Adding required command field
             args=["--test-arg"],
             env={"TEST_ENV": "test-value"},
         )

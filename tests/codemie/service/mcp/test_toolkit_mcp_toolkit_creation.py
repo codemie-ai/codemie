@@ -38,9 +38,7 @@ class TestMCPToolkitCreation(unittest.TestCase):
         # Properly mock the MCPConnectClient
         self.mcp_client = MagicMock(spec=MCPConnectClient)
 
-        self.mcp_server_config = MCPServerConfig(
-            command="test_command", args=["arg1", "arg2"], env={"ENV_VAR": "value"}
-        )
+        self.mcp_server_config = MCPServerConfig(command="npx", args=["arg1", "arg2"], env={"ENV_VAR": "value"})
 
         # Create a valid tool definition with JSON schema
         self.valid_tool_def = MCPToolDefinition(

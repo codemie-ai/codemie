@@ -326,7 +326,7 @@ class TestResolveCatalogConfig:
         assert result.config.command == "uvx"
 
     def test_inline_config_wins_over_catalog(self):
-        inline_cfg = MCPServerConfig(command="inline-cmd")
+        inline_cfg = MCPServerConfig(command="npx")
         server = _server("s1", mcp_config_id="cat-1", config=inline_cfg)
         with patch(_FIND_BY_ID) as find_by_id:
             result = MCPAccessControlService.resolve_catalog_config(server)

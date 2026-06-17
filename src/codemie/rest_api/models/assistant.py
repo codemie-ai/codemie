@@ -19,7 +19,15 @@ from typing import Annotated, Any, Optional, Self, Dict, List
 
 import yaml
 from codemie_tools.base.models import ToolKit, Tool
-from pydantic import AfterValidator, BaseModel, Field, model_validator, field_serializer, computed_field
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    model_validator,
+    field_serializer,
+    computed_field,
+    field_validator,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field as SQLField, Session, select, Column, and_, Index, text
 
@@ -39,7 +47,7 @@ from codemie.rest_api.models.settings import SettingsBase
 from codemie.rest_api.models.standard import PostResponse
 from codemie.core.models import BaseResponse
 from codemie.rest_api.security.user import User
-from codemie.service.mcp.models import MCPServerConfig
+from codemie.service.mcp.models import MCPServerConfig, _ALLOWED_MCP_COMMANDS, _ALLOWED_MCP_PATHS
 from codemie.configs.logger import logger
 from codemie.service.guardrail.guardrail_service import GuardrailService
 
@@ -176,6 +184,29 @@ class MCPServerDetails(BaseModel):
         None, description="The command used to invoke the MCP server (e.g., 'npx', 'uvx') using a stdio transport"
     )
     arguments: Optional[str] = Field(None, description="list of arguments to pass to the MCP server command")
+
+    @field_validator("command")
+    @classmethod
+    def validate_command(cls, v: Optional[str]) -> Optional[str]:
+        import os
+
+        if v is None:
+            return v
+        normalized = v.strip()
+        if normalized in _ALLOWED_MCP_PATHS:
+            return v
+        binary = os.path.basename(normalized)
+        if binary not in _ALLOWED_MCP_COMMANDS:
+            raise ValueError(
+                f"MCP server command '{binary}' is not allowed. Permitted: {sorted(_ALLOWED_MCP_COMMANDS)}"
+            )
+        if normalized != binary:
+            raise ValueError(
+                f"MCP server command '{normalized}' must be a plain binary name, not a path. "
+                f"Permitted: {sorted(_ALLOWED_MCP_COMMANDS)}"
+            )
+        return v
+
     settings: Optional[SettingsBase] = None  # Must be renamed to environment_vars
     integration_alias: Optional[str] = None
     mcp_connect_auth_token: Optional[SettingsBase] = None

@@ -40,9 +40,7 @@ class TestMCPToolkitAccess(unittest.TestCase):
         self.mock_client = MagicMock(spec=MCPConnectClient)
 
         # Create server config
-        self.mock_server_config = MCPServerConfig(
-            command="test_command", args=["arg1", "arg2"], env={"ENV_VAR": "value"}
-        )
+        self.mock_server_config = MCPServerConfig(command="npx", args=["arg1", "arg2"], env={"ENV_VAR": "value"})
 
         # Create tool definitions with different schema complexity
         # Tool 1 with simple schema

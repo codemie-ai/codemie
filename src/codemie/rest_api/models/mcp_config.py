@@ -21,6 +21,7 @@ that can be selected and used across assistants.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any
 from enum import Enum
@@ -53,6 +54,27 @@ class MCPCategory(str, Enum):
 MCP_SERVER_NAME_DESCRIPTION = "Name of the MCP server"
 MCP_SERVER_CONFIG_DESCRIPTION = "MCP server configuration"
 
+_ALLOWED_MCP_COMMANDS: frozenset[str] = frozenset(
+    {
+        # Package runners (user-configured)
+        "npx",
+        "uvx",
+        # Pre-installed MCP server binaries in the mcp-connect-service container
+        "mcp-server-filesystem",
+        "mcp-server-memory",
+        "mcp-server-sequential-thinking",
+        "mcp-server-postgres",
+        "mcp-server-puppeteer",
+        "mcp-mermaid",
+    }
+)
+
+_ALLOWED_MCP_PATHS: frozenset[str] = frozenset(
+    {
+        "/codemie/additional-tools/github-mcp-server/github-mcp-server",
+    }
+)
+
 
 class MCPVariableDefinition(BaseModel):
     """Definition of a required environment variable for MCP server"""
@@ -77,6 +99,30 @@ class MCPServerConfigData(BaseModel):
     """
 
     command: str | None = Field(None, description="Command to invoke MCP server (e.g., 'uvx', 'npx')")
+
+    @field_validator("command")
+    @classmethod
+    def validate_command(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        normalized = v.strip()
+        if not normalized:
+            # Empty/whitespace — no command present, not our concern to validate.
+            return v
+        if normalized in _ALLOWED_MCP_PATHS:
+            return v
+        binary = os.path.basename(normalized)
+        if binary not in _ALLOWED_MCP_COMMANDS:
+            raise ValueError(
+                f"MCP server command '{binary}' is not allowed. Permitted: {sorted(_ALLOWED_MCP_COMMANDS)}"
+            )
+        if normalized != binary:
+            raise ValueError(
+                f"MCP server command '{normalized}' must be a plain binary name, not a path. "
+                f"Permitted: {sorted(_ALLOWED_MCP_COMMANDS)}"
+            )
+        return v
+
     url: str | None = Field(None, description="HTTP URL for remote MCP server")
     args: list[str] = Field(default_factory=list, description="Arguments for the command")
     headers: dict[str, str] = Field(default_factory=dict, description="HTTP headers for URL-based servers")

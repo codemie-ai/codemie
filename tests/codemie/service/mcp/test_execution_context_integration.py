@@ -67,9 +67,7 @@ class TestMCPExecutionContextIntegration:
     def sample_mcp_tool(self):
         """Create a sample MCP tool for testing."""
         mock_client = MagicMock(spec=MCPConnectClient)
-        mock_server_config = MCPServerConfig(
-            command="test_command", args=["arg1", "arg2"], env={"TEST_VAR": "test_value"}
-        )
+        mock_server_config = MCPServerConfig(command="npx", args=["arg1", "arg2"], env={"TEST_VAR": "test_value"})
 
         from pydantic import create_model
 
@@ -97,9 +95,7 @@ class TestMCPExecutionContextIntegration:
     def test_create_context_aware_tools_preserves_attributes(self, sample_execution_context):
         """Test that context-aware tool creation preserves all original tool attributes."""
         mock_client = MagicMock(spec=MCPConnectClient)
-        mock_server_config = MCPServerConfig(
-            command="test_command", args=["arg1", "arg2"], env={"TEST_VAR": "test_value"}
-        )
+        mock_server_config = MCPServerConfig(command="npx", args=["arg1", "arg2"], env={"TEST_VAR": "test_value"})
 
         from pydantic import create_model
 
@@ -141,7 +137,7 @@ class TestMCPExecutionContextIntegration:
         mock_client.invoke_tool = AsyncMock(
             return_value=MCPToolInvocationResponse(content=[MCPToolContentItem(type="text", text="ok")], isError=False)
         )
-        mock_server_config = MCPServerConfig(command="test_command", args=["arg1"], env={"TEST_VAR": "test_value"})
+        mock_server_config = MCPServerConfig(command="npx", args=["arg1"], env={"TEST_VAR": "test_value"})
 
         from pydantic import create_model
 
@@ -167,7 +163,7 @@ class TestMCPExecutionContextIntegration:
 
     def test_mcp_toolkit_sanitizes_tool_name_but_preserves_original_server_name(self):
         mock_client = MagicMock(spec=MCPConnectClient)
-        mock_server_config = MCPServerConfig(command="test_command", args=["arg1"], env={"TEST_VAR": "test_value"})
+        mock_server_config = MCPServerConfig(command="npx", args=["arg1"], env={"TEST_VAR": "test_value"})
         tool_definitions = [
             MCPToolDefinition(
                 name="get.file.contents",
@@ -351,9 +347,7 @@ class TestMCPExecutionContextIntegration:
         """Test full integration of context-aware tool execution."""
         # Create mock client and server config
         mock_client = MagicMock(spec=MCPConnectClient)
-        mock_server_config = MCPServerConfig(
-            command="test_command", args=["arg1", "arg2"], env={"TEST_VAR": "test_value"}
-        )
+        mock_server_config = MCPServerConfig(command="npx", args=["arg1", "arg2"], env={"TEST_VAR": "test_value"})
 
         # Setup mock response
         mock_response = MCPToolInvocationResponse(
@@ -391,9 +385,7 @@ class TestMCPExecutionContextIntegration:
         """Test that execution context propagates correctly through the entire tool chain."""
         # Create mock client and server config
         mock_client = MagicMock(spec=MCPConnectClient)
-        mock_server_config = MCPServerConfig(
-            command="test_command", args=["arg1", "arg2"], env={"TEST_VAR": "test_value"}
-        )
+        mock_server_config = MCPServerConfig(command="npx", args=["arg1", "arg2"], env={"TEST_VAR": "test_value"})
 
         # Setup client invoke_tool to verify context is passed
         async def mock_invoke_tool(server_config, tool_name, tool_args, execution_context=None):

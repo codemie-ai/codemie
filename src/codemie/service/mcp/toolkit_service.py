@@ -1387,18 +1387,20 @@ class MCPToolkitService:
             return None
         mcp_server = resolved
 
+        has_inline_config = mcp_server.config is not None
         actual_config = (
             mcp_server.config.model_copy(deep=True)
-            if mcp_server.config
+            if has_inline_config
             else MCPServerConfig(
                 command=mcp_server.command,
             )
         )
 
-        # Set basic configuration
-        if mcp_server.command:
-            actual_config.command = mcp_server.command
-        if mcp_server.arguments:
+        # Set basic configuration — only apply legacy fields when no inline config was provided.
+        # When inline config is present it is already validated; overriding command/args from the
+        # legacy fields would bypass the MCPServerConfig field_validator (Pydantic v2 does not
+        # re-validate on direct attribute assignment).
+        if not has_inline_config and mcp_server.arguments:
             actual_config.args = mcp_server.arguments.split()
 
         # Initialize environment variables
