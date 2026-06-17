@@ -40,6 +40,7 @@ from codemie.rest_api.models.skill import (
     MarketplaceFilter,
     Skill,
     SkillCategory,
+    SkillCompanionFilePayload,
     SkillCreateRequest,
     SkillSortBy,
     SkillUpdateRequest,
@@ -47,6 +48,7 @@ from codemie.rest_api.models.skill import (
 )
 from codemie.rest_api.security.user import User
 from codemie.service.skill_service import SkillService, SkillErrors
+from codemie_tools.base.file_object import FileObject
 
 
 # =============================================================================
@@ -1893,3 +1895,373 @@ class TestSkillToolkits:
 
         # Assert
         assert response.toolkits == []
+
+
+# =============================================================================
+# TestUploadCompanionFiles
+# =============================================================================
+
+
+class TestUploadCompanionFiles:
+    """Tests for SkillService._upload_companion_files"""
+
+    def _make_file_repo(self):
+        repo = MagicMock()
+        repo.write_file.return_value = FileObject(
+            name="file.md", mime_type="text/markdown", owner="skill-abc", content=b"hello"
+        )
+        return repo
+
+    def test_uploads_each_file_and_returns_storage_key_records(self):
+        repo = self._make_file_repo()
+        payloads = [
+            SkillCompanionFilePayload(path="refs/a.md", content="hello world", encoding="text"),
+            SkillCompanionFilePayload(path="refs/b.md", content="second file", encoding="text"),
+        ]
+
+        records = SkillService._upload_companion_files("skill-id-1", payloads, repo)
+
+        assert len(records) == 2
+        assert repo.write_file.call_count == 2
+
+    def test_record_has_storage_key_not_content(self):
+        repo = self._make_file_repo()
+        payloads = [SkillCompanionFilePayload(path="refs/a.md", content="hello", encoding="text")]
+
+        records = SkillService._upload_companion_files("skill-id-1", payloads, repo)
+
+        assert "storage_key" in records[0]
+        assert "content" not in records[0]
+
+    def test_storage_key_equals_normalized_path(self):
+        repo = self._make_file_repo()
+        payloads = [SkillCompanionFilePayload(path="refs/a.md", content="hello", encoding="text")]
+
+        records = SkillService._upload_companion_files("skill-id-1", payloads, repo)
+
+        assert records[0]["storage_key"] == "refs/a.md"
+        assert records[0]["path"] == "refs/a.md"
+
+    def test_raises_on_reserved_path(self):
+        repo = self._make_file_repo()
+        payloads = [SkillCompanionFilePayload(path="skill.md", content="x", encoding="text")]
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            SkillService._upload_companion_files("skill-id-1", payloads, repo)
+
+        assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+
+    def test_raises_on_duplicate_paths(self):
+        repo = self._make_file_repo()
+        payloads = [
+            SkillCompanionFilePayload(path="refs/a.md", content="x", encoding="text"),
+            SkillCompanionFilePayload(path="refs/a.md", content="y", encoding="text"),
+        ]
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            SkillService._upload_companion_files("skill-id-1", payloads, repo)
+
+        assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+
+    def test_empty_payloads_returns_empty_list(self):
+        repo = self._make_file_repo()
+        records = SkillService._upload_companion_files("skill-id-1", [], repo)
+        assert records == []
+        repo.write_file.assert_not_called()
+
+
+# =============================================================================
+# TestGetCompanionFile (file repo path + legacy fallback)
+# =============================================================================
+
+
+class TestGetCompanionFileFromRepo:
+    """Tests for SkillService.get_companion_file reading from file repo"""
+
+    def _make_skill_with_storage_key(self, skill_id: str, owner_user) -> Skill:
+        from codemie.core.models import CreatedByUser
+
+        return Skill(
+            id=skill_id,
+            name="test-skill",
+            description="desc",
+            content="x" * 200,
+            project="project-a",
+            visibility=SkillVisibility.PRIVATE,
+            categories=[],
+            created_by=CreatedByUser(id=owner_user.id, name=owner_user.name, username=owner_user.username),
+            created_date=datetime(2026, 1, 1, tzinfo=UTC),
+            companion_files=[
+                {
+                    "path": "refs/guide.md",
+                    "mime_type": "text/markdown",
+                    "encoding": "text",
+                    "size_bytes": 5,
+                    "storage_key": "refs/guide.md",
+                }
+            ],
+        )
+
+    def _make_skill_with_inline_content(self, skill_id: str, owner_user) -> Skill:
+        from codemie.core.models import CreatedByUser
+
+        return Skill(
+            id=skill_id,
+            name="test-skill",
+            description="desc",
+            content="x" * 200,
+            project="project-a",
+            visibility=SkillVisibility.PRIVATE,
+            categories=[],
+            created_by=CreatedByUser(id=owner_user.id, name=owner_user.name, username=owner_user.username),
+            created_date=datetime(2026, 1, 1, tzinfo=UTC),
+            companion_files=[
+                {
+                    "path": "refs/guide.md",
+                    "mime_type": "text/markdown",
+                    "encoding": "text",
+                    "size_bytes": 5,
+                    "content": "hello",
+                }
+            ],
+        )
+
+    def test_reads_content_from_file_repo_when_storage_key_present(self, owner_user):
+        skill_id = "skill-abc"
+        skill = self._make_skill_with_storage_key(skill_id, owner_user)
+
+        mock_repo = MagicMock()
+        mock_repo.read_file.return_value = FileObject(
+            name="refs/guide.md",
+            mime_type="text/markdown",
+            owner=f"skill-{skill_id}",
+            content=b"hello from repo",
+        )
+
+        with patch.object(SkillRepository, "get_by_id", return_value=skill):
+            with patch("codemie.service.skill_service.FileRepositoryFactory") as mock_factory:
+                mock_factory.get_current_repository.return_value = mock_repo
+                result = SkillService.get_companion_file(skill_id, "refs/guide.md", owner_user)
+
+        assert result.content == "hello from repo"
+        assert result.path == "refs/guide.md"
+        mock_repo.read_file.assert_called_once()
+
+    def test_legacy_fallback_returns_inline_content_when_no_storage_key(self, owner_user):
+        skill_id = "skill-legacy"
+        skill = self._make_skill_with_inline_content(skill_id, owner_user)
+
+        mock_repo = MagicMock()
+
+        with patch.object(SkillRepository, "get_by_id", return_value=skill):
+            with patch("codemie.service.skill_service.FileRepositoryFactory") as mock_factory:
+                mock_factory.get_current_repository.return_value = mock_repo
+                result = SkillService.get_companion_file(skill_id, "refs/guide.md", owner_user)
+
+        assert result.content == "hello"
+        mock_repo.read_file.assert_not_called()
+
+
+# =============================================================================
+# TestCreateSkillWithCompanionFiles
+# =============================================================================
+
+
+class TestCreateSkillWithCompanionFiles:
+    """Tests for two-phase create_skill with companion files"""
+
+    def _make_create_request(self, companion_files=None):
+        return SkillCreateRequest(
+            name="new-skill",
+            description="A test skill description",
+            content="content " * 20,
+            project="project-a",
+            visibility=SkillVisibility.PRIVATE,
+            categories=[SkillCategory.DEVELOPMENT],
+            companion_files=companion_files or [],
+        )
+
+    def _make_skill(self, skill_id: str, owner_user, companion_files=None):
+        from codemie.core.models import CreatedByUser
+
+        return Skill(
+            id=skill_id,
+            name="new-skill",
+            description="A test skill description",
+            content="content " * 20,
+            project="project-a",
+            visibility=SkillVisibility.PRIVATE,
+            categories=[],
+            created_by=CreatedByUser(id=owner_user.id, name=owner_user.name, username=owner_user.username),
+            created_date=datetime(2026, 1, 1, tzinfo=UTC),
+            companion_files=companion_files or [],
+        )
+
+    def test_create_with_no_companion_files_skips_file_repo(self, owner_user):
+        skill_id = "skill-001"
+        skill = self._make_skill(skill_id, owner_user)
+        request = self._make_create_request(companion_files=[])
+
+        mock_repo = MagicMock()
+
+        with patch.object(SkillRepository, "get_by_name_author_project", return_value=None):
+            with patch.object(SkillRepository, "create", return_value=skill):
+                with patch("codemie.service.skill_service.FileRepositoryFactory") as mock_factory:
+                    mock_factory.get_current_repository.return_value = mock_repo
+                    SkillService.create_skill(request, owner_user)
+
+        mock_repo.write_file.assert_not_called()
+
+    def test_create_with_companion_files_uploads_and_updates_record(self, owner_user):
+        skill_id = "skill-002"
+        created_skill = self._make_skill(skill_id, owner_user, companion_files=[])
+        updated_skill = self._make_skill(
+            skill_id,
+            owner_user,
+            companion_files=[
+                {
+                    "path": "guide.md",
+                    "mime_type": "text/markdown",
+                    "encoding": "text",
+                    "size_bytes": 5,
+                    "storage_key": "guide.md",
+                }
+            ],
+        )
+        request = self._make_create_request(
+            companion_files=[SkillCompanionFilePayload(path="guide.md", content="hello", encoding="text")]
+        )
+
+        mock_file_repo = MagicMock()
+        mock_file_repo.write_file.return_value = FileObject(
+            name="guide.md", mime_type="text/markdown", owner=f"skill-{skill_id}", content=b"hello"
+        )
+
+        with patch.object(SkillRepository, "get_by_name_author_project", return_value=None):
+            with patch.object(SkillRepository, "create", return_value=created_skill):
+                with patch.object(SkillRepository, "update", return_value=updated_skill) as mock_update:
+                    with patch("codemie.service.skill_service.FileRepositoryFactory") as mock_factory:
+                        mock_factory.get_current_repository.return_value = mock_file_repo
+                        SkillService.create_skill(request, owner_user)
+
+        mock_file_repo.write_file.assert_called_once()
+        mock_update.assert_called_once()
+        update_call = mock_update.call_args
+        companion_files = update_call[0][1]["companion_files"]
+        assert len(companion_files) == 1
+        assert companion_files[0]["storage_key"] == "guide.md"
+        assert "content" not in companion_files[0]
+
+    def test_create_initial_db_record_has_empty_companion_files(self, owner_user):
+        skill_id = "skill-003"
+        created_skill = self._make_skill(skill_id, owner_user)
+        request = self._make_create_request(
+            companion_files=[SkillCompanionFilePayload(path="guide.md", content="x", encoding="text")]
+        )
+
+        mock_file_repo = MagicMock()
+        mock_file_repo.write_file.return_value = FileObject(
+            name="guide.md", mime_type="text/markdown", owner=f"skill-{skill_id}", content=b"x"
+        )
+
+        with patch.object(SkillRepository, "get_by_name_author_project", return_value=None):
+            with patch.object(SkillRepository, "create", return_value=created_skill) as mock_create:
+                with patch.object(SkillRepository, "update", return_value=created_skill):
+                    with patch("codemie.service.skill_service.FileRepositoryFactory") as mock_factory:
+                        mock_factory.get_current_repository.return_value = mock_file_repo
+                        SkillService.create_skill(request, owner_user)
+
+        create_call_data = mock_create.call_args[0][0]
+        assert create_call_data["companion_files"] == []
+
+
+# =============================================================================
+# TestUpdateSkillCompanionFiles
+# =============================================================================
+
+
+class TestUpdateSkillCompanionFiles:
+    """Tests for update_skill companion file handling via file repo"""
+
+    def _make_skill(self, skill_id: str, owner_user, companion_files=None):
+        from codemie.core.models import CreatedByUser
+
+        return Skill(
+            id=skill_id,
+            name="existing-skill",
+            description="An existing skill description",
+            content="content " * 20,
+            project="project-a",
+            visibility=SkillVisibility.PRIVATE,
+            categories=[],
+            created_by=CreatedByUser(id=owner_user.id, name=owner_user.name, username=owner_user.username),
+            created_date=datetime(2026, 1, 1, tzinfo=UTC),
+            companion_files=companion_files or [],
+        )
+
+    def test_update_with_companion_files_uploads_to_file_repo(self, owner_user):
+        skill_id = "skill-upd-001"
+        existing = self._make_skill(skill_id, owner_user)
+        updated = self._make_skill(
+            skill_id,
+            owner_user,
+            companion_files=[
+                {
+                    "path": "refs/a.md",
+                    "mime_type": "text/markdown",
+                    "encoding": "text",
+                    "size_bytes": 5,
+                    "storage_key": "refs/a.md",
+                }
+            ],
+        )
+        request = SkillUpdateRequest(
+            companion_files=[SkillCompanionFilePayload(path="refs/a.md", content="hello", encoding="text")]
+        )
+
+        mock_file_repo = MagicMock()
+        mock_file_repo.write_file.return_value = FileObject(
+            name="refs/a.md", mime_type="text/markdown", owner=f"skill-{skill_id}", content=b"hello"
+        )
+
+        with patch.object(SkillRepository, "get_by_id", return_value=existing):
+            with patch.object(SkillRepository, "update", return_value=updated) as mock_update:
+                with patch.object(SkillRepository, "count_assistants_using_skill", return_value=0):
+                    with patch("codemie.service.skill_service.FileRepositoryFactory") as mock_factory:
+                        mock_factory.get_current_repository.return_value = mock_file_repo
+                        SkillService.update_skill(skill_id, request, owner_user)
+
+        mock_file_repo.write_file.assert_called_once()
+        update_args = mock_update.call_args[0]
+        companion_files = update_args[1]["companion_files"]
+        assert companion_files[0]["storage_key"] == "refs/a.md"
+        assert "content" not in companion_files[0]
+
+    def test_update_without_companion_files_skips_file_repo(self, owner_user):
+        skill_id = "skill-upd-002"
+        existing = self._make_skill(skill_id, owner_user)
+        updated = self._make_skill(
+            skill_id,
+            owner_user,
+            companion_files=[
+                {
+                    "path": "old.md",
+                    "mime_type": "text/markdown",
+                    "encoding": "text",
+                    "size_bytes": 3,
+                    "storage_key": "old.md",
+                }
+            ],
+        )
+        request = SkillUpdateRequest(description="Updated description for skill")
+
+        mock_file_repo = MagicMock()
+
+        with patch.object(SkillRepository, "get_by_id", return_value=existing):
+            with patch.object(SkillRepository, "update", return_value=updated):
+                with patch.object(SkillRepository, "count_assistants_using_skill", return_value=0):
+                    with patch("codemie.service.skill_service.FileRepositoryFactory") as mock_factory:
+                        mock_factory.get_current_repository.return_value = mock_file_repo
+                        SkillService.update_skill(skill_id, request, owner_user)
+
+        mock_file_repo.write_file.assert_not_called()
