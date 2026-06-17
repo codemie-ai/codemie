@@ -176,11 +176,59 @@ class UserBudgetAssignment(SQLModel, table=True):
     )
 
 
+PROJECT_BUDGET_PLAN_ID_FOREIGN_KEY = "project_budget_plans.id"
+
+
+class ProjectBudgetPlan(SQLModel, table=True):
+    """Top-level plan grouping per-category budgets for a project.
+
+    At most one active plan per project (deleted_at IS NULL), enforced by a
+    partial unique index.  Historical plans are preserved for audit purposes.
+    """
+
+    __tablename__ = "project_budget_plans"
+
+    id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        primary_key=True,
+        max_length=36,
+    )
+    project_name: str = Field(nullable=False, max_length=100, foreign_key=APPLICATION_ID_FOREIGN_KEY)
+    name: str = Field(default="", nullable=False, max_length=100)
+    budget_duration: str = Field(nullable=False, max_length=16)
+    description: Optional[str] = Field(default=None, max_length=500)
+    created_by: str = Field(nullable=False, max_length=255)
+    created_at: Optional[datetime] = Field(
+        sa_column=Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
+        default=None,
+    )
+    updated_at: Optional[datetime] = Field(
+        sa_column=Column(TIMESTAMP(timezone=True), nullable=True, onupdate=func.now()),
+        default=None,
+    )
+    deleted_at: Optional[datetime] = Field(
+        sa_column=Column(TIMESTAMP(timezone=True), nullable=True),
+        default=None,
+    )
+
+    __table_args__ = (
+        Index("ix_pbp_project_name", "project_name"),
+        Index(
+            "uix_pbp_project_active",
+            "project_name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+
 class ProjectBudgetAssignment(SQLModel, table=True):
     """One active project budget per (project_name, budget_category).
 
     Soft-deleted rows have deleted_at set; unique constraint applies only to
     active rows (deleted_at IS NULL), enforced by a partial unique index.
+
+    plan_id is nullable for backward compatibility with pre-plan assignments.
     """
 
     __tablename__ = "project_budget_assignments"
@@ -197,6 +245,12 @@ class ProjectBudgetAssignment(SQLModel, table=True):
         max_length=255,
         foreign_key=BUDGET_ID_FOREIGN_KEY,
     )
+    plan_id: Optional[str] = Field(
+        default=None,
+        nullable=True,
+        max_length=36,
+        foreign_key=PROJECT_BUDGET_PLAN_ID_FOREIGN_KEY,
+    )
     allocation_mode: str = Field(nullable=False, max_length=16, default=AllocationMode.EQUAL)
     assigned_by: str = Field(nullable=False, max_length=255)
     assigned_at: Optional[datetime] = Field(
@@ -212,6 +266,7 @@ class ProjectBudgetAssignment(SQLModel, table=True):
         Index("ix_pba_budget_id", "budget_id"),
         Index("ix_pba_project_name", "project_name"),
         Index("ix_pba_project_category", "project_name", "budget_category"),
+        Index("ix_pba_plan_id", "plan_id"),
     )
 
 

@@ -757,6 +757,7 @@ app.include_router(dynamic_config.router)
 if is_litellm_enabled() and config.LLM_PROXY_BUDGET_CHECK_ENABLED:
     app.include_router(budget_router.router)
 app.include_router(project_budget_router.router)
+app.include_router(project_budget_router.plan_router)
 app.include_router(sharepoint_oauth.router)
 app.include_router(user_preferences_router.router)
 

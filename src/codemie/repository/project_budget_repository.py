@@ -21,7 +21,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from codemie.service.budget.budget_models import ProjectBudgetAssignment, ProjectMemberBudgetAssignment
+from codemie.service.budget.budget_models import (
+    ProjectBudgetAssignment,
+    ProjectBudgetPlan,
+    ProjectMemberBudgetAssignment,
+)
 from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 
 
@@ -431,6 +435,19 @@ class ProjectBudgetAssignmentRepository:
             for row in result.mappings().all()
         }
 
+    async def get_active_by_plan_id(
+        self,
+        session: AsyncSession,
+        plan_id: str,
+    ) -> list[ProjectBudgetAssignment]:
+        """Return all active assignments belonging to a plan."""
+        stmt = select(ProjectBudgetAssignment).where(
+            ProjectBudgetAssignment.plan_id == plan_id,
+            ProjectBudgetAssignment.deleted_at.is_(None),
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
     async def soft_delete(
         self,
         session: AsyncSession,
@@ -821,5 +838,66 @@ class ProjectMemberBudgetAssignmentRepository:
         return len(rows)
 
 
+class ProjectBudgetPlanRepository:
+    """Async repository for project_budget_plans."""
+
+    async def insert(self, session: AsyncSession, plan: ProjectBudgetPlan) -> ProjectBudgetPlan:
+        session.add(plan)
+        await session.flush()
+        await session.refresh(plan)
+        return plan
+
+    async def get_by_id(self, session: AsyncSession, plan_id: str) -> ProjectBudgetPlan | None:
+        stmt = select(ProjectBudgetPlan).where(ProjectBudgetPlan.id == plan_id)
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    async def get_active_by_project(self, session: AsyncSession, project_name: str) -> ProjectBudgetPlan | None:
+        """Return the single active (deleted_at IS NULL) plan for a project, or None."""
+        stmt = select(ProjectBudgetPlan).where(
+            ProjectBudgetPlan.project_name == project_name,
+            ProjectBudgetPlan.deleted_at.is_(None),
+        )
+        result = await session.execute(stmt)
+        return result.scalars().first()
+
+    async def list_by_project(self, session: AsyncSession, project_name: str) -> list[ProjectBudgetPlan]:
+        """Return all plans for a project ordered newest first (includes soft-deleted)."""
+        from sqlalchemy import desc
+
+        stmt = (
+            select(ProjectBudgetPlan)
+            .where(ProjectBudgetPlan.project_name == project_name)
+            .order_by(desc(ProjectBudgetPlan.created_at))
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def update(self, session: AsyncSession, plan_id: str, fields: dict) -> ProjectBudgetPlan:
+        """Partial update: apply provided values in fields dict."""
+        from codemie.core.exceptions import ExtendedHTTPException
+
+        plan = await self.get_by_id(session, plan_id)
+        if plan is None:
+            raise ExtendedHTTPException(code=404, message=f"ProjectBudgetPlan not found: {plan_id}")
+        for key, value in fields.items():
+            setattr(plan, key, value)
+        session.add(plan)
+        await session.flush()
+        await session.refresh(plan)
+        return plan
+
+    async def soft_delete(self, session: AsyncSession, plan_id: str) -> None:
+        """Soft-delete a plan by setting deleted_at to now."""
+        from datetime import datetime, timezone
+
+        plan = await self.get_by_id(session, plan_id)
+        if plan is not None:
+            plan.deleted_at = datetime.now(tz=timezone.utc)
+            session.add(plan)
+            await session.flush()
+
+
+project_budget_plan_repository = ProjectBudgetPlanRepository()
 project_budget_assignment_repository = ProjectBudgetAssignmentRepository()
 project_member_budget_assignment_repository = ProjectMemberBudgetAssignmentRepository()

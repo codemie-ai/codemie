@@ -30,8 +30,18 @@ from codemie.repository.project_budget_repository import (
 from codemie.rest_api.security.authentication import authenticate, maintainer_access_only
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory
-from codemie.service.budget.budget_models import Budget, ProjectBudgetAssignment, ProjectMemberBudgetAssignment
-from codemie.service.budget.project_budget_service import project_budget_service
+from codemie.service.budget.budget_models import (
+    Budget,
+    ProjectBudgetAssignment,
+    ProjectBudgetPlan,
+    ProjectMemberBudgetAssignment,
+)
+from codemie.service.budget.project_budget_service import (
+    ProjectBudgetPlanFullResult,
+    project_budget_service,
+)
+
+_DURATION_PATTERN = r"^\d+[smhd]$"
 
 router = APIRouter(
     tags=["Project Budgets"],
@@ -57,7 +67,7 @@ class ProjectBudgetCreateRequest(BaseModel):
     soft_budget: float = Field(ge=0)
     max_budget: float = Field(gt=0)
     budget_duration: str = Field(
-        pattern=r"^\d+[smhd]$",
+        pattern=_DURATION_PATTERN,
         description="e.g. '30d', '8h', '3600s'",
     )
     allocation_mode: str = Field(default=AllocationMode.EQUAL.value)
@@ -69,7 +79,7 @@ class ProjectBudgetUpdateRequest(BaseModel):
     description: Optional[str] = Field(default=None, max_length=500)
     soft_budget: Optional[float] = Field(default=None, ge=0)
     max_budget: Optional[float] = Field(default=None, gt=0)
-    budget_duration: Optional[str] = Field(default=None, pattern=r"^\d+[smhd]$")
+    budget_duration: Optional[str] = Field(default=None, pattern=_DURATION_PATTERN)
     models: Optional[list[str]] = Field(default=None, description="Model allow-list for this budget")
 
 
@@ -453,3 +463,244 @@ async def clear_member_override(
         budget, assignment, allocations = await project_budget_service.get_project_budget(session, budget_id)
         response = _build_project_budget_response(budget, assignment, allocations)
     return response
+
+
+# ==================== Plan router ====================
+
+
+plan_router = APIRouter(
+    tags=["Project Budget Plans"],
+    prefix="/v1/admin/project-budget-plans",
+    dependencies=[],
+)
+
+
+# ---- Plan request / response schemas ----
+
+
+class CategoryBudgetSpec(BaseModel):
+    pct: float = Field(gt=0, le=100, description="Percentage of total_amount allocated to this category")
+    soft_budget: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Soft limit as an absolute amount. Defaults to 80%% of the category max when omitted.",
+    )
+
+
+class ProjectBudgetPlanCreateRequest(BaseModel):
+    project_name: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=100)
+    total_amount: float = Field(gt=0, description="Total budget amount distributed across categories")
+    budget_duration: str = Field(pattern=_DURATION_PATTERN, description="e.g. '30d', '8h'")
+    description: str = Field(min_length=1, max_length=500)
+    categories: dict[str, CategoryBudgetSpec] = Field(
+        description="Category distribution keyed by BudgetCategory value (platform/cli/premium_models)"
+    )
+
+
+class CategoryBudgetSpecUpdate(BaseModel):
+    pct: float = Field(ge=0, le=100, description="Set to 0 to remove this category from the plan")
+    soft_budget: Optional[float] = Field(default=None, ge=0, description="Soft limit as an absolute amount.")
+
+
+class ProjectBudgetPlanUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    total_amount: Optional[float] = Field(default=None, gt=0)
+    budget_duration: Optional[str] = Field(default=None, pattern=_DURATION_PATTERN)
+    description: Optional[str] = Field(default=None, max_length=500)
+    categories: Optional[dict[str, CategoryBudgetSpecUpdate]] = Field(default=None)
+
+
+class CategoryBudgetDetailResponse(BaseModel):
+    budget_id: str
+    category: str
+    max_budget: float
+    soft_budget: float
+    budget_duration: str
+    member_count: int
+    allocated_member_budget_total: float
+    provider_sync_status: Optional[str]
+    budget_reset_at: Optional[str]
+    created_at: Optional[datetime]
+
+    model_config = {'from_attributes': True}
+
+
+class ProjectBudgetPlanResponse(BaseModel):
+    plan_id: str
+    project_name: str
+    name: str = ""
+    budget_duration: str
+    total_amount: float
+    description: Optional[str] = None
+    created_by: str
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+    deleted_at: Optional[datetime]
+    categories: list[CategoryBudgetDetailResponse]
+
+    model_config = {'from_attributes': True}
+
+
+class PaginatedPlanListResponse(BaseModel):
+    items: list[ProjectBudgetPlanResponse]
+    total: int
+
+
+# ---- Plan helpers ----
+
+
+def _build_plan_response(result: ProjectBudgetPlanFullResult) -> ProjectBudgetPlanResponse:
+    categories = []
+    for cat in result.categories:
+        provider_meta = cat.budget.provider_metadata or {}
+        categories.append(
+            CategoryBudgetDetailResponse(
+                budget_id=cat.budget.budget_id,
+                category=cat.budget.budget_category,
+                max_budget=cat.budget.max_budget,
+                soft_budget=cat.budget.soft_budget,
+                budget_duration=cat.budget.budget_duration,
+                member_count=len(cat.allocations),
+                allocated_member_budget_total=sum(a.allocated_max_budget for a in cat.allocations),
+                provider_sync_status=provider_meta.get('sync_status'),
+                budget_reset_at=cat.budget.budget_reset_at,
+                created_at=cat.budget.created_at,
+            )
+        )
+    return ProjectBudgetPlanResponse(
+        plan_id=result.plan.id,
+        project_name=result.plan.project_name,
+        name=result.plan.name,
+        budget_duration=result.plan.budget_duration,
+        total_amount=result.total_amount,
+        description=result.plan.description,
+        created_by=result.plan.created_by,
+        created_at=result.plan.created_at,
+        updated_at=result.plan.updated_at,
+        deleted_at=result.plan.deleted_at,
+        categories=categories,
+    )
+
+
+def _build_plan_response_from_plan(plan: ProjectBudgetPlan) -> ProjectBudgetPlanResponse:
+    return ProjectBudgetPlanResponse(
+        plan_id=plan.id,
+        project_name=plan.project_name,
+        name=plan.name,
+        budget_duration=plan.budget_duration,
+        total_amount=0.0,
+        description=plan.description,
+        created_by=plan.created_by,
+        created_at=plan.created_at,
+        updated_at=plan.updated_at,
+        deleted_at=plan.deleted_at,
+        categories=[],
+    )
+
+
+# ---- Plan endpoints ----
+
+
+@plan_router.post('', response_model=ProjectBudgetPlanResponse, status_code=201)
+async def create_project_budget_plan(
+    payload: ProjectBudgetPlanCreateRequest,
+    user: User = Depends(authenticate),
+    _: None = Depends(maintainer_access_only),
+):
+    """Create a unified budget plan for a project, distributing a total amount across categories."""
+    _require_budgeting_enabled()
+    async with get_async_session() as session:
+        result = await project_budget_service.create_project_budget_plan(session, payload, actor_id=user.id)
+        new_plan_id = result.plan.id
+        await session.commit()
+        result = await project_budget_service.get_project_budget_plan(session, new_plan_id)
+    return _build_plan_response(result)
+
+
+@plan_router.get('', response_model=PaginatedPlanListResponse)
+async def list_project_budget_plans(
+    project_name: str = Query(..., min_length=1),
+    user: User = Depends(authenticate),
+):
+    """List all budget plans for a project (includes audit history)."""
+    _require_budgeting_enabled()
+    _ensure_project_budget_read_access(user, project_name)
+    async with get_async_session() as session:
+        plans = await project_budget_service.list_project_budget_plans(session, project_name)
+    items = [_build_plan_response_from_plan(p) for p in plans]
+    return PaginatedPlanListResponse(items=items, total=len(items))
+
+
+@plan_router.get('/{plan_id}', response_model=ProjectBudgetPlanResponse)
+async def get_project_budget_plan(
+    plan_id: str,
+    user: User = Depends(authenticate),
+):
+    """Get a budget plan with all its category breakdowns."""
+    _require_budgeting_enabled()
+    async with get_async_session() as session:
+        result = await project_budget_service.get_project_budget_plan(session, plan_id)
+        _ensure_project_budget_read_access(user, result.plan.project_name)
+    return _build_plan_response(result)
+
+
+@plan_router.put('/{plan_id}', response_model=ProjectBudgetPlanResponse)
+async def update_project_budget_plan(
+    plan_id: str,
+    payload: ProjectBudgetPlanUpdateRequest,
+    user: User = Depends(authenticate),
+    _: None = Depends(maintainer_access_only),
+):
+    """Update a budget plan in-place (total amount, duration, or category distribution)."""
+    _require_budgeting_enabled()
+    async with get_async_session() as session:
+        await project_budget_service.update_project_budget_plan(
+            session, plan_id=plan_id, data=payload, actor_id=user.id
+        )
+        await session.commit()
+        result = await project_budget_service.get_project_budget_plan(session, plan_id)
+    return _build_plan_response(result)
+
+
+@plan_router.delete('/{plan_id}', status_code=204)
+async def delete_project_budget_plan(
+    plan_id: str,
+    user: User = Depends(authenticate),
+    _: None = Depends(maintainer_access_only),
+):
+    """Soft-delete a budget plan and all its category budgets."""
+    _require_budgeting_enabled()
+    async with get_async_session() as session:
+        await project_budget_service.delete_project_budget_plan(session, plan_id=plan_id, actor_id=user.id)
+        await session.commit()
+
+
+@plan_router.post('/{plan_id}/reset', response_model=ProjectBudgetPlanResponse)
+async def reset_project_budget_plan(
+    plan_id: str,
+    user: User = Depends(authenticate),
+    _: None = Depends(maintainer_access_only),
+):
+    """Reset spend counters for all category budgets in a plan."""
+    _require_budgeting_enabled()
+    async with get_async_session() as session:
+        await project_budget_service.reset_project_budget_plan(session, plan_id=plan_id, actor_id=user.id)
+        await session.commit()
+        result = await project_budget_service.get_project_budget_plan(session, plan_id)
+    return _build_plan_response(result)
+
+
+@plan_router.post('/{plan_id}/rebalance', response_model=ProjectBudgetPlanResponse)
+async def rebalance_project_budget_plan(
+    plan_id: str,
+    user: User = Depends(authenticate),
+    _: None = Depends(maintainer_access_only),
+):
+    """Rebalance member allocations for all category budgets in a plan."""
+    _require_budgeting_enabled()
+    async with get_async_session() as session:
+        await project_budget_service.rebalance_project_budget_plan(session, plan_id=plan_id, actor_id=user.id)
+        await session.commit()
+        result = await project_budget_service.get_project_budget_plan(session, plan_id)
+    return _build_plan_response(result)
