@@ -61,7 +61,7 @@ alembic-postgresql-enum = "^1.7.0"
 aiosmtplib = "^3.0.0"
 argon2-cffi = "^23.1.0"
 slowapi = "^0.1.9"
-tornado = "^6.5.5"
+tornado = "~6.5.6"  # Security (EPMCDME-12871): pin >=6.5.6 to fix CVE-2026-49853, CVE-2026-49855 (tornado HTTP request smuggling / header injection)
 ipykernel = "^6.25.2"
 pytesseract = "^0.3.13"
 langgraph-supervisor = "0.0.31"
