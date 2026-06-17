@@ -203,7 +203,7 @@ class ProjectDetailResponse(BaseModel):
     created_at: Optional[datetime] = None
     cost_center_id: Optional[UUID] = None
     cost_center_name: Optional[str] = None
-    project_member_budget_tracking_enabled: bool = False
+    enforce_member_spend_limits: bool = False
     members: list[ProjectMember]
     spending: Optional[ProjectSpendingDetail] = None
     spending_widget: Optional[ProjectSpendingWidget] = None
@@ -223,7 +223,7 @@ class ProjectCreateResponse(BaseModel):
     created_at: datetime
     cost_center_id: Optional[UUID] = None
     cost_center_name: Optional[str] = None
-    project_member_budget_tracking_enabled: bool = False
+    enforce_member_spend_limits: bool = False
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -231,7 +231,7 @@ class ProjectUpdateRequest(BaseModel):
     description: Optional[str] = None
     cost_center_id: Optional[UUID] = None
     clear_cost_center: bool = False
-    project_member_budget_tracking_enabled: Optional[bool] = None
+    enforce_member_spend_limits: Optional[bool] = None
 
     @model_validator(mode="after")
     def validate_non_empty(self):
@@ -239,7 +239,7 @@ class ProjectUpdateRequest(BaseModel):
             self.name is None
             and self.description is None
             and self.cost_center_id is None
-            and self.project_member_budget_tracking_enabled is None
+            and self.enforce_member_spend_limits is None
             and not self.clear_cost_center
         ):
             raise ValueError("At least one mutable field must be provided")
@@ -629,7 +629,7 @@ def create_project(payload: ProjectCreateRequest, user: User = Depends(authentic
         created_at=project.date,
         cost_center_id=getattr(project, "cost_center_id", None),
         cost_center_name=_resolve_cost_center_name(getattr(project, "cost_center_id", None)),
-        project_member_budget_tracking_enabled=SettingsService.get_project_member_budget_tracking_enabled(project.name),
+        enforce_member_spend_limits=SettingsService.get_enforce_member_spend_limits(project.name),
     )
 
 
@@ -773,7 +773,7 @@ def _build_project_detail_response(project_detail: dict, project_name: str) -> P
         admin_count=project_detail["admin_count"],
         cost_center_id=project_detail.get("cost_center_id"),
         cost_center_name=project_detail.get("cost_center_name"),
-        project_member_budget_tracking_enabled=SettingsService.get_project_member_budget_tracking_enabled(project_name),
+        enforce_member_spend_limits=SettingsService.get_enforce_member_spend_limits(project_name),
         members=[ProjectMember(**m) for m in project_detail["members"]],
     )
 
@@ -875,7 +875,7 @@ def update_project(
         description=payload.description,
         cost_center_id=None if payload.clear_cost_center else payload.cost_center_id,
         clear_cost_center=payload.clear_cost_center,
-        project_member_budget_tracking_enabled=payload.project_member_budget_tracking_enabled,
+        enforce_member_spend_limits=payload.enforce_member_spend_limits,
     )
 
     return ProjectCreateResponse(
@@ -886,7 +886,7 @@ def update_project(
         created_at=project.date or datetime.now(UTC),
         cost_center_id=getattr(project, "cost_center_id", None),
         cost_center_name=_resolve_cost_center_name(getattr(project, "cost_center_id", None)),
-        project_member_budget_tracking_enabled=SettingsService.get_project_member_budget_tracking_enabled(project.name),
+        enforce_member_spend_limits=SettingsService.get_enforce_member_spend_limits(project.name),
     )
 
 

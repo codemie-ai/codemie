@@ -338,6 +338,7 @@ class BudgetEnforcementProvider(Protocol):
         *,
         allocation: "ProjectMemberBudgetAssignment",
         budget: "Budget",
+        effective_max_budget: float | None = None,
     ) -> BudgetProviderMemberState: ...
 
     async def delete_member_allocation(

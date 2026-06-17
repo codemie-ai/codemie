@@ -403,7 +403,7 @@ class TestProjectsVisibilityEndpoints:
         mock_get_latest_budget_rows.assert_awaited_once()
 
     @patch("codemie.rest_api.routers.projects.config")
-    @patch("codemie.rest_api.routers.projects.SettingsService.get_project_member_budget_tracking_enabled")
+    @patch("codemie.rest_api.routers.projects.SettingsService.get_enforce_member_spend_limits")
     @patch("codemie.rest_api.routers.projects._get_project_detail_sync")
     @pytest.mark.anyio
     async def test_get_project_detail_includes_project_member_budget_tracking_flag(
@@ -443,7 +443,7 @@ class TestProjectsVisibilityEndpoints:
         )
 
         assert isinstance(result, ProjectDetailResponse)
-        assert result.project_member_budget_tracking_enabled is True
+        assert result.enforce_member_spend_limits is True
         mock_get_tracking_enabled.assert_called_once_with("proj-a")
 
     @patch("codemie.rest_api.routers.projects.config")
@@ -1450,7 +1450,7 @@ class TestUpdateProjectEndpoint:
             description="new description",
             cost_center_id=None,
             clear_cost_center=False,
-            project_member_budget_tracking_enabled=None,
+            enforce_member_spend_limits=None,
         )
 
     @patch("codemie.rest_api.routers.projects.config")
@@ -1486,7 +1486,7 @@ class TestUpdateProjectEndpoint:
             description=None,
             cost_center_id=cost_center_id,
             clear_cost_center=False,
-            project_member_budget_tracking_enabled=None,
+            enforce_member_spend_limits=None,
         )
 
     @patch("codemie.rest_api.routers.projects.config")
@@ -1521,7 +1521,7 @@ class TestUpdateProjectEndpoint:
             description=None,
             cost_center_id=None,
             clear_cost_center=True,
-            project_member_budget_tracking_enabled=None,
+            enforce_member_spend_limits=None,
         )
 
     @patch("codemie.rest_api.routers.projects.config")
@@ -1543,7 +1543,7 @@ class TestUpdateProjectEndpoint:
 
         user = MagicMock(id="user-1")
         update_project(
-            payload=ProjectUpdateRequest(project_member_budget_tracking_enabled=True),
+            payload=ProjectUpdateRequest(enforce_member_spend_limits=True),
             project_name="my-project",
             user=user,
         )
@@ -1555,7 +1555,7 @@ class TestUpdateProjectEndpoint:
             description=None,
             cost_center_id=None,
             clear_cost_center=False,
-            project_member_budget_tracking_enabled=True,
+            enforce_member_spend_limits=True,
         )
 
     @patch("codemie.rest_api.routers.projects.config")
@@ -1589,8 +1589,8 @@ class TestUpdateProjectEndpoint:
             ProjectUpdateRequest(cost_center_id=uuid4(), clear_cost_center=True)
 
     def test_request_model_accepts_budget_tracking_flag_as_mutable_field(self):
-        request = ProjectUpdateRequest(project_member_budget_tracking_enabled=True)
-        assert request.project_member_budget_tracking_enabled is True
+        request = ProjectUpdateRequest(enforce_member_spend_limits=True)
+        assert request.enforce_member_spend_limits is True
 
 
 @pytest.fixture

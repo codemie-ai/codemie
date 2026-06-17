@@ -496,6 +496,20 @@ class ProjectMemberBudgetAssignmentRepository:
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_active_by_project(
+        self,
+        session: AsyncSession,
+        project_name: str,
+    ) -> list[ProjectMemberBudgetAssignment]:
+        """Return all active member allocations for the given project."""
+        result = await session.execute(
+            select(ProjectMemberBudgetAssignment).where(
+                ProjectMemberBudgetAssignment.project_name == project_name,
+                ProjectMemberBudgetAssignment.deleted_at.is_(None),
+            )
+        )
+        return list(result.scalars().all())
+
     async def get_active_by_project_category_user(
         self,
         session: AsyncSession,

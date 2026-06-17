@@ -640,13 +640,10 @@ async def _create_body_stream_with_optional_injection(
     )
     project_name = request_info.get(PROJECT) or None
     if project_runtime is not None:
-        from codemie.service.settings.settings import SettingsService
-
-        member_tracking_enabled = SettingsService.get_project_member_budget_tracking_enabled(project_name)
         selection = select_runtime_budget_mode(
             has_user_litellm_credentials=False,
             project_name=project_name,
-            project_member_tracking_enabled=member_tracking_enabled,
+            project_member_tracking_enabled=True,
             resolved_project_budget=True,
         )
         project_runtime_username = project_runtime.body_overrides.get("user")

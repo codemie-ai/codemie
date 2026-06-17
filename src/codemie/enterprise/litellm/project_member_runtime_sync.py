@@ -104,14 +104,6 @@ async def ensure_project_member_runtime_ready(
         f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
         f"budget_category={budget_category.value!r}"
     )
-    if not SettingsService.get_project_member_budget_tracking_enabled(project_name):
-        logger.debug(
-            f"budget_event=runtime_member_sync_skipped component=project_member_runtime_sync "
-            f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
-            f"budget_category={budget_category.value!r} reason=member_tracking_disabled"
-        )
-        return
-
     async with get_async_session() as session:
         resolved = await budget_resolution_service.resolve(
             session,
@@ -188,6 +180,9 @@ async def ensure_project_member_runtime_ready(
                 f"project={project_name!r}, budget_category={budget_category.value!r}, user_id={user_id!r}"
             )
 
+        enforce_limit = SettingsService.get_enforce_member_spend_limits(project_name)
+        effective_max_budget = allocation.allocated_max_budget if enforce_limit else budget.max_budget
+
         effective_budget_id = _effective_budget_id_for_member(
             budget_id=resolved.budget_id,
             user_id=user_id,
@@ -204,7 +199,11 @@ async def ensure_project_member_runtime_ready(
                 f"budget_id={resolved.budget_id!r} effective_budget_id={effective_budget_id!r} "
                 f"budget_category={budget_category.value!r} allocation_id={allocation.id!r}"
             )
-            member_state = await get_active_provider().sync_member_allocation(allocation=allocation, budget=budget)
+            member_state = await get_active_provider().sync_member_allocation(
+                allocation=allocation,
+                budget=budget,
+                effective_max_budget=effective_max_budget,
+            )
         except Exception as exc:
             logger.error(
                 f"budget_event=runtime_member_sync_failed component=project_member_runtime_sync "
@@ -262,6 +261,103 @@ async def ensure_project_member_runtime_ready(
             f"provider_budget_id={member_state.provider_budget_id!r} sync_status={sync_status!r} "
             f"cache_invalidated=true"
         )
+
+
+async def resync_project_member_allocations(project_name: str, enforce_limit: bool) -> None:
+    """Re-sync max_budget for all already-synced member allocations after enforcement flag toggle.
+
+    Skips allocations that have never been synced (no provider_member_ref) — they will
+    pick up the new enforcement state lazily on their first LLM request.
+    """
+    provider = get_active_provider()
+    async with get_async_session() as session:
+        allocations = await project_member_budget_assignment_repository.get_active_by_project(
+            session, project_name=project_name
+        )
+        updated = 0
+        for allocation in allocations:
+            provider_member_ref = _metadata_value(allocation.provider_metadata or {}, "provider_member_ref")
+            if not provider_member_ref:
+                continue
+            budget = await budget_repository.get_by_id(session, allocation.project_budget_id)
+            if budget is None:
+                logger.warning(
+                    f"budget_event=member_resync_skipped component=project_member_runtime_sync "
+                    f"project_name={project_name!r} allocation_id={allocation.id!r} "
+                    f"reason=budget_row_missing"
+                )
+                continue
+            effective_max_budget = allocation.allocated_max_budget if enforce_limit else budget.max_budget
+            try:
+                member_state = await provider.sync_member_allocation(
+                    allocation=allocation,
+                    budget=budget,
+                    effective_max_budget=effective_max_budget,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"budget_event=member_resync_failed component=project_member_runtime_sync "
+                    f"project_name={project_name!r} user_id={allocation.user_id!r} "
+                    f"allocation_id={allocation.id!r} error={exc}"
+                )
+                continue
+            sync_status = str(member_state.sync_status)
+            if sync_status not in _ALLOWED_SYNC_STATUSES:
+                logger.warning(
+                    f"budget_event=member_resync_unexpected_status component=project_member_runtime_sync "
+                    f"project_name={project_name!r} allocation_id={allocation.id!r} sync_status={sync_status!r}"
+                )
+                continue
+            metadata = _build_member_provider_metadata(member_state)
+            await project_member_budget_assignment_repository.update_provider_metadata(
+                session,
+                allocation_id=allocation.id,
+                provider_metadata=metadata,
+                sync_status=sync_status,
+                budget_reset_at=member_state.budget_reset_at,
+            )
+            updated += 1
+        await session.commit()
+    logger.info(
+        f"budget_event=member_resync_completed component=project_member_runtime_sync "
+        f"project_name={project_name!r} enforce_limit={enforce_limit} "
+        f"total={len(allocations)} updated={updated}"
+    )
+
+
+def resync_project_member_allocations_sync(project_name: str, enforce_limit: bool) -> None:
+    """Synchronous bridge for resync_project_member_allocations.
+
+    Uses the same event-loop bridging pattern as ensure_project_member_runtime_ready_sync.
+    """
+    coro = resync_project_member_allocations(project_name=project_name, enforce_limit=enforce_limit)
+
+    loop = _main_event_loop
+    if loop is not None and loop.is_running():
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        future.result(timeout=30)
+        return
+
+    thread_error: list[Exception] = []
+
+    def _run_in_thread() -> None:
+        try:
+            asyncio.run(coro)
+        except Exception as exc:
+            thread_error.append(exc)
+
+    worker = threading.Thread(
+        target=_run_in_thread,
+        name="project-member-resync",
+        daemon=False,
+    )
+    worker.start()
+    worker.join(timeout=30)
+
+    if worker.is_alive():
+        raise RuntimeError(f"resync_project_member_allocations timed out after 30 s for project_name={project_name!r}")
+    if thread_error:
+        raise thread_error[0]
 
 
 def ensure_project_member_runtime_ready_sync(

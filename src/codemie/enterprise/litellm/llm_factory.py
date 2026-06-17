@@ -603,30 +603,18 @@ def _resolve_direct_project_budget_runtime(
         availability=availability,
     )
 
-    from codemie.service.settings.settings import SettingsService
-
     project_name = litellm_context.current_project
     logger.info(
         f"budget_event=runtime_category_selected component=litellm_llm_factory "
         f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
         f"budget_category={category.value!r} model={llm_model_details.base_name!r}"
     )
-    member_tracking_enabled = SettingsService.get_project_member_budget_tracking_enabled(project_name)
-
-    if member_tracking_enabled:
-        ensure_project_member_runtime_ready_sync(
-            user_id=user_id,
-            user_email=user_email,
-            project_name=project_name,
-            budget_category=category,
-        )
-    else:
-        logger.info(
-            f"budget_event=runtime_member_sync_skipped component=litellm_llm_factory path=sync "
-            f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
-            f"budget_category={category.value!r} model={llm_model_details.base_name!r} "
-            f"reason=member_tracking_disabled"
-        )
+    ensure_project_member_runtime_ready_sync(
+        user_id=user_id,
+        user_email=user_email,
+        project_name=project_name,
+        budget_category=category,
+    )
 
     resolved = budget_resolution_service.resolve_sync(
         user_id=user_id,
@@ -656,7 +644,7 @@ def _resolve_direct_project_budget_runtime(
     selection = select_runtime_budget_mode(
         has_user_litellm_credentials=False,
         project_name=project_name,
-        project_member_tracking_enabled=member_tracking_enabled,
+        project_member_tracking_enabled=True,
         resolved_project_budget=True,
     )
     runtime_user = provider_result.body_overrides.get("user")
@@ -664,7 +652,7 @@ def _resolve_direct_project_budget_runtime(
         f"budget_event=runtime_mode_selected component=litellm_llm_factory "
         f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
         f"budget_category={category.value!r} model={llm_model_details.base_name!r} "
-        f"mode={selection.mode.value!r} member_tracking_enabled={member_tracking_enabled} "
+        f"mode={selection.mode.value!r} "
         f"api_key_present={provider_result.api_key is not None} "
         f"api_key_fingerprint={_anonymized_key_fingerprint(provider_result.api_key)!r} "
         f"headers_applied={bool(provider_result.headers)} "

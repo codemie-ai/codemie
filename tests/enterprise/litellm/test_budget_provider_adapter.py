@@ -213,3 +213,35 @@ async def test_list_personal_budget_assignments_normalizes_identifiers_and_skips
     assert entries[0].budget_id == "cli-budget"
     assert entries[0].budget_category == BudgetCategory.CLI
     assert entries[1].budget_category == BudgetCategory.PLATFORM
+
+
+@pytest.mark.asyncio
+async def test_sync_member_allocation_uses_effective_max_budget_when_provided():
+    allocation = SimpleNamespace(
+        project_budget_id="proj-budget-1",
+        project_name="proj-a",
+        budget_category="cli",
+        user_id="user-1",
+        allocated_max_budget=100.0,
+        allocated_soft_budget=80.0,
+    )
+    budget = SimpleNamespace(budget_duration="30d", budget_reset_at="2026-04-22T10:00:00Z")
+    service_result = SimpleNamespace(
+        provider_member_ref="codemie:project:proj-a:category:cli:user:user-1",
+        budget_id="member-budget-1",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        metadata={},
+    )
+
+    mock_service = MagicMock()
+    adapter = LiteLLMBudgetEnforcementProvider(service=mock_service)
+
+    with patch(
+        "codemie.enterprise.litellm.budget_provider_adapter.asyncio.to_thread",
+        return_value=service_result,
+    ) as mock_to_thread:
+        result = await adapter.sync_member_allocation(allocation=allocation, budget=budget, effective_max_budget=500.0)
+
+    assert result.sync_status == SyncStatus.OK
+    _, call_kwargs = mock_to_thread.call_args
+    assert call_kwargs.get("allocated_max_budget") == 500.0

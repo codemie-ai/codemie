@@ -119,7 +119,7 @@ class SettingsService(BaseSettingsService):
     AUTH_VALUE = "auth_value"
     IS_CLOUD = "is_cloud"
     ENABLED = "enabled"
-    PROJECT_MEMBER_BUDGET_TRACKING_ALIAS = "project_member_budget_tracking_enabled"
+    ENFORCE_MEMBER_SPEND_LIMITS_ALIAS = "project_member_budget_tracking_enabled"
 
     LIST_OF_SENSITIVE_FIELDS: List[str] = [
         TOKEN,
@@ -819,14 +819,14 @@ class SettingsService(BaseSettingsService):
         return cls._build_credential_result(setting, cls.LITELLM_FIELDS, LiteLLMCredentials)
 
     @classmethod
-    def get_project_member_budget_tracking_enabled(cls, project_name: str) -> bool:
-        """Return whether project-member budget tracking is enabled for the project."""
+    def get_enforce_member_spend_limits(cls, project_name: str) -> bool:
+        """Return whether individual member spend limit enforcement is enabled for the project."""
         if not project_name:
             return False
 
         setting = cls.retrieve_setting(
             {
-                SearchFields.ALIAS: cls.PROJECT_MEMBER_BUDGET_TRACKING_ALIAS,
+                SearchFields.ALIAS: cls.ENFORCE_MEMBER_SPEND_LIMITS_ALIAS,
                 SearchFields.PROJECT_NAME: project_name,
                 SearchFields.CREDENTIAL_TYPE: CredentialTypes.ENVIRONMENT_VARS,
                 SearchFields.SETTING_TYPE: SettingType.PROJECT.value,
@@ -839,14 +839,14 @@ class SettingsService(BaseSettingsService):
         return str(enabled).lower() == "true"
 
     @classmethod
-    def set_project_member_budget_tracking_enabled(cls, project_name: str, enabled: bool) -> None:
-        """Persist the project-wide project-member budget tracking flag."""
+    def set_enforce_member_spend_limits(cls, project_name: str, enabled: bool) -> None:
+        """Persist the project-wide member spend enforcement flag."""
         if not project_name:
             return
 
         cls.upsert_project_setting(
             project_name=project_name,
-            alias=cls.PROJECT_MEMBER_BUDGET_TRACKING_ALIAS,
+            alias=cls.ENFORCE_MEMBER_SPEND_LIMITS_ALIAS,
             credential_type=CredentialTypes.ENVIRONMENT_VARS,
             credential_values=[CredentialValues(key=cls.ENABLED, value=str(enabled).lower())],
         )

@@ -1152,15 +1152,20 @@ class LiteLLMBudgetEnforcementProvider:
         *,
         allocation: "ProjectMemberBudgetAssignment",
         budget: "Budget",
+        effective_max_budget: float | None = None,
     ) -> BudgetProviderMemberState:
         effective_budget_id = _effective_project_member_budget_id(allocation)
         allocation_id = getattr(allocation, "id", None)
+        resolved_max_budget = (
+            effective_max_budget if effective_max_budget is not None else allocation.allocated_max_budget
+        )
         logger.debug(
             f"budget_event=provider_member_budget_sync_started component=litellm_budget_provider "
             f"provider={_PROVIDER_NAME!r} project_name={allocation.project_name!r} "
             f"budget_id={allocation.project_budget_id!r} effective_budget_id={effective_budget_id!r} "
             f"budget_category={allocation.budget_category!r} allocation_id={allocation_id!r} "
             f"user_id={allocation.user_id!r} allocated_max_budget={allocation.allocated_max_budget!r} "
+            f"resolved_max_budget={resolved_max_budget!r} enforcement_override={effective_max_budget is not None} "
             f"allocated_soft_budget={allocation.allocated_soft_budget!r}"
         )
         service = self._get_service()
@@ -1179,7 +1184,7 @@ class LiteLLMBudgetEnforcementProvider:
             project_name=allocation.project_name,
             budget_category=allocation.budget_category,
             user_id=allocation.user_id,
-            allocated_max_budget=allocation.allocated_max_budget,
+            allocated_max_budget=resolved_max_budget,
             allocated_soft_budget=allocation.allocated_soft_budget,
             budget_duration=budget.budget_duration,
             budget_reset_at=budget.budget_reset_at,
@@ -1302,24 +1307,20 @@ class LiteLLMBudgetEnforcementProvider:
         )
 
         provider_member_ref = _metadata_value(context.member_provider_metadata, "provider_member_ref")
-        member_tracking_enabled = bool(
-            context.project_name and SettingsService.get_project_member_budget_tracking_enabled(context.project_name)
-        )
         logger.debug(
             f"budget_event=runtime_mode_selected component=litellm_budget_provider provider={_PROVIDER_NAME!r} "
             f"user_id={context.user_id!r} username={context.user_email!r} project_name={context.project_name!r} "
             f"budget_id={context.budget_id!r} budget_category={context.budget_category.value!r} "
-            f"model={context.model!r} member_tracking_enabled={member_tracking_enabled} "
-            f"provider_member_ref={provider_member_ref!r}"
+            f"model={context.model!r} provider_member_ref={provider_member_ref!r}"
         )
-        if member_tracking_enabled and provider_member_ref:
+        if provider_member_ref:
             logger.debug(
                 f"budget_event=runtime_provider_overrides_applied component=litellm_budget_provider "
                 f"provider={_PROVIDER_NAME!r} user_id={context.user_id!r} username={context.user_email!r} "
                 f"project_name={context.project_name!r} budget_id={context.budget_id!r} "
                 f"budget_category={context.budget_category.value!r} model={context.model!r} "
                 f"api_key_present={project_api_key is not None} base_url_present={project_base_url is not None} "
-                f"member_tracking_enabled={member_tracking_enabled} provider_member_ref={provider_member_ref!r} "
+                f"provider_member_ref={provider_member_ref!r} "
                 f"headers_applied=true body_overrides_applied=true"
             )
             return BudgetRuntimeProviderResult(
@@ -1335,7 +1336,7 @@ class LiteLLMBudgetEnforcementProvider:
             f"project_name={context.project_name!r} budget_id={context.budget_id!r} "
             f"budget_category={context.budget_category.value!r} model={context.model!r} "
             f"api_key_present={project_api_key is not None} base_url_present={project_base_url is not None} "
-            f"member_tracking_enabled={member_tracking_enabled} provider_member_ref={provider_member_ref!r} "
+            f"provider_member_ref={provider_member_ref!r} "
             f"headers_applied=false body_overrides_applied=false"
         )
         return BudgetRuntimeProviderResult(

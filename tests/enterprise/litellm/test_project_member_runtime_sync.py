@@ -24,6 +24,7 @@ import pytest
 from codemie.enterprise.litellm.project_member_runtime_sync import (
     ensure_project_member_runtime_ready,
     ensure_project_member_runtime_ready_sync,
+    resync_project_member_allocations,
 )
 from codemie.service.budget.budget_enums import BudgetCategory, BudgetScope, SyncStatus
 from codemie.service.budget.budget_resolution_service import (
@@ -74,8 +75,10 @@ def _project_context(
 async def test_syncs_member_allocation_and_persists_runtime_metadata():
     session = AsyncMock()
     resolved = _project_context(member_provider_metadata={})
-    allocation = SimpleNamespace(id=ALLOCATION_ID)
-    budget = SimpleNamespace(budget_id=BUDGET_ID, budget_duration="30d", budget_reset_at="2026-04-22T10:00:00Z")
+    allocation = SimpleNamespace(id=ALLOCATION_ID, allocated_max_budget=50.0)
+    budget = SimpleNamespace(
+        budget_id=BUDGET_ID, budget_duration="30d", budget_reset_at="2026-04-22T10:00:00Z", max_budget=100.0
+    )
     provider_state = BudgetProviderMemberState(
         provider="litellm",
         provider_member_ref="member-ref-1",
@@ -94,7 +97,7 @@ async def test_syncs_member_allocation_and_persists_runtime_metadata():
             return_value=_mock_session_ctx(session),
         ),
         patch(
-            "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
+            "codemie.service.settings.settings.SettingsService.get_enforce_member_spend_limits",
             return_value=True,
         ),
         patch(
@@ -127,7 +130,9 @@ async def test_syncs_member_allocation_and_persists_runtime_metadata():
             budget_category=BUDGET_CATEGORY,
         )
 
-    provider.sync_member_allocation.assert_awaited_once_with(allocation=allocation, budget=budget)
+    provider.sync_member_allocation.assert_awaited_once_with(
+        allocation=allocation, budget=budget, effective_max_budget=50.0
+    )
     mock_update_provider_metadata.assert_awaited_once()
     update_call = mock_update_provider_metadata.await_args.kwargs
     assert update_call["allocation_id"] == ALLOCATION_ID
@@ -157,7 +162,7 @@ async def test_skips_sync_when_member_provider_ref_already_exists():
             return_value=_mock_session_ctx(session),
         ),
         patch(
-            "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
+            "codemie.service.settings.settings.SettingsService.get_enforce_member_spend_limits",
             return_value=True,
         ),
         patch(
@@ -200,7 +205,7 @@ async def test_skips_sync_when_member_provider_ref_exists_in_raw_metadata():
             return_value=_mock_session_ctx(session),
         ),
         patch(
-            "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
+            "codemie.service.settings.settings.SettingsService.get_enforce_member_spend_limits",
             return_value=True,
         ),
         patch(
@@ -232,8 +237,10 @@ async def test_skips_sync_when_member_provider_ref_exists_in_raw_metadata():
 async def test_resyncs_when_provider_member_ref_exists_but_budget_id_is_missing():
     session = AsyncMock()
     resolved = _project_context(member_provider_metadata={"provider_member_ref": "existing-ref"})
-    allocation = SimpleNamespace(id=ALLOCATION_ID)
-    budget = SimpleNamespace(budget_id=BUDGET_ID, budget_duration="30d", budget_reset_at="2026-04-22T10:00:00Z")
+    allocation = SimpleNamespace(id=ALLOCATION_ID, allocated_max_budget=50.0)
+    budget = SimpleNamespace(
+        budget_id=BUDGET_ID, budget_duration="30d", budget_reset_at="2026-04-22T10:00:00Z", max_budget=100.0
+    )
     provider_state = BudgetProviderMemberState(
         provider="litellm",
         provider_member_ref="existing-ref",
@@ -250,7 +257,7 @@ async def test_resyncs_when_provider_member_ref_exists_but_budget_id_is_missing(
             return_value=_mock_session_ctx(session),
         ),
         patch(
-            "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
+            "codemie.service.settings.settings.SettingsService.get_enforce_member_spend_limits",
             return_value=True,
         ),
         patch(
@@ -283,7 +290,9 @@ async def test_resyncs_when_provider_member_ref_exists_but_budget_id_is_missing(
             budget_category=BUDGET_CATEGORY,
         )
 
-    provider.sync_member_allocation.assert_awaited_once_with(allocation=allocation, budget=budget)
+    provider.sync_member_allocation.assert_awaited_once_with(
+        allocation=allocation, budget=budget, effective_max_budget=50.0
+    )
 
 
 @pytest.mark.asyncio
@@ -302,7 +311,7 @@ async def test_skips_sync_when_resolved_scope_is_not_project():
             return_value=_mock_session_ctx(session),
         ),
         patch(
-            "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
+            "codemie.service.settings.settings.SettingsService.get_enforce_member_spend_limits",
             return_value=True,
         ),
         patch(
@@ -335,7 +344,7 @@ async def test_raises_runtime_error_when_allocation_is_missing():
             return_value=_mock_session_ctx(session),
         ),
         patch(
-            "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
+            "codemie.service.settings.settings.SettingsService.get_enforce_member_spend_limits",
             return_value=True,
         ),
         patch(
@@ -380,7 +389,7 @@ async def test_raises_runtime_error_when_resolved_budget_id_is_missing():
             return_value=_mock_session_ctx(session),
         ),
         patch(
-            "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
+            "codemie.service.settings.settings.SettingsService.get_enforce_member_spend_limits",
             return_value=True,
         ),
         patch(
@@ -425,7 +434,7 @@ async def test_raises_runtime_error_when_budget_is_missing():
             return_value=_mock_session_ctx(session),
         ),
         patch(
-            "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
+            "codemie.service.settings.settings.SettingsService.get_enforce_member_spend_limits",
             return_value=True,
         ),
         patch(
@@ -461,8 +470,8 @@ async def test_raises_runtime_error_when_budget_is_missing():
 async def test_raises_runtime_error_when_provider_sync_raises():
     session = AsyncMock()
     resolved = _project_context(member_provider_metadata={})
-    allocation = SimpleNamespace(id=ALLOCATION_ID)
-    budget = SimpleNamespace(budget_id=BUDGET_ID)
+    allocation = SimpleNamespace(id=ALLOCATION_ID, allocated_max_budget=50.0)
+    budget = SimpleNamespace(budget_id=BUDGET_ID, max_budget=100.0)
     provider = SimpleNamespace(sync_member_allocation=AsyncMock(side_effect=RuntimeError("provider boom")))
 
     with (
@@ -471,7 +480,7 @@ async def test_raises_runtime_error_when_provider_sync_raises():
             return_value=_mock_session_ctx(session),
         ),
         patch(
-            "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
+            "codemie.service.settings.settings.SettingsService.get_enforce_member_spend_limits",
             return_value=True,
         ),
         patch(
@@ -513,8 +522,8 @@ async def test_raises_runtime_error_when_provider_sync_raises():
 async def test_raises_runtime_error_when_provider_sync_status_is_not_ok_or_noop():
     session = AsyncMock()
     resolved = _project_context(member_provider_metadata={})
-    allocation = SimpleNamespace(id=ALLOCATION_ID)
-    budget = SimpleNamespace(budget_id=BUDGET_ID)
+    allocation = SimpleNamespace(id=ALLOCATION_ID, allocated_max_budget=50.0)
+    budget = SimpleNamespace(budget_id=BUDGET_ID, max_budget=100.0)
     provider_state = BudgetProviderMemberState(
         provider="litellm",
         provider_member_ref="member-ref-1",
@@ -529,7 +538,7 @@ async def test_raises_runtime_error_when_provider_sync_status_is_not_ok_or_noop(
             return_value=_mock_session_ctx(session),
         ),
         patch(
-            "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
+            "codemie.service.settings.settings.SettingsService.get_enforce_member_spend_limits",
             return_value=True,
         ),
         patch(
@@ -565,6 +574,130 @@ async def test_raises_runtime_error_when_provider_sync_status_is_not_ok_or_noop(
 
     mock_update_provider_metadata.assert_not_called()
     session.commit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_runtime_sync_proceeds_when_enforcement_disabled():
+    """With enforcement OFF, sync should still run for tracking."""
+    session = AsyncMock()
+    resolved = _project_context(member_provider_metadata={})
+    allocation = SimpleNamespace(id=ALLOCATION_ID, allocated_max_budget=50.0)
+    budget = SimpleNamespace(
+        budget_id=BUDGET_ID, budget_duration="30d", budget_reset_at="2026-04-22T10:00:00Z", max_budget=100.0
+    )
+    provider_state = BudgetProviderMemberState(
+        provider="litellm",
+        provider_member_ref="member-ref-1",
+        provider_budget_id="member-budget-1",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        sync_status=SyncStatus.OK,
+        metadata={},
+    )
+    provider = SimpleNamespace(sync_member_allocation=AsyncMock(return_value=provider_state))
+
+    with (
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_async_session",
+            return_value=_mock_session_ctx(session),
+        ),
+        patch(
+            "codemie.service.settings.settings.SettingsService.get_enforce_member_spend_limits",
+            return_value=False,
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.budget_resolution_service.resolve",
+            new=AsyncMock(return_value=resolved),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync"
+            ".project_member_budget_assignment_repository.get_active_by_project_category_user",
+            new=AsyncMock(return_value=allocation),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.budget_repository.get_by_id",
+            new=AsyncMock(return_value=budget),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync"
+            ".project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_active_provider",
+            return_value=provider,
+        ),
+    ):
+        await ensure_project_member_runtime_ready(
+            user_id=USER_ID,
+            user_email=USER_EMAIL,
+            project_name=PROJECT_NAME,
+            budget_category=BUDGET_CATEGORY,
+        )
+
+    provider.sync_member_allocation.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_runtime_sync_passes_full_project_budget_when_enforcement_disabled():
+    """With enforcement OFF, effective_max_budget should equal budget.max_budget."""
+    session = AsyncMock()
+    resolved = _project_context(member_provider_metadata={})
+    allocation = SimpleNamespace(id=ALLOCATION_ID, allocated_max_budget=50.0)
+    budget = SimpleNamespace(
+        budget_id=BUDGET_ID, budget_duration="30d", budget_reset_at="2026-04-22T10:00:00Z", max_budget=200.0
+    )
+    provider_state = BudgetProviderMemberState(
+        provider="litellm",
+        provider_member_ref="member-ref-1",
+        provider_budget_id="member-budget-1",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        sync_status=SyncStatus.OK,
+        metadata={},
+    )
+    provider = SimpleNamespace(sync_member_allocation=AsyncMock(return_value=provider_state))
+
+    with (
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_async_session",
+            return_value=_mock_session_ctx(session),
+        ),
+        patch(
+            "codemie.service.settings.settings.SettingsService.get_enforce_member_spend_limits",
+            return_value=False,
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.budget_resolution_service.resolve",
+            new=AsyncMock(return_value=resolved),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync"
+            ".project_member_budget_assignment_repository.get_active_by_project_category_user",
+            new=AsyncMock(return_value=allocation),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.budget_repository.get_by_id",
+            new=AsyncMock(return_value=budget),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync"
+            ".project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_active_provider",
+            return_value=provider,
+        ),
+    ):
+        await ensure_project_member_runtime_ready(
+            user_id=USER_ID,
+            user_email=USER_EMAIL,
+            project_name=PROJECT_NAME,
+            budget_category=BUDGET_CATEGORY,
+        )
+
+    provider.sync_member_allocation.assert_awaited_once_with(
+        allocation=allocation, budget=budget, effective_max_budget=200.0
+    )
 
 
 def test_sync_wrapper_uses_asyncio_run_when_no_running_event_loop():
@@ -652,3 +785,155 @@ def test_sync_wrapper_propagates_exception_from_helper_thread():
     mock_thread.assert_called_once()
     mock_thread.return_value.start.assert_called_once()
     mock_thread.return_value.join.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Tests for resync_project_member_allocations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resync_skips_allocations_without_provider_member_ref():
+    """Unsynced allocations (no provider_member_ref) are skipped."""
+    session = AsyncMock()
+    allocation_no_ref = SimpleNamespace(
+        id="alloc-1",
+        user_id="user-1",
+        project_budget_id="budget-1",
+        allocated_max_budget=50.0,
+        provider_metadata={},
+    )
+
+    with (
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_async_session",
+            return_value=_mock_session_ctx(session),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync"
+            ".project_member_budget_assignment_repository.get_active_by_project",
+            new=AsyncMock(return_value=[allocation_no_ref]),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.budget_repository.get_by_id",
+            new=AsyncMock(),
+        ) as mock_budget_get,
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_active_provider",
+        ) as mock_get_provider,
+    ):
+        await resync_project_member_allocations(project_name=PROJECT_NAME, enforce_limit=True)
+
+    mock_budget_get.assert_not_called()
+    mock_get_provider.assert_called_once()
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resync_updates_synced_allocations_with_enforcement_on():
+    """Synced allocations get max_budget = allocation.allocated_max_budget when enforce=True."""
+    session = AsyncMock()
+    allocation = SimpleNamespace(
+        id="alloc-1",
+        user_id="user-1",
+        project_budget_id=BUDGET_ID,
+        allocated_max_budget=50.0,
+        provider_metadata={"raw": {"provider_member_ref": "member-ref-1"}},
+    )
+    budget = SimpleNamespace(budget_id=BUDGET_ID, max_budget=200.0, budget_reset_at="2026-04-22T10:00:00Z")
+    provider_state = BudgetProviderMemberState(
+        provider="litellm",
+        provider_member_ref="member-ref-1",
+        provider_budget_id="member-budget-1",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        sync_status=SyncStatus.OK,
+        metadata={},
+    )
+    provider = SimpleNamespace(sync_member_allocation=AsyncMock(return_value=provider_state))
+
+    with (
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_async_session",
+            return_value=_mock_session_ctx(session),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync"
+            ".project_member_budget_assignment_repository.get_active_by_project",
+            new=AsyncMock(return_value=[allocation]),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.budget_repository.get_by_id",
+            new=AsyncMock(return_value=budget),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync"
+            ".project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ) as mock_update,
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_active_provider",
+            return_value=provider,
+        ),
+    ):
+        await resync_project_member_allocations(project_name=PROJECT_NAME, enforce_limit=True)
+
+    provider.sync_member_allocation.assert_awaited_once_with(
+        allocation=allocation, budget=budget, effective_max_budget=50.0
+    )
+    mock_update.assert_awaited_once()
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resync_updates_synced_allocations_with_enforcement_off():
+    """Synced allocations get max_budget = budget.max_budget when enforce=False."""
+    session = AsyncMock()
+    allocation = SimpleNamespace(
+        id="alloc-1",
+        user_id="user-1",
+        project_budget_id=BUDGET_ID,
+        allocated_max_budget=50.0,
+        provider_metadata={"raw": {"provider_member_ref": "member-ref-1"}},
+    )
+    budget = SimpleNamespace(budget_id=BUDGET_ID, max_budget=200.0, budget_reset_at="2026-04-22T10:00:00Z")
+    provider_state = BudgetProviderMemberState(
+        provider="litellm",
+        provider_member_ref="member-ref-1",
+        provider_budget_id="member-budget-1",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        sync_status=SyncStatus.OK,
+        metadata={},
+    )
+    provider = SimpleNamespace(sync_member_allocation=AsyncMock(return_value=provider_state))
+
+    with (
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_async_session",
+            return_value=_mock_session_ctx(session),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync"
+            ".project_member_budget_assignment_repository.get_active_by_project",
+            new=AsyncMock(return_value=[allocation]),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.budget_repository.get_by_id",
+            new=AsyncMock(return_value=budget),
+        ),
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync"
+            ".project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ) as mock_update,
+        patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.get_active_provider",
+            return_value=provider,
+        ),
+    ):
+        await resync_project_member_allocations(project_name=PROJECT_NAME, enforce_limit=False)
+
+    provider.sync_member_allocation.assert_awaited_once_with(
+        allocation=allocation, budget=budget, effective_max_budget=200.0
+    )
+    mock_update.assert_awaited_once()
+    session.commit.assert_awaited_once()

@@ -156,7 +156,7 @@ class ProjectService:
         description: str | None = None,
         cost_center_id: UUID | None = None,
         clear_cost_center: bool = False,
-        project_member_budget_tracking_enabled: bool | None = None,
+        enforce_member_spend_limits: bool | None = None,
     ) -> Application:
         with get_session() as session:
             project = application_repository.get_by_name(session, project_name)
@@ -200,14 +200,38 @@ class ProjectService:
                 description=validated_description,
                 cost_center_id=resolved_cost_center_id,
             )
-            if project_member_budget_tracking_enabled is not None:
-                SettingsService.set_project_member_budget_tracking_enabled(
+            if enforce_member_spend_limits is not None:
+                SettingsService.set_enforce_member_spend_limits(
                     project.name,
-                    project_member_budget_tracking_enabled,
+                    enforce_member_spend_limits,
                 )
             session.commit()
             session.refresh(project)
+            cls._resync_member_allocations_if_needed(project.name, enforce_member_spend_limits)
             return project
+
+    @classmethod
+    def _resync_member_allocations_if_needed(
+        cls,
+        project_name: str,
+        enforce_member_spend_limits: bool | None,
+    ) -> None:
+        if enforce_member_spend_limits is None:
+            return
+        from codemie.enterprise.litellm.project_member_runtime_sync import (  # noqa: PLC0415
+            resync_project_member_allocations_sync,
+        )
+
+        try:
+            resync_project_member_allocations_sync(
+                project_name=project_name,
+                enforce_limit=enforce_member_spend_limits,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"budget_event=member_resync_on_toggle_failed component=project_service "
+                f"project_name={project_name!r} enforce_limit={enforce_member_spend_limits} error={exc}"
+            )
 
     @classmethod
     def _validate_shared_project_name(cls, name: str) -> str:

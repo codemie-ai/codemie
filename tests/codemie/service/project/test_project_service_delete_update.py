@@ -522,10 +522,10 @@ class TestProjectServiceUpdateProject:
         ProjectService.update_project(
             user=self._make_super_admin(),
             project_name="my-project",
-            project_member_budget_tracking_enabled=True,
+            enforce_member_spend_limits=True,
         )
 
-        mock_settings_service.set_project_member_budget_tracking_enabled.assert_called_once_with("my-project", True)
+        mock_settings_service.set_enforce_member_spend_limits.assert_called_once_with("my-project", True)
 
     @patch("codemie.service.project.project_service.SettingsService")
     @patch("codemie.service.project.project_service.cost_center_service")
@@ -548,10 +548,10 @@ class TestProjectServiceUpdateProject:
         ProjectService.update_project(
             user=self._make_super_admin(),
             project_name="my-project",
-            project_member_budget_tracking_enabled=False,
+            enforce_member_spend_limits=False,
         )
 
-        mock_settings_service.set_project_member_budget_tracking_enabled.assert_called_once_with("my-project", False)
+        mock_settings_service.set_enforce_member_spend_limits.assert_called_once_with("my-project", False)
 
     @patch("codemie.service.project.project_service.cost_center_service")
     @patch("codemie.service.project.project_service.application_repository")
@@ -611,3 +611,65 @@ class TestProjectServiceUpdateProject:
             description=None,
             cost_center_id=None,
         )
+
+    @patch("codemie.service.project.project_service.SettingsService")
+    @patch("codemie.service.project.project_service.cost_center_service")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.get_session")
+    def test_update_enforcement_flag_triggers_immediate_member_resync(
+        self,
+        mock_get_session,
+        mock_app_repo,
+        mock_cc_service,
+        mock_settings_service,
+    ):
+        """Toggling enforce_member_spend_limits calls bulk resync."""
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        project = _make_app("my-project")
+        project.cost_center_id = None
+        mock_app_repo.get_by_name.return_value = project
+        mock_app_repo.update_project.return_value = project
+
+        with patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.resync_project_member_allocations_sync"
+        ) as mock_resync:
+            ProjectService.update_project(
+                user=self._make_super_admin(),
+                project_name="my-project",
+                enforce_member_spend_limits=True,
+            )
+
+        mock_resync.assert_called_once_with(project_name="my-project", enforce_limit=True)
+
+    @patch("codemie.service.project.project_service.SettingsService")
+    @patch("codemie.service.project.project_service.cost_center_service")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.get_session")
+    def test_update_enforcement_flag_resync_failure_does_not_raise(
+        self,
+        mock_get_session,
+        mock_app_repo,
+        mock_cc_service,
+        mock_settings_service,
+    ):
+        """If resync fails, flag is still saved and no exception propagates."""
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        project = _make_app("my-project")
+        project.cost_center_id = None
+        mock_app_repo.get_by_name.return_value = project
+        mock_app_repo.update_project.return_value = project
+
+        with patch(
+            "codemie.enterprise.litellm.project_member_runtime_sync.resync_project_member_allocations_sync",
+            side_effect=RuntimeError("resync exploded"),
+        ):
+            result = ProjectService.update_project(
+                user=self._make_super_admin(),
+                project_name="my-project",
+                enforce_member_spend_limits=False,
+            )
+
+        assert result is project
+        mock_settings_service.set_enforce_member_spend_limits.assert_called_once_with("my-project", False)

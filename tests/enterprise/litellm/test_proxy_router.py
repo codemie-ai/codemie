@@ -355,28 +355,24 @@ class TestResolveProjectBudgetRuntime:
             side_effect=_ensure_side_effect,
         ):
             with patch(
-                "codemie.service.settings.settings.SettingsService.get_project_member_budget_tracking_enabled",
-                return_value=True,
+                "codemie.enterprise.litellm.proxy_router.get_async_session",
+                return_value=session_context,
             ):
                 with patch(
-                    "codemie.enterprise.litellm.proxy_router.get_async_session",
-                    return_value=session_context,
+                    "codemie.enterprise.litellm.proxy_router.budget_resolution_service.resolve",
+                    new_callable=AsyncMock,
+                    side_effect=_resolve_side_effect,
                 ):
                     with patch(
-                        "codemie.enterprise.litellm.proxy_router.budget_resolution_service.resolve",
+                        "codemie.enterprise.litellm.proxy_router.budget_resolution_service.dispatch_runtime",
                         new_callable=AsyncMock,
-                        side_effect=_resolve_side_effect,
+                        side_effect=_dispatch_side_effect,
                     ):
-                        with patch(
-                            "codemie.enterprise.litellm.proxy_router.budget_resolution_service.dispatch_runtime",
-                            new_callable=AsyncMock,
-                            side_effect=_dispatch_side_effect,
-                        ):
-                            result = await _resolve_project_budget_runtime(
-                                user=user,
-                                category=BudgetCategory.CLI,
-                                request_info=request_info,
-                            )
+                        result = await _resolve_project_budget_runtime(
+                            user=user,
+                            category=BudgetCategory.CLI,
+                            request_info=request_info,
+                        )
 
         assert result is provider_result
         assert call_order == ["ensure", "resolve", "dispatch"]

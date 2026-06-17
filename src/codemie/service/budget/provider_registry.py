@@ -221,8 +221,9 @@ class _NoopBudgetEnforcementProvider:
         *,
         allocation: "ProjectMemberBudgetAssignment",
         budget: "Budget",
+        effective_max_budget: float | None = None,
     ) -> BudgetProviderMemberState:
-        _ = (allocation, budget)
+        _ = (allocation, budget, effective_max_budget)
         return BudgetProviderMemberState(provider=_NOOP_PROVIDER_NAME, sync_status=SyncStatus.NOOP)
 
     async def delete_member_allocation(
