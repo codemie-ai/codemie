@@ -15,15 +15,14 @@
 | Provider | Jira |
 | Key/prefix | EPMCDME |
 | Adapter status | configured |
-| Adapter instructions | Use the Brianna/Jira workflow when a task requires ticket lookup; commit and MR skills require an `EPMCDME-####` ticket. |
+| Adapter instructions | Use the codemie-jira-assistant/Jira workflow when a task requires ticket lookup; commit and MR skills require an `EPMCDME-####` ticket. |
 
 ## Ticket Adapter
 
 **Status**: configured
-**Adapter**: `brianna` skill — invoke via the `Skill` tool with the approved story content or file path as the argument. Do not hardcode the underlying command or assistant ID.
-**Lookup**: Invoke the `brianna` skill with the ticket key or URL and request summary, description, acceptance criteria, status, assignee, issue type, and relevant links. Use `--conversation-id` for multi-turn flows.
-**Create**: Invoke the `brianna` skill with the complete ticket payload or the approved story file attached. Do not use conversational references such as "as drafted" unless `--conversation-id` is used and the create call includes the full final payload.
-**Multi-turn follow-up**: pass `--conversation-id <id>` returned from the first call to maintain context across calls.
+**Adapter**: `codemie-jira-assistant` skill — invoke via the `Skill` tool with the approved story content or file path as the argument. Do not hardcode the underlying command or assistant ID.
+**Lookup**: Invoke the `codemie-jira-assistant` skill with the ticket key or URL and request summary, description, acceptance criteria, status, assignee, issue type, and relevant links.
+**Create**: Invoke the `codemie-jira-assistant` skill with the complete ticket payload or the approved story file attached. Do not use conversational references such as "as drafted" unless the full final payload is included.
 **Output**: Jira ticket key and URL.
 
 ## Source Control And Review
