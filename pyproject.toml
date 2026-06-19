@@ -151,7 +151,7 @@ ecdsa = "^0.19.1"
 cryptography = "~48.0.1"
 pillow = "^12.2.0"
 lxml = "^6.1.0"
-jupyter-server = ">=2.18.0"
+jupyter-server = ">=2.20.0"  # Security (EPMCDME-12962): pin >=2.20.0 to fix CVE-2026-44727 (GHSA-fcw5-x6j4-ccmp arbitrary code exec in jupyter-server)
 langchain-classic = "1.0.7"
 openai = "2.26.0"
 langsmith = "0.8.0"
