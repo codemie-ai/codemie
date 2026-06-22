@@ -20,13 +20,13 @@ restricted_modules:
     description: >-
       Operating system interface - LOW for file operations
       (walk, path), HIGH for system commands
-    severity: LOW
+    severity: HIGH
 
   - name: subprocess
     description: >-
       Process execution - LOW severity for git operations,
       HIGH for others
-    severity: LOW
+    severity: HIGH
 
   - name: sys
     description: >-
@@ -67,7 +67,7 @@ restricted_modules:
     description: >-
       HTTP library - read operations (GET) allowed with
       low severity
-    severity: LOW
+    severity: MEDIUM
 
   - name: httpx
     description: "HTTP client - blocked"
@@ -119,7 +119,7 @@ patterns:
     description: >-
       Process execution - LOW severity (allows git and
       system tools)
-    severity: LOW
+    severity: HIGH
 
   # File system manipulation
   - pattern: 'os\.(remove|rmdir|unlink|mkdir|makedirs)'
@@ -133,7 +133,7 @@ patterns:
 
   - pattern: 'requests\.(get|post|put|delete)'
     description: "HTTP request - blocked for security"
-    severity: LOW
+    severity: MEDIUM
 
   # Code evaluation
   - pattern: '\beval\s*\('

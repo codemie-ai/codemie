@@ -30,6 +30,7 @@ from llm_sandbox.security import SecurityIssueSeverity, SecurityPattern, Securit
 
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.data_management.code_executor.models import CodeExecutorConfig
+from codemie_tools.data_management.code_executor.ast_security_checker import check_code_with_ast
 
 logger = logging.getLogger(__name__)
 
@@ -175,14 +176,12 @@ class LocalExecutionEngine:
     def _check_policy(policy: SecurityPolicy, code: str) -> tuple[bool, list[SecurityPattern]]:
         """Run the security policy check against Python code.
 
-        Replicates ``SandboxSession._check_security_policy`` without requiring an
-        active sandbox session.  Uses :class:`PythonHandler` to:
+        Uses a two-layer approach:
+        1. AST-based analysis (NEW) - detects bypass techniques like __import__,
+           string concatenation, chr() construction
+        2. Regex-based analysis (EXISTING) - detects patterns in filtered code
 
-        1. Convert each ``RestrictedModule`` into its corresponding import-detection
-           regex pattern.
-        2. Filter Python comments from the code before pattern matching.
-        3. Evaluate every configured pattern against the comment-stripped code,
-           respecting ``severity_threshold`` for early-exit on critical violations.
+        The AST layer catches techniques that evade regex detection.
 
         Args:
             policy: The :class:`SecurityPolicy` to evaluate.
@@ -192,6 +191,16 @@ class LocalExecutionEngine:
             A ``(is_safe, violations)`` tuple consistent with
             ``SandboxSession.is_safe()``.
         """
+
+        threshold = policy.severity_threshold or SecurityIssueSeverity.SAFE
+
+        # Layer 1: AST-based check (catches bypasses)
+        ast_is_safe, ast_violations = check_code_with_ast(code, threshold)
+        if not ast_is_safe:
+            logger.info(f"AST security check failed: {len(ast_violations)} violation(s)")
+            return False, ast_violations
+
+        # Layer 2: Regex-based check (existing logic)
         handler = PythonHandler(logger=logger)
 
         # Expand restricted modules into regex patterns (same as _add_restricted_module_patterns)
@@ -213,7 +222,6 @@ class LocalExecutionEngine:
 
         # Check each pattern (same as _check_pattern_violations)
         violations: list[SecurityPattern] = []
-        threshold = policy.severity_threshold or SecurityIssueSeverity.SAFE
 
         for pattern_obj in patterns:
             if not pattern_obj.pattern:

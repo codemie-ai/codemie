@@ -111,8 +111,8 @@ class TestSecurityPolicyThreshold(unittest.TestCase):
 class TestRequestsSecurityPatterns(unittest.TestCase):
     """Test suite for requests library security patterns."""
 
-    def test_requests_module_is_low_severity(self):
-        """Test that requests module is marked as LOW severity."""
+    def test_requests_module_is_medium_severity(self):
+        """Test that requests module is marked as MEDIUM severity."""
         policy = get_codemie_security_policy(severity_threshold=SecurityIssueSeverity.LOW)
 
         # Find requests module in restricted modules
@@ -123,10 +123,10 @@ class TestRequestsSecurityPatterns(unittest.TestCase):
                 break
 
         assert requests_module is not None, "requests module not found in restricted modules"
-        assert requests_module.severity == SecurityIssueSeverity.LOW
+        assert requests_module.severity == SecurityIssueSeverity.MEDIUM
 
-    def test_requests_http_pattern_is_low_severity(self):
-        """Test that requests HTTP operations pattern is LOW severity."""
+    def test_requests_http_pattern_is_medium_severity(self):
+        """Test that requests HTTP operations pattern is MEDIUM severity."""
         policy = get_codemie_security_policy(severity_threshold=SecurityIssueSeverity.LOW)
 
         # Find requests pattern (get, post, put, delete)
@@ -139,7 +139,7 @@ class TestRequestsSecurityPatterns(unittest.TestCase):
                 break
 
         assert requests_pattern is not None, "requests HTTP pattern not found"
-        assert requests_pattern.severity == SecurityIssueSeverity.LOW
+        assert requests_pattern.severity == SecurityIssueSeverity.MEDIUM
 
     def test_requests_pattern_includes_all_methods(self):
         """Test that requests pattern includes all major HTTP methods."""
