@@ -271,6 +271,7 @@ class TestGetFavoriteAssistants:
         mock_a1.created_by = None
         mock_a1.unique_likes_count = 0
         mock_a1.unique_dislikes_count = 0
+        mock_a1.categories = []
 
         mock_a2 = MagicMock()
         mock_a2.id = "a2"
@@ -283,6 +284,7 @@ class TestGetFavoriteAssistants:
         mock_a2.created_by = None
         mock_a2.unique_likes_count = 0
         mock_a2.unique_dislikes_count = 0
+        mock_a2.categories = []
 
         count_result = MagicMock()
         count_result.one.return_value = 2
@@ -297,6 +299,45 @@ class TestGetFavoriteAssistants:
         assert result.data[0].id == "a1"
         assert result.data[1].id == "a2"
         assert result.data[1].icon_url == ""
+
+    @patch("codemie.service.user_preferences_service.Ability")
+    @patch("codemie.service.user_preferences_service.get_assistant_reactions_by_user")
+    @patch("codemie.service.user_preferences_service.user_preferences_repository")
+    @patch("codemie.service.user_preferences_service.get_session")
+    def test_categories_populated_in_favorite_item(
+        self, mock_get_session, mock_repo, mock_get_assistant_reactions, mock_ability_cls
+    ):
+        mock_session = _make_session_mock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_get_session.return_value.__exit__.return_value = False
+        mock_get_assistant_reactions.return_value = []
+        mock_ability_cls.return_value.list.return_value = []
+
+        profile = _make_profile(assistants=["a1"])
+        mock_repo.get_by_user_id.return_value = profile
+
+        mock_a1 = MagicMock()
+        mock_a1.id = "a1"
+        mock_a1.name = "Assistant 1"
+        mock_a1.description = "Desc"
+        mock_a1.icon_url = "icon.png"
+        mock_a1.type = None
+        mock_a1.is_global = None
+        mock_a1.shared = None
+        mock_a1.created_by = None
+        mock_a1.unique_likes_count = 0
+        mock_a1.unique_dislikes_count = 0
+        mock_a1.categories = ["ai", "dev"]
+
+        count_result = MagicMock()
+        count_result.one.return_value = 1
+        data_result = MagicMock()
+        data_result.all.return_value = [mock_a1]
+        mock_session.exec.side_effect = [count_result, data_result]
+
+        result = UserPreferencesService.get_favorite_assistants("user-123", current_user=_make_user())
+
+        assert result.data[0].categories == ["ai", "dev"]
 
     @patch("codemie.service.user_preferences_service.Ability")
     @patch("codemie.service.user_preferences_service.get_assistant_reactions_by_user")
@@ -374,6 +415,7 @@ class TestGetFavoriteSkills:
         mock_s1.visibility = None
         mock_s1.unique_likes_count = 0
         mock_s1.unique_dislikes_count = 0
+        mock_s1.categories = []
 
         count_result = MagicMock()
         count_result.one.return_value = 1
@@ -386,6 +428,44 @@ class TestGetFavoriteSkills:
         assert len(result.data) == 1
         assert result.total == 1
         assert result.data[0].id == "s1"
+
+    @patch("codemie.service.user_preferences_service.Ability")
+    @patch("codemie.service.user_preferences_service.get_skill_reactions_by_user")
+    @patch("codemie.repository.skill_repository.SkillRepository.get_assistants_count_for_skills")
+    @patch("codemie.service.user_preferences_service.user_preferences_repository")
+    @patch("codemie.service.user_preferences_service.get_session")
+    def test_categories_populated_in_favorite_item(
+        self, mock_get_session, mock_repo, mock_assistants_count, mock_get_skill_reactions, mock_ability_cls
+    ):
+        mock_session = _make_session_mock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_get_session.return_value.__exit__.return_value = False
+        mock_assistants_count.return_value = {}
+        mock_get_skill_reactions.return_value = []
+        mock_ability_cls.return_value.list.return_value = []
+
+        profile = _make_profile(skills=["s1"])
+        mock_repo.get_by_user_id.return_value = profile
+
+        mock_s1 = MagicMock()
+        mock_s1.id = "s1"
+        mock_s1.name = "Skill 1"
+        mock_s1.description = "A skill"
+        mock_s1.created_by = None
+        mock_s1.visibility = None
+        mock_s1.unique_likes_count = 0
+        mock_s1.unique_dislikes_count = 0
+        mock_s1.categories = ["data", "ml"]
+
+        count_result = MagicMock()
+        count_result.one.return_value = 1
+        data_result = MagicMock()
+        data_result.all.return_value = [mock_s1]
+        mock_session.exec.side_effect = [count_result, data_result]
+
+        result = UserPreferencesService.get_favorite_skills("user-123", current_user=_make_user())
+
+        assert result.data[0].categories == ["data", "ml"]
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +508,8 @@ class TestGetFavoriteWorkflows:
         mock_w1.icon_url = "wf.png"
         mock_w1.shared = None
         mock_w1.created_by = None
+        mock_w1.is_global = None
+        mock_w1.categories = []
 
         count_result = MagicMock()
         count_result.one.return_value = 1
@@ -441,6 +523,71 @@ class TestGetFavoriteWorkflows:
         assert result.total == 1
         assert result.data[0].id == "w1"
         assert result.data[0].icon_url == "wf.png"
+
+    @patch("codemie.service.user_preferences_service.Ability")
+    @patch("codemie.service.user_preferences_service.user_preferences_repository")
+    @patch("codemie.service.user_preferences_service.get_session")
+    def test_categories_populated_in_favorite_item(self, mock_get_session, mock_repo, mock_ability_cls):
+        mock_session = _make_session_mock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_get_session.return_value.__exit__.return_value = False
+        mock_ability_cls.return_value.list.return_value = []
+
+        profile = _make_profile(workflows=["w1"])
+        mock_repo.get_by_user_id.return_value = profile
+
+        mock_w1 = MagicMock()
+        mock_w1.id = "w1"
+        mock_w1.name = "Workflow 1"
+        mock_w1.description = "A workflow"
+        mock_w1.icon_url = "wf.png"
+        mock_w1.shared = None
+        mock_w1.created_by = None
+        mock_w1.is_global = None
+        mock_w1.categories = ["ai", "dev"]
+
+        count_result = MagicMock()
+        count_result.one.return_value = 1
+        data_result = MagicMock()
+        data_result.all.return_value = [mock_w1]
+        mock_session.exec.side_effect = [count_result, data_result]
+
+        result = UserPreferencesService.get_favorite_workflows("user-123", current_user=_make_user())
+
+        assert result.data[0].categories == ["ai", "dev"]
+
+    @patch("codemie.service.user_preferences_service.Ability")
+    @patch("codemie.service.user_preferences_service.user_preferences_repository")
+    @patch("codemie.service.user_preferences_service.get_session")
+    def test_categories_filter_accepted(self, mock_get_session, mock_repo, mock_ability_cls):
+        mock_session = _make_session_mock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_get_session.return_value.__exit__.return_value = False
+        mock_ability_cls.return_value.list.return_value = []
+
+        profile = _make_profile(workflows=["w1"])
+        mock_repo.get_by_user_id.return_value = profile
+
+        mock_w1 = MagicMock()
+        mock_w1.id = "w1"
+        mock_w1.name = "Workflow 1"
+        mock_w1.description = "A workflow"
+        mock_w1.icon_url = "wf.png"
+        mock_w1.shared = None
+        mock_w1.created_by = None
+        mock_w1.is_global = None
+        mock_w1.categories = ["ai"]
+
+        count_result = MagicMock()
+        count_result.one.return_value = 1
+        data_result = MagicMock()
+        data_result.all.return_value = [mock_w1]
+        mock_session.exec.side_effect = [count_result, data_result]
+
+        result = UserPreferencesService.get_favorite_workflows("user-123", current_user=_make_user(), categories=["ai"])
+
+        assert result.total == 1
+        assert result.data[0].categories == ["ai"]
 
 
 # ---------------------------------------------------------------------------

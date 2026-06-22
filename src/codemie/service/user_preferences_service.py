@@ -89,11 +89,11 @@ class UserPreferencesService:
     ) -> FavoritesListResult:
         with get_session() as session:
             profile = user_preferences_repository.get_by_user_id(session, user_id)
-            favorite_ids = getattr(profile.favorites, "assistants", []) if profile and profile.favorites else []
+            favorite_ids = UserPreferencesService._get_favorite_ids(profile, "assistants")
             if not favorite_ids:
                 return UserPreferencesService._empty_result(page, per_page)
 
-            pinned_set = set(profile.pinned_assistants) if profile.pinned_assistants else set()
+            pinned_set = set(profile.pinned_assistants or [])
 
             query = select(Assistant).where(Assistant.id.in_(favorite_ids))
 
@@ -138,6 +138,7 @@ class UserPreferencesService:
                     unique_likes_count=a.unique_likes_count or 0,
                     unique_dislikes_count=a.unique_dislikes_count or 0,
                     user_abilities=[action.value for action in ability.list(a)],
+                    categories=a.categories or [],
                 )
                 for a in rows
             ]
@@ -158,7 +159,7 @@ class UserPreferencesService:
     ) -> FavoritesListResult:
         with get_session() as session:
             profile = user_preferences_repository.get_by_user_id(session, user_id)
-            favorite_ids = getattr(profile.favorites, "skills", []) if profile and profile.favorites else []
+            favorite_ids = UserPreferencesService._get_favorite_ids(profile, "skills")
             if not favorite_ids:
                 return UserPreferencesService._empty_result(page, per_page)
 
@@ -174,14 +175,7 @@ class UserPreferencesService:
             if created_by:
                 query = query.where(Skill.created_by["name"].astext == created_by)
             if visibility:
-                try:
-                    query = query.where(Skill.visibility == SkillVisibility(visibility))
-                except ValueError:
-                    raise ExtendedHTTPException(
-                        code=400,
-                        message=f"Invalid visibility value: '{visibility}'",
-                        details=f"Allowed values: {[v.value for v in SkillVisibility]}",
-                    )
+                query = query.where(Skill.visibility == UserPreferencesService._parse_skill_visibility(visibility))
 
             total = session.exec(select(func.count()).select_from(query.subquery())).one()
             rows = list(
@@ -211,6 +205,7 @@ class UserPreferencesService:
                     unique_dislikes_count=s.unique_dislikes_count or 0,
                     assistants_count=assistants_count_map.get(s.id, 0),
                     user_abilities=[action.value for action in ability.list(s)],
+                    categories=s.categories or [],
                 )
                 for s in rows
             ]
@@ -223,6 +218,7 @@ class UserPreferencesService:
         current_user: User,
         search: str | None = None,
         project: list[str] | None = None,
+        categories: list[str] | None = None,
         created_by: str | None = None,
         shared: bool | None = None,
         page: int = 0,
@@ -230,7 +226,7 @@ class UserPreferencesService:
     ) -> FavoritesListResult:
         with get_session() as session:
             profile = user_preferences_repository.get_by_user_id(session, user_id)
-            favorite_ids = getattr(profile.favorites, "workflows", []) if profile and profile.favorites else []
+            favorite_ids = UserPreferencesService._get_favorite_ids(profile, "workflows")
             if not favorite_ids:
                 return UserPreferencesService._empty_result(page, per_page)
 
@@ -240,6 +236,9 @@ class UserPreferencesService:
                 query = query.where(WorkflowConfig.name.ilike(f"%{search}%"))
             if project:
                 query = query.where(WorkflowConfig.project.in_(project))
+            if categories:
+                cat_conditions = [cast(WorkflowConfig.categories, JSONB).contains([cat]) for cat in categories]
+                query = query.where(or_(*cat_conditions))
             if created_by:
                 query = query.where(WorkflowConfig.created_by["name"].astext == created_by)
             if shared is not None:
@@ -264,6 +263,7 @@ class UserPreferencesService:
                     is_favorited=True,
                     is_global=w.is_global,
                     user_abilities=[action.value for action in ability.list(w)],
+                    categories=w.categories or [],
                 )
                 for w in rows
             ]
@@ -273,6 +273,23 @@ class UserPreferencesService:
     # =========================================================================
     # Helpers
     # =========================================================================
+
+    @staticmethod
+    def _parse_skill_visibility(visibility: str) -> SkillVisibility:
+        try:
+            return SkillVisibility(visibility)
+        except ValueError:
+            raise ExtendedHTTPException(
+                code=400,
+                message=f"Invalid visibility value: '{visibility}'",
+                details=f"Allowed values: {[v.value for v in SkillVisibility]}",
+            )
+
+    @staticmethod
+    def _get_favorite_ids(profile: UserPreferences | None, key: str) -> list[str]:
+        if profile is None or profile.favorites is None:
+            return []
+        return getattr(profile.favorites, key, []) or []
 
     @staticmethod
     def _empty_result(page: int, per_page: int) -> FavoritesListResult:

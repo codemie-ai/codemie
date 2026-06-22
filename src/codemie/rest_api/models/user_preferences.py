@@ -69,6 +69,7 @@ class FavoriteItem(BaseModel):
     unique_dislikes_count: int = 0
     assistants_count: int = 0
     user_abilities: list[str] = Field(default_factory=list)
+    categories: list[str] = Field(default_factory=list)
 
 
 class FavoritesListResponse(BaseModel):

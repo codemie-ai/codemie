@@ -464,6 +464,7 @@ class TestGetFavoriteWorkflows:
             user_id="user-123",
             search=None,
             project=None,
+            categories=None,
             created_by=None,
             shared=None,
             page=0,
@@ -484,6 +485,7 @@ class TestGetFavoriteWorkflows:
             user_id="user-123",
             search="deploy",
             project=["proj-b"],
+            categories=None,
             created_by="carol",
             shared=False,
             page=0,
@@ -496,6 +498,7 @@ class TestGetFavoriteWorkflows:
             current_user=user,
             search="deploy",
             project=["proj-b"],
+            categories=None,
             created_by="carol",
             shared=False,
             page=0,
@@ -508,6 +511,7 @@ class TestGetFavoriteWorkflows:
                 user_id="user-123",
                 search=None,
                 project=None,
+                categories=None,
                 created_by=None,
                 shared=None,
                 page=0,
@@ -516,3 +520,33 @@ class TestGetFavoriteWorkflows:
             )
 
         assert exc_info.value.code == 403
+
+    @patch("codemie.rest_api.routers.user_preferences_router.user_preferences_service")
+    def test_forwards_categories_filter_to_service(self, mock_service, user):
+        mock_service.get_favorite_workflows.return_value = FavoritesListResult(
+            data=[], page=0, per_page=12, total=0, pages=0
+        )
+
+        get_favorite_workflows(
+            user_id="user-123",
+            search=None,
+            project=None,
+            categories=["ai"],
+            created_by=None,
+            shared=None,
+            page=0,
+            per_page=12,
+            current_user=user,
+        )
+
+        mock_service.get_favorite_workflows.assert_called_once_with(
+            user_id="user-123",
+            current_user=user,
+            search=None,
+            project=None,
+            categories=["ai"],
+            created_by=None,
+            shared=None,
+            page=0,
+            per_page=12,
+        )
