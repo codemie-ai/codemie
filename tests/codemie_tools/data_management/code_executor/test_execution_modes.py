@@ -24,7 +24,11 @@ from codemie_tools.data_management.code_executor.code_executor_tool import (
     CodeExecutorTool,
     get_code_executor_input_schema,
 )
-from codemie_tools.data_management.code_executor.models import ExecutionMode, CodeExecutorConfig
+from codemie_tools.data_management.code_executor.models import (
+    CodeExecutorConfig,
+    ExecutionMode,
+    SandboxMode,
+)
 
 
 class TestExecutionModeSelection(unittest.TestCase):
@@ -33,8 +37,9 @@ class TestExecutionModeSelection(unittest.TestCase):
     def setUp(self) -> None:
         self.mock_file_repo = MagicMock()
 
+    @patch.dict('os.environ', {}, clear=True)
     def test_default_execution_mode_is_local(self):
-        """Test that default execution mode is LOCAL."""
+        """Test that default execution mode is LOCAL when no env override is set."""
         tool = CodeExecutorTool(user_id="test_user", file_repository=self.mock_file_repo)
 
         assert tool.config.execution_mode == ExecutionMode.LOCAL
@@ -234,6 +239,7 @@ class TestExecutionModeRouting(unittest.TestCase):
         tool = CodeExecutorTool(
             user_id="test_user", execution_mode=ExecutionMode.SANDBOX, file_repository=self.mock_file_repo
         )
+        tool.config = tool.config.model_copy(update={"sandbox_mode": SandboxMode.SHARED})
 
         with patch.object(tool, '_get_available_pod_name', return_value="test-pod"):
             result = tool.execute(code="print('hello')")

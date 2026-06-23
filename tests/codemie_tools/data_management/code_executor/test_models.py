@@ -24,6 +24,7 @@ from llm_sandbox.security import SecurityIssueSeverity
 from codemie_tools.data_management.code_executor.models import (
     CodeExecutorConfig,
     ExecutionMode,
+    SandboxMode,
 )
 
 
@@ -459,3 +460,71 @@ class TestWarnIfLocalExecution(unittest.TestCase):
     def test_no_warning_in_sandbox_mode(self, mock_logger):
         CodeExecutorConfig.warn_if_local_execution()
         mock_logger.warning.assert_not_called()
+
+
+class TestSandboxMode(unittest.TestCase):
+    """Test suite for SandboxMode enum."""
+
+    def test_sandbox_mode_values(self):
+        assert SandboxMode.SHARED.value == "sandbox-shared"
+        assert SandboxMode.JOBS.value == "sandbox-jobs"
+
+    def test_sandbox_mode_is_string_enum(self):
+        assert isinstance(SandboxMode.SHARED, str)
+        assert isinstance(SandboxMode.JOBS, str)
+
+
+class TestSandboxModeValidation(unittest.TestCase):
+    """Test suite for sandbox_mode field validator on CodeExecutorConfig."""
+
+    def test_default_sandbox_mode_is_jobs(self):
+        config = CodeExecutorConfig()
+        assert config.sandbox_mode == SandboxMode.JOBS
+
+    def test_sandbox_mode_string_shared(self):
+        config = CodeExecutorConfig(sandbox_mode="sandbox-shared")
+        assert config.sandbox_mode == SandboxMode.SHARED
+
+    def test_sandbox_mode_string_jobs(self):
+        config = CodeExecutorConfig(sandbox_mode="sandbox-jobs")
+        assert config.sandbox_mode == SandboxMode.JOBS
+
+    def test_sandbox_mode_empty_defaults_to_jobs(self):
+        config = CodeExecutorConfig(sandbox_mode="")
+        assert config.sandbox_mode == SandboxMode.JOBS
+
+    def test_sandbox_mode_pods_isolated_string_no_longer_valid(self):
+        with pytest.raises(ValueError):
+            CodeExecutorConfig(sandbox_mode="sandbox-pods-isolated")
+
+    def test_sandbox_mode_invalid_raises(self):
+        with pytest.raises(ValueError):
+            CodeExecutorConfig(sandbox_mode="sandbox-other")
+
+    def test_sandbox_mode_enum_passthrough(self):
+        config = CodeExecutorConfig(sandbox_mode=SandboxMode.JOBS)
+        assert config.sandbox_mode == SandboxMode.JOBS
+
+
+class TestSandboxModeFromEnv(unittest.TestCase):
+    """Test suite for CODE_EXECUTOR_SANDBOX_MODE env var."""
+
+    def test_from_env_default_is_jobs(self):
+        with patch.dict(os.environ, {}, clear=True):
+            config = CodeExecutorConfig.from_env()
+            assert config.sandbox_mode == SandboxMode.JOBS
+
+    def test_from_env_reads_sandbox_mode_jobs(self):
+        with patch.dict(os.environ, {"CODE_EXECUTOR_SANDBOX_MODE": "sandbox-jobs"}, clear=True):
+            config = CodeExecutorConfig.from_env()
+            assert config.sandbox_mode == SandboxMode.JOBS
+
+    def test_from_env_reads_sandbox_mode_shared(self):
+        with patch.dict(os.environ, {"CODE_EXECUTOR_SANDBOX_MODE": "sandbox-shared"}, clear=True):
+            config = CodeExecutorConfig.from_env()
+            assert config.sandbox_mode == SandboxMode.SHARED
+
+    def test_from_env_invalid_raises(self):
+        with patch.dict(os.environ, {"CODE_EXECUTOR_SANDBOX_MODE": "bogus"}, clear=True):
+            with pytest.raises(ValueError):
+                CodeExecutorConfig.from_env()

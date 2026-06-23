@@ -37,6 +37,13 @@ class ExecutionMode(str, Enum):
     LOCAL = "local"
 
 
+class SandboxMode(str, Enum):
+    """Sandbox execution mode for code execution."""
+
+    SHARED = "sandbox-shared"
+    JOBS = "sandbox-jobs"
+
+
 class CodeExecutorConfig(CodeMieToolConfig):
     """Configuration for Code Executor tool."""
 
@@ -153,6 +160,12 @@ class CodeExecutorConfig(CodeMieToolConfig):
         "Note: 'local' mode has limited security and resource controls.",
     )
 
+    sandbox_mode: SandboxMode = Field(
+        default=SandboxMode.JOBS,
+        description="Sandbox execution mode: 'sandbox-shared' (pooled long-lived pods), "
+        "or 'sandbox-jobs' (one K8s Job per execution, default).",
+    )
+
     verbose: bool = Field(
         default=False,
         description="Enable verbose logging",
@@ -195,6 +208,27 @@ class CodeExecutorConfig(CodeMieToolConfig):
                 raise ValueError(f"Invalid execution_mode: {v}. Must be 'sandbox' or 'local'")
 
         raise ValueError(f"Invalid execution_mode type: {type(v)}")
+
+    @field_validator("sandbox_mode", mode="before")
+    @classmethod
+    def validate_sandbox_mode(cls, v) -> "SandboxMode":
+        """Validate sandbox mode value."""
+        if not v:
+            return SandboxMode.JOBS
+
+        if isinstance(v, SandboxMode):
+            return v
+
+        if isinstance(v, str):
+            v_lower = v.lower()
+            if v_lower == "sandbox-shared":
+                return SandboxMode.SHARED
+            elif v_lower == "sandbox-jobs":
+                return SandboxMode.JOBS
+            else:
+                raise ValueError(f"Invalid sandbox_mode: {v}. Must be 'sandbox-shared' or 'sandbox-jobs'")
+
+        raise ValueError(f"Invalid sandbox_mode type: {type(v)}")
 
     @field_validator("security_threshold", mode="before")
     @classmethod
@@ -260,6 +294,8 @@ class CodeExecutorConfig(CodeMieToolConfig):
             CODE_EXECUTOR_VERBOSE: Enable verbose logging (true/false)
             CODE_EXECUTOR_SKIP_ENVIRONMENT_SETUP: Skip environment setup (true/false)
             CODE_EXECUTOR_KUBECONFIG_PATH: Path to kubeconfig file (optional, takes priority over in-cluster config)
+            CODE_EXECUTOR_SANDBOX_MODE: Sandbox mode (sandbox-shared/sandbox-jobs,
+                default: sandbox-jobs)
 
         Returns:
             CodeExecutorConfig: Configuration instance with values from environment or defaults
@@ -292,6 +328,7 @@ class CodeExecutorConfig(CodeMieToolConfig):
             keep_template=str_to_bool(os.getenv("CODE_EXECUTOR_KEEP_TEMPLATE", "true")),
             skip_environment_setup=str_to_bool(os.getenv("CODE_EXECUTOR_SKIP_ENVIRONMENT_SETUP", "false")),
             kubeconfig_path=os.getenv("CODE_EXECUTOR_KUBECONFIG_PATH", ""),
+            sandbox_mode=os.getenv("CODE_EXECUTOR_SANDBOX_MODE", "sandbox-jobs"),
         )
 
     @classmethod

@@ -233,11 +233,12 @@ class TestCodeExecutorToolIntegration(unittest.TestCase):
         mock_content.bytes_content.return_value = b"data"
         mock_file_repo.read_file.return_value = mock_content
 
-        from codemie_tools.data_management.code_executor.models import ExecutionMode
+        from codemie_tools.data_management.code_executor.models import ExecutionMode, SandboxMode
 
         tool = CodeExecutorTool(
             file_repository=mock_file_repo, user_id="user", input_files=[file1], execution_mode=ExecutionMode.SANDBOX
         )
+        tool.config = tool.config.model_copy(update={"sandbox_mode": SandboxMode.SHARED})
 
         # Patch _get_available_pod_name to return a pod name
         with patch.object(tool, '_get_available_pod_name', return_value="test-pod"):

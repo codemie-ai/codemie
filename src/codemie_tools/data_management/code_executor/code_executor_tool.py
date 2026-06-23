@@ -14,6 +14,7 @@
 
 import logging
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Type, Optional, Any, List, Tuple
 
@@ -26,11 +27,16 @@ from pydantic import BaseModel, Field
 
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.file_object import FileObject
+from codemie_tools.data_management.code_executor.batch_job_runner import run_via_jobs
 from codemie_tools.data_management.code_executor.file_export_service import FileExportService
 from codemie_tools.data_management.code_executor.file_upload_service import FileUploadService
 from codemie_tools.data_management.code_executor.llm_sandbox import apply_llm_sandbox_patch
 from codemie_tools.data_management.code_executor.local_execution_engine import LocalExecutionEngine
-from codemie_tools.data_management.code_executor.models import CodeExecutorConfig, ExecutionMode
+from codemie_tools.data_management.code_executor.models import (
+    CodeExecutorConfig,
+    ExecutionMode,
+    SandboxMode,
+)
 from codemie_tools.data_management.code_executor.security_policies import (
     get_codemie_security_policy,
     get_restricted_module_names,
@@ -427,24 +433,35 @@ class CodeExecutorTool(CodeMieTool):
             ToolException: If execution fails
         """
         try:
+            if self.config.sandbox_mode == SandboxMode.JOBS:
+                self._validate_code_security_policy(code)
+                return run_via_jobs(
+                    self.config,
+                    code,
+                    self._read_input_file_bytes(self.input_files),
+                    export_files,
+                    self._get_user_workdir(),
+                    self._format_execution_result,
+                    self._store_exported_bytes,
+                    self._log_execution_timing,
+                )
+
             user_workdir = self._get_user_workdir()
-            session, session_time = self._acquire_session(user_workdir)
+            with self._sandbox_session(user_workdir) as session:
+                if self.input_files:
+                    self._upload_files_to_sandbox(session, self.input_files, user_workdir)
 
-            # Upload input files to sandbox if provided in constructor
-            if self.input_files:
-                self._upload_files_to_sandbox(session, self.input_files, user_workdir)
+                self._validate_code_security(session, code)
 
-            self._validate_code_security(session, code)
+                result, exec_time = self._execute_code_sandbox(session, code)
+                self._log_execution_timing(0.0, exec_time)
 
-            result, exec_time = self._execute_code_sandbox(session, code)
-            self._log_execution_timing(session_time, exec_time)
+                result_text = self._format_execution_result(result)
+                exported_files = self._export_files_from_execution(session, export_files, user_workdir)
+                if exported_files:
+                    result_text += ", ".join(exported_files)
 
-            result_text = self._format_execution_result(result)
-            exported_files = self._export_files_from_execution(session, export_files, user_workdir)
-            if exported_files:
-                result_text += ", ".join(exported_files)
-
-            return result_text
+                return result_text
 
         except ImportError as e:
             raise ToolException(
@@ -503,6 +520,16 @@ class CodeExecutorTool(CodeMieTool):
         """
         upload_service = FileUploadService(self.file_repository)
         upload_service.upload_files_to_sandbox(session, file_objects, workdir)
+
+    @contextmanager
+    def _sandbox_session(self, user_workdir: str):
+        """Yield a sandbox session from the long-lived pool (SHARED mode).
+
+        JOBS mode submits a V1Job and is dispatched before this helper is
+        called, so this helper is SHARED-only by construction.
+        """
+        session, _ = self._acquire_session(user_workdir)
+        yield session
 
     def _acquire_session(self, user_workdir: str) -> Tuple[SandboxSession, float]:
         """
@@ -565,6 +592,24 @@ class CodeExecutorTool(CodeMieTool):
             )
             logger.warning(
                 f"Security validation failed: {len(violations)} violation(s) - {', '.join([v.description for v in violations[:3]])}"
+            )
+            raise ToolException(error_msg)
+
+    def _validate_code_security_policy(self, code: str) -> None:
+        """Session-less variant used by JOBS mode where no session exists yet."""
+        if self.security_policy is None:
+            return
+        is_safe, violations = LocalExecutionEngine._check_policy(self.security_policy, code)
+        if not is_safe:
+            violation_details = [f"  • [{v.severity.name}] {v.description}" for v in violations]
+            error_msg = (
+                f"Code failed security validation ({len(violations)} violation(s) detected):\n"
+                + "\n".join(violation_details)
+                + "\n\nPlease review your code and remove any restricted operations."
+            )
+            logger.warning(
+                f"Security validation failed: {len(violations)} violation(s) - "
+                f"{', '.join([v.description for v in violations[:3]])}"
             )
             raise ToolException(error_msg)
 
@@ -700,3 +745,33 @@ class CodeExecutorTool(CodeMieTool):
         """
         export_service = FileExportService(self.file_repository, self.user_id)
         return export_service.export_files_from_execution(session, file_paths, workdir)
+
+    def _read_input_file_bytes(self, file_objects: Optional[List[FileObject]]) -> dict[str, bytes]:
+        """Read input FileObject bytes from the repository for sandbox-jobs upload."""
+        if not file_objects:
+            return {}
+        if not self.file_repository:
+            raise ToolException("Cannot upload files: file_repository not available")
+        out: dict[str, bytes] = {}
+        for fo in file_objects:
+            relative_path = Path(fo.name)
+            if relative_path.is_absolute() or ".." in relative_path.parts:
+                raise ToolException(f"Invalid file path for sandbox upload: {fo.name}")
+            out[relative_path.as_posix()] = self.file_repository.read_file(
+                file_name=fo.name,
+                owner=fo.owner,
+                mime_type=fo.mime_type,
+            ).bytes_content()
+        return out
+
+    def _store_exported_bytes(self, exported: dict[str, bytes]) -> List[str]:
+        """Persist already-pulled file bytes via FileExportService, return sandbox URLs."""
+        if not exported:
+            return []
+        export_service = FileExportService(self.file_repository, self.user_id)
+        urls: List[str] = []
+        for rel_path, content in exported.items():
+            url = export_service.store_exported_bytes(rel_path, content)
+            if url:
+                urls.append(url)
+        return urls

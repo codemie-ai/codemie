@@ -32,6 +32,10 @@ from codemie.rest_api.models.agent_workspace import CreateAgentWorkspaceRequest
 from codemie.rest_api.security.user import User
 from codemie_tools.base.codemie_tool import CodeMieTool
 from codemie_tools.base.file_object import FileObject
+
+import time as _time
+
+from codemie_tools.data_management.code_executor.batch_job_runner import BatchJobRunner
 from codemie_tools.data_management.code_executor.code_executor_tool import (
     CodeExecutorTool,
 )
@@ -42,7 +46,7 @@ from codemie_tools.data_management.code_executor.local_execution_engine import (
     LocalExecutionEngine,
     _MATPLOTLIB_CAPTURE_SETUP,
 )
-from codemie_tools.data_management.code_executor.models import ExecutionMode
+from codemie_tools.data_management.code_executor.models import ExecutionMode, SandboxMode
 from codemie_tools.data_management.workspace.tools_vars import (
     EXECUTE_WORKSPACE_SCRIPT_TOOL,
 )
@@ -320,26 +324,67 @@ class WorkspaceScriptRunner(CodeExecutorTool):
 
     def _execute_sandbox_script(self, script_path: str, export_files: Optional[list[str]] = None) -> str:
         user_workdir = self._get_user_workdir()
-        session, session_time = self._acquire_session(user_workdir)
-        input_file_hashes = self._get_input_file_hashes()
 
-        if self.input_files:
-            self._upload_files_to_sandbox(session, self.input_files, user_workdir)
+        if self.config.sandbox_mode == SandboxMode.JOBS:
+            return self._execute_sandbox_script_jobs(script_path, export_files, user_workdir)
 
+        with self._sandbox_session(user_workdir) as session:
+            input_file_hashes = self._get_input_file_hashes()
+
+            if self.input_files:
+                self._upload_files_to_sandbox(session, self.input_files, user_workdir)
+
+            script_code = self._get_script_content(script_path)
+            self._validate_code_security(session, script_code)
+            wrapper_code = self._build_script_wrapper(script_path)
+
+            result, exec_time = self._execute_code_sandbox(session, wrapper_code)
+            self._log_execution_timing(0.0, exec_time)
+
+            result_text = self._format_execution_result(result)
+            self.last_execution_files = self._collect_sandbox_changed_files(session, user_workdir, input_file_hashes)
+            exported_files = self._export_files_from_execution(session, export_files, user_workdir)
+            if exported_files:
+                result_text += ", ".join(exported_files)
+
+            return result_text
+
+    def _execute_sandbox_script_jobs(
+        self, script_path: str, export_files: Optional[list[str]], user_workdir: str
+    ) -> str:
         script_code = self._get_script_content(script_path)
-        self._validate_code_security(session, script_code)
+        self._validate_code_security_policy(script_code)
         wrapper_code = self._build_script_wrapper(script_path)
 
-        result, exec_time = self._execute_code_sandbox(session, wrapper_code)
-        self._log_execution_timing(session_time, exec_time)
+        input_file_hashes = self._get_input_file_hashes()
+        input_bytes = self._read_input_file_bytes(self.input_files)
 
-        result_text = self._format_execution_result(result)
-        self.last_execution_files = self._collect_sandbox_changed_files(session, user_workdir, input_file_hashes)
-        exported_files = self._export_files_from_execution(session, export_files, user_workdir)
-        if exported_files:
-            result_text += ", ".join(exported_files)
+        start = _time.time()
+        result = BatchJobRunner(self.config).run(
+            wrapper_code,
+            input_files=input_bytes,
+            export_files=export_files,
+            workdir=user_workdir,
+            baseline_hashes=input_file_hashes,
+        )
+        self._log_execution_timing(0.0, _time.time() - start)
 
-        return result_text
+        self.last_execution_files = [
+            FileObject(
+                name=rel_path,
+                path=rel_path,
+                mime_type=mimetypes.guess_type(rel_path)[0] or "application/octet-stream",
+                owner=self.user_id,
+                content=content,
+            )
+            for rel_path, content in result.changed_files.items()
+        ]
+
+        text = self._format_execution_result(result)
+        urls = self._store_exported_bytes(result.exported_files)
+        if urls:
+            text += ", ".join(urls)
+        return text
 
     def _execute_local_script(self, script_path: str, export_files: Optional[list[str]] = None) -> str:
         engine = WorkspaceLocalScriptExecutionEngine(

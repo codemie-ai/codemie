@@ -100,6 +100,30 @@ class FileExportService:
 
         return collected_files
 
+    def store_exported_bytes(self, filename: str, content: bytes) -> Optional[str]:
+        """Store already-pulled bytes in the repository and return the sandbox URL.
+
+        Shared kernel for any execution backend that delivers file bytes itself
+        (e.g. sandbox-jobs exec-tar), bypassing the SandboxSession copy_from_runtime path.
+        """
+        if not self.file_repository:
+            logger.warning("Cannot store exported file: file_repository not available")
+            return None
+        try:
+            extension = Path(filename).suffix.lower().lstrip(".")
+            mime_type = self._determine_mime_type(extension)
+            unique_filename = f"{uuid.uuid4()}_{os.path.basename(filename)}"
+            stored_file = self.file_repository.write_file(
+                name=unique_filename,
+                mime_type=mime_type,
+                content=content,
+                owner=self.user_id,
+            )
+            return f" File '{os.path.basename(filename)}', URL `sandbox:/v1/files/{stored_file.to_encoded_url()}`"
+        except Exception as e:
+            logger.error(f"Failed to store exported file {filename}: {e}")
+            return None
+
     def _export_single_file(
         self, session: SandboxSession, src_path: str, workdir: str, temp_dir: str, index: int
     ) -> Optional[str]:
@@ -120,27 +144,12 @@ class FileExportService:
             filename = os.path.basename(src_path) or f"file_{index}"
             temp_file_path = os.path.join(temp_dir, filename)
 
-            # Copy file from sandbox to host
             session.copy_from_runtime(f"{workdir}/{src_path}", temp_file_path)
-
-            # Determine MIME type and read content
-            extension = Path(src_path).suffix.lower().lstrip(".")
-            mime_type = self._determine_mime_type(extension)
 
             with open(temp_file_path, "rb") as f:
                 content = f.read()
 
-            # Store file in repository
-            unique_filename = f"{uuid.uuid4()}_{filename}"
-            stored_file = self.file_repository.write_file(
-                name=unique_filename,
-                mime_type=mime_type,
-                content=content,
-                owner=self.user_id,
-            )
-
-            url = f" File '{filename}', URL `sandbox:/v1/files/{stored_file.to_encoded_url()}`"
-            return url
+            return self.store_exported_bytes(filename, content)
 
         except Exception as e:
             logger.error(f"Failed to export file {src_path}: {e}")

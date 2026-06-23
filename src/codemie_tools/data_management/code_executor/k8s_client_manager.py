@@ -43,10 +43,12 @@ class KubernetesClientManager:
         """
         self.kubeconfig_path = kubeconfig_path
         self._client_instance = None
+        self._batch_client_instance = None
+        self._config_loaded = False
 
     def get_client(self):
         """
-        Get or create Kubernetes API client.
+        Get or create Kubernetes CoreV1 API client.
 
         Lazily initializes the client on first access.
 
@@ -54,12 +56,31 @@ class KubernetesClientManager:
             kubernetes.client.CoreV1Api: Kubernetes API client
         """
         if self._client_instance is None:
-            self._client_instance = self._create_client()
+            from kubernetes import client
+
+            self._ensure_config_loaded()
+            self._client_instance = client.CoreV1Api()
         return self._client_instance
+
+    def get_batch_client(self):
+        """
+        Get or create Kubernetes BatchV1 API client (Jobs).
+
+        Lazily initializes the client on first access.
+
+        Returns:
+            kubernetes.client.BatchV1Api: Kubernetes Batch API client
+        """
+        if self._batch_client_instance is None:
+            from kubernetes import client
+
+            self._ensure_config_loaded()
+            self._batch_client_instance = client.BatchV1Api()
+        return self._batch_client_instance
 
     def recreate_client(self):
         """
-        Force recreation of Kubernetes client.
+        Force recreation of Kubernetes clients.
 
         Useful when connection pool becomes corrupted and needs to be reset.
 
@@ -68,18 +89,14 @@ class KubernetesClientManager:
         """
         logger.debug("Recreating Kubernetes client due to connection issues")
         self._client_instance = None
+        self._batch_client_instance = None
         return self.get_client()
 
-    def _create_client(self):
-        """
-        Create a new Kubernetes API client.
-
-        Loads configuration from kubeconfig file or in-cluster config.
-
-        Returns:
-            kubernetes.client.CoreV1Api: New Kubernetes API client
-        """
-        from kubernetes import client, config
+    def _ensure_config_loaded(self):
+        """Load kubeconfig or in-cluster config once per manager."""
+        if self._config_loaded:
+            return
+        from kubernetes import config
 
         if self.kubeconfig_path:
             logger.debug(f"Loading Kubernetes config from: {self.kubeconfig_path}")
@@ -87,5 +104,4 @@ class KubernetesClientManager:
         else:
             logger.debug("Loading Kubernetes config for in-cluster environment")
             config.load_incluster_config()
-
-        return client.CoreV1Api()
+        self._config_loaded = True
