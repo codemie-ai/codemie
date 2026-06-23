@@ -51,12 +51,13 @@ def _metadata_value(metadata: dict[str, Any], key: str) -> Any:
     return None
 
 
-def _build_member_provider_metadata(member_state: BudgetProviderMemberState) -> dict[str, Any]:
+def _build_member_provider_metadata(member_state: BudgetProviderMemberState, enforce_limit: bool) -> dict[str, Any]:
     raw = dict(member_state.metadata or {})
     if member_state.provider_member_ref is not None:
         raw["provider_member_ref"] = member_state.provider_member_ref
     if member_state.provider_budget_id is not None:
         raw["provider_budget_id"] = member_state.provider_budget_id
+    raw["enforce_limit"] = enforce_limit
     return {
         "provider": member_state.provider,
         "last_synced_at": datetime.now(tz=timezone.utc).isoformat(),
@@ -122,21 +123,27 @@ async def ensure_project_member_runtime_ready(
 
         current_provider_member_ref = _metadata_value(resolved.member_provider_metadata, "provider_member_ref")
         current_provider_budget_id = _metadata_value(resolved.member_provider_metadata, "provider_budget_id")
+        stored_enforce_limit = _metadata_value(resolved.member_provider_metadata, "enforce_limit")
         expected_budget_id = resolved.effective_budget_id or current_provider_budget_id
+        enforce_limit = None
         if (
             current_provider_member_ref
             and current_provider_budget_id
             and expected_budget_id
             and current_provider_budget_id == expected_budget_id
         ):
-            logger.debug(
-                f"budget_event=runtime_member_sync_skipped component=project_member_runtime_sync "
-                f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
-                f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
-                f"provider_member_ref={current_provider_member_ref!r} "
-                f"provider_budget_id={current_provider_budget_id!r} reason=provider_metadata_current"
-            )
-            return
+            enforce_limit = SettingsService.get_enforce_member_spend_limits(project_name)
+            if isinstance(stored_enforce_limit, bool) and stored_enforce_limit == enforce_limit:
+                logger.debug(
+                    f"budget_event=runtime_member_sync_skipped component=project_member_runtime_sync "
+                    f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
+                    f"budget_id={resolved.budget_id!r} budget_category={budget_category.value!r} "
+                    f"provider_member_ref={current_provider_member_ref!r} "
+                    f"provider_budget_id={current_provider_budget_id!r} reason=provider_metadata_current"
+                )
+                return
+        if enforce_limit is None:
+            enforce_limit = SettingsService.get_enforce_member_spend_limits(project_name)
 
         allocation = await project_member_budget_assignment_repository.get_active_by_project_category_user(
             session,
@@ -180,7 +187,6 @@ async def ensure_project_member_runtime_ready(
                 f"project={project_name!r}, budget_category={budget_category.value!r}, user_id={user_id!r}"
             )
 
-        enforce_limit = SettingsService.get_enforce_member_spend_limits(project_name)
         effective_max_budget = allocation.allocated_max_budget if enforce_limit else budget.max_budget
 
         effective_budget_id = _effective_budget_id_for_member(
@@ -245,7 +251,7 @@ async def ensure_project_member_runtime_ready(
         await project_member_budget_assignment_repository.update_provider_metadata(
             session,
             allocation_id=allocation_id,
-            provider_metadata=_build_member_provider_metadata(member_state),
+            provider_metadata=_build_member_provider_metadata(member_state, enforce_limit),
             sync_status=sync_status,
             budget_reset_at=member_state.budget_reset_at,
         )
@@ -308,7 +314,7 @@ async def resync_project_member_allocations(project_name: str, enforce_limit: bo
                     f"project_name={project_name!r} allocation_id={allocation.id!r} sync_status={sync_status!r}"
                 )
                 continue
-            metadata = _build_member_provider_metadata(member_state)
+            metadata = _build_member_provider_metadata(member_state, enforce_limit)
             await project_member_budget_assignment_repository.update_provider_metadata(
                 session,
                 allocation_id=allocation.id,
