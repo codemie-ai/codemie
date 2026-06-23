@@ -82,9 +82,107 @@ def test_build_project_budget_response_includes_member_budget_id():
         provider_metadata={"raw": {"provider_budget_id": "member-budget-1"}},
     )
 
-    result = _build_project_budget_response(budget, assignment, [allocation])
+    with patch(
+        "codemie.rest_api.routers.project_budget_router.SettingsService.get_enforce_member_spend_limits",
+        return_value=True,
+    ):
+        result = _build_project_budget_response(budget, assignment, [allocation])
 
     assert result.member_allocations[0].budget_id == "member-budget-1"
+
+
+def test_build_project_budget_response_uses_full_budget_when_enforcement_disabled():
+    budget = SimpleNamespace(
+        budget_id="proj-budget-1",
+        budget_category="cli",
+        budget_type="project",
+        name="CLI Budget",
+        description=None,
+        soft_budget=0.0,
+        max_budget=100.0,
+        budget_duration="30d",
+        budget_reset_at=None,
+        provider_metadata={},
+        created_by="admin-1",
+        created_at=None,
+        updated_at=None,
+    )
+    assignment = SimpleNamespace(project_name="proj-a", allocation_mode="equal")
+    allocations = [
+        SimpleNamespace(
+            user_id="user-1",
+            allocation_mode="equal",
+            allocated_soft_budget=20.0,
+            allocated_max_budget=50.0,
+            sync_status="ok",
+            provider_metadata={},
+        ),
+        SimpleNamespace(
+            user_id="user-2",
+            allocation_mode="equal",
+            allocated_soft_budget=20.0,
+            allocated_max_budget=50.0,
+            sync_status="ok",
+            provider_metadata={},
+        ),
+    ]
+
+    with patch(
+        "codemie.rest_api.routers.project_budget_router.SettingsService.get_enforce_member_spend_limits",
+        return_value=False,
+    ):
+        result = _build_project_budget_response(budget, assignment, allocations)
+
+    assert result.member_allocations[0].allocated_max_budget == 100.0
+    assert result.member_allocations[1].allocated_max_budget == 100.0
+    assert result.allocated_member_budget_total == 200.0
+
+
+def test_build_project_budget_response_uses_allocated_budget_when_enforcement_enabled():
+    budget = SimpleNamespace(
+        budget_id="proj-budget-1",
+        budget_category="cli",
+        budget_type="project",
+        name="CLI Budget",
+        description=None,
+        soft_budget=0.0,
+        max_budget=100.0,
+        budget_duration="30d",
+        budget_reset_at=None,
+        provider_metadata={},
+        created_by="admin-1",
+        created_at=None,
+        updated_at=None,
+    )
+    assignment = SimpleNamespace(project_name="proj-a", allocation_mode="equal")
+    allocations = [
+        SimpleNamespace(
+            user_id="user-1",
+            allocation_mode="equal",
+            allocated_soft_budget=20.0,
+            allocated_max_budget=50.0,
+            sync_status="ok",
+            provider_metadata={},
+        ),
+        SimpleNamespace(
+            user_id="user-2",
+            allocation_mode="equal",
+            allocated_soft_budget=20.0,
+            allocated_max_budget=50.0,
+            sync_status="ok",
+            provider_metadata={},
+        ),
+    ]
+
+    with patch(
+        "codemie.rest_api.routers.project_budget_router.SettingsService.get_enforce_member_spend_limits",
+        return_value=True,
+    ):
+        result = _build_project_budget_response(budget, assignment, allocations)
+
+    assert result.member_allocations[0].allocated_max_budget == 50.0
+    assert result.member_allocations[1].allocated_max_budget == 50.0
+    assert result.allocated_member_budget_total == 100.0
 
 
 @pytest.mark.asyncio
@@ -106,12 +204,51 @@ async def test_list_project_budget_members_returns_nullable_budget_id():
         ),
         patch(
             "codemie.rest_api.routers.project_budget_router.project_budget_service.get_project_budget",
-            new=AsyncMock(return_value=(SimpleNamespace(), SimpleNamespace(project_name="proj-a"), [allocation])),
+            new=AsyncMock(
+                return_value=(SimpleNamespace(max_budget=25.0), SimpleNamespace(project_name="proj-a"), [allocation])
+            ),
+        ),
+        patch(
+            "codemie.rest_api.routers.project_budget_router.SettingsService.get_enforce_member_spend_limits",
+            return_value=True,
         ),
     ):
         result = await list_project_budget_members("proj-budget-1", user=_admin_user())
 
     assert result.data[0].budget_id == "member-budget-1"
+
+
+@pytest.mark.asyncio
+async def test_list_project_budget_members_returns_effective_budget_when_enforcement_disabled():
+    session = AsyncMock()
+    budget = SimpleNamespace(max_budget=100.0)
+    assignment = SimpleNamespace(project_name="proj-a")
+    allocation = SimpleNamespace(
+        user_id="user-1",
+        allocation_mode="equal",
+        allocated_soft_budget=20.0,
+        allocated_max_budget=50.0,
+        sync_status="ok",
+        provider_metadata={},
+    )
+
+    with (
+        patch(
+            "codemie.rest_api.routers.project_budget_router.get_async_session",
+            return_value=_mock_session_ctx(session),
+        ),
+        patch(
+            "codemie.rest_api.routers.project_budget_router.project_budget_service.get_project_budget",
+            new=AsyncMock(return_value=(budget, assignment, [allocation])),
+        ),
+        patch(
+            "codemie.rest_api.routers.project_budget_router.SettingsService.get_enforce_member_spend_limits",
+            return_value=False,
+        ),
+    ):
+        result = await list_project_budget_members("proj-budget-1", user=_admin_user())
+
+    assert result.data[0].allocated_max_budget == 100.0
 
 
 @pytest.mark.asyncio
@@ -201,7 +338,11 @@ async def test_project_admin_can_read_budget_members_for_owned_project():
         ),
         patch(
             "codemie.rest_api.routers.project_budget_router.project_budget_service.get_project_budget",
-            new=AsyncMock(return_value=(SimpleNamespace(), assignment, [allocation])),
+            new=AsyncMock(return_value=(SimpleNamespace(max_budget=25.0), assignment, [allocation])),
+        ),
+        patch(
+            "codemie.rest_api.routers.project_budget_router.SettingsService.get_enforce_member_spend_limits",
+            return_value=True,
         ),
     ):
         result = await list_project_budget_members(

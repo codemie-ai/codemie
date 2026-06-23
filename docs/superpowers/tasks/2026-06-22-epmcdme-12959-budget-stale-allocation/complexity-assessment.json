@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "task": "Fix stale member budget allocation API responses by applying the effective_max_budget calculation (using enforce_member_spend_limits flag) in project_budget_router.py response builders.",
+  "generated": "2026-06-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 1, "label": "XS" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 9,
+  "size": "XS",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Two sites in project_budget_router.py (_build_project_budget_response and list_project_budget_members) plus a call to SettingsService.get_enforce_member_spend_limits, spanning the API and Service layers. Self-contained within one router file."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "API layer (router response projection) and Service layer (SettingsService call) — two layers with a simple established handoff. No persistence changes, no new layer coordination required."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -32,6 +32,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory
 from codemie.service.budget.budget_models import Budget, ProjectBudgetAssignment, ProjectMemberBudgetAssignment
 from codemie.service.budget.project_budget_service import project_budget_service
+from codemie.service.settings.settings import SettingsService
 
 router = APIRouter(
     tags=["Project Budgets"],
@@ -139,10 +140,14 @@ def _build_project_budget_response(
     allocations: list[ProjectMemberBudgetAssignment],
 ) -> ProjectBudgetResponse:
     provider_meta: dict = budget.provider_metadata or {}
-    allocated_total = sum(a.allocated_max_budget for a in allocations)
+    project_name = assignment.project_name if assignment else ""
+    enforce_limit = SettingsService.get_enforce_member_spend_limits(project_name)
+    # When enforcement is disabled each member holds the full budget independently,
+    # so the aggregate can exceed the project cap.
+    allocated_total = sum(a.allocated_max_budget if enforce_limit else budget.max_budget for a in allocations)
     return ProjectBudgetResponse(
         budget_id=budget.budget_id,
-        project_name=assignment.project_name if assignment else "",
+        project_name=project_name,
         budget_category=BudgetCategory(budget.budget_category),
         budget_type=budget.budget_type,
         name=budget.name,
@@ -165,7 +170,7 @@ def _build_project_budget_response(
                 user_id=a.user_id,
                 allocation_mode=a.allocation_mode,
                 allocated_soft_budget=a.allocated_soft_budget,
-                allocated_max_budget=a.allocated_max_budget,
+                allocated_max_budget=a.allocated_max_budget if enforce_limit else budget.max_budget,
                 sync_status=a.sync_status,
                 budget_id=_member_budget_id(a),
             )
@@ -370,16 +375,18 @@ async def list_project_budget_members(
     """List active member allocations for a project budget when authorized."""
     _require_budgeting_enabled()
     async with get_async_session() as session:
-        _budget, assignment, allocations = await project_budget_service.get_project_budget(session, budget_id)
+        budget, assignment, allocations = await project_budget_service.get_project_budget(session, budget_id)
         if assignment is not None:
             _ensure_project_budget_read_access(user, assignment.project_name)
+    project_name = assignment.project_name if assignment else ""
+    enforce_limit = SettingsService.get_enforce_member_spend_limits(project_name)
     return ProjectBudgetMembersResponse(
         data=[
             ProjectBudgetMemberAllocationResponse(
                 user_id=a.user_id,
                 allocation_mode=a.allocation_mode,
                 allocated_soft_budget=a.allocated_soft_budget,
-                allocated_max_budget=a.allocated_max_budget,
+                allocated_max_budget=a.allocated_max_budget if enforce_limit else budget.max_budget,
                 sync_status=a.sync_status,
                 budget_id=_member_budget_id(a),
             )

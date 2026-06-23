@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "runner": "poetry",
+  "gates": [
+    {"id": "lint",            "command": "make ruff",          "available": true},
+    {"id": "build",           "command": "make build",         "available": true},
+    {"id": "license-headers", "command": "make license-check", "available": true},
+    {"id": "gitleaks",        "command": "make gitleaks",      "available": true},
+    {"id": "unit",            "command": "make test",          "available": true},
+    {"id": "coverage",        "command": "make coverage",      "available": true},
+    {"id": "sonar",           "command": "make sonar-local",   "available": true},
+    {"id": "ui",              "command": null,                 "available": false}
+  ],
+  "ui_globs": [],
+  "detected_at": "2026-06-22T09:00:00Z"
+}

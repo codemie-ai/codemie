@@ -1,0 +1,30 @@
+{
+  "gate": "code-review.final",
+  "ticket": "EPMCDME-12959",
+  "decision": "approve",
+  "confidence": "medium",
+  "rationale": "All 7 acceptance criteria pass. Both fix sites apply the identical formula; no logic errors, no security issues, no public API breakage. Two deferred findings are pre-existing patterns not introduced by this diff: (1) ORM objects used outside the async-session block in list_project_budget_members — the original code already did this for allocations; adding budget.max_budget to the same pattern is safe today because all scalar columns are loaded eagerly, but fragile if the query is later changed to defer columns. (2) SettingsService.get_enforce_member_spend_limits is a synchronous DB call inside an async handler — technical analysis confirms this pattern is already established in other routers. Dismissed: dead assignment guard (service raises 404 before it fires), aggregate semantics (N x max_budget total is intentional and documented with a comment). 1 dismissed test gap: test_list_project_budget_members_returns_effective_budget_when_enforcement_disabled does not assert allocated_soft_budget unchanged in the enforcement-disabled path, but AC-7 is covered by the two _build_project_budget_response tests.",
+  "business_review": [
+    {"id": "AC-1", "description": "GET /members returns budget.max_budget per member and N x budget.max_budget total when enforcement disabled", "status": "pass"},
+    {"id": "AC-2", "description": "Both endpoints return persisted allocation.allocated_max_budget when enforcement enabled", "status": "pass"},
+    {"id": "AC-3", "description": "_build_project_budget_response applies effective formula to both per-member value and aggregate total", "status": "pass"},
+    {"id": "AC-4", "description": "LiteLLM sync unchanged — project_member_runtime_sync.py not touched", "status": "pass"},
+    {"id": "AC-5", "description": "Rebalance behaviour unchanged when enforcement enabled", "status": "pass"},
+    {"id": "AC-6", "description": "Regression test for enforcement-disabled read path present and correct", "status": "pass"},
+    {"id": "AC-7", "description": "allocated_soft_budget not changed by enforcement flag", "status": "pass"}
+  ],
+  "standards_review": [
+    {"standard": "commit-format", "status": "pass", "notes": "Both commits follow EPMCDME-####: Description format"},
+    {"standard": "ruff", "status": "pass", "notes": "make ruff passes clean after line-length fix"},
+    {"standard": "license-headers", "status": "na", "notes": "No new source files created"},
+    {"standard": "security", "status": "pass", "notes": "No auth changes; existing authenticate dependency unchanged; no secrets introduced"}
+  ],
+  "findings": [],
+  "risk_flags": [],
+  "deferred": [
+    "ORM objects (budget, assignment, allocations) used outside async-with session block in list_project_budget_members — pre-existing pattern, safe today, fragile if repository queries add deferred columns",
+    "SettingsService.get_enforce_member_spend_limits is a synchronous DB read inside an async handler — pre-existing architectural pattern in this codebase",
+    "test_list_project_budget_members_returns_effective_budget_when_enforcement_disabled does not assert allocated_soft_budget unchanged in the enforcement-disabled path"
+  ],
+  "dismissed_count": 3
+}
