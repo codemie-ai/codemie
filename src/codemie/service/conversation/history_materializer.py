@@ -97,6 +97,8 @@ def _materialize_execution_reference(message: GeneratedMessage, workflow_id: Opt
     final_output = execution.output or ""
     if not final_output and thoughts:
         final_output = thoughts[-1].get("message", "")
+    if not final_output:
+        final_output = _get_last_completed_state_output(execution_id) or ""
 
     return GeneratedMessage(
         role=message.role,
@@ -112,6 +114,19 @@ def _materialize_execution_reference(message: GeneratedMessage, workflow_id: Opt
         workflow_execution_ref=True,
         execution_id=execution_id,
     )
+
+
+def _get_last_completed_state_output(execution_id: str) -> Optional[str]:
+    from codemie.core.workflow_models import WorkflowExecutionState
+
+    try:
+        states = WorkflowExecutionState.get_all_by_fields(
+            fields={"execution_id.keyword": execution_id}, order_by="date"
+        )
+        return next((s.output for s in reversed(states) if s.output), None)
+    except Exception as e:
+        logger.error(f"Failed to get last state output for execution {execution_id}: {e}", exc_info=True)
+        return None
 
 
 def _get_execution_thoughts(execution_id: str, history_index: Optional[int] = None) -> List[dict]:
@@ -134,7 +149,9 @@ def _get_execution_thoughts(execution_id: str, history_index: Optional[int] = No
         )
 
         if history_index is not None and any(s.history_index is not None for s in states):
-            states = [s for s in states if s.history_index == history_index]
+            filtered = [s for s in states if s.history_index == history_index]
+            if filtered:
+                states = filtered
 
         return [
             {
@@ -149,7 +166,7 @@ def _get_execution_thoughts(execution_id: str, history_index: Optional[int] = No
                 "aborted": state.status == WorkflowExecutionStatusEnum.ABORTED,
             }
             for state in states
-            if state.output
+            if state.output or state.status == WorkflowExecutionStatusEnum.ABORTED
         ]
     except Exception as e:
         logger.error(f"Failed to get thoughts for execution {execution_id}: {e}", exc_info=True)

@@ -33,7 +33,13 @@ from codemie.core.ability import Ability, Action
 from codemie.core.dependecies import set_disable_prompt_cache
 from codemie.core.errors import ErrorDetailLevel
 from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException
-from codemie.core.models import BaseModelResponse, AssistantChatRequest, BackgroundTaskRequest, AssistantDetails
+from codemie.core.models import (
+    BaseModelResponse,
+    AssistantChatRequest,
+    BackgroundTaskRequest,
+    AssistantDetails,
+    TokensUsage,
+)
 from codemie.core.thread import ThreadedGenerator
 from codemie.rest_api.a2a.client.remote_agent_connection import RemoteAgentConnections, TaskCallbackArg
 from codemie.rest_api.a2a.types import Task, SendTaskRequest, SendTaskStreamingRequest, AgentCard, TaskState
@@ -351,7 +357,9 @@ class AssistantRequestHandler(ABC):
         set_llm_context(self.assistant, None, self.user)
 
         summary = request_summary_manager.get_summary(self.request_uuid)
-        tokens_usage = summary.tokens_usage if summary else None
+        tokens_usage = (summary.tokens_usage if summary else None) or TokensUsage(
+            input_tokens=0, output_tokens=0, money_spent=0
+        )
         ConversationService.upsert_chat_history(
             request=data.request,
             user=self.user,

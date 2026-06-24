@@ -98,7 +98,10 @@ class WorkflowExecutionService:
                 f"set to {WorkflowExecutionStatusEnum.ABORTED}"
             )
             self.workflow_execution.overall_status = WorkflowExecutionStatusEnum.ABORTED
-            self.workflow_execution.tokens_usage = self._calculate_tokens_usage(self.workflow_execution_id)
+            calculated_tokens = self._calculate_tokens_usage(self.workflow_execution_id)
+            if calculated_tokens is not None:
+                self.workflow_execution.tokens_usage = calculated_tokens
+
             self.workflow_execution.update(refresh=True)
 
             states = WorkflowExecutionState.get_all_by_fields(fields={EXECUTION_ID_KEYWORD: self.workflow_execution_id})
@@ -280,10 +283,10 @@ class WorkflowExecutionService:
             self._refresh_workflow_execution()
             if self.workflow_execution:
                 if self.workflow_execution.overall_status != WorkflowExecutionStatusEnum.ABORTED:
-                    self.workflow_execution.tokens_usage = self._calculate_tokens_usage(
-                        self.workflow_execution_id,
-                    )
-                    self.workflow_execution.update(refresh=REFRESH_WAIT_FOR)
+                    calculated_tokens = self._calculate_tokens_usage(self.workflow_execution_id)
+                    if calculated_tokens is not None:
+                        self.workflow_execution.tokens_usage = calculated_tokens
+                        self.workflow_execution.update(refresh=REFRESH_WAIT_FOR)
             else:
                 logger.warning(
                     f"Workflow execution not found for execution_id: {self.workflow_execution_id}. "
