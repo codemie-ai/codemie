@@ -20,6 +20,8 @@ from typing import List, Optional
 from botocore.exceptions import ClientError
 
 from codemie.configs import logger
+from codemie.core.ability import Ability, Action
+
 from codemie.core.workflow_models.workflow_config import (
     BedrockFlowData,
     WorkflowConfig,
@@ -39,7 +41,13 @@ from codemie.rest_api.models.vendor import ImportFlow
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.default_applications import ensure_application_exists
 from codemie.service.aws_bedrock.base_bedrock_service import ALL_SETTINGS_OVERVIEW_ENTITY_COUNT, BaseBedrockService
-from codemie.service.aws_bedrock.exceptions import aws_service_exception_handler
+from codemie.service.aws_bedrock.exceptions import (
+    EntityAccessDenied,
+    EntityDeletionError,
+    EntityNotFound,
+    aws_service_exception_handler,
+    is_resource_not_found,
+)
 from codemie.service.aws_bedrock.utils import (
     CONFIGURATION_INVALID_EXCEPTIONS,
     call_bedrock_listing_api,
@@ -436,6 +444,18 @@ class BedrockFlowService(BaseBedrockService):
             GuardrailService.remove_guardrail_assignments_for_entity(GuardrailEntity.WORKFLOW, str(entity.id))
 
     @staticmethod
+    def unimport_entity(entity_id: str, user: User) -> None:
+        entity_model = WorkflowConfig.find_by_id(entity_id)
+        if not entity_model:
+            raise EntityNotFound("flow", entity_id)
+        if not Ability(user).can(Action.DELETE, entity_model):
+            raise EntityAccessDenied
+        try:
+            workflow_service.delete_workflow(entity_model, user)
+        except Exception as e:
+            raise EntityDeletionError("flow", str(e))
+
+    @staticmethod
     def validate_remote_entity_exists_and_cleanup(entity: WorkflowConfigBase):
         if not entity.bedrock or not entity.bedrock.bedrock_flow_id or not entity.bedrock.bedrock_flow_alias_id:
             return None  # not a bedrock entity
@@ -459,8 +479,7 @@ class BedrockFlowService(BaseBedrockService):
             return None
 
         except ClientError as e:
-            error_code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
-            if error_code.strip().lower() == "resourcenotfoundexception":
+            if is_resource_not_found(e):
                 workflow_executions = WorkflowExecution.get_by_workflow_id(str(entity.id))
                 for execution in workflow_executions:
                     WorkflowExecution.delete(str(execution.id))

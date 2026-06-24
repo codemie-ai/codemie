@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional
+from typing import Any, List, Optional
 from codemie.rest_api.models.assistant import Assistant, AssistantType
 from codemie.service.aws_bedrock.bedrock_agent_service import BedrockAgentService, InvokeAgentResponse
 from codemie.service.aws_bedrock.bedrock_agentcore_runtime_service import (
@@ -39,6 +39,7 @@ class BedrockOrchestratorService:
         input_text: str,
         conversation_id: str,
         chat_history: Optional[List] = None,
+        thread_generator: Optional[Any] = None,
     ) -> InvokeAgentResponse | InvokeAgentCoreRuntimeResponse:
         """
         Unified invocation method for AWS Bedrock assistants.
@@ -50,7 +51,7 @@ class BedrockOrchestratorService:
             assistant: The assistant to invoke
             input_text: The input text to send
             conversation_id: The conversation session ID
-            chat_history: Optional chat history (used for Bedrock Agents)
+            chat_history: Optional chat history (used for Bedrock Agents and AgentCore Runtime)
 
         Returns:
             Response dict with 'output' and 'time_elapsed' keys
@@ -70,6 +71,8 @@ class BedrockOrchestratorService:
                 assistant=assistant,
                 input_text=input_text,
                 conversation_id=conversation_id,
+                history=chat_history,
+                thread_generator=thread_generator,
             )
         else:
             raise ValueError(f"Assistant type {assistant.type} is not a Bedrock assistant type")
@@ -90,5 +93,5 @@ class BedrockOrchestratorService:
 
         return bool(
             (assistant.bedrock and assistant.bedrock.bedrock_agent_id)
-            or (assistant.bedrock_agentcore_runtime and assistant.bedrock_agentcore_runtime.runtime_endpoint_arn)
+            or (assistant.bedrock_agentcore_runtime and assistant.bedrock_agentcore_runtime.runtime_arn)
         )

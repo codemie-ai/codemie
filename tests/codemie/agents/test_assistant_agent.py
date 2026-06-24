@@ -13,11 +13,15 @@
 # limitations under the License.
 
 import json
+from unittest.mock import MagicMock, patch
 
 from pydantic import BaseModel
 
-from codemie.agents.assistant_agent import TaskResult
+from codemie.agents.assistant_agent import AIToolsAgent, TaskResult
 from codemie.chains.base import GenerationResult
+from codemie.core.constants import ChatRole
+from codemie.core.models import AssistantChatRequest, ChatMessage
+from codemie.rest_api.models.assistant import AssistantType
 
 
 class SampleOutput(BaseModel):
@@ -117,3 +121,51 @@ def test_from_agent_response_dict_with_no_known_key():
 
     assert result.result == ""
     assert result.success is False
+
+
+_AGENT_MOD = "codemie.agents.assistant_agent"
+
+
+def _make_agentcore_agent(history=None):
+    from codemie.agents.aws_bedrock.agentcore_executor import AgentCoreExecutor
+
+    request = AssistantChatRequest(text="hello", conversation_id="conv-1")
+    if history is not None:
+        request.history = history
+
+    assistant = MagicMock()
+    assistant.type = AssistantType.BEDROCK_AGENTCORE_RUNTIME
+    assistant.bedrock_agentcore_runtime = MagicMock()
+    assistant.bedrock_agentcore_runtime.runtime_arn = "arn:aws:bedrock:us-east-1::agent/test"
+    assistant.bedrock = None
+
+    agent = AIToolsAgent.__new__(AIToolsAgent)
+    agent.request = request
+    agent.assistant = assistant
+    agent.conversation_id = request.conversation_id
+    agent.agent_name = "test-agent"
+    agent.llm_model = "gpt-4"
+    agent.request_uuid = "test-uuid"
+    agent.user = MagicMock()
+    agent.trace_context = None
+    agent.agent_executor = AgentCoreExecutor(
+        assistant=assistant,
+        conversation_id=request.conversation_id,
+        history_fn=lambda: request.history,
+    )
+    return agent
+
+
+@patch(f"{_AGENT_MOD}.AIToolsAgent._get_tool_errors", return_value=[])
+@patch(f"{_AGENT_MOD}.AIToolsAgent._persist_generated_workspace_files")
+@patch("codemie.agents.aws_bedrock.agentcore_executor.BedrockAgentCoreRuntimeService.invoke_agentcore_runtime")
+def test_generate_forwards_chat_history_to_orchestrator(mock_invoke, _mock_persist, _mock_errors):
+    history = [ChatMessage(role=ChatRole.USER, message="prior turn")]
+    mock_invoke.return_value = {"output": "response text", "thoughts": [], "time_elapsed": 0.1}
+
+    agent = _make_agentcore_agent(history=history)
+    agent.generate()
+
+    mock_invoke.assert_called_once()
+    _, kwargs = mock_invoke.call_args
+    assert kwargs["history"] == history

@@ -15,8 +15,10 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.service.aws_bedrock.exceptions import EntityNotFound, EntityAccessDenied
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant
+from codemie.rest_api.models.guardrail import GuardrailEntity
 from codemie.rest_api.models.vendor import ImportAgent
 from codemie.service.aws_bedrock.bedrock_agent_service import BedrockAgentService
 from codemie.rest_api.models.settings import AWSCredentials, Settings, SettingsBase
@@ -824,3 +826,38 @@ def test_validate_remote_entity_exists_and_cleanup_unexpected_error_passes(
     BedrockAgentService.validate_remote_entity_exists_and_cleanup(mock_assistant)
 
     mock_assistant.delete.assert_not_called()
+
+
+# --- Tests for unimport_entity ---
+@patch("codemie.service.aws_bedrock.bedrock_agent_service.GuardrailService.remove_guardrail_assignments_for_entity")
+@patch("codemie.service.aws_bedrock.bedrock_agent_service.Ability")
+@patch("codemie.service.aws_bedrock.bedrock_agent_service.Assistant.find_by_id")
+def test_unimport_entity_agent_deletes_and_removes_guardrails(
+    mock_find_by_id, mock_ability_cls, mock_remove_guardrails, mock_user
+):
+    """unimport_entity deletes the assistant and removes guardrail assignments."""
+    mock_assistant = MagicMock()
+    mock_assistant.id = "assistant-uuid-1"
+    mock_find_by_id.return_value = mock_assistant
+    mock_ability_cls.return_value.can.return_value = True
+
+    BedrockAgentService.unimport_entity("assistant-uuid-1", mock_user)
+
+    mock_assistant.delete.assert_called_once()
+    mock_remove_guardrails.assert_called_once_with(GuardrailEntity.ASSISTANT, "assistant-uuid-1")
+
+
+@patch("codemie.service.aws_bedrock.bedrock_agent_service.Assistant.find_by_id")
+def test_unimport_entity_agent_raises_404_when_not_found(mock_find_by_id, mock_user):
+    mock_find_by_id.return_value = None
+    with pytest.raises(EntityNotFound):
+        BedrockAgentService.unimport_entity("missing-id", mock_user)
+
+
+@patch("codemie.service.aws_bedrock.bedrock_agent_service.Ability")
+@patch("codemie.service.aws_bedrock.bedrock_agent_service.Assistant.find_by_id")
+def test_unimport_entity_agent_raises_403_when_no_permission(mock_find_by_id, mock_ability_cls, mock_user):
+    mock_find_by_id.return_value = MagicMock()
+    mock_ability_cls.return_value.can.return_value = False
+    with pytest.raises(EntityAccessDenied):
+        BedrockAgentService.unimport_entity("assistant-uuid-1", mock_user)

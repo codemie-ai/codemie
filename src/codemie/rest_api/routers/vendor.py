@@ -12,18 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import contextlib
 from typing import Dict, List, Optional, Type
 from fastapi import APIRouter, Body, Query, status, Depends
 from pydantic import ValidationError
 import urllib.parse
 
-from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import NOT_FOUND_MESSAGE, ExtendedHTTPException
-from codemie.core.workflow_models.workflow_config import WorkflowConfig
-from codemie.rest_api.models.assistant import Assistant
-from codemie.rest_api.models.guardrail import Guardrail
-from codemie.rest_api.models.index import IndexInfo
 from codemie.rest_api.models.vendor import (
     Entities,
     ImportAgent,
@@ -34,17 +28,24 @@ from codemie.rest_api.models.vendor import (
     ImportKnowledgeBase,
     Vendor,
 )
-from codemie.rest_api.routers.utils import raise_access_denied
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
+from codemie.service.aws_bedrock.agentcore.bedrock_agentcore_endpoint_service import (
+    AgentcoreEndpointEntity,
+)
 from codemie.service.aws_bedrock.base_bedrock_service import BaseBedrockService
+from codemie.service.aws_bedrock.exceptions import (
+    AgentcoreEndpointNotFoundError,
+    AgentcoreEndpointValidationError,
+    EntityAccessDenied,
+    EntityDeletionError,
+    EntityNotFound,
+)
 from codemie.service.aws_bedrock.bedrock_agentcore_runtime_service import BedrockAgentCoreRuntimeService
 from codemie.service.aws_bedrock.bedrock_guardrail_service import BedrockGuardrailService
 from codemie.service.aws_bedrock.bedrock_agent_service import BedrockAgentService
 from codemie.service.aws_bedrock.bedrock_flow_service import BedrockFlowService
 from codemie.service.aws_bedrock.bedrock_knowledge_base_service import BedrockKnowledgeBaseService
-from codemie.service.guardrail.guardrail_service import GuardrailService
-from codemie.service.workflow_service import WorkflowService
 
 
 router = APIRouter(
@@ -52,8 +53,6 @@ router = APIRouter(
     prefix="/v1",
     dependencies=[],
 )
-
-workflow_service = WorkflowService()
 
 DEFAULT_PAGE = 0
 DEFAULT_PER_PAGE = 12
@@ -290,6 +289,7 @@ def list_vendor_importable_entities_endpoints(
 
     next_token = unquote_and_validate_next_token(next_token)
 
+    importable_entities: List[AgentcoreEndpointEntity]
     importable_entities, return_next_token = service.list_importable_entities_for_main_entity(
         user=user,
         main_entity_id=vendor_entity_id,
@@ -406,7 +406,22 @@ def import_vendor_entities(
             result.setdefault(setting_id, []).append(item)
 
     service = get_service_or_404(origin, entity)
-    summary = service.import_entities(user=user, import_payload=result)
+    try:
+        summary = service.import_entities(user=user, import_payload=result)
+    except AgentcoreEndpointNotFoundError as e:
+        raise ExtendedHTTPException(
+            code=404,
+            message=e.message,
+            details="Import failed: endpoint not found.",
+            help="Check the endpoint name and ensure it exists on AWS.",
+        ) from e
+    except AgentcoreEndpointValidationError as e:
+        raise ExtendedHTTPException(
+            code=400,
+            message=e.message,
+            details="Import failed: invalid configuration.",
+            help="Check the configuration_json field and ensure it is valid JSON with all required fields.",
+        ) from e
 
     return {"summary": summary}
 
@@ -415,49 +430,34 @@ def import_vendor_entities(
     "/vendors/{origin}/{entity}/{entity_id}",
     status_code=status.HTTP_200_OK,
 )
-def delete_vendor_entity(
+def unimport_vendor_entity(
     origin: Vendor,
     entity: Entities,
     entity_id: str,
     user: User = Depends(authenticate),
 ):
-    entity_model = None
-    if entity in [Entities.AWS_AGENTS, Entities.AWS_AGENTCORE_RUNTIMES]:
-        entity_model = Assistant.find_by_id(entity_id)
-    elif entity == Entities.AWS_KNOWLEDGE_BASES:
-        entity_model = IndexInfo.find_by_id(entity_id)
-    elif entity == Entities.AWS_FLOWS:
-        with contextlib.suppress(KeyError):
-            entity_model = workflow_service.get_workflow(workflow_id=entity_id)
-    elif entity == Entities.AWS_GUARDRAILS:
-        entity_model = Guardrail.find_by_id(entity_id)
-
-    if not entity_model:
+    service = get_service_or_404(origin, entity)
+    try:
+        service.unimport_entity(entity_id, user)
+    except EntityNotFound as e:
         raise ExtendedHTTPException(
             code=status.HTTP_404_NOT_FOUND,
-            message=f"{entity.value[:-1]} not found",
-            details=f"No {entity.value[:-1]} found with the id '{entity_id}'.",
+            message=f"{e.entity_type} not found",
+            details=f"No {e.entity_type} found with the id '{e.entity_id}'.",
             help="Please check the id and ensure it is correct.",
-        )
-
-    if not Ability(user).can(Action.DELETE, entity_model):
-        raise_access_denied("delete")
-
-    try:
-        if isinstance(entity_model, WorkflowConfig):
-            workflow_service.delete_workflow(entity_model, user)
-        elif isinstance(entity_model, Guardrail):
-            GuardrailService.remove_guardrail_assignments_for_guardrail(str(entity_model.id))
-            entity_model.delete()
-        else:
-            entity_model.delete()
-    except Exception as e:
+        ) from e
+    except EntityAccessDenied as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_403_FORBIDDEN,
+            message="Access denied",
+            details="You do not have permission to delete this entity.",
+            help="Contact your administrator if you believe this is an error.",
+        ) from e
+    except EntityDeletionError as e:
         raise ExtendedHTTPException(
             code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             message="Failed to delete entity",
-            details=f"An error occurred while deleting the {entity.value[:-1]}: {str(e)}",
-            help="This is likely a temporary issue. Please try again later. "
-            "If the problem persists, contact the system administrator.",
-        )
-
+            details=f"An error occurred while deleting the {e.entity_type}: {e.detail}",
+            help="This is likely a temporary issue. Please try again later.",
+        ) from e
     return {"success": True}

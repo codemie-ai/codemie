@@ -18,6 +18,8 @@ import re
 from botocore.exceptions import ClientError
 
 from codemie.configs import logger
+from codemie.core.ability import Ability, Action
+
 from codemie.core.models import CreatedByUser
 from codemie.rest_api.models.guardrail import Guardrail
 from codemie.rest_api.models.settings import AWSCredentials, Settings, SettingsBase
@@ -25,7 +27,13 @@ from codemie.rest_api.models.vendor import ImportGuardrail
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.default_applications import ensure_application_exists
 from codemie.service.aws_bedrock.base_bedrock_service import ALL_SETTINGS_OVERVIEW_ENTITY_COUNT, BaseBedrockService
-from codemie.service.aws_bedrock.exceptions import aws_service_exception_handler
+from codemie.service.aws_bedrock.exceptions import (
+    EntityAccessDenied,
+    EntityDeletionError,
+    EntityNotFound,
+    aws_service_exception_handler,
+    is_resource_not_found,
+)
 from codemie.service.aws_bedrock.utils import (
     CONFIGURATION_INVALID_EXCEPTIONS,
     call_bedrock_listing_api,
@@ -340,6 +348,19 @@ class BedrockGuardrailService(BaseBedrockService):
             GuardrailService.remove_guardrail_assignments_for_guardrail(str(entity.id))
 
     @staticmethod
+    def unimport_entity(entity_id: str, user: User) -> None:
+        entity_model = Guardrail.find_by_id(entity_id)
+        if not entity_model:
+            raise EntityNotFound("guardrail", entity_id)
+        if not Ability(user).can(Action.DELETE, entity_model):
+            raise EntityAccessDenied
+        try:
+            entity_model.delete()
+            GuardrailService.remove_guardrail_assignments_for_guardrail(str(entity_model.id))
+        except Exception as e:
+            raise EntityDeletionError("guardrail", str(e))
+
+    @staticmethod
     def validate_remote_entity_exists_and_cleanup(entity: Guardrail):
         if not entity.bedrock or not entity.bedrock.bedrock_guardrail_id or not entity.bedrock.bedrock_version:
             return None  # not a bedrock entity
@@ -363,8 +384,7 @@ class BedrockGuardrailService(BaseBedrockService):
             return None
 
         except ClientError as e:
-            error_code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
-            if error_code.strip().lower() == "resourcenotfoundexception":
+            if is_resource_not_found(e):
                 entity.delete()
                 GuardrailService.remove_guardrail_assignments_for_guardrail(str(entity.id))
             else:
@@ -510,8 +530,7 @@ class BedrockGuardrailService(BaseBedrockService):
                 "aiRunId": created_entity_id,
             }
         except ClientError as e:
-            error_code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
-            if error_code.strip().lower() == "resourcenotfoundexception":
+            if is_resource_not_found(e):
                 return {
                     "guardrailId": guardrail_input_id,
                     "version": guardrail_input_version,

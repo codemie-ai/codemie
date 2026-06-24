@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import pytest
 from unittest.mock import patch, MagicMock
+from codemie.rest_api.models.assistant import BedrockAgentcoreRuntimeData
+from codemie.rest_api.models.guardrail import GuardrailEntity
 from codemie.rest_api.models.vendor import ImportAgentcoreRuntime
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.service.aws_bedrock.exceptions import EntityNotFound, EntityAccessDenied
 from codemie.service.aws_bedrock.bedrock_agentcore_runtime_service import BedrockAgentCoreRuntimeService
+from codemie.service.aws_bedrock.agentcore.bedrock_agentcore_endpoint_service import BedrockAgentCoreEndpointService
 from codemie.rest_api.models.settings import AWSCredentials, Settings
 from codemie.rest_api.security.user import User
+
+_ENDPOINT_MOD = "codemie.service.aws_bedrock.agentcore.bedrock_agentcore_endpoint_service"
+_RUNTIME_MOD = "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service"
 
 
 @pytest.fixture
@@ -120,16 +128,14 @@ def runtime_endpoint_import():
     return ImportAgentcoreRuntime(
         id="runtime-1",
         agentcoreRuntimeEndpointName="Endpoint 1",
-        invocation_json='{"prompt": "__QUERY_PLACEHOLDER__"}',
+        configuration_json='{"prompt": "__QUERY_PLACEHOLDER__"}',
         setting_id="setting-1",
     )
 
 
 # --- Tests for get_all_settings_overview ---
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_all_settings_for_user")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._fetch_main_entity_names_for_setting"
-)
+@patch(f"{_RUNTIME_MOD}.get_all_settings_for_user")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._fetch_main_entity_names_for_setting")
 def test_get_all_settings_overview_success(
     mock_fetch_main_entity_names_for_setting,
     mock_get_all_settings_for_user,
@@ -137,7 +143,6 @@ def test_get_all_settings_overview_success(
     runtime_data,
 ):
     """Test get_all_settings_overview returns correct overview for multiple settings."""
-    # Mock settings
     setting1 = MagicMock()
     setting1.id = "setting-1"
     setting1.alias = "Setting 1"
@@ -149,11 +154,9 @@ def test_get_all_settings_overview_success(
     setting2.project_name = "project-2"
 
     mock_get_all_settings_for_user.return_value = [setting1, setting2]
-
-    # Mock the fetch method to return runtime names for different settings
     mock_fetch_main_entity_names_for_setting.side_effect = [
-        ["Runtime 1", "Runtime 2"],
-        ["Runtime 3"],
+        (["Runtime 1", "Runtime 2"], False),
+        (["Runtime 3"], False),
     ]
 
     result = BedrockAgentCoreRuntimeService.get_all_settings_overview(mock_user, page=0, per_page=10)
@@ -165,10 +168,8 @@ def test_get_all_settings_overview_success(
     assert result["data"][1]["entities"] == ["Runtime 3"]
 
 
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_all_settings_for_user")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._fetch_main_entity_names_for_setting"
-)
+@patch(f"{_RUNTIME_MOD}.get_all_settings_for_user")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._fetch_main_entity_names_for_setting")
 def test_get_all_settings_overview_empty_settings(
     mock_fetch_main_entity_names_for_setting,
     mock_get_all_settings_for_user,
@@ -185,19 +186,18 @@ def test_get_all_settings_overview_empty_settings(
     assert result["pagination"]["page"] == 0
     assert result["pagination"]["per_page"] == 10
 
-    # Should not call the fetch method when there are no settings
     mock_fetch_main_entity_names_for_setting.assert_not_called()
 
 
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_all_settings_for_user")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_list_agent_runtimes"
-)
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._get_deleted_runtime_entities")
+@patch(f"{_RUNTIME_MOD}.get_all_settings_for_user")
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_list_agent_runtimes")
 def test_get_all_settings_overview_limits_entity_count(
     mock_bedrock_list_agent_runtimes,
     mock_get_setting_aws_credentials,
     mock_get_all_settings_for_user,
+    mock_get_deleted_runtime_entities,
     mock_user,
     mock_setting,
     mock_aws_creds,
@@ -205,31 +205,27 @@ def test_get_all_settings_overview_limits_entity_count(
     """Test get_all_settings_overview limits entity count to ALL_SETTINGS_OVERVIEW_ENTITY_COUNT."""
     mock_get_all_settings_for_user.return_value = [mock_setting]
     mock_get_setting_aws_credentials.return_value = mock_aws_creds
+    mock_get_deleted_runtime_entities.return_value = []
 
-    # Create more than 4 runtimes
-    many_runtimes = []
-    for i in range(10):
-        many_runtimes.append({"agentRuntimeName": f"Runtime {i}"})
-
+    many_runtimes = [{"agentRuntimeName": f"Runtime {i}"} for i in range(10)]
     mock_bedrock_list_agent_runtimes.return_value = many_runtimes, None
 
     result = BedrockAgentCoreRuntimeService.get_all_settings_overview(mock_user, page=0, per_page=10)
 
-    # Should only return 4 runtime names (ALL_SETTINGS_OVERVIEW_ENTITY_COUNT)
     assert len(result["data"]) == 1
     assert len(result["data"][0]["entities"]) == 4
 
 
 # --- Tests for list_main_entities ---
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_for_user")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_list_agent_runtimes"
-)
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._get_deleted_runtime_entities")
+@patch(f"{_RUNTIME_MOD}.get_setting_for_user")
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_list_agent_runtimes")
 def test_list_main_entities_success(
     mock_bedrock_list_agent_runtimes,
     mock_get_setting_aws_credentials,
     mock_get_setting_for_user,
+    mock_get_deleted_runtime_entities,
     mock_user,
     mock_setting,
     mock_aws_creds,
@@ -239,28 +235,29 @@ def test_list_main_entities_success(
     mock_get_setting_for_user.return_value = mock_setting
     mock_get_setting_aws_credentials.return_value = mock_aws_creds
     mock_bedrock_list_agent_runtimes.return_value = (runtime_data, None)
+    mock_get_deleted_runtime_entities.return_value = []
 
     result, next_token = BedrockAgentCoreRuntimeService.list_main_entities(mock_user, "setting-1", page=0, per_page=10)
 
     assert len(result) == 2
-    assert result[0]["id"] == "runtime-1"
-    assert result[0]["name"] == "Runtime 1"
-    assert result[0]["status"] == "PREPARED"
-    assert result[1]["id"] == "runtime-2"
-    assert result[1]["name"] == "Runtime 2"
-    assert result[1]["status"] == "NOT_PREPARED"
+    assert result[0].id == "runtime-1"
+    assert result[0].name == "Runtime 1"
+    assert result[0].status == "PREPARED"
+    assert result[1].id == "runtime-2"
+    assert result[1].name == "Runtime 2"
+    assert result[1].status == "NOT_PREPARED"
     assert next_token is None
 
 
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_for_user")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_list_agent_runtimes"
-)
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._get_deleted_runtime_entities")
+@patch(f"{_RUNTIME_MOD}.get_setting_for_user")
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_list_agent_runtimes")
 def test_list_main_entities_empty(
     mock_bedrock_list_agent_runtimes,
     mock_get_setting_aws_credentials,
     mock_get_setting_for_user,
+    mock_get_deleted_runtime_entities,
     mock_user,
     mock_setting,
     mock_aws_creds,
@@ -269,6 +266,7 @@ def test_list_main_entities_empty(
     mock_get_setting_for_user.return_value = mock_setting
     mock_get_setting_aws_credentials.return_value = mock_aws_creds
     mock_bedrock_list_agent_runtimes.return_value = ([], None)
+    mock_get_deleted_runtime_entities.return_value = []
 
     result, next_token = BedrockAgentCoreRuntimeService.list_main_entities(mock_user, "setting-1", page=0, per_page=10)
 
@@ -277,11 +275,9 @@ def test_list_main_entities_empty(
 
 
 # --- Tests for get_main_entity_detail ---
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_for_user")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_get_agent_runtime"
-)
+@patch(f"{_RUNTIME_MOD}.get_setting_for_user")
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_get_agent_runtime")
 def test_get_main_entity_detail_success(
     mock_bedrock_get_agent_runtime,
     mock_get_setting_aws_credentials,
@@ -306,10 +302,10 @@ def test_get_main_entity_detail_success(
 
     result = BedrockAgentCoreRuntimeService.get_main_entity_detail(mock_user, "runtime-1", "setting-1")
 
-    assert result["id"] == "runtime-1"
-    assert result["name"] == "Runtime 1"
-    assert result["description"] == "Test runtime description"
-    assert result["status"] == "PREPARED"
+    assert result.id == "runtime-1"
+    assert result.name == "Runtime 1"
+    assert result.description == "Test runtime description"
+    assert result.status == "PREPARED"
 
     mock_get_setting_for_user.assert_called_once_with(mock_user, "setting-1")
     mock_get_setting_aws_credentials.assert_called_once_with(mock_setting.id)
@@ -318,38 +314,41 @@ def test_get_main_entity_detail_success(
         region=mock_aws_creds.region,
         access_key_id=mock_aws_creds.access_key_id,
         secret_access_key=mock_aws_creds.secret_access_key,
+        session_token=mock_aws_creds.session_token,
     )
 
 
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_for_user")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_get_agent_runtime"
-)
+@patch(f"{_RUNTIME_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_RUNTIME_MOD}.get_setting_for_user")
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_get_agent_runtime")
 def test_get_main_entity_detail_not_found(
     mock_bedrock_get_agent_runtime,
     mock_get_setting_aws_credentials,
     mock_get_setting_for_user,
+    mock_get_by_runtime,
     mock_user,
     mock_setting,
     mock_aws_creds,
 ):
-    """Test get_main_entity_detail when runtime is not found."""
+    """Test get_main_entity_detail re-raises when runtime is deleted on AWS and no imported assistants."""
+    from botocore.exceptions import ClientError
+
     mock_get_setting_for_user.return_value = mock_setting
     mock_get_setting_aws_credentials.return_value = mock_aws_creds
-    mock_bedrock_get_agent_runtime.return_value = None
+    error_response = {"Error": {"Code": "ResourceNotFoundException", "Message": "Runtime not found"}}
+    mock_bedrock_get_agent_runtime.side_effect = ClientError(error_response, "GetAgentRuntime")
+    mock_get_by_runtime.return_value = []
 
     with pytest.raises(ExtendedHTTPException):
         BedrockAgentCoreRuntimeService.get_main_entity_detail(mock_user, "runtime-1", "setting-1")
 
 
 # --- Tests for list_importable_entities_for_main_entity ---
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_for_user")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.Assistant.get_by_bedrock_runtime_aws_settings_id")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_list_runtime_endpoints"
-)
+@patch(f"{_ENDPOINT_MOD}.get_setting_for_user")
+@patch(f"{_ENDPOINT_MOD}.get_setting_aws_credentials")
+@patch(f"{_ENDPOINT_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_list_runtime_endpoints")
 def test_list_importable_entities_for_main_entity_success(
     mock_list_runtime_endpoints,
     mock_get_by_bedrock_runtime_aws_settings_id,
@@ -379,12 +378,10 @@ def test_list_importable_entities_for_main_entity_success(
     assert next_token is None
 
 
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_for_user")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.Assistant.get_by_bedrock_runtime_aws_settings_id")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_list_runtime_endpoints"
-)
+@patch(f"{_ENDPOINT_MOD}.get_setting_for_user")
+@patch(f"{_ENDPOINT_MOD}.get_setting_aws_credentials")
+@patch(f"{_ENDPOINT_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_list_runtime_endpoints")
 def test_list_importable_entities_for_main_entity_with_existing_assistant(
     mock_list_runtime_endpoints,
     mock_get_by_bedrock_runtime_aws_settings_id,
@@ -402,9 +399,11 @@ def test_list_importable_entities_for_main_entity_with_existing_assistant(
     mock_assistant = MagicMock()
     mock_assistant.id = "assistant-1"
     mock_assistant.bedrock_agentcore_runtime = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_id = "runtime-1"
     mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_id = "endpoint-1"
-
     mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_name = "Endpoint 1"
+    mock_assistant.bedrock_agentcore_runtime.configuration_json = '{"message": "__QUERY_PLACEHOLDER__"}'
+    mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_live_version = "1"
 
     mock_get_by_bedrock_runtime_aws_settings_id.return_value = [mock_assistant]
     mock_list_runtime_endpoints.return_value = (endpoint_data, None)
@@ -413,22 +412,18 @@ def test_list_importable_entities_for_main_entity_with_existing_assistant(
         mock_user, "runtime-1", "setting-1", page=0, per_page=10
     )
 
-    # First endpoint should have aiRunId since it matches existing assistant by endpoint_id
     assert result[0]["id"] == "endpoint-1"
     assert "aiRunId" in result[0]
     assert result[0]["aiRunId"] == "assistant-1"
 
-    # Second endpoint should not have aiRunId
     assert result[1]["id"] == "endpoint-2"
     assert "aiRunId" not in result[1]
 
 
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_for_user")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.Assistant.get_by_bedrock_runtime_aws_settings_id")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_list_runtime_endpoints"
-)
+@patch(f"{_ENDPOINT_MOD}.get_setting_for_user")
+@patch(f"{_ENDPOINT_MOD}.get_setting_aws_credentials")
+@patch(f"{_ENDPOINT_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_list_runtime_endpoints")
 def test_list_importable_entities_for_main_entity_handles_exceptions(
     mock_list_runtime_endpoints,
     mock_get_by_bedrock_runtime_aws_settings_id,
@@ -451,11 +446,9 @@ def test_list_importable_entities_for_main_entity_handles_exceptions(
 
 
 # --- Tests for get_importable_entity_detail ---
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_for_user")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_get_runtime_endpoint"
-)
+@patch(f"{_ENDPOINT_MOD}.get_setting_for_user")
+@patch(f"{_ENDPOINT_MOD}.get_setting_aws_credentials")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_get_runtime_endpoint")
 def test_get_importable_entity_detail_success(
     mock_bedrock_get_runtime_endpoint,
     mock_get_setting_aws_credentials,
@@ -480,13 +473,82 @@ def test_get_importable_entity_detail_success(
     assert result["description"] == "Test endpoint description"
 
 
+# --- Tests for get_importable_entity_detail (import status enrichment) ---
+@patch(f"{_ENDPOINT_MOD}.get_setting_for_user")
+@patch(f"{_ENDPOINT_MOD}.get_setting_aws_credentials")
+@patch(f"{_ENDPOINT_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_get_runtime_endpoint")
+def test_get_importable_entity_detail_includes_ai_run_id_when_imported(
+    mock_get_endpoint,
+    mock_get_existing,
+    mock_get_aws_creds,
+    mock_get_setting,
+    mock_user,
+    mock_setting,
+    mock_aws_creds,
+    endpoint_detail,
+):
+    """Detail response includes aiRunId and invocationJson when endpoint is already imported."""
+    mock_get_setting.return_value = mock_setting
+    mock_get_aws_creds.return_value = mock_aws_creds
+    mock_get_endpoint.return_value = endpoint_detail
+
+    existing_assistant = MagicMock()
+    existing_assistant.id = "assistant-uuid-1"
+    existing_assistant.bedrock_agentcore_runtime = MagicMock()
+    existing_assistant.bedrock_agentcore_runtime.runtime_endpoint_id = "endpoint-1"
+    existing_assistant.bedrock_agentcore_runtime.configuration_json = '{"prompt": "__QUERY_PLACEHOLDER__"}'
+    mock_get_existing.return_value = [existing_assistant]
+
+    result = BedrockAgentCoreRuntimeService.get_importable_entity_detail(
+        user=mock_user,
+        main_entity_id="runtime-1",
+        importable_entity_detail="Endpoint 1",
+        setting_id="setting-1",
+    )
+
+    assert result["aiRunId"] == "assistant-uuid-1"
+    assert result["configurationJson"] == '{"prompt": "__QUERY_PLACEHOLDER__"}'
+    assert result["id"] == "endpoint-1"
+    assert result["agentRuntimeEndpointArn"] == endpoint_detail["agentRuntimeEndpointArn"]
+
+
+@patch(f"{_ENDPOINT_MOD}.get_setting_for_user")
+@patch(f"{_ENDPOINT_MOD}.get_setting_aws_credentials")
+@patch(f"{_ENDPOINT_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_get_runtime_endpoint")
+def test_get_importable_entity_detail_no_ai_run_id_when_not_imported(
+    mock_get_endpoint,
+    mock_get_existing,
+    mock_get_aws_creds,
+    mock_get_setting,
+    mock_user,
+    mock_setting,
+    mock_aws_creds,
+    endpoint_detail,
+):
+    """Detail response omits aiRunId when endpoint has not been imported."""
+    mock_get_setting.return_value = mock_setting
+    mock_get_aws_creds.return_value = mock_aws_creds
+    mock_get_endpoint.return_value = endpoint_detail
+    mock_get_existing.return_value = []
+
+    result = BedrockAgentCoreRuntimeService.get_importable_entity_detail(
+        user=mock_user,
+        main_entity_id="runtime-1",
+        importable_entity_detail="Endpoint 1",
+        setting_id="setting-1",
+    )
+
+    assert "aiRunId" not in result
+    assert "configurationJson" not in result
+
+
 # --- Tests for import_entities ---
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_for_user")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.Assistant.get_by_bedrock_runtime_aws_settings_id")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._process_endpoint_import"
-)
+@patch(f"{_ENDPOINT_MOD}.get_setting_for_user")
+@patch(f"{_ENDPOINT_MOD}.get_setting_aws_credentials")
+@patch(f"{_ENDPOINT_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._process_endpoint_import")
 def test_import_entities_success(
     mock_process_endpoint_import,
     mock_get_by_bedrock_runtime_aws_settings_id,
@@ -495,7 +557,6 @@ def test_import_entities_success(
     mock_user,
 ):
     """Test import_entities calls _process_endpoint_import correctly."""
-    # Setup mocks
     mock_setting = MagicMock()
     mock_setting.id = "setting-1"
 
@@ -512,13 +573,13 @@ def test_import_entities_success(
             ImportAgentcoreRuntime(
                 id="runtime-1",
                 agentcoreRuntimeEndpointName="Endpoint 1",
-                invocation_json='{"prompt": "__QUERY_PLACEHOLDER__"}',
+                configuration_json='{"prompt": "__QUERY_PLACEHOLDER__"}',
                 setting_id="setting-1",
             ),
             ImportAgentcoreRuntime(
                 id="runtime-1",
                 agentcoreRuntimeEndpointName="Endpoint 2",
-                invocation_json='{"text": "__QUERY_PLACEHOLDER__"}',
+                configuration_json='{"text": "__QUERY_PLACEHOLDER__"}',
                 setting_id="setting-1",
             ),
         ]
@@ -533,7 +594,7 @@ def test_import_entities_success(
 
 
 # --- Tests for delete_entities ---
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_RUNTIME_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.remove_guardrail_assignments_for_entity")
 def test_delete_entities_deletes_all_assistants(mock_remove_guardrails, mock_get_by_bedrock_runtime_aws_settings_id):
     """Test delete_entities deletes all assistants for a given setting_id."""
@@ -556,10 +617,8 @@ def test_delete_entities_deletes_all_assistants(mock_remove_guardrails, mock_get
 
 # --- Tests for validate_remote_entity_exists_and_cleanup ---
 @patch("codemie.rest_api.models.settings.Settings.get_by_id")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_get_runtime_endpoint"
-)
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_get_runtime_endpoint")
 def test_validate_remote_entity_exists_and_cleanup_entity_exists(
     mock_bedrock_get_runtime_endpoint,
     mock_get_setting_aws_credentials,
@@ -573,7 +632,6 @@ def test_validate_remote_entity_exists_and_cleanup_entity_exists(
     mock_get_setting_aws_credentials.return_value = mock_aws_creds
     mock_bedrock_get_runtime_endpoint.return_value = {"id": "endpoint-1"}
 
-    # Create mock assistant
     mock_assistant = MagicMock()
     mock_assistant.type = AssistantType.BEDROCK_AGENTCORE_RUNTIME
     mock_assistant.bedrock_agentcore_runtime = MagicMock()
@@ -589,10 +647,8 @@ def test_validate_remote_entity_exists_and_cleanup_entity_exists(
 
 
 @patch("codemie.rest_api.models.settings.Settings.get_by_id")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_get_runtime_endpoint"
-)
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_get_runtime_endpoint")
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.remove_guardrail_assignments_for_entity")
 def test_validate_remote_entity_exists_and_cleanup_entity_not_found(
     mock_remove_guardrails,
@@ -608,11 +664,9 @@ def test_validate_remote_entity_exists_and_cleanup_entity_not_found(
     mock_settings_get_by_id.return_value = MagicMock(id="setting-1")
     mock_get_setting_aws_credentials.return_value = mock_aws_creds
 
-    # Mock ResourceNotFoundException
     error_response = {"Error": {"Code": "ResourceNotFoundException", "Message": "Endpoint not found"}}
     mock_bedrock_get_runtime_endpoint.side_effect = ClientError(error_response, "GetRuntimeEndpoint")
 
-    # Create mock assistant
     mock_assistant = MagicMock()
     mock_assistant.type = AssistantType.BEDROCK_AGENTCORE_RUNTIME
     mock_assistant.bedrock_agentcore_runtime = MagicMock()
@@ -629,10 +683,8 @@ def test_validate_remote_entity_exists_and_cleanup_entity_not_found(
 
 
 @patch("codemie.rest_api.models.settings.Settings.get_by_id")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_get_runtime_endpoint"
-)
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_get_runtime_endpoint")
 def test_validate_remote_entity_exists_and_cleanup_other_client_error(
     mock_bedrock_get_runtime_endpoint,
     mock_get_setting_aws_credentials,
@@ -646,11 +698,9 @@ def test_validate_remote_entity_exists_and_cleanup_other_client_error(
     mock_settings_get_by_id.return_value = MagicMock(id="setting-1")
     mock_get_setting_aws_credentials.return_value = mock_aws_creds
 
-    # Mock other client error
     error_response = {"Error": {"Code": "AccessDeniedException", "Message": "Access denied"}}
     mock_bedrock_get_runtime_endpoint.side_effect = ClientError(error_response, "GetRuntimeEndpoint")
 
-    # Create mock assistant
     mock_assistant = MagicMock()
     mock_assistant.type = AssistantType.BEDROCK_AGENTCORE_RUNTIME
     mock_assistant.bedrock_agentcore_runtime = MagicMock()
@@ -668,7 +718,6 @@ def test_validate_remote_entity_exists_and_cleanup_other_client_error(
 
 def test_validate_remote_entity_exists_and_cleanup_non_bedrock_assistant():
     """Test validate_remote_entity_exists_and_cleanup with non-Bedrock assistant."""
-    # Create mock assistant without Bedrock configuration
     mock_assistant = MagicMock()
     mock_assistant.type = "codemie"
     mock_assistant.bedrock_agentcore_runtime = None
@@ -683,7 +732,6 @@ def test_validate_remote_entity_exists_and_cleanup_missing_bedrock_fields():
     """Test validate_remote_entity_exists_and_cleanup with incomplete Bedrock configuration."""
     from codemie.rest_api.models.assistant import AssistantType
 
-    # Create mock assistant with incomplete Bedrock configuration
     mock_assistant = MagicMock()
     mock_assistant.type = AssistantType.BEDROCK_AGENTCORE_RUNTIME
     mock_assistant.bedrock_agentcore_runtime = MagicMock()
@@ -742,34 +790,32 @@ def test_validate_remote_entity_exists_and_cleanup_unexpected_error(
 
 
 # --- Tests for invoke_agentcore_runtime ---
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._prepare_invocation_payload"
-)
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_invoke_runtime"
-)
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_invoke_runtime")
 def test_invoke_agentcore_runtime_success(
     mock_bedrock_invoke_runtime,
-    mock_prepare_invocation_payload,
     mock_get_setting_aws_credentials,
     mock_aws_creds,
 ):
     """Test invoke_agentcore_runtime successfully invokes a runtime."""
     from codemie.rest_api.models.assistant import AssistantType
 
-    mock_get_setting_aws_credentials.return_value = mock_aws_creds
-    mock_prepare_invocation_payload.return_value = b'{"prompt": "test query"}'
-    mock_bedrock_invoke_runtime.return_value = "Test response from runtime"
+    import json as _json
 
-    # Create mock assistant
+    mock_get_setting_aws_credentials.return_value = mock_aws_creds
+    mock_stream = MagicMock()
+    mock_stream.iter_lines.return_value = [b'{"text": "Test response from runtime"}']
+    mock_bedrock_invoke_runtime.return_value = mock_stream
+
     mock_assistant = MagicMock()
     mock_assistant.type = AssistantType.BEDROCK_AGENTCORE_RUNTIME
     mock_assistant.bedrock_agentcore_runtime = MagicMock()
     mock_assistant.bedrock_agentcore_runtime.runtime_arn = "arn:aws:bedrock:us-east-1:123456789012:runtime/runtime-1"
     mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_name = "Endpoint 1"
     mock_assistant.bedrock_agentcore_runtime.aws_settings_id = "setting-1"
-    mock_assistant.bedrock_agentcore_runtime.invocation_json = '{"prompt": "__QUERY_PLACEHOLDER__"}'
+    mock_assistant.bedrock_agentcore_runtime.configuration_json = _json.dumps(
+        {"request": {"message_path": "message"}, "response": {"streaming": True, "chunk": {"text_path": "text"}}}
+    )
 
     response = BedrockAgentCoreRuntimeService.invoke_agentcore_runtime(
         assistant=mock_assistant,
@@ -782,16 +828,10 @@ def test_invoke_agentcore_runtime_success(
     mock_bedrock_invoke_runtime.assert_called_once()
 
 
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials")
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._prepare_invocation_payload"
-)
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_invoke_runtime"
-)
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_invoke_runtime")
 def test_invoke_agentcore_runtime_client_error(
     mock_bedrock_invoke_runtime,
-    mock_prepare_invocation_payload,
     mock_get_setting_aws_credentials,
     mock_aws_creds,
 ):
@@ -800,19 +840,17 @@ def test_invoke_agentcore_runtime_client_error(
     from codemie.rest_api.models.assistant import AssistantType
 
     mock_get_setting_aws_credentials.return_value = mock_aws_creds
-    mock_prepare_invocation_payload.return_value = b'{"prompt": "test query"}'
     mock_bedrock_invoke_runtime.side_effect = ClientError(
         {"Error": {"Code": "400", "Message": "Bad Request"}}, "invoke_runtime"
     )
 
-    # Create mock assistant
     mock_assistant = MagicMock()
     mock_assistant.type = AssistantType.BEDROCK_AGENTCORE_RUNTIME
     mock_assistant.bedrock_agentcore_runtime = MagicMock()
     mock_assistant.bedrock_agentcore_runtime.runtime_arn = "arn:aws:bedrock:us-east-1:123456789012:runtime/runtime-1"
     mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_name = "Endpoint 1"
     mock_assistant.bedrock_agentcore_runtime.aws_settings_id = "setting-1"
-    mock_assistant.bedrock_agentcore_runtime.invocation_json = '{"prompt": "__QUERY_PLACEHOLDER__"}'
+    mock_assistant.bedrock_agentcore_runtime.configuration_json = None
 
     response = BedrockAgentCoreRuntimeService.invoke_agentcore_runtime(
         assistant=mock_assistant,
@@ -824,157 +862,41 @@ def test_invoke_agentcore_runtime_client_error(
     assert "time_elapsed" in response
 
 
-# --- Tests for _validate_invocation_json ---
-def test_validate_invocation_json_valid():
-    """Test _validate_invocation_json with valid JSON."""
-    valid_json = '{"prompt": "__QUERY_PLACEHOLDER__"}'
-    result = BedrockAgentCoreRuntimeService._validate_invocation_json(valid_json)
-    assert result is None
+# --- Tests for _validate_configuration_json ---
+def test_validate_configuration_json_valid():
+    """Test _validate_configuration_json accepts a well-formed response config."""
+    raw = '{"response": {"streaming": false, "body": {"text_path": "output"}}}'
+    assert BedrockAgentCoreEndpointService._validate_configuration_json(raw) is None
 
 
-def test_validate_invocation_json_missing_placeholder():
-    """Test _validate_invocation_json when placeholder is missing."""
-    invalid_json = '{"prompt": "some text"}'
-    result = BedrockAgentCoreRuntimeService._validate_invocation_json(invalid_json)
-    assert result is not None
-    assert "__QUERY_PLACEHOLDER__" in result
-
-
-def test_validate_invocation_json_invalid_json():
-    """Test _validate_invocation_json with invalid JSON."""
-    invalid_json = '{"prompt": "__QUERY_PLACEHOLDER__"'  # Missing closing brace
-    result = BedrockAgentCoreRuntimeService._validate_invocation_json(invalid_json)
+def test_validate_configuration_json_invalid_json():
+    """Test _validate_configuration_json rejects malformed JSON."""
+    result = BedrockAgentCoreEndpointService._validate_configuration_json('{"prompt": "hello"')
     assert result is not None
     assert "Invalid JSON" in result
 
 
-def test_validate_invocation_json_none():
-    """Test _validate_invocation_json with None input."""
-    result = BedrockAgentCoreRuntimeService._validate_invocation_json(None)
-    assert result is None
-
-
-def test_validate_invocation_json_nested_structure():
-    """Test _validate_invocation_json with nested structure."""
-    valid_nested = '{"input": {"text": "__QUERY_PLACEHOLDER__", "metadata": {}}}'
-    result = BedrockAgentCoreRuntimeService._validate_invocation_json(valid_nested)
-    assert result is None
-
-
-# --- Tests for _contains_placeholder ---
-def test_contains_placeholder_string():
-    """Test _contains_placeholder with string value."""
-    assert BedrockAgentCoreRuntimeService._contains_placeholder("__QUERY_PLACEHOLDER__") is True
-    assert BedrockAgentCoreRuntimeService._contains_placeholder("other text") is False
-
-
-def test_contains_placeholder_dict():
-    """Test _contains_placeholder with dictionary."""
-    assert BedrockAgentCoreRuntimeService._contains_placeholder({"key": "__QUERY_PLACEHOLDER__"}) is True
-    assert BedrockAgentCoreRuntimeService._contains_placeholder({"key": "value"}) is False
-
-
-def test_contains_placeholder_list():
-    """Test _contains_placeholder with list."""
-    assert BedrockAgentCoreRuntimeService._contains_placeholder(["__QUERY_PLACEHOLDER__"]) is True
-    assert BedrockAgentCoreRuntimeService._contains_placeholder(["value"]) is False
-
-
-def test_contains_placeholder_nested():
-    """Test _contains_placeholder with nested structure."""
-    nested = {"outer": {"inner": ["__QUERY_PLACEHOLDER__"]}}
-    assert BedrockAgentCoreRuntimeService._contains_placeholder(nested) is True
-
-
-# --- Tests for _replace_placeholder_in_structure ---
-def test_replace_placeholder_string():
-    """Test _replace_placeholder_in_structure with string."""
-    result = BedrockAgentCoreRuntimeService._replace_placeholder_in_structure("__QUERY_PLACEHOLDER__", "test query")
-    assert result == "test query"
-
-
-def test_replace_placeholder_dict():
-    """Test _replace_placeholder_in_structure with dictionary."""
-    input_dict = {"prompt": "__QUERY_PLACEHOLDER__", "other": "value"}
-    result = BedrockAgentCoreRuntimeService._replace_placeholder_in_structure(input_dict, "test query")
-    assert result["prompt"] == "test query"
-    assert result["other"] == "value"
-
-
-def test_replace_placeholder_list():
-    """Test _replace_placeholder_in_structure with list."""
-    input_list = ["__QUERY_PLACEHOLDER__", "other"]
-    result = BedrockAgentCoreRuntimeService._replace_placeholder_in_structure(input_list, "test query")
-    assert result[0] == "test query"
-    assert result[1] == "other"
-
-
-def test_replace_placeholder_nested():
-    """Test _replace_placeholder_in_structure with nested structure."""
-    nested = {"outer": {"inner": ["__QUERY_PLACEHOLDER__"]}}
-    result = BedrockAgentCoreRuntimeService._replace_placeholder_in_structure(nested, "test query")
-    assert result["outer"]["inner"][0] == "test query"
-
-
-# --- Tests for _prepare_invocation_payload ---
-def test_prepare_invocation_payload_with_template():
-    """Test _prepare_invocation_payload with valid template."""
-    template = '{"prompt": "__QUERY_PLACEHOLDER__"}'
-    result = BedrockAgentCoreRuntimeService._prepare_invocation_payload(template, "test query", "conv-123")
-
-    import json
-
-    payload = json.loads(result.decode("utf-8"))
-    assert payload["prompt"] == "test query"
-
-
-def test_prepare_invocation_payload_fallback():
-    """Test _prepare_invocation_payload falls back to default when template is invalid."""
-    invalid_template = '{"prompt": "__QUERY_PLACEHOLDER__"'  # Invalid JSON
-    result = BedrockAgentCoreRuntimeService._prepare_invocation_payload(invalid_template, "test query", "conv-123")
-
-    import json
-
-    payload = json.loads(result.decode("utf-8"))
-    assert payload["message"] == "test query"
-    assert payload["sessionId"] == "conv-123"
-
-
-def test_prepare_invocation_payload_no_template():
-    """Test _prepare_invocation_payload with no template."""
-    result = BedrockAgentCoreRuntimeService._prepare_invocation_payload(None, "test query", "conv-123")
-
-    import json
-
-    payload = json.loads(result.decode("utf-8"))
-    assert payload["message"] == "test query"
-    assert payload["sessionId"] == "conv-123"
+def test_validate_configuration_json_none():
+    """Test _validate_configuration_json accepts None."""
+    assert BedrockAgentCoreEndpointService._validate_configuration_json(None) is None
 
 
 # --- Tests for _process_endpoint_import ---
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._validate_invocation_json"
-)
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_get_runtime_endpoint"
-)
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._create_assistant_data"
-)
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._create_or_update_entity"
-)
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._validate_configuration_json")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_get_runtime_endpoint")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._create_assistant_data")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._create_or_update_entity")
 def test_process_endpoint_import_success(
     mock_create_or_update_entity,
     mock_create_assistant_data,
     mock_bedrock_get_runtime_endpoint,
-    mock_validate_invocation_json,
+    mock_validate_configuration_json,
     mock_user,
     mock_setting,
     mock_aws_creds,
 ):
     """Test _process_endpoint_import successfully imports an endpoint."""
-    mock_validate_invocation_json.return_value = None
+    mock_validate_configuration_json.return_value = None
     mock_bedrock_get_runtime_endpoint.return_value = {
         "id": "endpoint-1",
         "agentRuntimeEndpointArn": "arn:aws:bedrock:us-east-1:123456789012:runtime-endpoint/endpoint-1",
@@ -984,14 +906,14 @@ def test_process_endpoint_import_success(
     mock_create_assistant_data.return_value = {"name": "Test Assistant"}
     mock_create_or_update_entity.return_value = "assistant-1"
 
-    result = BedrockAgentCoreRuntimeService._process_endpoint_import(
+    result = BedrockAgentCoreEndpointService._process_endpoint_import(
         user=mock_user,
         setting=mock_setting,
         aws_creds=mock_aws_creds,
         existing_entities_map={},
         input_runtime_id="runtime-1",
         input_endpoint_name="Endpoint 1",
-        invocation_json='{"prompt": "__QUERY_PLACEHOLDER__"}',
+        configuration_json='{"prompt": "__QUERY_PLACEHOLDER__"}',
     )
 
     assert result["runtimeId"] == "runtime-1"
@@ -1000,47 +922,41 @@ def test_process_endpoint_import_success(
     assert "error" not in result
 
 
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._validate_invocation_json"
-)
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._validate_configuration_json")
 def test_process_endpoint_import_invalid_json(
-    mock_validate_invocation_json,
+    mock_validate_configuration_json,
     mock_user,
     mock_setting,
     mock_aws_creds,
 ):
-    """Test _process_endpoint_import with invalid invocation JSON."""
-    mock_validate_invocation_json.return_value = "Invalid JSON template"
+    """Test _process_endpoint_import raises AgentcoreEndpointValidationError for invalid JSON."""
+    from codemie.service.aws_bedrock.exceptions import AgentcoreEndpointValidationError
 
-    result = BedrockAgentCoreRuntimeService._process_endpoint_import(
-        user=mock_user,
-        setting=mock_setting,
-        aws_creds=mock_aws_creds,
-        existing_entities_map={},
-        input_runtime_id="runtime-1",
-        input_endpoint_name="Endpoint 1",
-        invocation_json='{"prompt": "no placeholder"}',
-    )
+    mock_validate_configuration_json.return_value = "Invalid JSON template"
 
-    assert "error" in result
-    assert result["error"]["statusCode"] == "400"
+    with pytest.raises(AgentcoreEndpointValidationError):
+        BedrockAgentCoreEndpointService._process_endpoint_import(
+            user=mock_user,
+            setting=mock_setting,
+            aws_creds=mock_aws_creds,
+            existing_entities_map={},
+            input_runtime_id="runtime-1",
+            input_endpoint_name="Endpoint 1",
+            configuration_json='{"prompt": "no placeholder"}',
+        )
 
 
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._validate_invocation_json"
-)
-@patch(
-    "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.BedrockAgentCoreRuntimeService._bedrock_get_runtime_endpoint"
-)
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._validate_configuration_json")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_get_runtime_endpoint")
 def test_process_endpoint_import_endpoint_not_ready(
     mock_bedrock_get_runtime_endpoint,
-    mock_validate_invocation_json,
+    mock_validate_configuration_json,
     mock_user,
     mock_setting,
     mock_aws_creds,
 ):
-    """Test _process_endpoint_import when endpoint is not in READY status."""
-    mock_validate_invocation_json.return_value = None
+    """Test _process_endpoint_import raises ExtendedHTTPException when endpoint is not in READY status."""
+    mock_validate_configuration_json.return_value = None
     mock_bedrock_get_runtime_endpoint.return_value = {
         "id": "endpoint-1",
         "agentRuntimeEndpointArn": "arn:aws:bedrock:us-east-1:123456789012:runtime-endpoint/endpoint-1",
@@ -1048,19 +964,19 @@ def test_process_endpoint_import_endpoint_not_ready(
         "name": "Endpoint 1",
     }
 
-    result = BedrockAgentCoreRuntimeService._process_endpoint_import(
-        user=mock_user,
-        setting=mock_setting,
-        aws_creds=mock_aws_creds,
-        existing_entities_map={},
-        input_runtime_id="runtime-1",
-        input_endpoint_name="Endpoint 1",
-        invocation_json='{"prompt": "__QUERY_PLACEHOLDER__"}',
-    )
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        BedrockAgentCoreEndpointService._process_endpoint_import(
+            user=mock_user,
+            setting=mock_setting,
+            aws_creds=mock_aws_creds,
+            existing_entities_map={},
+            input_runtime_id="runtime-1",
+            input_endpoint_name="Endpoint 1",
+            configuration_json='{"prompt": "__QUERY_PLACEHOLDER__"}',
+        )
 
-    assert "error" in result
-    assert result["error"]["statusCode"] == "409"
-    assert "not in READY status" in result["error"]["message"]
+    assert exc_info.value.code == 409
+    assert "not in READY status" in exc_info.value.message
 
 
 # --- Tests for _create_assistant_data ---
@@ -1075,12 +991,12 @@ def test_create_assistant_data(mock_user, mock_setting):
         "liveVersion": "1",
     }
 
-    result = BedrockAgentCoreRuntimeService._create_assistant_data(
+    result = BedrockAgentCoreEndpointService._create_assistant_data(
         user=mock_user,
         setting=mock_setting,
         input_runtime_id="runtime-1",
         endpoint_info=endpoint_info,
-        invocation_json='{"prompt": "__QUERY_PLACEHOLDER__"}',
+        configuration_json='{"prompt": "__QUERY_PLACEHOLDER__"}',
     )
 
     assert result["name"] == "runtime-1:Endpoint 1"
@@ -1088,13 +1004,126 @@ def test_create_assistant_data(mock_user, mock_setting):
     assert "bedrock_agentcore_runtime" in result
     assert result["bedrock_agentcore_runtime"]["runtime_id"] == "runtime-1"
     assert result["bedrock_agentcore_runtime"]["runtime_endpoint_name"] == "Endpoint 1"
-    assert result["bedrock_agentcore_runtime"]["invocation_json"] == '{"prompt": "__QUERY_PLACEHOLDER__"}'
+    assert result["bedrock_agentcore_runtime"]["configuration_json"] == '{"prompt": "__QUERY_PLACEHOLDER__"}'
     assert result["type"] == "bedrock_agentcore_runtime"
 
 
+def test_create_assistant_data_with_custom_name_and_description(mock_user, mock_setting):
+    """Test _create_assistant_data uses assistant_name and assistant_description when provided."""
+    endpoint_info = {
+        "id": "endpoint-1",
+        "name": "Endpoint 1",
+        "description": "Test endpoint",
+        "agentRuntimeArn": "arn:aws:bedrock:us-east-1:123456789012:runtime/runtime-1",
+        "agentRuntimeEndpointArn": "arn:aws:bedrock:us-east-1:123456789012:runtime-endpoint/endpoint-1",
+        "liveVersion": "1",
+    }
+
+    result = BedrockAgentCoreEndpointService._create_assistant_data(
+        user=mock_user,
+        setting=mock_setting,
+        input_runtime_id="runtime-1",
+        endpoint_info=endpoint_info,
+        configuration_json='{"prompt": "__QUERY_PLACEHOLDER__"}',
+        assistant_name="My Custom Assistant",
+        assistant_description="My custom description",
+    )
+
+    assert result["name"] == "My Custom Assistant"
+    assert result["description"] == "My custom description"
+    assert result["slug"].startswith("My Custom Assistant-")
+
+
+# --- Tests for list_importable_entities_for_main_entity (invocationJson enrichment) ---
+@patch(f"{_ENDPOINT_MOD}.get_setting_for_user")
+@patch(f"{_ENDPOINT_MOD}.get_setting_aws_credentials")
+@patch(f"{_ENDPOINT_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_list_runtime_endpoints")
+def test_list_importable_entities_includes_configuration_json_for_imported_endpoint(
+    mock_list_endpoints,
+    mock_get_existing,
+    mock_get_aws_creds,
+    mock_get_setting,
+    mock_user,
+    mock_setting,
+    mock_aws_creds,
+    endpoint_data,
+):
+    """Already-imported endpoint items include invocationJson alongside aiRunId."""
+    mock_get_setting.return_value = mock_setting
+    mock_get_aws_creds.return_value = mock_aws_creds
+    mock_list_endpoints.return_value = (endpoint_data, None)
+
+    existing_assistant = MagicMock()
+    existing_assistant.id = "assistant-uuid-1"
+    existing_assistant.bedrock_agentcore_runtime = MagicMock()
+    existing_assistant.bedrock_agentcore_runtime.runtime_id = "runtime-1"
+    existing_assistant.bedrock_agentcore_runtime.runtime_endpoint_id = "endpoint-1"
+    existing_assistant.bedrock_agentcore_runtime.configuration_json = '{"message": "__QUERY_PLACEHOLDER__"}'
+    mock_get_existing.return_value = [existing_assistant]
+
+    result, _ = BedrockAgentCoreRuntimeService.list_importable_entities_for_main_entity(
+        user=mock_user,
+        main_entity_id="runtime-1",
+        setting_id="setting-1",
+        page=0,
+        per_page=10,
+    )
+
+    imported = next(r for r in result if r["id"] == "endpoint-1")
+    assert imported["aiRunId"] == "assistant-uuid-1"
+    assert imported["configurationJson"] == '{"message": "__QUERY_PLACEHOLDER__"}'
+
+    not_imported = next(r for r in result if r["id"] == "endpoint-2")
+    assert "aiRunId" not in not_imported
+    assert "configurationJson" not in not_imported
+
+
+# --- Tests for unimport_entity ---
+@patch(f"{_ENDPOINT_MOD}.GuardrailService.remove_guardrail_assignments_for_entity")
+@patch(f"{_ENDPOINT_MOD}.Ability")
+@patch(f"{_ENDPOINT_MOD}.Assistant.find_by_id")
+def test_unimport_entity_agentcore_deletes_and_removes_guardrails(
+    mock_find_by_id,
+    mock_ability_cls,
+    mock_remove_guardrails,
+    mock_user,
+):
+    """unimport_entity deletes the assistant and removes guardrail assignments."""
+    mock_assistant = MagicMock()
+    mock_assistant.id = "assistant-uuid-1"
+    mock_find_by_id.return_value = mock_assistant
+    mock_ability_cls.return_value.can.return_value = True
+
+    BedrockAgentCoreRuntimeService.unimport_entity("assistant-uuid-1", mock_user)
+
+    mock_assistant.delete.assert_called_once()
+    mock_remove_guardrails.assert_called_once_with(GuardrailEntity.ASSISTANT, "assistant-uuid-1")
+
+
+@patch(f"{_ENDPOINT_MOD}.Assistant.find_by_id")
+def test_unimport_entity_agentcore_raises_404_when_not_found(mock_find_by_id, mock_user):
+    """unimport_entity raises HTTP 404 when entity does not exist."""
+    mock_find_by_id.return_value = None
+
+    with pytest.raises(EntityNotFound):
+        BedrockAgentCoreRuntimeService.unimport_entity("missing-id", mock_user)
+
+
+@patch(f"{_ENDPOINT_MOD}.Ability")
+@patch(f"{_ENDPOINT_MOD}.Assistant.find_by_id")
+def test_unimport_entity_agentcore_raises_403_when_no_permission(mock_find_by_id, mock_ability_cls, mock_user):
+    """unimport_entity raises EntityAccessDenied when user lacks DELETE permission."""
+    mock_find_by_id.return_value = MagicMock()
+    mock_ability_cls.return_value.can.return_value = False
+
+    with pytest.raises(EntityAccessDenied):
+        BedrockAgentCoreRuntimeService.unimport_entity("assistant-uuid-1", mock_user)
+
+
 # --- Tests for _create_or_update_entity ---
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.ensure_application_exists")
-@patch("codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.Assistant")
+@patch(f"{_ENDPOINT_MOD}.ensure_application_exists")
+@patch(f"{_ENDPOINT_MOD}.Assistant")
 def test_create_or_update_entity_creates_new(
     mock_assistant_class,
     mock_ensure_application_exists,
@@ -1109,7 +1138,7 @@ def test_create_or_update_entity_creates_new(
         "project": "test-project",
     }
 
-    result = BedrockAgentCoreRuntimeService._create_or_update_entity(
+    result = BedrockAgentCoreEndpointService._create_or_update_entity(
         endpoint_id="endpoint-1",
         assistant_data=assistant_data,
         existing_entities_map={},
@@ -1133,7 +1162,7 @@ def test_create_or_update_entity_updates_existing():
         "project": "test-project",
     }
 
-    result = BedrockAgentCoreRuntimeService._create_or_update_entity(
+    result = BedrockAgentCoreEndpointService._create_or_update_entity(
         endpoint_id="endpoint-1",
         assistant_data=assistant_data,
         existing_entities_map=existing_entities_map,
@@ -1143,3 +1172,1118 @@ def test_create_or_update_entity_updates_existing():
     assert result == "assistant-1"
     assert mock_assistant.name == "Updated Assistant"
     mock_assistant.save.assert_called_once()
+
+
+# --- Tests for is_resource_not_found ---
+def test_is_resource_not_found_returns_true():
+    """Test is_resource_not_found returns True for ResourceNotFoundException."""
+    from botocore.exceptions import ClientError
+    from codemie.service.aws_bedrock.exceptions import is_resource_not_found
+
+    e = ClientError({"Error": {"Code": "ResourceNotFoundException", "Message": "Not found"}}, "OperationName")
+    assert is_resource_not_found(e) is True
+
+
+def test_is_resource_not_found_returns_false_for_other_code():
+    """Test is_resource_not_found returns False for non-ResourceNotFoundException codes."""
+    from botocore.exceptions import ClientError
+    from codemie.service.aws_bedrock.exceptions import is_resource_not_found
+
+    e = ClientError({"Error": {"Code": "AccessDeniedException", "Message": "Denied"}}, "OperationName")
+    assert is_resource_not_found(e) is False
+
+
+def test_is_resource_not_found_case_insensitive():
+    """Test is_resource_not_found is case-insensitive."""
+    from botocore.exceptions import ClientError
+    from codemie.service.aws_bedrock.exceptions import is_resource_not_found
+
+    e = ClientError({"Error": {"Code": "resourcenotfoundexception", "Message": "Not found"}}, "OperationName")
+    assert is_resource_not_found(e) is True
+
+
+def test_is_resource_not_found_strips_whitespace():
+    """Test is_resource_not_found strips whitespace from the error code."""
+    from botocore.exceptions import ClientError
+    from codemie.service.aws_bedrock.exceptions import is_resource_not_found
+
+    e = ClientError({"Error": {"Code": " ResourceNotFoundException ", "Message": "Not found"}}, "OperationName")
+    assert is_resource_not_found(e) is True
+
+
+# --- New tests for list_main_entities (DELETED_ON_AWS) ---
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._get_deleted_runtime_entities")
+@patch(f"{_RUNTIME_MOD}.get_setting_for_user")
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_list_agent_runtimes")
+def test_list_main_entities_appends_deleted_on_aws(
+    mock_bedrock_list_agent_runtimes,
+    mock_get_setting_aws_credentials,
+    mock_get_setting_for_user,
+    mock_get_deleted_runtime_entities,
+    mock_user,
+    mock_setting,
+    mock_aws_creds,
+    runtime_data,
+):
+    """Test list_main_entities appends DELETED_ON_AWS runtimes from _get_deleted_runtime_entities."""
+    from codemie.service.aws_bedrock.bedrock_agentcore_runtime_service import AgentcoreRuntimeEntity, RuntimeStatus
+
+    mock_get_setting_for_user.return_value = mock_setting
+    mock_get_setting_aws_credentials.return_value = mock_aws_creds
+    mock_bedrock_list_agent_runtimes.return_value = (runtime_data, None)
+    mock_get_deleted_runtime_entities.return_value = [
+        AgentcoreRuntimeEntity(id="deleted-runtime", status=RuntimeStatus.DELETED_ON_AWS)
+    ]
+
+    result, next_token = BedrockAgentCoreRuntimeService.list_main_entities(mock_user, "setting-1", page=0, per_page=10)
+
+    assert len(result) == 3
+    deleted = next(r for r in result if r.id == "deleted-runtime")
+    assert deleted.status == RuntimeStatus.DELETED_ON_AWS
+    mock_get_deleted_runtime_entities.assert_called_once()
+
+
+# --- New tests for get_main_entity_detail (DELETED_ON_AWS) ---
+@patch(f"{_RUNTIME_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_RUNTIME_MOD}.get_setting_for_user")
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_get_agent_runtime")
+def test_get_main_entity_detail_returns_deleted_on_aws_when_imported(
+    mock_bedrock_get_agent_runtime,
+    mock_get_setting_aws_credentials,
+    mock_get_setting_for_user,
+    mock_get_by_runtime,
+    mock_user,
+    mock_setting,
+    mock_aws_creds,
+):
+    """Test get_main_entity_detail returns DELETED_ON_AWS when runtime deleted but has imported assistants."""
+    from botocore.exceptions import ClientError
+    from codemie.service.aws_bedrock.bedrock_agentcore_runtime_service import RuntimeStatus
+
+    mock_get_setting_for_user.return_value = mock_setting
+    mock_get_setting_aws_credentials.return_value = mock_aws_creds
+    error_response = {"Error": {"Code": "ResourceNotFoundException", "Message": "Not found"}}
+    mock_bedrock_get_agent_runtime.side_effect = ClientError(error_response, "GetAgentRuntime")
+
+    mock_assistant = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_id = "runtime-1"
+    mock_get_by_runtime.return_value = [mock_assistant]
+
+    result = BedrockAgentCoreRuntimeService.get_main_entity_detail(mock_user, "runtime-1", "setting-1")
+
+    assert result.id == "runtime-1"
+    assert result.status == RuntimeStatus.DELETED_ON_AWS
+
+
+@patch(f"{_RUNTIME_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_RUNTIME_MOD}.get_setting_for_user")
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_get_agent_runtime")
+def test_get_main_entity_detail_reraises_when_deleted_no_imported(
+    mock_bedrock_get_agent_runtime,
+    mock_get_setting_aws_credentials,
+    mock_get_setting_for_user,
+    mock_get_by_runtime,
+    mock_user,
+    mock_setting,
+    mock_aws_creds,
+):
+    """Test get_main_entity_detail re-raises when runtime deleted and no imported assistants remain."""
+    from botocore.exceptions import ClientError
+
+    mock_get_setting_for_user.return_value = mock_setting
+    mock_get_setting_aws_credentials.return_value = mock_aws_creds
+    error_response = {"Error": {"Code": "ResourceNotFoundException", "Message": "Not found"}}
+    mock_bedrock_get_agent_runtime.side_effect = ClientError(error_response, "GetAgentRuntime")
+    mock_get_by_runtime.return_value = []
+
+    with pytest.raises(ExtendedHTTPException):
+        BedrockAgentCoreRuntimeService.get_main_entity_detail(mock_user, "runtime-1", "setting-1")
+
+
+@patch(f"{_RUNTIME_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_RUNTIME_MOD}.get_setting_for_user")
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_get_agent_runtime")
+def test_get_main_entity_detail_deleted_runtime_no_match_for_this_runtime(
+    mock_bedrock_get_agent_runtime,
+    mock_get_setting_aws_credentials,
+    mock_get_setting_for_user,
+    mock_get_by_runtime,
+    mock_user,
+    mock_setting,
+    mock_aws_creds,
+):
+    """Test get_main_entity_detail re-raises when assistants exist but belong to a different runtime."""
+    from botocore.exceptions import ClientError
+
+    mock_get_setting_for_user.return_value = mock_setting
+    mock_get_setting_aws_credentials.return_value = mock_aws_creds
+    error_response = {"Error": {"Code": "ResourceNotFoundException", "Message": "Not found"}}
+    mock_bedrock_get_agent_runtime.side_effect = ClientError(error_response, "GetAgentRuntime")
+
+    mock_assistant = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_id = "different-runtime-id"
+    mock_get_by_runtime.return_value = [mock_assistant]
+
+    with pytest.raises(ExtendedHTTPException):
+        BedrockAgentCoreRuntimeService.get_main_entity_detail(mock_user, "runtime-1", "setting-1")
+
+
+# --- Tests for _get_deleted_runtime_entities ---
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_get_agent_runtime")
+@patch(f"{_RUNTIME_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+def test_get_deleted_runtime_entities_returns_empty_when_no_candidates(
+    mock_get_by_runtime,
+    mock_bedrock_get_agent_runtime,
+    mock_aws_creds,
+):
+    """Test _get_deleted_runtime_entities returns empty list when no imported runtimes."""
+    mock_get_by_runtime.return_value = []
+
+    result = BedrockAgentCoreRuntimeService._get_deleted_runtime_entities(
+        setting_id="setting-1",
+        seen_runtime_ids=set(),
+        aws_creds=mock_aws_creds,
+    )
+
+    assert result == []
+    mock_bedrock_get_agent_runtime.assert_not_called()
+
+
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_get_agent_runtime")
+@patch(f"{_RUNTIME_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+def test_get_deleted_runtime_entities_excludes_seen_ids(
+    mock_get_by_runtime,
+    mock_bedrock_get_agent_runtime,
+    mock_aws_creds,
+):
+    """Test _get_deleted_runtime_entities does not check already-seen runtimes."""
+    mock_assistant = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_id = "runtime-1"
+    mock_get_by_runtime.return_value = [mock_assistant]
+
+    result = BedrockAgentCoreRuntimeService._get_deleted_runtime_entities(
+        setting_id="setting-1",
+        seen_runtime_ids={"runtime-1"},
+        aws_creds=mock_aws_creds,
+    )
+
+    assert result == []
+    mock_bedrock_get_agent_runtime.assert_not_called()
+
+
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_get_agent_runtime")
+@patch(f"{_RUNTIME_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+def test_get_deleted_runtime_entities_returns_deleted_on_resource_not_found(
+    mock_get_by_runtime,
+    mock_bedrock_get_agent_runtime,
+    mock_aws_creds,
+):
+    """Test _get_deleted_runtime_entities appends DELETED_ON_AWS for ResourceNotFoundException."""
+    from botocore.exceptions import ClientError
+    from codemie.service.aws_bedrock.bedrock_agentcore_runtime_service import RuntimeStatus
+
+    mock_assistant = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_id = "runtime-deleted"
+    mock_get_by_runtime.return_value = [mock_assistant]
+
+    error_response = {"Error": {"Code": "ResourceNotFoundException", "Message": "Not found"}}
+    mock_bedrock_get_agent_runtime.side_effect = ClientError(error_response, "GetAgentRuntime")
+
+    result = BedrockAgentCoreRuntimeService._get_deleted_runtime_entities(
+        setting_id="setting-1",
+        seen_runtime_ids=set(),
+        aws_creds=mock_aws_creds,
+    )
+
+    assert len(result) == 1
+    assert result[0].id == "runtime-deleted"
+    assert result[0].status == RuntimeStatus.DELETED_ON_AWS
+
+
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_get_agent_runtime")
+@patch(f"{_RUNTIME_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+def test_get_deleted_runtime_entities_skips_on_other_client_error(
+    mock_get_by_runtime,
+    mock_bedrock_get_agent_runtime,
+    mock_aws_creds,
+):
+    """Test _get_deleted_runtime_entities skips runtime on non-ResourceNotFoundException ClientError."""
+    from botocore.exceptions import ClientError
+
+    mock_assistant = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_id = "runtime-access-denied"
+    mock_get_by_runtime.return_value = [mock_assistant]
+
+    error_response = {"Error": {"Code": "AccessDeniedException", "Message": "Access denied"}}
+    mock_bedrock_get_agent_runtime.side_effect = ClientError(error_response, "GetAgentRuntime")
+
+    result = BedrockAgentCoreRuntimeService._get_deleted_runtime_entities(
+        setting_id="setting-1",
+        seen_runtime_ids=set(),
+        aws_creds=mock_aws_creds,
+    )
+
+    assert result == []
+
+
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_get_agent_runtime")
+@patch(f"{_RUNTIME_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+def test_get_deleted_runtime_entities_skips_on_unexpected_error(
+    mock_get_by_runtime,
+    mock_bedrock_get_agent_runtime,
+    mock_aws_creds,
+):
+    """Test _get_deleted_runtime_entities skips runtime on unexpected errors."""
+    mock_assistant = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_id = "runtime-error"
+    mock_get_by_runtime.return_value = [mock_assistant]
+
+    mock_bedrock_get_agent_runtime.side_effect = Exception("Unexpected error")
+
+    result = BedrockAgentCoreRuntimeService._get_deleted_runtime_entities(
+        setting_id="setting-1",
+        seen_runtime_ids=set(),
+        aws_creds=mock_aws_creds,
+    )
+
+    assert result == []
+
+
+# --- Tests for _fetch_main_entity_names_for_setting ---
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._get_deleted_runtime_entities")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_list_agent_runtimes")
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+def test_fetch_main_entity_names_includes_deleted_runtime_ids(
+    mock_get_setting_aws_credentials,
+    mock_bedrock_list_agent_runtimes,
+    mock_get_deleted_runtime_entities,
+    mock_setting,
+    mock_aws_creds,
+):
+    """Test _fetch_main_entity_names_for_setting appends deleted runtime IDs to the entity names list."""
+    from codemie.service.aws_bedrock.bedrock_agentcore_runtime_service import AgentcoreRuntimeEntity, RuntimeStatus
+
+    mock_get_setting_aws_credentials.return_value = mock_aws_creds
+    mock_bedrock_list_agent_runtimes.return_value = (
+        [{"agentRuntimeId": "runtime-1", "agentRuntimeName": "Runtime 1"}],
+        None,
+    )
+    mock_get_deleted_runtime_entities.return_value = [
+        AgentcoreRuntimeEntity(id="deleted-runtime-id", status=RuntimeStatus.DELETED_ON_AWS)
+    ]
+
+    names, has_deleted = BedrockAgentCoreRuntimeService._fetch_main_entity_names_for_setting(mock_setting)
+
+    assert "Runtime 1" in names
+    assert "deleted-runtime-id" in names
+
+
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._get_deleted_runtime_entities")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_list_agent_runtimes")
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+def test_fetch_main_entity_names_respects_count_limit_with_deleted(
+    mock_get_setting_aws_credentials,
+    mock_bedrock_list_agent_runtimes,
+    mock_get_deleted_runtime_entities,
+    mock_setting,
+    mock_aws_creds,
+):
+    """Test _fetch_main_entity_names_for_setting does not exceed ALL_SETTINGS_OVERVIEW_ENTITY_COUNT."""
+    from codemie.service.aws_bedrock.bedrock_agentcore_runtime_service import AgentcoreRuntimeEntity, RuntimeStatus
+    from codemie.service.aws_bedrock.base_bedrock_service import ALL_SETTINGS_OVERVIEW_ENTITY_COUNT
+
+    mock_get_setting_aws_credentials.return_value = mock_aws_creds
+    aws_runtimes = [
+        {"agentRuntimeId": f"rt-{i}", "agentRuntimeName": f"Runtime {i}"}
+        for i in range(ALL_SETTINGS_OVERVIEW_ENTITY_COUNT)
+    ]
+    mock_bedrock_list_agent_runtimes.return_value = (aws_runtimes, None)
+    mock_get_deleted_runtime_entities.return_value = [
+        AgentcoreRuntimeEntity(id="deleted-runtime-id", status=RuntimeStatus.DELETED_ON_AWS)
+    ]
+
+    names, has_deleted = BedrockAgentCoreRuntimeService._fetch_main_entity_names_for_setting(mock_setting)
+
+    assert len(names) == ALL_SETTINGS_OVERVIEW_ENTITY_COUNT
+    assert "deleted-runtime-id" not in names
+
+
+# --- Tests for list_importable_entities_for_main_entity (cross-runtime fix) ---
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._get_deleted_endpoint_entities")
+@patch(f"{_ENDPOINT_MOD}.get_setting_for_user")
+@patch(f"{_ENDPOINT_MOD}.get_setting_aws_credentials")
+@patch(f"{_ENDPOINT_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_list_runtime_endpoints")
+def test_list_importable_entities_excludes_endpoints_from_other_runtimes(
+    mock_list_endpoints,
+    mock_get_by_setting,
+    mock_get_aws_creds,
+    mock_get_setting,
+    mock_get_deleted_endpoints,
+    mock_user,
+    mock_setting,
+    mock_aws_creds,
+    endpoint_data,
+):
+    """Test that only endpoints belonging to the requested runtime_id are matched to imported assistants."""
+    mock_get_setting.return_value = mock_setting
+    mock_get_aws_creds.return_value = mock_aws_creds
+    mock_list_endpoints.return_value = (endpoint_data, None)
+    mock_get_deleted_endpoints.return_value = []
+
+    assistant_same_runtime = MagicMock()
+    assistant_same_runtime.id = "assistant-1"
+    assistant_same_runtime.bedrock_agentcore_runtime = MagicMock()
+    assistant_same_runtime.bedrock_agentcore_runtime.runtime_id = "runtime-1"
+    assistant_same_runtime.bedrock_agentcore_runtime.runtime_endpoint_id = "endpoint-1"
+    assistant_same_runtime.bedrock_agentcore_runtime.runtime_endpoint_name = "Endpoint 1"
+    assistant_same_runtime.bedrock_agentcore_runtime.runtime_endpoint_live_version = "1"
+    assistant_same_runtime.bedrock_agentcore_runtime.configuration_json = None
+
+    assistant_other_runtime = MagicMock()
+    assistant_other_runtime.id = "assistant-2"
+    assistant_other_runtime.bedrock_agentcore_runtime = MagicMock()
+    assistant_other_runtime.bedrock_agentcore_runtime.runtime_id = "runtime-2"
+    assistant_other_runtime.bedrock_agentcore_runtime.runtime_endpoint_id = "endpoint-2"
+    assistant_other_runtime.bedrock_agentcore_runtime.runtime_endpoint_name = "Endpoint 2"
+    assistant_other_runtime.bedrock_agentcore_runtime.runtime_endpoint_live_version = "2"
+    assistant_other_runtime.bedrock_agentcore_runtime.configuration_json = None
+
+    mock_get_by_setting.return_value = [assistant_same_runtime, assistant_other_runtime]
+
+    result, _ = BedrockAgentCoreRuntimeService.list_importable_entities_for_main_entity(
+        user=mock_user,
+        main_entity_id="runtime-1",
+        setting_id="setting-1",
+        page=0,
+        per_page=10,
+    )
+
+    ep1 = next(r for r in result if r["id"] == "endpoint-1")
+    assert ep1["aiRunId"] == "assistant-1"
+
+    ep2 = next(r for r in result if r["id"] == "endpoint-2")
+    assert ep2.aiRunId is None
+
+
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._get_deleted_endpoint_entities")
+@patch(f"{_ENDPOINT_MOD}.get_setting_for_user")
+@patch(f"{_ENDPOINT_MOD}.get_setting_aws_credentials")
+@patch(f"{_ENDPOINT_MOD}.Assistant.get_by_bedrock_runtime_aws_settings_id")
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_list_runtime_endpoints")
+def test_list_importable_entities_appends_deleted_on_aws_endpoints(
+    mock_list_endpoints,
+    mock_get_by_setting,
+    mock_get_aws_creds,
+    mock_get_setting,
+    mock_get_deleted_endpoints,
+    mock_user,
+    mock_setting,
+    mock_aws_creds,
+    endpoint_data,
+):
+    """Test list_importable_entities_for_main_entity appends DELETED_ON_AWS endpoints."""
+    from codemie.service.aws_bedrock.agentcore.bedrock_agentcore_endpoint_service import (
+        AgentcoreEndpointEntity,
+        EndpointStatus,
+    )
+
+    mock_get_setting.return_value = mock_setting
+    mock_get_aws_creds.return_value = mock_aws_creds
+    mock_get_by_setting.return_value = []
+    mock_list_endpoints.return_value = (endpoint_data, None)
+    mock_get_deleted_endpoints.return_value = [
+        AgentcoreEndpointEntity(id="deleted-ep", status=EndpointStatus.DELETED_ON_AWS, aiRunId="assistant-99")
+    ]
+
+    result, _ = BedrockAgentCoreRuntimeService.list_importable_entities_for_main_entity(
+        user=mock_user,
+        main_entity_id="runtime-1",
+        setting_id="setting-1",
+        page=0,
+        per_page=10,
+    )
+
+    assert len(result) == 3
+    deleted = next(r for r in result if r["id"] == "deleted-ep")
+    assert deleted["status"] == EndpointStatus.DELETED_ON_AWS
+    assert deleted["aiRunId"] == "assistant-99"
+
+
+# --- Tests for _get_deleted_endpoint_entities ---
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_get_runtime_endpoint")
+def test_get_deleted_endpoint_entities_returns_empty_when_no_candidates(mock_get_endpoint, mock_aws_creds):
+    """Test _get_deleted_endpoint_entities returns empty list when existing_entities_map is empty."""
+    result = BedrockAgentCoreEndpointService._get_deleted_endpoint_entities(
+        runtime_id="runtime-1",
+        existing_entities_map={},
+        seen_endpoint_ids=set(),
+        aws_creds=mock_aws_creds,
+    )
+
+    assert result == []
+    mock_get_endpoint.assert_not_called()
+
+
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_get_runtime_endpoint")
+def test_get_deleted_endpoint_entities_skips_seen_endpoint_ids(mock_get_endpoint, mock_aws_creds):
+    """Test _get_deleted_endpoint_entities does not check endpoints already seen from AWS."""
+    mock_assistant = MagicMock()
+    mock_assistant.id = "assistant-1"
+    mock_assistant.bedrock_agentcore_runtime = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_name = "Endpoint 1"
+
+    result = BedrockAgentCoreEndpointService._get_deleted_endpoint_entities(
+        runtime_id="runtime-1",
+        existing_entities_map={"endpoint-1": mock_assistant},
+        seen_endpoint_ids={"endpoint-1"},
+        aws_creds=mock_aws_creds,
+    )
+
+    assert result == []
+    mock_get_endpoint.assert_not_called()
+
+
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_get_runtime_endpoint")
+def test_get_deleted_endpoint_entities_returns_deleted_on_resource_not_found(mock_get_endpoint, mock_aws_creds):
+    """Test _get_deleted_endpoint_entities appends DELETED_ON_AWS for ResourceNotFoundException."""
+    from botocore.exceptions import ClientError
+    from codemie.service.aws_bedrock.agentcore.bedrock_agentcore_endpoint_service import EndpointStatus
+
+    mock_assistant = MagicMock()
+    mock_assistant.id = "assistant-1"
+    mock_assistant.bedrock_agentcore_runtime = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_name = "Deleted Endpoint"
+    mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_id = "endpoint-deleted"
+    mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_description = "desc"
+    mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_live_version = "1"
+    mock_assistant.bedrock_agentcore_runtime.configuration_json = None
+
+    error_response = {"Error": {"Code": "ResourceNotFoundException", "Message": "Not found"}}
+    mock_get_endpoint.side_effect = ClientError(error_response, "GetRuntimeEndpoint")
+
+    result = BedrockAgentCoreEndpointService._get_deleted_endpoint_entities(
+        runtime_id="runtime-1",
+        existing_entities_map={"endpoint-deleted": mock_assistant},
+        seen_endpoint_ids=set(),
+        aws_creds=mock_aws_creds,
+    )
+
+    assert len(result) == 1
+    assert result[0].id == "endpoint-deleted"
+    assert result[0].status == EndpointStatus.DELETED_ON_AWS
+    assert result[0].aiRunId == "assistant-1"
+
+
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_get_runtime_endpoint")
+def test_get_deleted_endpoint_entities_skips_on_other_client_error(mock_get_endpoint, mock_aws_creds):
+    """Test _get_deleted_endpoint_entities skips endpoint on non-ResourceNotFoundException ClientError."""
+    from botocore.exceptions import ClientError
+
+    mock_assistant = MagicMock()
+    mock_assistant.id = "assistant-1"
+    mock_assistant.bedrock_agentcore_runtime = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_name = "Endpoint 1"
+
+    error_response = {"Error": {"Code": "AccessDeniedException", "Message": "Access denied"}}
+    mock_get_endpoint.side_effect = ClientError(error_response, "GetRuntimeEndpoint")
+
+    result = BedrockAgentCoreEndpointService._get_deleted_endpoint_entities(
+        runtime_id="runtime-1",
+        existing_entities_map={"endpoint-1": mock_assistant},
+        seen_endpoint_ids=set(),
+        aws_creds=mock_aws_creds,
+    )
+
+    assert result == []
+
+
+@patch(f"{_ENDPOINT_MOD}.BedrockAgentCoreEndpointService._bedrock_get_runtime_endpoint")
+def test_get_deleted_endpoint_entities_skips_on_unexpected_error(mock_get_endpoint, mock_aws_creds):
+    """Test _get_deleted_endpoint_entities skips endpoint on unexpected errors."""
+    mock_assistant = MagicMock()
+    mock_assistant.id = "assistant-1"
+    mock_assistant.bedrock_agentcore_runtime = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_name = "Endpoint 1"
+
+    mock_get_endpoint.side_effect = Exception("Unexpected error")
+
+    result = BedrockAgentCoreEndpointService._get_deleted_endpoint_entities(
+        runtime_id="runtime-1",
+        existing_entities_map={"endpoint-1": mock_assistant},
+        seen_endpoint_ids=set(),
+        aws_creds=mock_aws_creds,
+    )
+
+    assert result == []
+
+
+# --- ARN bug fix tests ---
+
+
+def _make_agentcore_assistant(runtime_arn=None, endpoint_arn=None):
+    """Helper to build a mock assistant with given ARN values."""
+    from codemie.rest_api.models.assistant import AssistantType
+
+    assistant = MagicMock()
+    assistant.type = AssistantType.BEDROCK_AGENTCORE_RUNTIME
+    assistant.bedrock = None
+    rt = MagicMock()
+    rt.runtime_arn = runtime_arn
+    rt.runtime_endpoint_arn = endpoint_arn
+    rt.aws_settings_id = "setting-1"
+    assistant.bedrock_agentcore_runtime = rt
+    return assistant
+
+
+def test_is_bedrock_assistant_uses_runtime_arn():
+    """is_bedrock_assistant must check runtime_arn, not runtime_endpoint_arn."""
+    from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
+
+    assistant = _make_agentcore_assistant(
+        runtime_arn="arn:aws:bedrock:us-east-1:123:runtime/r1",
+        endpoint_arn=None,  # endpoint_arn absent — guard should still pass
+    )
+    assert BedrockOrchestratorService.is_bedrock_assistant(assistant) is True
+
+
+def test_is_bedrock_assistant_false_when_no_runtime_arn():
+    """is_bedrock_assistant must return False when runtime_arn is absent, even if endpoint_arn is present."""
+    from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
+
+    assistant = _make_agentcore_assistant(
+        runtime_arn=None,
+        endpoint_arn="some-endpoint-arn",  # endpoint_arn present — should still fail
+    )
+    assert BedrockOrchestratorService.is_bedrock_assistant(assistant) is False
+
+
+# --- BedrockAgentcoreRuntimeData model tests ---
+
+
+def test_bedrock_agentcore_runtime_data_reads_configuration_json():
+    data = BedrockAgentcoreRuntimeData.model_validate(
+        {
+            "runtime_id": "r1",
+            "runtime_arn": "arn:aws:bedrock:us-east-1:123:agentruntime/r1",
+            "runtime_endpoint_id": "ep1",
+            "runtime_endpoint_arn": "arn:aws:bedrock:us-east-1:123:agentruntime/r1/endpoint/ep1",
+            "runtime_endpoint_name": "my-endpoint",
+            "runtime_endpoint_live_version": "1",
+            "aws_settings_id": "s1",
+            "configuration_json": '{"response": {"streaming": false, "body": {"text_path": "output"}}}',
+        }
+    )
+    assert data.configuration_json is not None
+    assert "streaming" in data.configuration_json
+
+
+# --- Wire parsers into invocation tests ---
+
+
+def _make_assistant_with_config(configuration_json_str: str):
+    assistant = MagicMock()
+    rt = MagicMock()
+    rt.runtime_arn = "arn:aws:bedrock:us-east-1:123:agentruntime/r1"
+    rt.runtime_endpoint_name = "my-endpoint"
+    rt.aws_settings_id = "setting-1"
+    rt.configuration_json = configuration_json_str
+    assistant.bedrock_agentcore_runtime = rt
+    return assistant
+
+
+def test_invoke_uses_new_config_request_path():
+    """When configuration_json has message_path='prompt', request payload uses that key."""
+    from codemie.service.aws_bedrock.bedrock_agentcore_runtime_service import BedrockAgentCoreRuntimeService
+
+    config_json = json.dumps(
+        {
+            "request": {"message_path": "prompt"},
+            "response": {"streaming": False, "body": {"text_path": "answer"}},
+        }
+    )
+    assistant = _make_assistant_with_config(config_json)
+
+    with (
+        patch(
+            "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials"
+        ) as mock_creds,
+        patch.object(BedrockAgentCoreRuntimeService, "_bedrock_invoke_runtime") as mock_invoke,
+    ):
+        mock_creds.return_value = MagicMock(
+            region="us-east-1", access_key_id="k", secret_access_key="s", session_token=None
+        )
+        mock_invoke.return_value = json.dumps({"answer": "hello"}).encode()
+
+        result = BedrockAgentCoreRuntimeService.invoke_agentcore_runtime(
+            assistant=assistant, input_text="my question", conversation_id="conv-1"
+        )
+
+    # Verify payload was built with message_path="prompt"
+    call_kwargs = mock_invoke.call_args
+    raw_payload = call_kwargs.kwargs.get("payload") or (call_kwargs.args[2] if len(call_kwargs.args) > 2 else None)
+    payload = json.loads(raw_payload)
+    assert payload == {"prompt": "my question"}
+    assert result["output"] == "hello"
+    assert "thoughts" in result
+
+
+def test_invoke_json_mode_sends_application_json_accept():
+    """Non-streaming config must send accept=application/json."""
+    from codemie.service.aws_bedrock.bedrock_agentcore_runtime_service import BedrockAgentCoreRuntimeService
+
+    config_json = json.dumps(
+        {
+            "request": {"message_path": "message"},
+            "response": {"streaming": False, "body": {"text_path": "output"}},
+        }
+    )
+    assistant = _make_assistant_with_config(config_json)
+
+    with (
+        patch(
+            "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials"
+        ) as mock_creds,
+        patch.object(BedrockAgentCoreRuntimeService, "_bedrock_invoke_runtime") as mock_invoke,
+    ):
+        mock_creds.return_value = MagicMock(
+            region="us-east-1", access_key_id="k", secret_access_key="s", session_token=None
+        )
+        mock_invoke.return_value = json.dumps({"output": "hi"}).encode()
+        BedrockAgentCoreRuntimeService.invoke_agentcore_runtime(
+            assistant=assistant, input_text="q", conversation_id="c"
+        )
+
+    call_kwargs = mock_invoke.call_args
+    accept = call_kwargs.kwargs.get("accept")
+    assert accept == "application/json"
+
+
+def test_invoke_streaming_sends_text_event_stream_accept():
+    """Streaming config must send accept=text/event-stream."""
+    from codemie.service.aws_bedrock.bedrock_agentcore_runtime_service import BedrockAgentCoreRuntimeService
+
+    config_json = json.dumps(
+        {
+            "request": {"message_path": "message"},
+            "response": {"streaming": True, "chunk": {"text_path": "delta"}},
+        }
+    )
+    assistant = _make_assistant_with_config(config_json)
+    mock_stream = MagicMock()
+    mock_stream.iter_lines.return_value = [
+        b'data: {"delta": "hello"}',
+        b"",
+    ]
+
+    with (
+        patch(
+            "codemie.service.aws_bedrock.bedrock_agentcore_runtime_service.get_setting_aws_credentials"
+        ) as mock_creds,
+        patch.object(BedrockAgentCoreRuntimeService, "_bedrock_invoke_runtime") as mock_invoke,
+    ):
+        mock_creds.return_value = MagicMock(
+            region="us-east-1", access_key_id="k", secret_access_key="s", session_token=None
+        )
+        mock_invoke.return_value = mock_stream
+        BedrockAgentCoreRuntimeService.invoke_agentcore_runtime(
+            assistant=assistant, input_text="q", conversation_id="c"
+        )
+
+    call_kwargs = mock_invoke.call_args
+    accept = call_kwargs.kwargs.get("accept")
+    assert accept == "text/event-stream"
+
+
+# --- Thought emission in _agent_streaming tests ---
+
+
+def test_agent_streaming_calls_process_output_with_response():
+    """_agent_streaming delegates to agent_executor.stream() and calls process_output with the output chunk."""
+    from codemie.agents.assistant_agent import AIToolsAgent
+
+    agent = MagicMock()
+    agent.thread_generator.is_closed.return_value = False
+    agent._get_run_config.return_value = {}
+    agent._get_inputs.return_value = {"input": "hello"}
+    agent.agent_executor.stream.return_value = iter([{"output": "the answer"}])
+
+    with patch.object(AIToolsAgent, "process_output") as mock_process_output:
+        chunks = []
+        AIToolsAgent._agent_streaming(agent, chunks)
+
+    mock_process_output.assert_called_once_with("the answer", chunks)
+
+
+def test_agent_streaming_no_thoughts_no_send():
+    """_agent_streaming does not call thread_generator.send directly; streaming side-effects happen inside invoke_agentcore_runtime."""
+    from codemie.agents.assistant_agent import AIToolsAgent
+
+    agent = MagicMock()
+    agent.thread_generator.is_closed.return_value = False
+    agent._get_run_config.return_value = {}
+    agent._get_inputs.return_value = {"input": "hello"}
+    agent.agent_executor.stream.return_value = iter([{"output": "the answer"}])
+
+    with patch.object(AIToolsAgent, "process_output"):
+        chunks = []
+        AIToolsAgent._agent_streaming(agent, chunks)
+
+    agent.thread_generator.send.assert_not_called()
+
+
+# --- Entity response model test ---
+
+
+def test_endpoint_entity_exposes_configuration_json():
+    """Entity builder must read configuration_json."""
+    rt = MagicMock()
+    rt.runtime_id = "rt-1"
+    rt.runtime_arn = "arn:aws:bedrock:us-east-1:123:agentruntime/rt-1"
+    rt.runtime_endpoint_id = "ep-1"
+    rt.runtime_endpoint_name = "my-endpoint"
+    rt.runtime_endpoint_live_version = "2"
+    rt.runtime_endpoint_description = "desc"
+    rt.configuration_json = '{"response": {"streaming": false, "body": {"text_path": "output"}}}'
+
+    mock_assistant = MagicMock()
+    mock_assistant.id = "assistant-uuid"
+    mock_assistant.bedrock_agentcore_runtime = rt
+
+    entity = BedrockAgentCoreEndpointService._build_endpoint_entity(None, mock_assistant)
+    assert entity.configurationJson == rt.configuration_json
+
+
+# --- Tests for history threading through invoke_agentcore_runtime ---
+
+
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_invoke_runtime")
+@patch(f"{_RUNTIME_MOD}.AgentcoreRequestBuilder")
+def test_invoke_agentcore_runtime_passes_history_to_builder(
+    mock_builder_cls,
+    mock_bedrock_invoke_runtime,
+    mock_get_setting_aws_credentials,
+    mock_aws_creds,
+):
+    import json
+    from codemie.core.models import ChatMessage
+    from codemie.core.constants import ChatRole
+
+    mock_get_setting_aws_credentials.return_value = mock_aws_creds
+    mock_instance = MagicMock()
+    mock_instance.build.return_value = b'{"query":"hi"}'
+    mock_builder_cls.return_value = mock_instance
+    mock_bedrock_invoke_runtime.return_value = b'{"output": "ok"}'
+
+    configuration_json = json.dumps(
+        {
+            "request": {
+                "message_path": "query",
+                "history": {"history_path": "messages"},
+            },
+            "response": {"streaming": False, "body": {"text_path": "output"}},
+        }
+    )
+
+    mock_assistant = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_arn = "arn:test"
+    mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_name = "ep"
+    mock_assistant.bedrock_agentcore_runtime.aws_settings_id = "setting-1"
+    mock_assistant.bedrock_agentcore_runtime.configuration_json = configuration_json
+
+    history = [ChatMessage(role=ChatRole.USER, message="prev")]
+
+    BedrockAgentCoreRuntimeService.invoke_agentcore_runtime(
+        assistant=mock_assistant,
+        input_text="hi",
+        conversation_id="conv-1",
+        history=history,
+    )
+
+    call = mock_instance.build.call_args
+    passed_history = call.kwargs.get("history") if call.kwargs and "history" in call.kwargs else call.args[1]
+    assert passed_history == history
+
+
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_invoke_runtime")
+def test_invoke_agentcore_runtime_no_history_arg_backward_compat(
+    mock_bedrock_invoke_runtime,
+    mock_get_setting_aws_credentials,
+    mock_aws_creds,
+):
+    import json as _json
+
+    mock_get_setting_aws_credentials.return_value = mock_aws_creds
+    mock_stream = MagicMock()
+    mock_stream.iter_lines.return_value = [b'{"text": "response"}']
+    mock_bedrock_invoke_runtime.return_value = mock_stream
+
+    mock_assistant = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_arn = "arn:test"
+    mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_name = "ep"
+    mock_assistant.bedrock_agentcore_runtime.aws_settings_id = "setting-1"
+    mock_assistant.bedrock_agentcore_runtime.configuration_json = _json.dumps(
+        {"request": {"message_path": "message"}, "response": {"streaming": True, "chunk": {"text_path": "text"}}}
+    )
+
+    response = BedrockAgentCoreRuntimeService.invoke_agentcore_runtime(
+        assistant=mock_assistant,
+        input_text="hi",
+        conversation_id="conv-1",
+    )
+    assert response["output"] == "response"
+
+
+@patch(f"{_RUNTIME_MOD}.get_setting_aws_credentials")
+@patch(f"{_RUNTIME_MOD}.BedrockAgentCoreRuntimeService._bedrock_invoke_runtime")
+def test_invoke_agentcore_runtime_progressive_streaming(
+    mock_bedrock_invoke_runtime,
+    mock_get_setting_aws_credentials,
+    mock_aws_creds,
+):
+    """When thread_generator is provided, each SSE text chunk is sent immediately via generated_chunk."""
+    import json as _json
+
+    mock_get_setting_aws_credentials.return_value = mock_aws_creds
+    mock_stream = MagicMock()
+    mock_stream.iter_lines.return_value = [
+        b"data: " + _json.dumps({"text": "Hello"}).encode(),
+        b"data: " + _json.dumps({"text": " world"}).encode(),
+    ]
+    mock_bedrock_invoke_runtime.return_value = mock_stream
+
+    mock_assistant = MagicMock()
+    mock_assistant.bedrock_agentcore_runtime.runtime_arn = "arn:test"
+    mock_assistant.bedrock_agentcore_runtime.runtime_endpoint_name = "ep"
+    mock_assistant.bedrock_agentcore_runtime.aws_settings_id = "setting-1"
+    mock_assistant.bedrock_agentcore_runtime.configuration_json = _json.dumps(
+        {"request": {"message_path": "message"}, "response": {"streaming": True, "chunk": {"text_path": "text"}}}
+    )
+
+    thread_gen = MagicMock()
+    response = BedrockAgentCoreRuntimeService.invoke_agentcore_runtime(
+        assistant=mock_assistant,
+        input_text="hi",
+        conversation_id="conv-1",
+        thread_generator=thread_gen,
+    )
+
+    assert response["output"] == "Hello world"
+    assert response["thoughts"] == []
+    # Two text chunks + one last=True terminator
+    assert thread_gen.send.call_count == 3
+    sent_payloads = [_json.loads(call.args[0]) for call in thread_gen.send.call_args_list]
+    chunk_payloads = sent_payloads[:2]
+    assert all(p.get("generated_chunk") is not None for p in chunk_payloads)
+    assert [p["generated_chunk"] for p in chunk_payloads] == ["Hello", " world"]
+    last_payload = sent_payloads[2]
+    assert last_payload.get("last") is True
+    assert last_payload.get("generated_chunk") == ""
+
+
+class TestParseAgentcoreJsonResponse:
+    """Unit tests for _parse_agentcore_json_response."""
+
+    def _make_config(self):
+        from codemie.service.aws_bedrock.agentcore.agentcore_config import AgentcoreResponseConfig
+
+        return AgentcoreResponseConfig.model_validate(
+            {
+                "streaming": False,
+                "body": {"text_path": "output"},
+            }
+        )
+
+    def _make_config_with_reasoning(self):
+        from codemie.service.aws_bedrock.agentcore.agentcore_config import AgentcoreResponseConfig
+
+        return AgentcoreResponseConfig.model_validate(
+            {
+                "streaming": False,
+                "body": {
+                    "text_path": "output",
+                    "reasoning": {"text_path": "thought"},
+                },
+            }
+        )
+
+    def test_no_thread_generator_returns_text_and_thoughts(self):
+        """Without thread_generator thoughts are returned directly."""
+        import json as _json
+
+        config = self._make_config_with_reasoning()
+        raw = MagicMock()
+        raw.decode.return_value = _json.dumps({"output": "hello", "thought": "thinking..."})
+
+        text, thoughts = BedrockAgentCoreRuntimeService._parse_agentcore_json_response(raw, config)
+
+        assert text == "hello"
+        assert len(thoughts) == 1
+        assert thoughts[0].message == "thinking..."
+
+    def test_no_thread_generator_no_thoughts(self):
+        """Without reasoning config the thoughts list is empty."""
+        import json as _json
+
+        config = self._make_config()
+        raw = MagicMock()
+        raw.decode.return_value = _json.dumps({"output": "hello"})
+
+        text, thoughts = BedrockAgentCoreRuntimeService._parse_agentcore_json_response(raw, config)
+
+        assert text == "hello"
+        assert thoughts == []
+
+    def test_with_thread_generator_sends_thoughts_and_returns_empty_list(self):
+        """With thread_generator each thought is forwarded via send() and [] is returned."""
+        import json as _json
+
+        config = self._make_config_with_reasoning()
+        raw = MagicMock()
+        raw.decode.return_value = _json.dumps({"output": "hello", "thought": "thinking..."})
+        thread_gen = MagicMock()
+
+        text, thoughts = BedrockAgentCoreRuntimeService._parse_agentcore_json_response(raw, config, thread_gen)
+
+        assert text == "hello"
+        assert thoughts == []
+        assert thread_gen.send.call_count == 1
+        payload = _json.loads(thread_gen.send.call_args[0][0])
+        assert payload["thought"]["message"] == "thinking..."
+
+    def test_with_thread_generator_no_thoughts_sends_nothing(self):
+        """With thread_generator but no thoughts, send() is never called."""
+        import json as _json
+
+        config = self._make_config()
+        raw = MagicMock()
+        raw.decode.return_value = _json.dumps({"output": "hello"})
+        thread_gen = MagicMock()
+
+        text, thoughts = BedrockAgentCoreRuntimeService._parse_agentcore_json_response(raw, config, thread_gen)
+
+        assert text == "hello"
+        assert thoughts == []
+        thread_gen.send.assert_not_called()
+
+
+class TestParseAgentcoreStreamingResponse:
+    """Unit tests for _parse_agentcore_streaming_response."""
+
+    def _make_config(self):
+        from codemie.service.aws_bedrock.agentcore.agentcore_config import AgentcoreResponseConfig
+
+        return AgentcoreResponseConfig.model_validate(
+            {
+                "streaming": True,
+                "chunk": {"text_path": "token"},
+            }
+        )
+
+    @patch(f"{_RUNTIME_MOD}._agentcore_response_parser")
+    def test_no_thread_generator_delegates_to_parse_streaming(self, mock_parser):
+        """Without thread_generator parse_streaming is called and its result returned."""
+        config = self._make_config()
+        mock_parser.parse_streaming.return_value = ("full text", [])
+
+        result = BedrockAgentCoreRuntimeService._parse_agentcore_streaming_response(MagicMock(), config)
+
+        assert result == ("full text", [])
+        mock_parser.parse_streaming.assert_called_once()
+
+    @patch(f"{_RUNTIME_MOD}._agentcore_response_parser")
+    def test_with_thread_generator_sends_chunks_and_thoughts(self, mock_parser):
+        """With thread_generator each chunk and thought is forwarded via send()."""
+        import json as _json
+        from codemie.chains.base import Thought, ThoughtAuthorType
+
+        config = self._make_config()
+        thought = Thought(id="t1", message="step", author_type=ThoughtAuthorType.Agent, in_progress=False)
+        mock_parser.parse_streaming.return_value = iter(
+            [
+                (None, [thought]),
+                ("Hello", []),
+                (" world", []),
+            ]
+        )
+        thread_gen = MagicMock()
+
+        text, thoughts = BedrockAgentCoreRuntimeService._parse_agentcore_streaming_response(
+            MagicMock(), config, thread_gen
+        )
+
+        assert text == "Hello world"
+        assert thoughts == []
+        sent_payloads = [_json.loads(c.args[0]) for c in thread_gen.send.call_args_list]
+        assert sent_payloads[0]["thought"]["message"] == "step"
+        assert sent_payloads[1]["generated_chunk"] == "Hello"
+        assert sent_payloads[2]["generated_chunk"] == " world"
+
+
+class TestParseAgentcoreResponse:
+    """Unit tests for _parse_agentcore_response routing."""
+
+    def _make_json_config(self):
+        from codemie.service.aws_bedrock.agentcore.agentcore_config import AgentcoreResponseConfig
+
+        return AgentcoreResponseConfig.model_validate(
+            {
+                "streaming": False,
+                "body": {"text_path": "output"},
+            }
+        )
+
+    def _make_streaming_config(self):
+        from codemie.service.aws_bedrock.agentcore.agentcore_config import AgentcoreResponseConfig
+
+        return AgentcoreResponseConfig.model_validate(
+            {
+                "streaming": True,
+                "chunk": {"text_path": "token"},
+            }
+        )
+
+    @patch.object(BedrockAgentCoreRuntimeService, "_parse_agentcore_json_response", return_value=("json out", []))
+    def test_routes_to_json_when_not_streaming(self, mock_json):
+        """Non-streaming config delegates to _parse_agentcore_json_response."""
+        raw = MagicMock()
+        config = self._make_json_config()
+
+        result = BedrockAgentCoreRuntimeService._parse_agentcore_response(raw, config)
+
+        mock_json.assert_called_once_with(raw, config, None)
+        assert result == ("json out", [])
+
+    @patch.object(BedrockAgentCoreRuntimeService, "_parse_agentcore_streaming_response", return_value=("sse out", []))
+    def test_routes_to_streaming_when_streaming(self, mock_sse):
+        """Streaming config delegates to _parse_agentcore_streaming_response."""
+        raw = MagicMock()
+        config = self._make_streaming_config()
+
+        result = BedrockAgentCoreRuntimeService._parse_agentcore_response(raw, config)
+
+        mock_sse.assert_called_once_with(raw, config, None)
+        assert result == ("sse out", [])
+
+    @patch.object(BedrockAgentCoreRuntimeService, "_parse_agentcore_json_response", return_value=("out", []))
+    def test_passes_thread_generator_through(self, mock_json):
+        """thread_generator is forwarded to the delegated method."""
+        raw = MagicMock()
+        config = self._make_json_config()
+        tg = MagicMock()
+
+        BedrockAgentCoreRuntimeService._parse_agentcore_response(raw, config, tg)
+
+        mock_json.assert_called_once_with(raw, config, tg)

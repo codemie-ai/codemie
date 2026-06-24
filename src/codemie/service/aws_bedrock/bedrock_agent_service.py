@@ -29,7 +29,13 @@ from codemie.rest_api.models.vendor import ImportAgent
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.default_applications import ensure_application_exists
 from codemie.service.aws_bedrock.base_bedrock_service import ALL_SETTINGS_OVERVIEW_ENTITY_COUNT, BaseBedrockService
-from codemie.service.aws_bedrock.exceptions import aws_service_exception_handler
+from codemie.service.aws_bedrock.exceptions import (
+    EntityAccessDenied,
+    EntityDeletionError,
+    EntityNotFound,
+    aws_service_exception_handler,
+    is_resource_not_found,
+)
 from codemie.service.aws_bedrock.utils import (
     CONFIGURATION_INVALID_EXCEPTIONS,
     call_bedrock_listing_api,
@@ -39,6 +45,8 @@ from codemie.service.aws_bedrock.utils import (
     handle_aws_call,
     get_setting_aws_credentials,
 )
+from codemie.core.ability import Ability, Action
+
 from codemie.service.guardrail.guardrail_service import GuardrailService
 
 
@@ -338,6 +346,19 @@ class BedrockAgentService(BaseBedrockService):
             GuardrailService.remove_guardrail_assignments_for_entity(GuardrailEntity.ASSISTANT, str(assistant.id))
 
     @staticmethod
+    def unimport_entity(entity_id: str, user: User) -> None:
+        entity_model = Assistant.find_by_id(entity_id)
+        if not entity_model:
+            raise EntityNotFound("assistant", entity_id)
+        if not Ability(user).can(Action.DELETE, entity_model):
+            raise EntityAccessDenied
+        try:
+            entity_model.delete()
+            GuardrailService.remove_guardrail_assignments_for_entity(GuardrailEntity.ASSISTANT, str(entity_model.id))
+        except Exception as e:
+            raise EntityDeletionError("assistant", str(e))
+
+    @staticmethod
     def validate_remote_entity_exists_and_cleanup(entity: Assistant):
         if (
             entity.type != AssistantType.BEDROCK_AGENT
@@ -363,8 +384,7 @@ class BedrockAgentService(BaseBedrockService):
             return None
 
         except ClientError as e:
-            error_code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
-            if error_code.strip().lower() == "resourcenotfoundexception":
+            if is_resource_not_found(e):
                 entity.delete()
                 GuardrailService.remove_guardrail_assignments_for_entity(GuardrailEntity.ASSISTANT, str(entity.id))
 
@@ -457,8 +477,7 @@ class BedrockAgentService(BaseBedrockService):
                 "time_elapsed": time() - start_time,
             }
         except ClientError as e:
-            error_code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
-            if error_code.strip().lower() == "resourcenotfoundexception":
+            if is_resource_not_found(e):
                 logger.warning(f"Bedrock agent not found on remote {assistant.bedrock.bedrock_agent_id}: {e}")
 
                 BedrockAgentService.validate_remote_entity_exists_and_cleanup_with_subassistants(
@@ -622,8 +641,7 @@ class BedrockAgentService(BaseBedrockService):
                 "aiRunId": created_entity_id,
             }
         except ClientError as e:
-            error_code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
-            if error_code.strip().lower() == "resourcenotfoundexception":
+            if is_resource_not_found(e):
                 return {
                     "agentId": input_agent_id,
                     "agentAliasId": input_agent_alias_id,

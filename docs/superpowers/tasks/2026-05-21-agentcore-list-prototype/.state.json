@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "slug": "agentcore-list-prototype",
+  "branch": "EPMCDME-12240_agentcore",
+  "phase": "maintenance",
+  "started_at": "2026-05-21T10:11:10Z",
+  "completed_at": "2026-05-21T13:32:00Z",
+  "last_sync_commit": "0c0fea1f379e555af94d3f956337a175929a9f58"
+}

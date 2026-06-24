@@ -13,6 +13,8 @@
 # limitations under the License.
 
 from enum import Enum
+from typing import Optional
+
 from pydantic import BaseModel
 
 
@@ -40,7 +42,9 @@ class ImportAgent(ImportEntityBase):
 class ImportAgentcoreRuntime(ImportEntityBase):
     id: str
     agentcoreRuntimeEndpointName: str
-    invocation_json: str
+    configuration_json: str
+    assistant_name: Optional[str] = None
+    assistant_description: Optional[str] = None
 
 
 class ImportKnowledgeBase(ImportEntityBase):

@@ -277,7 +277,7 @@ class BedrockAgentcoreRuntimeData(BaseModel):
     runtime_endpoint_live_version: str
     runtime_endpoint_description: Optional[str] = None
     aws_settings_id: str  # ID of the AWS settings
-    invocation_json: str  # JSON string for invoking the runtime
+    configuration_json: Optional[str] = None  # JSON string for invoking the runtime
 
 
 class AssistantRequest(BaseModel):

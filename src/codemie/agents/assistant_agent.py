@@ -74,9 +74,10 @@ from codemie.core.models import ChatMessage, AssistantChatRequest
 from codemie.core.thread import ThreadedGenerator
 from codemie.core.utils import extract_text_from_llm_output, calculate_tokens
 from codemie_tools.base.file_object import FileObject
-from codemie.rest_api.models.assistant import Assistant
+from codemie.agents.aws_bedrock.agentcore_executor import AgentCoreExecutor
+from codemie.agents.aws_bedrock.bedrock_agent_executor import BedrockAgentExecutor
+from codemie.rest_api.models.assistant import Assistant, AssistantType
 from codemie.rest_api.security.user import User
-from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
 from codemie.service.background_tasks_service import BackgroundTasksService
 from codemie.service.conversation.history_compaction_service import ConversationHistoryCompactionService
 from codemie.service.constants import AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY
@@ -225,6 +226,21 @@ class AIToolsAgent(WorkspaceAwareAgent):
         return callbacks
 
     def init_agent(self):
+        if self.assistant and self.assistant.type == AssistantType.BEDROCK_AGENT:
+            return BedrockAgentExecutor(
+                assistant=self.assistant,
+                conversation_id=self.conversation_id,
+                history_fn=lambda: self.request.history,
+            )
+
+        if self.assistant and self.assistant.type == AssistantType.BEDROCK_AGENTCORE_RUNTIME:
+            return AgentCoreExecutor(
+                assistant=self.assistant,
+                conversation_id=self.conversation_id,
+                history_fn=lambda: self.request.history,
+                thread_generator=self.thread_generator,
+            )
+
         llm = self._initialize_llm()
         callbacks = self.configure_callbacks(llm)
 
@@ -453,36 +469,15 @@ class AIToolsAgent(WorkspaceAwareAgent):
 
     def _invoke_agent(self, inputs):
         logger.debug(f"Invoking task. Agent={self.agent_name}. Inputs={self._serialize_inputs_for_log(inputs)}")
-        # Config will be retrieved from PureChatChain
-        if self.assistant and BedrockOrchestratorService.is_bedrock_assistant(self.assistant):
-            logger.info("Invoking bedrock assistant generation.")
-            response = BedrockOrchestratorService.invoke_bedrock_assistant(
-                assistant=self.assistant,
-                input_text=inputs.get("question", ""),
-                conversation_id=self.conversation_id,
-                chat_history=inputs.get("chat_history", []),
-            )
-            output = response.get("output", "")
-            logger.debug(
-                f"Bedrock response received. Agent={self.agent_name}, Output={self._truncate_log_content(str(output))}"
-            )
-            response = GenerationResult(
-                generated=output,
-                time_elapsed=None,
-                input_tokens_used=None,
-                tokens_used=None,
-                success=True,
-            )  # Bedrock doesn't provide token usage
+        if self.is_pure_chain():
+            response = self.agent_executor.invoke(inputs)
         else:
-            if self.is_pure_chain():
-                response = self.agent_executor.invoke(inputs)
-            else:
-                import contextlib
+            import contextlib
 
-                run_config = self._get_run_config()
-                trace_ctx = run_config.pop("_trace_ctx", contextlib.nullcontext())
-                with trace_ctx:
-                    response = self.agent_executor.invoke(inputs, config=run_config)
+            run_config = self._get_run_config()
+            trace_ctx = run_config.pop("_trace_ctx", contextlib.nullcontext())
+            with trace_ctx:
+                response = self.agent_executor.invoke(inputs, config=run_config)
 
         logger.debug(f"Invoking task. Agent={self.agent_name}. Response={self._serialize_response_for_log(response)}")
         return response
@@ -529,21 +524,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
     def generate(self, background_task_id: str = "") -> GenerationResult:
         start_time = time()
         try:
-            if self.assistant and BedrockOrchestratorService.is_bedrock_assistant(self.assistant):
-                # Use BedrockOrchestratorService to invoke the Bedrock assistant
-                logger.info("Invoking bedrock assistant generation.")
-                response = BedrockOrchestratorService.invoke_bedrock_assistant(
-                    assistant=self.assistant,
-                    input_text=self.request.text or "",
-                    conversation_id=self.conversation_id,
-                )
-                output = response.get("output", "")
-                logger.debug(
-                    f"Bedrock response received. Agent={self.agent_name}, "
-                    f"Output={self._truncate_log_content(str(output))}"
-                )
-                token_used = None  # Bedrock doesn't provide token usage
-            elif self.is_pure_chain():
+            if self.is_pure_chain():
                 response = self.agent_executor.generate()
                 output = response.generated
                 token_used = calculate_tokens(output)
@@ -606,9 +587,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
             user_email=self.user.username,
         )
 
-        if self.is_pure_chain() and not (
-            self.assistant and BedrockOrchestratorService.is_bedrock_assistant(self.assistant)
-        ):
+        if self.is_pure_chain():
             return self.agent_executor.stream()
 
         execution_start = time()
@@ -645,20 +624,6 @@ class AIToolsAgent(WorkspaceAwareAgent):
                 self.thread_generator.close()
 
     def _agent_streaming(self, chunks_collector: List[str]):
-        if self.assistant and BedrockOrchestratorService.is_bedrock_assistant(self.assistant):
-            logger.info(f"Streaming Bedrock assistant output for AssistantId={self.assistant.id}")
-
-            try:
-                response = BedrockOrchestratorService.invoke_bedrock_assistant(
-                    assistant=self.assistant,
-                    input_text=self.request.text or "",
-                    conversation_id=self.conversation_id,
-                )
-                AIToolsAgent.process_output(response["output"], chunks_collector)
-            except Exception as e:
-                logger.error(f"Error during Bedrock assistant invocation: {str(e)}", exc_info=True)
-            return
-
         import contextlib
 
         run_config = self._get_run_config()

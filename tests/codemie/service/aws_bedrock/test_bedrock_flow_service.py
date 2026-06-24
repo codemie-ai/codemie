@@ -14,8 +14,9 @@
 
 import pytest
 from unittest.mock import patch, MagicMock
-from codemie.rest_api.models.vendor import ImportFlow
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.service.aws_bedrock.exceptions import EntityNotFound, EntityAccessDenied
+from codemie.rest_api.models.vendor import ImportFlow
 from codemie.service.aws_bedrock.bedrock_flow_service import BedrockFlowService
 from codemie.rest_api.models.settings import AWSCredentials, Settings
 from codemie.rest_api.security.user import User
@@ -928,3 +929,51 @@ def test_validate_remote_entity_exists_and_cleanup_unexpected_error_passes(
     mock_settings_get_by_id.side_effect = Exception("Unexpected error")
 
     BedrockFlowService.validate_remote_entity_exists_and_cleanup(mock_workflow)
+
+
+@patch("codemie.service.aws_bedrock.bedrock_flow_service.workflow_service")
+@patch("codemie.service.aws_bedrock.bedrock_flow_service.Ability")
+@patch("codemie.service.aws_bedrock.bedrock_flow_service.WorkflowConfig.find_by_id")
+def test_unimport_entity_flow_deletes_workflow(mock_find_by_id, mock_ability_class, mock_wf_service):
+    """Test unimport_entity calls workflow_service.delete_workflow."""
+    mock_entity = MagicMock()
+    mock_find_by_id.return_value = mock_entity
+
+    mock_ability = MagicMock()
+    mock_ability.can.return_value = True
+    mock_ability_class.return_value = mock_ability
+
+    user = MagicMock(spec=User)
+
+    BedrockFlowService.unimport_entity("entity-123", user)
+
+    mock_find_by_id.assert_called_once_with("entity-123")
+    mock_wf_service.delete_workflow.assert_called_once_with(mock_entity, user)
+
+
+@patch("codemie.service.aws_bedrock.bedrock_flow_service.WorkflowConfig.find_by_id")
+def test_unimport_entity_flow_raises_404_when_not_found(mock_find_by_id):
+    """Test unimport_entity raises 404 when workflow does not exist."""
+    mock_find_by_id.return_value = None
+
+    user = MagicMock(spec=User)
+
+    with pytest.raises(EntityNotFound):
+        BedrockFlowService.unimport_entity("missing-id", user)
+
+
+@patch("codemie.service.aws_bedrock.bedrock_flow_service.Ability")
+@patch("codemie.service.aws_bedrock.bedrock_flow_service.WorkflowConfig.find_by_id")
+def test_unimport_entity_flow_raises_403_when_no_permission(mock_find_by_id, mock_ability_class):
+    """Test unimport_entity raises EntityAccessDenied when user lacks DELETE permission."""
+    mock_entity = MagicMock()
+    mock_find_by_id.return_value = mock_entity
+
+    mock_ability = MagicMock()
+    mock_ability.can.return_value = False
+    mock_ability_class.return_value = mock_ability
+
+    user = MagicMock(spec=User)
+
+    with pytest.raises(EntityAccessDenied):
+        BedrockFlowService.unimport_entity("entity-123", user)

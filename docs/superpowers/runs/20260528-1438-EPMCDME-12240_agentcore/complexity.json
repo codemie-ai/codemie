@@ -1,0 +1,20 @@
+{
+  "run_id": "20260528-1438-EPMCDME-12240_agentcore",
+  "score": 24,
+  "routing": "brainstorming",
+  "source": "heuristic",
+  "signals": {
+    "affected_file_estimate": 17,
+    "keyword_signals": {
+      "integration": true,
+      "provider": true,
+      "security": false,
+      "auth": false,
+      "migration": false,
+      "breaking": false,
+      "refactor": false
+    },
+    "goal_word_count": 61
+  },
+  "rationale": "affected_file_estimate >= 7 fires brainstorming routing"
+}

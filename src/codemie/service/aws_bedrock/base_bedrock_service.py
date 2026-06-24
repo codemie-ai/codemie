@@ -80,6 +80,11 @@ class BaseBedrockService(ABC):
 
     @staticmethod
     @abstractmethod
+    def unimport_entity(entity_id: str, user: User) -> None:
+        pass
+
+    @staticmethod
+    @abstractmethod
     def delete_entities(setting_id: str):
         pass
 

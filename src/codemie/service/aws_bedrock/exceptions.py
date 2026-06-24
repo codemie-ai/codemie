@@ -47,6 +47,40 @@ class AwsCredentialsNotFoundException(Exception):
         self.setting_id = setting_id
 
 
+class EntityNotFound(Exception):
+    def __init__(self, entity_type: str, entity_id: str):
+        self.entity_type = entity_type
+        self.entity_id = entity_id
+
+
+class EntityAccessDenied(Exception):
+    pass
+
+
+class EntityDeletionError(Exception):
+    def __init__(self, entity_type: str, detail: str):
+        super().__init__(f"{entity_type}: {detail}")
+        self.entity_type = entity_type
+        self.detail = detail
+
+
+class AgentcoreEndpointNotFoundError(Exception):
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+class AgentcoreEndpointValidationError(Exception):
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
+
+
+def is_resource_not_found(e: ClientError) -> bool:
+    error_code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
+    return error_code.strip().lower() == "resourcenotfoundexception"
+
+
 def _handle_custom_exceptions(e):
     """Handle setting-related exceptions."""
     if isinstance(e, SettingNotFoundException):
@@ -156,7 +190,7 @@ def aws_service_exception_handler(entity: str):
                     help="Check your AWS credentials, permissions, and network connectivity. "
                     "If the problem persists, consult AWS documentation or contact support.",
                 ) from e
-            except ExtendedHTTPException:
+            except (ExtendedHTTPException, AgentcoreEndpointNotFoundError, AgentcoreEndpointValidationError):
                 raise
             except Exception as e:
                 logger.error(f"Unexpected error while loading {entity} for project {setting_id}: {e}")

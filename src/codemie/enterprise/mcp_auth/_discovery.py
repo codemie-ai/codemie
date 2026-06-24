@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -203,7 +204,11 @@ async def _resolve_discovered_candidate_payload(
                 enforce_https=deps._mcp_auth_service.config.enforce_https,
             ),
             dcr_timeout_seconds=deps._mcp_auth_service.config.dcr_registration_timeout_seconds,
-            allow_issuer_prefix_match=bool(candidate.get("allow_issuer_prefix_match")),
+            **(
+                {"allow_issuer_prefix_match": bool(candidate.get("allow_issuer_prefix_match"))}
+                if "allow_issuer_prefix_match" in inspect.signature(resolve_discovered_oauth2_flow).parameters
+                else {}
+            ),
         )
         deps._require_initialized_discovered_flow_store().store(resolution.snapshot)
     except MCPAuthRedisUnavailable as exc:

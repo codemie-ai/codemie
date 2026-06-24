@@ -123,6 +123,9 @@ components:
       name: "AI Champions Leaderboard"
       description: "Leaderboard analytics showing user AI proficiency scores, tier rankings, and dimension breakdowns"
       availableForExternal: false
+  - id: "vendorIntegrationAWS"
+    settings:
+      enabled: false
   - id: "features:webSearch"
     settings:
       enabled: true

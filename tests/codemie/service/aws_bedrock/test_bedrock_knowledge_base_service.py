@@ -15,6 +15,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.service.aws_bedrock.exceptions import EntityNotFound, EntityAccessDenied
 from codemie.rest_api.models.vendor import ImportKnowledgeBase
 from codemie.service.aws_bedrock.bedrock_knowledge_base_service import BedrockKnowledgeBaseService
 from codemie.rest_api.models.settings import AWSCredentials, Settings
@@ -1032,3 +1033,50 @@ def test_validate_remote_entity_exists_and_cleanup_unexpected_error_passes(
     BedrockKnowledgeBaseService.validate_remote_entity_exists_and_cleanup(mock_index)
 
     mock_index.delete.assert_not_called()
+
+
+@patch("codemie.service.aws_bedrock.bedrock_knowledge_base_service.Ability")
+@patch("codemie.service.aws_bedrock.bedrock_knowledge_base_service.IndexInfo.find_by_id")
+def test_unimport_entity_kb_deletes_entity(mock_find_by_id, mock_ability_class):
+    """Test unimport_entity deletes an IndexInfo entity."""
+    mock_entity = MagicMock()
+    mock_find_by_id.return_value = mock_entity
+
+    mock_ability = MagicMock()
+    mock_ability.can.return_value = True
+    mock_ability_class.return_value = mock_ability
+
+    user = MagicMock(spec=User)
+
+    BedrockKnowledgeBaseService.unimport_entity("entity-123", user)
+
+    mock_find_by_id.assert_called_once_with("entity-123")
+    mock_entity.delete.assert_called_once()
+
+
+@patch("codemie.service.aws_bedrock.bedrock_knowledge_base_service.IndexInfo.find_by_id")
+def test_unimport_entity_kb_raises_404_when_not_found(mock_find_by_id):
+    """Test unimport_entity raises 404 when entity does not exist."""
+    mock_find_by_id.return_value = None
+
+    user = MagicMock(spec=User)
+
+    with pytest.raises(EntityNotFound):
+        BedrockKnowledgeBaseService.unimport_entity("missing-id", user)
+
+
+@patch("codemie.service.aws_bedrock.bedrock_knowledge_base_service.Ability")
+@patch("codemie.service.aws_bedrock.bedrock_knowledge_base_service.IndexInfo.find_by_id")
+def test_unimport_entity_kb_raises_403_when_no_permission(mock_find_by_id, mock_ability_class):
+    """Test unimport_entity raises EntityAccessDenied when user lacks DELETE permission."""
+    mock_entity = MagicMock()
+    mock_find_by_id.return_value = mock_entity
+
+    mock_ability = MagicMock()
+    mock_ability.can.return_value = False
+    mock_ability_class.return_value = mock_ability
+
+    user = MagicMock(spec=User)
+
+    with pytest.raises(EntityAccessDenied):
+        BedrockKnowledgeBaseService.unimport_entity("entity-123", user)

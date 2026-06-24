@@ -44,6 +44,7 @@ CONFIGURATION_INVALID_EXCEPTIONS = [
     "IncompleteSignature",
     "AuthFailure",
     "Could not connect to the endpoint URL",
+    "ExpiredTokenException",
 ]
 
 

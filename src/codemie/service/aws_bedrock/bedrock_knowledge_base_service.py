@@ -17,6 +17,8 @@ from typing import List, Optional
 from botocore.exceptions import ClientError
 
 from codemie.configs import logger
+from codemie.core.ability import Ability, Action
+
 from codemie.core.models import CreatedByUser
 from codemie.rest_api.models.guardrail import GuardrailEntity
 from codemie.rest_api.models.index import IndexInfo, IndexInfoType
@@ -25,7 +27,13 @@ from codemie.rest_api.models.vendor import ImportKnowledgeBase
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.default_applications import ensure_application_exists
 from codemie.service.aws_bedrock.base_bedrock_service import ALL_SETTINGS_OVERVIEW_ENTITY_COUNT, BaseBedrockService
-from codemie.service.aws_bedrock.exceptions import aws_service_exception_handler
+from codemie.service.aws_bedrock.exceptions import (
+    EntityAccessDenied,
+    EntityDeletionError,
+    EntityNotFound,
+    aws_service_exception_handler,
+    is_resource_not_found,
+)
 from codemie.service.aws_bedrock.utils import (
     CONFIGURATION_INVALID_EXCEPTIONS,
     call_bedrock_listing_api,
@@ -321,6 +329,18 @@ class BedrockKnowledgeBaseService(BaseBedrockService):
             GuardrailService.remove_guardrail_assignments_for_entity(GuardrailEntity.KNOWLEDGEBASE, str(entity.id))
 
     @staticmethod
+    def unimport_entity(entity_id: str, user: User) -> None:
+        entity_model = IndexInfo.find_by_id(entity_id)
+        if not entity_model:
+            raise EntityNotFound("knowledge-base", entity_id)
+        if not Ability(user).can(Action.DELETE, entity_model):
+            raise EntityAccessDenied
+        try:
+            entity_model.delete()
+        except Exception as e:
+            raise EntityDeletionError("knowledge-base", str(e))
+
+    @staticmethod
     def validate_remote_entity_exists_and_cleanup(entity: IndexInfo):
         if not entity.bedrock or not entity.bedrock.bedrock_knowledge_base_id:
             return None  # not a bedrock entity
@@ -343,8 +363,7 @@ class BedrockKnowledgeBaseService(BaseBedrockService):
             return None
 
         except ClientError as e:
-            error_code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
-            if error_code.strip().lower() == "resourcenotfoundexception":
+            if is_resource_not_found(e):
                 entity.delete()
                 GuardrailService.remove_guardrail_assignments_for_entity(GuardrailEntity.KNOWLEDGEBASE, str(entity.id))
 
@@ -389,8 +408,7 @@ class BedrockKnowledgeBaseService(BaseBedrockService):
 
             return response
         except ClientError as e:
-            error_code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
-            if error_code.strip().lower() == "resourcenotfoundexception":
+            if is_resource_not_found(e):
                 logger.warning(f"Bedrock knowledge base not found on remote: {e}")
 
                 bedrock_index.delete()  # if the resource was deleted in the meantime, delete the local record
@@ -502,8 +520,7 @@ class BedrockKnowledgeBaseService(BaseBedrockService):
                 "aiRunId": created_entity_id,
             }
         except ClientError as e:
-            error_code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
-            if error_code.strip().lower() == "resourcenotfoundexception":
+            if is_resource_not_found(e):
                 return {
                     "knowledgeBaseId": knowledge_base_id,
                     "error": {

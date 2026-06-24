@@ -21,6 +21,7 @@ from codemie.rest_api.models.guardrail import Guardrail
 from codemie.rest_api.models.vendor import ImportGuardrail
 from codemie.core.models import CreatedByUser
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.service.aws_bedrock.exceptions import EntityNotFound, EntityAccessDenied
 
 
 @pytest.fixture
@@ -836,3 +837,57 @@ def test_validate_remote_entity_exists_and_cleanup_unexpected_error_passes(
     BedrockGuardrailService.validate_remote_entity_exists_and_cleanup(mock_guardrail)
 
     mock_guardrail.delete.assert_not_called()
+
+
+@patch(
+    "codemie.service.aws_bedrock.bedrock_guardrail_service.GuardrailService.remove_guardrail_assignments_for_guardrail"
+)
+@patch("codemie.service.aws_bedrock.bedrock_guardrail_service.Ability")
+@patch("codemie.service.aws_bedrock.bedrock_guardrail_service.Guardrail.find_by_id")
+def test_unimport_entity_guardrail_deletes_and_removes_assignments(
+    mock_find_by_id, mock_ability_class, mock_remove_assignments
+):
+    """Test unimport_entity deletes guardrail and removes its assignments."""
+    mock_entity = MagicMock()
+    mock_entity.id = "guardrail-id"
+    mock_find_by_id.return_value = mock_entity
+
+    mock_ability = MagicMock()
+    mock_ability.can.return_value = True
+    mock_ability_class.return_value = mock_ability
+
+    user = MagicMock(spec=User)
+
+    BedrockGuardrailService.unimport_entity("guardrail-id", user)
+
+    mock_find_by_id.assert_called_once_with("guardrail-id")
+    mock_entity.delete.assert_called_once()
+    mock_remove_assignments.assert_called_once_with("guardrail-id")
+
+
+@patch("codemie.service.aws_bedrock.bedrock_guardrail_service.Guardrail.find_by_id")
+def test_unimport_entity_guardrail_raises_404_when_not_found(mock_find_by_id):
+    """Test unimport_entity raises 404 when guardrail does not exist."""
+    mock_find_by_id.return_value = None
+
+    user = MagicMock(spec=User)
+
+    with pytest.raises(EntityNotFound):
+        BedrockGuardrailService.unimport_entity("missing-id", user)
+
+
+@patch("codemie.service.aws_bedrock.bedrock_guardrail_service.Ability")
+@patch("codemie.service.aws_bedrock.bedrock_guardrail_service.Guardrail.find_by_id")
+def test_unimport_entity_guardrail_raises_403_when_no_permission(mock_find_by_id, mock_ability_class):
+    """Test unimport_entity raises EntityAccessDenied when user lacks DELETE permission."""
+    mock_entity = MagicMock()
+    mock_find_by_id.return_value = mock_entity
+
+    mock_ability = MagicMock()
+    mock_ability.can.return_value = False
+    mock_ability_class.return_value = mock_ability
+
+    user = MagicMock(spec=User)
+
+    with pytest.raises(EntityAccessDenied):
+        BedrockGuardrailService.unimport_entity("guardrail-id", user)
