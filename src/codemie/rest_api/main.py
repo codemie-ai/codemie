@@ -345,6 +345,19 @@ def _initialize_optional_features():
         logger.info(f"Platform datasources synced successfully: {results}")
 
 
+def _check_sharepoint_pkce_redis() -> None:
+    """Warn at startup if SharePoint PKCE is enabled but Redis is unreachable."""
+    if not config.SHAREPOINT_PKCE_ENABLED:
+        return
+    try:
+        from codemie.clients.redis import create_redis_client
+
+        create_redis_client().ping()
+        logger.info("SharePoint PKCE: Redis connection verified")
+    except Exception as exc:
+        logger.warning(f"SharePoint PKCE: Redis unavailable at startup, PKCE flow will fail: {exc}")
+
+
 def _setup_conversation_analysis_scheduler(app: FastAPI):
     """Setup conversation analysis scheduler if enabled."""
     if not config.CONVERSATION_ANALYSIS_ENABLED:
@@ -615,6 +628,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize optional features
     _initialize_optional_features()
+    _check_sharepoint_pkce_redis()
 
     # Start background tasks
     tasks = []

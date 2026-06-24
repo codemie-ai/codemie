@@ -376,7 +376,9 @@ class Config(BaseSettings):
     A2A_PROVIDER_ORGANIZATION: str = ""
     A2A_PROVIDER_URL: str = ""
 
-    # SharePoint OAuth (delegated auth via Device Code Flow)
+    # SharePoint OAuth (delegated auth via Authorization Code + PKCE)
+    # Requires Redis. Disabled by default to avoid breaking OSS deployments without Redis.
+    SHAREPOINT_PKCE_ENABLED: bool = False
     SHAREPOINT_OAUTH_CLIENT_ID: str = ""
     SHAREPOINT_OAUTH_SCOPES: str = "Sites.Read.All Files.Read.All offline_access User.Read"
 
