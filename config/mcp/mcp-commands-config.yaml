@@ -1,0 +1,11 @@
+allowed_commands:
+  - npx
+  - uvx
+  - mcp-server-filesystem
+  - mcp-server-memory
+  - mcp-server-sequential-thinking
+  - mcp-server-postgres
+  - mcp-server-puppeteer
+  - mcp-mermaid
+  - github-mcp-server
+  - /codemie/additional-tools/github-mcp-server/github-mcp-server

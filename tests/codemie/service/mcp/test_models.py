@@ -21,6 +21,8 @@ import json
 import pytest
 from pydantic import ValidationError
 
+import codemie.service.mcp.models as _mcp_models
+from codemie.configs.mcp_commands_config import mcp_commands_config
 from codemie.service.mcp.models import (
     MCPServerConfig,
     MCPToolDefinition,
@@ -434,6 +436,16 @@ class TestMCPServerConfigValidator:
         )
         assert config2.url == "http://localhost:3000"
         assert config2.command is None
+
+
+class TestMCPCommandsWiring:
+    def test_allowed_commands_sourced_from_config_singleton(self):
+        """_ALLOWED_MCP_COMMANDS in models.py must be the same object as mcp_commands_config.allowed_commands."""
+        assert _mcp_models._ALLOWED_MCP_COMMANDS is mcp_commands_config.allowed_commands
+
+    def test_allowed_paths_sourced_from_config_singleton(self):
+        """_ALLOWED_MCP_PATHS in models.py must be the same object as mcp_commands_config.allowed_paths."""
+        assert _mcp_models._ALLOWED_MCP_PATHS is mcp_commands_config.allowed_paths
 
 
 class TestMCPToolDefinition:

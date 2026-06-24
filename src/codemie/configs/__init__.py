@@ -16,5 +16,6 @@ from codemie.configs.config import config, Config
 from codemie.configs.customer_config import customer_config
 from codemie.configs.logger import logger
 from codemie.configs.llm_config import llm_config
+from codemie.configs.mcp_commands_config import mcp_commands_config
 
-__all__ = ["config", "Config", "customer_config", "logger", "llm_config"]
+__all__ = ["config", "Config", "customer_config", "logger", "llm_config", "mcp_commands_config"]

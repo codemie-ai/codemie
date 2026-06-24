@@ -28,6 +28,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from codemie.configs.mcp_commands_config import mcp_commands_config
+
 
 class MCPExecutionContext(BaseModel):
     """
@@ -109,27 +111,8 @@ class MCPExecutionContext(BaseModel):
         )
 
 
-_ALLOWED_MCP_COMMANDS: frozenset[str] = frozenset(
-    {
-        # Package runners (user-configured)
-        "npx",
-        "uvx",
-        # Pre-installed MCP server binaries in the mcp-connect-service container
-        "mcp-server-filesystem",
-        "mcp-server-memory",
-        "mcp-server-sequential-thinking",
-        "mcp-server-postgres",
-        "mcp-server-puppeteer",
-        "mcp-mermaid",
-    }
-)
-
-# Pre-approved absolute-path binaries installed in the container image.
-_ALLOWED_MCP_PATHS: frozenset[str] = frozenset(
-    {
-        "/codemie/additional-tools/github-mcp-server/github-mcp-server",
-    }
-)
+_ALLOWED_MCP_COMMANDS: frozenset[str] = mcp_commands_config.allowed_commands
+_ALLOWED_MCP_PATHS: frozenset[str] = mcp_commands_config.allowed_paths
 
 
 class MCPServerConfig(BaseModel):
