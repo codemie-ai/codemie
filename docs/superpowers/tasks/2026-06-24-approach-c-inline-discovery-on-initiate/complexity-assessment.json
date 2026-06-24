@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "task": "Add inline-discovery safety net to POST /v1/mcp-auth/oauth2/initiate so a missing discovered-flow snapshot triggers an inline discovery probe (writing failing tests only — RED pass).",
+  "generated": "2026-06-24T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 16,
+  "size": "M",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Touches MCPToolkitService (new ensure_discovered_snapshot_for_server classmethod and _mcp_server_from_config builder), _initiate.py (by-binding and by-id heal paths), and optionally a new skip_auth_resolution mode in _process_single_mcp_server. MCPToolkitService is the central shared MCP service used across multiple workflows, triggering the core-shared-utilities red flag bump from M to L."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Two novel patterns with no current precedent in the auth-endpoint layer: (1) credential-less MCP connect requiring a new skip_auth_resolution mode in _process_single_mcp_server; (2) sync-initiated async discovery probe via _run_coroutine_sync from inside a sync FastAPI handler with subtle ThreadPoolExecutor behavior. OAuth2 initiate is a security-sensitive endpoint, triggering the auth/authorization red flag bump from M to L."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M (3) to L (4): MCPToolkitService is a core shared utility consumed across multiple workflows and agents",
+    "Technical Risk bumped from M (3) to L (4): task directly affects the OAuth2 authentication initiation endpoint (authentication/authorization red flag)"
+  ],
+  "split_recommendation": null
+}

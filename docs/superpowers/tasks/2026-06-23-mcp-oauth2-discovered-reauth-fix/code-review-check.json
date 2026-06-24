@@ -1,0 +1,81 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 is resolved: both new tests now capture the return value of resolver.resolve() and assert it is falsy. The fix-up diff is two identical 2-line hunks (result = resolver.resolve(...); assert not result), one per test. No new issues introduced.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Replace ReAuthenticationRequired raise with _invalidate_stale_discovered_credential + return False in _resolve_discovered_server",
+      "status": "pass",
+      "notes": "resolver.py lines 320-322: exact replacement present in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "_retrieve_token_data (line 202) configured-flow ReAuthenticationRequired handler unchanged",
+      "status": "pass",
+      "notes": "Diff does not touch line 202; only _resolve_discovered_server block changed"
+    },
+    {
+      "kind": "spec",
+      "item": "No other files change (no schema migrations, no new env vars, no API changes)",
+      "status": "pass",
+      "notes": "Diff touches only resolver.py and test_resolver.py"
+    },
+    {
+      "kind": "spec",
+      "item": "No _is_discovered_auth_config_id guard needed — method only reached for discovered servers by construction",
+      "status": "pass",
+      "notes": "No guard added; spec confirms none needed and diff confirms none present"
+    },
+    {
+      "kind": "spec",
+      "item": "Test: _invalidate_stale_discovered_credential is called when ReAuthenticationRequired raised",
+      "status": "pass",
+      "notes": "test_discovered_flow_invalid_grant_invalidates_credential_and_falls_through asserts invalidate_calls == [(user-1, discovered_auth_id)]"
+    },
+    {
+      "kind": "spec",
+      "item": "Test: resolve() does NOT raise MCPAuthenticationRequiredException (no SESSION_EXPIRED)",
+      "status": "pass",
+      "notes": "Both new tests call resolver.resolve() with no pytest.raises wrapper; any exception would fail the test"
+    },
+    {
+      "kind": "spec",
+      "item": "Test: resolve() returns a falsy value (falls through, allowing discovery to run)",
+      "status": "pass",
+      "notes": "Fix-up adds result = resolver.resolve(...) and assert not result to both tests — now fully verified"
+    },
+    {
+      "kind": "spec",
+      "item": "Regression guard: existing tests for configured-flow ReAuthenticationRequired (line 202 path) must continue passing",
+      "status": "na",
+      "notes": "Out of diff scope; verified by running the full test suite (47 passed)"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "Fix-up commit 'EPMCDME-13049: Add explicit return value assertion to discovered re-auth tests' matches EPMCDME-NNNNN: Capital description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "4 insertions / 2 deletions; pure test assertion additions, no new abstractions"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Test-only change; no security surface affected"
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Both test functions now capture return value with result = resolver.resolve(...) and assert falsy with assert not result"
+    }
+  ]
+}

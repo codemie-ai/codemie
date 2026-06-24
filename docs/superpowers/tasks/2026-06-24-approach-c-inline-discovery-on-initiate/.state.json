@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "slug": "approach-c-inline-discovery-on-initiate",
+  "flow": "sdlc-standard",
+  "branch": "EPMCDME-13049",
+  "phase": "maintenance",
+  "started_at": "2026-06-24T00:00:00Z",
+  "completed_at": "2026-06-24T00:00:00Z",
+  "last_sync_commit": "d409950dd"
+}

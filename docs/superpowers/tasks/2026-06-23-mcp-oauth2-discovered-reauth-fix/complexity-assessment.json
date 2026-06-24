@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "task": "Fix discovered OAuth2 MCP re-auth loop by treating invalid_grant ReAuthenticationRequired like TokenRefreshError in resolver.py (invalidate + return False), with optional Approach C safety net in _initiate.py to run discovery when no snapshot exists.",
+  "generated": "2026-06-23T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 13,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Approach A is a single method change in MCPAuthResolver._resolve_discovered_server (resolver.py, codemie-enterprise); Approach C adds one endpoint handler change in build_discovered_oauth2_initiate_response (_initiate.py, codemie). Two repos, two components, but both changes are narrow and self-contained within the MCP auth subsystem."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "The fix is in OAuth2 authentication logic — a security-sensitive area. The change mirrors the existing TokenRefreshError handler verbatim (same helper, same return value), so implementation risk is low. One subtle risk: invalidate_if_stale semantics for an invalid_grant token must be confirmed as a hard permanent invalidation, not a transient-stale check. Auth red flag applied: bumped from S (2) to M (3)."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: change affects OAuth2 authentication/authorization logic (auth red flag)"
+  ],
+  "split_recommendation": null
+}

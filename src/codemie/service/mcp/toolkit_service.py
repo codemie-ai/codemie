@@ -565,6 +565,60 @@ class MCPToolkitService:
             "allow_issuer_prefix_match": server_config.allow_issuer_prefix_match,
         }
 
+    @staticmethod
+    def _mcp_server_from_config(mcp_config: Any) -> MCPServerDetails:
+        from codemie.rest_api.models.assistant import MCPServerDetails
+        from codemie.service.mcp.models import MCPServerConfig
+
+        return MCPServerDetails(
+            name=mcp_config.name,
+            mcp_config_id=mcp_config.id,
+            config=MCPServerConfig(**mcp_config.config.model_dump()),
+        )
+
+    @classmethod
+    def ensure_discovered_snapshot_for_server(
+        cls,
+        *,
+        mcp_config: Any,
+        user_id: str,
+        session_binding_hash: str,
+    ) -> str | None:
+        mcp_server = cls._mcp_server_from_config(mcp_config)
+        try:
+            _default = cls.get_instance()
+        except RuntimeError:
+            _default = None  # type: ignore[assignment]
+            logger.warning(
+                "ensure_discovered_snapshot_for_server: toolkit service singleton not initialized; "
+                "heal skipped for mcp_config_id=%s",
+                getattr(mcp_config, "id", "unknown"),
+            )
+        try:
+            cls._process_single_mcp_server(
+                mcp_server=mcp_server,
+                default_toolkit_service=_default,
+                user_id=None,
+                skip_auth_resolution=True,
+            )
+            return None
+        except MCPToolLoadException as exc:
+            candidate = cls._build_discovery_candidate_from_challenge(mcp_server, exc)
+            if candidate is None:
+                return None
+        except (MCPAuthenticationRequiredException, BrokerAuthRequiredException):
+            return None
+
+        auth_failures, _ = cls._run_discovery_probe_and_collect_failures(
+            discovery_candidates=[candidate],
+            user_id=user_id,
+            session_binding_hash=session_binding_hash,
+            workflow_execution_id=None,
+        )
+        if not auth_failures:
+            return None
+        return auth_failures[0].get("discovered_flow_id")
+
     @classmethod
     def _build_discovery_warning_payloads(
         cls,
@@ -685,6 +739,8 @@ class MCPToolkitService:
         mcp_server_args_preprocessor: callable | None = None,
         mcp_server_single_usage: bool | None = False,
         execution_context: MCPExecutionContext | None = None,
+        *,
+        skip_auth_resolution: bool = False,
     ) -> list[MCPTool]:
         """
         Process a single MCP server to extract its tools.
@@ -722,6 +778,7 @@ class MCPToolkitService:
                 mcp_server_args_preprocessor=mcp_server_args_preprocessor,
                 mcp_server_single_usage=mcp_server_single_usage,
                 execution_context=execution_context,
+                skip_auth_resolution=skip_auth_resolution,
             )
             if server_config is None:
                 return []
@@ -832,6 +889,8 @@ class MCPToolkitService:
         mcp_server_args_preprocessor: callable | None = None,
         mcp_server_single_usage: bool | None = False,
         execution_context: MCPExecutionContext | None = None,
+        *,
+        skip_auth_resolution: bool = False,
     ) -> MCPServerConfig | None:
         """
         Prepare the complete server configuration for an MCP server.
@@ -866,7 +925,7 @@ class MCPToolkitService:
         cls._apply_server_tools_config(server_config, mcp_server, tools_config, user_id)
         cls._process_server_args(server_config, mcp_server_args_preprocessor)
         cls._process_server_url_and_command(server_config, mcp_server_args_preprocessor)
-        cls._resolve_server_auth(server_config, user_id, execution_context)
+        cls._resolve_server_auth(server_config, user_id, execution_context, skip_auth_resolution=skip_auth_resolution)
 
         return server_config
 
@@ -876,8 +935,12 @@ class MCPToolkitService:
         server_config: MCPServerConfig,
         user_id: str | None,
         execution_context: MCPExecutionContext | None = None,
+        *,
+        skip_auth_resolution: bool = False,
     ) -> None:
         """Run registered enterprise resolvers first, then the inline LegacyTokenResolver fallback."""
+        if skip_auth_resolution:
+            return
         if server_config.auth_config is not None:
             cls._strip_legacy_token_placeholder_headers(server_config)
             if not server_config.auth_config:

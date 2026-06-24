@@ -754,3 +754,382 @@ def test_derive_resource_uri_rejects_invalid_or_tainted_url_without_echo(server_
     assert "token" not in rendered
     assert "frag" not in rendered
     assert "user:" not in rendered
+
+
+# ── Approach C: inline discovery heal path ────────────────────────────────────
+
+
+def _build_discovered_mcp_config(
+    *,
+    owner_id: str = "user-1",
+    is_public: bool = False,
+    url: str = "https://mcp.example.com/",
+    allow_issuer_prefix_match: bool = False,
+) -> object:
+    """MCPConfig with auth_config=None — a discovered OAuth2 server."""
+    return SimpleNamespace(
+        id="mcp-config-disc-1",
+        name="discovered-server",
+        user_id=owner_id,
+        is_public=is_public,
+        config=SimpleNamespace(
+            url=url,
+            auth_config=None,
+            allow_issuer_prefix_match=allow_issuer_prefix_match,
+        ),
+    )
+
+
+def _build_discovered_snapshot(
+    *,
+    discovered_flow_id: str = "flow-healed-1",
+    mcp_config_id: str = "mcp-config-disc-1",
+    user_id: str = "user-1",
+) -> object:
+    return SimpleNamespace(
+        discovered_flow_id=discovered_flow_id,
+        discovered_auth_id="auth-id-healed",
+        mcp_config_id=mcp_config_id,
+        user_id=user_id,
+        session_binding_hash="binding-hash-token123",
+        status="authentication_required",
+        flow_config=SimpleNamespace(
+            auth_type="oauth2",
+            authorization_url="https://idp.example.com/oauth2/authorize",
+            token_url="https://idp.example.com/oauth2/token",
+            client_id="client-healed",
+            client_type="public",
+            scopes=["openid"],
+            token_delivery={"method": "header"},
+        ),
+        canonical_resource="https://mcp.example.com/",
+        as_hostname="idp.example.com",
+        redirect_uri="https://api.example.com/v1/mcp-auth/oauth2/callback",
+    )
+
+
+def _stub_enterprise_for_heal(monkeypatch, *, snapshot: object, auth_url: str) -> None:
+    """Patch all deps needed for build_discovered_oauth2_initiate_response to complete."""
+    import sys
+    from codemie.enterprise.mcp_auth import dependencies as deps
+
+    monkeypatch.setattr(
+        deps,
+        "_mcp_auth_discovered_flow_store",
+        SimpleNamespace(
+            get=lambda flow_id: snapshot if flow_id == getattr(snapshot, "discovered_flow_id", None) else None,
+            get_for_binding=lambda user_id, binding, cfg_id: snapshot,
+        ),
+    )
+    monkeypatch.setattr(deps, "_pkce_store", SimpleNamespace(store=lambda state, pkce: None))
+    monkeypatch.setattr(deps, "_redis_encryption", SimpleNamespace(signing_key=b"s" * 32))
+    monkeypatch.setattr(deps, "_validate_discovered_snapshot_context", lambda *a, **kw: None)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "codemie_enterprise.mcp_auth",
+        SimpleNamespace(
+            build_oauth2_initiate_response=lambda **kw: SimpleNamespace(
+                auth_url=auth_url,
+                redirect_uri_hostname="api.example.com",
+                localhost_warning=False,
+                model_dump=lambda: {
+                    "auth_url": auth_url,
+                    "redirect_uri_hostname": "api.example.com",
+                    "localhost_warning": False,
+                },
+            ),
+            MCPAuthRedisUnavailable=Exception,
+        ),
+    )
+
+
+def test_initiate_heals_binding_miss_via_inline_discovery(monkeypatch, app_client) -> None:
+    """By-binding miss: store returns None → ensure_... heals → re-read by binding → 200."""
+    import sys
+    from codemie.enterprise.mcp_auth import router as mcp_auth_router
+    from codemie.enterprise.mcp_auth import dependencies as deps
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    app, client = app_client
+    user = _build_user()
+    mcp_config = _build_discovered_mcp_config()
+    snapshot = _build_discovered_snapshot()
+    auth_url = "https://idp.example.com/oauth2/authorize?state=healed"
+
+    # Store: first get_for_binding returns None (miss), second returns snapshot (after heal)
+    get_for_binding_calls: list[int] = [0]
+
+    class _HealableStore:
+        def get(self, flow_id: str) -> object | None:
+            return None
+
+        def get_for_binding(self, user_id: str, session_binding_hash: str, mcp_config_id: str) -> object | None:
+            get_for_binding_calls[0] += 1
+            return None if get_for_binding_calls[0] == 1 else snapshot
+
+    monkeypatch.setattr(deps, "_mcp_auth_discovered_flow_store", _HealableStore())
+    monkeypatch.setattr(deps, "_pkce_store", SimpleNamespace(store=lambda state, pkce: None))
+    monkeypatch.setattr(deps, "_redis_encryption", SimpleNamespace(signing_key=b"s" * 32))
+    monkeypatch.setattr(deps, "_validate_discovered_snapshot_context", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        MCPToolkitService,
+        "ensure_discovered_snapshot_for_server",
+        classmethod(lambda cls, **kw: "flow-healed-1"),
+        raising=False,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "codemie_enterprise.mcp_auth",
+        SimpleNamespace(
+            build_oauth2_initiate_response=lambda **kw: SimpleNamespace(
+                auth_url=auth_url,
+                redirect_uri_hostname="api.example.com",
+                localhost_warning=False,
+                model_dump=lambda: {
+                    "auth_url": auth_url,
+                    "redirect_uri_hostname": "api.example.com",
+                    "localhost_warning": False,
+                },
+            ),
+            MCPAuthRedisUnavailable=Exception,
+        ),
+    )
+
+    app.dependency_overrides[router_authenticate] = lambda: user
+    monkeypatch.setattr(mcp_auth_router.MCPConfig, "find_by_id", lambda config_id: mcp_config)
+
+    # Without heal wiring in build_discovered_oauth2_initiate_response → 400 → RED
+    response = client.post("/v1/mcp-auth/oauth2/initiate", json={"mcp_config_id": mcp_config.id})
+
+    assert response.status_code == 200, f"Expected 200 after heal, got {response.status_code}: {response.text}"
+    assert response.json()["auth_url"] == auth_url
+    assert get_for_binding_calls[0] == 2, "store.get_for_binding must be called twice: probe then re-read"
+
+
+def test_initiate_heals_by_id_expired_via_inline_discovery(monkeypatch, app_client) -> None:
+    """By-id-expired: store.get(flow_id) returns None → heal → re-read by binding → 200.
+    Re-read must use binding (new snapshot stored by binding, not under stale id)."""
+    import sys
+    from codemie.enterprise.mcp_auth import router as mcp_auth_router
+    from codemie.enterprise.mcp_auth import dependencies as deps
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    app, client = app_client
+    user = _build_user()
+    mcp_config = _build_discovered_mcp_config()
+    snapshot = _build_discovered_snapshot(discovered_flow_id="new-flow-after-heal")
+    auth_url = "https://idp.example.com/oauth2/authorize?state=healed-id"
+
+    class _ExpiredIdStore:
+        def get(self, flow_id: str) -> object | None:
+            return None  # stale id — expired from Redis
+
+        def get_for_binding(self, user_id: str, session_binding_hash: str, mcp_config_id: str) -> object | None:
+            return snapshot  # heal stored it by binding
+
+    monkeypatch.setattr(deps, "_mcp_auth_discovered_flow_store", _ExpiredIdStore())
+    monkeypatch.setattr(deps, "_pkce_store", SimpleNamespace(store=lambda state, pkce: None))
+    monkeypatch.setattr(deps, "_redis_encryption", SimpleNamespace(signing_key=b"s" * 32))
+    monkeypatch.setattr(deps, "_validate_discovered_snapshot_context", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        MCPToolkitService,
+        "ensure_discovered_snapshot_for_server",
+        classmethod(lambda cls, **kw: "new-flow-after-heal"),
+        raising=False,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "codemie_enterprise.mcp_auth",
+        SimpleNamespace(
+            build_oauth2_initiate_response=lambda **kw: SimpleNamespace(
+                auth_url=auth_url,
+                redirect_uri_hostname="api.example.com",
+                localhost_warning=False,
+                model_dump=lambda: {
+                    "auth_url": auth_url,
+                    "redirect_uri_hostname": "api.example.com",
+                    "localhost_warning": False,
+                },
+            ),
+            MCPAuthRedisUnavailable=Exception,
+        ),
+    )
+
+    app.dependency_overrides[router_authenticate] = lambda: user
+    monkeypatch.setattr(mcp_auth_router.MCPConfig, "find_by_id", lambda config_id: mcp_config)
+
+    # With stale discovered_flow_id: without heal wiring → 400 → RED
+    response = client.post(
+        "/v1/mcp-auth/oauth2/initiate",
+        json={"mcp_config_id": mcp_config.id, "discovered_flow_id": "stale-flow-id"},
+    )
+
+    assert (
+        response.status_code == 200
+    ), f"Expected 200 after heal of expired id, got {response.status_code}: {response.text}"
+    assert response.json()["auth_url"] == auth_url
+
+
+def test_initiate_returns_400_not_500_when_discovery_fails(monkeypatch, app_client) -> None:
+    """If ensure_... returns None (discovery failed), the original 400 is raised — never a 500."""
+    from codemie.enterprise.mcp_auth import router as mcp_auth_router
+    from codemie.enterprise.mcp_auth import dependencies as deps
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    app, client = app_client
+    user = _build_user()
+    mcp_config = _build_discovered_mcp_config()
+
+    class _MissStore:
+        def get(self, flow_id: str) -> object | None:
+            return None
+
+        def get_for_binding(self, user_id: str, session_binding_hash: str, mcp_config_id: str) -> object | None:
+            return None
+
+    monkeypatch.setattr(deps, "_mcp_auth_discovered_flow_store", _MissStore())
+    monkeypatch.setattr(
+        MCPToolkitService, "ensure_discovered_snapshot_for_server", classmethod(lambda cls, **kw: None), raising=False
+    )
+
+    app.dependency_overrides[router_authenticate] = lambda: user
+    monkeypatch.setattr(mcp_auth_router.MCPConfig, "find_by_id", lambda config_id: mcp_config)
+
+    response = client.post("/v1/mcp-auth/oauth2/initiate", json={"mcp_config_id": mcp_config.id})
+
+    assert response.status_code == 400, f"Discovery failure must return 400, got {response.status_code}"
+    assert response.status_code != 500, "Discovery failure must never surface as 500"
+
+
+def test_initiate_valid_snapshot_does_not_trigger_heal(monkeypatch, app_client) -> None:
+    """If the snapshot exists already, ensure_... must NOT be called (no unnecessary probe)."""
+    import sys
+    from codemie.enterprise.mcp_auth import router as mcp_auth_router
+    from codemie.enterprise.mcp_auth import dependencies as deps
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    app, client = app_client
+    user = _build_user()
+    mcp_config = _build_discovered_mcp_config()
+    snapshot = _build_discovered_snapshot()
+    auth_url = "https://idp.example.com/oauth2/authorize?state=existing"
+
+    monkeypatch.setattr(
+        deps,
+        "_mcp_auth_discovered_flow_store",
+        SimpleNamespace(
+            get=lambda flow_id: snapshot,
+            get_for_binding=lambda user_id, binding, cfg_id: snapshot,
+        ),
+    )
+    monkeypatch.setattr(deps, "_pkce_store", SimpleNamespace(store=lambda state, pkce: None))
+    monkeypatch.setattr(deps, "_redis_encryption", SimpleNamespace(signing_key=b"s" * 32))
+    monkeypatch.setattr(deps, "_validate_discovered_snapshot_context", lambda *a, **kw: None)
+
+    ensure_calls: list[int] = [0]
+    monkeypatch.setattr(
+        MCPToolkitService,
+        "ensure_discovered_snapshot_for_server",
+        classmethod(lambda cls, **kw: ensure_calls.__setitem__(0, ensure_calls[0] + 1) or "flow"),
+        raising=False,
+    )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "codemie_enterprise.mcp_auth",
+        SimpleNamespace(
+            build_oauth2_initiate_response=lambda **kw: SimpleNamespace(
+                auth_url=auth_url,
+                redirect_uri_hostname="api.example.com",
+                localhost_warning=False,
+                model_dump=lambda: {
+                    "auth_url": auth_url,
+                    "redirect_uri_hostname": "api.example.com",
+                    "localhost_warning": False,
+                },
+            ),
+            MCPAuthRedisUnavailable=Exception,
+        ),
+    )
+
+    app.dependency_overrides[router_authenticate] = lambda: user
+    monkeypatch.setattr(mcp_auth_router.MCPConfig, "find_by_id", lambda config_id: mcp_config)
+
+    response = client.post("/v1/mcp-auth/oauth2/initiate", json={"mcp_config_id": mcp_config.id})
+
+    assert ensure_calls[0] == 0, "ensure_... must NOT be called when a valid snapshot already exists"
+    assert response.status_code == 200
+
+
+def test_initiate_auth_rejection_precedes_discovery(monkeypatch, app_client) -> None:
+    """_check_mcp_config_access raises 403 before ensure_... is ever called."""
+    from codemie.enterprise.mcp_auth import router as mcp_auth_router
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    app, client = app_client
+    # other-user does not own the config and it is not public
+    other_user = _build_user(id="other-user", auth_token="Bearer other-token")
+    mcp_config = _build_discovered_mcp_config(owner_id="owner-user")
+
+    ensure_calls: list[int] = [0]
+    monkeypatch.setattr(
+        MCPToolkitService,
+        "ensure_discovered_snapshot_for_server",
+        classmethod(lambda cls, **kw: ensure_calls.__setitem__(0, ensure_calls[0] + 1) or "flow"),
+        raising=False,
+    )
+
+    app.dependency_overrides[router_authenticate] = lambda: other_user
+    monkeypatch.setattr(mcp_auth_router.MCPConfig, "find_by_id", lambda config_id: mcp_config)
+
+    response = client.post("/v1/mcp-auth/oauth2/initiate", json={"mcp_config_id": mcp_config.id})
+
+    assert response.status_code == 403, "Non-owner must be rejected before any discovery attempt"
+    assert ensure_calls[0] == 0, "ensure_... must never run after a 403 access rejection"
+
+
+def test_initiate_redis_outage_on_probe_propagates_as_503(monkeypatch, app_client) -> None:
+    """Redis outage on the non-raising probe must NOT silently trigger heal — it must propagate as 503."""
+    from codemie.enterprise.mcp_auth import router as mcp_auth_router
+    from codemie.enterprise.mcp_auth import dependencies as deps
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    app, client = app_client
+    user = _build_user()
+    mcp_config = _build_discovered_mcp_config()
+
+    class _RedisDownStore:
+        def get(self, flow_id: str) -> object | None:
+            raise ExtendedHTTPException(
+                code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                message="MCP auth temporarily unavailable",
+                details="Redis is down",
+                help="Try again later.",
+            )
+
+        def get_for_binding(self, user_id: str, session_binding_hash: str, mcp_config_id: str) -> object | None:
+            raise ExtendedHTTPException(
+                code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                message="MCP auth temporarily unavailable",
+                details="Redis is down",
+                help="Try again later.",
+            )
+
+    monkeypatch.setattr(deps, "_mcp_auth_discovered_flow_store", _RedisDownStore())
+
+    ensure_calls: list[int] = [0]
+    monkeypatch.setattr(
+        MCPToolkitService,
+        "ensure_discovered_snapshot_for_server",
+        classmethod(lambda cls, **kw: ensure_calls.__setitem__(0, ensure_calls[0] + 1) or "flow"),
+        raising=False,
+    )
+
+    app.dependency_overrides[router_authenticate] = lambda: user
+    monkeypatch.setattr(mcp_auth_router.MCPConfig, "find_by_id", lambda config_id: mcp_config)
+
+    response = client.post("/v1/mcp-auth/oauth2/initiate", json={"mcp_config_id": mcp_config.id})
+
+    assert response.status_code == 503, f"Redis outage must propagate as 503, got {response.status_code}"
+    assert ensure_calls[0] == 0, "ensure_... must NOT run on infra error — only on genuine snapshot absence"

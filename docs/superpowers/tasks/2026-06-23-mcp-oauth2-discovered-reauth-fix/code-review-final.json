@@ -1,0 +1,85 @@
+{
+  "decision": "request-changes",
+  "rationale": "All three lenses ran clean; the implementation is correct. One blocking finding (CR-001): the two new tests do not explicitly capture or assert the return value of resolver.resolve(), leaving spec criterion 3 (resolve() returns a falsy value) partially verified — behavior is correct but the explicit assertion is absent. Fix is trivial: add `result = resolver.resolve(...)` and `assert not result` to both new tests. Five blind-lens observations were dismissed as intentional design (fall-through is the fix), existing tested behaviour, or a prompt-transcription artifact (actual code has resolver.resolve, not resolver.solve). Standards and security clean.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Replace ReAuthenticationRequired raise with _invalidate_stale_discovered_credential + return False in _resolve_discovered_server",
+      "status": "pass",
+      "notes": "resolver.py lines 320-322: exact replacement present in diff"
+    },
+    {
+      "kind": "spec",
+      "item": "_retrieve_token_data (line 202) configured-flow ReAuthenticationRequired handler unchanged",
+      "status": "pass",
+      "notes": "Diff does not touch line 202; only _resolve_discovered_server block changed"
+    },
+    {
+      "kind": "spec",
+      "item": "No other files change (no schema migrations, no new env vars, no API changes)",
+      "status": "pass",
+      "notes": "Diff touches only resolver.py and test_resolver.py"
+    },
+    {
+      "kind": "spec",
+      "item": "No _is_discovered_auth_config_id guard needed — method only reached for discovered servers by construction",
+      "status": "pass",
+      "notes": "No guard added; spec confirms none needed and diff confirms none present"
+    },
+    {
+      "kind": "spec",
+      "item": "Test: _invalidate_stale_discovered_credential is called when ReAuthenticationRequired raised",
+      "status": "pass",
+      "notes": "test_discovered_flow_invalid_grant_invalidates_credential_and_falls_through asserts invalidate_calls == [(user-1, discovered_auth_id)]"
+    },
+    {
+      "kind": "spec",
+      "item": "Test: resolve() does NOT raise MCPAuthenticationRequiredException (no SESSION_EXPIRED)",
+      "status": "pass",
+      "notes": "Both new tests call resolver.resolve() with no pytest.raises wrapper; any exception would fail the test"
+    },
+    {
+      "kind": "spec",
+      "item": "Test: resolve() returns a falsy value (falls through, allowing discovery to run)",
+      "status": "partial",
+      "notes": "Neither new test captures or asserts the return value of resolver.resolve(); fall-through is verified only through side-effects (auth_headers == {}, no exception)"
+    },
+    {
+      "kind": "spec",
+      "item": "Regression guard: existing tests for configured-flow ReAuthenticationRequired (line 202 path) must continue passing",
+      "status": "na",
+      "notes": "Out of diff scope; verified by running the full test suite (47 passed)"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "Commit 'EPMCDME-13049: Fix discovered OAuth2 MCP re-auth loop on invalid_grant' matches EPMCDME-NNNNN: Capital description format"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "3 insertions / 6 deletions; mirrors existing TokenRefreshError pattern exactly; no new abstractions or complexity"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "return False triggers discovery probe which enforces re-authentication; no bypass created; invalidate_if_stale removes the dead credential"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/mcp_auth/test_resolver.py",
+      "title": "resolve() return value not asserted in new tests",
+      "problem": "Neither test_discovered_flow_invalid_grant_invalidates_credential_and_falls_through nor test_discovered_flow_invalid_grant_falls_through_even_if_invalidate_raises captures or asserts the return value of resolver.resolve(), leaving spec criterion 3 only partially verified.",
+      "impact": "A future change that alters the return value while preserving side-effects would not be caught; the spec explicitly requires this assertion.",
+      "recommendation": "In both new tests, replace `resolver.resolve(server_config, \"user-1\", execution_context)` with `result = resolver.resolve(server_config, \"user-1\", execution_context)` and add `assert not result` (or `assert result is False`) on the next line."
+    }
+  ]
+}

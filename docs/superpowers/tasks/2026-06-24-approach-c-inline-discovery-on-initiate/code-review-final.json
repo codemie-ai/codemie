@@ -1,0 +1,40 @@
+{
+  "gate_id": "code-review.final",
+  "decision": "request-changes",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"criterion": "Heal at call site only (shared loaders untouched)", "status": "pass"},
+    {"criterion": "Both entry points covered: by-binding miss + by-id-expired", "status": "pass"},
+    {"criterion": "Re-read by binding after heal (collapses both paths)", "status": "pass"},
+    {"criterion": "skip_auth_resolution bypasses enterprise loop AND legacy fallback", "status": "pass"},
+    {"criterion": "user_id=None for connect; real user_id for probe (load-bearing asymmetry)", "status": "pass"},
+    {"criterion": "Lazy import of MCPToolkitService (avoids import cycle)", "status": "pass"},
+    {"criterion": "Fallback: original raising loaders unchanged — same 400 on total miss", "status": "pass"},
+    {"criterion": "Infra errors propagate as-is (not converted to 400)", "status": "pass"},
+    {"criterion": "SSRF: all discovery via run_mcp_auth_parallel_discovery_probe", "status": "pass"},
+    {"criterion": "_check_mcp_config_access runs before any discovery", "status": "pass"},
+    {"criterion": "ensure_... returns None on all failure paths", "status": "pass"},
+    {"criterion": "allow_issuer_prefix_match survives model_dump() round-trip", "status": "pass"},
+    {"criterion": "No codemie-enterprise changes", "status": "pass"}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow: commit format", "status": "pass", "notes": "All commits follow EPMCDME-13049: Capital description format"},
+    {"standard": "code-quality: type hints", "status": "pass", "notes": "All new public methods have explicit parameter and return types"},
+    {"standard": "code-quality: license headers", "status": "na", "notes": "No new source files created; modified files already carry Apache 2.0 headers"},
+    {"standard": "security: no secrets in logs", "status": "pass", "notes": "No new log statements; no credentials or tokens logged"},
+    {"standard": "security: SSRF controls", "status": "pass", "notes": "Discovery goes through run_mcp_auth_parallel_discovery_probe with allowed_private_networks and enforce_https"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "location": "src/codemie/service/mcp/toolkit_service.py — ensure_discovered_snapshot_for_server",
+      "problem": "When cls.get_instance() raises RuntimeError (singleton uninitialized), _default = None is silently passed as default_toolkit_service. This propagates as AttributeError wrapped in MCPToolLoadException, which _build_discovery_candidate_from_challenge receives and returns None for (cause is not httpx.HTTPStatusError), causing ensure_... to silently return None with no log entry. The # type: ignore[assignment] comment labels this path as test-only, but there is no production guard preventing it.",
+      "impact": "If the singleton is ever uninitialized during a production request (startup race, misconfiguration), the heal silently skips and the user gets a 400 with no operator-visible trace. The silent failure makes production diagnosis impossible.",
+      "recommendation": "Add logger.warning before the inner try block when _default is None. Preserves correct fallback behavior (400 per spec) while making the silent skip observable in production logs."
+    }
+  ],
+  "rationale": "13/13 spec acceptance criteria satisfied. All three lenses completed (blind, edge-case, acceptance). One major patch finding: silent RuntimeError swallow in ensure_discovered_snapshot_for_server lacks a log warning. Three findings deferred: TOCTOU re-read race on total miss (acceptable per spec same-400 guarantee), uncaught coroutine in _run_discovery_probe_and_collect_failures (pre-existing, not introduced here), config_error auth_failure silent fallthrough (correct 400 behavior). Four dismissed: intentional infra error propagation, user_id=None credential-less connect by design, upstream guards on _mcp_server_from_config, incorrect blind finding about conditional re-fetch."
+}

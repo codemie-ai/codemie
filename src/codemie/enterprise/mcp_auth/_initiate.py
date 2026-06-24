@@ -117,15 +117,38 @@ def build_discovered_oauth2_initiate_response(
         )
 
     session_binding_hash = _get_authenticated_bearer_token_hash(user)
-    snapshot = (
-        _deps._load_discovered_flow_snapshot_or_error(discovered_flow_id)
+
+    # Non-raising probe — only genuine None triggers heal; infra exceptions propagate unchanged
+    _store = _deps._require_initialized_discovered_flow_store()
+    _probe = (
+        _store.get(discovered_flow_id)
         if discovered_flow_id
-        else _load_discovered_flow_snapshot_for_binding_or_error(
+        else _store.get_for_binding(user.id, session_binding_hash, mcp_config.id)
+    )
+
+    # Heal on genuine absence
+    if _probe is None:
+        from codemie.service.mcp.toolkit_service import MCPToolkitService  # lazy — avoids import cycle
+
+        _new_flow_id = MCPToolkitService.ensure_discovered_snapshot_for_server(
+            mcp_config=mcp_config,
+            user_id=user.id,
+            session_binding_hash=session_binding_hash,
+        )
+        if _new_flow_id is not None:
+            _probe = _store.get_for_binding(user.id, session_binding_hash, mcp_config.id)
+
+    # Fall back to original raising loaders — same 400 as today on total miss
+    if _probe is not None:
+        snapshot = _probe
+    elif discovered_flow_id:
+        snapshot = _deps._load_discovered_flow_snapshot_or_error(discovered_flow_id)
+    else:
+        snapshot = _load_discovered_flow_snapshot_for_binding_or_error(
             user_id=user.id,
             session_binding_hash=session_binding_hash,
             mcp_config_id=mcp_config.id,
         )
-    )
     _deps._validate_discovered_snapshot_context(
         snapshot,
         user_id=user.id,

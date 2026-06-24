@@ -1,0 +1,37 @@
+{
+  "gate_id": "code-review.check",
+  "decision": "approve",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"criterion": "Heal at call site only (shared loaders untouched)", "status": "pass"},
+    {"criterion": "Both entry points covered: by-binding miss + by-id-expired", "status": "pass"},
+    {"criterion": "Re-read by binding after heal (collapses both paths)", "status": "pass"},
+    {"criterion": "skip_auth_resolution bypasses enterprise loop AND legacy fallback", "status": "pass"},
+    {"criterion": "user_id=None for connect; real user_id for probe (load-bearing asymmetry)", "status": "pass"},
+    {"criterion": "Lazy import of MCPToolkitService (avoids import cycle)", "status": "pass"},
+    {"criterion": "Fallback: original raising loaders unchanged — same 400 on total miss", "status": "pass"},
+    {"criterion": "Infra errors propagate as-is (not converted to 400)", "status": "pass"},
+    {"criterion": "SSRF: all discovery via run_mcp_auth_parallel_discovery_probe", "status": "pass"},
+    {"criterion": "_check_mcp_config_access runs before any discovery", "status": "pass"},
+    {"criterion": "ensure_... returns None on all failure paths", "status": "pass"},
+    {"criterion": "allow_issuer_prefix_match survives model_dump() round-trip", "status": "pass"},
+    {"criterion": "No codemie-enterprise changes", "status": "pass"}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow: commit format", "status": "pass", "notes": "All commits follow EPMCDME-13049: format"},
+    {"standard": "code-quality: type hints", "status": "pass", "notes": "No new untyped code"},
+    {"standard": "code-quality: license headers", "status": "na", "notes": "No new source files"},
+    {"standard": "security: no secrets in logs", "status": "pass", "notes": "logger.warning uses getattr with safe fallback; no credentials logged"},
+    {"standard": "security: SSRF controls", "status": "pass", "notes": "No change to discovery path"}
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "logger.warning added before inner try block; uses getattr(mcp_config, 'id', 'unknown') — safe, no injection risk. Fix-up diff introduces no new high-risk surface."
+    }
+  ],
+  "rationale": "CR-001 resolved: logger.warning now emitted when singleton is uninitialized so operators can diagnose a skipped heal. Fix-up diff is a single logging addition with no logic or security impact. No new findings."
+}

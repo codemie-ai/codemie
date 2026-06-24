@@ -2269,3 +2269,335 @@ def test_build_discovery_candidate_defaults_allow_issuer_prefix_match_false() ->
 
     assert candidate is not None
     assert candidate["allow_issuer_prefix_match"] is False
+
+
+# ── Approach C: skip_auth_resolution flag ────────────────────────────────────
+
+
+class _CallTrackingResolver:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def can_handle(self, server_config: object) -> bool:
+        self.calls.append("can_handle")
+        return True
+
+    def resolve(self, server_config: object, user_id: object, execution_context: object) -> bool:
+        self.calls.append("resolve")
+        return True
+
+
+def test_resolve_server_auth_skip_bypasses_enterprise_loop_and_legacy_fallback(monkeypatch) -> None:
+    from codemie.service.mcp.models import MCPServerConfig
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    server_config = MCPServerConfig(url="https://mcp.example.com/")
+    tracker = _CallTrackingResolver()
+    legacy_calls: list[str] = []
+
+    monkeypatch.setattr(MCPToolkitService, "_auth_resolvers", [tracker])
+    monkeypatch.setattr(
+        MCPToolkitService._legacy_token_resolver, "can_handle", lambda _: legacy_calls.append("can_handle") or True
+    )
+    monkeypatch.setattr(MCPToolkitService._legacy_token_resolver, "resolve", lambda *_: legacy_calls.append("resolve"))
+
+    # Raises TypeError today ("unexpected keyword argument 'skip_auth_resolution'") → RED
+    MCPToolkitService._resolve_server_auth(
+        server_config, user_id=None, execution_context=None, skip_auth_resolution=True
+    )
+
+    assert tracker.calls == [], "skip_auth_resolution=True must bypass enterprise resolver loop"
+    assert legacy_calls == [], "skip_auth_resolution=True must bypass legacy fallback"
+
+
+def test_resolve_server_auth_skip_false_still_calls_resolvers(monkeypatch) -> None:
+    from codemie.service.mcp.models import MCPServerConfig
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    server_config = MCPServerConfig(url="https://mcp.example.com/")
+    tracker = _CallTrackingResolver()
+
+    monkeypatch.setattr(MCPToolkitService, "_auth_resolvers", [tracker])
+
+    MCPToolkitService._resolve_server_auth(
+        server_config, user_id=None, execution_context=None, skip_auth_resolution=False
+    )
+
+    assert "can_handle" in tracker.calls, "skip_auth_resolution=False must run resolvers as normal"
+
+
+# ── Approach C: _mcp_server_from_config ──────────────────────────────────────
+
+
+def _make_mcp_config_for_c(
+    *,
+    config_id: str = "mcp-config-1",
+    name: str = "test-server",
+    url: str = "https://mcp.example.com/",
+    allow_issuer_prefix_match: bool = False,
+) -> object:
+    from types import SimpleNamespace
+
+    config_data = SimpleNamespace(
+        url=url,
+        type="streamable_http",
+        command=None,
+        args=[],
+        headers={},
+        env={},
+        auth_config=None,
+        auth_token=None,
+        single_usage=False,
+        tools=None,
+        audience=None,
+        allow_issuer_prefix_match=allow_issuer_prefix_match,
+        bucket_key=None,
+    )
+    config_data.model_dump = lambda: {
+        "url": config_data.url,
+        "type": config_data.type,
+        "command": config_data.command,
+        "args": config_data.args,
+        "headers": config_data.headers,
+        "env": config_data.env,
+        "auth_config": config_data.auth_config,
+        "auth_token": config_data.auth_token,
+        "single_usage": config_data.single_usage,
+        "tools": config_data.tools,
+        "audience": config_data.audience,
+        "allow_issuer_prefix_match": config_data.allow_issuer_prefix_match,
+        "bucket_key": config_data.bucket_key,
+    }
+    return SimpleNamespace(id=config_id, name=name, config=config_data)
+
+
+def test_mcp_server_from_config_returns_mcp_server_details() -> None:
+    from codemie.rest_api.models.assistant import MCPServerDetails
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    mcp_config = _make_mcp_config_for_c(config_id="cfg-1", name="my-server", url="https://mcp.example.com/")
+
+    # AttributeError today: 'MCPToolkitService' has no attribute '_mcp_server_from_config' → RED
+    result = MCPToolkitService._mcp_server_from_config(mcp_config)
+
+    assert isinstance(result, MCPServerDetails)
+    assert result.name == "my-server"
+    assert result.mcp_config_id == "cfg-1"
+    assert result.config.url == "https://mcp.example.com/"
+    assert result.config.auth_config is None
+
+
+def test_mcp_server_from_config_allow_issuer_prefix_match_round_trip() -> None:
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    # Atlassian-Rovo-style server that requires prefix matching
+    mcp_config = _make_mcp_config_for_c(
+        config_id="rovo-cfg",
+        name="atlassian-rovo",
+        url="https://rovo.atlassian.net/sse",
+        allow_issuer_prefix_match=True,
+    )
+
+    result = MCPToolkitService._mcp_server_from_config(mcp_config)
+
+    assert result.config.allow_issuer_prefix_match is True, (
+        "allow_issuer_prefix_match must survive MCPServerConfigData → MCPServerConfig mapping "
+        "so _build_discovery_candidate_from_challenge carries it to _resolve_discovered_candidate_payload"
+    )
+
+
+def test_mcp_server_from_config_candidate_fields_are_reachable() -> None:
+    """_build_discovery_candidate_from_challenge reads mcp_config_id from outer MCPServerDetails
+    and allow_issuer_prefix_match from inner MCPServerConfig — both must be set correctly."""
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    mcp_config = _make_mcp_config_for_c(config_id="cfg-2", name="srv", url="https://srv.example.com/")
+    result = MCPToolkitService._mcp_server_from_config(mcp_config)
+
+    assert result.mcp_config_id == "cfg-2", "outer mcp_config_id used by _build_discovery_candidate_from_challenge"
+    assert result.name == "srv"
+    assert result.config.url == "https://srv.example.com/"
+    assert result.config.auth_config is None, "auth_config must be None for discovery candidate guard to pass"
+    assert (
+        result.config is not None
+    ), "inline config must be set so _build_mcp_server_config does not do a catalog DB lookup"
+
+
+# ── Approach C: ensure_discovered_snapshot_for_server ────────────────────────
+
+
+def _make_401_load_exception(www_authenticate: str = 'Bearer realm="test"') -> object:
+    from codemie.service.mcp.models import MCPToolLoadException
+
+    response = httpx.Response(
+        status_code=401,
+        headers={"WWW-Authenticate": www_authenticate},
+        request=httpx.Request("GET", "https://mcp.example.com/"),
+    )
+    http_error = httpx.HTTPStatusError("401 Unauthorized", request=response.request, response=response)
+    exc = MCPToolLoadException("test-server", http_error)
+    exc.__cause__ = http_error
+    return exc
+
+
+def test_ensure_discovered_snapshot_returns_flow_id_on_challenge(monkeypatch) -> None:
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    mcp_config = _make_mcp_config_for_c(config_id="cfg-discover", name="disco", url="https://mcp.example.com/")
+    exc = _make_401_load_exception()
+
+    monkeypatch.setattr(
+        MCPToolkitService,
+        "_process_single_mcp_server",
+        classmethod(lambda cls, **kwargs: (_ for _ in ()).throw(exc)),
+    )
+    monkeypatch.setattr(
+        MCPToolkitService,
+        "_run_discovery_probe_and_collect_failures",
+        classmethod(lambda cls, **kwargs: ([{"discovered_flow_id": "flow-healed-1"}], [])),
+    )
+
+    # AttributeError today: 'MCPToolkitService' has no attribute 'ensure_discovered_snapshot_for_server' → RED
+    result = MCPToolkitService.ensure_discovered_snapshot_for_server(
+        mcp_config=mcp_config,
+        user_id="user-1",
+        session_binding_hash="binding-hash-1",
+    )
+
+    assert result == "flow-healed-1"
+
+
+def test_ensure_discovered_snapshot_returns_none_when_no_401(monkeypatch) -> None:
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    mcp_config = _make_mcp_config_for_c(config_id="cfg-open", name="open-server", url="https://mcp.example.com/")
+
+    monkeypatch.setattr(
+        MCPToolkitService,
+        "_process_single_mcp_server",
+        classmethod(lambda cls, **kwargs: []),
+    )
+
+    result = MCPToolkitService.ensure_discovered_snapshot_for_server(
+        mcp_config=mcp_config,
+        user_id="user-1",
+        session_binding_hash="binding-hash-1",
+    )
+
+    assert result is None
+
+
+def test_ensure_discovered_snapshot_returns_none_when_401_has_no_www_authenticate(monkeypatch) -> None:
+    from codemie.service.mcp.models import MCPToolLoadException
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    mcp_config = _make_mcp_config_for_c(config_id="cfg-bare401", name="bare", url="https://mcp.example.com/")
+
+    response = httpx.Response(
+        status_code=401,
+        headers={},
+        request=httpx.Request("GET", "https://mcp.example.com/"),
+    )
+    http_error = httpx.HTTPStatusError("401", request=response.request, response=response)
+    exc = MCPToolLoadException("bare", http_error)
+    exc.__cause__ = http_error
+
+    monkeypatch.setattr(
+        MCPToolkitService,
+        "_process_single_mcp_server",
+        classmethod(lambda cls, **kwargs: (_ for _ in ()).throw(exc)),
+    )
+
+    result = MCPToolkitService.ensure_discovered_snapshot_for_server(
+        mcp_config=mcp_config,
+        user_id="user-1",
+        session_binding_hash="binding-hash-1",
+    )
+
+    assert result is None
+
+
+def test_ensure_discovered_snapshot_returns_none_on_mcp_auth_required(monkeypatch) -> None:
+    from codemie.core.exceptions import MCPAuthenticationRequiredException
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    mcp_config = _make_mcp_config_for_c(config_id="cfg-auth", name="auth-server", url="https://mcp.example.com/")
+
+    monkeypatch.setattr(
+        MCPToolkitService,
+        "_process_single_mcp_server",
+        classmethod(lambda cls, **kwargs: (_ for _ in ()).throw(MCPAuthenticationRequiredException({}))),
+    )
+
+    result = MCPToolkitService.ensure_discovered_snapshot_for_server(
+        mcp_config=mcp_config,
+        user_id="user-1",
+        session_binding_hash="binding-hash-1",
+    )
+
+    assert result is None
+
+
+def test_ensure_discovered_snapshot_user_id_asymmetry(monkeypatch) -> None:
+    """Connect uses user_id=None (credential-less); probe uses real user_id so binding stores correctly."""
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    mcp_config = _make_mcp_config_for_c(config_id="cfg-uid", name="uid-server", url="https://mcp.example.com/")
+    exc = _make_401_load_exception()
+
+    connect_user_ids: list[object] = []
+    probe_kwargs: dict = {}
+
+    def fake_process(**kwargs):
+        connect_user_ids.append(kwargs.get("user_id", "NOT_SET"))
+        raise exc
+
+    def fake_probe(**kwargs):
+        probe_kwargs.update(kwargs)
+        return [{"discovered_flow_id": "flow-uid-1"}], []
+
+    monkeypatch.setattr(
+        MCPToolkitService, "_process_single_mcp_server", classmethod(lambda cls, **kw: fake_process(**kw))
+    )
+    monkeypatch.setattr(
+        MCPToolkitService, "_run_discovery_probe_and_collect_failures", classmethod(lambda cls, **kw: fake_probe(**kw))
+    )
+
+    MCPToolkitService.ensure_discovered_snapshot_for_server(
+        mcp_config=mcp_config,
+        user_id="real-user-id",
+        session_binding_hash="binding-hash-abc",
+    )
+
+    assert connect_user_ids == [None], "credential-less connect must pass user_id=None"
+    assert probe_kwargs.get("user_id") == "real-user-id", "probe must use real user_id for correct binding storage"
+    assert probe_kwargs.get("session_binding_hash") == "binding-hash-abc"
+
+
+def test_ensure_discovered_snapshot_ssrf_path_via_probe(monkeypatch) -> None:
+    """Heal always calls _run_discovery_probe_and_collect_failures (SSRF-gated), never a raw HTTP client."""
+    from codemie.service.mcp.toolkit_service import MCPToolkitService
+
+    mcp_config = _make_mcp_config_for_c(config_id="cfg-ssrf", name="ssrf-server", url="https://mcp.example.com/")
+    exc = _make_401_load_exception()
+    probe_calls: list[dict] = []
+
+    monkeypatch.setattr(
+        MCPToolkitService,
+        "_process_single_mcp_server",
+        classmethod(lambda cls, **kw: (_ for _ in ()).throw(exc)),
+    )
+    monkeypatch.setattr(
+        MCPToolkitService,
+        "_run_discovery_probe_and_collect_failures",
+        classmethod(lambda cls, **kw: probe_calls.append(kw) or ([{"discovered_flow_id": "flow-ssrf"}], [])),
+    )
+
+    result = MCPToolkitService.ensure_discovered_snapshot_for_server(
+        mcp_config=mcp_config,
+        user_id="user-1",
+        session_binding_hash="binding-1",
+    )
+
+    assert result == "flow-ssrf"
+    assert len(probe_calls) == 1, "SSRF-gated probe must be called exactly once"
