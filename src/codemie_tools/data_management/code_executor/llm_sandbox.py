@@ -27,9 +27,13 @@ The patch should be applied before creating any sandbox sessions.
 
 import io
 import logging
+import re
+import shlex
 import tarfile
+import tempfile
+import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from kubernetes.stream import stream
 
@@ -37,6 +41,94 @@ logger = logging.getLogger(__name__)
 
 # Store original method for potential restoration
 _original_copy_to_container = None
+_original_session_base_run = None
+
+SANDBOX_SYSTEM_FILE_PREFIX = "SANDBOX_"
+SANDBOX_SYSTEM_FILE_RE = re.compile(rf"^{re.escape(SANDBOX_SYSTEM_FILE_PREFIX)}[0-9a-f]{{32}}\.[A-Za-z0-9_+-]+$")
+
+
+def is_sandbox_system_file_path(file_path: str | Path) -> bool:
+    return bool(SANDBOX_SYSTEM_FILE_RE.fullmatch(Path(file_path).name))
+
+
+def _build_sandbox_system_file_path(workdir: str, extension: str) -> Path:
+    return Path(workdir) / f"{SANDBOX_SYSTEM_FILE_PREFIX}{uuid.uuid4().hex}.{extension}"
+
+
+def _patched_session_base_run(self: Any, code: str, libraries: list | None = None, timeout: float | None = None) -> Any:
+    from llm_sandbox.exceptions import NotOpenSessionError, SandboxTimeoutError
+    from llm_sandbox.language_handlers.runtime_context import RuntimeContext
+
+    if not self.container or not self.is_open:
+        raise NotOpenSessionError
+
+    self._check_session_timeout()
+    actual_timeout = timeout or self.config.get_execution_timeout()
+
+    def _run_code() -> Any:
+        self.install(libraries)
+        temp_file_path = None
+        code_dest_path_posix: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=f".{self.language_handler.file_extension}",
+                mode="w",
+                encoding="utf-8",
+            ) as code_file:
+                code_file.write(code)
+                temp_file_path = code_file.name
+
+            code_dest_file = _build_sandbox_system_file_path(
+                self.config.workdir,
+                self.language_handler.file_extension,
+            )
+            code_dest_path_posix = code_dest_file.as_posix()
+            self.copy_to_runtime(temp_file_path, code_dest_path_posix)
+
+            use_venv_paths = (
+                self.language_handler.name == "python"
+                and not self.config.skip_environment_setup
+                and not self.using_existing_container
+            )
+            runtime_context = RuntimeContext(
+                workdir=self.config.workdir,
+                python_executable_path=(self.python_executable_path if use_venv_paths else None),
+                pip_executable_path=(self.pip_executable_path if use_venv_paths else None),
+                pip_cache_dir=(self.pip_cache_dir_path if use_venv_paths else None),
+            )
+
+            commands = self.language_handler.get_execution_commands(
+                code_dest_path_posix,
+                runtime_context=runtime_context,
+            )
+            return self.execute_commands(
+                cast("list[str | tuple[str, str | None]]", commands),
+                workdir=self.config.workdir,
+            )
+        finally:
+            if temp_file_path:
+                Path(temp_file_path).unlink(missing_ok=True)
+            if code_dest_path_posix:
+                try:
+                    self.execute_commands(
+                        [f"rm -f {shlex.quote(code_dest_path_posix)}"],
+                        workdir=self.config.workdir,
+                    )
+                except Exception:
+                    # Best-effort cleanup only
+                    logger.debug(
+                        "Failed to cleanup sandbox system file %s",
+                        code_dest_path_posix,
+                        exc_info=True,
+                    )
+
+    try:
+        result = self._execute_with_timeout(_run_code, timeout=actual_timeout)
+        return result
+    except SandboxTimeoutError:
+        self._handle_timeout()
+        raise
 
 
 def _patched_copy_to_container(  # NOSONAR
@@ -164,10 +256,11 @@ def apply_llm_sandbox_patch() -> None:
     Raises:
         ImportError: If llm-sandbox with Kubernetes support is not installed
     """
-    global _original_copy_to_container
+    global _original_copy_to_container, _original_session_base_run
 
     try:
         from llm_sandbox.kubernetes import KubernetesContainerAPI
+        from llm_sandbox.core.session_base import SessionBase
     except ImportError as e:
         msg = "llm-sandbox with Kubernetes support not installed. Install with: pip install 'llm-sandbox[k8s]'"
         raise ImportError(msg) from e
@@ -175,27 +268,34 @@ def apply_llm_sandbox_patch() -> None:
     # Store original method for potential restoration
     if _original_copy_to_container is None:
         _original_copy_to_container = KubernetesContainerAPI.copy_to_container
+    if _original_session_base_run is None:
+        _original_session_base_run = SessionBase.run
 
     # Apply patch
     KubernetesContainerAPI.copy_to_container = _patched_copy_to_container
+    SessionBase.run = _patched_session_base_run
 
 
-def restore_original_copy_to_container() -> None:
+def restore_sandbox_unpatched_methods() -> None:
     """
-    Restore the original copy_to_container method.
+    Restore the original methods that were replaced during patching.
 
     This is primarily for testing purposes.
     """
-    global _original_copy_to_container
+    global _original_copy_to_container, _original_session_base_run
 
-    if _original_copy_to_container is None:
-        logger.warning("No original copy_to_container method stored, cannot restore")
+    if _original_copy_to_container is None and _original_session_base_run is None:
+        logger.warning("No original llm-sandbox methods stored, cannot restore")
         return
 
     try:
         from llm_sandbox.kubernetes import KubernetesContainerAPI
+        from llm_sandbox.core.session_base import SessionBase
 
-        KubernetesContainerAPI.copy_to_container = _original_copy_to_container
-        logger.info("Restored original copy_to_container method")
+        if _original_copy_to_container is not None:
+            KubernetesContainerAPI.copy_to_container = _original_copy_to_container
+        if _original_session_base_run is not None:
+            SessionBase.run = _original_session_base_run
+        logger.info("Restored original llm-sandbox methods")
     except ImportError:
         logger.warning("llm-sandbox not available, cannot restore method")

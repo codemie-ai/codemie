@@ -25,7 +25,6 @@ from pathlib import Path
 from typing import Any, Optional, Type
 
 from langchain_core.tools import ToolException
-from llm_sandbox import SandboxSession
 from pydantic import BaseModel, Field, PrivateAttr
 
 from codemie.rest_api.models.agent_workspace import CreateAgentWorkspaceRequest
@@ -42,6 +41,7 @@ from codemie_tools.data_management.code_executor.code_executor_tool import (
 from codemie_tools.data_management.code_executor.file_export_service import (
     FileExportService,
 )
+from codemie_tools.data_management.code_executor.llm_sandbox import is_sandbox_system_file_path
 from codemie_tools.data_management.code_executor.local_execution_engine import (
     LocalExecutionEngine,
     _MATPLOTLIB_CAPTURE_SETUP,
@@ -52,6 +52,10 @@ from codemie_tools.data_management.workspace.tools_vars import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_system_output_path(file_path: str) -> bool:
+    return file_path.endswith(".pyc") or is_sandbox_system_file_path(file_path)
 
 
 class ExecuteWorkspaceScriptInput(BaseModel):
@@ -107,7 +111,7 @@ class WorkspaceLocalScriptExecutionEngine(LocalExecutionEngine):
                 continue
 
             relative_path = full_path.relative_to(work_path).as_posix()
-            if "__pycache__" in full_path.parts or relative_path.endswith(".pyc"):
+            if "__pycache__" in full_path.parts or _is_system_output_path(relative_path):
                 continue
             content = full_path.read_bytes()
             if input_file_hashes.get(relative_path) == self._hash_content(content):
@@ -278,13 +282,13 @@ class WorkspaceScriptRunner(CodeExecutorTool):
         raise ToolException(f"Script file '{script_path}' was not provided to the execution workspace")
 
     def _collect_sandbox_changed_files(
-        self, session: SandboxSession, workdir: str, input_file_hashes: dict[str, str]
+        self, session: Any, workdir: str, input_file_hashes: dict[str, str]
     ) -> list[FileObject]:
         current_snapshot = self._get_sandbox_file_snapshot(session, workdir)
         changed_paths = [
             file_path
             for file_path, content_hash in sorted(current_snapshot.items())
-            if input_file_hashes.get(file_path) != content_hash
+            if input_file_hashes.get(file_path) != content_hash and not _is_system_output_path(file_path)
         ]
 
         if not changed_paths:
@@ -293,7 +297,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
         export_service = FileExportService(self.file_repository, self.user_id)
         return export_service.collect_files_from_execution(session, changed_paths, workdir)
 
-    def _get_sandbox_file_snapshot(self, session: SandboxSession, workdir: str) -> dict[str, str]:
+    def _get_sandbox_file_snapshot(self, session: Any, workdir: str) -> dict[str, str]:
         snapshot_code = (
             "import hashlib, json, os\n"
             f"root = {workdir!r}\n"
