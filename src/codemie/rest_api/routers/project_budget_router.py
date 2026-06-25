@@ -698,8 +698,9 @@ async def reset_project_budget_group(
     """Reset spend counters for all category budgets in a group."""
     _require_budgeting_enabled()
     async with get_async_session() as session:
-        result = await project_budget_service.reset_project_budget_group(session, group_id=group_id, actor_id=user.id)
+        await project_budget_service.reset_project_budget_group(session, group_id=group_id, actor_id=user.id)
         await session.commit()
+        result = await project_budget_service.get_project_budget_group(session, group_id)
     return _build_project_budget_group_response(result)
 
 
@@ -712,8 +713,7 @@ async def rebalance_project_budget_group(
     """Rebalance member allocations for all category budgets in a group."""
     _require_budgeting_enabled()
     async with get_async_session() as session:
-        result = await project_budget_service.rebalance_project_budget_group(
-            session, group_id=group_id, actor_id=user.id
-        )
+        await project_budget_service.rebalance_project_budget_group(session, group_id=group_id, actor_id=user.id)
         await session.commit()
+        result = await project_budget_service.get_project_budget_group(session, group_id)
     return _build_project_budget_group_response(result)
