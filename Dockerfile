@@ -100,6 +100,7 @@ ENV PATH="$POETRY_HOME/bin:$VIRTUAL_ENV/bin:$PATH"
 # procps is needed for kill command in "Code Interpreter"
 # texlive packages and pandoc are needed for PDF export (pdflatex + pypandoc)
 # lmodern and texlive-fonts-recommended are required for Pandoc PDF generation
+# subversion is needed for svn CLI (EPMCDME-13166: SVN datasource support)
 # hadolint ignore=DL3008
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -110,6 +111,7 @@ RUN apt-get update && \
     git=1:2.47.3-0+deb13u1 \
     procps=2:4.0.4-9 \
     libsqlite3-0=3.46.1-7+deb13u1 \
+    subversion \
     # Security (EPMCDME-12750): pin >=3.5.6-1~deb13u2 to fix CVE-2026-45447 (HIGH, OpenSSL)
     openssl=3.5.6-1~deb13u2 \
     pandoc \
