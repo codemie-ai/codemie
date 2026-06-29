@@ -18,6 +18,7 @@ from langchain_classic.chains.llm import LLMChain
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 
+from codemie.configs.llm_config import ModelCategory
 from codemie.core.dependecies import get_llm_by_credentials
 from codemie.core.models import GitRepo
 from codemie.datasource.code.code_datasource_processor import CodeDatasourceProcessor
@@ -41,7 +42,9 @@ class CodeSummaryDatasourceProcessor(CodeDatasourceProcessor):
         return CODE_CONFIG.summarization_batch_size
 
     def _on_process_start(self):
-        self.llm_name = llm_service.get_llm_deployment_name(self.repo.summarization_model)
+        self.llm_name = llm_service.get_llm_deployment_name(
+            self.repo.summarization_model, category=ModelCategory.SUMMARIZATION.value
+        )
         if self.index.docs_generation:
             self.docs_gen_service = DocsGenService()
         super()._on_process_start()

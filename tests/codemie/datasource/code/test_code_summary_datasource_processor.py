@@ -27,10 +27,32 @@ from codemie.datasource.code.code_summary_datasource_prompt import (
     FILE_SUMMARY_PROMPT,
     CHUNK_SUMMARY_PROMPT,
 )
+from codemie.configs.llm_config import ModelCategory
+from codemie.datasource.code.code_datasource_processor import CodeDatasourceProcessor
 from codemie.rest_api.security.user import User
 
 
 class TestCodeSummaryDatasourceProcessor(unittest.TestCase):
+    @patch('codemie.datasource.code.code_summary_datasource_processor.llm_service')
+    @patch.object(CodeDatasourceProcessor, '_on_process_start')
+    def test_on_process_start_passes_summarization_category(self, mock_super_start, mock_llm_service):
+        mock_llm_service.get_llm_deployment_name.return_value = 'test-deployment'
+        mock_repo = MagicMock(spec=GitRepo, summarization_model=None, name='TestRepo')
+        indexer = CodeSummaryDatasourceProcessor(repo=mock_repo, user=User(id='id', name='name', username='username'))
+        mock_index = MagicMock()
+        mock_index.docs_generation = False
+        indexer.index = mock_index
+
+        indexer._on_process_start()
+
+        mock_llm_service.get_llm_deployment_name.assert_called_once_with(
+            None, category=ModelCategory.SUMMARIZATION.value
+        )
+
+    def test_summarization_model_field_defaults_to_none(self):
+        field_info = GitRepo.model_fields['summarization_model']
+        self.assertIsNone(field_info.default)
+
     def test_process_chunk(self):
         mock_repo = MagicMock(spec=GitRepo, prompt=None)
         mock_document = Document("This is a test document.")

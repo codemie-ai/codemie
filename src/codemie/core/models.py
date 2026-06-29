@@ -22,7 +22,6 @@ from typing_extensions import Annotated
 
 
 import requests
-from codemie.service.llm_service.llm_service import llm_service
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import (
     BaseModel,
@@ -117,7 +116,7 @@ class BaseRepository(CommonBaseModel):
     files_filter: Optional[str] = SQLField(default="")
     index_type: CodeIndexType
     embeddings_model: Optional[str] = None
-    summarization_model: Optional[str] = SQLField(default=llm_service.default_llm_model)
+    summarization_model: Optional[str] = SQLField(default=None)
     prompt: Optional[str] = None
     docs_generation: Optional[bool] = SQLField(default=False)
     project_space_visible: bool = SQLField(default=False)

@@ -16,7 +16,6 @@ import pytest
 from pydantic import ValidationError
 
 from codemie.core.models import BaseGitRepo, CodeIndexType
-from codemie.service.llm_service.llm_service import llm_service
 
 
 @pytest.mark.parametrize(
@@ -54,10 +53,9 @@ def test_invalid_description_length() -> None:
 
 
 def test_optional_fields() -> None:
-    expected_nullable_default_fields = ("last_indexed_commit", "embeddings_model", "setting_id")
+    expected_nullable_default_fields = ("last_indexed_commit", "embeddings_model", "setting_id", "summarization_model")
     expected_empty_default_fields = ("files_filter",)
     expected_false_default_fields = ("docs_generation", "project_space_visible")
-    expected_summarization_model = llm_service.default_llm_model
 
     repo = BaseGitRepo(
         name="test-repo",
@@ -68,7 +66,6 @@ def test_optional_fields() -> None:
     )
 
     assert repo.prompt is None
-    assert repo.summarization_model == expected_summarization_model
     for field in expected_false_default_fields:
         assert getattr(repo, field) is False, field
     for field in expected_empty_default_fields:
