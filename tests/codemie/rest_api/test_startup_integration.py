@@ -20,6 +20,7 @@ correctly initializes LiteLLM services, models, and cleanup tasks.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -68,7 +69,7 @@ def mock_non_litellm_startup():
                                                     yield
 
 
-def test_initialize_database_and_defaults_runs_enterprise_migrations_before_defaults():
+def test_initialize_database_and_defaults_runs_only_migrations_and_default_apps():
     from codemie.rest_api import main
 
     calls = []
@@ -79,21 +80,77 @@ def test_initialize_database_and_defaults_runs_enterprise_migrations_before_defa
     with patch("codemie.rest_api.main.alembic_upgrade_postgres", track("core_migrations")):
         with patch("codemie.rest_api.main.alembic_upgrade_enterprise_postgres", track("enterprise_migrations")):
             with patch("codemie.rest_api.main.create_default_applications", track("default_applications")):
-                with patch("codemie.rest_api.main.manage_preconfigured_assistants", track("assistants")):
-                    with patch("codemie.rest_api.main.manage_preconfigured_skills", track("skills")):
-                        with patch("codemie.rest_api.main.create_preconfigured_workflows", track("workflows")):
-                            with patch("codemie.rest_api.main.import_preconfigured_katas", track("katas")):
-                                main._initialize_database_and_defaults()
+                main._initialize_database_and_defaults()
 
-    assert calls == [
-        "core_migrations",
-        "enterprise_migrations",
-        "default_applications",
-        "assistants",
-        "skills",
-        "workflows",
-        "katas",
+    assert calls == ["core_migrations", "enterprise_migrations", "default_applications"]
+
+
+def test_initialize_preconfigured_content_runs_all_content_in_order():
+    from codemie.rest_api import main
+
+    calls = []
+
+    def track(name):
+        return MagicMock(side_effect=lambda: calls.append(name))
+
+    with patch("codemie.rest_api.main.manage_preconfigured_assistants", track("assistants")):
+        with patch("codemie.rest_api.main.manage_preconfigured_skills", track("skills")):
+            with patch("codemie.rest_api.main.create_preconfigured_workflows", track("workflows")):
+                with patch("codemie.rest_api.main.import_preconfigured_katas", track("katas")):
+                    main._initialize_preconfigured_content()
+
+    assert calls == ["assistants", "skills", "workflows", "katas"]
+
+
+@pytest.mark.asyncio
+async def test_preconfigured_content_runs_after_litellm_init_in_lifespan():
+    """Verify preconfigured content setup happens after LiteLLM models are initialized.
+
+    Guards against the regression where assistants/skills/workflows received the YAML
+    fallback model (gpt-4.1) instead of the LiteLLM default because
+    manage_preconfigured_assistants ran before _initialize_litellm_models.
+    """
+    from codemie.rest_api.main import lifespan
+
+    app = FastAPI()
+    calls = []
+    mock_provider = MagicMock()
+
+    def track(name):
+        return MagicMock(side_effect=lambda: calls.append(name))
+
+    startup_patches = [
+        patch("codemie.rest_api.main.alembic_upgrade_postgres"),
+        patch("codemie.rest_api.main.alembic_upgrade_enterprise_postgres"),
+        patch("codemie.rest_api.main.create_default_applications"),
+        patch("codemie.rest_api.main._initialize_litellm_models", track("litellm_models")),
+        patch("codemie.rest_api.main.manage_preconfigured_assistants", track("assistants")),
+        patch("codemie.rest_api.main.manage_preconfigured_skills"),
+        patch("codemie.rest_api.main.create_preconfigured_workflows"),
+        patch("codemie.rest_api.main.import_preconfigured_katas"),
+        patch("codemie.rest_api.main.initialize_litellm_from_config", return_value=None),
+        patch("codemie.rest_api.main.is_litellm_enabled", return_value=True),
+        patch("codemie.rest_api.main.set_global_litellm_service"),
+        patch("codemie.rest_api.main.close_llm_proxy_client", new_callable=AsyncMock),
+        patch("codemie.rest_api.main.initialize_mcp_auth"),
+        patch("codemie.rest_api.main.shutdown_mcp_auth", new_callable=AsyncMock),
+        patch("codemie.rest_api.main.ensure_predefined_budgets", new_callable=AsyncMock),
+        patch("codemie.rest_api.main.get_observability_provider", return_value=mock_provider),
+        patch("codemie.rest_api.main._setup_memory_profiling_scheduler"),
     ]
+
+    with ExitStack() as stack:
+        for p in startup_patches:
+            stack.enter_context(p)
+        async with lifespan(app):
+            pass
+
+    litellm_idx = calls.index("litellm_models")
+    assistants_idx = calls.index("assistants")
+    assert litellm_idx < assistants_idx, (
+        f"_initialize_litellm_models (pos {litellm_idx}) must run before "
+        f"manage_preconfigured_assistants (pos {assistants_idx}). Full order: {calls}"
+    )
 
 
 class TestLiteLLMServiceInitialization:

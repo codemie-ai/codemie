@@ -325,6 +325,14 @@ def _initialize_database_and_defaults():
     alembic_upgrade_postgres()
     alembic_upgrade_enterprise_postgres()
     create_default_applications()
+
+
+def _initialize_preconfigured_content():
+    """Create preconfigured assistants, skills, workflows, and katas.
+
+    Must run after _setup_litellm_features() so llm_service.default_llm_model
+    resolves against LiteLLM proxy models rather than the YAML fallback.
+    """
     manage_preconfigured_assistants()
     manage_preconfigured_skills()
     create_preconfigured_workflows()
@@ -579,6 +587,10 @@ async def lifespan(app: FastAPI):
 
     # Setup LiteLLM features
     _setup_litellm_features()
+
+    # Create preconfigured content after LiteLLM is initialized so the correct
+    # default model is used instead of the YAML fallback.
+    _initialize_preconfigured_content()
 
     # Instrument SQLAlchemy engines explicitly after they are created.
     # PostgresClient uses from-imports (sqlmodel.create_engine /
