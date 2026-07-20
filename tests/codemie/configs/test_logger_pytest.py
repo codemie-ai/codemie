@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
 import uuid
 
 import pytest
@@ -40,3 +41,73 @@ def test_set_logging_info(input_logger_data: tuple, expected_logger_data: tuple)
     assert logging_uuid.get() == expected_logger_data[0]
     assert logging_user_id.get() == expected_logger_data[1]
     assert logging_conversation_id.get() == expected_logger_data[2]
+
+
+def test_copy_and_restore_logging_context() -> None:
+    """
+    copy_logging_context() captures current values;
+    restore_logging_context() writes them back in a new context.
+    """
+    from codemie.configs.logger import (
+        copy_logging_context,
+        restore_logging_context,
+        logging_uuid,
+        logging_user_id,
+        logging_conversation_id,
+        current_user_email,
+    )
+
+    set_logging_info(
+        uuid="snap-uuid",
+        user_id="snap-user",
+        conversation_id="snap-conv",
+        user_email="snap@example.com",
+    )
+    snapshot = copy_logging_context()
+
+    # Simulate context reset (new task)
+    set_logging_info()  # resets to defaults
+
+    # Restore from snapshot
+    restore_logging_context(snapshot)
+
+    assert logging_uuid.get() == "snap-uuid"
+    assert logging_user_id.get() == "snap-user"
+    assert logging_conversation_id.get() == "snap-conv"
+    assert current_user_email.get() == "snap@example.com"
+
+
+def test_logging_context_propagates_to_new_thread() -> None:
+    """Snapshot/restore carries correlation fields into a forked thread (hedged path pattern)."""
+    from codemie.configs.logger import (
+        copy_logging_context,
+        restore_logging_context,
+        current_user_email,
+    )
+
+    set_logging_info(
+        uuid="test-uuid",
+        user_id="user-abc",
+        conversation_id="conv-xyz",
+        user_email="user@example.com",
+    )
+    snapshot = copy_logging_context()
+    captured: dict[str, str] = {}
+
+    def worker() -> None:
+        restore_logging_context(snapshot)
+        captured["uuid"] = logging_uuid.get()
+        captured["user_id"] = logging_user_id.get()
+        captured["conversation_id"] = logging_conversation_id.get()
+        captured["user_email"] = current_user_email.get()
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert captured == {
+        "uuid": "test-uuid",
+        "user_id": "user-abc",
+        "conversation_id": "conv-xyz",
+        "user_email": "user@example.com",
+    }

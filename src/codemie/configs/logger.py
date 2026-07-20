@@ -18,10 +18,17 @@ import logging
 import uvicorn.logging
 
 from logging.config import dictConfig
-from typing import Dict, Any
+from typing import Any, Dict, TypedDict
 
 from codemie.configs.config import config
 from pydantic import BaseModel
+
+
+class LoggingContextSnapshot(TypedDict):
+    uuid: str
+    user_id: str
+    conversation_id: str
+    user_email: str
 
 
 class LogFormatter(uvicorn.logging.DefaultFormatter):
@@ -162,6 +169,41 @@ def set_logging_info(uuid: str = '-', user_id: str = '-', conversation_id: str =
     logging_conversation_id.set(conversation_id)
 
     logging.setLogRecordFactory(record_factory)
+
+
+def copy_logging_context() -> LoggingContextSnapshot:
+    """
+    Capture current logging ContextVar values for propagation into forked tasks/threads.
+
+    Returns a LoggingContextSnapshot that can be passed to
+    restore_logging_context() inside the forked execution unit.
+
+    Usage:
+        # At hedge initiation point (parent context):
+        ctx_snapshot = copy_logging_context()
+
+        # Inside the hedged task (before any logger call):
+        restore_logging_context(ctx_snapshot)
+    """
+    return {
+        "uuid": logging_uuid.get("-"),
+        "user_id": logging_user_id.get("-"),
+        "conversation_id": logging_conversation_id.get("-"),
+        "user_email": current_user_email.get("unknown"),
+    }
+
+
+def restore_logging_context(snapshot: LoggingContextSnapshot) -> None:
+    """
+    Restore logging ContextVar values captured by copy_logging_context().
+    Must be called at the start of a forked task/thread, before any logging.
+    """
+    set_logging_info(
+        uuid=snapshot["uuid"],
+        user_id=snapshot["user_id"],
+        conversation_id=snapshot["conversation_id"],
+        user_email=snapshot["user_email"],
+    )
 
 
 logging.setLogRecordFactory(record_factory)

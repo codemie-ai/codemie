@@ -45,6 +45,7 @@ from codemie.service.assistant_service import AssistantService
 from codemie.service.monitoring.hedging_monitoring_service import HedgingMetricPayload, HedgingMonitoringService
 from codemie.service.tools.dynamic_value_utils import process_string
 from codemie.service.tools.hedging_tool_service import HedgingToolService
+from codemie.configs.logger import copy_logging_context, restore_logging_context
 
 
 def _lazy_observe(**kwargs):
@@ -204,6 +205,7 @@ class HedgedAssistantHandler(StandardAssistantHandler):
         t0 = time()
         tool_name = self._tool_display_name()
         datasource_name = self._datasource_name()
+        logger.debug(f"[HEDGE-INIT] Firing hedged fast-path: tool={tool_name} assistant_id={self.assistant.id}")
         result: str | None = None
         invoke_elapsed: float = 0.0
         obs_input: Any = request.text
@@ -415,6 +417,7 @@ class HedgedAssistantHandler(StandardAssistantHandler):
 
         request_headers = extract_custom_headers(raw_request)
         _otel_ctx = get_otel_context_for_thread()
+        logging_ctx = copy_logging_context()
         set_disable_prompt_cache(request.disable_cache or False)
 
         def _fast_path_with_winner():
@@ -424,6 +427,7 @@ class HedgedAssistantHandler(StandardAssistantHandler):
             # barrier the coordinator relies on when reading under the same lock.
             token = attach_otel_context(_otel_ctx)
             try:
+                restore_logging_context(logging_ctx)
                 fast_path_attempt[0] = self._run_fast_path(request, raw_request.state.uuid, request_headers)
                 with winner_lock:
                     if winner[0] is None:
@@ -443,6 +447,7 @@ class HedgedAssistantHandler(StandardAssistantHandler):
 
         def _agent_stream_with_winner():
             try:
+                restore_logging_context(logging_ctx)
                 agent.stream()
             finally:
                 with winner_lock:
@@ -500,6 +505,10 @@ class HedgedAssistantHandler(StandardAssistantHandler):
         # calling save_chat_history on the same request.
         agent_queue.close(reason=HedgingCancellationReason.FAST_PATH_WON)
         logger.info(f"[HEDGED] fast-path won, tool={tool_name} assistant_id={self.assistant.id}")
+        logger.debug(
+            f"[HEDGE-COMPLETED] Hedged fast-path won race: tool={tool_name} "
+            f"assistant_id={self.assistant.id} hedge_latency_ms={(time() - execution_start) * 1000:.1f}"
+        )
         display_name = tool_name.replace("_", " ").title()
         thought_id = str(uuid.uuid4())
         yield (
@@ -624,6 +633,10 @@ class HedgedAssistantHandler(StandardAssistantHandler):
             else:
                 served_by = "agent"
                 logger.info(f"[HEDGED] agent path won, tool={tool_name} assistant_id={self.assistant.id}")
+                logger.debug(
+                    f"[HEDGE-CANCELLED] Primary (agent) completed first: tool={tool_name} "
+                    f"assistant_id={self.assistant.id}"
+                )
                 yield from self._stream_agent_path(
                     agent, agent_queue, execution_start, request, include_tool_errors, error_detail_level
                 )
@@ -672,10 +685,18 @@ class HedgedAssistantHandler(StandardAssistantHandler):
                 served_by = "fast_path"
                 elapsed = time() - execution_start
                 logger.info(f"[HEDGED] fast-path won, tool={tool_name} assistant_id={self.assistant.id}")
+                logger.debug(
+                    f"[HEDGE-COMPLETED] Hedged fast-path won race: tool={tool_name} "
+                    f"assistant_id={self.assistant.id} hedge_latency_ms={elapsed * 1000:.1f}"
+                )
                 self.save_chat_history(ChatHistoryData(execution_start, request, result_str, []))
                 return BaseModelResponse(generated=result_str, time_elapsed=elapsed, thoughts=[])
             served_by = "agent"
             logger.info(f"[HEDGED] agent path won, tool={tool_name} assistant_id={self.assistant.id}")
+            logger.debug(
+                f"[HEDGE-CANCELLED] Primary (agent) completed first: tool={tool_name} "
+                f"assistant_id={self.assistant.id}"
+            )
             return super()._handle_sync(request, raw_request, execution_start, include_tool_errors, error_detail_level)
         except Exception:
             terminal_reason = "exception"
