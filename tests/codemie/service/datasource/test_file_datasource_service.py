@@ -14,7 +14,9 @@
 
 """Tests for FileDatasourceService and _validate_json_file."""
 
+import io
 import json
+import zipfile
 
 import pytest
 from elasticsearch.exceptions import NotFoundError
@@ -24,6 +26,7 @@ from unittest.mock import MagicMock, patch
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.user import User
 from codemie.service.datasource.file_datasource_service import FileDatasourceService, _validate_json_file
+from codemie.service.datasource.zip_utils import ZipExtractionError, expand_zip_file
 
 
 @pytest.fixture
@@ -387,4 +390,312 @@ class TestValidateJsonFile:
     def test_raises_422_on_invalid_json_bytes(self):
         with pytest.raises(ExtendedHTTPException) as exc_info:
             _validate_json_file("file.json", b"not-json-content")
+        assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+# ---------------------------------------------------------------------------
+# _expand_zip_file
+# ---------------------------------------------------------------------------
+
+
+def _make_zip_bytes(*members: tuple[str, bytes]) -> bytes:
+    """Return in-memory ZIP bytes containing the given (name, content) pairs."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        for name, content in members:
+            zf.writestr(name, content)
+    return buf.getvalue()
+
+
+class TestExpandZipFile:
+    def test_expand_zip_file_yields_supported_files(self):
+        zip_bytes = _make_zip_bytes(("doc.pdf", b"pdf content"), ("readme.txt", b"text content"))
+
+        result = expand_zip_file(zip_bytes)
+
+        names = [name for name, _ in result]
+        assert "doc.pdf" in names
+        assert "readme.txt" in names
+        assert len(result) == 2
+
+    def test_expand_zip_file_returns_correct_bytes(self):
+        zip_bytes = _make_zip_bytes(("report.txt", b"hello world"))
+
+        result = expand_zip_file(zip_bytes)
+
+        assert result == [("report.txt", b"hello world")]
+
+    def test_expand_zip_file_skips_directories(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            dir_info = zipfile.ZipInfo("subdir/")
+            zf.writestr(dir_info, "")
+            zf.writestr("doc.pdf", b"pdf content")
+        zip_bytes = buf.getvalue()
+
+        result = expand_zip_file(zip_bytes)
+
+        names = [name for name, _ in result]
+        assert "subdir/" not in names
+        assert "doc.pdf" in names
+        assert len(result) == 1
+
+    def test_expand_zip_file_includes_unknown_extensions(self):
+        # Unknown extensions pass through; the indexer's PlainTextLoader handles them
+        zip_bytes = _make_zip_bytes(("script.sh", b"#!/bin/bash"))
+
+        result = expand_zip_file(zip_bytes)
+
+        names = [name for name, _ in result]
+        assert "script.sh" in names
+
+    def test_expand_zip_file_skips_nested_zip(self):
+        inner = _make_zip_bytes(("doc.pdf", b"inner pdf"))
+        zip_bytes = _make_zip_bytes(("nested.zip", inner), ("outer.pdf", b"outer pdf"))
+
+        result = expand_zip_file(zip_bytes)
+
+        names = [name for name, _ in result]
+        assert "outer.pdf" in names
+        assert "nested.zip" not in names
+        assert len(result) == 1
+
+    def test_expand_zip_file_includes_all_non_zip_files(self):
+        # All non-ZIP files are extracted; only nested archives are skipped
+        zip_bytes = _make_zip_bytes(("doc.pdf", b"content"), ("notes.md", b"# Notes"))
+
+        result = expand_zip_file(zip_bytes)
+
+        names = [name for name, _ in result]
+        assert "doc.pdf" in names
+        assert "notes.md" in names
+        assert len(result) == 2
+
+    def test_expand_zip_file_flattens_nested_path(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("subdir/nested/doc.pdf", b"nested pdf")
+        zip_bytes = buf.getvalue()
+
+        result = expand_zip_file(zip_bytes)
+
+        names = [name for name, _ in result]
+        assert "doc.pdf" in names
+        assert "subdir/nested/doc.pdf" not in names
+
+    def test_expand_zip_file_raises_on_bad_zip(self):
+        result = None
+        with pytest.raises(ZipExtractionError):
+            result = expand_zip_file(b"this is not a zip file")
+        assert result is None
+
+    def test_expand_zip_file_empty_archive_returns_empty(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w"):
+            pass
+        result = expand_zip_file(buf.getvalue())
+        assert result == []
+
+    def test_expand_zip_file_skips_duplicate_basenames(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("dir_a/report.pdf", b"first")
+            zf.writestr("dir_b/report.pdf", b"second")
+        result = expand_zip_file(buf.getvalue())
+        assert len(result) == 1
+        assert result[0] == ("report.pdf", b"first")
+
+    def test_expand_zip_file_normalises_windows_backslash_paths(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            info = zipfile.ZipInfo("subdir\\doc.pdf")
+            zf.writestr(info, b"pdf content")
+        result = expand_zip_file(buf.getvalue())
+        names = [name for name, _ in result]
+        assert "doc.pdf" in names
+
+    def test_expand_zip_file_includes_plain_text_files(self):
+        zip_bytes = _make_zip_bytes(("readme.md", b"# Hello"), ("notes.rst", b"Title\n====="))
+
+        result = expand_zip_file(zip_bytes)
+
+        names = [name for name, _ in result]
+        assert "readme.md" in names
+        assert "notes.rst" in names
+
+    def test_expand_zip_file_skips_apple_double_metadata(self):
+        # macOS embeds resource forks as ._filename entries (Apple Double format),
+        # either at the same directory level or under __MACOSX/ in some ZIP tools.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("doc.pdf", b"pdf content")
+            zf.writestr("plan.md", b"# plan")
+            zf.writestr("._doc.pdf", b"\x00\x05\x16\x07apple double at root")
+            zf.writestr("._plan.md", b"\x00\x05\x16\x07apple double at root")
+            zf.writestr("__MACOSX/._doc.pdf", b"\x00\x05\x16\x07apple double in macosx dir")
+        zip_bytes = buf.getvalue()
+
+        result = expand_zip_file(zip_bytes)
+
+        names = [name for name, _ in result]
+        assert "doc.pdf" in names
+        assert "plan.md" in names
+        assert "._doc.pdf" not in names
+        assert "._plan.md" not in names
+        assert len(result) == 2
+
+    def test_expand_zip_file_raises_on_size_bomb(self):
+        # The guard must use actual decompressed bytes, not info.file_size (which is spoofable).
+        # Patch the constant to a small value so the test does not allocate real gigabytes.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("big.txt", b"A" * 200)  # 200 bytes actual content
+
+        with patch("codemie.service.datasource.zip_utils._ZIP_MAX_UNCOMPRESSED_BYTES", 100):
+            with pytest.raises(ZipExtractionError):
+                expand_zip_file(buf.getvalue())
+
+    def test_expand_zip_file_skips_dot_and_dotdot_entries(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("real.txt", b"content")
+            info_dot = zipfile.ZipInfo(".")
+            zf.writestr(info_dot, b"")
+            info_dotdot = zipfile.ZipInfo("..")
+            zf.writestr(info_dotdot, b"")
+        result = expand_zip_file(buf.getvalue())
+        names = [n for n, _ in result]
+        assert names == ["real.txt"]
+
+    def test_expand_zip_file_raises_on_file_count_limit(self):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            for i in range(6):
+                zf.writestr(f"file_{i}.txt", b"x")
+
+        with patch("codemie.service.datasource.zip_utils._ZIP_MAX_FILE_COUNT", 5):
+            with pytest.raises(ZipExtractionError):
+                expand_zip_file(buf.getvalue())
+
+
+# ---------------------------------------------------------------------------
+# upload_and_prepare_files — ZIP expansion integration
+# ---------------------------------------------------------------------------
+
+
+class TestUploadAndPrepareFilesZip:
+    def _make_upload_file(self, filename, content=b"data", content_type="text/plain"):
+        f = MagicMock()
+        f.filename = filename
+        f.file.read.return_value = content
+        f.headers = {"content-type": content_type}
+        return f
+
+    def _make_file_object(self, name, owner="user1"):
+        obj = MagicMock()
+        obj.name = name
+        obj.owner = owner
+        return obj
+
+    def test_upload_and_prepare_files_expands_zip(self, mock_index, mock_user):
+        zip_bytes = _make_zip_bytes(("document.pdf", b"pdf content"))
+        upload_file = self._make_upload_file("archive.zip", content=zip_bytes, content_type="application/zip")
+        pdf_obj = self._make_file_object("document.pdf")
+
+        with patch(
+            "codemie.service.datasource.file_datasource_service.FileRepositoryFactory.get_current_repository"
+        ) as mock_repo:
+            mock_repo.return_value.write_file.return_value = pdf_obj
+            result = FileDatasourceService.upload_and_prepare_files(
+                new_files=[upload_file],
+                user=mock_user,
+                uploaded_files_to_keep=[],
+                index=mock_index,
+            )
+
+        mock_repo.return_value.write_file.assert_called_once()
+        call_kwargs = mock_repo.return_value.write_file.call_args.kwargs
+        assert call_kwargs["name"] == "document.pdf"
+        assert call_kwargs["owner"] == "user1"
+        assert call_kwargs["content"] == b"pdf content"
+        assert "archive.zip" not in result.uploaded_files
+        assert "document.pdf" in result.uploaded_files
+        assert len(result.new_files_paths) == 1
+
+    def test_upload_and_prepare_files_zip_multiple_files(self, mock_index, mock_user):
+        zip_bytes = _make_zip_bytes(("a.pdf", b"pdf"), ("b.txt", b"txt"))
+        upload_file = self._make_upload_file("bundle.zip", content=zip_bytes, content_type="application/zip")
+
+        pdf_obj = self._make_file_object("a.pdf")
+        txt_obj = self._make_file_object("b.txt")
+
+        with patch(
+            "codemie.service.datasource.file_datasource_service.FileRepositoryFactory.get_current_repository"
+        ) as mock_repo:
+            mock_repo.return_value.write_file.side_effect = [pdf_obj, txt_obj]
+            result = FileDatasourceService.upload_and_prepare_files(
+                new_files=[upload_file],
+                user=mock_user,
+                uploaded_files_to_keep=[],
+                index=mock_index,
+            )
+
+        assert mock_repo.return_value.write_file.call_count == 2
+        assert "bundle.zip" not in result.uploaded_files
+        assert "a.pdf" in result.uploaded_files
+        assert "b.txt" in result.uploaded_files
+        assert len(result.new_files_paths) == 2
+
+    def test_upload_and_prepare_files_non_zip_unchanged(self, mock_index, mock_user):
+        upload_file = self._make_upload_file("report.pdf", content=b"pdf data", content_type="application/pdf")
+        file_obj = self._make_file_object("report.pdf")
+
+        with patch(
+            "codemie.service.datasource.file_datasource_service.FileRepositoryFactory.get_current_repository"
+        ) as mock_repo:
+            mock_repo.return_value.write_file.return_value = file_obj
+            result = FileDatasourceService.upload_and_prepare_files(
+                new_files=[upload_file],
+                user=mock_user,
+                uploaded_files_to_keep=[],
+                index=mock_index,
+            )
+
+        mock_repo.return_value.write_file.assert_called_once_with(
+            name="report.pdf",
+            mime_type="application/pdf",
+            owner="user1",
+            content=b"pdf data",
+        )
+        assert "report.pdf" in result.uploaded_files
+
+    def test_upload_and_prepare_files_zip_raises_on_empty_archive(self, mock_index, mock_user):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w"):
+            pass
+        upload_file = self._make_upload_file("empty.zip", content=buf.getvalue(), content_type="application/zip")
+
+        with patch("codemie.service.datasource.file_datasource_service.FileRepositoryFactory.get_current_repository"):
+            with pytest.raises(ZipExtractionError):
+                FileDatasourceService.upload_and_prepare_files(
+                    new_files=[upload_file],
+                    user=mock_user,
+                    uploaded_files_to_keep=[],
+                    index=mock_index,
+                )
+
+    def test_upload_and_prepare_files_zip_validates_json_entries(self, mock_index, mock_user):
+        invalid_json = b'[{"content": "ok"}]'  # missing "metadata" key
+        zip_bytes = _make_zip_bytes(("data.json", invalid_json))
+        upload_file = self._make_upload_file("bundle.zip", content=zip_bytes, content_type="application/zip")
+
+        with patch("codemie.service.datasource.file_datasource_service.FileRepositoryFactory.get_current_repository"):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                FileDatasourceService.upload_and_prepare_files(
+                    new_files=[upload_file],
+                    user=mock_user,
+                    uploaded_files_to_keep=[],
+                    index=mock_index,
+                )
+
         assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY

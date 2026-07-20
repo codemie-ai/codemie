@@ -90,6 +90,17 @@ class FileSystemRepository(FileRepository):
             raise
         return file_obj
 
+    def delete_file(self, name: str, owner: str) -> None:
+        file_path = _resolve_safe_path(config.FILES_STORAGE_DIR, owner, name)
+        logger.debug(f"Deleting file {file_path}")
+        try:
+            os.remove(file_path)
+        except FileNotFoundError:
+            logger.debug(f"File not found during delete (already removed?): {file_path}")
+        except Exception as e:
+            logger.error(f"Error deleting file {file_path}: {e}")
+            raise
+
     def create_directory(self, name: str, owner: str) -> DirectoryObject:
         owner_directory_path = os.path.join(config.FILES_STORAGE_DIR, owner)
         directory_path = os.path.join(owner_directory_path, name)

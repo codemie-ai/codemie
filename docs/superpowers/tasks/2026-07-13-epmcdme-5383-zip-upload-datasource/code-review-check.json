@@ -1,0 +1,52 @@
+{
+  "decision": "approve",
+  "rationale": "All five findings from code-review-final are resolved. The fix-up diff introduces no new high-risk patterns. Standards check passes on the new commit (EPMCDME-5383: Fix ZIP upload security and robustness gaps from code review).",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "category": "git-workflow",
+      "status": "pass",
+      "notes": "Fix-up commit uses EPMCDME-5383: description format."
+    },
+    {
+      "category": "code-quality",
+      "status": "pass",
+      "notes": "Type hints present on chunks list, consistent exception patterns, no dead code."
+    },
+    {
+      "category": "security",
+      "status": "pass",
+      "notes": "CR-001 resolved: info.file_size no longer used; actual bytes accumulated in 64KB chunks via zf.open(info)."
+    }
+  ],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "info.file_size accumulation removed. Replaced with zf.open(info) chunk reading; total_size += len(chunk) tracks actual decompressed bytes and raises 422 mid-read if limit exceeded."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "_ZIP_MAX_FILE_COUNT = 1000 constant added. Guard if len(result) >= _ZIP_MAX_FILE_COUNT raises HTTP 422 before reading the entry that would exceed the cap."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "Both ZIP branches (CREATE path in index.py and UPDATE path in upload_and_prepare_files) now call validate_json_file/_validate_json_file for .json entries before write_file."
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "Both paths now call _expand_zip_file, capture the result, and raise HTTP 422 if the result list is empty before any write_file calls."
+    },
+    {
+      "id": "CR-005",
+      "status": "resolved",
+      "notes": "Guard extended to if not flat_name or flat_name in (\".\", \"..\"): continue. Test test_expand_zip_file_skips_dot_and_dotdot_entries confirms both entries are skipped."
+    }
+  ],
+  "findings": []
+}

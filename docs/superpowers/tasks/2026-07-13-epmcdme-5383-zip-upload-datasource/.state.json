@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-light",
+  "slug": "epmcdme-5383-zip-upload-datasource",
+  "branch": "EPMCDME-5383_zip-upload-datasource",
+  "phase": "maintenance",
+  "started_at": "2026-07-13T00:00:00Z",
+  "completed_at": "2026-07-14T15:30:00Z",
+  "last_sync_commit": "f749356e10985dae0fb692464c0c0a338e82bb45"
+}

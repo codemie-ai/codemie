@@ -63,6 +63,17 @@ class GCPFileRepository(FileRepository):
         logger.debug(f"File {file_name} read successfully from bucket {owner}")
         return FileObject(name=file_name, owner=owner, content=content, mime_type=mime_type)
 
+    def delete_file(self, name: str, owner: str) -> None:
+        bucket = self._get_bucket(owner)
+        blob = bucket.blob(name)
+        logger.debug(f"Deleting file {name} from bucket {owner}")
+        try:
+            blob.delete()
+            logger.debug(f"File {name} deleted successfully from bucket {owner}")
+        except Exception as e:
+            logger.error(f"Failed to delete file {name} from bucket {owner}: {e}")
+            raise
+
     def create_directory(self, name: str, owner: str) -> DirectoryObject:
         bucket = self._get_bucket(owner)
         blob = bucket.blob(f"{name}/")

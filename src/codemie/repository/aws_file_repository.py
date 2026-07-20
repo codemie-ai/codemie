@@ -59,6 +59,16 @@ class AWSFileRepository(FileRepository):
             raise
         return FileObject(name=file_name, owner=owner, content=content, mime_type=mime_type)
 
+    def delete_file(self, name: str, owner: str) -> None:
+        full_key = self._get_full_key(name, owner)
+        logger.debug(f"Deleting file {full_key} from bucket {self.root_bucket}")
+        try:
+            self.s3_client.delete_object(Bucket=self.root_bucket, Key=full_key)
+            logger.debug(f"File {full_key} deleted successfully from bucket {self.root_bucket}")
+        except (BotoCoreError, ClientError) as e:
+            logger.error(f"Failed to delete file {full_key} from bucket {self.root_bucket}: {e}")
+            raise
+
     def create_directory(self, name: str, owner: str) -> DirectoryObject:
         full_key = self._get_full_key(f"{name}/", owner)
         logger.debug(f"Creating directory {full_key} in bucket {self.root_bucket}")

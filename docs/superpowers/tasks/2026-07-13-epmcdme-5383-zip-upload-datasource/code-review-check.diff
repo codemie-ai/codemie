@@ -1,0 +1,282 @@
+diff --git a/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/code-review-final.json b/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/code-review-final.json
+new file mode 100644
+index 000000000..c059afd1c
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/code-review-final.json
+@@ -0,0 +1,71 @@
++{
++  "decision": "request-changes",
++  "rationale": "Five actionable findings: one critical zip-bomb bypass via spoofed central-directory metadata (info.file_size is attacker-controlled; actual decompressed bytes are never capped), three major correctness/security gaps (no file-count cap enabling DoS, JSON validation bypassed for ZIP-extracted files, empty-ZIP extraction returns [] which re-triggers the original NoChunksImportedException regression in background), and one major robustness issue ('.' and '..' entry names pass the if-not-flat_name guard and cause IsADirectoryError -> HTTP 500). All are concrete, actionable patches. One deferred finding: silent duplicate filename drop is a logged design decision per plan.md; not emitted.",
++  "confidence": "high",
++  "risk_flags": ["security"],
++  "business_review": [],
++  "standards_review": [
++    {
++      "category": "git-workflow",
++      "status": "pass",
++      "notes": "All commit subjects use EPMCDME-5383: description format as required by git-workflow.md."
++    },
++    {
++      "category": "code-quality",
++      "status": "pass",
++      "notes": "Type hints present throughout, consistent style, no dead code, ExtendedHTTPException used correctly."
++    },
++    {
++      "category": "security",
++      "status": "fail",
++      "notes": "info.file_size in ZIP central-directory metadata is attacker-controlled and can be set to 0. The 500 MB guard accumulates declared sizes, not actual decompressed bytes. zf.read() decompresses until the stream is exhausted regardless of declared file_size. See CR-001."
++    }
++  ],
++  "findings": [
++    {
++      "id": "CR-001",
++      "severity": "critical",
++      "triage": "patch",
++      "location": "src/codemie/service/datasource/file_datasource_service.py:229-252 (_expand_zip_file)",
++      "problem": "The decompression bomb guard accumulates info.file_size from ZIP central-directory metadata (line 229). This value is fully attacker-controlled: a crafted ZIP can set file_size=0 for every entry while the actual decompressed content is arbitrarily large. zf.read(info.filename) on line 252 decompresses until the compressed stream is exhausted, regardless of the declared size. A ZIP whose entries declare file_size=0 but expand to multiple gigabytes passes the 500 MB check and fully decompresses into the process heap.",
++      "impact": "Remote memory exhaustion / DoS by any authenticated user. The size guard is effectively disabled against a malicious upload.",
++      "recommendation": "Track actual bytes consumed. Replace zf.read(info.filename) with zf.open(info) and read in chunks, accumulating real byte counts. Raise HTTP 422 if the limit is exceeded mid-read:\n\n  with zf.open(info) as entry:\n      chunks = []\n      while True:\n          chunk = entry.read(65536)\n          if not chunk:\n              break\n          total_size += len(chunk)\n          if total_size > _ZIP_MAX_UNCOMPRESSED_BYTES:\n              raise ExtendedHTTPException(...)\n          chunks.append(chunk)\n      result.append((flat_name, b''.join(chunks)))"
++    },
++    {
++      "id": "CR-002",
++      "severity": "major",
++      "triage": "patch",
++      "location": "src/codemie/service/datasource/file_datasource_service.py:225-252 (_expand_zip_file loop)",
++      "problem": "No cap on the number of files extracted from a ZIP. The 500 MB size guard does not prevent a ZIP with 100,000 one-kilobyte files (100 MB total) from forcing 100,000 write_file calls, 100,000 FILE_PATH_DATA_NT allocations, and building a 100,000-element in-memory list before any response is sent. plan.md explicitly documents 'MAX_FILE_COUNT not enforced on extracted files — the purpose of ZIP upload is to upload more than 10 files at once', but this conflates the 10-file direct-upload limit with no limit at all.",
++      "impact": "Resource exhaustion via CPU, memory, and storage I/O within a single upload request. No authentication check prevents this from being triggered repeatedly.",
++      "recommendation": "Add a reasonable upper bound: _ZIP_MAX_FILE_COUNT = 1000 (or configurable). At the top of the loop body, after seen_names.add(flat_name), check: if len(result) >= _ZIP_MAX_FILE_COUNT: raise ExtendedHTTPException(code=422, message='ZIP archive contains too many files', details=f'Archives are limited to {_ZIP_MAX_FILE_COUNT} files.', ...). This still allows far more files than direct upload (10) while preventing unbounded iteration."
++    },
++    {
++      "id": "CR-003",
++      "severity": "major",
++      "triage": "patch",
++      "location": "src/codemie/service/datasource/file_datasource_service.py:283-292 (upload_and_prepare_files ZIP branch) and src/codemie/rest_api/routers/index.py (index_knowledge_base_files ZIP branch)",
++      "problem": "_validate_json_file is called for directly-uploaded JSON files (line 300-301 of file_datasource_service.py: if file.filename.split('.')[-1].lower() == IndexKnowledgeBaseFileTypes.JSON.value: _validate_json_file(file.filename, content)). This validation is skipped entirely for JSON files extracted from a ZIP: the ZIP branch (lines 283-292) has no equivalent check. Both the CREATE path in index.py and the UPDATE path in upload_and_prepare_files have the same gap.",
++      "impact": "Any security or schema enforcement the validator provides — rejection of malformed JSON, missing 'content'/'metadata' keys — is bypassed by wrapping a JSON file in a ZIP. A JSON file that would be rejected on direct upload is accepted silently via ZIP.",
++      "recommendation": "After extracting each entry in both ZIP branches, check the extension and validate: ext = os.path.splitext(extracted_name)[1].lstrip('.').lower(); if ext == IndexKnowledgeBaseFileTypes.JSON.value: _validate_json_file(extracted_name, extracted_bytes). Add a corresponding test."
++    },
++    {
++      "id": "CR-004",
++      "severity": "major",
++      "triage": "patch",
++      "location": "src/codemie/service/datasource/file_datasource_service.py:305 (upload_and_prepare_files) and src/codemie/rest_api/routers/index.py (index_knowledge_base_files)",
++      "problem": "Neither the CREATE nor UPDATE path checks whether _expand_zip_file returned an empty list. An empty archive, an all-directory ZIP, a ZIP containing only Apple Double files (._*), or a ZIP containing only nested ZIPs will yield files_paths=[] after expansion. The background indexing task then raises NoChunksImportedException — the exact exception this fix was intended to eliminate. plan.md acknowledges the case only for 'binary-only unsupported content' and frames it as 'the same behavior as uploading any single unsupported file directly', but the correct analogy is uploading a file that produces no readable content (same HTTP 200 + silent failure pattern the bug report targets).",
++      "impact": "A user uploading an empty or metadata-only ZIP receives HTTP 200 but the datasource ends up in a broken state with no actionable user feedback — the same user-facing failure mode as the original bug.",
++      "recommendation": "After the ZIP expansion loop in both paths, check if any files were actually extracted and raise HTTP 422 immediately if not: if not any_extracted: raise ExtendedHTTPException(code=422, message='ZIP archive contained no extractable files', details='The archive was empty or contained only directories or metadata entries.', help='Ensure the archive contains at least one supported file and try again.'). Track with a local boolean set to True on the first successful extraction."
++    },
++    {
++      "id": "CR-005",
++      "severity": "major",
++      "triage": "patch",
++      "location": "src/codemie/service/datasource/file_datasource_service.py:240-241 (_expand_zip_file)",
++      "problem": "os.path.basename('.') returns '.' and os.path.basename('..') returns '..'. Both are truthy strings that pass the 'if not flat_name: continue' guard on line 240. A crafted ZIP entry named exactly '.' or '..' reaches write_file(name='..', ...) which calls _resolve_safe_path, resolves to a directory, and then open(..., 'wb') raises IsADirectoryError — an unhandled exception that surfaces as an opaque HTTP 500.",
++      "impact": "A crafted ZIP causes an HTTP 500 error, potentially leaking internal path information in stack traces visible to the client.",
++      "recommendation": "Extend the guard to also reject '.' and '..': if not flat_name or flat_name in ('.', '..'): continue. Alternatively, add a regex check for valid filename characters. Add a test covering both cases."
++    }
++  ]
++}
+diff --git a/src/codemie/rest_api/routers/index.py b/src/codemie/rest_api/routers/index.py
+index 89d0b95d7..6ceba50eb 100644
+--- a/src/codemie/rest_api/routers/index.py
++++ b/src/codemie/rest_api/routers/index.py
+@@ -2062,7 +2062,17 @@ def index_knowledge_base_files(
+         content = file.file.read()
+ 
+         if file.filename.split(".")[-1].lower() == IndexKnowledgeBaseFileTypes.ZIP.value:
+-            for extracted_name, extracted_bytes in FileDatasourceService._expand_zip_file(content):
++            extracted = FileDatasourceService._expand_zip_file(content)
++            if not extracted:
++                raise ExtendedHTTPException(
++                    code=status.HTTP_422_UNPROCESSABLE_ENTITY,
++                    message="ZIP archive contained no extractable files",
++                    details="The archive was empty or contained only directories or metadata entries.",
++                    help="Ensure the archive contains at least one supported file and try again.",
++                )
++            for extracted_name, extracted_bytes in extracted:
++                if extracted_name.split(".")[-1].lower() == IndexKnowledgeBaseFileTypes.JSON.value:
++                    validate_json_file(extracted_name, extracted_bytes)
+                 mime, _ = mimetypes.guess_type(extracted_name)
+                 file_object = file_repo.write_file(
+                     name=extracted_name,
+diff --git a/src/codemie/service/datasource/file_datasource_service.py b/src/codemie/service/datasource/file_datasource_service.py
+index 52616b610..d6bb1c191 100644
+--- a/src/codemie/service/datasource/file_datasource_service.py
++++ b/src/codemie/service/datasource/file_datasource_service.py
+@@ -36,6 +36,7 @@ from codemie.rest_api.models.index import IndexInfo, IndexKnowledgeBaseFileTypes
+ from codemie.rest_api.security.user import User
+ 
+ _ZIP_MAX_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
++_ZIP_MAX_FILE_COUNT = 1000
+ 
+ _INDEX_NOT_FOUND_MESSAGE = "Index not found"
+ _INDEX_NOT_FOUND_HELP = (
+@@ -226,18 +227,10 @@ class FileDatasourceService:
+             for info in zf.infolist():
+                 if info.is_dir():
+                     continue
+-                total_size += info.file_size
+-                if total_size > _ZIP_MAX_UNCOMPRESSED_BYTES:
+-                    raise ExtendedHTTPException(
+-                        code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+-                        message="ZIP archive too large",
+-                        details=f"Uncompressed content exceeds the {_ZIP_MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit.",
+-                        help="Upload a smaller archive or split the content into multiple files.",
+-                    )
+                 # Normalise Windows backslash separators before basename extraction
+                 normalised = info.filename.replace("\\", "/")
+                 flat_name = os.path.basename(normalised)
+-                if not flat_name:
++                if not flat_name or flat_name in (".", ".."):
+                     continue
+                 if flat_name.startswith("._"):  # Apple Double resource forks — metadata, not content
+                     continue
+@@ -248,8 +241,32 @@ class FileDatasourceService:
+                 if flat_name in seen_names:
+                     logger.warning(f"Skipping duplicate filename in ZIP: {info.filename}")
+                     continue
++                if len(result) >= _ZIP_MAX_FILE_COUNT:
++                    raise ExtendedHTTPException(
++                        code=status.HTTP_422_UNPROCESSABLE_ENTITY,
++                        message="ZIP archive contains too many files",
++                        details=f"Archives are limited to {_ZIP_MAX_FILE_COUNT} files.",
++                        help="Split the archive into smaller batches and upload separately.",
++                    )
++                # Read in chunks to track actual decompressed bytes; info.file_size is metadata and
++                # can be set to 0 by a crafted archive to bypass the size guard (zip bomb).
++                chunks: list[bytes] = []
++                with zf.open(info) as entry:
++                    while True:
++                        chunk = entry.read(65536)
++                        if not chunk:
++                            break
++                        total_size += len(chunk)
++                        if total_size > _ZIP_MAX_UNCOMPRESSED_BYTES:
++                            raise ExtendedHTTPException(
++                                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
++                                message="ZIP archive too large",
++                                details=f"Uncompressed content exceeds the {_ZIP_MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit.",
++                                help="Upload a smaller archive or split the content into multiple files.",
++                            )
++                        chunks.append(chunk)
+                 seen_names.add(flat_name)
+-                result.append((flat_name, zf.read(info.filename)))
++                result.append((flat_name, b"".join(chunks)))
+ 
+         return result
+ 
+@@ -280,7 +297,17 @@ class FileDatasourceService:
+         for file in new_files:
+             content = file.file.read()
+             if file.filename.split(".")[-1].lower() == IndexKnowledgeBaseFileTypes.ZIP.value:
+-                for extracted_name, extracted_bytes in FileDatasourceService._expand_zip_file(content):
++                extracted = FileDatasourceService._expand_zip_file(content)
++                if not extracted:
++                    raise ExtendedHTTPException(
++                        code=status.HTTP_422_UNPROCESSABLE_ENTITY,
++                        message="ZIP archive contained no extractable files",
++                        details="The archive was empty or contained only directories or metadata entries.",
++                        help="Ensure the archive contains at least one supported file and try again.",
++                    )
++                for extracted_name, extracted_bytes in extracted:
++                    if extracted_name.split(".")[-1].lower() == IndexKnowledgeBaseFileTypes.JSON.value:
++                        _validate_json_file(extracted_name, extracted_bytes)
+                     mime, _ = mimetypes.guess_type(extracted_name)
+                     file_object = file_repo.write_file(
+                         name=extracted_name,
+diff --git a/tests/codemie/service/datasource/test_file_datasource_service.py b/tests/codemie/service/datasource/test_file_datasource_service.py
+index b74b2491c..36e83fc70 100644
+--- a/tests/codemie/service/datasource/test_file_datasource_service.py
++++ b/tests/codemie/service/datasource/test_file_datasource_service.py
+@@ -544,19 +544,40 @@ class TestExpandZipFile:
+         assert "._plan.md" not in names
+         assert len(result) == 2
+ 
+-    @patch("zipfile.ZipFile")
+-    def test_expand_zip_file_raises_on_size_bomb(self, mock_zip_class):
+-        mock_info = MagicMock(spec=zipfile.ZipInfo)
+-        mock_info.is_dir.return_value = False
+-        mock_info.file_size = 600 * 1024 * 1024  # 600 MB — exceeds 500 MB cap
+-        mock_info.filename = "big.pdf"
++    def test_expand_zip_file_raises_on_size_bomb(self):
++        # The guard must use actual decompressed bytes, not info.file_size (which is spoofable).
++        # Patch the constant to a small value so the test does not allocate real gigabytes.
++        buf = io.BytesIO()
++        with zipfile.ZipFile(buf, "w") as zf:
++            zf.writestr("big.txt", b"A" * 200)  # 200 bytes actual content
+ 
+-        mock_ctx = MagicMock()
+-        mock_ctx.infolist.return_value = [mock_info]
+-        mock_zip_class.return_value.__enter__.return_value = mock_ctx
++        with patch("codemie.service.datasource.file_datasource_service._ZIP_MAX_UNCOMPRESSED_BYTES", 100):
++            with pytest.raises(ExtendedHTTPException) as exc_info:
++                FileDatasourceService._expand_zip_file(buf.getvalue())
+ 
+-        with pytest.raises(ExtendedHTTPException) as exc_info:
+-            FileDatasourceService._expand_zip_file(b"fake-zip-bytes")
++        assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
++
++    def test_expand_zip_file_skips_dot_and_dotdot_entries(self):
++        buf = io.BytesIO()
++        with zipfile.ZipFile(buf, "w") as zf:
++            zf.writestr("real.txt", b"content")
++            info_dot = zipfile.ZipInfo(".")
++            zf.writestr(info_dot, b"")
++            info_dotdot = zipfile.ZipInfo("..")
++            zf.writestr(info_dotdot, b"")
++        result = FileDatasourceService._expand_zip_file(buf.getvalue())
++        names = [n for n, _ in result]
++        assert names == ["real.txt"]
++
++    def test_expand_zip_file_raises_on_file_count_limit(self):
++        buf = io.BytesIO()
++        with zipfile.ZipFile(buf, "w") as zf:
++            for i in range(6):
++                zf.writestr(f"file_{i}.txt", b"x")
++
++        with patch("codemie.service.datasource.file_datasource_service._ZIP_MAX_FILE_COUNT", 5):
++            with pytest.raises(ExtendedHTTPException) as exc_info:
++                FileDatasourceService._expand_zip_file(buf.getvalue())
+ 
+         assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+ 
+@@ -651,3 +672,40 @@ class TestUploadAndPrepareFilesZip:
+             content=b"pdf data",
+         )
+         assert "report.pdf" in result.uploaded_files
++
++    def test_upload_and_prepare_files_zip_raises_on_empty_archive(self, mock_index, mock_user):
++        buf = io.BytesIO()
++        with zipfile.ZipFile(buf, "w"):
++            pass
++        upload_file = self._make_upload_file("empty.zip", content=buf.getvalue(), content_type="application/zip")
++
++        with patch(
++            "codemie.service.datasource.file_datasource_service.FileRepositoryFactory.get_current_repository"
++        ):
++            with pytest.raises(ExtendedHTTPException) as exc_info:
++                FileDatasourceService.upload_and_prepare_files(
++                    new_files=[upload_file],
++                    user=mock_user,
++                    uploaded_files_to_keep=[],
++                    index=mock_index,
++                )
++
++        assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
++
++    def test_upload_and_prepare_files_zip_validates_json_entries(self, mock_index, mock_user):
++        invalid_json = b'[{"content": "ok"}]'  # missing "metadata" key
++        zip_bytes = _make_zip_bytes(("data.json", invalid_json))
++        upload_file = self._make_upload_file("bundle.zip", content=zip_bytes, content_type="application/zip")
++
++        with patch(
++            "codemie.service.datasource.file_datasource_service.FileRepositoryFactory.get_current_repository"
++        ):
++            with pytest.raises(ExtendedHTTPException) as exc_info:
++                FileDatasourceService.upload_and_prepare_files(
++                    new_files=[upload_file],
++                    user=mock_user,
++                    uploaded_files_to_keep=[],
++                    index=mock_index,
++                )
++
++        assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY

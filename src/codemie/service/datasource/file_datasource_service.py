@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 from dataclasses import dataclass, field
 
 from elasticsearch.exceptions import NotFoundError
@@ -30,6 +31,7 @@ from codemie.repository.repository_factory import FileRepositoryFactory
 from codemie.rest_api.models.guardrail import GuardrailAssignmentItem
 from codemie.rest_api.models.index import IndexInfo, IndexKnowledgeBaseFileTypes, KnowledgeBaseIndexInfo
 from codemie.rest_api.security.user import User
+from codemie.service.datasource.zip_utils import ZipExtractionError, expand_zip_file
 
 _INDEX_NOT_FOUND_MESSAGE = "Index not found"
 _INDEX_NOT_FOUND_HELP = (
@@ -201,6 +203,93 @@ class FileDatasourceService:
         )
 
     @staticmethod
+    def _write_extracted_file(
+        name: str,
+        content: bytes,
+        user_id: str,
+        file_repo,
+    ) -> tuple[FILE_PATH_DATA_NT, str]:
+        if name.split(".")[-1].lower() == IndexKnowledgeBaseFileTypes.JSON.value:
+            _validate_json_file(name, content)
+        mime, _ = mimetypes.guess_type(name)
+        file_object = file_repo.write_file(
+            name=name,
+            mime_type=mime or "application/octet-stream",
+            owner=user_id,
+            content=content,
+        )
+        return FILE_PATH_DATA_NT(name=file_object.name, owner=file_object.owner), file_object.name
+
+    @staticmethod
+    def _write_extracted_files_with_rollback(
+        extracted: list[tuple[str, bytes]],
+        user_id: str,
+        file_repo,
+    ) -> tuple[list[FILE_PATH_DATA_NT], list[str]]:
+        written: list[FILE_PATH_DATA_NT] = []
+        paths: list[FILE_PATH_DATA_NT] = []
+        filenames: list[str] = []
+        try:
+            for extracted_name, extracted_bytes in extracted:
+                path, fname = FileDatasourceService._write_extracted_file(
+                    extracted_name, extracted_bytes, user_id, file_repo
+                )
+                written.append(path)
+                paths.append(path)
+                filenames.append(fname)
+        except Exception:
+            for stored in written:
+                try:
+                    file_repo.delete_file(stored.name, stored.owner)
+                except Exception as del_exc:
+                    logger.warning(f"Failed to roll back uploaded file '{stored.name}': {del_exc}")
+            raise
+        return paths, filenames
+
+    @staticmethod
+    def _process_upload_file(
+        file: UploadFile,
+        user_id: str,
+        file_repo,
+    ) -> tuple[list[FILE_PATH_DATA_NT], list[str]]:
+        """Write one uploaded file to storage, expanding ZIP archives if needed.
+
+        Returns ``(paths, filenames)`` for the resulting stored file(s).
+        """
+        if not file.filename:
+            raise ZipExtractionError(
+                message="Uploaded file is missing a filename",
+                detail="The multipart part did not include a filename.",
+                help_text="Ensure the file upload includes a valid filename.",
+            )
+        content = file.file.read()
+        paths: list[FILE_PATH_DATA_NT] = []
+        filenames: list[str] = []
+
+        if file.filename.split(".")[-1].lower() == IndexKnowledgeBaseFileTypes.ZIP.value:
+            extracted = expand_zip_file(content)  # raises ZipExtractionError on bad/oversized/too-many-files
+            if not extracted:
+                raise ZipExtractionError(
+                    message="ZIP archive contained no extractable files",
+                    detail="The archive was empty or contained only directories or metadata entries.",
+                    help_text="Ensure the archive contains at least one supported file and try again.",
+                )
+            paths, filenames = FileDatasourceService._write_extracted_files_with_rollback(extracted, user_id, file_repo)
+        else:
+            file_object = file_repo.write_file(
+                name=file.filename,
+                mime_type=file.headers.get("content-type", "application/octet-stream"),
+                owner=user_id,
+                content=content,
+            )
+            if file.filename.split(".")[-1].lower() == IndexKnowledgeBaseFileTypes.JSON.value:
+                _validate_json_file(file.filename, content)
+            paths.append(FILE_PATH_DATA_NT(name=file_object.name, owner=file_object.owner))
+            filenames.append(file_object.name)
+
+        return paths, filenames
+
+    @staticmethod
     def upload_and_prepare_files(
         new_files: list[UploadFile],
         user: User,
@@ -225,17 +314,9 @@ class FileDatasourceService:
         new_filenames: list[str] = []
 
         for file in new_files:
-            content = file.file.read()
-            file_object = file_repo.write_file(
-                name=file.filename,
-                mime_type=file.headers["content-type"],
-                owner=user.id,
-                content=content,
-            )
-            if file.filename.split(".")[-1] == IndexKnowledgeBaseFileTypes.JSON.value:
-                _validate_json_file(file.filename, content)
-            new_paths.append(FILE_PATH_DATA_NT(name=file_object.name, owner=file_object.owner))
-            new_filenames.append(file_object.name)
+            file_paths, file_names = FileDatasourceService._process_upload_file(file, user.id, file_repo)
+            new_paths.extend(file_paths)
+            new_filenames.extend(file_names)
 
         return PreparedFilesResult(
             all_files_paths=kept_paths + new_paths,

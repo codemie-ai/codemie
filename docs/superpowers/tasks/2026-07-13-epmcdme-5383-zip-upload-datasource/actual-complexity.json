@@ -1,0 +1,78 @@
+{
+  "task": "Add ZIP archive upload support to file-type knowledge base datasources with decompression bomb guard, file count cap, Apple Double filter, nested ZIP skip, and duplicate filename dedup.",
+  "generated": "2026-07-14T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 3,
+      "label": "M",
+      "affected": "FileDatasourceService._expand_zip_file (new), FileDatasourceService.upload_and_prepare_files (modified), index_knowledge_base_files router handler (modified)",
+      "layers": "API, Service"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M",
+      "risk_factors": "Decompression bomb prevention (chunked reads bypass spoofable info.file_size metadata), ZIP path traversal (flat-name extraction), Apple Double resource fork filtering, nested archive skip",
+      "mitigation": "Chunked streaming read accumulates actual decompressed bytes against a 500 MB cap; basename extraction strips directory components; constants patchable in tests for guard verification"
+    },
+    "file_change_estimate": {
+      "score": 3,
+      "label": "M",
+      "modified_files": 2,
+      "modified_file_list": [
+        "src/codemie/rest_api/routers/index.py",
+        "src/codemie/service/datasource/file_datasource_service.py"
+      ],
+      "new_files": 1,
+      "new_file_list": [
+        "tests/codemie/service/datasource/test_file_datasource_service.py"
+      ],
+      "affected_dirs": [
+        "src/codemie/rest_api/routers",
+        "src/codemie/service/datasource",
+        "tests/codemie/service/datasource"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 2,
+      "label": "S",
+      "layers_changed": ["API", "Service"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 6,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Security-sensitive ZIP processing: decompression bomb guard uses chunked reads (info.file_size is spoofable), path traversal mitigated via basename flattening, Apple Double resource forks filtered — bumped from S to M by security red flag."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Two production components modified (FileDatasourceService service class, index_knowledge_base_files router handler) spanning 2 layers; new _expand_zip_file static method is self-contained within the service."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Diffstat reports 6 files changed (522 insertions, 23 deletions). Three named: router, service, and new test file. Three additional unlisted files (likely planning/docs artifacts). Fits M band (5–7 files)."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S (2) to M (3): decompression bomb guard and ZIP input security validation constitute explicit security requirements."
+  ],
+  "split_recommendation": null
+}

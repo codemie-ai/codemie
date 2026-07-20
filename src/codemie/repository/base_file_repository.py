@@ -69,6 +69,16 @@ class FileRepository(ABC):
         pass
 
     @abstractmethod
+    def delete_file(self, name: str, owner: str) -> None:
+        """Delete a file from the repository.
+
+        Parameters:
+            name (str): Name of the file to delete.
+            owner (str): User identifier.
+        """
+        pass
+
+    @abstractmethod
     def create_directory(self, name: str, owner: str) -> DirectoryObject:
         """
         Creates a new directory in the repository.

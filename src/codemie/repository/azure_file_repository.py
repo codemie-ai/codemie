@@ -67,6 +67,16 @@ class AzureFileRepository(FileRepository):
         logger.debug(f"File {file_name} read successfully from container {owner}")
         return FileObject(name=file_name, owner=owner, content=content, mime_type=mime_type)
 
+    def delete_file(self, name: str, owner: str) -> None:
+        logger.debug(f"Deleting file {name} from container {owner}")
+        container_client = self._get_container(owner)
+        try:
+            container_client.get_blob_client(name).delete_blob()
+            logger.debug(f"File {name} deleted successfully from container {owner}")
+        except Exception as e:
+            logger.error(f"Failed to delete file {name} from container {owner}: {e}")
+            raise
+
     def create_directory(self, name: str, owner: str) -> DirectoryObject:
         logger.debug(f"Creating directory {name} in container {owner}")
         container_client = self._get_container(owner)

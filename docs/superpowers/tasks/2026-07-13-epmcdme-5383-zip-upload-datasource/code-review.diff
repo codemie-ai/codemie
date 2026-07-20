@@ -1,0 +1,1017 @@
+diff --git a/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/.state.json b/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/.state.json
+new file mode 100644
+index 000000000..ee31a3751
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/.state.json
+@@ -0,0 +1,8 @@
++{
++  "schema": 1,
++  "flow": "sdlc-light",
++  "slug": "epmcdme-5383-zip-upload-datasource",
++  "branch": "EPMCDME-5383_zip-upload-datasource",
++  "phase": "main",
++  "started_at": "2026-07-13T00:00:00Z"
++}
+diff --git a/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/code-review.diff b/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/code-review.diff
+new file mode 100644
+index 000000000..006b73d19
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/code-review.diff
+@@ -0,0 +1,303 @@
++diff --git a/src/codemie/service/datasource/file_datasource_service.py b/src/codemie/service/datasource/file_datasource_service.py
++index 874e370ed..841212b16 100644
++--- a/src/codemie/service/datasource/file_datasource_service.py
+++++ b/src/codemie/service/datasource/file_datasource_service.py
++@@ -16,7 +16,11 @@
++ 
++ from __future__ import annotations
++ 
+++import io
++ import json
+++import mimetypes
+++import os
+++import zipfile
++ from dataclasses import dataclass, field
++ 
++ from elasticsearch.exceptions import NotFoundError
++@@ -31,6 +35,8 @@ from codemie.rest_api.models.guardrail import GuardrailAssignmentItem
++ from codemie.rest_api.models.index import IndexInfo, IndexKnowledgeBaseFileTypes, KnowledgeBaseIndexInfo
++ from codemie.rest_api.security.user import User
++ 
+++_ZIP_MAX_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
+++
++ _INDEX_NOT_FOUND_MESSAGE = "Index not found"
++ _INDEX_NOT_FOUND_HELP = (
++     "Please verify the index name and project name. If you believe this index should exist, "
++@@ -200,6 +206,35 @@ class FileDatasourceService:
++             updated_by=updated_by,
++         )
++ 
+++    @staticmethod
+++    def _expand_zip_file(zip_bytes: bytes) -> list[tuple[str, bytes]]:
+++        supported = {e.value for e in IndexKnowledgeBaseFileTypes}
+++        result: list[tuple[str, bytes]] = []
+++        total_size = 0
+++
+++        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+++            for info in zf.infolist():
+++                if info.is_dir():
+++                    continue
+++                total_size += info.file_size
+++                if total_size > _ZIP_MAX_UNCOMPRESSED_BYTES:
+++                    raise ExtendedHTTPException(
+++                        code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+++                        message="ZIP archive too large",
+++                        details=f"Uncompressed content exceeds the {_ZIP_MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit.",
+++                        help="Upload a smaller archive or split the content into multiple files.",
+++                    )
+++                flat_name = os.path.basename(info.filename)
+++                if not flat_name:
+++                    continue
+++                ext = os.path.splitext(flat_name)[1].lstrip(".").lower()
+++                if ext not in supported:
+++                    logger.warning(f"Skipping unsupported file type in ZIP: {info.filename}")
+++                    continue
+++                result.append((flat_name, zf.read(info.filename)))
+++
+++        return result
+++
++     @staticmethod
++     def upload_and_prepare_files(
++         new_files: list[UploadFile],
++@@ -226,16 +261,28 @@ class FileDatasourceService:
++ 
++         for file in new_files:
++             content = file.file.read()
++-            file_object = file_repo.write_file(
++-                name=file.filename,
++-                mime_type=file.headers["content-type"],
++-                owner=user.id,
++-                content=content,
++-            )
++-            if file.filename.split(".")[-1] == IndexKnowledgeBaseFileTypes.JSON.value:
++-                _validate_json_file(file.filename, content)
++-            new_paths.append(FILE_PATH_DATA_NT(name=file_object.name, owner=file_object.owner))
++-            new_filenames.append(file_object.name)
+++            if file.filename.split(".")[-1].lower() == IndexKnowledgeBaseFileTypes.ZIP.value:
+++                for extracted_name, extracted_bytes in FileDatasourceService._expand_zip_file(content):
+++                    mime, _ = mimetypes.guess_type(extracted_name)
+++                    file_object = file_repo.write_file(
+++                        name=extracted_name,
+++                        mime_type=mime or "application/octet-stream",
+++                        owner=user.id,
+++                        content=extracted_bytes,
+++                    )
+++                    new_paths.append(FILE_PATH_DATA_NT(name=file_object.name, owner=file_object.owner))
+++                    new_filenames.append(file_object.name)
+++            else:
+++                file_object = file_repo.write_file(
+++                    name=file.filename,
+++                    mime_type=file.headers["content-type"],
+++                    owner=user.id,
+++                    content=content,
+++                )
+++                if file.filename.split(".")[-1] == IndexKnowledgeBaseFileTypes.JSON.value:
+++                    _validate_json_file(file.filename, content)
+++                new_paths.append(FILE_PATH_DATA_NT(name=file_object.name, owner=file_object.owner))
+++                new_filenames.append(file_object.name)
++ 
++         return PreparedFilesResult(
++             all_files_paths=kept_paths + new_paths,
++diff --git a/tests/codemie/service/datasource/test_file_datasource_service.py b/tests/codemie/service/datasource/test_file_datasource_service.py
++index eaeef03a5..bf658ad99 100644
++--- a/tests/codemie/service/datasource/test_file_datasource_service.py
+++++ b/tests/codemie/service/datasource/test_file_datasource_service.py
++@@ -14,7 +14,9 @@
++ 
++ """Tests for FileDatasourceService and _validate_json_file."""
++ 
+++import io
++ import json
+++import zipfile
++ 
++ import pytest
++ from elasticsearch.exceptions import NotFoundError
++@@ -388,3 +390,188 @@ class TestValidateJsonFile:
++         with pytest.raises(ExtendedHTTPException) as exc_info:
++             _validate_json_file("file.json", b"not-json-content")
++         assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+++
+++
+++# ---------------------------------------------------------------------------
+++# _expand_zip_file
+++# ---------------------------------------------------------------------------
+++
+++
+++def _make_zip_bytes(*members: tuple[str, bytes]) -> bytes:
+++    """Return in-memory ZIP bytes containing the given (name, content) pairs."""
+++    buf = io.BytesIO()
+++    with zipfile.ZipFile(buf, "w") as zf:
+++        for name, content in members:
+++            zf.writestr(name, content)
+++    return buf.getvalue()
+++
+++
+++class TestExpandZipFile:
+++    def test_expand_zip_file_yields_supported_files(self):
+++        zip_bytes = _make_zip_bytes(("doc.pdf", b"pdf content"), ("readme.txt", b"text content"))
+++
+++        result = FileDatasourceService._expand_zip_file(zip_bytes)
+++
+++        names = [name for name, _ in result]
+++        assert "doc.pdf" in names
+++        assert "readme.txt" in names
+++        assert len(result) == 2
+++
+++    def test_expand_zip_file_returns_correct_bytes(self):
+++        zip_bytes = _make_zip_bytes(("report.txt", b"hello world"))
+++
+++        result = FileDatasourceService._expand_zip_file(zip_bytes)
+++
+++        assert result == [("report.txt", b"hello world")]
+++
+++    def test_expand_zip_file_skips_directories(self):
+++        buf = io.BytesIO()
+++        with zipfile.ZipFile(buf, "w") as zf:
+++            dir_info = zipfile.ZipInfo("subdir/")
+++            zf.writestr(dir_info, "")
+++            zf.writestr("doc.pdf", b"pdf content")
+++        zip_bytes = buf.getvalue()
+++
+++        result = FileDatasourceService._expand_zip_file(zip_bytes)
+++
+++        names = [name for name, _ in result]
+++        assert "subdir/" not in names
+++        assert "doc.pdf" in names
+++        assert len(result) == 1
+++
+++    def test_expand_zip_file_skips_unsupported_extensions(self):
+++        zip_bytes = _make_zip_bytes(("malware.exe", b"binary content"))
+++
+++        result = FileDatasourceService._expand_zip_file(zip_bytes)
+++
+++        assert result == []
+++
+++    def test_expand_zip_file_skips_unsupported_but_keeps_supported(self):
+++        zip_bytes = _make_zip_bytes(("good.pdf", b"content"), ("bad.exe", b"binary"))
+++
+++        result = FileDatasourceService._expand_zip_file(zip_bytes)
+++
+++        names = [name for name, _ in result]
+++        assert "good.pdf" in names
+++        assert "bad.exe" not in names
+++        assert len(result) == 1
+++
+++    def test_expand_zip_file_flattens_nested_path(self):
+++        buf = io.BytesIO()
+++        with zipfile.ZipFile(buf, "w") as zf:
+++            zf.writestr("subdir/nested/doc.pdf", b"nested pdf")
+++        zip_bytes = buf.getvalue()
+++
+++        result = FileDatasourceService._expand_zip_file(zip_bytes)
+++
+++        names = [name for name, _ in result]
+++        assert "doc.pdf" in names
+++        assert "subdir/nested/doc.pdf" not in names
+++
+++    @patch("zipfile.ZipFile")
+++    def test_expand_zip_file_raises_on_size_bomb(self, mock_zip_class):
+++        mock_info = MagicMock(spec=zipfile.ZipInfo)
+++        mock_info.is_dir.return_value = False
+++        mock_info.file_size = 600 * 1024 * 1024  # 600 MB — exceeds 500 MB cap
+++        mock_info.filename = "big.pdf"
+++
+++        mock_ctx = MagicMock()
+++        mock_ctx.infolist.return_value = [mock_info]
+++        mock_zip_class.return_value.__enter__.return_value = mock_ctx
+++
+++        with pytest.raises(ExtendedHTTPException) as exc_info:
+++            FileDatasourceService._expand_zip_file(b"fake-zip-bytes")
+++
+++        assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+++
+++
+++# ---------------------------------------------------------------------------
+++# upload_and_prepare_files — ZIP expansion integration
+++# ---------------------------------------------------------------------------
+++
+++
+++class TestUploadAndPrepareFilesZip:
+++    def _make_upload_file(self, filename, content=b"data", content_type="text/plain"):
+++        f = MagicMock()
+++        f.filename = filename
+++        f.file.read.return_value = content
+++        f.headers = {"content-type": content_type}
+++        return f
+++
+++    def _make_file_object(self, name, owner="user1"):
+++        obj = MagicMock()
+++        obj.name = name
+++        obj.owner = owner
+++        return obj
+++
+++    def test_upload_and_prepare_files_expands_zip(self, mock_index, mock_user):
+++        zip_bytes = _make_zip_bytes(("document.pdf", b"pdf content"))
+++        upload_file = self._make_upload_file("archive.zip", content=zip_bytes, content_type="application/zip")
+++        pdf_obj = self._make_file_object("document.pdf")
+++
+++        with patch(
+++            "codemie.service.datasource.file_datasource_service.FileRepositoryFactory.get_current_repository"
+++        ) as mock_repo:
+++            mock_repo.return_value.write_file.return_value = pdf_obj
+++            result = FileDatasourceService.upload_and_prepare_files(
+++                new_files=[upload_file],
+++                user=mock_user,
+++                uploaded_files_to_keep=[],
+++                index=mock_index,
+++            )
+++
+++        mock_repo.return_value.write_file.assert_called_once()
+++        call_kwargs = mock_repo.return_value.write_file.call_args.kwargs
+++        assert call_kwargs["name"] == "document.pdf"
+++        assert call_kwargs["owner"] == "user1"
+++        assert call_kwargs["content"] == b"pdf content"
+++        assert "archive.zip" not in result.uploaded_files
+++        assert "document.pdf" in result.uploaded_files
+++        assert len(result.new_files_paths) == 1
+++
+++    def test_upload_and_prepare_files_zip_multiple_files(self, mock_index, mock_user):
+++        zip_bytes = _make_zip_bytes(("a.pdf", b"pdf"), ("b.txt", b"txt"))
+++        upload_file = self._make_upload_file("bundle.zip", content=zip_bytes, content_type="application/zip")
+++
+++        pdf_obj = self._make_file_object("a.pdf")
+++        txt_obj = self._make_file_object("b.txt")
+++
+++        with patch(
+++            "codemie.service.datasource.file_datasource_service.FileRepositoryFactory.get_current_repository"
+++        ) as mock_repo:
+++            mock_repo.return_value.write_file.side_effect = [pdf_obj, txt_obj]
+++            result = FileDatasourceService.upload_and_prepare_files(
+++                new_files=[upload_file],
+++                user=mock_user,
+++                uploaded_files_to_keep=[],
+++                index=mock_index,
+++            )
+++
+++        assert mock_repo.return_value.write_file.call_count == 2
+++        assert "bundle.zip" not in result.uploaded_files
+++        assert "a.pdf" in result.uploaded_files
+++        assert "b.txt" in result.uploaded_files
+++        assert len(result.new_files_paths) == 2
+++
+++    def test_upload_and_prepare_files_non_zip_unchanged(self, mock_index, mock_user):
+++        upload_file = self._make_upload_file("report.pdf", content=b"pdf data", content_type="application/pdf")
+++        file_obj = self._make_file_object("report.pdf")
+++
+++        with patch(
+++            "codemie.service.datasource.file_datasource_service.FileRepositoryFactory.get_current_repository"
+++        ) as mock_repo:
+++            mock_repo.return_value.write_file.return_value = file_obj
+++            result = FileDatasourceService.upload_and_prepare_files(
+++                new_files=[upload_file],
+++                user=mock_user,
+++                uploaded_files_to_keep=[],
+++                index=mock_index,
+++            )
+++
+++        mock_repo.return_value.write_file.assert_called_once_with(
+++            name="report.pdf",
+++            mime_type="application/pdf",
+++            owner="user1",
+++            content=b"pdf data",
+++        )
+++        assert "report.pdf" in result.uploaded_files
+diff --git a/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/plan.md b/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/plan.md
+new file mode 100644
+index 000000000..212b40785
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/plan.md
+@@ -0,0 +1,99 @@
++# Plan — EPMCDME-5383: ZIP Upload for File Datasource
++
++## Requirements
++
++Allow users to upload a ZIP archive to a file-type datasource. The backend extracts the archive contents, stores each file individually, and makes them visible as separate entries in the datasource. The ZIP itself is not stored.
++
++Files inside the ZIP that the indexer can handle as plain text (e.g. `.md`, `.rst`) must be indexed, not silently dropped — aligned with the `PlainTextLoader` fallback behavior of direct upload.
++
++---
++
++## Tasks
++
++### Task 1 — Add `_expand_zip_file` helper to `FileDatasourceService` ✅
++
++**File**: `src/codemie/service/datasource/file_datasource_service.py`
++
++Static method that:
++- Accepts `zip_bytes: bytes`
++- Opens the archive with `zipfile.ZipFile(io.BytesIO(zip_bytes))`
++- Skips directory entries (`ZipInfo.is_dir()`)
++- Guards total uncompressed size; raises `ExtendedHTTPException(HTTP_422)` if it exceeds `_ZIP_MAX_UNCOMPRESSED_BYTES` (500 MB)
++- Derives flat filenames with `os.path.basename`
++- Skips nested ZIPs (extension == `'zip'`) with a logged warning — storing them verbatim would trigger `ZipLoader` failure at index time
++- Tracks `seen_names` to skip duplicates with a logged warning
++- Reads member bytes with `ZipFile.read(info.filename)`
++- Returns `list[tuple[str, bytes]]` — `(flat_filename, content)` pairs
++
++Extension filter: exclude only `.zip` (nested archives). Do NOT filter against `IndexKnowledgeBaseFileTypes` — the indexer accepts all unknown extensions via `PlainTextLoader` fallback, so filtering here would silently drop text files (`.md`, `.rst`, etc.) that direct upload would index correctly.
++
++**Test-first**: `test_expand_zip_file_yields_supported_files`, `test_expand_zip_file_skips_directories`, `test_expand_zip_file_skips_nested_zip`, `test_expand_zip_file_raises_on_size_bomb`, `test_expand_zip_file_skips_duplicate_filenames`
++
++---
++
++### Task 2 — Modify `upload_and_prepare_files` to expand ZIP files (UPDATE path) ✅
++
++**File**: `src/codemie/service/datasource/file_datasource_service.py`
++
++In the `for file in new_files` loop, after reading `content = file.file.read()`:
++- Check `file.filename.split(".")[-1].lower() == IndexKnowledgeBaseFileTypes.ZIP.value`
++- If ZIP: call `_expand_zip_file(content)`; iterate `(name, bytes)` pairs; `write_file` each; append to `new_paths` / `new_filenames`
++- If not ZIP: keep current behaviour (store verbatim, validate JSON if applicable)
++- ZIP filename itself is NOT added to `uploaded_files`
++
++**Test-first**: `test_upload_and_prepare_files_expands_zip`, `test_upload_and_prepare_files_zip_does_not_appear_in_uploaded_files`
++
++---
++
++### Task 3 — Apply ZIP expansion to the CREATE path in the router ✅
++
++**File**: `src/codemie/rest_api/routers/index.py`
++
++The CREATE handler `index_knowledge_base_files` (`@router.post("/index/knowledge_base/file")`) iterates files inline without going through `FileDatasourceService`. Apply the same ZIP expansion logic:
++- Add `import mimetypes` to the router imports
++- In the `for file in request.files` loop, check if extension is `zip`
++- If ZIP: call `FileDatasourceService._expand_zip_file(content)`; iterate extracted pairs; `write_file` each with `mimetypes.guess_type(name)` mime; append to `files_paths` / `uploaded_files`
++- If not ZIP: existing behaviour unchanged
++
++**Test-first**: no — this is router-level glue that mirrors already-tested service logic; the logic itself is covered by Task 1/2 tests.
++
++---
++
++### Task 4 — Align `_expand_zip_file` extension filter with indexer behaviour (pending)
++
++**File**: `src/codemie/service/datasource/file_datasource_service.py`
++
++The current implementation already drops the `IndexKnowledgeBaseFileTypes` guard (Task 1 above). This task tracks verifying the aligned behaviour with a test:
++
++- Upload a ZIP containing a `.md` file
++- Assert the extracted `.md` file IS included in the result (not skipped)
++- Confirms parity with direct-upload plain-text fallback
++
++**Test-first**: `test_expand_zip_file_includes_plain_text_files` (`.md`, `.rst`, `.log`)
++
++---
++
++## Invariants and Constraints
++
++| Constraint | Rationale |
++|---|---|
++| ZIP itself not added to `uploaded_files` | Users should see extracted files, not the archive |
++| Flat filenames (`os.path.basename`) | Keeps the datasource file list simple; avoids path separator issues across storage backends |
++| `MAX_FILE_COUNT` not enforced on extracted files | The purpose of ZIP upload is to upload more than 10 files at once |
++| Nested ZIPs skipped (not stored verbatim) | Storing them would trigger `ZipLoader`/`ZipConverter` failure at index time |
++| No extension guard beyond skipping nested ZIPs | Indexer accepts all unknown extensions via `PlainTextLoader`; guard in ZIP path would be stricter than direct upload |
++| Size guard before extraction | Prevents decompression bombs from exhausting memory |
++| `ZipLoader` in `LOADERS` dict left unchanged | Other code paths (SharePoint, direct loader use) may still pass ZIPs to it |
++| CREATE path not refactored into service | The inline router code is out of scope; ZIP expansion duplicated there for now |
++
++---
++
++## Files Changed
++
++| File | Change |
++|---|---|
++| `src/codemie/service/datasource/file_datasource_service.py` | Add `_ZIP_MAX_UNCOMPRESSED_BYTES`, `_expand_zip_file`; modify `upload_and_prepare_files` (UPDATE path) |
++| `src/codemie/rest_api/routers/index.py` | Add `import mimetypes`; expand ZIP in `index_knowledge_base_files` (CREATE path) |
++| `tests/codemie/service/datasource/test_file_datasource_service.py` | Add ZIP expansion test cases |
++
++**Not changed**: `file_extraction_utils.py`, `FileDatasourceUpdateProcessor`, `FileDatasourceProcessor`, `IndexKnowledgeBaseFileTypes`.
+diff --git a/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/technical-analysis.md b/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/technical-analysis.md
+new file mode 100644
+index 000000000..7d1095601
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-13-epmcdme-5383-zip-upload-datasource/technical-analysis.md
+@@ -0,0 +1,135 @@
++# Technical Analysis — EPMCDME-5383: ZIP Upload for File Datasource
++
++## Summary
++
++Add the ability to upload a ZIP archive to a file-type datasource so the system extracts its contents and stores each individual file as a separate datasource entry. The fix required changes to **two separate upload paths** — the original analysis captured only the UPDATE path; the CREATE path was missed and contained the same bug.
++
++A secondary finding: the extension guard inside `_expand_zip_file` was stricter than the indexer's actual behavior, causing `.md` and other text-based files inside a ZIP to be silently skipped even though direct upload of those same files works via the `PlainTextLoader` fallback.
++
++---
++
++## Codebase Findings
++
++### Entry Points and Request Models
++
++There are **two independent upload paths** for file datasources:
++
++**CREATE path**
++`POST /v1/knowledge_base/{project_name}/files`
++→ `index_knowledge_base_files` (`src/codemie/rest_api/routers/index.py:2033`)
++→ `FileDatasourceProcessor` (background task)
++
++**UPDATE path**
++`PUT /v1/knowledge_base/{project_name}/indexes/{name}/files`
++→ `update_knowledge_base_files` (`src/codemie/rest_api/routers/index.py:1429`)
++→ `UpdateFileDatasourceUseCase.execute()` (`src/codemie/use_cases/datasource/update_file_datasource_use_case.py:50`)
++→ `FileDatasourceService.upload_and_prepare_files()` (`src/codemie/service/datasource/file_datasource_service.py:256`)
++
++**`IndexKnowledgeBaseFileRequest`** (CREATE, `src/codemie/rest_api/models/index.py:1566`):
++- `files: List[UploadFile]`
++- Validators: count and size only; no extension filter at the model level
++
++**`UpdateKnowledgeBaseFileRequest`** (UPDATE, `src/codemie/rest_api/models/index.py:1377`):
++- `files: Optional[List[UploadFile]] = None`
++- `MAX_FILE_COUNT: ClassVar[int] = 10`
++- Same count/size validators; no extension filter
++
++### Current (pre-fix) File Upload Flow
++
++**CREATE path** — inline in router, no service extraction:
++```
++index_knowledge_base_files(request, ...)
++  for file in request.files:
++    content = file.file.read()
++    file_object = file_repo.write_file(name=file.filename, ...)  ← ZIP stored verbatim
++    files_paths.append(FILE_PATH_DATA_NT(...))
++    uploaded_files.append(file_object.name)
++  FileDatasourceProcessor(files_paths=files_paths, ...)
++```
++
++**UPDATE path** — delegated to service:
++```
++upload_and_prepare_files(new_files, user, uploaded_files_to_keep, index)
++  for file in new_files:
++    content = file.file.read()
++    file_object = file_repo.write_file(name=file.filename, ...)  ← ZIP stored verbatim
++    new_paths.append(FILE_PATH_DATA_NT(...))
++    new_filenames.append(file_object.name)
++  return PreparedFilesResult(all_files_paths, new_files_paths, uploaded_files)
++```
++
++Both paths then invoke the indexer which calls:
++```
++extract_documents_from_bytes(file_bytes, file_name, ...)
++  loader_class = LOADERS.get(file_ext, PlainTextLoader)  ← fallback for unknown ext
++```
++
++### ZIP Support Status Before Fix
++
++| Layer | Status | Detail |
++|---|---|---|
++| `IndexKnowledgeBaseFileTypes.ZIP` | ✅ exists | `index.py:1549` — `ZIP = 'zip'` |
++| `LOADERS['zip']` | ✅ mapped | `file_extraction_utils.py:62` — `ZipLoader` (langchain_markitdown) |
++| `index_knowledge_base_files` (CREATE) | ❌ gap | Stored ZIP verbatim; `ZipLoader`/`ZipConverter` failed on binary content |
++| `upload_and_prepare_files` (UPDATE) | ❌ gap | Same — no extraction before storage |
++| `_expand_zip_file` extension guard | ❌ over-strict | Used `IndexKnowledgeBaseFileTypes` to filter; excluded `.md` and other text files that the indexer accepts via `PlainTextLoader` fallback |
++
++### Why ZipLoader Fails
++
++`LOADERS['zip']` → `ZipLoader` from `langchain_markitdown` uses `ZipConverter`, which attempts UTF-8 decode of zip member bytes. Binary content (PDF, DOCX, PPTX, images) raises `UnicodeDecodeError`. The resulting `ValueError` is caught in `extract_documents_from_bytes`, which returns `[]` → processor sees 0 chunks → `NoChunksImportedException`.
++
++### Extension Guard vs. Indexer Inconsistency
++
++`_expand_zip_file` originally guarded with:
++```python
++supported = {e.value for e in IndexKnowledgeBaseFileTypes}
++```
++This is stricter than the indexer at `file_extraction_utils.py:143`:
++```python
++loader_class = LOADERS.get(file_ext, PlainTextLoader)
++```
++Any extension not in `LOADERS` falls back to `PlainTextLoader` — so `.md`, `.rst`, `.log`, and other plain-text files ARE indexed when uploaded directly, but were silently skipped inside a ZIP. The guard should exclude only file types the indexer cannot handle (currently none — `PlainTextLoader` covers everything).
++
++### Storage Layer
++
++`FileRepositoryFactory.get_current_repository()` returns `FileSystemRepository`, `AWSFileRepository`, or `AzureFileRepository`. All expose the same interface:
++```python
++write_file(name: str, mime_type: str, owner: str, content: Any) -> FileObject
++```
++`FileObject.name` equals the `name` argument exactly.
++
++### Test Coverage
++
++| File | Relevance |
++|---|---|
++| `tests/codemie/service/datasource/test_file_datasource_service.py` | Covers `upload_and_prepare_files`, `_expand_zip_file`, `compute_file_changes`, `parse_uploaded_files` |
++| `tests/codemie/use_cases/datasource/test_update_file_datasource_use_case.py` | Covers the UPDATE execute flow end-to-end |
++| `tests/codemie/datasource/loader/test_file_extraction_utils.py` | Covers loader selection by extension |
++
++---
++
++## Risk Indicators
++
++1. **ZIP bomb / decompression bomb** — a crafted archive with small compressed size but enormous uncompressed content could exhaust memory or disk. A `_ZIP_MAX_UNCOMPRESSED_BYTES` guard is required (implemented: 500 MB cap).
++2. **Filename collisions** — two files with the same name in different ZIP subdirectories. Strategy: flatten with `os.path.basename` and skip duplicates with a warning (implemented).
++3. **Nested ZIPs** — spec does not require recursive extraction; nested ZIPs are skipped (not stored verbatim — storing them would trigger `ZipLoader` failure on next index).
++4. **Missing files if ZIP has only unsupported content** — if every file in the archive is binary-only unsupported (an edge case after removing the extension guard), `_expand_zip_file` returns `[]`; the background task gets `files_paths=[]` and will raise `NoChunksImportedException`. This is the same behavior as uploading any single unsupported file directly.
++5. **CREATE path not using the service layer** — `index_knowledge_base_files` is inline router code, not delegated to `FileDatasourceService`. The ZIP expansion logic must be duplicated there until that function is refactored into the service (out of scope for this task).
++6. **`ZipLoader` in LOADERS becomes unreachable for file-datasource uploads** — once expansion happens at upload time, no `.zip` reaches `extract_documents_from_bytes`. The entry can remain (other paths like SharePoint may use it) but is effectively dead for file datasources.
++
++---
++
++## Implementation Approach
++
++Three changes required:
++
++1. **`_expand_zip_file` in `FileDatasourceService`** — add helper; guard removed nested ZIPs and ZIP bomb; flatten filenames. Extension filter changed to exclude only ZIP itself (not all `IndexKnowledgeBaseFileTypes`) so that text-based files like `.md` are passed through to the `PlainTextLoader` fallback at index time.
++
++2. **UPDATE path in `upload_and_prepare_files`** — call `_expand_zip_file` when file extension is `zip` rather than storing verbatim.
++
++3. **CREATE path in `index_knowledge_base_files` (router)** — apply the same ZIP expansion inline (mirrors the UPDATE path logic). Requires `import mimetypes` in the router.
++
++**Files NOT touched:**
++- `file_extraction_utils.py` — `ZipLoader` stays for non-file-datasource paths
++- `UpdateKnowledgeBaseFileRequest` — no model changes needed
++- `FileDatasourceUpdateProcessor` / `FileDatasourceProcessor` — receive the expanded file list transparently
+diff --git a/src/codemie/rest_api/routers/index.py b/src/codemie/rest_api/routers/index.py
+index 79e17c1ed..89d0b95d7 100644
+--- a/src/codemie/rest_api/routers/index.py
++++ b/src/codemie/rest_api/routers/index.py
+@@ -15,6 +15,7 @@
+ import base64
+ import json
+ import io
++import mimetypes
+ import time
+ from typing import List, Optional
+ from typing_extensions import Annotated
+@@ -2060,16 +2061,28 @@ def index_knowledge_base_files(
+     for file in request.files:
+         content = file.file.read()
+ 
+-        file_object = file_repo.write_file(
+-            name=file.filename,
+-            mime_type=file.headers["content-type"],
+-            owner=raw_request.state.user.id,
+-            content=content,
+-        )
+-        if file.filename.split(".")[-1] == IndexKnowledgeBaseFileTypes.JSON.value:
+-            validate_json_file(file.filename, content)
+-        files_paths.append(FILE_PATH_DATA_NT(name=file_object.name, owner=file_object.owner))
+-        uploaded_files.append(file_object.name)
++        if file.filename.split(".")[-1].lower() == IndexKnowledgeBaseFileTypes.ZIP.value:
++            for extracted_name, extracted_bytes in FileDatasourceService._expand_zip_file(content):
++                mime, _ = mimetypes.guess_type(extracted_name)
++                file_object = file_repo.write_file(
++                    name=extracted_name,
++                    mime_type=mime or "application/octet-stream",
++                    owner=raw_request.state.user.id,
++                    content=extracted_bytes,
++                )
++                files_paths.append(FILE_PATH_DATA_NT(name=file_object.name, owner=file_object.owner))
++                uploaded_files.append(file_object.name)
++        else:
++            file_object = file_repo.write_file(
++                name=file.filename,
++                mime_type=file.headers["content-type"],
++                owner=raw_request.state.user.id,
++                content=content,
++            )
++            if file.filename.split(".")[-1] == IndexKnowledgeBaseFileTypes.JSON.value:
++                validate_json_file(file.filename, content)
++            files_paths.append(FILE_PATH_DATA_NT(name=file_object.name, owner=file_object.owner))
++            uploaded_files.append(file_object.name)
+ 
+     file_data_source_processor = FileDatasourceProcessor(
+         datasource_name=request.name,
+diff --git a/src/codemie/service/datasource/file_datasource_service.py b/src/codemie/service/datasource/file_datasource_service.py
+index 874e370ed..52616b610 100644
+--- a/src/codemie/service/datasource/file_datasource_service.py
++++ b/src/codemie/service/datasource/file_datasource_service.py
+@@ -16,7 +16,11 @@
+ 
+ from __future__ import annotations
+ 
++import io
+ import json
++import mimetypes
++import os
++import zipfile
+ from dataclasses import dataclass, field
+ 
+ from elasticsearch.exceptions import NotFoundError
+@@ -31,6 +35,8 @@ from codemie.rest_api.models.guardrail import GuardrailAssignmentItem
+ from codemie.rest_api.models.index import IndexInfo, IndexKnowledgeBaseFileTypes, KnowledgeBaseIndexInfo
+ from codemie.rest_api.security.user import User
+ 
++_ZIP_MAX_UNCOMPRESSED_BYTES = 500 * 1024 * 1024
++
+ _INDEX_NOT_FOUND_MESSAGE = "Index not found"
+ _INDEX_NOT_FOUND_HELP = (
+     "Please verify the index name and project name. If you believe this index should exist, "
+@@ -200,6 +206,53 @@ class FileDatasourceService:
+             updated_by=updated_by,
+         )
+ 
++    @staticmethod
++    def _expand_zip_file(zip_bytes: bytes) -> list[tuple[str, bytes]]:
++        result: list[tuple[str, bytes]] = []
++        seen_names: set[str] = set()
++        total_size = 0
++
++        try:
++            zf_ctx = zipfile.ZipFile(io.BytesIO(zip_bytes))
++        except zipfile.BadZipFile as exc:
++            raise ExtendedHTTPException(
++                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
++                message="Invalid ZIP archive",
++                details="The uploaded file could not be opened as a ZIP archive.",
++                help="Ensure the file is a valid ZIP archive and try again.",
++            ) from exc
++
++        with zf_ctx as zf:
++            for info in zf.infolist():
++                if info.is_dir():
++                    continue
++                total_size += info.file_size
++                if total_size > _ZIP_MAX_UNCOMPRESSED_BYTES:
++                    raise ExtendedHTTPException(
++                        code=status.HTTP_422_UNPROCESSABLE_ENTITY,
++                        message="ZIP archive too large",
++                        details=f"Uncompressed content exceeds the {_ZIP_MAX_UNCOMPRESSED_BYTES // (1024 * 1024)} MB limit.",
++                        help="Upload a smaller archive or split the content into multiple files.",
++                    )
++                # Normalise Windows backslash separators before basename extraction
++                normalised = info.filename.replace("\\", "/")
++                flat_name = os.path.basename(normalised)
++                if not flat_name:
++                    continue
++                if flat_name.startswith("._"):  # Apple Double resource forks — metadata, not content
++                    continue
++                ext = os.path.splitext(flat_name)[1].lstrip(".").lower()
++                if ext == IndexKnowledgeBaseFileTypes.ZIP.value:
++                    logger.warning(f"Skipping nested ZIP in archive: {info.filename}")
++                    continue
++                if flat_name in seen_names:
++                    logger.warning(f"Skipping duplicate filename in ZIP: {info.filename}")
++                    continue
++                seen_names.add(flat_name)
++                result.append((flat_name, zf.read(info.filename)))
++
++        return result
++
+     @staticmethod
+     def upload_and_prepare_files(
+         new_files: list[UploadFile],
+@@ -226,16 +279,28 @@ class FileDatasourceService:
+ 
+         for file in new_files:
+             content = file.file.read()
+-            file_object = file_repo.write_file(
+-                name=file.filename,
+-                mime_type=file.headers["content-type"],
+-                owner=user.id,
+-                content=content,
+-            )
+-            if file.filename.split(".")[-1] == IndexKnowledgeBaseFileTypes.JSON.value:
+-                _validate_json_file(file.filename, content)
+-            new_paths.append(FILE_PATH_DATA_NT(name=file_object.name, owner=file_object.owner))
+-            new_filenames.append(file_object.name)
++            if file.filename.split(".")[-1].lower() == IndexKnowledgeBaseFileTypes.ZIP.value:
++                for extracted_name, extracted_bytes in FileDatasourceService._expand_zip_file(content):
++                    mime, _ = mimetypes.guess_type(extracted_name)
++                    file_object = file_repo.write_file(
++                        name=extracted_name,
++                        mime_type=mime or "application/octet-stream",
++                        owner=user.id,
++                        content=extracted_bytes,
++                    )
++                    new_paths.append(FILE_PATH_DATA_NT(name=file_object.name, owner=file_object.owner))
++                    new_filenames.append(file_object.name)
++            else:
++                file_object = file_repo.write_file(
++                    name=file.filename,
++                    mime_type=file.headers["content-type"],
++                    owner=user.id,
++                    content=content,
++                )
++                if file.filename.split(".")[-1].lower() == IndexKnowledgeBaseFileTypes.JSON.value:
++                    _validate_json_file(file.filename, content)
++                new_paths.append(FILE_PATH_DATA_NT(name=file_object.name, owner=file_object.owner))
++                new_filenames.append(file_object.name)
+ 
+         return PreparedFilesResult(
+             all_files_paths=kept_paths + new_paths,
+diff --git a/tests/codemie/service/datasource/test_file_datasource_service.py b/tests/codemie/service/datasource/test_file_datasource_service.py
+index eaeef03a5..b74b2491c 100644
+--- a/tests/codemie/service/datasource/test_file_datasource_service.py
++++ b/tests/codemie/service/datasource/test_file_datasource_service.py
+@@ -14,7 +14,9 @@
+ 
+ """Tests for FileDatasourceService and _validate_json_file."""
+ 
++import io
+ import json
++import zipfile
+ 
+ import pytest
+ from elasticsearch.exceptions import NotFoundError
+@@ -388,3 +390,264 @@ class TestValidateJsonFile:
+         with pytest.raises(ExtendedHTTPException) as exc_info:
+             _validate_json_file("file.json", b"not-json-content")
+         assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
++
++
++# ---------------------------------------------------------------------------
++# _expand_zip_file
++# ---------------------------------------------------------------------------
++
++
++def _make_zip_bytes(*members: tuple[str, bytes]) -> bytes:
++    """Return in-memory ZIP bytes containing the given (name, content) pairs."""
++    buf = io.BytesIO()
++    with zipfile.ZipFile(buf, "w") as zf:
++        for name, content in members:
++            zf.writestr(name, content)
++    return buf.getvalue()
++
++
++class TestExpandZipFile:
++    def test_expand_zip_file_yields_supported_files(self):
++        zip_bytes = _make_zip_bytes(("doc.pdf", b"pdf content"), ("readme.txt", b"text content"))
++
++        result = FileDatasourceService._expand_zip_file(zip_bytes)
++
++        names = [name for name, _ in result]
++        assert "doc.pdf" in names
++        assert "readme.txt" in names
++        assert len(result) == 2
++
++    def test_expand_zip_file_returns_correct_bytes(self):
++        zip_bytes = _make_zip_bytes(("report.txt", b"hello world"))
++
++        result = FileDatasourceService._expand_zip_file(zip_bytes)
++
++        assert result == [("report.txt", b"hello world")]
++
++    def test_expand_zip_file_skips_directories(self):
++        buf = io.BytesIO()
++        with zipfile.ZipFile(buf, "w") as zf:
++            dir_info = zipfile.ZipInfo("subdir/")
++            zf.writestr(dir_info, "")
++            zf.writestr("doc.pdf", b"pdf content")
++        zip_bytes = buf.getvalue()
++
++        result = FileDatasourceService._expand_zip_file(zip_bytes)
++
++        names = [name for name, _ in result]
++        assert "subdir/" not in names
++        assert "doc.pdf" in names
++        assert len(result) == 1
++
++    def test_expand_zip_file_includes_unknown_extensions(self):
++        # Unknown extensions pass through; the indexer's PlainTextLoader handles them
++        zip_bytes = _make_zip_bytes(("script.sh", b"#!/bin/bash"))
++
++        result = FileDatasourceService._expand_zip_file(zip_bytes)
++
++        names = [name for name, _ in result]
++        assert "script.sh" in names
++
++    def test_expand_zip_file_skips_nested_zip(self):
++        inner = _make_zip_bytes(("doc.pdf", b"inner pdf"))
++        zip_bytes = _make_zip_bytes(("nested.zip", inner), ("outer.pdf", b"outer pdf"))
++
++        result = FileDatasourceService._expand_zip_file(zip_bytes)
++
++        names = [name for name, _ in result]
++        assert "outer.pdf" in names
++        assert "nested.zip" not in names
++        assert len(result) == 1
++
++    def test_expand_zip_file_includes_all_non_zip_files(self):
++        # All non-ZIP files are extracted; only nested archives are skipped
++        zip_bytes = _make_zip_bytes(("doc.pdf", b"content"), ("notes.md", b"# Notes"))
++
++        result = FileDatasourceService._expand_zip_file(zip_bytes)
++
++        names = [name for name, _ in result]
++        assert "doc.pdf" in names
++        assert "notes.md" in names
++        assert len(result) == 2
++
++    def test_expand_zip_file_flattens_nested_path(self):
++        buf = io.BytesIO()
++        with zipfile.ZipFile(buf, "w") as zf:
++            zf.writestr("subdir/nested/doc.pdf", b"nested pdf")
++        zip_bytes = buf.getvalue()
++
++        result = FileDatasourceService._expand_zip_file(zip_bytes)
++
++        names = [name for name, _ in result]
++        assert "doc.pdf" in names
++        assert "subdir/nested/doc.pdf" not in names
++
++    def test_expand_zip_file_raises_on_bad_zip(self):
++        result = None
++        with pytest.raises(ExtendedHTTPException) as exc_info:
++            result = FileDatasourceService._expand_zip_file(b"this is not a zip file")
++        assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
++        assert result is None
++
++    def test_expand_zip_file_empty_archive_returns_empty(self):
++        buf = io.BytesIO()
++        with zipfile.ZipFile(buf, "w"):
++            pass
++        result = FileDatasourceService._expand_zip_file(buf.getvalue())
++        assert result == []
++
++    def test_expand_zip_file_skips_duplicate_basenames(self):
++        buf = io.BytesIO()
++        with zipfile.ZipFile(buf, "w") as zf:
++            zf.writestr("dir_a/report.pdf", b"first")
++            zf.writestr("dir_b/report.pdf", b"second")
++        result = FileDatasourceService._expand_zip_file(buf.getvalue())
++        assert len(result) == 1
++        assert result[0] == ("report.pdf", b"first")
++
++    def test_expand_zip_file_normalises_windows_backslash_paths(self):
++        buf = io.BytesIO()
++        with zipfile.ZipFile(buf, "w") as zf:
++            info = zipfile.ZipInfo("subdir\\doc.pdf")
++            zf.writestr(info, b"pdf content")
++        result = FileDatasourceService._expand_zip_file(buf.getvalue())
++        names = [name for name, _ in result]
++        assert "doc.pdf" in names
++
++    def test_expand_zip_file_includes_plain_text_files(self):
++        zip_bytes = _make_zip_bytes(("readme.md", b"# Hello"), ("notes.rst", b"Title\n====="))
++
++        result = FileDatasourceService._expand_zip_file(zip_bytes)
++
++        names = [name for name, _ in result]
++        assert "readme.md" in names
++        assert "notes.rst" in names
++
++    def test_expand_zip_file_skips_apple_double_metadata(self):
++        # macOS embeds resource forks as ._filename entries (Apple Double format),
++        # either at the same directory level or under __MACOSX/ in some ZIP tools.
++        buf = io.BytesIO()
++        with zipfile.ZipFile(buf, "w") as zf:
++            zf.writestr("doc.pdf", b"pdf content")
++            zf.writestr("plan.md", b"# plan")
++            zf.writestr("._doc.pdf", b"\x00\x05\x16\x07apple double at root")
++            zf.writestr("._plan.md", b"\x00\x05\x16\x07apple double at root")
++            zf.writestr("__MACOSX/._doc.pdf", b"\x00\x05\x16\x07apple double in macosx dir")
++        zip_bytes = buf.getvalue()
++
++        result = FileDatasourceService._expand_zip_file(zip_bytes)
++
++        names = [name for name, _ in result]
++        assert "doc.pdf" in names
++        assert "plan.md" in names
++        assert "._doc.pdf" not in names
++        assert "._plan.md" not in names
++        assert len(result) == 2
++
++    @patch("zipfile.ZipFile")
++    def test_expand_zip_file_raises_on_size_bomb(self, mock_zip_class):
++        mock_info = MagicMock(spec=zipfile.ZipInfo)
++        mock_info.is_dir.return_value = False
++        mock_info.file_size = 600 * 1024 * 1024  # 600 MB — exceeds 500 MB cap
++        mock_info.filename = "big.pdf"
++
++        mock_ctx = MagicMock()
++        mock_ctx.infolist.return_value = [mock_info]
++        mock_zip_class.return_value.__enter__.return_value = mock_ctx
++
++        with pytest.raises(ExtendedHTTPException) as exc_info:
++            FileDatasourceService._expand_zip_file(b"fake-zip-bytes")
++
++        assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
++
++
++# ---------------------------------------------------------------------------
++# upload_and_prepare_files — ZIP expansion integration
++# ---------------------------------------------------------------------------
++
++
++class TestUploadAndPrepareFilesZip:
++    def _make_upload_file(self, filename, content=b"data", content_type="text/plain"):
++        f = MagicMock()
++        f.filename = filename
++        f.file.read.return_value = content
++        f.headers = {"content-type": content_type}
++        return f
++
++    def _make_file_object(self, name, owner="user1"):
++        obj = MagicMock()
++        obj.name = name
++        obj.owner = owner
++        return obj
++
++    def test_upload_and_prepare_files_expands_zip(self, mock_index, mock_user):
++        zip_bytes = _make_zip_bytes(("document.pdf", b"pdf content"))
++        upload_file = self._make_upload_file("archive.zip", content=zip_bytes, content_type="application/zip")
++        pdf_obj = self._make_file_object("document.pdf")
++
++        with patch(
++            "codemie.service.datasource.file_datasource_service.FileRepositoryFactory.get_current_repository"
++        ) as mock_repo:
++            mock_repo.return_value.write_file.return_value = pdf_obj
++            result = FileDatasourceService.upload_and_prepare_files(
++                new_files=[upload_file],
++                user=mock_user,
++                uploaded_files_to_keep=[],
++                index=mock_index,
++            )
++
++        mock_repo.return_value.write_file.assert_called_once()
++        call_kwargs = mock_repo.return_value.write_file.call_args.kwargs
++        assert call_kwargs["name"] == "document.pdf"
++        assert call_kwargs["owner"] == "user1"
++        assert call_kwargs["content"] == b"pdf content"
++        assert "archive.zip" not in result.uploaded_files
++        assert "document.pdf" in result.uploaded_files
++        assert len(result.new_files_paths) == 1
++
++    def test_upload_and_prepare_files_zip_multiple_files(self, mock_index, mock_user):
++        zip_bytes = _make_zip_bytes(("a.pdf", b"pdf"), ("b.txt", b"txt"))
++        upload_file = self._make_upload_file("bundle.zip", content=zip_bytes, content_type="application/zip")
++
++        pdf_obj = self._make_file_object("a.pdf")
++        txt_obj = self._make_file_object("b.txt")
++
++        with patch(
++            "codemie.service.datasource.file_datasource_service.FileRepositoryFactory.get_current_repository"
++        ) as mock_repo:
++            mock_repo.return_value.write_file.side_effect = [pdf_obj, txt_obj]
++            result = FileDatasourceService.upload_and_prepare_files(
++                new_files=[upload_file],
++                user=mock_user,
++                uploaded_files_to_keep=[],
++                index=mock_index,
++            )
++
++        assert mock_repo.return_value.write_file.call_count == 2
++        assert "bundle.zip" not in result.uploaded_files
++        assert "a.pdf" in result.uploaded_files
++        assert "b.txt" in result.uploaded_files
++        assert len(result.new_files_paths) == 2
++
++    def test_upload_and_prepare_files_non_zip_unchanged(self, mock_index, mock_user):
++        upload_file = self._make_upload_file("report.pdf", content=b"pdf data", content_type="application/pdf")
++        file_obj = self._make_file_object("report.pdf")
++
++        with patch(
++            "codemie.service.datasource.file_datasource_service.FileRepositoryFactory.get_current_repository"
++        ) as mock_repo:
++            mock_repo.return_value.write_file.return_value = file_obj
++            result = FileDatasourceService.upload_and_prepare_files(
++                new_files=[upload_file],
++                user=mock_user,
++                uploaded_files_to_keep=[],
++                index=mock_index,
++            )
++
++        mock_repo.return_value.write_file.assert_called_once_with(
++            name="report.pdf",
++            mime_type="application/pdf",
++            owner="user1",
++            content=b"pdf data",
++        )
++        assert "report.pdf" in result.uploaded_files

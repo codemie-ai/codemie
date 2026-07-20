@@ -25,7 +25,7 @@ from codemie.rest_api.main import app
 from codemie.rest_api.models.index import IndexKnowledgeBaseJIRARequest
 from codemie.core.models import BaseResponse, CreatedByUser
 from codemie.rest_api.routers.index import router
-from codemie.rest_api.routers.index import validate_json_file
+from codemie.service.datasource.file_datasource_service import _validate_json_file as validate_json_file
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 

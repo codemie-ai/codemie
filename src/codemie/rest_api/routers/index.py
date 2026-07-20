@@ -40,7 +40,6 @@ from codemie.core.models import (
     BRANCH_PATTERN,
 )
 from codemie.rest_api.models.guardrail import GuardrailAssignmentItem, GuardrailEntity
-from codemie.rest_api.models.index import IndexKnowledgeBaseFileTypes
 from codemie.datasource.code.code_datasource_processor import (
     index_code_datasource_in_background,
     update_code_datasource_in_background,
@@ -48,7 +47,7 @@ from codemie.datasource.code.code_datasource_processor import (
 )
 from codemie.datasource.svn.svn_datasource_processor import SVNDatasourceProcessor
 from codemie.datasource.svn.svn_index_service import SVNIndexService
-from codemie.datasource.file.file_datasource_processor import FileDatasourceProcessor, FILE_PATH_DATA_NT
+from codemie.datasource.file.file_datasource_processor import FileDatasourceProcessor
 from codemie.datasource.confluence_datasource_processor import (
     IndexKnowledgeBaseConfluenceConfig,
     ConfluenceDatasourceProcessor,
@@ -141,6 +140,7 @@ from codemie.service.index.index_encrypted_settings_service import (
 from codemie.service.google_oauth.token_manager import GoogleOAuthTokenManager
 
 from codemie.service.datasource.file_datasource_service import FileDatasourceService
+from codemie.service.datasource.zip_utils import ZipExtractionError
 from codemie.use_cases.datasource.update_file_datasource_use_case import UpdateFileDatasourceUseCase
 
 
@@ -1431,12 +1431,20 @@ def update_knowledge_base_files(
     raw_request: Request,
     request: UpdateKnowledgeBaseFileRequest = Depends(),
 ):
-    return UpdateFileDatasourceUseCase(FileDatasourceService()).execute(
-        request=request,
-        user=raw_request.state.user,
-        background_tasks=background_tasks,
-        request_uuid=raw_request.state.uuid,
-    )
+    try:
+        return UpdateFileDatasourceUseCase(FileDatasourceService()).execute(
+            request=request,
+            user=raw_request.state.user,
+            background_tasks=background_tasks,
+            request_uuid=raw_request.state.uuid,
+        )
+    except ZipExtractionError as exc:
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message=str(exc),
+            details=exc.detail,
+            help=exc.help_text,
+        ) from exc
 
 
 @router.put("/index/knowledge_base/confluence", status_code=status.HTTP_200_OK)
@@ -2041,35 +2049,25 @@ def index_knowledge_base_files(
 
     _kb_demo_user_check(raw_request.state.user)
 
-    parsed_guardrail_assignments = None
-    if request.guardrail_assignments:
-        try:
-            assignments_list = json.loads(request.guardrail_assignments)
-            parsed_guardrail_assignments = [GuardrailAssignmentItem.model_validate(item) for item in assignments_list]
-        except (json.JSONDecodeError, ValueError, TypeError):
-            raise ExtendedHTTPException(
-                code=status.HTTP_400_BAD_REQUEST,
-                message="Invalid guardrail_assignments parameter",
-                details="Failed to parse guardrail_assignments.",
-                help="Ensure guardrail_assignments is a valid JSON array.",
-            )
+    parsed_guardrail_assignments = FileDatasourceService.parse_guardrail_assignments(request.guardrail_assignments)
 
     file_repo = FileRepositoryFactory.get_current_repository()
     uploaded_files = []
 
     for file in request.files:
-        content = file.file.read()
-
-        file_object = file_repo.write_file(
-            name=file.filename,
-            mime_type=file.headers["content-type"],
-            owner=raw_request.state.user.id,
-            content=content,
-        )
-        if file.filename.split(".")[-1] == IndexKnowledgeBaseFileTypes.JSON.value:
-            validate_json_file(file.filename, content)
-        files_paths.append(FILE_PATH_DATA_NT(name=file_object.name, owner=file_object.owner))
-        uploaded_files.append(file_object.name)
+        try:
+            file_paths, file_names = FileDatasourceService._process_upload_file(
+                file, raw_request.state.user.id, file_repo
+            )
+        except ZipExtractionError as exc:
+            raise ExtendedHTTPException(
+                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message=str(exc),
+                details=exc.detail,
+                help=exc.help_text,
+            ) from exc
+        files_paths.extend(file_paths)
+        uploaded_files.extend(file_names)
 
     file_data_source_processor = FileDatasourceProcessor(
         datasource_name=request.name,
@@ -2364,24 +2362,6 @@ def _kb_demo_user_check(user):
                 help="To index additional repositories, please upgrade your account "
                 "or remove your existing indexed repository.",
             )
-
-
-def validate_json_file(filename: str, content: bytes):
-    """Function to validate if JSON file is correct."""
-    try:
-        for d in json.loads(content):
-            if "content" not in d:
-                raise KeyError("missing 'content' key")
-            if "metadata" not in d:
-                raise KeyError("missing 'metadata' key")
-
-    except (json.JSONDecodeError, KeyError) as e:
-        raise ExtendedHTTPException(
-            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            message="File has incorrect format",
-            details=f"An error occurred while validating file {filename} datasource: {str(e)}",
-            help="Please check provided data on form or contact an administrator for assistance.",
-        ) from e
 
 
 def _validate_remote_entities_and_raise(entity: IndexInfo):
