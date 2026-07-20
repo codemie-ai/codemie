@@ -39,3 +39,21 @@
 **Status**: configured
 **Adapter**: GitLab CLI (`glab`) via project MR skills
 **Instructions**: Use `.ai-run/guides/standards/git-workflow.md` for branch, commit, push, and MR rules before creating review artifacts.
+
+## Lifecycle Intent Handling
+
+### record_complexity_score
+Invoke the `codemie-jira-assistant` skill and ask it to update the ticket's complexity score (Total Score) with the value from `data.complexity_total`.
+Ticket ID: extract from the current branch name (pattern `EPMCDME-\d+`) or from the run work item.
+
+### artifact_published
+Invoke the `codemie-jira-assistant` skill and attach the artifact file using the `--file` flag:
+
+```bash
+codemie assistants chat "289d2751-afd9-4c77-a272-90df7cd71702" \
+  "Attach this file to Jira ticket EPMCDME-<ID> as the approved <kind> artifact." \
+  --file "<path-to-artifact>"
+```
+
+Ticket ID: extract from the current branch name (pattern `EPMCDME-\d+`) or from the run work item.
+`<path-to-artifact>`: use `data.artifact_path`, or the path to `spec.md` / `plan.md` in the run directory.
