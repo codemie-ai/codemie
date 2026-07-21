@@ -35,6 +35,18 @@ class MetricName(str, Enum):
     DATASOURCE_TOKENS_USAGE = "datasource_tokens_usage"
     WORKFLOW_EXECUTION_TOTAL = "workflow_execution_total"
 
+    # Datasource lifecycle metrics (emitted by DatasourceMonitoringService.send_indexing_metrics)
+    DATASOURCE_INDEX_TOTAL = "datasource_index_total"
+    DATASOURCE_INDEX_DOCUMENTS = "datasource_index_documents"
+    DATASOURCE_INDEX_ERRORS_TOTAL = "datasource_index_errors_total"
+    DATASOURCE_REINDEX_TOTAL = "datasource_reindex_total"
+    DATASOURCE_REINDEX_DOCUMENTS = "datasource_reindex_documents"
+    DATASOURCE_REINDEX_ERRORS_TOTAL = "datasource_reindex_errors_total"
+    DATASOURCE_RESUME_TOTAL = "datasource_resume_total"
+    DATASOURCE_RESUME_DOCUMENTS = "datasource_resume_documents"
+    DATASOURCE_RESUME_ERRORS_TOTAL = "datasource_resume_errors_total"
+    UPDATE_DATASOURCE = "update_datasource"
+
     # Tools and integrations
     CODEMIE_TOOLS_USAGE_TOTAL = "codemie_tools_usage_total"
     CODEMIE_TOOLS_USAGE_TOKENS = "codemie_tools_usage_tokens"

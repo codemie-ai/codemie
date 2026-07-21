@@ -21,15 +21,88 @@ with the appropriate lifecycle state.
 
 from __future__ import annotations
 
+import re
+from collections import defaultdict
 from datetime import datetime, timedelta, UTC
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, or_
 
+from codemie.agents.utils import OPEN_AI_TOOL_NAME_LIMIT, adapt_tool_name, generate_tool_hash
 from codemie.configs import logger, config
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.models.index import IndexInfo, LifecycleState
+from codemie.service.analytics.metric_names import MetricName
+
+
+_DATASOURCE_LIFECYCLE_METRICS: list[str] = MetricName.to_list(
+    MetricName.DATASOURCE_TOKENS_USAGE,
+    MetricName.DATASOURCE_INDEX_TOTAL,
+    MetricName.DATASOURCE_INDEX_DOCUMENTS,
+    MetricName.DATASOURCE_INDEX_ERRORS_TOTAL,
+    MetricName.DATASOURCE_REINDEX_TOTAL,
+    MetricName.DATASOURCE_REINDEX_DOCUMENTS,
+    MetricName.DATASOURCE_REINDEX_ERRORS_TOTAL,
+    MetricName.DATASOURCE_RESUME_TOTAL,
+    MetricName.DATASOURCE_RESUME_DOCUMENTS,
+    MetricName.DATASOURCE_RESUME_ERRORS_TOTAL,
+    MetricName.UPDATE_DATASOURCE,
+)
+
+_TOOL_USAGE_METRICS: list[str] = MetricName.to_list(
+    MetricName.CODEMIE_TOOLS_USAGE_TOTAL,
+    MetricName.CODEMIE_TOOLS_USAGE_TOKENS,
+)
+
+_CODE_INDEX_TYPES: frozenset[str] = frozenset({"code", "summary", "chunk-summary"})
+
+_CODE_TOOL_PREFIXES: list[str] = [
+    "search_code_repo",
+    "search_code_repo_by_path",
+    "search_code_repo_v2",
+    "get_repository_file_tree",
+    "get_repository_file_tree_v2",
+    "read_files_content",
+    "read_files_content_summary",
+]
+
+_KB_TOOL_PREFIX = "search_kb"
+
+
+def _legacy_adapt_tool_name(prefix: str, repo: str) -> str:
+    # Naming scheme used before EPMCDME-11979 (to_snake_case collapsed runs and
+    # replaced hyphens); metrics recorded back then still fall inside the
+    # staleness lookback window, so both variants must be matched.
+    snake = re.sub(r"[^0-9a-zA-Z]+", "_", repo).strip("_")
+    full = f"{prefix}_{snake}"
+    if len(full) > OPEN_AI_TOOL_NAME_LIMIT:
+        full = f"{prefix}_{generate_tool_hash(repo)}"
+    return full.lower()
+
+
+def _compute_base_tool_names(datasource: IndexInfo) -> list[str]:
+    """Expected base_tool_name values stored in codemie_metrics_logs for this datasource.
+
+    Uses the runtime adapt_tool_name for names recorded by current monitoring
+    callbacks, plus the legacy pre-EPMCDME-11979 variant for older metrics.
+    """
+    repo = datasource.repo_name
+    prefixes = _CODE_TOOL_PREFIXES if datasource.index_type in _CODE_INDEX_TYPES else [_KB_TOOL_PREFIX]
+
+    names: list[str] = []
+    for prefix in prefixes:
+        current = adapt_tool_name(f"{prefix}_{{}}", repo).lower()
+        legacy = _legacy_adapt_tool_name(prefix, repo)
+        for name in (current, legacy):
+            if name not in names:
+                names.append(name)
+    return names
+
+
+def _keep_latest(timestamps: dict[str, datetime], ds_id: str, dt: datetime) -> None:
+    if ds_id not in timestamps or dt > timestamps[ds_id]:
+        timestamps[ds_id] = dt
 
 
 class StaleDatasourceService:
@@ -83,8 +156,9 @@ class StaleDatasourceService:
 
             logger.info(f"Evaluating {len(candidates)} candidate datasources")
 
-            # Fetch usage metrics for all candidates from Elasticsearch
-            usage_map = await self._fetch_usage_metrics(candidates)
+            # Fetch all available activity signals from Elasticsearch
+            lifecycle_map = await self._fetch_lifecycle_metrics(candidates)
+            tool_map = await self._fetch_tool_usage_metrics(candidates)
 
             # Evaluate each datasource and mark if stale
             for datasource in candidates:
@@ -93,7 +167,13 @@ class StaleDatasourceService:
                         stats["already_stale"] += 1
                         continue
 
-                    is_stale = self._is_datasource_stale(datasource, usage_map.get(datasource.id))
+                    lifecycle_ts = lifecycle_map.get(datasource.id)
+                    tool_ts = tool_map.get(datasource.id)
+                    update_ts = datasource.update_date
+                    if update_ts and update_ts.tzinfo is not None:
+                        update_ts = update_ts.replace(tzinfo=None)
+                    last_activity = max(filter(None, [lifecycle_ts, tool_ts, update_ts]), default=None)
+                    is_stale = self._is_datasource_stale(datasource, last_activity)
 
                     if is_stale:
                         self._mark_as_stale(datasource)
@@ -158,179 +238,135 @@ class StaleDatasourceService:
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
-    async def _fetch_usage_metrics(self, datasources: list[IndexInfo]) -> dict[str, Optional[datetime]]:
-        """Fetch last usage timestamp for each datasource from Elasticsearch.
+    async def _paginate_composite_agg(
+        self,
+        query: dict,
+        sources: list[dict],
+        sub_aggs: dict,
+    ) -> list[dict]:
+        """Page through a composite aggregation until all buckets are retrieved.
 
-        Queries the codemie_metrics_logs index for datasource_tokens_usage metrics,
-        aggregating by datasource to get the most recent usage timestamp.
+        Raises on ES error (fail-closed): incomplete signals must abort the
+        detection run, otherwise every datasource silently degrades to the
+        update_date fallback and risks being mass-marked stale during an outage.
+        """
+        buckets: list[dict] = []
+        after_key: Optional[dict] = None
+        while True:
+            composite: dict = {"size": config.STALE_DATASOURCE_BATCH_SIZE, "sources": sources}
+            if after_key:
+                composite["after"] = after_key
+            body = {
+                "size": 0,
+                "query": query,
+                "aggs": {"result": {"composite": composite, "aggs": sub_aggs}},
+            }
+            response = await self.metrics_repository.execute_aggregation_query(body=body, request_timeout=60)
+            agg = response.get("aggregations", {}).get("result", {})
+            page = agg.get("buckets", [])
+            buckets.extend(page)
+            after_key = agg.get("after_key")
+            if not after_key or not page:
+                break
+        return buckets
 
-        Args:
-            datasources: List of datasources to check
+    async def _fetch_lifecycle_metrics(self, datasources: list[IndexInfo]) -> dict[str, Optional[datetime]]:
+        """Latest lifecycle-event timestamp per datasource id.
 
-        Returns:
-            dict mapping datasource.id -> last_usage_timestamp (or None)
+        Aggregates all datasource lifecycle metric names (index, reindex, config
+        update, etc.) grouped by (project, repo_name, datasource_type) so multiple
+        datasources sharing project+repo with different types are attributed
+        independently.
         """
         if not datasources:
             return {}
 
-        datasource_filters, datasource_lookup = self._build_datasource_filters(datasources)
-        base_query = self._build_base_usage_query(datasource_filters)
+        lookup: dict[tuple[str, str, str], str] = {
+            (ds.project_name, ds.repo_name, ds.index_type): ds.id for ds in datasources
+        }
+
+        buckets = await self._paginate_composite_agg(
+            query={"terms": {"metric_name.keyword": _DATASOURCE_LIFECYCLE_METRICS}},
+            sources=[
+                {"project": {"terms": {"field": "attributes.project.keyword"}}},
+                {"repo_name": {"terms": {"field": "attributes.repo_name.keyword"}}},
+                {"datasource_type": {"terms": {"field": "attributes.datasource_type.keyword"}}},
+            ],
+            sub_aggs={"last_seen": {"max": {"field": "@timestamp"}}},
+        )
 
         usage_map: dict[str, Optional[datetime]] = {}
+        for bucket in buckets:
+            key = bucket["key"]
+            ds_id = lookup.get((key.get("project", ""), key.get("repo_name", ""), key.get("datasource_type", "")))
+            if not ds_id:
+                continue
+            ts = bucket.get("last_seen", {}).get("value_as_string")
+            if ts:
+                usage_map[ds_id] = datetime.fromisoformat(ts.replace("Z", "+00:00")).replace(tzinfo=None)
 
-        try:
-            after_key: Optional[dict] = None
-            while True:
-                query_body = self._build_usage_aggregation_query(base_query, after_key)
-                result = await self.metrics_repository.execute_aggregation_query(
-                    body=query_body,
-                    request_timeout=60,
-                )
-                agg = result.get("aggregations", {}).get("by_datasource", {})
-                buckets = agg.get("buckets", [])
+        return usage_map
 
-                self._merge_usage_buckets(buckets, datasource_lookup, usage_map)
+    async def _fetch_tool_usage_metrics(self, datasources: list[IndexInfo]) -> dict[str, Optional[datetime]]:
+        """Latest tool-invocation timestamp per datasource id.
 
-                # Composite aggregations require paging via after_key until either
-                # no after_key is returned or the page is empty.
-                next_after = agg.get("after_key")
-                if not next_after or not buckets:
-                    break
-                after_key = next_after
-
-            logger.info(f"Found usage metrics for {len(usage_map)} datasources")
-            return usage_map
-
-        except Exception as e:
-            logger.error(f"Failed to fetch usage metrics from Elasticsearch: {e}", exc_info=True)
-            # Return empty map - datasources will be evaluated based on update_date
+        Aggregates tool-usage metrics by (base_tool_name, project) and matches
+        each bucket back to candidate datasources via pre-computed expected
+        names. A usage signal from the datasource's own project is preferred;
+        when the same base_tool_name maps to multiple datasources (same
+        repo_name in different projects) and no same-project signal exists,
+        the timestamp is attributed to all of them (name-only fallback,
+        fail-safe against staling an active datasource).
+        """
+        if not datasources:
             return {}
 
-    @staticmethod
-    def _build_datasource_filters(
-        datasources: list[IndexInfo],
-    ) -> tuple[list[dict], dict[tuple[str, str], str]]:
-        """Build per-datasource ES bool filters and a (project, repo) -> id lookup."""
-        datasource_filters: list[dict] = []
-        datasource_lookup: dict[tuple[str, str], str] = {}
+        tool_to_ids: dict[str, list[str]] = defaultdict(list)
         for ds in datasources:
-            datasource_lookup[(ds.project_name, ds.repo_name)] = ds.id
-            datasource_filters.append(
-                {
-                    "bool": {
-                        "must": [
-                            {"term": {"attributes.project.keyword": ds.project_name}},
-                            {"term": {"attributes.repo_name.keyword": ds.repo_name}},
-                        ]
-                    }
-                }
-            )
-        return datasource_filters, datasource_lookup
+            for tool_name in _compute_base_tool_names(ds):
+                tool_to_ids[tool_name].append(ds.id)
+        project_by_id = {ds.id: ds.project_name for ds in datasources}
 
-    @staticmethod
-    def _build_base_usage_query(datasource_filters: list[dict]) -> dict:
-        return {
-            "bool": {
-                "must": [{"term": {"metric_name.keyword": "datasource_tokens_usage"}}],
-                "should": datasource_filters,
-                "minimum_should_match": 1,
-            }
-        }
-
-    @staticmethod
-    def _build_usage_aggregation_query(base_query: dict, after_key: Optional[dict]) -> dict:
-        composite_agg: dict = {
-            "size": config.STALE_DATASOURCE_BATCH_SIZE,
-            "sources": [
-                {"project": {"terms": {"field": "attributes.project.keyword"}}},
-                {"repo": {"terms": {"field": "attributes.repo_name.keyword"}}},
+        buckets = await self._paginate_composite_agg(
+            query={"terms": {"metric_name.keyword": _TOOL_USAGE_METRICS}},
+            sources=[
+                {"base_tool_name": {"terms": {"field": "attributes.base_tool_name.keyword"}}},
+                {"project": {"terms": {"field": "attributes.project.keyword", "missing_bucket": True}}},
             ],
-        }
-        if after_key is not None:
-            composite_agg["after"] = after_key
+            sub_aggs={"last_seen": {"max": {"field": "@timestamp"}}},
+        )
 
-        return {
-            "size": 0,
-            "query": base_query,
-            "aggs": {
-                "by_datasource": {
-                    "composite": composite_agg,
-                    "aggs": {"latest_usage": {"max": {"field": "@timestamp"}}},
-                }
-            },
-        }
-
-    @staticmethod
-    def _merge_usage_buckets(
-        buckets: list[dict],
-        datasource_lookup: dict[tuple[str, str], str],
-        usage_map: dict[str, Optional[datetime]],
-    ) -> None:
+        same_project: dict[str, datetime] = {}
+        any_project: dict[str, datetime] = {}
         for bucket in buckets:
-            latest_ts_ms = bucket["latest_usage"]["value"]
-            if not latest_ts_ms:
+            ds_ids = tool_to_ids.get(bucket["key"].get("base_tool_name", "").lower())
+            ts = bucket.get("last_seen", {}).get("value_as_string")
+            if not ds_ids or not ts:
                 continue
-            datasource_id = datasource_lookup.get((bucket["key"]["project"], bucket["key"]["repo"]))
-            if datasource_id:
-                usage_map[datasource_id] = datetime.fromtimestamp(latest_ts_ms / 1000.0, tz=UTC)
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).replace(tzinfo=None)
+            bucket_project = bucket["key"].get("project")
+            for ds_id in ds_ids:
+                if bucket_project == project_by_id.get(ds_id):
+                    _keep_latest(same_project, ds_id, dt)
+                _keep_latest(any_project, ds_id, dt)
 
-    def _is_datasource_stale(self, datasource: IndexInfo, last_usage: Optional[datetime]) -> bool:
-        """Determine if a datasource is stale based on usage and update metrics.
+        return {ds_id: same_project.get(ds_id, any_ts) for ds_id, any_ts in any_project.items()}
 
-        Staleness criteria (evaluated in order):
-        1. If usage metrics exist: stale if last_usage > X days ago
-        2. If no usage metrics: stale if update_date > Y days ago
-        3. If no update_date: stale (edge case, shouldn't happen)
+    def _is_datasource_stale(self, datasource: IndexInfo, last_activity: Optional[datetime]) -> bool:
+        """Return True if the datasource should be marked stale.
 
-        Args:
-            datasource: The datasource to evaluate
-            last_usage: Last usage timestamp from Elasticsearch (if any)
-
-        Returns:
-            True if datasource is stale, False otherwise
+        last_activity is the most recent timestamp across all available signals
+        (lifecycle events, tool invocations, and update_date — all folded in by
+        the caller). Returns True unconditionally when no signal exists at all.
         """
         now = datetime.now(UTC).replace(tzinfo=None)
 
-        # Criterion 1: Check usage metrics
-        if last_usage:
-            # Ensure last_usage is naive for comparison
-            if last_usage.tzinfo is not None:
-                last_usage = last_usage.replace(tzinfo=None)
+        if last_activity:
+            if last_activity.tzinfo is not None:
+                last_activity = last_activity.replace(tzinfo=None)
+            return (now - last_activity).days >= config.STALE_DATASOURCE_NO_USAGE_DAYS
 
-            days_since_usage = (now - last_usage).days
-            is_stale = days_since_usage >= config.STALE_DATASOURCE_NO_USAGE_DAYS
-
-            if is_stale:
-                logger.debug(
-                    f"Datasource {datasource.id} is stale: "
-                    f"no usage for {days_since_usage} days "
-                    f"(threshold: {config.STALE_DATASOURCE_NO_USAGE_DAYS})"
-                )
-
-            return is_stale
-
-        # Criterion 2: Check update_date as fallback
-        if datasource.update_date:
-            # Ensure update_date is naive for comparison
-            update_date = datasource.update_date
-            if update_date.tzinfo is not None:
-                update_date = update_date.replace(tzinfo=None)
-
-            days_since_update = (now - update_date).days
-            is_stale = days_since_update >= config.STALE_DATASOURCE_NO_UPDATE_DAYS
-
-            if is_stale:
-                logger.debug(
-                    f"Datasource {datasource.id} is stale: "
-                    f"no update for {days_since_update} days "
-                    f"(threshold: {config.STALE_DATASOURCE_NO_UPDATE_DAYS}, "
-                    f"no usage metrics found)"
-                )
-
-            return is_stale
-
-        # Criterion 3: No usage and no update_date (edge case)
-        logger.warning(f"Datasource {datasource.id} has no usage metrics and no update_date, marking as stale")
+        logger.warning(f"Datasource {datasource.id} has no activity signal and no update_date, marking as stale")
         return True
 
     def _mark_as_stale(self, datasource: IndexInfo) -> None:
