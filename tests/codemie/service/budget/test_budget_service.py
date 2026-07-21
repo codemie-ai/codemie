@@ -22,8 +22,11 @@ Covers:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -32,6 +35,7 @@ from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.budget.budget_models import Budget
 from codemie.service.budget.provider import PersonalBudgetEntry
 from codemie.service.budget.budget_service import BudgetService
+from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 
 
 # ---------------------------------------------------------------------------
@@ -779,3 +783,154 @@ async def test_resolve_backfill_category_uses_prefetched_provider_metadata_when_
     assert category == "cli"
     assert fetched is True
     assert state is prefetched_state
+
+
+# ---------------------------------------------------------------------------
+# Tests for reset_user_budget_spending zero marker rows (EPMCDME-12991)
+# ---------------------------------------------------------------------------
+
+
+def _make_budget_tracking_row(project_name, budget_id, budget_period_spend, cumulative_spend):
+    return ProjectSpendTracking(
+        id=uuid4(),
+        project_name=project_name,
+        budget_id=budget_id,
+        budget_category="platform",
+        spend_subject_type="budget",
+        spend_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        budget_period_spend=Decimal(str(budget_period_spend)),
+        daily_spend=Decimal(str(budget_period_spend)),
+        cumulative_spend=Decimal(str(cumulative_spend)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_reset_user_budget_spending_writes_zero_marker_row():
+    """After personal reset, a zero 'budget' marker row is inserted for each category."""
+    service = BudgetService()
+    session = AsyncMock()
+
+    db_user = SimpleNamespace(id="user-1", username="alice@example.com")
+    prev_row = _make_budget_tracking_row("alice@example.com", "budget-platform-1", "25.00", "75.00")
+
+    provider = SimpleNamespace(reset_user_budget_spending=AsyncMock())
+    mock_insert = AsyncMock()
+
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.first.return_value = db_user
+    session.execute = AsyncMock(return_value=mock_result)
+
+    with (
+        patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
+        patch(
+            "codemie.service.budget.budget_service.budget_repository.get_user_category_budget_id",
+            new=AsyncMock(return_value="budget-platform-1"),
+        ),
+        patch(
+            "codemie.service.budget.budget_service.project_spend_tracking_repository.get_latest_by_budget_ids",
+            new=AsyncMock(return_value={"budget-platform-1": prev_row}),
+        ),
+        patch(
+            "codemie.service.budget.budget_service.project_spend_tracking_repository.insert_budget_entries",
+            new=mock_insert,
+        ),
+    ):
+        await service.reset_user_budget_spending(
+            session=session,
+            user_id="user-1",
+            actor_id="admin",
+            categories=[BudgetCategory.PLATFORM],
+        )
+
+    mock_insert.assert_awaited()
+    all_inserted_rows = [row for call in mock_insert.await_args_list for row in call[0][1]]
+    assert len(all_inserted_rows) == 1
+    inserted = all_inserted_rows[0]
+    assert inserted.budget_period_spend == Decimal("0")
+    assert inserted.daily_spend == Decimal("0")
+    assert inserted.cumulative_spend == Decimal("75.00")
+    assert inserted.project_name == "alice@example.com"
+    assert inserted.user_id == "user-1"
+    assert inserted.budget_id == "budget-platform-1"
+    assert inserted.spend_subject_type == "budget"
+
+
+@pytest.mark.asyncio
+async def test_reset_user_budget_spending_no_marker_when_no_prior_row():
+    """No marker row inserted if this user has no prior spend rows."""
+    service = BudgetService()
+    session = AsyncMock()
+
+    db_user = SimpleNamespace(id="user-2", username="bob@example.com")
+    provider = SimpleNamespace(reset_user_budget_spending=AsyncMock())
+    mock_insert = AsyncMock()
+
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.first.return_value = db_user
+    session.execute = AsyncMock(return_value=mock_result)
+
+    with (
+        patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
+        patch(
+            "codemie.service.budget.budget_service.budget_repository.get_user_category_budget_id",
+            new=AsyncMock(return_value="budget-cli-2"),
+        ),
+        patch(
+            "codemie.service.budget.budget_service.project_spend_tracking_repository.get_latest_by_budget_ids",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "codemie.service.budget.budget_service.project_spend_tracking_repository.insert_budget_entries",
+            new=mock_insert,
+        ),
+    ):
+        await service.reset_user_budget_spending(
+            session=session,
+            user_id="user-2",
+            actor_id="admin",
+            categories=[BudgetCategory.CLI],
+        )
+
+    mock_insert.assert_awaited()
+    all_rows = [row for call in mock_insert.await_args_list for row in call[0][1]]
+    assert all_rows == []
+
+
+@pytest.mark.asyncio
+async def test_reset_user_budget_spending_rolls_back_session_on_marker_failure():
+    """If the marker insert fails, session.rollback() is called so the next category can proceed."""
+    service = BudgetService()
+    session = AsyncMock()
+    session.rollback = AsyncMock()
+
+    db_user = SimpleNamespace(id="user-3", username="carol@example.com")
+    prev_row = _make_budget_tracking_row("carol@example.com", "budget-platform-3", "10.00", "30.00")
+    provider = SimpleNamespace(reset_user_budget_spending=AsyncMock())
+
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.first.return_value = db_user
+    session.execute = AsyncMock(return_value=mock_result)
+
+    with (
+        patch("codemie.service.budget.budget_service.get_active_provider", return_value=provider),
+        patch(
+            "codemie.service.budget.budget_service.budget_repository.get_user_category_budget_id",
+            new=AsyncMock(return_value="budget-platform-3"),
+        ),
+        patch(
+            "codemie.service.budget.budget_service.project_spend_tracking_repository.get_latest_by_budget_ids",
+            new=AsyncMock(return_value={"budget-platform-3": prev_row}),
+        ),
+        patch(
+            "codemie.service.budget.budget_service.project_spend_tracking_repository.insert_budget_entries",
+            new=AsyncMock(side_effect=Exception("DB error")),
+        ),
+    ):
+        await service.reset_user_budget_spending(
+            session=session,
+            user_id="user-3",
+            actor_id="admin",
+            categories=[BudgetCategory.PLATFORM],
+        )
+
+    session.rollback.assert_awaited_once()

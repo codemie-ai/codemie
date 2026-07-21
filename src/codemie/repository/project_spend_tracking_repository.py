@@ -896,3 +896,6 @@ class ProjectSpendTrackingRepository:
 
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+
+project_spend_tracking_repository = ProjectSpendTrackingRepository()

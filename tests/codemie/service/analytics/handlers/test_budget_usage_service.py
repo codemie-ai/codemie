@@ -25,13 +25,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+from uuid import uuid4
+
 from codemie.service.analytics.handlers.budget_usage_service import (
     BudgetUsageService,
     _build_budget_usage_rows,
     _build_spending_row,
     _calculate_time_until_reset,
+    _collect_spend_rows,
+    _compute_spend_delta_safe,
     _get_key_spending_columns,
 )
+from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 
 
 class TestCalculateTimeUntilReset:
@@ -470,3 +475,93 @@ class TestBudgetUsageServiceLoadFromDb:
         assert assignments == []
         assert bmap == {}
         assert smap == {}
+
+
+# ---------------------------------------------------------------------------
+# Tests for lazy-load zero-skip relaxation (EPMCDME-12991)
+# ---------------------------------------------------------------------------
+
+
+def _make_tracking_row_for_budget_usage(budget_period_spend: str, cumulative: str) -> ProjectSpendTracking:
+    return ProjectSpendTracking(
+        id=uuid4(),
+        project_name="alice@example.com",
+        budget_id="bud-1",
+        budget_category="platform",
+        spend_subject_type="budget",
+        spend_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        budget_period_spend=Decimal(budget_period_spend),
+        daily_spend=Decimal(budget_period_spend),
+        cumulative_spend=Decimal(cumulative),
+    )
+
+
+class TestComputeSpendDeltaSafeAllowZero:
+    def test_returns_none_for_zero_delta_without_allow_zero(self):
+        """Default: zero delta → None (skip)."""
+        assignment = SimpleNamespace(budget_id="bud-1", category="platform")
+        prev = _make_tracking_row_for_budget_usage("10.00", "50.00")
+        now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+        result = _compute_spend_delta_safe(assignment, Decimal("10.00"), prev, None, now, "test")
+        assert result is None
+
+    def test_returns_zero_tuple_when_allow_zero_true(self):
+        """allow_zero=True: zero delta on reset → (0, prev_cumulative)."""
+        assignment = SimpleNamespace(budget_id="bud-1", category="platform")
+        prev = _make_tracking_row_for_budget_usage("10.00", "50.00")
+        now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+        result = _compute_spend_delta_safe(assignment, Decimal("0.00"), prev, None, now, "test", allow_zero=True)
+        assert result is not None
+        daily, cumulative = result
+        assert daily == Decimal("0")
+        assert cumulative == Decimal("50.00")
+
+
+class TestCollectSpendRowsResetTransition:
+    def test_inserts_zero_row_when_spend_dropped_after_reset(self):
+        """_collect_spend_rows inserts a zero row when fresh_spend < prev (reset)."""
+        now = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+        prev_row = _make_tracking_row_for_budget_usage("40.00", "120.00")
+        assignment = SimpleNamespace(budget_id="bud-1", category="platform")
+        budget = SimpleNamespace(budget_id="bud-1", budget_duration="30d", budget_reset_at=None)
+
+        rows, unchanged_ids, _ = _collect_spend_rows(
+            session=SimpleNamespace(),
+            fetch_assignments=[assignment],
+            results=[{"total_spend": 0.0, "budget_reset_at": None}],
+            budgets_map={"bud-1": budget},
+            current_spend_map={"bud-1": prev_row},
+            prev_day_map={},
+            subject_user_id="user-1",
+            subject_label="alice@example.com",
+            now=now,
+        )
+
+        assert len(rows) == 1
+        assert rows[0].budget_period_spend == Decimal("0")
+        assert rows[0].daily_spend == Decimal("0")
+        assert rows[0].cumulative_spend == Decimal("120.00")
+        assert unchanged_ids == []
+
+    def test_second_lazy_call_after_reset_marker_hits_touch_path(self):
+        """After a reset marker (budget_period_spend=0) is in DB, a second lazy call
+        with fresh_spend=0 must hit the 'unchanged' path, not insert a new row."""
+        now = datetime(2026, 7, 2, 10, 0, tzinfo=timezone.utc)
+        zero_marker = _make_tracking_row_for_budget_usage("0.00", "120.00")
+        assignment = SimpleNamespace(budget_id="bud-1", category="platform")
+        budget = SimpleNamespace(budget_id="bud-1", budget_duration="30d", budget_reset_at=None)
+
+        rows, unchanged_ids, _ = _collect_spend_rows(
+            session=SimpleNamespace(),
+            fetch_assignments=[assignment],
+            results=[{"total_spend": 0.0, "budget_reset_at": None}],
+            budgets_map={"bud-1": budget},
+            current_spend_map={"bud-1": zero_marker},
+            prev_day_map={},
+            subject_user_id="user-1",
+            subject_label="alice@example.com",
+            now=now,
+        )
+
+        assert rows == []
+        assert "bud-1" in unchanged_ids

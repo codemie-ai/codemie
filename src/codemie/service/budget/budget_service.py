@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from decimal import Decimal
 from typing import TYPE_CHECKING, Optional
 from uuid import uuid4
 
@@ -37,9 +39,11 @@ from codemie.service.activity.activity_models import (
     BudgetManagementEvent,
 )
 from codemie.service.activity.activity_repository import activity_event_repository
+from codemie.repository.project_spend_tracking_repository import project_spend_tracking_repository
 from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory, BudgetType
 from codemie.service.budget.budget_models import Budget
 from codemie.service.budget.provider_registry import get_active_provider
+from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 
 if TYPE_CHECKING:
     from codemie.service.budget.provider import BudgetEnforcementProvider, BudgetProviderState, GlobalBudgetState
@@ -1267,6 +1271,7 @@ class BudgetService:
         db_user = result.scalars().first()
         if db_user is None:
             raise ExtendedHTTPException(code=404, message=f"User '{user_id}' not found")
+        username = db_user.username
 
         target_categories: list[BudgetCategory] = categories if categories else list(BudgetCategory)
 
@@ -1281,11 +1286,46 @@ class BudgetService:
 
             try:
                 await provider.reset_user_budget_spending(
-                    username=db_user.username, budget_category=category, budget_id=budget_id
+                    username=username, budget_category=category, budget_id=budget_id
                 )
             except Exception as exc:
                 logger.warning(
                     f"Failed to reset budget spending for user {user_id!r} category {category.value!r}: {exc}"
+                )
+                continue
+
+            try:
+                from codemie.service.spend_tracking.spend_collector_service import LiteLLMSpendCollectorService
+
+                now = datetime.now(timezone.utc)
+                prev_rows = await project_spend_tracking_repository.get_latest_by_budget_ids(
+                    session, [budget_id], username
+                )
+                prev_row = prev_rows.get(budget_id)
+                marker: list[ProjectSpendTracking] = []
+                if prev_row is not None and LiteLLMSpendCollectorService._quantize_spend(
+                    prev_row.budget_period_spend
+                ) > Decimal("0"):
+                    marker.append(
+                        ProjectSpendTracking(
+                            id=uuid4(),
+                            project_name=username,
+                            user_id=user_id,
+                            budget_id=budget_id,
+                            budget_category=category.value,
+                            spend_subject_type="budget",
+                            spend_date=now,
+                            budget_period_spend=Decimal("0"),
+                            daily_spend=Decimal("0"),
+                            cumulative_spend=prev_row.cumulative_spend,
+                        )
+                    )
+                await project_spend_tracking_repository.insert_budget_entries(session, marker)
+            except Exception as exc:
+                await session.rollback()
+                logger.warning(
+                    f"budget_event=reset_marker_write_failed component=budget_service "
+                    f"user_id={user_id!r} category={category.value!r}: {exc}"
                 )
 
         reset_scope = [c.value for c in target_categories]
