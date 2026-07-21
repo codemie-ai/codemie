@@ -145,3 +145,51 @@ def test_get_applications(mock_customer_config):
 
     assert data[0]["slug"] == "app-component"
     assert data[0]["type"] == "module"
+
+
+def test_get_config_with_idp_provider(mock_customer_config):
+    """Test that IDP provider feature component is returned correctly"""
+    enabled_components = [
+        Component(id="component1", settings=ComponentSetting(enabled=True, name="Test Component 1")),
+        Component(
+            id="idpProvider",
+            settings=ComponentSetting(enabled=True, value="keycloak"),
+        ),
+    ]
+
+    mock_customer_config.get_enabled_components.return_value = enabled_components
+
+    response = client.get("/v1/config")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 2
+
+    # Find the IDP provider component
+    idp_component = next((c for c in data if c["id"] == "idpProvider"), None)
+    assert idp_component is not None
+    assert idp_component["settings"]["enabled"] is True
+    assert idp_component["settings"]["value"] == "keycloak"
+
+
+def test_get_config_with_mcp_auth_origin(mock_customer_config):
+    enabled_components = [
+        Component(id="component1", settings=ComponentSetting(enabled=True, name="Test Component 1")),
+        Component(
+            id="mcpAuthOrigin",
+            settings=ComponentSetting(enabled=True, value="https://codemie.example.com"),
+        ),
+    ]
+
+    mock_customer_config.get_enabled_components.return_value = enabled_components
+
+    response = client.get("/v1/config")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 2
+
+    mcp_component = next((c for c in data if c["id"] == "mcpAuthOrigin"), None)
+    assert mcp_component is not None
+    assert mcp_component["settings"]["enabled"] is True
+    assert mcp_component["settings"]["value"] == "https://codemie.example.com"

@@ -16,8 +16,17 @@ import logging
 import yaml
 from pathlib import Path
 from typing import List, Optional, Dict
+from importlib.metadata import version, PackageNotFoundError
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from codemie.configs.config import config
+
+
+CONFIG_IDS = {
+    "enterpriseEdition": "features:enterpriseEdition",
+    "userManagement": "features:userManagement",
+    "idpProvider": "idpProvider",
+    "mcpAuthOrigin": "mcpAuthOrigin",
+}
 
 
 class ComponentSetting(BaseModel):
@@ -115,8 +124,66 @@ class CustomerConfig(BaseModel):
         except Exception as exc:
             raise ValueError(f"Error processing configuration: {exc}")
 
+    def _get_runtime_config(self) -> List[Component]:
+        """Generate runtime-computed configuration components.
+
+        These components are determined by actual system state rather than YAML configuration.
+        Includes both boolean feature flags and string config values.
+        """
+        runtime_config = []
+
+        # Enterprise Edition - automatic detection via package presence
+        try:
+            version("codemie-enterprise")
+            is_enterprise = True
+        except PackageNotFoundError:
+            is_enterprise = False
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["enterpriseEdition"],
+                settings=ComponentSetting(enabled=is_enterprise),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["userManagement"],
+                settings=ComponentSetting(enabled=config.ENABLE_USER_MANAGEMENT),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["idpProvider"],
+                settings=ComponentSetting(enabled=True, value=config.IDP_PROVIDER),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["mcpAuthOrigin"],
+                settings=ComponentSetting(enabled=True, value=config.CALLBACK_API_BASE_URL),
+            )
+        )
+
+        return runtime_config
+
     def get_enabled_components(self) -> List[Component]:
-        return [component for component in self.components if component.settings.enabled]
+        """Get enabled components including runtime-computed config"""
+        runtime_config_ids = set(CONFIG_IDS.values())
+
+        # Get YAML-based components
+        yaml_components = [
+            component
+            for component in self.components
+            if component.settings.enabled and component.id not in runtime_config_ids
+        ]
+
+        # Add runtime config
+        runtime_config = [c for c in self._get_runtime_config() if c.settings.enabled]
+
+        return yaml_components + runtime_config
 
     def is_assistant_enabled(self, assistant_slug: str) -> bool:
         """
@@ -159,9 +226,17 @@ class CustomerConfig(BaseModel):
 
     def is_component_enabled(self, component_id: str) -> bool:
         """
-        Check if a component is enabled.
+        Check if a component is enabled (includes runtime-computed config).
         If the component is not in the configuration, it defaults to False (disabled).
         """
+        # Check runtime config first
+        runtime_config_ids = set(CONFIG_IDS.values())
+        if component_id in runtime_config_ids:
+            runtime_components = {c.id: c for c in self._get_runtime_config()}
+            if component_id in runtime_components:
+                return runtime_components[component_id].settings.enabled
+
+        # Fall back to YAML components
         return next(
             (component.settings.enabled for component in self.components if component.id == component_id),
             False,

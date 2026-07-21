@@ -156,7 +156,7 @@ components:
       enabled: true
       name: "Import Provider Datasources"
       description: "Enable the admin action to import datasources that already exist on a configured provider (e.g. AICE)"
-  
+
   - id: "features:costCenters"
     settings:
       enabled: true
@@ -196,7 +196,19 @@ components:
       enabled: false
       name: "Personal LiteLLM Integrations"
       description: "Enable regular users to manage personal LiteLLM credentials"
-      
+
+  - id: "features:budgetManagement"
+    settings:
+      enabled: true
+      name: "Budget Management"
+      description: "Enable budget management features in project and user administration"
+
+  - id: "features:showAllProjects"
+    settings:
+      enabled: false
+      name: "Show All Projects"
+      description: "Show all projects in the project selectors regardless of user assignment"
+
   - id: "mcpCustomServersDisabled"
     settings:
       enabled: false
@@ -215,6 +227,26 @@ components:
       name: "Teams Bot Integration"
       description: "Enable project-level assistant configuration for Microsoft Teams Bot integration."
 
+  - id: "mcpAuthTimeoutSeconds"
+    settings:
+      enabled: true
+      value: 60
+
+  - id: "bannerMessage"
+    settings:
+      enabled: false
+      value: ""
+
+  - id: "bannerLinkLabel"
+    settings:
+      enabled: false
+      value: ""
+
+  - id: "bannerLinkRoute"
+    settings:
+      enabled: false
+      value: ""
+
 preconfigured_assistants:
   - id: "codemie-onboarding"
     settings:
@@ -225,7 +257,7 @@ preconfigured_assistants:
       enabled: true
   - id: "keycloak-manager"
     settings:
-      enabled: false  # Disabled by default
+      enabled: false # Disabled by default
   - id: "prompt-engineer"
     settings:
       enabled: true
