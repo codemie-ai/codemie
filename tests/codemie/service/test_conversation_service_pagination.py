@@ -48,6 +48,8 @@ class TestGetUserConversationsPaginated:
         row.is_workflow_conversation = kwargs.get("is_workflow_conversation", False)
         row.very_first_msg_at = kwargs.get("very_first_msg_at")
         row.very_last_msg_at = kwargs.get("very_last_msg_at")
+        row.assistant_icon = kwargs.get("assistant_icon", None)
+        row.assistant_names = kwargs.get("assistant_names", [])
         return row
 
     @patch("codemie.service.conversation_service.get_session")

@@ -1317,19 +1317,28 @@ class ConversationService:
         with get_session() as session:
             stmt = text(f"""
                 SELECT
-                    conversation_id,
-                    conversation_name,
-                    folder,
-                    assistant_ids,
-                    initial_assistant_id,
-                    pinned,
-                    date,
-                    update_date,
-                    is_workflow_conversation,
+                    c.conversation_id,
+                    c.conversation_name,
+                    c.folder,
+                    c.assistant_ids,
+                    c.initial_assistant_id,
+                    c.pinned,
+                    c.date,
+                    c.update_date,
+                    c.is_workflow_conversation,
+                    a.icon_url AS assistant_icon,
+                    ARRAY(
+                        SELECT linked_assistant.name
+                        FROM jsonb_array_elements_text(COALESCE(c.assistant_ids, '[]'::jsonb))
+                            AS linked_assistant_id(id)
+                        JOIN assistants linked_assistant ON linked_assistant.id = linked_assistant_id.id
+                        ORDER BY linked_assistant.name
+                    ) AS assistant_names,
                     {timestamp_sql}
-                FROM conversations
-                WHERE user_id = :uid
-                ORDER BY update_date DESC NULLS LAST
+                FROM conversations c
+                LEFT JOIN assistants a ON a.id = c.initial_assistant_id
+                WHERE c.user_id = :uid
+                ORDER BY COALESCE(c.update_date, c.date) DESC NULLS LAST
                 OFFSET :off LIMIT :lim
             """).bindparams(uid=user_id, off=offset, lim=per_page)
             rows = list(session.exec(stmt).all())
@@ -1346,11 +1355,14 @@ class ConversationService:
                     initial_assistant_id=row.initial_assistant_id,
                     pinned=row.pinned,
                     date=row.update_date or row.date,
+                    update_date=row.update_date,
                     is_workflow=is_workflow,
                     workflow_id=row.initial_assistant_id if is_workflow else None,
                     conversation_id=row.conversation_id if is_workflow else None,
                     very_first_msg_at=row.very_first_msg_at,
                     very_last_msg_at=row.very_last_msg_at,
+                    assistant_icon=row.assistant_icon,
+                    assistant_names=row.assistant_names,
                 )
             )
         return result

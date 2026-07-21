@@ -467,6 +467,22 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             conversation.history = result.history
         return conversation
 
+    @staticmethod
+    def _build_filter_sql(filters: dict, allowed_columns: set) -> tuple[str, dict]:
+        clauses = ""
+        params: dict = {}
+        for i, (key, value) in enumerate(filters.items()):
+            clean_key = key.replace(".keyword", "")
+            if clean_key not in allowed_columns:
+                raise ValidationException(f"Unsupported filter: {clean_key}")
+            if value is None:
+                clauses += f" AND c.{clean_key} IS NULL"
+                continue
+            param_name = f"filter_{i}"
+            clauses += f" AND c.{clean_key} = :{param_name}"
+            params[param_name] = value
+        return clauses, params
+
     @classmethod
     def get_user_conversations(cls, user_id: str, filters: dict = None) -> List[ConversationListItem]:
         """
@@ -498,32 +514,33 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             "project",
         }
 
-        filter_clauses = ""
-        params: dict = {"uid": user_id}
-        if filters:
-            for i, (key, value) in enumerate(filters.items()):
-                clean_key = key.replace(".keyword", "")
-                if clean_key not in allowed_filter_columns:
-                    raise ValidationException(f"Unsupported filter: {clean_key}")
-                param_name = f"filter_{i}"
-                filter_clauses += f" AND {clean_key} = :{param_name}"
-                params[param_name] = value
+        filter_clauses, extra_params = cls._build_filter_sql(filters or {}, allowed_filter_columns)
+        params: dict = {"uid": user_id, **extra_params}
 
         stmt = text(f"""
             SELECT
-                conversation_id,
-                conversation_name,
-                folder,
-                assistant_ids,
-                initial_assistant_id,
-                pinned,
-                date,
-                update_date,
-                is_workflow_conversation,
+                c.conversation_id,
+                c.conversation_name,
+                c.folder,
+                c.assistant_ids,
+                c.initial_assistant_id,
+                c.pinned,
+                c.date,
+                c.update_date,
+                c.is_workflow_conversation,
+                a.icon_url AS assistant_icon,
+                ARRAY(
+                    SELECT linked_assistant.name
+                    FROM jsonb_array_elements_text(COALESCE(c.assistant_ids, '[]'::jsonb))
+                        AS linked_assistant_id(id)
+                    JOIN assistants linked_assistant ON linked_assistant.id = linked_assistant_id.id
+                    ORDER BY linked_assistant.name
+                ) AS assistant_names,
                 {timestamp_sql}
-            FROM conversations
-            WHERE user_id = :uid{filter_clauses}
-            ORDER BY COALESCE(update_date, date) DESC NULLS LAST
+            FROM conversations c
+            LEFT JOIN assistants a ON a.id = c.initial_assistant_id
+            WHERE c.user_id = :uid{filter_clauses}
+            ORDER BY COALESCE(c.update_date, c.date) DESC NULLS LAST
         """).bindparams(**params)
 
         with get_session() as session:
@@ -541,11 +558,14 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
                     initial_assistant_id=row.initial_assistant_id,
                     pinned=row.pinned,
                     date=row.update_date or row.date,
+                    update_date=row.update_date,
                     is_workflow=is_workflow,
                     workflow_id=row.initial_assistant_id if is_workflow else None,
                     conversation_id=row.conversation_id if is_workflow else None,
                     very_first_msg_at=row.very_first_msg_at,
                     very_last_msg_at=row.very_last_msg_at,
+                    assistant_icon=row.assistant_icon,
+                    assistant_names=row.assistant_names,
                 )
             )
         return result
@@ -706,6 +726,7 @@ class ConversationListItem(BaseModel):
     folder: Optional[str] = None
     pinned: Optional[bool] = False
     date: datetime
+    update_date: Optional[datetime] = None
 
     assistant_ids: Optional[List[str]] = Field(default_factory=list)
     initial_assistant_id: Optional[str] = None
@@ -717,6 +738,10 @@ class ConversationListItem(BaseModel):
     is_workflow: Optional[bool] = False
     workflow_id: Optional[str] = None
     conversation_id: Optional[str] = None
+
+    # Assistant display fields
+    assistant_icon: Optional[str] = None
+    assistant_names: Optional[List[str]] = Field(default_factory=list)
 
 
 class ConversationResponse(BaseModel):
