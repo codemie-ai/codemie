@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "task": "Add AI refine and revert endpoints for workflows, with audit logging for AI modifications and reverts (EPMCDME-12616, backend only).",
+  "generated": "2026-07-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 21,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "affected_layers",
+      "reason": "Five distinct layers are touched: API (workflow router), Service (workflow_service), AI-Chain (new WorkflowGeneratorService or extended AssistantGeneratorService), DB-Persistence (YamlConfigHistory Pydantic model with new optional change_type field stored in JSONB), and External (LLM invocation via LiteLLM/PromptGeneratorChain). Cross-cutting observability changes also land in WorkflowMonitoringService."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Four to five components must be created or modified: workflow router (new endpoints), workflow service (new revert and refine methods), a new AI generator service with a new workflow YAML prompt template, the YamlConfigHistory model, and the monitoring service plus metrics constants. The revert path builds on existing infrastructure; the AI refine path requires a new abstraction."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "No WorkflowGeneratorService or workflow-specific prompt template exists — a new pattern must be authored. Workflow YAML is significantly more complex than assistant fields, making structured-output prompt design non-trivial with mandatory LLM output validation. The revert path risks double-writing history if not carefully ordered relative to the existing _update_workflow_history prepend. Guardrail re-sync behaviour on revert is an open design question. The yaml_config_history code path has zero existing tests, so correctness must be established from scratch."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Estimated 7–10 files: workflow.py router (modify), workflow_service.py (modify), new WorkflowGeneratorService file (new), new workflow YAML prompt template (new), workflow_config.py YamlConfigHistory model (modify), workflow_monitoring_service.py (modify), metrics_constants.py (modify), plus 2–3 new test files across tests/codemie/rest_api/routers/ and tests/codemie/service/. Changes span 4+ directories."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

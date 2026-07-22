@@ -649,7 +649,10 @@ class WorkflowService:
         workflow_config.refresh()
 
     def _update_workflow_values(
-        self, stored_config: WorkflowConfig, updated_workflow_config: WorkflowConfig, user: User
+        self,
+        stored_config: WorkflowConfig,
+        updated_workflow_config: WorkflowConfig,
+        user: User,
     ) -> None:
         new_history_entry = YamlConfigHistory(
             yaml_config=stored_config.yaml_config,

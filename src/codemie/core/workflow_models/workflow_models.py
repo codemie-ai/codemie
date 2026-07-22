@@ -130,30 +130,30 @@ class CustomWorkflowNode(BaseModel):
 
 
 def _validate_python_expression_syntax(expression: str) -> str:
-    """Ensure a workflow condition expression is valid, Python-compatible syntax.
+    """Validate a workflow condition expression and auto-correct YAML-style booleans.
 
-    Condition expressions are evaluated at runtime as Python (elsewhere, via a
-    restricted/sandboxed evaluator), not parsed as YAML. This function only
-    parses the expression with ast.parse (no execution) to validate syntax and
-    boolean-literal style. YAML-style boolean literals (true/false) parse as
-    undefined names rather than booleans, so the condition silently falls
-    through to 'otherwise'/'default' instead of raising a visible error. Catch
-    that here at config-validation time.
+    Condition expressions are evaluated at runtime as Python. YAML/JSON-style
+    boolean literals (true/false) would silently evaluate as undefined names at
+    runtime, causing conditions to always fall through to 'otherwise'/'default'.
+    This function auto-corrects them to Python-style True/False using AST
+    transformation, so LLM-generated expressions with lowercase booleans work
+    correctly rather than failing after multiple validation retries.
     """
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError as e:
         raise ValueError(f"Invalid Python syntax in expression {expression!r}: {e.msg}") from e
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and node.id in ("true", "false"):
-            correct = "True" if node.id == "true" else "False"
-            raise ValueError(
-                f"Invalid boolean literal '{node.id}' in expression {expression!r}. "
-                f"Use Python-compatible '{correct}' instead of YAML-style '{node.id}'."
-            )
+    class _YamlBoolFixer(ast.NodeTransformer):
+        def visit_Name(self, node: ast.Name) -> ast.AST:  # noqa: N802
+            if node.id == "true":
+                return ast.Constant(value=True)
+            if node.id == "false":
+                return ast.Constant(value=False)
+            return node
 
-    return expression
+    fixed_tree = _YamlBoolFixer().visit(tree)
+    return ast.unparse(fixed_tree)
 
 
 class WorkflowStateSwitchCondition(BaseModel):

@@ -16,7 +16,10 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from codemie.core.exceptions import WorkflowGenerationError
 from codemie.core.workflow_models.workflow_models import CreateWorkflowRequest, WorkflowMode
+from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
+from codemie.rest_api.security.user import User as _User
 
 
 def test_metric_constants_importable():
@@ -120,7 +123,6 @@ def test_generate_returns_response(mock_llm_svc, mock_tools_svc, mock_graph_clas
 @patch("codemie.service.workflow_generator_service.ToolsInfoService")
 @patch("codemie.service.workflow_generator_service.llm_service")
 def test_generate_raises_on_graph_error(mock_llm_svc, mock_tools_svc, mock_graph_class):
-    from codemie.core.exceptions import ExtendedHTTPException
     from codemie.service.workflow_generator_service import WorkflowGeneratorService
 
     mock_llm_svc.default_llm_model = "gpt-4o"
@@ -134,10 +136,10 @@ def test_generate_raises_on_graph_error(mock_llm_svc, mock_tools_svc, mock_graph
     }
     mock_graph_class.return_value = mock_graph
 
-    with pytest.raises(ExtendedHTTPException) as exc_info:
+    with pytest.raises(WorkflowGenerationError) as exc_info:
         WorkflowGeneratorService.generate(nl_query="bad query", user=_make_user())
 
-    assert exc_info.value.code == 500
+    assert "Workflow generation failed" in exc_info.value.message
 
 
 @patch("codemie.service.workflow_generator_service.WorkflowGeneratorGraph")
@@ -243,3 +245,115 @@ def test_generate_falls_back_to_default_when_config_model_empty(mock_llm_svc, mo
         WorkflowGeneratorService.generate(nl_query="test", user=_make_user())
 
     mock_graph_class.assert_called_once_with(llm_model="gpt-4o", request_id=None)
+
+
+# ── EPMCDME-12616: refine_workflow tests (graph-based) ──────────────────────────
+
+EXAMPLE_PROJECT = "example_project"
+EXAMPLE_YAML = "name: my-workflow\nstates:\n  - id: state1\n"
+REFINED_YAML = "name: my-workflow\nstates:\n  - id: state1\n    description: improved\n"
+
+
+@pytest.fixture
+def refine_user():
+    return _User(id="123", username="testuser", name="Test User", project_names=[EXAMPLE_PROJECT])
+
+
+@patch("codemie.service.workflow_generator_service.request_summary_manager")
+@patch("codemie.service.workflow_generator_service.emit_llm_token_metric")
+@patch("codemie.service.workflow_generator_service.WorkflowRefinerGraph")
+@patch("codemie.service.workflow_generator_service.ToolsInfoService")
+@patch("codemie.service.workflow_generator_service.llm_service")
+def test_refine_workflow_returns_response(
+    mock_llm_svc, mock_tools_svc, mock_graph_class, mock_emit, mock_summary, refine_user
+):
+    from codemie.core.workflow_models.workflow_models import CreateWorkflowRequest, WorkflowMode
+    from codemie.service.workflow_generator_service import WorkflowGeneratorService
+
+    mock_llm_svc.default_llm_model = "gpt-4o"
+    mock_tools_svc.get_tools_info.return_value = []
+
+    create_req = CreateWorkflowRequest(
+        name="my-workflow",
+        description="",
+        project=EXAMPLE_PROJECT,
+        mode=WorkflowMode.SEQUENTIAL,
+        states=[],
+        assistants=[],
+        yaml_config=REFINED_YAML,
+    )
+    mock_graph = Mock()
+    mock_graph.run.return_value = {"result": create_req, "error": None, "validation_errors": []}
+    mock_graph_class.return_value = mock_graph
+
+    result = WorkflowGeneratorService.refine_workflow(
+        yaml_config=EXAMPLE_YAML,
+        refine_prompt="improve descriptions",
+        user=refine_user,
+        llm_model="gpt-4o",
+        request_id="req-1",
+    )
+
+    assert isinstance(result, WorkflowRefineResponse)
+    assert result.yaml_config == REFINED_YAML
+    mock_emit.assert_called_once()
+    mock_summary.clear_summary.assert_called_once_with("req-1")
+
+
+@patch("codemie.service.workflow_generator_service.request_summary_manager")
+@patch("codemie.service.workflow_generator_service.WorkflowRefinerGraph")
+@patch("codemie.service.workflow_generator_service.ToolsInfoService")
+@patch("codemie.service.workflow_generator_service.llm_service")
+def test_refine_workflow_raises_on_graph_error(
+    mock_llm_svc, mock_tools_svc, mock_graph_class, mock_summary, refine_user
+):
+    from codemie.service.workflow_generator_service import WorkflowGeneratorService
+
+    mock_llm_svc.default_llm_model = "gpt-4o"
+    mock_tools_svc.get_tools_info.return_value = []
+
+    mock_graph = Mock()
+    mock_graph.run.return_value = {
+        "result": None,
+        "error": "Validation failed after 3 retries",
+        "validation_errors": ["missing field"],
+    }
+    mock_graph_class.return_value = mock_graph
+
+    with pytest.raises(WorkflowGenerationError) as exc_info:
+        WorkflowGeneratorService.refine_workflow(
+            yaml_config=EXAMPLE_YAML,
+            refine_prompt=None,
+            user=refine_user,
+            llm_model=None,
+            request_id="req-2",
+        )
+
+    assert "Workflow refinement failed" in exc_info.value.message
+    mock_summary.clear_summary.assert_called_once_with("req-2")
+
+
+@patch("codemie.service.workflow_generator_service.request_summary_manager")
+@patch("codemie.service.workflow_generator_service.WorkflowRefinerGraph")
+@patch("codemie.service.workflow_generator_service.ToolsInfoService")
+@patch("codemie.service.workflow_generator_service.llm_service")
+def test_refine_workflow_raises_500_on_unexpected_exception(
+    mock_llm_svc, mock_tools_svc, mock_graph_class, mock_summary, refine_user
+):
+    from codemie.service.workflow_generator_service import WorkflowGeneratorService
+
+    mock_llm_svc.default_llm_model = "gpt-4o"
+    mock_tools_svc.get_tools_info.return_value = []
+    mock_graph_class.side_effect = RuntimeError("LLM unavailable")
+
+    with pytest.raises(WorkflowGenerationError) as exc_info:
+        WorkflowGeneratorService.refine_workflow(
+            yaml_config=EXAMPLE_YAML,
+            refine_prompt=None,
+            user=refine_user,
+            llm_model=None,
+            request_id="req-3",
+        )
+
+    assert "Failed to refine workflow" in exc_info.value.message
+    mock_summary.clear_summary.assert_called_once_with("req-3")

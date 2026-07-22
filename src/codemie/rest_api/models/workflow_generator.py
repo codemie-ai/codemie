@@ -31,3 +31,14 @@ class WorkflowGeneratorRequest(BaseModel):
 class WorkflowGeneratorResponse(BaseModel):
     workflow_config: CreateWorkflowRequest
     workflow_id: Optional[str] = None
+
+
+class WorkflowRefineRequest(BaseModel):
+    yaml_config: str
+    refine_prompt: Optional[str] = None
+    llm_model: Optional[str] = None
+    project: Optional[str] = None
+
+
+class WorkflowRefineResponse(BaseModel):
+    yaml_config: str

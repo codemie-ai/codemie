@@ -1,0 +1,34 @@
+{
+  "decision": "approve",
+  "rationale": "Both blocking findings are resolved. CR-001: except Exception narrowed to except KeyError in both refine_workflow and revert_workflow handlers, consistent with delete_workflow pattern; test updated to raise KeyError. CR-002: send_workflow_revert_metric() added to the revert_workflow success path with correct parameters. No new high-risk issues introduced by the fix-up diff. AC4 now fully satisfied.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"criterion": "AC1: POST /v1/workflows/{id}/refine endpoint available", "status": "satisfied", "notes": "Endpoint registered, correct request/response models."},
+    {"criterion": "AC2: POST /v1/workflows/{id}/revert endpoint available", "status": "satisfied", "notes": "Endpoint registered, correct response envelope."},
+    {"criterion": "AC3: After revert, workflow restored to last saved version", "status": "satisfied", "notes": "revert_workflow() reads history[0] (most recent) and applies via _update_workflow_values."},
+    {"criterion": "AC4: Action history logged for AI modifications and reverts", "status": "satisfied", "notes": "change_type='revert' recorded in history. Refine metric emitted. Revert metric now emitted via send_workflow_revert_metric() on success path (CR-002 resolved)."},
+    {"criterion": "AC5: No regression in workflow edit/save", "status": "satisfied", "notes": "change_type=None default preserves backward compatibility."},
+    {"criterion": "AC6: Both endpoints protected by WRITE permission check", "status": "satisfied", "notes": "Ability.can(WRITE) check present on both endpoints."},
+    {"criterion": "Spec: Refine stateless (no DB write)", "status": "satisfied", "notes": "No DB write in WorkflowGeneratorService."},
+    {"criterion": "Spec: 403/401 for missing WRITE permission", "status": "partial", "notes": "Spec says 403; implementation returns 401 per codebase convention. Spec documentation error, not a code bug. Deferred."}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow commit format", "status": "pass", "notes": "Fix-up commit follows fix(EPMCDME-12616): pattern consistent with repo convention."},
+    {"standard": "code-quality (ruff)", "status": "pass", "notes": "make ruff passes with 0 issues."},
+    {"standard": "security patterns", "status": "pass", "notes": "No new security concerns introduced by fix-up."}
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "except Exception changed to except KeyError in both refine_workflow and revert_workflow handlers. Test updated to raise KeyError to match."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "WorkflowMonitoringService.send_workflow_revert_metric() called on success path of revert_workflow() with user_id, user_name, workflow_id, workflow_name, project, success=True, mode."
+    }
+  ]
+}

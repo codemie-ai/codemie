@@ -1,0 +1,104 @@
+{
+  "schema": 1,
+  "gate_id": "code-review.final",
+  "round": "rework",
+  "generated": "2026-07-17T00:00:00Z",
+  "decision": "approve",
+  "confidence": "medium",
+  "rationale": "All three review lenses ran successfully. The rework correctly replaces PromptGeneratorChain with WorkflowRefinerGraph, reuses all six generation nodes, and deletes all revert code as specified. Both prior blocking findings (CR-001: broad except Exception → fixed to except KeyError; CR-002: dead revert metric → resolved by removing revert entirely) are confirmed resolved. Two new minor defensive guards are recommended: None-check on sk.INTENT in _route_from_router, and None-check on final_state['result'] before yaml_config access. Neither blocks correctness on normal paths. send_workflow_ai_refine_metric is dead code (monitoring gap, not a correctness issue). test_refine_planner.py lives in the flat test directory rather than a nodes/ subdirectory as spec prescribes, but tests pass and cover all required scenarios. Confidence is medium due to minor defensive gaps and one partial spec criterion.",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "criterion": "WorkflowRefinerGraph exists as sibling to WorkflowGeneratorGraph with correct LangGraph topology",
+      "status": "pass",
+      "notes": "workflow_refiner.py at correct location. Graph wiring: refine_planner → node_generator_router → [node_generator → tools_selector] → config_assembly → validation → [node_regenerator → config_assembly]."
+    },
+    {
+      "criterion": "All 6 shared nodes reused without modification",
+      "status": "pass",
+      "notes": "NodeGeneratorRouterNode, NodeGeneratorNode, ToolsSelectorNode, ConfigAssemblyNode, ValidationNode, NodeRegeneratorNode all instantiated and wired."
+    },
+    {
+      "criterion": "RefinePlannerNode with single structured LLM call using RefinePlan schema",
+      "status": "pass",
+      "notes": "nodes/refine_planner.py present. Reads existing_yaml_config, refine_prompt, available_tools. Returns {sk.INTENT, sk.STEP_PLANS, sk.CURRENT_NODE_INDEX: 0, sk.PREVIOUS_NODE: None}."
+    },
+    {
+      "criterion": "REFINE_PLANNING_PROMPT inside workflow_generator/ subpackage",
+      "status": "pass",
+      "notes": "templates/agents/workflow_generator/refine_planning.py present and exported from package __init__.py."
+    },
+    {
+      "criterion": "WorkflowGeneratorState extended with existing_yaml_config and refine_prompt",
+      "status": "pass",
+      "notes": "Both Optional[str] fields added to TypedDict. generate() path unaffected."
+    },
+    {
+      "criterion": "refine_workflow() uses WorkflowRefinerGraph; emits WORKFLOW_AI_REFINE_TOTAL_METRIC on success; clears request_summary_manager",
+      "status": "pass",
+      "notes": "Service method correctly wired. emit_llm_token_metric called on success path. finally block clears summary."
+    },
+    {
+      "criterion": "POST /workflows/{id}/refine endpoint unchanged (same path, same models)",
+      "status": "pass",
+      "notes": "Endpoint present with WorkflowRefineRequest / WorkflowRefineResponse. Router uses except KeyError for get_workflow (correct pattern)."
+    },
+    {
+      "criterion": "POST /workflows/{id}/revert and all revert-related code removed",
+      "status": "pass",
+      "notes": "revert endpoint, WorkflowService.revert_workflow(), WorkflowRevertRequest, YamlConfigHistory.change_type, WORKFLOW_REVERT_TOTAL_METRIC, send_workflow_revert_metric(), change_type on _update_workflow_values — all absent."
+    },
+    {
+      "criterion": "WorkflowGeneratorGraph not touched",
+      "status": "pass",
+      "notes": "workflow.py (WorkflowGeneratorGraph) unmodified."
+    },
+    {
+      "criterion": "Tests present and covering RefinePlannerNode, WorkflowRefinerGraph, refine_workflow(), and refine router endpoint",
+      "status": "partial",
+      "notes": "test_refine_planner.py exists at flat path tests/codemie/workflows/workflow_generator/ instead of nodes/ subdirectory per spec. Tests pass and cover all required scenarios (4 tests in TestRefinePlannerNode, 3 in TestWorkflowRefinerGraph, 3 refine_workflow service tests, 3 router tests). Functional coverage is complete; only path deviates from spec."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "git-workflow",
+      "status": "pass",
+      "notes": "All 20 branch commits use EPMCDME-12616: prefix with imperative subject lines. Clean, linear history."
+    },
+    {
+      "standard": "code-quality",
+      "status": "pass",
+      "notes": "Apache 2.0 license headers on all new files. F811 duplicate import fix committed. Ruff-compliant. Type annotations consistent with project patterns."
+    },
+    {
+      "standard": "security",
+      "status": "pass",
+      "notes": "No secrets or injection vectors. Ability.can(Action.WRITE) guard present on refine endpoint. yaml_config from request body is by design (stateless refine — client sends current draft YAML)."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "triage": "patch",
+      "severity": "minor",
+      "file": "src/codemie/workflows/workflow_generator/workflow_refiner.py",
+      "sources": ["blind", "edge-case"],
+      "title": "No None guard on sk.INTENT in _route_from_router before .steps access",
+      "problem": "_route_from_router accesses state[sk.INTENT].steps without checking if INTENT is None. WorkflowGeneratorState declares intent: Optional[Any]. If RefinePlannerNode fails via an unusual LangGraph error path that leaves sk.INTENT unset, this raises AttributeError instead of routing to END via the error guard.",
+      "impact": "Produces an obscured AttributeError caught by refine_workflow()'s outer except block, returning 500 with an unhelpful 'NoneType has no attribute steps' message. Normal execution paths are unaffected.",
+      "recommendation": "Add: intent = state.get(sk.INTENT); then guard the steps access: `if state.get(sk.CURRENT_NODE_INDEX, 0) < len(intent.steps if intent else [])` or explicitly check `if intent is None: return END`."
+    },
+    {
+      "id": "CR-002",
+      "triage": "patch",
+      "severity": "minor",
+      "file": "src/codemie/service/workflow_generator_service.py",
+      "sources": ["blind", "edge-case"],
+      "title": "No None guard on final_state['result'] before .yaml_config access",
+      "problem": "refine_workflow() checks final_state.get('error') and raises if set, but then accesses final_state['result'].yaml_config without verifying result is not None. If the graph exits without setting error but also without setting result (unexpected flow), this raises AttributeError caught by the outer except block.",
+      "impact": "Unhelpful AttributeError message in edge cases. Normal execution where the graph either sets error or sets result is unaffected.",
+      "recommendation": "After the error check, add: `if final_state.get('result') is None: raise ExtendedHTTPException(code=500, message='Workflow refinement produced no result', details='Graph completed without a result.', help=_REFINE_HELP_MESSAGE)`"
+    }
+  ],
+  "deferred_findings_summary": "3 deferred: (1) send_workflow_ai_refine_metric defined but never called — per-operation count metric missing, token metric still emitted; (2) WorkflowRefineRequest.project accepted but silently ignored; (3) router catches only KeyError for get_workflow — broader DB errors produce 500 (pre-existing pattern across all workflow endpoints, not introduced here). 0 dismissed."
+}

@@ -15,7 +15,7 @@
 """
 Test suite validating that condition.expression / switch.cases[].condition strings
 use Python-compatible syntax. CodeMie evaluates these expressions with Python's
-eval(), so YAML-style boolean literals (true/false) must be rejected in favor of
+eval(), so YAML-style boolean literals (true/false) are auto-corrected to
 Python-style literals (True/False) at config-validation time, per EPMCDME-13294.
 """
 
@@ -29,19 +29,13 @@ from codemie.core.workflow_models.workflow_models import (
 
 
 class TestWorkflowStateConditionExpressionValidation:
-    def test_rejects_lowercase_true(self):
-        with pytest.raises(ValidationError) as exc:
-            WorkflowStateCondition(expression="valid == true", then="a", otherwise="b")
+    def test_auto_corrects_lowercase_true(self):
+        condition = WorkflowStateCondition(expression="valid == true", then="a", otherwise="b")
+        assert condition.expression == "valid == True"
 
-        assert "True" in str(exc.value)
-        assert "true" in str(exc.value)
-
-    def test_rejects_lowercase_false(self):
-        with pytest.raises(ValidationError) as exc:
-            WorkflowStateCondition(expression="valid == false", then="a", otherwise="b")
-
-        assert "False" in str(exc.value)
-        assert "false" in str(exc.value)
+    def test_auto_corrects_lowercase_false(self):
+        condition = WorkflowStateCondition(expression="valid == false", then="a", otherwise="b")
+        assert condition.expression == "valid == False"
 
     def test_accepts_uppercase_true(self):
         condition = WorkflowStateCondition(expression="valid == True", then="a", otherwise="b")
@@ -52,8 +46,8 @@ class TestWorkflowStateConditionExpressionValidation:
         assert condition.expression == "valid == False"
 
     def test_allows_quoted_true_string_literal(self):
-        # 'true' inside a string literal is a value comparison, not a YAML/Python
-        # boolean literal mistake, and must not be flagged.
+        # 'true' inside a string literal is a value comparison, not a boolean literal;
+        # it must not be transformed to 'True'.
         condition = WorkflowStateCondition(expression="status == 'true'", then="a", otherwise="b")
         assert condition.expression == "status == 'true'"
 
@@ -65,17 +59,13 @@ class TestWorkflowStateConditionExpressionValidation:
 
 
 class TestWorkflowStateSwitchConditionExpressionValidation:
-    def test_rejects_lowercase_true(self):
-        with pytest.raises(ValidationError) as exc:
-            WorkflowStateSwitchCondition(condition="x == true", state_id="a")
+    def test_auto_corrects_lowercase_true(self):
+        switch_condition = WorkflowStateSwitchCondition(condition="x == true", state_id="a")
+        assert switch_condition.condition == "x == True"
 
-        assert "True" in str(exc.value)
-
-    def test_rejects_lowercase_false(self):
-        with pytest.raises(ValidationError) as exc:
-            WorkflowStateSwitchCondition(condition="x == false", state_id="a")
-
-        assert "False" in str(exc.value)
+    def test_auto_corrects_lowercase_false(self):
+        switch_condition = WorkflowStateSwitchCondition(condition="x == false", state_id="a")
+        assert switch_condition.condition == "x == False"
 
     def test_accepts_valid_expression(self):
         switch_condition = WorkflowStateSwitchCondition(condition="x == 1", state_id="a")

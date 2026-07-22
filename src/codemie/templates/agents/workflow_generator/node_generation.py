@@ -92,6 +92,8 @@ Use transition_type from step_plan:
       boolean → `== True` / `== False`   (NEVER bare `field` or `not field`)
       string  → `== "value"` / `in ["a", "b"]`   (string must be quoted)
       number  → `> n`, `< n`, `>= n`, `<= n`, `== n`   (numeric operator required)
+    CRITICAL: boolean literals MUST use Python capitalization: True / False
+      NEVER use YAML/JSON-style lowercase: true / false
     NEVER write: `"ticket is ready"`, `score_eval.is_low`, `status == done` (unquoted)
     next_state_ids = [then_state_id, otherwise_state_id]
 - switch: build switch_cases from step_plan.condition_steps_ids (all non-default entries);
@@ -141,6 +143,7 @@ When step_plan.is_per_item_processor is true AND transition_type is "conditional
     PATTERN B — step_plan.output_key is null (routing on item's own promoted fields):
       No write needed; set store_in_context: false. No output_schema.
 - condition_expression MUST be a Python expression. NEVER natural language.
+  CRITICAL: boolean literals MUST use Python capitalization: True / False — NEVER lowercase true / false
   Match the operator to the output field's declared type in output_schema:
     boolean → `field == True` / `field == False`   (NEVER bare `field` or `not field`)
     string  → `field == "value"` / `field in ["a", "b"]`   (always quoted)

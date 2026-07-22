@@ -33,3 +33,5 @@ class WorkflowGeneratorState(TypedDict):
     failed_step_ids: list  # list[str] — step IDs to regenerate; [] on first run or clean validation
     result: Optional[Any]  # CreateWorkflowRequest | None
     error: Optional[str]
+    existing_yaml_config: Optional[str]  # set by the refine path; absent on the generate path
+    refine_prompt: Optional[str]  # user's refinement instruction; absent on the generate path

@@ -26,7 +26,7 @@ from codemie.core.ability import Ability, Action
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.core.constants import MermaidMimeType
-from codemie.core.exceptions import ExtendedHTTPException, ValidationException
+from codemie.core.exceptions import ExtendedHTTPException, ValidationException, WorkflowGenerationError
 from codemie.core.models import BaseResponse, BaseResponseWithData, CreatedByUser, EvaluationResponse
 from codemie.core.workflow_models import (
     CreateWorkflowRequest,
@@ -42,6 +42,10 @@ from codemie.rest_api.models.guardrail import GuardrailEntity
 from codemie.rest_api.routers.utils import raise_access_denied, raise_forbidden, run_in_thread_pool, raise_not_found
 from codemie.rest_api.security.authentication import authenticate, project_access_check
 from codemie.rest_api.security.user import User
+from codemie.rest_api.models.workflow_generator import (
+    WorkflowRefineRequest,
+    WorkflowRefineResponse,
+)
 from codemie.service.monitoring.workflow_monitoring_service import WorkflowMonitoringService
 from codemie.service.guardrail.guardrail_service import GuardrailService
 from codemie.service.workflow_config import WorkflowConfigIndexService
@@ -329,8 +333,16 @@ async def update_workflow(
     if not Ability(user).can(Action.WRITE, workflow):
         raise_access_denied("update")
 
-    updated_config = WorkflowConfig(**request.model_dump())
-    updated_config.parse_execution_config()
+    try:
+        updated_config = WorkflowConfig(**request.model_dump())
+        updated_config.parse_execution_config()
+    except Exception as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message=WORKFLOW_CONFIGURATION_ERROR,
+            details=str(e).strip(),
+            help="",
+        ) from e
 
     try:
         MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(updated_config))
@@ -378,6 +390,49 @@ async def update_workflow(
             details=details,
             help="",
         ) from e
+
+
+@router.post(
+    "/workflows/{workflow_id}/refine",
+    status_code=status.HTTP_200_OK,
+    response_model=WorkflowRefineResponse,
+)
+def refine_workflow(
+    workflow_id: str,
+    request: WorkflowRefineRequest,
+    raw_request: Request,
+    user: User = Depends(authenticate),
+):
+    from codemie.configs.logger import set_logging_info
+    from codemie.service.llm_service.utils import set_llm_context
+
+    try:
+        workflow = workflow_service.get_workflow(workflow_id)
+    except KeyError:
+        raise_not_found(resource_id=workflow_id, resource_type="Workflow")
+
+    if not Ability(user).can(Action.WRITE, workflow):
+        raise_access_denied("refine")
+
+    request_id = raw_request.state.uuid
+    set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
+    set_llm_context(None, user.current_project, user)
+
+    try:
+        return WorkflowGeneratorService.refine_workflow(
+            yaml_config=request.yaml_config,
+            refine_prompt=request.refine_prompt,
+            user=user,
+            llm_model=request.llm_model,
+            request_id=request_id,
+        )
+    except WorkflowGenerationError as exc:
+        raise ExtendedHTTPException(
+            code=500,
+            message=exc.message,
+            details=exc.details,
+            help=exc.help,
+        ) from exc
 
 
 @router.delete(
@@ -513,11 +568,19 @@ def generate_workflow(
     request_id = raw_request.state.uuid
     set_llm_context(None, user.current_project, user)
 
-    return WorkflowGeneratorService.generate(
-        nl_query=request.text,
-        user=user,
-        llm_model=request.llm_model,
-        persist=request.persist,
-        guardrail_ids=request.guardrail_ids,
-        request_id=request_id,
-    )
+    try:
+        return WorkflowGeneratorService.generate(
+            nl_query=request.text,
+            user=user,
+            llm_model=request.llm_model,
+            persist=request.persist,
+            guardrail_ids=request.guardrail_ids,
+            request_id=request_id,
+        )
+    except WorkflowGenerationError as exc:
+        raise ExtendedHTTPException(
+            code=500,
+            message=exc.message,
+            details=exc.details,
+            help=exc.help,
+        ) from exc

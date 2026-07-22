@@ -1,0 +1,81 @@
+diff --git a/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md b/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md
+index 3e5917d57..3ee7b4be4 100644
+--- a/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md
++++ b/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md
+@@ -55,7 +55,10 @@ The endpoint loads the workflow to perform the access check, then passes the req
+ }
+ ```
+ 
+-**Response 200:** Full `WorkflowConfigResponse` (same shape as the existing GET endpoint).
++**Response 200:** `BaseResponseWithData` — same envelope as `PUT /workflows/{id}`:
++```json
++{ "message": "Workflow reverted successfully", "data": { /* full WorkflowConfig */ } }
++```
+ 
+ **Error responses:**
+ - `400` — `yaml_config_history` is empty; no prior version exists
+@@ -193,7 +196,8 @@ class WorkflowRevertRequest(BaseModel):
+     project: Optional[str] = None
+ ```
+ 
+-The revert response reuses the existing `WorkflowConfigResponse` type from the workflow router.
++The revert response uses `BaseResponseWithData` — the same envelope as `PUT /workflows/{id}`:
++`{ "message": "Workflow reverted successfully", "data": <WorkflowConfig> }`
+ 
+ ---
+ 
+diff --git a/src/codemie/rest_api/routers/workflow.py b/src/codemie/rest_api/routers/workflow.py
+index 891ed00d5..a64c372d2 100644
+--- a/src/codemie/rest_api/routers/workflow.py
++++ b/src/codemie/rest_api/routers/workflow.py
+@@ -397,7 +397,7 @@ def refine_workflow(
+ 
+     try:
+         workflow = workflow_service.get_workflow(workflow_id)
+-    except Exception:
++    except KeyError:
+         raise_not_found(resource_id=workflow_id, resource_type="Workflow")
+ 
+     if not Ability(user).can(Action.WRITE, workflow):
+@@ -429,7 +429,7 @@ def revert_workflow(
+ ):
+     try:
+         workflow = workflow_service.get_workflow(workflow_id)
+-    except Exception:
++    except KeyError:
+         raise_not_found(resource_id=workflow_id, resource_type="Workflow")
+ 
+     if not Ability(user).can(Action.WRITE, workflow):
+diff --git a/src/codemie/service/workflow_service.py b/src/codemie/service/workflow_service.py
+index 10d1c2095..13c5f37e9 100644
+--- a/src/codemie/service/workflow_service.py
++++ b/src/codemie/service/workflow_service.py
+@@ -185,6 +185,15 @@ class WorkflowService:
+         previous = stored_config.yaml_config_history[0]
+         reverted_config = stored_config.model_copy(update={"yaml_config": previous.yaml_config})
+         self._update_workflow_values(stored_config, reverted_config, user, change_type="revert")
++        WorkflowMonitoringService.send_workflow_revert_metric(
++            user_id=user.id,
++            user_name=user.name,
++            workflow_id=str(stored_config.id),
++            workflow_name=stored_config.name,
++            project=stored_config.project,
++            success=True,
++            mode=stored_config.mode,
++        )
+         return stored_config
+ 
+     @staticmethod
+diff --git a/tests/codemie/rest_api/routers/test_workflow.py b/tests/codemie/rest_api/routers/test_workflow.py
+index f6b4aa597..12146117a 100644
+--- a/tests/codemie/rest_api/routers/test_workflow.py
++++ b/tests/codemie/rest_api/routers/test_workflow.py
+@@ -843,7 +843,7 @@ async def test_refine_workflow_access_denied(workflow_config, request_header):
+ async def test_refine_workflow_not_found(request_header):
+     with patch(
+         "codemie.service.workflow_service.WorkflowService.get_workflow",
+-        side_effect=Exception("not found"),
++        side_effect=KeyError("not found"),
+     ):
+         transport = ASGITransport(app=app)
+         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:

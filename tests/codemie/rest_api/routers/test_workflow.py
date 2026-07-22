@@ -30,7 +30,9 @@ from codemie.core.workflow_models import (
     WorkflowEvaluationRequest,
     WorkflowMode,
 )
+
 from codemie.rest_api.main import app
+from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
 from codemie.rest_api.security.user import User
 from codemie.service.workflow_service import WorkflowService
 import codemie.rest_api.routers.workflow as workflow_router
@@ -909,3 +911,67 @@ async def test_evaluate_workflow_dataset_not_found(workflow_config, workflow_eva
             )
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+# ── EPMCDME-12616: refine and revert endpoints ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_refine_workflow_success(workflow_config, request_header):
+    refined_yaml = "name: refined-workflow\n"
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.get_workflow",
+            return_value=workflow_config,
+        ),
+        patch("codemie.core.ability.Ability.can", return_value=True),
+        patch(
+            "codemie.service.workflow_generator_service.WorkflowGeneratorService.refine_workflow",
+            return_value=WorkflowRefineResponse(yaml_config=refined_yaml),
+        ) as mock_refine,
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                f"/v1/workflows/{workflow_config.id}/refine",
+                json={"yaml_config": "name: old\n", "refine_prompt": "improve it"},
+                headers=request_header,
+            )
+        assert response.status_code == 200
+        assert response.json()["yaml_config"] == refined_yaml
+        mock_refine.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_refine_workflow_access_denied(workflow_config, request_header):
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.get_workflow",
+            return_value=workflow_config,
+        ),
+        patch("codemie.core.ability.Ability.can", return_value=False),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                f"/v1/workflows/{workflow_config.id}/refine",
+                json={"yaml_config": "name: old\n"},
+                headers=request_header,
+            )
+        assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_refine_workflow_not_found(request_header):
+    with patch(
+        "codemie.service.workflow_service.WorkflowService.get_workflow",
+        side_effect=KeyError("not found"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                "/v1/workflows/nonexistent/refine",
+                json={"yaml_config": "name: old\n"},
+                headers=request_header,
+            )
+        assert response.status_code == 404

@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-standard",
+  "slug": "epmcdme-12616-workflow-ai-refine-revert",
+  "branch": "EPMCDME-12616_enhance-workflow-edit-ai-refine-revert",
+  "phase": "main",
+  "started_at": "2026-07-09T00:00:00Z",
+  "completed_at": "2026-07-09T00:00:00Z",
+  "last_sync_commit": "eb7d0d0d5c1ce69020a233164c5ff907d3fa2893"
+}

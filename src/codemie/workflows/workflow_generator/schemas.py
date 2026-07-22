@@ -357,6 +357,28 @@ class WorkflowPlan(BaseModel):
     )
 
 
+class RefinePlan(BaseModel):
+    """Structured output from RefinePlannerNode — combines intent and step plans in one LLM call."""
+
+    intent: WorkflowIntent = Field(
+        description=(
+            "Complete desired WorkflowIntent for the refined workflow. "
+            "workflow_name and workflow_description should match the existing workflow unless "
+            "the refine_prompt explicitly requests renaming. "
+            "steps must list ALL steps in the final workflow — preserved, modified, and new — "
+            "in execution order. Removed steps must be absent."
+        )
+    )
+    plans: list[StepPlan] = Field(
+        description=(
+            "One StepPlan per step in intent.steps, in the same order. "
+            "Preserved steps carry a description that matches the original node configuration "
+            "so the generator can reproduce them faithfully. "
+            "Modified and new steps carry the desired change description."
+        )
+    )
+
+
 class GeneratedCondition(BaseModel):
     expression: str = Field(
         description="Python expression evaluated against context store variables using bare names (e.g. status == 'ok')"

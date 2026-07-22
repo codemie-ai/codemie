@@ -14,12 +14,14 @@
 
 from codemie.templates.agents.workflow_generator.intent_analysis import INTENT_ANALYSIS_PROMPT
 from codemie.templates.agents.workflow_generator.node_generation import NODE_GENERATION_PROMPT
+from codemie.templates.agents.workflow_generator.refine_planning import REFINE_PLANNING_PROMPT
 from codemie.templates.agents.workflow_generator.step_planning import STEP_PLANNING_PROMPT
 from codemie.templates.agents.workflow_generator.tools_selection import TOOLS_SELECTION_PROMPT
 
 __all__ = [
     "INTENT_ANALYSIS_PROMPT",
     "NODE_GENERATION_PROMPT",
+    "REFINE_PLANNING_PROMPT",
     "STEP_PLANNING_PROMPT",
     "TOOLS_SELECTION_PROMPT",
 ]

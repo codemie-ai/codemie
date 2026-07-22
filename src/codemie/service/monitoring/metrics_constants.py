@@ -55,6 +55,8 @@ WORKFLOW_GENERATOR_ERRORS_METRIC = "codemie_workflow_generator_errors_total"
 WORKFLOW_OUTPUT_CHANGE_TOTAL_METRIC = "codemie_workflow_output_change_total"
 WORKFLOW_OUTPUT_CHANGE_ERRORS_METRIC = "codemie_workflow_output_change_errors_total"
 
+WORKFLOW_AI_REFINE_TOTAL_METRIC = "codemie_workflow_ai_refine_total"
+
 CONVERSATION_ANALYSIS_TOTAL_METRIC = "codemie_conversation_analysis_total"
 
 

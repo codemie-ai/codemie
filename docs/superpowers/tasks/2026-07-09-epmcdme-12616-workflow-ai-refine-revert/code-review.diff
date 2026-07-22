@@ -1,0 +1,3962 @@
+diff --git a/docs/superpowers/plans/2026-07-09-workflow-ai-refine-revert.md b/docs/superpowers/plans/2026-07-09-workflow-ai-refine-revert.md
+new file mode 100644
+index 000000000..10c1c2d79
+--- /dev/null
++++ b/docs/superpowers/plans/2026-07-09-workflow-ai-refine-revert.md
+@@ -0,0 +1,987 @@
++# Workflow AI Refine and Revert Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** Add `POST /v1/workflows/{id}/refine` (stateless AI-powered YAML suggestions) and `POST /v1/workflows/{id}/revert` (restore last history snapshot) to the workflow API.
++
++**Architecture:** New `WorkflowGeneratorService` uses `PromptGeneratorChain` + LangChain structured output for stateless AI refinement; revert is a thin wrapper over existing `update_workflow` that reads `yaml_config_history[0]` and re-applies it. Both endpoints follow the `POST /v1/skills/refine` pattern for LLM context setup.
++
++**Tech Stack:** FastAPI, Pydantic v2, LangChain `PromptGeneratorChain` (from `assistant_generator_service.py`), SQLModel + JSONB (`yaml_config_history`), pytest + `AsyncClient`.
++
++## Global Constraints
++
++- All new code must pass `make lint` (Ruff) without errors.
++- No Alembic migration required — `change_type` is added to a JSONB column (`yaml_config_history`), deserialized as `Optional[str] = None` for existing rows.
++- Import `PromptGeneratorChain` from `codemie.service.assistant_generator_service` — it lives there, not in a separate module.
++- `WorkflowRefineDetails` (structured output model) belongs in the prompt template file, not the service file.
++- Router endpoints use `raw_request: Request` to get `request_id = raw_request.state.uuid`.
++- `set_logging_info` and `set_llm_context` are called at the top of every LLM-calling endpoint.
++- `request_summary_manager.clear_summary(request_id)` must be called in the `finally` block of `WorkflowGeneratorService.refine_workflow`.
++- `emit_llm_token_metric` on success, `send_log_metric` on failure — same as `SkillGeneratorService`.
++- Tests use `patch("codemie.service.workflow_service.WorkflowService.<method>")` for service patches and `patch("codemie.service.workflow_generator_service.WorkflowGeneratorService.refine_workflow")` for generator patches.
++
++---
++
++## File Map
++
++| Action | Path | Responsibility |
++|---|---|---|
++| Modify | `src/codemie/core/workflow_models/workflow_config.py:57` | Add `change_type: Optional[str] = None` to `YamlConfigHistory` |
++| Modify | `src/codemie/service/monitoring/metrics_constants.py` | Add two new metric name constants |
++| Modify | `src/codemie/service/monitoring/workflow_monitoring_service.py` | Add `send_workflow_ai_refine_metric` and `send_workflow_revert_metric` |
++| Create | `src/codemie/templates/agents/workflow_generator_prompt.py` | `WORKFLOW_REFINE_TEMPLATE` + `WorkflowRefineDetails` structured-output model |
++| Create | `src/codemie/rest_api/models/workflow_generator.py` | `WorkflowRefineRequest`, `WorkflowRefineResponse`, `WorkflowRevertRequest` |
++| Create | `src/codemie/service/workflow_generator_service.py` | `WorkflowGeneratorService.refine_workflow()` |
++| Modify | `src/codemie/service/workflow_service.py:651` | Add `change_type` param to `_update_workflow_values`; add `revert_workflow()` |
++| Modify | `src/codemie/rest_api/routers/workflow.py` | Two new endpoints: `refine` and `revert` |
++| Modify | `tests/codemie/service/test_workflow_service.py` | Tests for `revert_workflow` and `change_type` recording |
++| Create | `tests/codemie/service/test_workflow_generator_service.py` | Unit tests for `WorkflowGeneratorService` |
++| Modify | `tests/codemie/rest_api/routers/test_workflow.py` | Router tests for refine and revert endpoints |
++
++---
++
++### Task 1: Add `change_type` to `YamlConfigHistory`
++
++**Files:**
++- Modify: `src/codemie/core/workflow_models/workflow_config.py:57-61`
++- Test: `tests/codemie/service/test_workflow_service.py` (new test added in Task 5)
++
++**Interfaces:**
++- Produces: `YamlConfigHistory(yaml_config, date, created_by, change_type=None)` — used in Tasks 5, 6, 7
++
++**Test-first: yes — `test_yaml_config_history_default_change_type_is_none` (added in Task 5 alongside `revert` tests to keep commits cohesive)**
++
++- [ ] **Step 1: Open the model file**
++
++  File: `src/codemie/core/workflow_models/workflow_config.py`, lines 57–61.
++
++  Current:
++  ```python
++  class YamlConfigHistory(BaseModel):
++      yaml_config: str
++      date: datetime
++      created_by: Optional[UserEntity] = None
++  ```
++
++- [ ] **Step 2: Add the field**
++
++  ```python
++  class YamlConfigHistory(BaseModel):
++      yaml_config: str
++      date: datetime
++      created_by: Optional[UserEntity] = None
++      change_type: Optional[str] = None
++  ```
++
++- [ ] **Step 3: Verify lint passes**
++
++  Run: `cd /Users/yevhen_slyva/codemie-dev/codemie && make lint`
++  Expected: no errors.
++
++- [ ] **Step 4: Commit**
++
++  ```bash
++  git add src/codemie/core/workflow_models/workflow_config.py
++  git commit -m "feat(EPMCDME-12616): add change_type field to YamlConfigHistory"
++  ```
++
++---
++
++### Task 2: Add metric constants and monitoring methods
++
++**Files:**
++- Modify: `src/codemie/service/monitoring/metrics_constants.py`
++- Modify: `src/codemie/service/monitoring/workflow_monitoring_service.py`
++
++**Interfaces:**
++- Produces:
++  - `WORKFLOW_AI_REFINE_TOTAL_METRIC = "codemie_workflow_ai_refine_total"` — imported in Task 4
++  - `WORKFLOW_REVERT_TOTAL_METRIC = "codemie_workflow_revert_total"` — imported in Task 5
++  - `WorkflowMonitoringService.send_workflow_ai_refine_metric(user_id, user_name, workflow_id, workflow_name, project, success, llm_model=None, mode=WorkflowMode.SEQUENTIAL)`
++  - `WorkflowMonitoringService.send_workflow_revert_metric(user_id, user_name, workflow_id, workflow_name, project, success, mode=WorkflowMode.SEQUENTIAL)`
++
++**Test-first: no** — monitoring methods follow an established pattern that is already tested by the existing metric infra. No new test file warranted here.
++
++- [ ] **Step 1: Add constants to `metrics_constants.py`**
++
++  Append after `WORKFLOW_OUTPUT_CHANGE_ERRORS_METRIC` (around line 54):
++  ```python
++  WORKFLOW_AI_REFINE_TOTAL_METRIC = "codemie_workflow_ai_refine_total"
++  WORKFLOW_REVERT_TOTAL_METRIC = "codemie_workflow_revert_total"
++  ```
++
++- [ ] **Step 2: Add imports to `workflow_monitoring_service.py`**
++
++  In `workflow_monitoring_service.py`, add to the existing `from codemie.service.monitoring.metrics_constants import MetricsAttributes` import:
++  ```python
++  from codemie.service.monitoring.metrics_constants import (
++      MetricsAttributes,
++      WORKFLOW_AI_REFINE_TOTAL_METRIC,
++      WORKFLOW_REVERT_TOTAL_METRIC,
++  )
++  ```
++
++- [ ] **Step 3: Add the two new methods to `WorkflowMonitoringService`**
++
++  Append after `send_delete_workflow_metric` (before `_build_workflow_attributes`):
++
++  ```python
++  @classmethod
++  def send_workflow_ai_refine_metric(
++      cls,
++      user_id: str,
++      user_name: str,
++      workflow_id: str,
++      workflow_name: str,
++      project: str,
++      success: bool,
++      llm_model: Optional[str] = None,
++      mode: WorkflowMode = WorkflowMode.SEQUENTIAL,
++      additional_attributes: Optional[dict] = None,
++  ):
++      attributes = cls._build_workflow_attributes(
++          project, success, user_id, user_name, workflow_id, workflow_name, mode
++      )
++      if llm_model:
++          attributes[MetricsAttributes.LLM_MODEL] = llm_model
++      if additional_attributes:
++          attributes.update(additional_attributes)
++      cls.send_count_metric(name=WORKFLOW_AI_REFINE_TOTAL_METRIC, attributes=attributes)
++
++  @classmethod
++  def send_workflow_revert_metric(
++      cls,
++      user_id: str,
++      user_name: str,
++      workflow_id: str,
++      workflow_name: str,
++      project: str,
++      success: bool,
++      mode: WorkflowMode = WorkflowMode.SEQUENTIAL,
++      additional_attributes: Optional[dict] = None,
++  ):
++      attributes = cls._build_workflow_attributes(
++          project, success, user_id, user_name, workflow_id, workflow_name, mode
++      )
++      if additional_attributes:
++          attributes.update(additional_attributes)
++      cls.send_count_metric(name=WORKFLOW_REVERT_TOTAL_METRIC, attributes=attributes)
++  ```
++
++- [ ] **Step 4: Verify lint**
++
++  Run: `make lint`
++  Expected: no errors.
++
++- [ ] **Step 5: Commit**
++
++  ```bash
++  git add src/codemie/service/monitoring/metrics_constants.py \
++          src/codemie/service/monitoring/workflow_monitoring_service.py
++  git commit -m "feat(EPMCDME-12616): add workflow_ai_refine and workflow_revert metric methods"
++  ```
++
++---
++
++### Task 3: Prompt template and `WorkflowRefineDetails` model
++
++**Files:**
++- Create: `src/codemie/templates/agents/workflow_generator_prompt.py`
++
++**Interfaces:**
++- Produces:
++  - `WORKFLOW_REFINE_TEMPLATE: PromptTemplate` (input variables: `yaml_config`, `refine_prompt`)
++  - `WorkflowRefineDetails(BaseModel)` with field `yaml_config: str`
++  - Both are imported in Task 4
++
++**Test-first: no** — prompt templates contain no logic; exercised end-to-end by Task 4's service tests.
++
++- [ ] **Step 1: Create the file**
++
++  ```python
++  # Copyright 2026 EPAM Systems, Inc. ("EPAM")
++  #
++  # Licensed under the Apache License, Version 2.0 (the "License");
++  # you may not use this file except in compliance with the License.
++  # You may obtain a copy of the License at
++  #
++  #     http://www.apache.org/licenses/LICENSE-2.0
++  #
++  # Unless required by applicable law or agreed to in writing, software
++  # distributed under the License is distributed on an "AS IS" BASIS,
++  # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++  # See the License for the specific language governing permissions and
++  # limitations under the License.
++
++  from langchain_core.prompts import PromptTemplate
++  from pydantic import BaseModel, Field
++
++
++  class WorkflowRefineDetails(BaseModel):
++      """Structured output from the workflow refine LLM chain."""
++
++      yaml_config: str = Field(
++          description="The complete revised workflow YAML. Must be valid YAML. No markdown fencing."
++      )
++
++
++  WORKFLOW_REFINE_TEMPLATE = PromptTemplate.from_template(
++      """You are an expert workflow engineer. Your task is to improve a CodeMie workflow YAML configuration.
++
++  Current workflow YAML:
++  ```yaml
++  {yaml_config}
++  ```
++
++  Refinement instructions:
++  {refine_prompt}
++
++  Rules:
++  - Return the COMPLETE revised workflow YAML. Do not summarize or truncate.
++  - Preserve the overall workflow structure (states, transitions, assistants).
++  - Apply only the changes described in the refinement instructions. If instructions are empty, apply general improvements (clarity, robustness, best practices).
++  - The output must be valid YAML. Do not wrap it in markdown code fences or add any commentary.
++  - Do not change the workflow id, name, or project fields.
++  """
++  )
++  ```
++
++- [ ] **Step 2: Verify lint**
++
++  Run: `make lint`
++  Expected: no errors.
++
++- [ ] **Step 3: Commit**
++
++  ```bash
++  git add src/codemie/templates/agents/workflow_generator_prompt.py
++  git commit -m "feat(EPMCDME-12616): add workflow refine prompt template"
++  ```
++
++---
++
++### Task 4: `WorkflowGeneratorService` with `refine_workflow()`
++
++**Files:**
++- Create: `src/codemie/service/workflow_generator_service.py`
++- Create: `tests/codemie/service/test_workflow_generator_service.py`
++
++**Interfaces:**
++- Consumes:
++  - `PromptGeneratorChain.from_prompt_template(WORKFLOW_REFINE_TEMPLATE, request_id, llm_model)` from `codemie.service.assistant_generator_service`
++  - `WorkflowRefineDetails` from `codemie.templates.agents.workflow_generator_prompt`
++  - `WORKFLOW_AI_REFINE_TOTAL_METRIC` from `codemie.service.monitoring.metrics_constants`
++  - `emit_llm_token_metric`, `send_log_metric` from `codemie.service.monitoring.base_monitoring_service`
++  - `request_summary_manager` from `codemie.service.request_summary_manager`
++- Produces:
++  - `WorkflowGeneratorService.refine_workflow(yaml_config, refine_prompt, user, llm_model, request_id) -> WorkflowRefineResponse`
++  - `WorkflowRefineResponse` is imported from `codemie.rest_api.models.workflow_generator` (created in Task 5 — Task 4 imports it lazily or Task 5 is created first; see note below)
++
++> **Note on ordering:** `WorkflowGeneratorService.refine_workflow()` returns `WorkflowRefineResponse` from `codemie.rest_api.models.workflow_generator`. Create the models file (Task 5) before writing this service, OR use an inline `dict` return and patch the import in tests. The plan steps below assume Task 5's models file is created in parallel — if following sequentially, create the models file from Task 5 Step 1 first, then come back and write this service.
++
++**Test-first: yes — write tests in `test_workflow_generator_service.py` before writing the service**
++
++- [ ] **Step 1: First create `src/codemie/rest_api/models/workflow_generator.py`** (Task 5's model file, needed here as a dependency)
++
++  ```python
++  # Copyright 2026 EPAM Systems, Inc. ("EPAM")
++  #
++  # Licensed under the Apache License, Version 2.0 (the "License")
++  # ... (same Apache header)
++
++  from typing import Optional
++  from pydantic import BaseModel
++
++
++  class WorkflowRefineRequest(BaseModel):
++      yaml_config: str
++      refine_prompt: Optional[str] = None
++      llm_model: Optional[str] = None
++      project: Optional[str] = None
++
++
++  class WorkflowRefineResponse(BaseModel):
++      yaml_config: str
++
++
++  class WorkflowRevertRequest(BaseModel):
++      project: Optional[str] = None
++  ```
++
++- [ ] **Step 2: Write failing tests in `tests/codemie/service/test_workflow_generator_service.py`**
++
++  ```python
++  # Copyright 2026 EPAM Systems, Inc. ("EPAM")
++  # ... (Apache header)
++
++  from unittest.mock import patch, MagicMock
++  import pytest
++  import yaml
++
++  from codemie.core.exceptions import ExtendedHTTPException
++  from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
++  from codemie.rest_api.security.user import User
++
++  EXAMPLE_PROJECT = "example_project"
++  EXAMPLE_YAML = "name: my-workflow\nstates:\n  - id: state1\n"
++  REFINED_YAML = "name: my-workflow\nstates:\n  - id: state1\n    description: improved\n"
++
++
++  @pytest.fixture
++  def user():
++      return User(id="123", username="testuser", name="Test User", project_names=[EXAMPLE_PROJECT])
++
++
++  @patch("codemie.service.workflow_generator_service.request_summary_manager")
++  @patch("codemie.service.workflow_generator_service.emit_llm_token_metric")
++  @patch("codemie.service.workflow_generator_service.PromptGeneratorChain")
++  def test_refine_workflow_returns_revised_yaml(mock_chain_cls, mock_emit, mock_summary, user):
++      mock_chain = MagicMock()
++      mock_chain_cls.from_prompt_template.return_value = mock_chain
++      from codemie.templates.agents.workflow_generator_prompt import WorkflowRefineDetails
++      mock_chain.invoke_with_model.return_value = WorkflowRefineDetails(yaml_config=REFINED_YAML)
++
++      from codemie.service.workflow_generator_service import WorkflowGeneratorService
++      result = WorkflowGeneratorService.refine_workflow(
++          yaml_config=EXAMPLE_YAML,
++          refine_prompt="improve descriptions",
++          user=user,
++          llm_model="gpt-4o",
++          request_id="req-1",
++      )
++
++      assert isinstance(result, WorkflowRefineResponse)
++      assert result.yaml_config == REFINED_YAML
++      mock_emit.assert_called_once()
++      mock_summary.clear_summary.assert_called_once_with("req-1")
++
++
++  @patch("codemie.service.workflow_generator_service.request_summary_manager")
++  @patch("codemie.service.workflow_generator_service.send_log_metric")
++  @patch("codemie.service.workflow_generator_service.PromptGeneratorChain")
++  def test_refine_workflow_raises_on_invalid_yaml(mock_chain_cls, mock_send_log, mock_summary, user):
++      mock_chain = MagicMock()
++      mock_chain_cls.from_prompt_template.return_value = mock_chain
++      from codemie.templates.agents.workflow_generator_prompt import WorkflowRefineDetails
++      mock_chain.invoke_with_model.return_value = WorkflowRefineDetails(yaml_config=": invalid: yaml: [")
++
++      from codemie.service.workflow_generator_service import WorkflowGeneratorService
++      with pytest.raises(ExtendedHTTPException) as exc_info:
++          WorkflowGeneratorService.refine_workflow(
++              yaml_config=EXAMPLE_YAML,
++              refine_prompt=None,
++              user=user,
++              llm_model=None,
++              request_id="req-2",
++          )
++      assert exc_info.value.status_code == 400
++      mock_summary.clear_summary.assert_called_once_with("req-2")
++
++
++  @patch("codemie.service.workflow_generator_service.request_summary_manager")
++  @patch("codemie.service.workflow_generator_service.send_log_metric")
++  @patch("codemie.service.workflow_generator_service.PromptGeneratorChain")
++  def test_refine_workflow_raises_500_on_chain_failure(mock_chain_cls, mock_send_log, mock_summary, user):
++      mock_chain_cls.from_prompt_template.side_effect = RuntimeError("LLM unavailable")
++
++      from codemie.service.workflow_generator_service import WorkflowGeneratorService
++      with pytest.raises(ExtendedHTTPException) as exc_info:
++          WorkflowGeneratorService.refine_workflow(
++              yaml_config=EXAMPLE_YAML,
++              refine_prompt=None,
++              user=user,
++              llm_model=None,
++              request_id="req-3",
++          )
++      assert exc_info.value.status_code == 500
++      mock_send_log.assert_called_once()
++      mock_summary.clear_summary.assert_called_once_with("req-3")
++  ```
++
++- [ ] **Step 3: Run tests to confirm RED**
++
++  Run: `cd /Users/yevhen_slyva/codemie-dev/codemie && python -m pytest tests/codemie/service/test_workflow_generator_service.py -v 2>&1 | tail -20`
++  Expected: `ModuleNotFoundError` or `ImportError` — `workflow_generator_service` does not exist yet.
++
++- [ ] **Step 4: Create `src/codemie/service/workflow_generator_service.py`**
++
++  ```python
++  # Copyright 2026 EPAM Systems, Inc. ("EPAM")
++  #
++  # Licensed under the Apache License, Version 2.0 (the "License");
++  # you may not use this file except in compliance with the License.
++  # You may obtain a copy of the License at
++  #
++  #     http://www.apache.org/licenses/LICENSE-2.0
++  #
++  # Unless required by applicable law or agreed to in writing, software
++  # distributed under the License is distributed on an "AS IS" BASIS,
++  # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++  # See the License for the specific language governing permissions and
++  # limitations under the License.
++
++  from typing import Optional
++
++  import yaml
++
++  from codemie.configs.logger import current_user_email, logger, logging_user_id
++  from codemie.core.dependecies import get_project_for_metric
++  from codemie.core.exceptions import ExtendedHTTPException
++  from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
++  from codemie.rest_api.security.user import User
++  from codemie.service.assistant_generator_service import PromptGeneratorChain
++  from codemie.service.monitoring.base_monitoring_service import emit_llm_token_metric, send_log_metric
++  from codemie.service.monitoring.metrics_constants import (
++      WORKFLOW_AI_REFINE_TOTAL_METRIC,
++      MetricsAttributes,
++  )
++  from codemie.service.request_summary_manager import request_summary_manager
++  from codemie.templates.agents.workflow_generator_prompt import (
++      WORKFLOW_REFINE_TEMPLATE,
++      WorkflowRefineDetails,
++  )
++
++  _HELP_MESSAGE = "Try again with a different instruction or model."
++
++
++  class WorkflowGeneratorService:
++      @classmethod
++      def refine_workflow(
++          cls,
++          yaml_config: str,
++          refine_prompt: Optional[str],
++          user: User,
++          llm_model: Optional[str],
++          request_id: Optional[str],
++      ) -> WorkflowRefineResponse:
++          try:
++              chain = PromptGeneratorChain.from_prompt_template(WORKFLOW_REFINE_TEMPLATE, request_id, llm_model)
++              result: WorkflowRefineDetails = chain.invoke_with_model(
++                  WorkflowRefineDetails,
++                  {
++                      "yaml_config": yaml_config,
++                      "refine_prompt": refine_prompt or "",
++                  },
++              )
++
++              try:
++                  yaml.safe_load(result.yaml_config)
++              except yaml.YAMLError as parse_err:
++                  raise ExtendedHTTPException(
++                      code=400,
++                      message="LLM returned invalid YAML",
++                      details=str(parse_err),
++                      help=_HELP_MESSAGE,
++                  )
++
++              emit_llm_token_metric(
++                  name=WORKFLOW_AI_REFINE_TOTAL_METRIC,
++                  request_id=request_id,
++                  base_attributes={
++                      MetricsAttributes.LLM_MODEL: llm_model or "default",
++                      MetricsAttributes.USER_ID: logging_user_id.get("-"),
++                      MetricsAttributes.USER_NAME: current_user_email.get("-"),
++                      MetricsAttributes.PROJECT: get_project_for_metric(),
++                  },
++              )
++
++              return WorkflowRefineResponse(yaml_config=result.yaml_config)
++
++          except ExtendedHTTPException:
++              raise
++          except Exception as e:
++              logger.error(f"Failed to refine workflow: {e}", exc_info=True)
++              send_log_metric(
++                  name=WORKFLOW_AI_REFINE_TOTAL_METRIC + "_errors",
++                  attributes={
++                      MetricsAttributes.LLM_MODEL: llm_model or "default",
++                      MetricsAttributes.USER_ID: logging_user_id.get("-"),
++                      MetricsAttributes.USER_NAME: current_user_email.get("-"),
++                      MetricsAttributes.PROJECT: get_project_for_metric(),
++                  },
++              )
++              raise ExtendedHTTPException(
++                  code=500,
++                  message="Failed to refine workflow",
++                  details=f"An error occurred while refining the workflow: {str(e)}",
++                  help=_HELP_MESSAGE,
++              )
++          finally:
++              if request_id:
++                  request_summary_manager.clear_summary(request_id)
++  ```
++
++- [ ] **Step 5: Run tests to confirm GREEN**
++
++  Run: `python -m pytest tests/codemie/service/test_workflow_generator_service.py -v 2>&1 | tail -20`
++  Expected: all 3 tests PASS.
++
++- [ ] **Step 6: Verify lint**
++
++  Run: `make lint`
++  Expected: no errors.
++
++- [ ] **Step 7: Commit**
++
++  ```bash
++  git add src/codemie/service/workflow_generator_service.py \
++          src/codemie/rest_api/models/workflow_generator.py \
++          src/codemie/templates/agents/workflow_generator_prompt.py \
++          tests/codemie/service/test_workflow_generator_service.py
++  git commit -m "feat(EPMCDME-12616): add WorkflowGeneratorService with refine_workflow"
++  ```
++
++---
++
++### Task 5: `WorkflowService.revert_workflow()` and `change_type` threading
++
++**Files:**
++- Modify: `src/codemie/service/workflow_service.py:651-680`
++- Modify: `tests/codemie/service/test_workflow_service.py`
++
++**Interfaces:**
++- Consumes: `YamlConfigHistory.change_type` (Task 1), `update_workflow` (existing)
++- Produces:
++  - `WorkflowService.revert_workflow(stored_config: WorkflowConfig, user: User) -> WorkflowConfig`
++  - `WorkflowService._update_workflow_values(stored_config, updated_config, user, change_type=None)` — backward-compatible signature change
++
++**Test-first: yes — write failing tests before modifying the service**
++
++- [ ] **Step 1: Write failing tests in `tests/codemie/service/test_workflow_service.py`**
++
++  Add these tests after the existing fixtures:
++
++  ```python
++  from datetime import datetime
++  from codemie.core.exceptions import ExtendedHTTPException
++  from codemie.core.workflow_models.workflow_config import YamlConfigHistory
++
++
++  def test_yaml_config_history_default_change_type_is_none():
++      entry = YamlConfigHistory(yaml_config="yaml: true", date=datetime.now())
++      assert entry.change_type is None
++
++
++  def test_yaml_config_history_accepts_revert_change_type():
++      entry = YamlConfigHistory(yaml_config="yaml: true", date=datetime.now(), change_type="revert")
++      assert entry.change_type == "revert"
++
++
++  @patch("codemie.service.workflow_service.WorkflowService._update_workflow_values")
++  def test_revert_workflow_calls_update_with_history_yaml(mock_update, user, workflow_config):
++      previous_yaml = "name: old-workflow\n"
++      workflow_config.yaml_config_history = [
++          YamlConfigHistory(yaml_config=previous_yaml, date=datetime.now())
++      ]
++
++      service = WorkflowService()
++      service.revert_workflow(workflow_config, user)
++
++      mock_update.assert_called_once()
++      call_kwargs = mock_update.call_args
++      # Third positional arg is updated_config; check its yaml_config
++      updated_config_arg = call_kwargs[0][1]
++      assert updated_config_arg.yaml_config == previous_yaml
++      # change_type kwarg must be "revert"
++      assert call_kwargs[1].get("change_type") == "revert"
++
++
++  def test_revert_workflow_raises_when_no_history(user, workflow_config):
++      workflow_config.yaml_config_history = []
++
++      service = WorkflowService()
++      with pytest.raises(ExtendedHTTPException) as exc_info:
++          service.revert_workflow(workflow_config, user)
++      assert exc_info.value.status_code == 400
++  ```
++
++- [ ] **Step 2: Run tests to confirm RED**
++
++  Run: `python -m pytest tests/codemie/service/test_workflow_service.py -k "revert or change_type" -v 2>&1 | tail -20`
++  Expected: `AttributeError: 'WorkflowService' object has no attribute 'revert_workflow'` or similar.
++
++- [ ] **Step 3: Add `change_type` parameter to `_update_workflow_values`**
++
++  In `src/codemie/service/workflow_service.py`, locate `_update_workflow_values` at line ~651. Change its signature and the history entry construction:
++
++  Before:
++  ```python
++  def _update_workflow_values(
++      self, stored_config: WorkflowConfig, updated_workflow_config: WorkflowConfig, user: User
++  ) -> None:
++      new_history_entry = YamlConfigHistory(
++          yaml_config=stored_config.yaml_config,
++          date=datetime.now(),
++          created_by=user.as_user_model(),
++      )
++  ```
++
++  After:
++  ```python
++  def _update_workflow_values(
++      self,
++      stored_config: WorkflowConfig,
++      updated_workflow_config: WorkflowConfig,
++      user: User,
++      change_type: Optional[str] = None,
++  ) -> None:
++      new_history_entry = YamlConfigHistory(
++          yaml_config=stored_config.yaml_config,
++          date=datetime.now(),
++          created_by=user.as_user_model(),
++          change_type=change_type,
++      )
++  ```
++
++- [ ] **Step 4: Add `revert_workflow()` method to `WorkflowService`**
++
++  Add after `update_workflow` (around line 174):
++
++  ```python
++  def revert_workflow(self, stored_config: WorkflowConfig, user: User) -> WorkflowConfig:
++      if not stored_config.yaml_config_history:
++          raise ExtendedHTTPException(
++              code=400,
++              message="No history available",
++              details="The workflow has no saved history entries to revert to.",
++              help="Save the workflow at least once before using revert.",
++          )
++      previous = stored_config.yaml_config_history[0]
++      reverted_config = stored_config.model_copy(update={"yaml_config": previous.yaml_config})
++      self._update_workflow_values(stored_config, reverted_config, user, change_type="revert")
++      return stored_config
++  ```
++
++  Also ensure `Optional` is imported at the top of `workflow_service.py` (it already is).
++
++- [ ] **Step 5: Run tests to confirm GREEN**
++
++  Run: `python -m pytest tests/codemie/service/test_workflow_service.py -k "revert or change_type" -v 2>&1 | tail -20`
++  Expected: all 4 new tests PASS.
++
++- [ ] **Step 6: Run full workflow service test suite**
++
++  Run: `python -m pytest tests/codemie/service/test_workflow_service.py -v 2>&1 | tail -20`
++  Expected: all tests PASS (no regressions from the `change_type=None` default).
++
++- [ ] **Step 7: Verify lint**
++
++  Run: `make lint`
++  Expected: no errors.
++
++- [ ] **Step 8: Commit**
++
++  ```bash
++  git add src/codemie/service/workflow_service.py \
++          tests/codemie/service/test_workflow_service.py
++  git commit -m "feat(EPMCDME-12616): add revert_workflow and change_type threading to WorkflowService"
++  ```
++
++---
++
++### Task 6: Router endpoints for refine and revert
++
++**Files:**
++- Modify: `src/codemie/rest_api/routers/workflow.py`
++- Modify: `tests/codemie/rest_api/routers/test_workflow.py`
++
++**Interfaces:**
++- Consumes:
++  - `WorkflowGeneratorService.refine_workflow(yaml_config, refine_prompt, user, llm_model, request_id)` → `WorkflowRefineResponse`
++  - `WorkflowService.revert_workflow(stored_config, user)` → `WorkflowConfig`
++  - `WorkflowRefineRequest`, `WorkflowRevertRequest` from `codemie.rest_api.models.workflow_generator`
++  - `WorkflowRefineResponse` from `codemie.rest_api.models.workflow_generator`
++  - `set_logging_info` from `codemie.configs.logger`
++  - `set_llm_context` from `codemie.service.llm_service.utils`
++- Produces: `POST /v1/workflows/{workflow_id}/refine` → `WorkflowRefineResponse`; `POST /v1/workflows/{workflow_id}/revert` → `BaseResponseWithData`
++
++**Test-first: yes — write router tests before adding endpoints**
++
++- [ ] **Step 1: Write failing router tests**
++
++  Add to `tests/codemie/rest_api/routers/test_workflow.py`:
++
++  ```python
++  from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
++  from codemie.core.workflow_models.workflow_config import YamlConfigHistory
++  from datetime import datetime
++
++
++  @pytest.mark.asyncio
++  async def test_refine_workflow_success(workflow_config, request_header):
++      refined_yaml = "name: refined-workflow\n"
++      with (
++          patch(
++              "codemie.service.workflow_service.WorkflowService.get_workflow",
++              return_value=workflow_config,
++          ),
++          patch("codemie.core.ability.Ability.can", return_value=True),
++          patch(
++              "codemie.service.workflow_generator_service.WorkflowGeneratorService.refine_workflow",
++              return_value=WorkflowRefineResponse(yaml_config=refined_yaml),
++          ) as mock_refine,
++      ):
++          transport = ASGITransport(app=app)
++          async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++              response = await ac.post(
++                  f"/v1/workflows/{workflow_config.id}/refine",
++                  json={"yaml_config": "name: old\n", "refine_prompt": "improve it"},
++                  headers=request_header,
++              )
++          assert response.status_code == 200
++          assert response.json()["yaml_config"] == refined_yaml
++          mock_refine.assert_called_once()
++
++
++  @pytest.mark.asyncio
++  async def test_refine_workflow_access_denied(workflow_config, request_header):
++      with (
++          patch(
++              "codemie.service.workflow_service.WorkflowService.get_workflow",
++              return_value=workflow_config,
++          ),
++          patch("codemie.core.ability.Ability.can", return_value=False),
++      ):
++          transport = ASGITransport(app=app)
++          async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++              response = await ac.post(
++                  f"/v1/workflows/{workflow_config.id}/refine",
++                  json={"yaml_config": "name: old\n"},
++                  headers=request_header,
++              )
++          assert response.status_code == 403
++
++
++  @pytest.mark.asyncio
++  async def test_refine_workflow_not_found(request_header):
++      with patch(
++          "codemie.service.workflow_service.WorkflowService.get_workflow",
++          side_effect=Exception("not found"),
++      ):
++          transport = ASGITransport(app=app)
++          async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++              response = await ac.post(
++                  "/v1/workflows/nonexistent/refine",
++                  json={"yaml_config": "name: old\n"},
++                  headers=request_header,
++              )
++          assert response.status_code == 404
++
++
++  @pytest.mark.asyncio
++  async def test_revert_workflow_success(workflow_config, request_header):
++      workflow_config.yaml_config_history = [
++          YamlConfigHistory(yaml_config="name: prev\n", date=datetime.now())
++      ]
++      with (
++          patch(
++              "codemie.service.workflow_service.WorkflowService.get_workflow",
++              return_value=workflow_config,
++          ),
++          patch("codemie.core.ability.Ability.can", return_value=True),
++          patch(
++              "codemie.service.workflow_service.WorkflowService.revert_workflow",
++              return_value=workflow_config,
++          ) as mock_revert,
++          patch(
++              "codemie.service.guardrail.guardrail_service.GuardrailService.sync_guardrail_assignments_for_entity"
++          ),
++          patch(
++              "codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments",
++              return_value=[],
++          ),
++      ):
++          transport = ASGITransport(app=app)
++          async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++              response = await ac.post(
++                  f"/v1/workflows/{workflow_config.id}/revert",
++                  json={},
++                  headers=request_header,
++              )
++          assert response.status_code == 200
++          body = response.json()
++          assert body["message"] == "Workflow reverted successfully"
++          mock_revert.assert_called_once()
++
++
++  @pytest.mark.asyncio
++  async def test_revert_workflow_no_history(workflow_config, request_header):
++      from codemie.core.exceptions import ExtendedHTTPException
++      with (
++          patch(
++              "codemie.service.workflow_service.WorkflowService.get_workflow",
++              return_value=workflow_config,
++          ),
++          patch("codemie.core.ability.Ability.can", return_value=True),
++          patch(
++              "codemie.service.workflow_service.WorkflowService.revert_workflow",
++              side_effect=ExtendedHTTPException(
++                  code=400, message="No history available", details="", help=""
++              ),
++          ),
++      ):
++          transport = ASGITransport(app=app)
++          async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++              response = await ac.post(
++                  f"/v1/workflows/{workflow_config.id}/revert",
++                  json={},
++                  headers=request_header,
++              )
++          assert response.status_code == 400
++  ```
++
++- [ ] **Step 2: Run tests to confirm RED**
++
++  Run: `python -m pytest tests/codemie/rest_api/routers/test_workflow.py -k "refine or revert" -v 2>&1 | tail -20`
++  Expected: `404 Not Found` or `405 Method Not Allowed` — endpoints don't exist yet.
++
++- [ ] **Step 3: Add imports to the router**
++
++  In `src/codemie/rest_api/routers/workflow.py`, add to the existing imports block:
++
++  ```python
++  from fastapi import Request
++  from codemie.rest_api.models.workflow_generator import (
++      WorkflowRefineRequest,
++      WorkflowRefineResponse,
++      WorkflowRevertRequest,
++  )
++  from codemie.service.workflow_generator_service import WorkflowGeneratorService
++  ```
++
++  Note: `Request` may not be imported yet — check the top of the file. The existing imports include `APIRouter, status, Depends, Query, BackgroundTasks` from `fastapi`, so add `Request` to that import.
++
++- [ ] **Step 4: Add the `refine` endpoint**
++
++  Add after the `update_workflow` endpoint (after line ~375):
++
++  ```python
++  @router.post(
++      "/workflows/{workflow_id}/refine",
++      status_code=status.HTTP_200_OK,
++      response_model=WorkflowRefineResponse,
++  )
++  def refine_workflow(
++      workflow_id: str,
++      request: WorkflowRefineRequest,
++      raw_request: Request,
++      user: User = Depends(authenticate),
++  ):
++      from codemie.configs.logger import set_logging_info
++      from codemie.service.llm_service.utils import set_llm_context
++
++      try:
++          workflow = workflow_service.get_workflow(workflow_id)
++      except Exception:
++          raise_not_found(resource_id=workflow_id, resource_type="Workflow")
++
++      if not Ability(user).can(Action.WRITE, workflow):
++          raise_access_denied("refine")
++
++      request_id = raw_request.state.uuid
++      set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
++      set_llm_context(None, user.current_project, user)
++
++      return WorkflowGeneratorService.refine_workflow(
++          yaml_config=request.yaml_config,
++          refine_prompt=request.refine_prompt,
++          user=user,
++          llm_model=request.llm_model,
++          request_id=request_id,
++      )
++  ```
++
++- [ ] **Step 5: Add the `revert` endpoint**
++
++  Add immediately after the `refine` endpoint:
++
++  ```python
++  @router.post(
++      "/workflows/{workflow_id}/revert",
++      status_code=status.HTTP_200_OK,
++      response_model=BaseResponseWithData,
++      response_model_by_alias=True,
++  )
++  def revert_workflow(
++      workflow_id: str,
++      request: WorkflowRevertRequest,
++      user: User = Depends(authenticate),
++  ):
++      try:
++          workflow = workflow_service.get_workflow(workflow_id)
++      except Exception:
++          raise_not_found(resource_id=workflow_id, resource_type="Workflow")
++
++      if not Ability(user).can(Action.WRITE, workflow):
++          raise_access_denied("revert")
++
++      reverted_workflow = workflow_service.revert_workflow(workflow, user)
++
++      GuardrailService.sync_guardrail_assignments_for_entity(
++          user=user,
++          entity_type=GuardrailEntity.WORKFLOW,
++          entity_id=str(reverted_workflow.id),
++          entity_project_name=reverted_workflow.project,
++          guardrail_assignments=None,
++      )
++
++      reverted_workflow.guardrail_assignments = GuardrailService.get_entity_guardrail_assignments(
++          user,
++          GuardrailEntity.WORKFLOW,
++          str(reverted_workflow.id),
++      )
++
++      return {"message": "Workflow reverted successfully", "data": reverted_workflow}
++  ```
++
++- [ ] **Step 6: Run router tests to confirm GREEN**
++
++  Run: `python -m pytest tests/codemie/rest_api/routers/test_workflow.py -k "refine or revert" -v 2>&1 | tail -20`
++  Expected: all 5 new tests PASS.
++
++- [ ] **Step 7: Run full router test suite to check regressions**
++
++  Run: `python -m pytest tests/codemie/rest_api/routers/test_workflow.py -v 2>&1 | tail -30`
++  Expected: all tests PASS.
++
++- [ ] **Step 8: Verify lint**
++
++  Run: `make lint`
++  Expected: no errors.
++
++- [ ] **Step 9: Commit**
++
++  ```bash
++  git add src/codemie/rest_api/routers/workflow.py \
++          tests/codemie/rest_api/routers/test_workflow.py
++  git commit -m "feat(EPMCDME-12616): add POST /workflows/{id}/refine and /revert endpoints"
++  ```
++
++---
++
++### Task 7: Full test run and final validation
++
++**Files:** No new files — validation only.
++
++**Test-first: N/A**
++
++- [ ] **Step 1: Run the full test suite for all touched areas**
++
++  ```bash
++  python -m pytest \
++    tests/codemie/service/test_workflow_service.py \
++    tests/codemie/service/test_workflow_generator_service.py \
++    tests/codemie/rest_api/routers/test_workflow.py \
++    -v 2>&1 | tail -40
++  ```
++  Expected: all tests PASS.
++
++- [ ] **Step 2: Run lint**
++
++  Run: `make lint`
++  Expected: no errors.
++
++- [ ] **Step 3: Confirm no uncommitted changes**
++
++  Run: `git status`
++  Expected: clean working tree.
+diff --git a/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md b/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md
+new file mode 100644
+index 000000000..3ee7b4be4
+--- /dev/null
++++ b/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md
+@@ -0,0 +1,291 @@
++# EPMCDME-12616: Workflow AI Refine and Revert — Backend Design
++
++**Ticket:** EPMCDME-12616  
++**Branch:** EPMCDME-12616_enhance-workflow-edit-ai-refine-revert  
++**Scope:** Backend only  
++**Date:** 2026-07-09
++
++---
++
++## Overview
++
++Add two new endpoints to the workflow API:
++
++1. `POST /v1/workflows/{workflow_id}/refine` — stateless AI-powered suggestion: accepts the current `yaml_config` and an optional natural-language instruction, returns a revised `yaml_config` without persisting it.
++2. `POST /v1/workflows/{workflow_id}/revert` — restores the workflow's `yaml_config` to the most recent snapshot in `yaml_config_history`.
++
++Both endpoints follow the established patterns used by the assistant and skill domains.
++
++---
++
++## API Contracts
++
++### POST /v1/workflows/{workflow_id}/refine
++
++**Request body:**
++```json
++{
++  "yaml_config": "<current workflow YAML string>",
++  "refine_prompt": "Make the retry logic more resilient",  // optional
++  "llm_model": "gpt-4o",                                   // optional, defaults to default model
++  "project": "my-project"                                  // for auth context
++}
++```
++
++**Response 200:**
++```json
++{
++  "yaml_config": "<revised workflow YAML string>"
++}
++```
++
++**Error responses:**
++- `400` — LLM returned invalid YAML (YAML parse failed or structural validation failed)
++- `403` — User lacks WRITE permission on the workflow
++- `404` — Workflow not found
++
++The endpoint loads the workflow to perform the access check, then passes the request body's `yaml_config` to the AI service. Nothing is written to the database.
++
++### POST /v1/workflows/{workflow_id}/revert
++
++**Request body:**
++```json
++{
++  "project": "my-project"
++}
++```
++
++**Response 200:** `BaseResponseWithData` — same envelope as `PUT /workflows/{id}`:
++```json
++{ "message": "Workflow reverted successfully", "data": { /* full WorkflowConfig */ } }
++```
++
++**Error responses:**
++- `400` — `yaml_config_history` is empty; no prior version exists
++- `403` — User lacks WRITE permission on the workflow
++- `404` — Workflow not found
++
++The revert writes to the database: it restores `yaml_config` from `history[0]` and records the pre-revert state back into history with `change_type="revert"`. Guardrail assignments are re-synced (via the existing `update_workflow` path).
++
++---
++
++## File Changes
++
++### New files
++
++| File | Purpose |
++|---|---|
++| `src/codemie/service/workflow_generator_service.py` | AI chain logic for workflow refine |
++| `src/codemie/rest_api/models/workflow_generator.py` | Request/response Pydantic models |
++| `src/codemie/templates/agents/workflow_generator_prompt.py` | Prompt template + `WorkflowRefineDetails` structured-output model |
++| `tests/codemie/service/test_workflow_generator_service.py` | Unit tests for `WorkflowGeneratorService` |
++
++### Modified files
++
++| File | Change |
++|---|---|
++| `src/codemie/core/workflow_models/workflow_config.py` | Add `change_type: Optional[str] = None` to `YamlConfigHistory` |
++| `src/codemie/service/workflow_service.py` | Add `revert_workflow()`; add `change_type` param to `_update_workflow_values` |
++| `src/codemie/rest_api/routers/workflow.py` | Two new endpoints; import `WorkflowGeneratorService` and new models |
++| `src/codemie/service/monitoring/workflow_monitoring_service.py` | `send_workflow_ai_refine_metric()`, `send_workflow_revert_metric()` |
++| `src/codemie/service/monitoring/metrics_constants.py` | `WORKFLOW_AI_REFINE_TOTAL_METRIC`, `WORKFLOW_REVERT_TOTAL_METRIC` |
++| `tests/codemie/rest_api/routers/test_workflow.py` | Router tests for refine and revert |
++| `tests/codemie/service/test_workflow_service.py` | Service tests for revert and `change_type` recording |
++
++---
++
++## Service Layer
++
++### WorkflowGeneratorService
++
++```python
++class WorkflowGeneratorService:
++    @classmethod
++    def refine_workflow(
++        cls,
++        yaml_config: str,
++        refine_prompt: Optional[str],
++        user: User,
++        llm_model: Optional[str],
++        request_id: str,
++    ) -> WorkflowRefineResponse:
++```
++
++Flow:
++1. Build `PromptGeneratorChain.from_prompt_template(WORKFLOW_REFINE_TEMPLATE, request_id, llm_model)`.
++2. Call `chain.invoke_with_model(WorkflowRefineDetails, {"yaml_config": yaml_config, "refine_prompt": refine_prompt or ""})`.
++3. Validate the returned YAML string (YAML parse; raise `ExtendedHTTPException(400)` on parse failure).
++4. Emit `WORKFLOW_AI_REFINE_TOTAL_METRIC` via `emit_llm_token_metric`.
++5. Return `WorkflowRefineResponse(yaml_config=result.yaml_config)`.
++
++Error path: catch all exceptions, emit error metric, raise `ExtendedHTTPException(500)`.
++
++### WorkflowService.revert_workflow (new method)
++
++```python
++def revert_workflow(self, stored_config: WorkflowConfig, user: User) -> WorkflowConfig:
++```
++
++Flow:
++1. Check `stored_config.yaml_config_history` is non-empty; raise `ExtendedHTTPException(400, "No history available")` if empty.
++2. Read `previous = stored_config.yaml_config_history[0]`.
++3. Build a transient `WorkflowConfig` with `yaml_config = previous.yaml_config` (all other fields from `stored_config`).
++4. Call `self.update_workflow(stored_config, reverted_config, user, change_type="revert")`.
++5. Return the updated `stored_config`.
++
++### _update_workflow_values change_type threading
++
++`_update_workflow_values(stored_config, updated_config, user, change_type=None)` gains a `change_type` keyword argument. The `YamlConfigHistory` entry it creates carries this value:
++
++```python
++new_history_entry = YamlConfigHistory(
++    yaml_config=stored_config.yaml_config,
++    date=datetime.now(),
++    created_by=user.as_user_model(),
++    change_type=change_type,
++)
++```
++
++Existing callers pass no argument → `change_type=None`. Only the revert path passes `change_type="revert"`.
++
++---
++
++## Data Model Change
++
++### YamlConfigHistory (workflow_config.py)
++
++```python
++class YamlConfigHistory(BaseModel):
++    yaml_config: str
++    date: datetime
++    created_by: Optional[UserEntity] = None
++    change_type: Optional[str] = None  # "revert" | None (legacy/manual saves)
++```
++
++`change_type` is stored in the `yaml_config_history` JSONB column. No Alembic migration is required — existing rows deserialize with `change_type=None`.
++
++---
++
++## Prompt Template
++
++**File:** `src/codemie/templates/agents/workflow_generator_prompt.py`
++
++Contains:
++- `WORKFLOW_REFINE_TEMPLATE: PromptTemplate` — instructs the LLM to return an improved YAML config. Input variables: `yaml_config`, `refine_prompt`.
++- `WorkflowRefineDetails(BaseModel)` — single field `yaml_config: str` used as the structured output type with `invoke_with_model`.
++
++The prompt instructs the LLM to: preserve the overall workflow structure, apply only the changes described in `refine_prompt` (or general improvements if empty), return the complete valid YAML, and not include any commentary or markdown fencing.
++
++---
++
++## Request/Response Models
++
++**File:** `src/codemie/rest_api/models/workflow_generator.py`
++
++```python
++class WorkflowRefineRequest(BaseModel):
++    yaml_config: str
++    refine_prompt: Optional[str] = None
++    llm_model: Optional[str] = None
++    project: Optional[str] = None
++
++class WorkflowRefineResponse(BaseModel):
++    yaml_config: str
++
++class WorkflowRevertRequest(BaseModel):
++    project: Optional[str] = None
++```
++
++The revert response uses `BaseResponseWithData` — the same envelope as `PUT /workflows/{id}`:
++`{ "message": "Workflow reverted successfully", "data": <WorkflowConfig> }`
++
++---
++
++## Monitoring
++
++### New metric constants (metrics_constants.py)
++
++```python
++WORKFLOW_AI_REFINE_TOTAL_METRIC = "codemie_workflow_ai_refine_total"
++WORKFLOW_REVERT_TOTAL_METRIC = "codemie_workflow_revert_total"
++```
++
++### New methods (workflow_monitoring_service.py)
++
++```python
++@classmethod
++def send_workflow_ai_refine_metric(
++    cls, user_id, user_name, workflow_id, workflow_name, project,
++    success, llm_model=None, mode=WorkflowMode.SEQUENTIAL,
++    additional_attributes=None
++):
++    attributes = cls._build_workflow_attributes(project, success, user_id, user_name, workflow_id, workflow_name, mode)
++    if llm_model:
++        attributes[MetricsAttributes.LLM_MODEL] = llm_model
++    if additional_attributes:
++        attributes.update(additional_attributes)
++    cls.send_count_metric(name=WORKFLOW_AI_REFINE_TOTAL_METRIC, attributes=attributes)
++
++@classmethod
++def send_workflow_revert_metric(
++    cls, user_id, user_name, workflow_id, workflow_name, project,
++    success, mode=WorkflowMode.SEQUENTIAL, additional_attributes=None
++):
++    attributes = cls._build_workflow_attributes(project, success, user_id, user_name, workflow_id, workflow_name, mode)
++    if additional_attributes:
++        attributes.update(additional_attributes)
++    cls.send_count_metric(name=WORKFLOW_REVERT_TOTAL_METRIC, attributes=attributes)
++```
++
++---
++
++## Error Handling
++
++| Scenario | HTTP status | Where raised |
++|---|---|---|
++| Workflow not found | 404 | Router (existing `raise_not_found` helper) |
++| User lacks WRITE permission | 403 | Router (existing `raise_access_denied`) |
++| `yaml_config_history` empty on revert | 400 | `WorkflowService.revert_workflow` |
++| LLM returns invalid YAML | 400 | `WorkflowGeneratorService.refine_workflow` |
++| LLM unavailable / chain error | 500 | `WorkflowGeneratorService.refine_workflow` |
++
++All `ExtendedHTTPException` instances carry `code`, `message`, `details`, and `help` fields per the existing convention.
++
++---
++
++## Testing
++
++### Router tests (test_workflow.py additions)
++
++- `test_refine_workflow_success` — mocks `WorkflowGeneratorService.refine_workflow`, asserts 200 + `yaml_config`
++- `test_refine_workflow_access_denied` — asserts 403 when user lacks WRITE
++- `test_refine_workflow_workflow_not_found` — asserts 404
++- `test_revert_workflow_success` — mocks `WorkflowService.revert_workflow`, asserts 200 + workflow response
++- `test_revert_workflow_no_history` — mocks service to raise 400, asserts 400 propagated
++
++### Service tests (test_workflow_service.py additions)
++
++- `test_revert_workflow_uses_latest_history_entry` — asserts `update_workflow` called with `history[0].yaml_config`
++- `test_revert_workflow_raises_when_no_history` — asserts `ExtendedHTTPException(400)`
++- `test_update_workflow_history_records_change_type_revert` — asserts history entry has `change_type="revert"` when called from revert path
++- `test_update_workflow_history_change_type_none_for_normal_save` — asserts `change_type=None` on normal `update_workflow` call
++
++### Generator service tests (test_workflow_generator_service.py — new)
++
++- `test_refine_workflow_returns_revised_yaml` — mocks chain, asserts revised YAML returned
++- `test_refine_workflow_raises_on_invalid_yaml` — mocks chain returning invalid YAML, asserts `ExtendedHTTPException(400)`
++- `test_refine_workflow_emits_ai_refine_metric` — asserts metric emitted on success
++- `test_refine_workflow_emits_error_on_chain_failure` — asserts 500 on chain exception
++
++---
++
++## Acceptance Criteria Coverage
++
++| AC | How covered |
++|---|---|
++| 'Refine/Modify with AI' endpoint available | `POST /v1/workflows/{id}/refine` |
++| 'Revert to Previous' endpoint available | `POST /v1/workflows/{id}/revert` |
++| After revert, workflow restored to last saved version | `revert_workflow()` reads `history[0]`, calls `update_workflow` |
++| Action history logged for AI modifications and reverts | `change_type="revert"` in history; monitoring metrics for both actions |
++| No regression in workflow edit/save | Existing `update_workflow` path unchanged; `change_type` param is backward-compatible |
++| Both options validated for all workflow types | `Ability(user).can(Action.WRITE, workflow)` guards both endpoints |
+diff --git a/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/.state.json b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/.state.json
+new file mode 100644
+index 000000000..316a6ceb7
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/.state.json
+@@ -0,0 +1,10 @@
++{
++  "schema": 1,
++  "flow": "sdlc-standard",
++  "slug": "epmcdme-12616-workflow-ai-refine-revert",
++  "branch": "EPMCDME-12616_enhance-workflow-edit-ai-refine-revert",
++  "phase": "main",
++  "started_at": "2026-07-09T00:00:00Z",
++  "completed_at": "2026-07-09T00:00:00Z",
++  "last_sync_commit": "eb7d0d0d5c1ce69020a233164c5ff907d3fa2893"
++}
+diff --git a/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/code-review-check.diff b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/code-review-check.diff
+new file mode 100644
+index 000000000..e52523737
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/code-review-check.diff
+@@ -0,0 +1,81 @@
++diff --git a/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md b/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md
++index 3e5917d57..3ee7b4be4 100644
++--- a/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md
+++++ b/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md
++@@ -55,7 +55,10 @@ The endpoint loads the workflow to perform the access check, then passes the req
++ }
++ ```
++ 
++-**Response 200:** Full `WorkflowConfigResponse` (same shape as the existing GET endpoint).
+++**Response 200:** `BaseResponseWithData` — same envelope as `PUT /workflows/{id}`:
+++```json
+++{ "message": "Workflow reverted successfully", "data": { /* full WorkflowConfig */ } }
+++```
++ 
++ **Error responses:**
++ - `400` — `yaml_config_history` is empty; no prior version exists
++@@ -193,7 +196,8 @@ class WorkflowRevertRequest(BaseModel):
++     project: Optional[str] = None
++ ```
++ 
++-The revert response reuses the existing `WorkflowConfigResponse` type from the workflow router.
+++The revert response uses `BaseResponseWithData` — the same envelope as `PUT /workflows/{id}`:
+++`{ "message": "Workflow reverted successfully", "data": <WorkflowConfig> }`
++ 
++ ---
++ 
++diff --git a/src/codemie/rest_api/routers/workflow.py b/src/codemie/rest_api/routers/workflow.py
++index 891ed00d5..a64c372d2 100644
++--- a/src/codemie/rest_api/routers/workflow.py
+++++ b/src/codemie/rest_api/routers/workflow.py
++@@ -397,7 +397,7 @@ def refine_workflow(
++ 
++     try:
++         workflow = workflow_service.get_workflow(workflow_id)
++-    except Exception:
+++    except KeyError:
++         raise_not_found(resource_id=workflow_id, resource_type="Workflow")
++ 
++     if not Ability(user).can(Action.WRITE, workflow):
++@@ -429,7 +429,7 @@ def revert_workflow(
++ ):
++     try:
++         workflow = workflow_service.get_workflow(workflow_id)
++-    except Exception:
+++    except KeyError:
++         raise_not_found(resource_id=workflow_id, resource_type="Workflow")
++ 
++     if not Ability(user).can(Action.WRITE, workflow):
++diff --git a/src/codemie/service/workflow_service.py b/src/codemie/service/workflow_service.py
++index 10d1c2095..13c5f37e9 100644
++--- a/src/codemie/service/workflow_service.py
+++++ b/src/codemie/service/workflow_service.py
++@@ -185,6 +185,15 @@ class WorkflowService:
++         previous = stored_config.yaml_config_history[0]
++         reverted_config = stored_config.model_copy(update={"yaml_config": previous.yaml_config})
++         self._update_workflow_values(stored_config, reverted_config, user, change_type="revert")
+++        WorkflowMonitoringService.send_workflow_revert_metric(
+++            user_id=user.id,
+++            user_name=user.name,
+++            workflow_id=str(stored_config.id),
+++            workflow_name=stored_config.name,
+++            project=stored_config.project,
+++            success=True,
+++            mode=stored_config.mode,
+++        )
++         return stored_config
++ 
++     @staticmethod
++diff --git a/tests/codemie/rest_api/routers/test_workflow.py b/tests/codemie/rest_api/routers/test_workflow.py
++index f6b4aa597..12146117a 100644
++--- a/tests/codemie/rest_api/routers/test_workflow.py
+++++ b/tests/codemie/rest_api/routers/test_workflow.py
++@@ -843,7 +843,7 @@ async def test_refine_workflow_access_denied(workflow_config, request_header):
++ async def test_refine_workflow_not_found(request_header):
++     with patch(
++         "codemie.service.workflow_service.WorkflowService.get_workflow",
++-        side_effect=Exception("not found"),
+++        side_effect=KeyError("not found"),
++     ):
++         transport = ASGITransport(app=app)
++         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+diff --git a/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/code-review-check.json b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/code-review-check.json
+new file mode 100644
+index 000000000..63af7a6ec
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/code-review-check.json
+@@ -0,0 +1,34 @@
++{
++  "decision": "approve",
++  "rationale": "Both blocking findings are resolved. CR-001: except Exception narrowed to except KeyError in both refine_workflow and revert_workflow handlers, consistent with delete_workflow pattern; test updated to raise KeyError. CR-002: send_workflow_revert_metric() added to the revert_workflow success path with correct parameters. No new high-risk issues introduced by the fix-up diff. AC4 now fully satisfied.",
++  "confidence": "high",
++  "risk_flags": [],
++  "business_review": [
++    {"criterion": "AC1: POST /v1/workflows/{id}/refine endpoint available", "status": "satisfied", "notes": "Endpoint registered, correct request/response models."},
++    {"criterion": "AC2: POST /v1/workflows/{id}/revert endpoint available", "status": "satisfied", "notes": "Endpoint registered, correct response envelope."},
++    {"criterion": "AC3: After revert, workflow restored to last saved version", "status": "satisfied", "notes": "revert_workflow() reads history[0] (most recent) and applies via _update_workflow_values."},
++    {"criterion": "AC4: Action history logged for AI modifications and reverts", "status": "satisfied", "notes": "change_type='revert' recorded in history. Refine metric emitted. Revert metric now emitted via send_workflow_revert_metric() on success path (CR-002 resolved)."},
++    {"criterion": "AC5: No regression in workflow edit/save", "status": "satisfied", "notes": "change_type=None default preserves backward compatibility."},
++    {"criterion": "AC6: Both endpoints protected by WRITE permission check", "status": "satisfied", "notes": "Ability.can(WRITE) check present on both endpoints."},
++    {"criterion": "Spec: Refine stateless (no DB write)", "status": "satisfied", "notes": "No DB write in WorkflowGeneratorService."},
++    {"criterion": "Spec: 403/401 for missing WRITE permission", "status": "partial", "notes": "Spec says 403; implementation returns 401 per codebase convention. Spec documentation error, not a code bug. Deferred."}
++  ],
++  "standards_review": [
++    {"standard": "git-workflow commit format", "status": "pass", "notes": "Fix-up commit follows fix(EPMCDME-12616): pattern consistent with repo convention."},
++    {"standard": "code-quality (ruff)", "status": "pass", "notes": "make ruff passes with 0 issues."},
++    {"standard": "security patterns", "status": "pass", "notes": "No new security concerns introduced by fix-up."}
++  ],
++  "findings": [],
++  "finding_status": [
++    {
++      "id": "CR-001",
++      "status": "resolved",
++      "notes": "except Exception changed to except KeyError in both refine_workflow and revert_workflow handlers. Test updated to raise KeyError to match."
++    },
++    {
++      "id": "CR-002",
++      "status": "resolved",
++      "notes": "WorkflowMonitoringService.send_workflow_revert_metric() called on success path of revert_workflow() with user_id, user_name, workflow_id, workflow_name, project, success=True, mode."
++    }
++  ]
++}
+diff --git a/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/code-review-final.json b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/code-review-final.json
+new file mode 100644
+index 000000000..a19db86b0
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/code-review-final.json
+@@ -0,0 +1,87 @@
++{
++  "decision": "request-changes",
++  "rationale": "Two major issues: (1) both new router handlers catch `except Exception` around `get_workflow()` and unconditionally call `raise_not_found`, masking DB/infrastructure errors as HTTP 404 — inconsistent with the existing `delete_workflow` pattern which catches only `KeyError`; (2) `WORKFLOW_REVERT_TOTAL_METRIC` and `send_workflow_revert_metric()` are defined but never called in production code, leaving AC4 monitoring for revert operations as dead code. One spec-doc misalignment (spec says 403 for access-denied, implementation returns 401 per codebase convention — not a code bug, defer to spec update) and one design note (guardrail sync passes None by design, preserving current assignments on revert) are noted but not blocking.",
++  "confidence": "medium",
++  "risk_flags": [],
++  "business_review": [
++    {
++      "criterion": "AC1: POST /v1/workflows/{id}/refine endpoint available",
++      "status": "satisfied",
++      "notes": "Endpoint registered with correct request/response models."
++    },
++    {
++      "criterion": "AC2: POST /v1/workflows/{id}/revert endpoint available",
++      "status": "satisfied",
++      "notes": "Endpoint registered with correct BaseResponseWithData response envelope."
++    },
++    {
++      "criterion": "AC3: After revert, workflow restored to last saved version",
++      "status": "satisfied",
++      "notes": "revert_workflow() reads history[0] (newest-first, confirmed) and applies via _update_workflow_values which mutates stored_config in-place."
++    },
++    {
++      "criterion": "AC4: Action history logged for AI modifications and reverts",
++      "status": "partial",
++      "notes": "change_type='revert' is correctly recorded in YamlConfigHistory. Refine metric (WORKFLOW_AI_REFINE_TOTAL_METRIC) is emitted via emit_llm_token_metric. However, WORKFLOW_REVERT_TOTAL_METRIC / send_workflow_revert_metric() are defined but never called — revert monitoring is dead code."
++    },
++    {
++      "criterion": "AC5: No regression in workflow edit/save",
++      "status": "satisfied",
++      "notes": "change_type=None default preserves backward compatibility for all existing callers."
++    },
++    {
++      "criterion": "AC6: Both endpoints protected by WRITE permission check",
++      "status": "satisfied",
++      "notes": "Ability(user).can(Action.WRITE, workflow) guard present on both endpoints."
++    },
++    {
++      "criterion": "Spec: Refine stateless (no DB write)",
++      "status": "satisfied",
++      "notes": "WorkflowGeneratorService.refine_workflow() has no DB writes."
++    },
++    {
++      "criterion": "Spec: 403/401 for missing WRITE permission",
++      "status": "partial",
++      "notes": "Spec documents 403; codebase-wide raise_access_denied() returns 401. Tests assert 401. Codebase convention diverges from spec text — defer to spec documentation update, not a code fix."
++    }
++  ],
++  "standards_review": [
++    {
++      "standard": "git-workflow commit format",
++      "status": "pass",
++      "notes": "All 6 commits follow feat(EPMCDME-12616): pattern consistent with Conventional Commits + ticket-id prefix."
++    },
++    {
++      "standard": "code-quality (ruff)",
++      "status": "pass",
++      "notes": "make ruff passes with 0 issues, 2103 files unchanged."
++    },
++    {
++      "standard": "security patterns",
++      "status": "pass",
++      "notes": "No hardcoded secrets. Auth guards present on both endpoints. Broad exception catch is an observability issue (CR-001), not a security bypass."
++    }
++  ],
++  "findings": [
++    {
++      "id": "CR-001",
++      "title": "Broad except Exception in refine/revert routers masks infrastructure errors as HTTP 404",
++      "severity": "major",
++      "triage": "patch",
++      "file": "src/codemie/rest_api/routers/workflow.py",
++      "problem": "Both refine_workflow and revert_workflow catch `except Exception` around `get_workflow()` and unconditionally call `raise_not_found`. DB connection failures, session timeouts, and other infrastructure exceptions are silently reclassified as HTTP 404. The existing delete_workflow endpoint correctly catches only `KeyError`.",
++      "impact": "When the database is unavailable, callers receive misleading 404 instead of 5xx. Root cause is hidden from monitoring, and client retry logic will not retry a 404.",
++      "recommendation": "Match the delete_workflow pattern: catch only the specific exception that get_workflow raises for a missing row (e.g., `except KeyError: raise_not_found(...)`) and let infrastructure errors propagate to the global error handler."
++    },
++    {
++      "id": "CR-002",
++      "title": "WORKFLOW_REVERT_TOTAL_METRIC is never emitted — dead monitoring code",
++      "severity": "major",
++      "triage": "patch",
++      "file": "src/codemie/service/workflow_service.py",
++      "problem": "WORKFLOW_REVERT_TOTAL_METRIC constant and WorkflowMonitoringService.send_workflow_revert_metric() are defined but never called in production code. Neither WorkflowService.revert_workflow() nor the router handler invokes them.",
++      "impact": "AC4 monitoring for revert operations is incomplete — dashboards and alerts tracking workflow revert activity will always read zero.",
++      "recommendation": "Call WorkflowMonitoringService.send_workflow_revert_metric(...) at the end of WorkflowService.revert_workflow() on the success path, mirroring how other monitoring methods are called from workflow_service.py update paths."
++    }
++  ]
++}
+diff --git a/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/code-review.diff b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/code-review.diff
+new file mode 100644
+index 000000000..d320d3c37
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/code-review.diff
+@@ -0,0 +1,1046 @@
++diff --git a/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md b/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md
++new file mode 100644
++index 000000000..3e5917d57
++--- /dev/null
+++++ b/docs/superpowers/specs/2026-07-09-workflow-ai-refine-revert-design.md
++@@ -0,0 +1,287 @@
+++# EPMCDME-12616: Workflow AI Refine and Revert — Backend Design
+++
+++**Ticket:** EPMCDME-12616  
+++**Branch:** EPMCDME-12616_enhance-workflow-edit-ai-refine-revert  
+++**Scope:** Backend only  
+++**Date:** 2026-07-09
+++
+++---
+++
+++## Overview
+++
+++Add two new endpoints to the workflow API:
+++
+++1. `POST /v1/workflows/{workflow_id}/refine` — stateless AI-powered suggestion: accepts the current `yaml_config` and an optional natural-language instruction, returns a revised `yaml_config` without persisting it.
+++2. `POST /v1/workflows/{workflow_id}/revert` — restores the workflow's `yaml_config` to the most recent snapshot in `yaml_config_history`.
+++
+++Both endpoints follow the established patterns used by the assistant and skill domains.
+++
+++---
+++
+++## API Contracts
+++
+++### POST /v1/workflows/{workflow_id}/refine
+++
+++**Request body:**
+++```json
+++{
+++  "yaml_config": "<current workflow YAML string>",
+++  "refine_prompt": "Make the retry logic more resilient",  // optional
+++  "llm_model": "gpt-4o",                                   // optional, defaults to default model
+++  "project": "my-project"                                  // for auth context
+++}
+++```
+++
+++**Response 200:**
+++```json
+++{
+++  "yaml_config": "<revised workflow YAML string>"
+++}
+++```
+++
+++**Error responses:**
+++- `400` — LLM returned invalid YAML (YAML parse failed or structural validation failed)
+++- `403` — User lacks WRITE permission on the workflow
+++- `404` — Workflow not found
+++
+++The endpoint loads the workflow to perform the access check, then passes the request body's `yaml_config` to the AI service. Nothing is written to the database.
+++
+++### POST /v1/workflows/{workflow_id}/revert
+++
+++**Request body:**
+++```json
+++{
+++  "project": "my-project"
+++}
+++```
+++
+++**Response 200:** Full `WorkflowConfigResponse` (same shape as the existing GET endpoint).
+++
+++**Error responses:**
+++- `400` — `yaml_config_history` is empty; no prior version exists
+++- `403` — User lacks WRITE permission on the workflow
+++- `404` — Workflow not found
+++
+++The revert writes to the database: it restores `yaml_config` from `history[0]` and records the pre-revert state back into history with `change_type="revert"`. Guardrail assignments are re-synced (via the existing `update_workflow` path).
+++
+++---
+++
+++## File Changes
+++
+++### New files
+++
+++| File | Purpose |
+++|---|---|
+++| `src/codemie/service/workflow_generator_service.py` | AI chain logic for workflow refine |
+++| `src/codemie/rest_api/models/workflow_generator.py` | Request/response Pydantic models |
+++| `src/codemie/templates/agents/workflow_generator_prompt.py` | Prompt template + `WorkflowRefineDetails` structured-output model |
+++| `tests/codemie/service/test_workflow_generator_service.py` | Unit tests for `WorkflowGeneratorService` |
+++
+++### Modified files
+++
+++| File | Change |
+++|---|---|
+++| `src/codemie/core/workflow_models/workflow_config.py` | Add `change_type: Optional[str] = None` to `YamlConfigHistory` |
+++| `src/codemie/service/workflow_service.py` | Add `revert_workflow()`; add `change_type` param to `_update_workflow_values` |
+++| `src/codemie/rest_api/routers/workflow.py` | Two new endpoints; import `WorkflowGeneratorService` and new models |
+++| `src/codemie/service/monitoring/workflow_monitoring_service.py` | `send_workflow_ai_refine_metric()`, `send_workflow_revert_metric()` |
+++| `src/codemie/service/monitoring/metrics_constants.py` | `WORKFLOW_AI_REFINE_TOTAL_METRIC`, `WORKFLOW_REVERT_TOTAL_METRIC` |
+++| `tests/codemie/rest_api/routers/test_workflow.py` | Router tests for refine and revert |
+++| `tests/codemie/service/test_workflow_service.py` | Service tests for revert and `change_type` recording |
+++
+++---
+++
+++## Service Layer
+++
+++### WorkflowGeneratorService
+++
+++```python
+++class WorkflowGeneratorService:
+++    @classmethod
+++    def refine_workflow(
+++        cls,
+++        yaml_config: str,
+++        refine_prompt: Optional[str],
+++        user: User,
+++        llm_model: Optional[str],
+++        request_id: str,
+++    ) -> WorkflowRefineResponse:
+++```
+++
+++Flow:
+++1. Build `PromptGeneratorChain.from_prompt_template(WORKFLOW_REFINE_TEMPLATE, request_id, llm_model)`.
+++2. Call `chain.invoke_with_model(WorkflowRefineDetails, {"yaml_config": yaml_config, "refine_prompt": refine_prompt or ""})`.
+++3. Validate the returned YAML string (YAML parse; raise `ExtendedHTTPException(400)` on parse failure).
+++4. Emit `WORKFLOW_AI_REFINE_TOTAL_METRIC` via `emit_llm_token_metric`.
+++5. Return `WorkflowRefineResponse(yaml_config=result.yaml_config)`.
+++
+++Error path: catch all exceptions, emit error metric, raise `ExtendedHTTPException(500)`.
+++
+++### WorkflowService.revert_workflow (new method)
+++
+++```python
+++def revert_workflow(self, stored_config: WorkflowConfig, user: User) -> WorkflowConfig:
+++```
+++
+++Flow:
+++1. Check `stored_config.yaml_config_history` is non-empty; raise `ExtendedHTTPException(400, "No history available")` if empty.
+++2. Read `previous = stored_config.yaml_config_history[0]`.
+++3. Build a transient `WorkflowConfig` with `yaml_config = previous.yaml_config` (all other fields from `stored_config`).
+++4. Call `self.update_workflow(stored_config, reverted_config, user, change_type="revert")`.
+++5. Return the updated `stored_config`.
+++
+++### _update_workflow_values change_type threading
+++
+++`_update_workflow_values(stored_config, updated_config, user, change_type=None)` gains a `change_type` keyword argument. The `YamlConfigHistory` entry it creates carries this value:
+++
+++```python
+++new_history_entry = YamlConfigHistory(
+++    yaml_config=stored_config.yaml_config,
+++    date=datetime.now(),
+++    created_by=user.as_user_model(),
+++    change_type=change_type,
+++)
+++```
+++
+++Existing callers pass no argument → `change_type=None`. Only the revert path passes `change_type="revert"`.
+++
+++---
+++
+++## Data Model Change
+++
+++### YamlConfigHistory (workflow_config.py)
+++
+++```python
+++class YamlConfigHistory(BaseModel):
+++    yaml_config: str
+++    date: datetime
+++    created_by: Optional[UserEntity] = None
+++    change_type: Optional[str] = None  # "revert" | None (legacy/manual saves)
+++```
+++
+++`change_type` is stored in the `yaml_config_history` JSONB column. No Alembic migration is required — existing rows deserialize with `change_type=None`.
+++
+++---
+++
+++## Prompt Template
+++
+++**File:** `src/codemie/templates/agents/workflow_generator_prompt.py`
+++
+++Contains:
+++- `WORKFLOW_REFINE_TEMPLATE: PromptTemplate` — instructs the LLM to return an improved YAML config. Input variables: `yaml_config`, `refine_prompt`.
+++- `WorkflowRefineDetails(BaseModel)` — single field `yaml_config: str` used as the structured output type with `invoke_with_model`.
+++
+++The prompt instructs the LLM to: preserve the overall workflow structure, apply only the changes described in `refine_prompt` (or general improvements if empty), return the complete valid YAML, and not include any commentary or markdown fencing.
+++
+++---
+++
+++## Request/Response Models
+++
+++**File:** `src/codemie/rest_api/models/workflow_generator.py`
+++
+++```python
+++class WorkflowRefineRequest(BaseModel):
+++    yaml_config: str
+++    refine_prompt: Optional[str] = None
+++    llm_model: Optional[str] = None
+++    project: Optional[str] = None
+++
+++class WorkflowRefineResponse(BaseModel):
+++    yaml_config: str
+++
+++class WorkflowRevertRequest(BaseModel):
+++    project: Optional[str] = None
+++```
+++
+++The revert response reuses the existing `WorkflowConfigResponse` type from the workflow router.
+++
+++---
+++
+++## Monitoring
+++
+++### New metric constants (metrics_constants.py)
+++
+++```python
+++WORKFLOW_AI_REFINE_TOTAL_METRIC = "codemie_workflow_ai_refine_total"
+++WORKFLOW_REVERT_TOTAL_METRIC = "codemie_workflow_revert_total"
+++```
+++
+++### New methods (workflow_monitoring_service.py)
+++
+++```python
+++@classmethod
+++def send_workflow_ai_refine_metric(
+++    cls, user_id, user_name, workflow_id, workflow_name, project,
+++    success, llm_model=None, mode=WorkflowMode.SEQUENTIAL,
+++    additional_attributes=None
+++):
+++    attributes = cls._build_workflow_attributes(project, success, user_id, user_name, workflow_id, workflow_name, mode)
+++    if llm_model:
+++        attributes[MetricsAttributes.LLM_MODEL] = llm_model
+++    if additional_attributes:
+++        attributes.update(additional_attributes)
+++    cls.send_count_metric(name=WORKFLOW_AI_REFINE_TOTAL_METRIC, attributes=attributes)
+++
+++@classmethod
+++def send_workflow_revert_metric(
+++    cls, user_id, user_name, workflow_id, workflow_name, project,
+++    success, mode=WorkflowMode.SEQUENTIAL, additional_attributes=None
+++):
+++    attributes = cls._build_workflow_attributes(project, success, user_id, user_name, workflow_id, workflow_name, mode)
+++    if additional_attributes:
+++        attributes.update(additional_attributes)
+++    cls.send_count_metric(name=WORKFLOW_REVERT_TOTAL_METRIC, attributes=attributes)
+++```
+++
+++---
+++
+++## Error Handling
+++
+++| Scenario | HTTP status | Where raised |
+++|---|---|---|
+++| Workflow not found | 404 | Router (existing `raise_not_found` helper) |
+++| User lacks WRITE permission | 403 | Router (existing `raise_access_denied`) |
+++| `yaml_config_history` empty on revert | 400 | `WorkflowService.revert_workflow` |
+++| LLM returns invalid YAML | 400 | `WorkflowGeneratorService.refine_workflow` |
+++| LLM unavailable / chain error | 500 | `WorkflowGeneratorService.refine_workflow` |
+++
+++All `ExtendedHTTPException` instances carry `code`, `message`, `details`, and `help` fields per the existing convention.
+++
+++---
+++
+++## Testing
+++
+++### Router tests (test_workflow.py additions)
+++
+++- `test_refine_workflow_success` — mocks `WorkflowGeneratorService.refine_workflow`, asserts 200 + `yaml_config`
+++- `test_refine_workflow_access_denied` — asserts 403 when user lacks WRITE
+++- `test_refine_workflow_workflow_not_found` — asserts 404
+++- `test_revert_workflow_success` — mocks `WorkflowService.revert_workflow`, asserts 200 + workflow response
+++- `test_revert_workflow_no_history` — mocks service to raise 400, asserts 400 propagated
+++
+++### Service tests (test_workflow_service.py additions)
+++
+++- `test_revert_workflow_uses_latest_history_entry` — asserts `update_workflow` called with `history[0].yaml_config`
+++- `test_revert_workflow_raises_when_no_history` — asserts `ExtendedHTTPException(400)`
+++- `test_update_workflow_history_records_change_type_revert` — asserts history entry has `change_type="revert"` when called from revert path
+++- `test_update_workflow_history_change_type_none_for_normal_save` — asserts `change_type=None` on normal `update_workflow` call
+++
+++### Generator service tests (test_workflow_generator_service.py — new)
+++
+++- `test_refine_workflow_returns_revised_yaml` — mocks chain, asserts revised YAML returned
+++- `test_refine_workflow_raises_on_invalid_yaml` — mocks chain returning invalid YAML, asserts `ExtendedHTTPException(400)`
+++- `test_refine_workflow_emits_ai_refine_metric` — asserts metric emitted on success
+++- `test_refine_workflow_emits_error_on_chain_failure` — asserts 500 on chain exception
+++
+++---
+++
+++## Acceptance Criteria Coverage
+++
+++| AC | How covered |
+++|---|---|
+++| 'Refine/Modify with AI' endpoint available | `POST /v1/workflows/{id}/refine` |
+++| 'Revert to Previous' endpoint available | `POST /v1/workflows/{id}/revert` |
+++| After revert, workflow restored to last saved version | `revert_workflow()` reads `history[0]`, calls `update_workflow` |
+++| Action history logged for AI modifications and reverts | `change_type="revert"` in history; monitoring metrics for both actions |
+++| No regression in workflow edit/save | Existing `update_workflow` path unchanged; `change_type` param is backward-compatible |
+++| Both options validated for all workflow types | `Ability(user).can(Action.WRITE, workflow)` guards both endpoints |
++diff --git a/src/codemie/core/workflow_models/workflow_config.py b/src/codemie/core/workflow_models/workflow_config.py
++index 457b7d5ea..5d2fe9b1b 100644
++--- a/src/codemie/core/workflow_models/workflow_config.py
+++++ b/src/codemie/core/workflow_models/workflow_config.py
++@@ -58,6 +58,7 @@ class YamlConfigHistory(BaseModel):
++     yaml_config: str
++     date: datetime
++     created_by: Optional[UserEntity] = None
+++    change_type: Optional[str] = None
++ 
++ 
++ class BedrockFlowData(BaseModel):
++diff --git a/src/codemie/rest_api/models/workflow_generator.py b/src/codemie/rest_api/models/workflow_generator.py
++new file mode 100644
++index 000000000..e18d23e00
++--- /dev/null
+++++ b/src/codemie/rest_api/models/workflow_generator.py
++@@ -0,0 +1,32 @@
+++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
+++#
+++# Licensed under the Apache License, Version 2.0 (the "License");
+++# you may not use this file except in compliance with the License.
+++# You may obtain a copy of the License at
+++#
+++#     http://www.apache.org/licenses/LICENSE-2.0
+++#
+++# Unless required by applicable law or agreed to in writing, software
+++# distributed under the License is distributed on an "AS IS" BASIS,
+++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+++# See the License for the specific language governing permissions and
+++# limitations under the License.
+++
+++from typing import Optional
+++
+++from pydantic import BaseModel
+++
+++
+++class WorkflowRefineRequest(BaseModel):
+++    yaml_config: str
+++    refine_prompt: Optional[str] = None
+++    llm_model: Optional[str] = None
+++    project: Optional[str] = None
+++
+++
+++class WorkflowRefineResponse(BaseModel):
+++    yaml_config: str
+++
+++
+++class WorkflowRevertRequest(BaseModel):
+++    project: Optional[str] = None
++diff --git a/src/codemie/rest_api/routers/workflow.py b/src/codemie/rest_api/routers/workflow.py
++index bd7681fbf..891ed00d5 100644
++--- a/src/codemie/rest_api/routers/workflow.py
+++++ b/src/codemie/rest_api/routers/workflow.py
++@@ -16,7 +16,7 @@ import base64
++ import json
++ from typing import Any, Dict, List, Optional
++ 
++-from fastapi import APIRouter, status, Depends, Query, BackgroundTasks
+++from fastapi import APIRouter, Request, status, Depends, Query, BackgroundTasks
++ 
++ from codemie.configs import logger
++ from codemie.core.ability import Ability, Action
++@@ -38,7 +38,13 @@ from codemie.rest_api.models.guardrail import GuardrailEntity
++ from codemie.rest_api.routers.utils import raise_access_denied, run_in_thread_pool, raise_not_found
++ from codemie.rest_api.security.authentication import authenticate, project_access_check
++ from codemie.rest_api.security.user import User
+++from codemie.rest_api.models.workflow_generator import (
+++    WorkflowRefineRequest,
+++    WorkflowRefineResponse,
+++    WorkflowRevertRequest,
+++)
++ from codemie.service.monitoring.workflow_monitoring_service import WorkflowMonitoringService
+++from codemie.service.workflow_generator_service import WorkflowGeneratorService
++ from codemie.service.guardrail.guardrail_service import GuardrailService
++ from codemie.service.workflow_config import WorkflowConfigIndexService
++ from codemie.service.workflow_config.workflow_config_index_service import WorkflowScope
++@@ -375,6 +381,79 @@ async def update_workflow(
++         ) from e
++ 
++ 
+++@router.post(
+++    "/workflows/{workflow_id}/refine",
+++    status_code=status.HTTP_200_OK,
+++    response_model=WorkflowRefineResponse,
+++)
+++def refine_workflow(
+++    workflow_id: str,
+++    request: WorkflowRefineRequest,
+++    raw_request: Request,
+++    user: User = Depends(authenticate),
+++):
+++    from codemie.configs.logger import set_logging_info
+++    from codemie.service.llm_service.utils import set_llm_context
+++
+++    try:
+++        workflow = workflow_service.get_workflow(workflow_id)
+++    except Exception:
+++        raise_not_found(resource_id=workflow_id, resource_type="Workflow")
+++
+++    if not Ability(user).can(Action.WRITE, workflow):
+++        raise_access_denied("refine")
+++
+++    request_id = raw_request.state.uuid
+++    set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
+++    set_llm_context(None, user.current_project, user)
+++
+++    return WorkflowGeneratorService.refine_workflow(
+++        yaml_config=request.yaml_config,
+++        refine_prompt=request.refine_prompt,
+++        user=user,
+++        llm_model=request.llm_model,
+++        request_id=request_id,
+++    )
+++
+++
+++@router.post(
+++    "/workflows/{workflow_id}/revert",
+++    status_code=status.HTTP_200_OK,
+++    response_model=BaseResponseWithData,
+++    response_model_by_alias=True,
+++)
+++def revert_workflow(
+++    workflow_id: str,
+++    request: WorkflowRevertRequest,
+++    user: User = Depends(authenticate),
+++):
+++    try:
+++        workflow = workflow_service.get_workflow(workflow_id)
+++    except Exception:
+++        raise_not_found(resource_id=workflow_id, resource_type="Workflow")
+++
+++    if not Ability(user).can(Action.WRITE, workflow):
+++        raise_access_denied("revert")
+++
+++    reverted_workflow = workflow_service.revert_workflow(workflow, user)
+++
+++    GuardrailService.sync_guardrail_assignments_for_entity(
+++        user=user,
+++        entity_type=GuardrailEntity.WORKFLOW,
+++        entity_id=str(reverted_workflow.id),
+++        entity_project_name=reverted_workflow.project,
+++        guardrail_assignments=None,
+++    )
+++
+++    reverted_workflow.guardrail_assignments = GuardrailService.get_entity_guardrail_assignments(
+++        user,
+++        GuardrailEntity.WORKFLOW,
+++        str(reverted_workflow.id),
+++    )
+++
+++    return {"message": "Workflow reverted successfully", "data": reverted_workflow}
+++
+++
++ @router.delete(
++     "/workflows/{workflow_id}",
++     status_code=status.HTTP_200_OK,
++diff --git a/src/codemie/service/monitoring/metrics_constants.py b/src/codemie/service/monitoring/metrics_constants.py
++index f28c2980a..09b36fbfd 100644
++--- a/src/codemie/service/monitoring/metrics_constants.py
+++++ b/src/codemie/service/monitoring/metrics_constants.py
++@@ -53,6 +53,9 @@ SKILL_GENERATOR_ERRORS_METRIC = "codemie_skill_generator_errors_total"
++ WORKFLOW_OUTPUT_CHANGE_TOTAL_METRIC = "codemie_workflow_output_change_total"
++ WORKFLOW_OUTPUT_CHANGE_ERRORS_METRIC = "codemie_workflow_output_change_errors_total"
++ 
+++WORKFLOW_AI_REFINE_TOTAL_METRIC = "codemie_workflow_ai_refine_total"
+++WORKFLOW_REVERT_TOTAL_METRIC = "codemie_workflow_revert_total"
+++
++ CONVERSATION_ANALYSIS_TOTAL_METRIC = "codemie_conversation_analysis_total"
++ 
++ 
++diff --git a/src/codemie/service/monitoring/workflow_monitoring_service.py b/src/codemie/service/monitoring/workflow_monitoring_service.py
++index 94a86d73c..65181b3e9 100644
++--- a/src/codemie/service/monitoring/workflow_monitoring_service.py
+++++ b/src/codemie/service/monitoring/workflow_monitoring_service.py
++@@ -19,7 +19,11 @@ from codemie.core.dependecies import get_current_project
++ from codemie.core.workflow_models import WorkflowConfig, WorkflowExecution, WorkflowMode
++ from codemie.rest_api.security.user import User
++ from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
++-from codemie.service.monitoring.metrics_constants import MetricsAttributes
+++from codemie.service.monitoring.metrics_constants import (
+++    MetricsAttributes,
+++    WORKFLOW_AI_REFINE_TOTAL_METRIC,
+++    WORKFLOW_REVERT_TOTAL_METRIC,
+++)
++ 
++ 
++ class WorkflowMonitoringService(BaseMonitoringService):
++@@ -168,6 +172,47 @@ class WorkflowMonitoringService(BaseMonitoringService):
++             attributes.update(additional_attributes)
++         cls.send_count_metric(name=cls.WORKFLOW_BASE_METRIC + "_deleted_total", attributes=attributes)
++ 
+++    @classmethod
+++    def send_workflow_ai_refine_metric(
+++        cls,
+++        user_id: str,
+++        user_name: str,
+++        workflow_id: str,
+++        workflow_name: str,
+++        project: str,
+++        success: bool,
+++        llm_model: Optional[str] = None,
+++        mode: WorkflowMode = WorkflowMode.SEQUENTIAL,
+++        additional_attributes: Optional[dict] = None,
+++    ):
+++        attributes = cls._build_workflow_attributes(
+++            project, success, user_id, user_name, workflow_id, workflow_name, mode
+++        )
+++        if llm_model:
+++            attributes[MetricsAttributes.LLM_MODEL] = llm_model
+++        if additional_attributes:
+++            attributes.update(additional_attributes)
+++        cls.send_count_metric(name=WORKFLOW_AI_REFINE_TOTAL_METRIC, attributes=attributes)
+++
+++    @classmethod
+++    def send_workflow_revert_metric(
+++        cls,
+++        user_id: str,
+++        user_name: str,
+++        workflow_id: str,
+++        workflow_name: str,
+++        project: str,
+++        success: bool,
+++        mode: WorkflowMode = WorkflowMode.SEQUENTIAL,
+++        additional_attributes: Optional[dict] = None,
+++    ):
+++        attributes = cls._build_workflow_attributes(
+++            project, success, user_id, user_name, workflow_id, workflow_name, mode
+++        )
+++        if additional_attributes:
+++            attributes.update(additional_attributes)
+++        cls.send_count_metric(name=WORKFLOW_REVERT_TOTAL_METRIC, attributes=attributes)
+++
++     @classmethod
++     def _build_workflow_attributes(cls, project, success, user_id, user_name, workflow_id, workflow_name, mode):
++         return {
++diff --git a/src/codemie/service/workflow_generator_service.py b/src/codemie/service/workflow_generator_service.py
++new file mode 100644
++index 000000000..faef8c168
++--- /dev/null
+++++ b/src/codemie/service/workflow_generator_service.py
++@@ -0,0 +1,103 @@
+++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
+++#
+++# Licensed under the Apache License, Version 2.0 (the "License");
+++# you may not use this file except in compliance with the License.
+++# You may obtain a copy of the License at
+++#
+++#     http://www.apache.org/licenses/LICENSE-2.0
+++#
+++# Unless required by applicable law or agreed to in writing, software
+++# distributed under the License is distributed on an "AS IS" BASIS,
+++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+++# See the License for the specific language governing permissions and
+++# limitations under the License.
+++
+++from typing import Optional
+++
+++import yaml
+++
+++from codemie.configs.logger import current_user_email, logger, logging_user_id
+++from codemie.core.dependecies import get_project_for_metric
+++from codemie.core.exceptions import ExtendedHTTPException
+++from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
+++from codemie.rest_api.security.user import User
+++from codemie.service.assistant_generator_service import PromptGeneratorChain
+++from codemie.service.monitoring.base_monitoring_service import emit_llm_token_metric, send_log_metric
+++from codemie.service.monitoring.metrics_constants import (
+++    WORKFLOW_AI_REFINE_TOTAL_METRIC,
+++    MetricsAttributes,
+++)
+++from codemie.service.request_summary_manager import request_summary_manager
+++from codemie.templates.agents.workflow_generator_prompt import (
+++    WORKFLOW_REFINE_TEMPLATE,
+++    WorkflowRefineDetails,
+++)
+++
+++_HELP_MESSAGE = "Try again with a different instruction or model."
+++
+++
+++class WorkflowGeneratorService:
+++    @classmethod
+++    def refine_workflow(
+++        cls,
+++        yaml_config: str,
+++        refine_prompt: Optional[str],
+++        user: User,
+++        llm_model: Optional[str],
+++        request_id: Optional[str],
+++    ) -> WorkflowRefineResponse:
+++        try:
+++            chain = PromptGeneratorChain.from_prompt_template(WORKFLOW_REFINE_TEMPLATE, request_id, llm_model)
+++            result: WorkflowRefineDetails = chain.invoke_with_model(
+++                WorkflowRefineDetails,
+++                {
+++                    "yaml_config": yaml_config,
+++                    "refine_prompt": refine_prompt or "",
+++                },
+++            )
+++
+++            try:
+++                yaml.safe_load(result.yaml_config)
+++            except yaml.YAMLError as parse_err:
+++                raise ExtendedHTTPException(
+++                    code=400,
+++                    message="LLM returned invalid YAML",
+++                    details=str(parse_err),
+++                    help=_HELP_MESSAGE,
+++                )
+++
+++            emit_llm_token_metric(
+++                name=WORKFLOW_AI_REFINE_TOTAL_METRIC,
+++                request_id=request_id,
+++                base_attributes={
+++                    MetricsAttributes.LLM_MODEL: llm_model or "default",
+++                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
+++                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
+++                    MetricsAttributes.PROJECT: get_project_for_metric(),
+++                },
+++            )
+++
+++            return WorkflowRefineResponse(yaml_config=result.yaml_config)
+++
+++        except ExtendedHTTPException:
+++            raise
+++        except Exception as e:
+++            logger.error(f"Failed to refine workflow: {e}", exc_info=True)
+++            send_log_metric(
+++                name=WORKFLOW_AI_REFINE_TOTAL_METRIC + "_errors",
+++                attributes={
+++                    MetricsAttributes.LLM_MODEL: llm_model or "default",
+++                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
+++                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
+++                    MetricsAttributes.PROJECT: get_project_for_metric(),
+++                },
+++            )
+++            raise ExtendedHTTPException(
+++                code=500,
+++                message="Failed to refine workflow",
+++                details=f"An error occurred while refining the workflow: {str(e)}",
+++                help=_HELP_MESSAGE,
+++            )
+++        finally:
+++            if request_id:
+++                request_summary_manager.clear_summary(request_id)
++diff --git a/src/codemie/service/workflow_service.py b/src/codemie/service/workflow_service.py
++index a727649f7..10d1c2095 100644
++--- a/src/codemie/service/workflow_service.py
+++++ b/src/codemie/service/workflow_service.py
++@@ -172,6 +172,21 @@ class WorkflowService:
++             self._send_workflow_update_failed_metric(e, stored_config.id, updated_workflow_config, user)
++             raise e
++ 
+++    def revert_workflow(self, stored_config: WorkflowConfig, user: User) -> WorkflowConfig:
+++        from codemie.core.exceptions import ExtendedHTTPException
+++
+++        if not stored_config.yaml_config_history:
+++            raise ExtendedHTTPException(
+++                code=400,
+++                message="No history available",
+++                details="The workflow has no saved history entries to revert to.",
+++                help="Save the workflow at least once before using revert.",
+++            )
+++        previous = stored_config.yaml_config_history[0]
+++        reverted_config = stored_config.model_copy(update={"yaml_config": previous.yaml_config})
+++        self._update_workflow_values(stored_config, reverted_config, user, change_type="revert")
+++        return stored_config
+++
++     @staticmethod
++     def create_workflow_execution(
++         workflow_config: WorkflowConfig,
++@@ -649,12 +664,17 @@ class WorkflowService:
++         workflow_config.refresh()
++ 
++     def _update_workflow_values(
++-        self, stored_config: WorkflowConfig, updated_workflow_config: WorkflowConfig, user: User
+++        self,
+++        stored_config: WorkflowConfig,
+++        updated_workflow_config: WorkflowConfig,
+++        user: User,
+++        change_type: Optional[str] = None,
++     ) -> None:
++         new_history_entry = YamlConfigHistory(
++             yaml_config=stored_config.yaml_config,
++             date=datetime.now(),
++             created_by=user.as_user_model(),
+++            change_type=change_type,
++         )
++         yaml_config_updated = False
++ 
++diff --git a/src/codemie/templates/agents/workflow_generator_prompt.py b/src/codemie/templates/agents/workflow_generator_prompt.py
++new file mode 100644
++index 000000000..3bd67278c
++--- /dev/null
+++++ b/src/codemie/templates/agents/workflow_generator_prompt.py
++@@ -0,0 +1,43 @@
+++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
+++#
+++# Licensed under the Apache License, Version 2.0 (the "License");
+++# you may not use this file except in compliance with the License.
+++# You may obtain a copy of the License at
+++#
+++#     http://www.apache.org/licenses/LICENSE-2.0
+++#
+++# Unless required by applicable law or agreed to in writing, software
+++# distributed under the License is distributed on an "AS IS" BASIS,
+++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+++# See the License for the specific language governing permissions and
+++# limitations under the License.
+++
+++from langchain_core.prompts import PromptTemplate
+++from pydantic import BaseModel, Field
+++
+++
+++class WorkflowRefineDetails(BaseModel):
+++    """Structured output from the workflow refine LLM chain."""
+++
+++    yaml_config: str = Field(description="The complete revised workflow YAML. Must be valid YAML. No markdown fencing.")
+++
+++
+++WORKFLOW_REFINE_TEMPLATE = PromptTemplate.from_template(
+++    """You are an expert workflow engineer. Your task is to improve a CodeMie workflow YAML configuration.
+++
+++Current workflow YAML:
+++```yaml
+++{yaml_config}
+++```
+++
+++Refinement instructions:
+++{refine_prompt}
+++
+++Rules:
+++- Return the COMPLETE revised workflow YAML. Do not summarize or truncate.
+++- Preserve the overall workflow structure (states, transitions, assistants).
+++- Apply only the changes described in the refinement instructions. If instructions are empty, apply general improvements (clarity, robustness, best practices).
+++- The output must be valid YAML. Do not wrap it in markdown code fences or add any commentary.
+++- Do not change the workflow id, name, or project fields.
+++"""
+++)
++diff --git a/tests/codemie/rest_api/routers/test_workflow.py b/tests/codemie/rest_api/routers/test_workflow.py
++index 5e1442c06..f6b4aa597 100644
++--- a/tests/codemie/rest_api/routers/test_workflow.py
+++++ b/tests/codemie/rest_api/routers/test_workflow.py
++@@ -12,6 +12,7 @@
++ # See the License for the specific language governing permissions and
++ # limitations under the License.
++ 
+++from datetime import datetime
++ from unittest.mock import MagicMock, patch
++ 
++ import pytest
++@@ -29,7 +30,9 @@ from codemie.core.workflow_models import (
++     UpdateWorkflowRequest,
++     WorkflowMode,
++ )
+++from codemie.core.workflow_models.workflow_config import YamlConfigHistory
++ from codemie.rest_api.main import app
+++from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
++ from codemie.rest_api.security.user import User
++ from codemie.service.workflow_service import WorkflowService
++ import codemie.rest_api.routers.workflow as workflow_router
++@@ -786,3 +789,122 @@ async def test_get_workflow_users(mock_get_users, request_header):
++     assert response.json()[0]["name"] == "User One"
++     assert response.json()[1]["id"] == "user2"
++     mock_get_users.assert_called_once_with(user=user, scope=None)
+++
+++
+++# ── EPMCDME-12616: refine and revert endpoints ──────────────────────────────────
+++
+++
+++@pytest.mark.asyncio
+++async def test_refine_workflow_success(workflow_config, request_header):
+++    refined_yaml = "name: refined-workflow\n"
+++    with (
+++        patch(
+++            "codemie.service.workflow_service.WorkflowService.get_workflow",
+++            return_value=workflow_config,
+++        ),
+++        patch("codemie.core.ability.Ability.can", return_value=True),
+++        patch(
+++            "codemie.service.workflow_generator_service.WorkflowGeneratorService.refine_workflow",
+++            return_value=WorkflowRefineResponse(yaml_config=refined_yaml),
+++        ) as mock_refine,
+++    ):
+++        transport = ASGITransport(app=app)
+++        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+++            response = await ac.post(
+++                f"/v1/workflows/{workflow_config.id}/refine",
+++                json={"yaml_config": "name: old\n", "refine_prompt": "improve it"},
+++                headers=request_header,
+++            )
+++        assert response.status_code == 200
+++        assert response.json()["yaml_config"] == refined_yaml
+++        mock_refine.assert_called_once()
+++
+++
+++@pytest.mark.asyncio
+++async def test_refine_workflow_access_denied(workflow_config, request_header):
+++    with (
+++        patch(
+++            "codemie.service.workflow_service.WorkflowService.get_workflow",
+++            return_value=workflow_config,
+++        ),
+++        patch("codemie.core.ability.Ability.can", return_value=False),
+++    ):
+++        transport = ASGITransport(app=app)
+++        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+++            response = await ac.post(
+++                f"/v1/workflows/{workflow_config.id}/refine",
+++                json={"yaml_config": "name: old\n"},
+++                headers=request_header,
+++            )
+++        assert response.status_code == 401
+++
+++
+++@pytest.mark.asyncio
+++async def test_refine_workflow_not_found(request_header):
+++    with patch(
+++        "codemie.service.workflow_service.WorkflowService.get_workflow",
+++        side_effect=Exception("not found"),
+++    ):
+++        transport = ASGITransport(app=app)
+++        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+++            response = await ac.post(
+++                "/v1/workflows/nonexistent/refine",
+++                json={"yaml_config": "name: old\n"},
+++                headers=request_header,
+++            )
+++        assert response.status_code == 404
+++
+++
+++@pytest.mark.asyncio
+++async def test_revert_workflow_success(workflow_config, request_header):
+++    workflow_config.yaml_config_history = [YamlConfigHistory(yaml_config="name: prev\n", date=datetime.now())]
+++    with (
+++        patch(
+++            "codemie.service.workflow_service.WorkflowService.get_workflow",
+++            return_value=workflow_config,
+++        ),
+++        patch("codemie.core.ability.Ability.can", return_value=True),
+++        patch(
+++            "codemie.service.workflow_service.WorkflowService.revert_workflow",
+++            return_value=workflow_config,
+++        ) as mock_revert,
+++        patch("codemie.service.guardrail.guardrail_service.GuardrailService.sync_guardrail_assignments_for_entity"),
+++        patch(
+++            "codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments",
+++            return_value=[],
+++        ),
+++    ):
+++        transport = ASGITransport(app=app)
+++        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+++            response = await ac.post(
+++                f"/v1/workflows/{workflow_config.id}/revert",
+++                json={},
+++                headers=request_header,
+++            )
+++        assert response.status_code == 200
+++        body = response.json()
+++        assert body["message"] == "Workflow reverted successfully"
+++        mock_revert.assert_called_once()
+++
+++
+++@pytest.mark.asyncio
+++async def test_revert_workflow_no_history(workflow_config, request_header):
+++    with (
+++        patch(
+++            "codemie.service.workflow_service.WorkflowService.get_workflow",
+++            return_value=workflow_config,
+++        ),
+++        patch("codemie.core.ability.Ability.can", return_value=True),
+++        patch(
+++            "codemie.service.workflow_service.WorkflowService.revert_workflow",
+++            side_effect=ExtendedHTTPException(code=400, message="No history available", details="", help=""),
+++        ),
+++    ):
+++        transport = ASGITransport(app=app)
+++        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+++            response = await ac.post(
+++                f"/v1/workflows/{workflow_config.id}/revert",
+++                json={},
+++                headers=request_header,
+++            )
+++        assert response.status_code == 400
++diff --git a/tests/codemie/service/test_workflow_generator_service.py b/tests/codemie/service/test_workflow_generator_service.py
++new file mode 100644
++index 000000000..e5a80f5fc
++--- /dev/null
+++++ b/tests/codemie/service/test_workflow_generator_service.py
++@@ -0,0 +1,101 @@
+++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
+++#
+++# Licensed under the Apache License, Version 2.0 (the "License");
+++# you may not use this file except in compliance with the License.
+++# You may obtain a copy of the License at
+++#
+++#     http://www.apache.org/licenses/LICENSE-2.0
+++#
+++# Unless required by applicable law or agreed to in writing, software
+++# distributed under the License is distributed on an "AS IS" BASIS,
+++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+++# See the License for the specific language governing permissions and
+++# limitations under the License.
+++
+++from unittest.mock import patch, MagicMock
+++
+++import pytest
+++
+++from codemie.core.exceptions import ExtendedHTTPException
+++from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
+++from codemie.rest_api.security.user import User
+++
+++EXAMPLE_PROJECT = "example_project"
+++EXAMPLE_YAML = "name: my-workflow\nstates:\n  - id: state1\n"
+++REFINED_YAML = "name: my-workflow\nstates:\n  - id: state1\n    description: improved\n"
+++
+++
+++@pytest.fixture
+++def user():
+++    return User(id="123", username="testuser", name="Test User", project_names=[EXAMPLE_PROJECT])
+++
+++
+++@patch("codemie.service.workflow_generator_service.request_summary_manager")
+++@patch("codemie.service.workflow_generator_service.emit_llm_token_metric")
+++@patch("codemie.service.workflow_generator_service.PromptGeneratorChain")
+++def test_refine_workflow_returns_revised_yaml(mock_chain_cls, mock_emit, mock_summary, user):
+++    mock_chain = MagicMock()
+++    mock_chain_cls.from_prompt_template.return_value = mock_chain
+++    from codemie.templates.agents.workflow_generator_prompt import WorkflowRefineDetails
+++
+++    mock_chain.invoke_with_model.return_value = WorkflowRefineDetails(yaml_config=REFINED_YAML)
+++
+++    from codemie.service.workflow_generator_service import WorkflowGeneratorService
+++
+++    result = WorkflowGeneratorService.refine_workflow(
+++        yaml_config=EXAMPLE_YAML,
+++        refine_prompt="improve descriptions",
+++        user=user,
+++        llm_model="gpt-4o",
+++        request_id="req-1",
+++    )
+++
+++    assert isinstance(result, WorkflowRefineResponse)
+++    assert result.yaml_config == REFINED_YAML
+++    mock_emit.assert_called_once()
+++    mock_summary.clear_summary.assert_called_once_with("req-1")
+++
+++
+++@patch("codemie.service.workflow_generator_service.request_summary_manager")
+++@patch("codemie.service.workflow_generator_service.send_log_metric")
+++@patch("codemie.service.workflow_generator_service.PromptGeneratorChain")
+++def test_refine_workflow_raises_on_invalid_yaml(mock_chain_cls, mock_send_log, mock_summary, user):
+++    mock_chain = MagicMock()
+++    mock_chain_cls.from_prompt_template.return_value = mock_chain
+++    from codemie.templates.agents.workflow_generator_prompt import WorkflowRefineDetails
+++
+++    mock_chain.invoke_with_model.return_value = WorkflowRefineDetails(yaml_config=": invalid: yaml: [")
+++
+++    from codemie.service.workflow_generator_service import WorkflowGeneratorService
+++
+++    with pytest.raises(ExtendedHTTPException) as exc_info:
+++        WorkflowGeneratorService.refine_workflow(
+++            yaml_config=EXAMPLE_YAML,
+++            refine_prompt=None,
+++            user=user,
+++            llm_model=None,
+++            request_id="req-2",
+++        )
+++    assert exc_info.value.code == 400
+++    mock_summary.clear_summary.assert_called_once_with("req-2")
+++
+++
+++@patch("codemie.service.workflow_generator_service.request_summary_manager")
+++@patch("codemie.service.workflow_generator_service.send_log_metric")
+++@patch("codemie.service.workflow_generator_service.PromptGeneratorChain")
+++def test_refine_workflow_raises_500_on_chain_failure(mock_chain_cls, mock_send_log, mock_summary, user):
+++    mock_chain_cls.from_prompt_template.side_effect = RuntimeError("LLM unavailable")
+++
+++    from codemie.service.workflow_generator_service import WorkflowGeneratorService
+++
+++    with pytest.raises(ExtendedHTTPException) as exc_info:
+++        WorkflowGeneratorService.refine_workflow(
+++            yaml_config=EXAMPLE_YAML,
+++            refine_prompt=None,
+++            user=user,
+++            llm_model=None,
+++            request_id="req-3",
+++        )
+++    assert exc_info.value.code == 500
+++    mock_send_log.assert_called_once()
+++    mock_summary.clear_summary.assert_called_once_with("req-3")
++diff --git a/tests/codemie/service/test_workflow_service.py b/tests/codemie/service/test_workflow_service.py
++index 320510e3e..264a3436f 100644
++--- a/tests/codemie/service/test_workflow_service.py
+++++ b/tests/codemie/service/test_workflow_service.py
++@@ -12,6 +12,7 @@
++ # See the License for the specific language governing permissions and
++ # limitations under the License.
++ 
+++from datetime import datetime
++ from unittest.mock import patch, MagicMock
++ from uuid import UUID
++ 
++@@ -34,6 +35,8 @@ from codemie.core.workflow_models import (
++     WorkflowNextState,
++     WorkflowState,
++ )
+++from codemie.core.exceptions import ExtendedHTTPException
+++from codemie.core.workflow_models.workflow_config import YamlConfigHistory
++ from codemie.rest_api.models.conversation import GeneratedMessage
++ from codemie.rest_api.security.user import User
++ from codemie.service.workflow_service import WorkflowService
++@@ -939,3 +942,40 @@ def test_update_workflow_values_start_hint_cleared(
++     workflow_service._update_workflow_values(workflow_config, updated_config, user)
++ 
++     assert workflow_config.start_hint == updated_hint
+++
+++
+++# ── EPMCDME-12616: revert and change_type ──────────────────────────────────────
+++
+++
+++def test_yaml_config_history_default_change_type_is_none():
+++    entry = YamlConfigHistory(yaml_config="yaml: true", date=datetime.now())
+++    assert entry.change_type is None
+++
+++
+++def test_yaml_config_history_accepts_revert_change_type():
+++    entry = YamlConfigHistory(yaml_config="yaml: true", date=datetime.now(), change_type="revert")
+++    assert entry.change_type == "revert"
+++
+++
+++@patch("codemie.service.workflow_service.WorkflowService._update_workflow_values")
+++def test_revert_workflow_calls_update_with_history_yaml(mock_update, user, workflow_config):
+++    previous_yaml = "name: old-workflow\n"
+++    workflow_config.yaml_config_history = [YamlConfigHistory(yaml_config=previous_yaml, date=datetime.now())]
+++
+++    workflow_service = WorkflowService()
+++    workflow_service.revert_workflow(workflow_config, user)
+++
+++    mock_update.assert_called_once()
+++    call_args = mock_update.call_args
+++    updated_config_arg = call_args[0][1]
+++    assert updated_config_arg.yaml_config == previous_yaml
+++    assert call_args[1].get("change_type") == "revert"
+++
+++
+++def test_revert_workflow_raises_when_no_history(user, workflow_config):
+++    workflow_config.yaml_config_history = []
+++
+++    workflow_service = WorkflowService()
+++    with pytest.raises(ExtendedHTTPException) as exc_info:
+++        workflow_service.revert_workflow(workflow_config, user)
+++    assert exc_info.value.code == 400
+diff --git a/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/complexity-assessment.json b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/complexity-assessment.json
+new file mode 100644
+index 000000000..3dc21281c
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/complexity-assessment.json
+@@ -0,0 +1,36 @@
++{
++  "schema": 1,
++  "task": "Add AI refine and revert endpoints for workflows, with audit logging for AI modifications and reverts (EPMCDME-12616, backend only).",
++  "generated": "2026-07-09T00:00:00Z",
++  "dimensions": {
++    "component_scope":      { "score": 4, "label": "L" },
++    "requirements_clarity": { "score": 3, "label": "M" },
++    "technical_risk":       { "score": 4, "label": "L" },
++    "file_change_estimate": { "score": 4, "label": "L" },
++    "dependencies":         { "score": 1, "label": "XS" },
++    "affected_layers":      { "score": 5, "label": "XL" }
++  },
++  "total": 21,
++  "size": "L",
++  "routing": "brainstorming",
++  "key_reasoning": [
++    {
++      "dimension": "affected_layers",
++      "reason": "Five distinct layers are touched: API (workflow router), Service (workflow_service), AI-Chain (new WorkflowGeneratorService or extended AssistantGeneratorService), DB-Persistence (YamlConfigHistory Pydantic model with new optional change_type field stored in JSONB), and External (LLM invocation via LiteLLM/PromptGeneratorChain). Cross-cutting observability changes also land in WorkflowMonitoringService."
++    },
++    {
++      "dimension": "component_scope",
++      "reason": "Four to five components must be created or modified: workflow router (new endpoints), workflow service (new revert and refine methods), a new AI generator service with a new workflow YAML prompt template, the YamlConfigHistory model, and the monitoring service plus metrics constants. The revert path builds on existing infrastructure; the AI refine path requires a new abstraction."
++    },
++    {
++      "dimension": "technical_risk",
++      "reason": "No WorkflowGeneratorService or workflow-specific prompt template exists — a new pattern must be authored. Workflow YAML is significantly more complex than assistant fields, making structured-output prompt design non-trivial with mandatory LLM output validation. The revert path risks double-writing history if not carefully ordered relative to the existing _update_workflow_history prepend. Guardrail re-sync behaviour on revert is an open design question. The yaml_config_history code path has zero existing tests, so correctness must be established from scratch."
++    },
++    {
++      "dimension": "file_change_estimate",
++      "reason": "Estimated 7–10 files: workflow.py router (modify), workflow_service.py (modify), new WorkflowGeneratorService file (new), new workflow YAML prompt template (new), workflow_config.py YamlConfigHistory model (modify), workflow_monitoring_service.py (modify), metrics_constants.py (modify), plus 2–3 new test files across tests/codemie/rest_api/routers/ and tests/codemie/service/. Changes span 4+ directories."
++    }
++  ],
++  "red_flags_applied": [],
++  "split_recommendation": null
++}
+diff --git a/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/decisions.jsonl b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/decisions.jsonl
+new file mode 100644
+index 000000000..55fc133af
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/decisions.jsonl
+@@ -0,0 +1 @@
++{"ts":"2026-07-09T00:00:00Z","gate_id":"code-review.check","mode":"hitl","verdict":{"decision":"approve","rationale":"Both blocking findings resolved. CR-001: except Exception narrowed to except KeyError in both handlers; test updated. CR-002: send_workflow_revert_metric() added to revert success path. No new high-risk issues introduced.","confidence":"high","risk_flags":[]},"escalated":false,"prior_context":{"question":"Code review check round complete. Both findings resolved — approve or reject?","prior_orchestrator_verdict":"docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/code-review-check.json"}}
+diff --git a/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/events.jsonl b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/events.jsonl
+new file mode 100644
+index 000000000..f2c52bef3
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/events.jsonl
+@@ -0,0 +1 @@
++{"schema":1,"ts":"2026-07-09T00:00:00Z","event":"decision.recorded","run_id":"2026-07-09-epmcdme-12616-workflow-ai-refine-revert","phase":6,"actor":"decision-router","summary":"Decision recorded for code-review.check: approve","artifacts":["decisions.jsonl","code-review-check.json"],"data":{"gate_id":"code-review.check","mode":"hitl","decision":"approve","source":"hitl","escalated":false,"prior_context":{"question":"Code review check round complete. Both findings resolved.","phase":6,"risk_flags":[],"artifact_refs":["code-review-check.diff","code-review-final.json","code-review-check.json"]}}}
+diff --git a/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/technical-analysis.md b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/technical-analysis.md
+new file mode 100644
+index 000000000..c921ce127
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-07-09-epmcdme-12616-workflow-ai-refine-revert/technical-analysis.md
+@@ -0,0 +1,221 @@
++# Technical Research
++
++**Task**: workflow ai-refine revert audit-history backend
++**Generated**: 2026-07-09T00:00:00Z
++**Research path**: filesystem
++
++---
++
++## 1. Original Context
++
++EPMCDME-12616: Enhance Workflow Edit with 'Refine/Modify with AI' and 'Revert to Previous' Option (Backend only)
++
++Description:
++The story proposes enhancing workflow edit with:
++- 'Refine/Modify with AI' option for applying AI suggestions to workflow optimization
++- 'Revert to Previous' action to restore the last saved workflow version if AI changes are not satisfactory
++- Clear availability of both actions in the edit UI
++- Audit/history tracking for AI modifications and reverts
++
++Acceptance Criteria:
++- 'Refine/Modify with AI' button is added to workflow edit interface (frontend out of scope for this run)
++- 'Revert to Previous' option is available after AI modification
++- After revert, workflow is restored to last saved version; user can continue editing
++- Action history is logged for all AI modifications and reverts
++- No regression in workflow edit/save functionality
++- Both options are accessible and validated for all workflow types
++
++Scope: Backend only. Focus on:
++1. API endpoint(s) for AI-based workflow refinement (accepts a workflow definition and returns AI-refined version)
++2. API endpoint(s) for reverting a workflow to its last saved version
++3. Audit/history logging for AI modifications and reverts
++4. Any service-layer changes to support these operations
++
++---
++
++## 2. Codebase Findings
++
++### Existing Implementations
++
++**Workflow Router (API layer)**
++- `/Users/yevhen_slyva/codemie-dev/codemie/src/codemie/rest_api/routers/workflow.py`
++  - Defines all workflow CRUD endpoints under `/v1` prefix
++  - Existing endpoints: `GET /workflows`, `GET /workflows/id/{workflow_id}`, `POST /workflows`, `PUT /workflows/{workflow_id}`, `DELETE /workflows/{workflow_id}`, `POST /workflows/diagram`
++  - No existing `refine` or `revert` endpoints
++  - Router is registered in `src/codemie/rest_api/main.py:756` via `app.include_router(workflow.router)`
++
++**WorkflowService (Service layer)**
++- `/Users/yevhen_slyva/codemie-dev/codemie/src/codemie/service/workflow_service.py`
++  - Central orchestration class for workflow CRUD, execution management, and history tracking
++  - Key method: `_update_workflow_history(workflow_config, new_history_entry)` — prepends a `YamlConfigHistory` entry to `yaml_config_history` using a raw PostgreSQL `text()` statement
++  - Key method: `_update_workflow_values(stored_config, updated_config, user)` — captures current `yaml_config` into history before applying the update
++  - Key method: `update_workflow(stored_config, updated_config, user)` — outer entry point that delegates to `_update_workflow_values`
++  - No existing revert or AI-refine methods
++
++**WorkflowConfig (DB Model)**
++- `/Users/yevhen_slyva/codemie-dev/codemie/src/codemie/core/workflow_models/workflow_config.py`
++  - SQLModel table: `workflows`
++  - `yaml_config: Optional[str]` — primary workflow definition (YAML string)
++  - `yaml_config_history: List[YamlConfigHistory]` — JSONB array of prior `yaml_config` snapshots with `date` and `created_by`
++  - `YamlConfigHistory` Pydantic model has fields: `yaml_config: str`, `date: datetime`, `created_by: Optional[UserEntity]`
++  - No `change_type` or `action` field on `YamlConfigHistory` — cannot currently distinguish a regular save from an AI refine or a revert
++
++**WorkflowConfigRepository**
++- `/Users/yevhen_slyva/codemie-dev/codemie/src/codemie/repository/workflow_config_repository.py`
++  - Thin repository, currently only has `set_publish_state` and `recompute_unique_users_count`
++  - No revert or history retrieval helpers
++
++**AI Refine Patterns (Parallel: Assistant and Skill)**
++- `/Users/yevhen_slyva/codemie-dev/codemie/src/codemie/rest_api/routers/assistant.py:1738` — `POST /v1/assistants/refine` endpoint
++  - Delegates to `AssistantGeneratorService.generate_refine_prompt()`
++  - Receives draft fields, returns `RefineGeneratorResponse` (per-field LLM recommendations)
++  - Uses `PromptGeneratorChain` (chains a `PromptTemplate` with a structured-output LLM via LangChain)
++- `/Users/yevhen_slyva/codemie-dev/codemie/src/codemie/rest_api/routers/skill.py:770` — `POST /v1/skills/refine` endpoint
++  - Delegates to `SkillGeneratorService.refine_skill_details()`
++  - Same `PromptGeneratorChain` pattern, same `RefineGeneratorResponse` return type
++
++**AssistantGeneratorService / PromptGeneratorChain (AI invocation engine)**
++- `/Users/yevhen_slyva/codemie-dev/codemie/src/codemie/service/assistant_generator_service.py`
++  - `PromptGeneratorChain.from_prompt_template(template, request_id, llm_model)` — builds chain with LLM resolved via `get_llm_by_credentials()`
++  - `PromptGeneratorChain.invoke_with_model(base_model, input)` — invokes chain with structured output
++  - `generate_refine_prompt()` — callable AI refine entry point used by `assistants/refine`
++
++**Assistant Rollback Pattern**
++- `/Users/yevhen_slyva/codemie-dev/codemie/src/codemie/service/assistant/assistant_version_service.py`
++  - `AssistantVersionService.rollback_to_version()` — creates a new version from a target historical version; includes robust validation
++  - Distinct "versioning" table approach vs. workflow's embedded JSONB history
++
++**WorkflowMonitoringService (Observability)**
++- `/Users/yevhen_slyva/codemie-dev/codemie/src/codemie/service/monitoring/workflow_monitoring_service.py`
++  - Provides: `send_create_workflow_metric`, `send_update_workflow_metric`, `send_delete_workflow_metric`
++  - No `send_ai_refine_workflow_metric` or `send_revert_workflow_metric` yet
++  - Extends `BaseMonitoringService.send_count_metric` with OTel metrics
++
++### Architecture and Layers Affected
++
++| Layer | Component | Change Type |
++|---|---|---|
++| API / Router | `src/codemie/rest_api/routers/workflow.py` | New endpoints added |
++| Service / Business Logic | `src/codemie/service/workflow_service.py` | New methods for AI refine and revert |
++| AI Chain (new) | New `WorkflowGeneratorService` or extension of `AssistantGeneratorService` | New prompt template + chain invocation |
++| DB Model | `src/codemie/core/workflow_models/workflow_config.py` — `YamlConfigHistory` | Schema enhancement: add `change_type` field |
++| DB Migration | `src/external/alembic/versions/` | New migration if `YamlConfigHistory` schema changes |
++| Monitoring | `src/codemie/service/monitoring/workflow_monitoring_service.py` | New metric methods for AI refine and revert actions |
++| Metrics Constants | `src/codemie/service/monitoring/metrics_constants.py` | New metric name constants |
++
++### Integration Points
++
++- **LLM resolution**: `get_llm_by_credentials(llm_model, request_id)` from `codemie.core.dependecies` — used by all existing AI generation services
++- **LiteLLM context**: `set_llm_context(None, project, user)` must be called before LLM invocation (present in both `assistants/refine` and `skills/refine` endpoints)
++- **Workflow validation**: `WorkflowExecutor.validate_workflow(workflow_config, user, error_format)` — the AI-refined YAML must be validated before being returned or saved
++- **YAML parsing**: `WorkflowConfig.parse_execution_config()` / `WorkflowConfig.from_yaml()` — already handles YAML deserialization
++- **Access control**: `Ability(user).can(Action.WRITE, workflow)` — existing check that must guard both new endpoints
++- **Project access**: `project_access_check(user, request.project)` — called at the router level before service delegation
++- **Guardrail assignments**: `GuardrailService` is called after save; revert must re-trigger or preserve guardrail state
++
++### Patterns and Conventions
++
++- **AI refine pattern**: `POST /<resource>/refine` endpoint → calls `<Resource>GeneratorService` → uses `PromptGeneratorChain.from_prompt_template` → `invoke_with_model(ResponseModel, input_dict)` → returns structured recommendations
++- **Workflow YAML history**: `_update_workflow_history()` uses raw SQL `text()` with `||` operator to prepend history entries atomically
++- **Monitoring**: Wrap service operations in try/except; send `send_count_metric` before re-raising; pass `success=True/False`
++- **Error handling**: Raise `ExtendedHTTPException` with `code`, `message`, `details`, `help` fields; catch `ValidationException` separately
++- **Background tasks**: `background_tasks.add_task(run_in_thread_pool, update_workflow_schema, ...)` used after workflow save
++- **Request ID propagation**: `raw_request.state.uuid` is extracted and passed to all service calls for LLM metric correlation
++
++---
++
++## 3. Documentation Findings
++
++### Guides and Architecture Docs
++
++- `/Users/yevhen_slyva/codemie-dev/codemie/.ai-run/guides/workflows/langgraph-workflows.md` — Covers LangGraph executor; directs to extend `WorkflowExecutor` rather than create parallel paths
++- `/Users/yevhen_slyva/codemie-dev/codemie/.ai-run/guides/api/rest-api-patterns.md` — Router registration, error responses, auth dependencies
++- `/Users/yevhen_slyva/codemie-dev/codemie/.ai-run/guides/architecture/layered-architecture.md` — API → Service → Repository layering; shared exceptions
++- `/Users/yevhen_slyva/codemie-dev/codemie/.ai-run/guides/integration/llm-providers.md` — Use config-driven model resolution; gate LiteLLM with `is_litellm_enabled`
++- `/Users/yevhen_slyva/codemie-dev/codemie/.ai-run/guides/testing/testing-patterns.md` — Test location conventions, mocking external dependencies
++
++### Architectural Decisions
++
++- AI generation for assistant and skill domains follows an identical pattern: a stateless POST endpoint that accepts current field values and a `refine_prompt`, invokes `PromptGeneratorChain`, and returns recommendations without persisting them. The workflow AI refine should follow the same approach.
++- The `YamlConfigHistory` mechanism is already in place and populated on every `update_workflow` call. The revert operation should restore `yaml_config` from the most recent history entry without introducing a separate version table.
++- The `WorkflowConfig` model uses JSONB for `yaml_config_history`, and history entries are prepended using raw SQL to avoid race conditions (seen at `workflow_service.py:639-649`).
++
++### Derived Conventions
++
++- New endpoints in `workflow.py` should follow the `POST /workflows/{workflow_id}/refine` and `POST /workflows/{workflow_id}/revert` path structure (resource-scoped actions)
++- All AI-related endpoint logic should call `set_llm_context` and extract `request_id = raw_request.state.uuid`
++- Audit logging for AI modifications and reverts should be implemented as metrics via `WorkflowMonitoringService.send_count_metric`, consistent with `send_update_workflow_metric`; the `change_type` dimension should be added to metric attributes
++- `YamlConfigHistory` should gain a `change_type: Optional[str]` field (`"manual"`, `"ai_refine"`, `"revert"`) — this is a non-breaking Pydantic change since the field is Optional; however, it is stored in JSONB, so no migration is strictly required for existing rows
++
++---
++
++## 4. Testing Landscape
++
++### Existing Coverage
++
++- `/Users/yevhen_slyva/codemie-dev/codemie/tests/codemie/rest_api/routers/test_workflow.py` — router-level tests for create, read, update, delete, diagram, prebuilt, and access-control cases; uses `AsyncClient` with mocked service calls
++- `/Users/yevhen_slyva/codemie-dev/codemie/tests/codemie/service/test_workflow_service.py` — service-level tests with mocked DB, `User` fixtures with project membership
++- `/Users/yevhen_slyva/codemie-dev/codemie/tests/codemie/core/workflow_models/test_workflow_config.py` — model validation tests
++- `/Users/yevhen_slyva/codemie-dev/codemie/tests/codemie/service/workflow_execution/test_workflow_execution_service.py` — execution service tests
++
++### Testing Framework and Patterns
++
++- **Framework**: pytest with `pytest-asyncio`; `AsyncClient` via `httpx` for async router tests, `TestClient` for sync endpoints
++- **Auth mocking**: `Depends(authenticate)` is patched at the `codemie.rest_api.security.authentication` level; `User` fixture provides project membership
++- **Service mocking**: `patch("codemie.service.workflow_service.WorkflowService.<method>")` or `patch.object`
++- **DB isolation**: tests do not hit a real database; SQLModel operations are mocked via `patch`
++- **Fixtures**: `user()`, `admin_user()`, `workflow_config` (in service tests), `create_workflow_request` / `update_workflow_request` (in router tests)
++
++### Coverage Gaps
++
++- No tests for `_update_workflow_history` or `yaml_config_history` contents — history tracking is never asserted in existing tests
++- No tests for workflow AI refine (the feature does not yet exist)
++- No tests for workflow revert (the feature does not yet exist)
++- No tests validating that `change_type` is recorded on history entries
++- No tests asserting that `WorkflowMonitoringService` sends the expected metric events for refine or revert
++
++---
++
++## 5. Configuration and Environment
++
++### Environment Variables
++
++- `WORKFLOW_TEMPLATES_DIR` — resolved at `src/codemie/configs/config.py:110` as `Path(...).parents[3] / "config/templates/workflow"` — not directly relevant to this task
++- LLM model configuration: driven by `config/llms/llm-azure-config.yaml` and the `MODELS_ENV` environment variable (see README); model resolution via `llm_service.default_llm_model` and `get_llm_by_credentials()`
++- `WORKFLOW_DEFAULT_CONCURRENCY`, `WORKFLOW_MAX_CONCURRENCY` — workflow execution limits; not relevant to the edit/refine flow
++
++### Configuration Files
++
++- `/Users/yevhen_slyva/codemie-dev/codemie/config/llms/llm-azure-config.yaml` — defines available LLM models; the AI refine endpoint will select from these
++- `/Users/yevhen_slyva/codemie-dev/codemie/src/codemie/configs/config.py` — central config; the `llm_service.default_llm_model` value is derived here
++
++### Feature Flags and Deployment Concerns
++
++- No existing feature flag for workflow AI refine; not required if implementing as a new stateless endpoint
++- No DB migration is strictly required if `change_type` is added as an Optional field on `YamlConfigHistory` (JSONB; existing rows will deserialize with `None`)
++- If `change_type` is added as a non-null column with a DB default, a migration script in `src/external/alembic/versions/` is required following the pattern of `8f7d26d3ff1c_create_workflows.py`
++- The AI refine endpoint is stateless (does not persist); no deployment concern beyond LLM availability
++
++---
++
++## 6. Risk Indicators
++
++- **No existing AI service for workflows**: No `WorkflowGeneratorService` or workflow-specific refine prompt template exists. The implementation must create a new service or extend `AssistantGeneratorService`; a workflow YAML prompt template needs to be authored. This introduces a novel pattern compared to the rest of the codebase.
++- **YamlConfigHistory has no `change_type` field**: Adding it as `Optional[str]` is a safe non-breaking Pydantic change for JSONB storage, but the field must be threaded through all history-creation call sites (`_update_workflow_values`). Missing this results in audit history without action labels.
++- **Revert operates on a live JSONB prepend pattern**: `_update_workflow_history` uses a raw SQL `||` prepend. A revert must read `yaml_config_history[0]` (the most recent prior version) and call `update_workflow` with that YAML. Care is needed to avoid double-writing the same snapshot to history (revert triggers `update_workflow` which itself records the pre-revert state).
++- **No tests for yaml_config_history**: The history tracking code path is completely untested. Any new work in this area must add tests to ensure correctness.
++- **Validation of AI-refined YAML is mandatory**: The AI may produce invalid YAML. `WorkflowExecutor.validate_workflow()` must be called on the AI output before returning it to the client (or before persisting, if auto-apply is chosen). Failure modes are already defined via `WorkflowErrorFormat`.
++- **LLM prompt design for workflow YAML is non-trivial**: Workflow YAML is significantly more complex than assistant fields. A prompt template that reliably returns valid, improved workflow YAML (rather than free-form text) requires careful design and structured-output enforcement via `invoke_with_model`.
++- **Guardrail re-sync on revert**: Current `update_workflow` endpoint calls `GuardrailService.sync_guardrail_assignments_for_entity` after each update. The revert endpoint must decide whether guardrail assignments are preserved, reset, or re-synced from the reverted config.
++- **Monitoring metric names not yet defined**: No `WORKFLOW_AI_REFINE_TOTAL_METRIC` or `WORKFLOW_REVERT_TOTAL_METRIC` constants exist in `metrics_constants.py`. These must be added to maintain observability parity with other workflow actions.
++- **Circular import risk**: `workflow_service.py` already uses a lazy import of `WorkflowExecutor` to avoid circular dependency (`service/workflow_service.py:160`). Any new service referencing both `WorkflowService` and the AI chain must follow the same lazy-import pattern.
++
++---
++
++## 7. Summary for Complexity Assessment
++
++This task spans the API, Service, and AI-Chain layers, touching four to six files for the core implementation: the workflow router (`workflow.py`), the workflow service (`workflow_service.py`), a new or extended AI generator service, a new workflow-specific prompt template, the `YamlConfigHistory` model (optional schema addition), and the monitoring service and constants. The revert feature is architecturally straightforward because the `yaml_config_history` JSONB column already stores prior states; the implementation is a new service method that reads the most recent history entry and re-applies it via the existing `update_workflow` path, plus a new router endpoint. The audit/history logging requirement is satisfied by adding an optional `change_type` dimension to `YamlConfigHistory` and corresponding monitoring metrics.
++
++The AI refine feature introduces genuine novelty. There is an established `PromptGeneratorChain` pattern (used for assistants and skills) that can be reused, but no workflow-specific refine prompt template exists. Workflow YAML is more complex than assistant fields, so prompt engineering and structured-output design are non-trivial. The refine endpoint should be stateless (return recommended changes without persisting), consistent with the existing assistant and skill refine endpoints. The response model can mirror `RefineGeneratorResponse` or return a revised YAML string directly — the appropriate shape depends on whether the frontend intends to apply changes field-by-field or wholesale.
++
++The affected area has reasonable test coverage for CRUD operations but no tests exist for `yaml_config_history` contents, the history tracking mechanism, or any AI-generation path. New tests are required for: the revert service method (asserting history is read and applied correctly), the AI refine endpoint (mocking `PromptGeneratorChain`), audit field correctness, and monitoring metric emission. The implementation complexity is moderate: the revert path is low-risk given the existing data model; the AI refine path carries higher complexity due to prompt design and LLM output validation requirements.
+diff --git a/src/codemie/rest_api/models/workflow_generator.py b/src/codemie/rest_api/models/workflow_generator.py
+index 7898ec87e..ad27b5a89 100644
+--- a/src/codemie/rest_api/models/workflow_generator.py
++++ b/src/codemie/rest_api/models/workflow_generator.py
+@@ -31,3 +31,16 @@ class WorkflowGeneratorRequest(BaseModel):
+ class WorkflowGeneratorResponse(BaseModel):
+     workflow_config: CreateWorkflowRequest
+     workflow_id: Optional[str] = None
++
++
++class WorkflowRefineRequest(BaseModel):
++    yaml_config: str
++    refine_prompt: Optional[str] = None
++    llm_model: Optional[str] = None
++    project: Optional[str] = None
++
++
++class WorkflowRefineResponse(BaseModel):
++    yaml_config: str
++
++
+diff --git a/src/codemie/rest_api/routers/workflow.py b/src/codemie/rest_api/routers/workflow.py
+index f46d2b53c..ee419beb0 100644
+--- a/src/codemie/rest_api/routers/workflow.py
++++ b/src/codemie/rest_api/routers/workflow.py
+@@ -42,6 +42,10 @@ from codemie.rest_api.models.guardrail import GuardrailEntity
+ from codemie.rest_api.routers.utils import raise_access_denied, raise_forbidden, run_in_thread_pool, raise_not_found
+ from codemie.rest_api.security.authentication import authenticate, project_access_check
+ from codemie.rest_api.security.user import User
++from codemie.rest_api.models.workflow_generator import (
++    WorkflowRefineRequest,
++    WorkflowRefineResponse,
++)
+ from codemie.service.monitoring.workflow_monitoring_service import WorkflowMonitoringService
+ from codemie.service.guardrail.guardrail_service import GuardrailService
+ from codemie.service.workflow_config import WorkflowConfigIndexService
+@@ -329,8 +333,16 @@ async def update_workflow(
+     if not Ability(user).can(Action.WRITE, workflow):
+         raise_access_denied("update")
+ 
+-    updated_config = WorkflowConfig(**request.model_dump())
+-    updated_config.parse_execution_config()
++    try:
++        updated_config = WorkflowConfig(**request.model_dump())
++        updated_config.parse_execution_config()
++    except Exception as e:
++        raise ExtendedHTTPException(
++            code=status.HTTP_400_BAD_REQUEST,
++            message=WORKFLOW_CONFIGURATION_ERROR,
++            details=str(e).strip(),
++            help="",
++        ) from e
+ 
+     try:
+         MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(updated_config))
+@@ -380,6 +392,41 @@ async def update_workflow(
+         ) from e
+ 
+ 
++@router.post(
++    "/workflows/{workflow_id}/refine",
++    status_code=status.HTTP_200_OK,
++    response_model=WorkflowRefineResponse,
++)
++def refine_workflow(
++    workflow_id: str,
++    request: WorkflowRefineRequest,
++    raw_request: Request,
++    user: User = Depends(authenticate),
++):
++    from codemie.configs.logger import set_logging_info
++    from codemie.service.llm_service.utils import set_llm_context
++
++    try:
++        workflow = workflow_service.get_workflow(workflow_id)
++    except KeyError:
++        raise_not_found(resource_id=workflow_id, resource_type="Workflow")
++
++    if not Ability(user).can(Action.WRITE, workflow):
++        raise_access_denied("refine")
++
++    request_id = raw_request.state.uuid
++    set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
++    set_llm_context(None, user.current_project, user)
++
++    return WorkflowGeneratorService.refine_workflow(
++        yaml_config=request.yaml_config,
++        refine_prompt=request.refine_prompt,
++        user=user,
++        llm_model=request.llm_model,
++        request_id=request_id,
++    )
++
++
+ @router.delete(
+     "/workflows/{workflow_id}",
+     status_code=status.HTTP_200_OK,
+diff --git a/src/codemie/service/monitoring/metrics_constants.py b/src/codemie/service/monitoring/metrics_constants.py
+index 6b0e08d6a..6c92e9891 100644
+--- a/src/codemie/service/monitoring/metrics_constants.py
++++ b/src/codemie/service/monitoring/metrics_constants.py
+@@ -55,6 +55,8 @@ WORKFLOW_GENERATOR_ERRORS_METRIC = "codemie_workflow_generator_errors_total"
+ WORKFLOW_OUTPUT_CHANGE_TOTAL_METRIC = "codemie_workflow_output_change_total"
+ WORKFLOW_OUTPUT_CHANGE_ERRORS_METRIC = "codemie_workflow_output_change_errors_total"
+ 
++WORKFLOW_AI_REFINE_TOTAL_METRIC = "codemie_workflow_ai_refine_total"
++
+ CONVERSATION_ANALYSIS_TOTAL_METRIC = "codemie_conversation_analysis_total"
+ 
+ 
+diff --git a/src/codemie/service/monitoring/workflow_monitoring_service.py b/src/codemie/service/monitoring/workflow_monitoring_service.py
+index 94a86d73c..14cfd4f59 100644
+--- a/src/codemie/service/monitoring/workflow_monitoring_service.py
++++ b/src/codemie/service/monitoring/workflow_monitoring_service.py
+@@ -19,7 +19,10 @@ from codemie.core.dependecies import get_current_project
+ from codemie.core.workflow_models import WorkflowConfig, WorkflowExecution, WorkflowMode
+ from codemie.rest_api.security.user import User
+ from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
+-from codemie.service.monitoring.metrics_constants import MetricsAttributes
++from codemie.service.monitoring.metrics_constants import (
++    MetricsAttributes,
++    WORKFLOW_AI_REFINE_TOTAL_METRIC,
++)
+ 
+ 
+ class WorkflowMonitoringService(BaseMonitoringService):
+@@ -168,6 +171,28 @@ class WorkflowMonitoringService(BaseMonitoringService):
+             attributes.update(additional_attributes)
+         cls.send_count_metric(name=cls.WORKFLOW_BASE_METRIC + "_deleted_total", attributes=attributes)
+ 
++    @classmethod
++    def send_workflow_ai_refine_metric(
++        cls,
++        user_id: str,
++        user_name: str,
++        workflow_id: str,
++        workflow_name: str,
++        project: str,
++        success: bool,
++        llm_model: Optional[str] = None,
++        mode: WorkflowMode = WorkflowMode.SEQUENTIAL,
++        additional_attributes: Optional[dict] = None,
++    ):
++        attributes = cls._build_workflow_attributes(
++            project, success, user_id, user_name, workflow_id, workflow_name, mode
++        )
++        if llm_model:
++            attributes[MetricsAttributes.LLM_MODEL] = llm_model
++        if additional_attributes:
++            attributes.update(additional_attributes)
++        cls.send_count_metric(name=WORKFLOW_AI_REFINE_TOTAL_METRIC, attributes=attributes)
++
+     @classmethod
+     def _build_workflow_attributes(cls, project, success, user_id, user_name, workflow_id, workflow_name, mode):
+         return {
+diff --git a/src/codemie/service/workflow_generator_service.py b/src/codemie/service/workflow_generator_service.py
+index 8376a896b..1c3cc8c52 100644
+--- a/src/codemie/service/workflow_generator_service.py
++++ b/src/codemie/service/workflow_generator_service.py
+@@ -23,12 +23,13 @@ from codemie.configs.logger import current_user_email, logger, logging_user_id
+ from codemie.core.dependecies import get_project_for_metric
+ from codemie.core.exceptions import ExtendedHTTPException
+ from codemie.rest_api.models.guardrail import GuardrailAssignmentItem, GuardrailMode, GuardrailSource
+-from codemie.rest_api.models.workflow_generator import WorkflowGeneratorResponse
++from codemie.rest_api.models.workflow_generator import WorkflowGeneratorResponse, WorkflowRefineResponse
+ from codemie.rest_api.security.user import User
+ from codemie.service.guardrail.guardrail_service import GuardrailService
+ from codemie.service.llm_service.llm_service import llm_service
+ from codemie.service.monitoring.base_monitoring_service import emit_llm_token_metric, send_log_metric
+ from codemie.service.monitoring.metrics_constants import (
++    WORKFLOW_AI_REFINE_TOTAL_METRIC,
+     WORKFLOW_GENERATOR_ERRORS_METRIC,
+     WORKFLOW_GENERATOR_TOTAL_METRIC,
+     MetricsAttributes,
+@@ -38,8 +39,10 @@ from codemie.service.tools.tools_info_service import ToolsInfoService
+ from codemie.service.workflow_service import WorkflowService
+ from codemie.workflows.workflow_generator.state import WorkflowGeneratorState
+ from codemie.workflows.workflow_generator.workflow import WorkflowGeneratorGraph
++from codemie.workflows.workflow_generator.workflow_refiner import WorkflowRefinerGraph
+ 
+ _HELP_MESSAGE = "Try again with a different query or model."
++_REFINE_HELP_MESSAGE = "Try again with a different instruction or model."
+ 
+ 
+ class WorkflowGeneratorService:
+@@ -156,3 +159,76 @@ class WorkflowGeneratorService:
+         finally:
+             if request_id:
+                 request_summary_manager.clear_summary(request_id)
++
++    @classmethod
++    def refine_workflow(
++        cls,
++        yaml_config: str,
++        refine_prompt: Optional[str],
++        user: User,
++        llm_model: Optional[str],
++        request_id: Optional[str],
++    ) -> WorkflowRefineResponse:
++        if not llm_model:
++            llm_model = config.WORKFLOW_GENERATOR_LLM_MODEL or llm_service.default_llm_model
++
++        try:
++            available_tools = ToolsInfoService.get_tools_info(user=user, exclude_toolkits=["Plugin"])
++
++            initial_state: WorkflowGeneratorState = {
++                "nl_query": "",
++                "user": user,
++                "project": user.current_project,
++                "available_tools": available_tools,
++                "existing_yaml_config": yaml_config,
++                "refine_prompt": refine_prompt or "",
++                "intent": None,
++                "step_plans": None,
++                "current_node_index": 0,
++                "previous_node": None,
++                "node_plan": None,
++                "generated_config": None,
++                "validation_errors": [],
++                "validation_attempts": 0,
++                "failed_step_ids": [],
++                "result": None,
++                "error": None,
++            }
++
++            graph = WorkflowRefinerGraph(llm_model=llm_model, request_id=request_id)
++            final_state = graph.run(initial_state)
++
++            if final_state.get("error"):
++                raise ExtendedHTTPException(
++                    code=500,
++                    message="Workflow refinement failed after validation retries",
++                    details=final_state["error"],
++                    help=_REFINE_HELP_MESSAGE,
++                )
++
++            emit_llm_token_metric(
++                name=WORKFLOW_AI_REFINE_TOTAL_METRIC,
++                request_id=request_id,
++                base_attributes={
++                    MetricsAttributes.LLM_MODEL: llm_model,
++                    MetricsAttributes.USER_ID: logging_user_id.get("-"),
++                    MetricsAttributes.USER_NAME: current_user_email.get("-"),
++                    MetricsAttributes.PROJECT: get_project_for_metric(),
++                },
++            )
++
++            return WorkflowRefineResponse(yaml_config=final_state["result"].yaml_config)
++
++        except ExtendedHTTPException:
++            raise
++        except Exception as exc:
++            logger.error(f"Failed to refine workflow: {exc}", exc_info=True)
++            raise ExtendedHTTPException(
++                code=500,
++                message="Failed to refine workflow",
++                details=f"An error occurred while refining the workflow: {str(exc)}",
++                help=_REFINE_HELP_MESSAGE,
++            ) from exc
++        finally:
++            if request_id:
++                request_summary_manager.clear_summary(request_id)
+diff --git a/src/codemie/service/workflow_service.py b/src/codemie/service/workflow_service.py
+index a727649f7..4eccf66bb 100644
+--- a/src/codemie/service/workflow_service.py
++++ b/src/codemie/service/workflow_service.py
+@@ -649,7 +649,10 @@ class WorkflowService:
+         workflow_config.refresh()
+ 
+     def _update_workflow_values(
+-        self, stored_config: WorkflowConfig, updated_workflow_config: WorkflowConfig, user: User
++        self,
++        stored_config: WorkflowConfig,
++        updated_workflow_config: WorkflowConfig,
++        user: User,
+     ) -> None:
+         new_history_entry = YamlConfigHistory(
+             yaml_config=stored_config.yaml_config,
+diff --git a/src/codemie/templates/agents/workflow_generator/__init__.py b/src/codemie/templates/agents/workflow_generator/__init__.py
+index b97d2cf4b..2596afb1f 100644
+--- a/src/codemie/templates/agents/workflow_generator/__init__.py
++++ b/src/codemie/templates/agents/workflow_generator/__init__.py
+@@ -14,12 +14,14 @@
+ 
+ from codemie.templates.agents.workflow_generator.intent_analysis import INTENT_ANALYSIS_PROMPT
+ from codemie.templates.agents.workflow_generator.node_generation import NODE_GENERATION_PROMPT
++from codemie.templates.agents.workflow_generator.refine_planning import REFINE_PLANNING_PROMPT
+ from codemie.templates.agents.workflow_generator.step_planning import STEP_PLANNING_PROMPT
+ from codemie.templates.agents.workflow_generator.tools_selection import TOOLS_SELECTION_PROMPT
+ 
+ __all__ = [
+     "INTENT_ANALYSIS_PROMPT",
+     "NODE_GENERATION_PROMPT",
++    "REFINE_PLANNING_PROMPT",
+     "STEP_PLANNING_PROMPT",
+     "TOOLS_SELECTION_PROMPT",
+ ]
+diff --git a/src/codemie/templates/agents/workflow_generator/refine_planning.py b/src/codemie/templates/agents/workflow_generator/refine_planning.py
+new file mode 100644
+index 000000000..c6c77cc98
+--- /dev/null
++++ b/src/codemie/templates/agents/workflow_generator/refine_planning.py
+@@ -0,0 +1,58 @@
++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from __future__ import annotations
++
++REFINE_PLANNING_PROMPT = """You are an expert workflow engineer. \
++Analyse the existing workflow and the refinement instruction, then produce a RefinePlan.
++
++## Existing workflow YAML
++{existing_yaml_config}
++
++## Refinement instruction
++{refine_prompt}
++
++## Available tools
++{available_tools}
++
++## Your task
++
++Produce a RefinePlan with two fields:
++
++### intent
++A WorkflowIntent that describes the COMPLETE desired workflow after refinement:
++- workflow_name / workflow_description: copy from the existing workflow unless the instruction \
++explicitly requests a rename
++- steps: list ALL steps in the final workflow in execution order
++  - Preserved steps: copy id, description, and all properties from the existing workflow exactly
++  - Modified steps: update only the properties the instruction targets; preserve everything else
++  - New steps: describe the new step clearly
++  - Removed steps: omit entirely
++- data_sources / ambiguities: carry over from the existing workflow intent if discernible; \
++otherwise use empty lists
++
++### plans
++One StepPlan per step in intent.steps, in the same order:
++- Preserved steps: set transition_type, next_step_id, output_key, and all data-flow properties \
++to match the original step exactly so the node generator reproduces it faithfully
++- Modified / new steps: plan the data flow changes the instruction requires
++
++## Rules
++- ONLY use tool names that already appear in the existing workflow YAML. \
++Do NOT invent new tool names.
++- Never add "start" or "end" as entries in intent.steps.
++- The last step's StepPlan must have next_step_id = "end".
++- If the instruction would require a completely new workflow unrelated to the existing one, \
++still return a RefinePlan; treat all steps as new.
++"""
+diff --git a/src/codemie/workflows/workflow_generator/nodes/refine_planner.py b/src/codemie/workflows/workflow_generator/nodes/refine_planner.py
+new file mode 100644
+index 000000000..911b1c6f5
+--- /dev/null
++++ b/src/codemie/workflows/workflow_generator/nodes/refine_planner.py
+@@ -0,0 +1,65 @@
++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from __future__ import annotations
++
++from typing import Optional
++
++from codemie.core.dependecies import get_llm_by_credentials
++from codemie.templates.agents.workflow_generator import REFINE_PLANNING_PROMPT
++from codemie.workflows.workflow_generator.schemas import RefinePlan
++from codemie.workflows.workflow_generator.state import WorkflowGeneratorState
++from codemie.workflows.workflow_generator import state_keys as sk
++
++
++class RefinePlannerNode:
++    def __init__(self, llm_model: str, request_id: Optional[str] = None):
++        self.llm_model = llm_model
++        self.request_id = request_id
++
++    def _format_tools(self, available_tools: list) -> str:
++        lines: list[str] = []
++        for toolkit in available_tools:
++            for tool in toolkit.get("tools", []):
++                name = tool.get("name", "")
++                desc = tool.get("description", "")
++                if name:
++                    lines.append(f"  {name}: {desc}")
++        return "\n".join(lines) if lines else "  (none)"
++
++    def __call__(self, state: WorkflowGeneratorState) -> dict:
++        existing_yaml: str = state[sk.EXISTING_YAML_CONFIG]
++        refine_prompt: str = state.get(sk.REFINE_PROMPT) or ""
++        available_tools: list = state.get(sk.AVAILABLE_TOOLS) or []
++
++        prompt = REFINE_PLANNING_PROMPT.format(
++            existing_yaml_config=existing_yaml,
++            refine_prompt=refine_prompt,
++            available_tools=self._format_tools(available_tools),
++        )
++
++        llm = get_llm_by_credentials(
++            llm_model=self.llm_model,
++            temperature=0.0,
++            streaming=False,
++            request_id=self.request_id,
++        )
++        plan: RefinePlan = llm.with_structured_output(RefinePlan).invoke(prompt)
++
++        return {
++            sk.INTENT: plan.intent,
++            sk.STEP_PLANS: plan.plans,
++            sk.CURRENT_NODE_INDEX: 0,
++            sk.PREVIOUS_NODE: None,
++        }
+diff --git a/src/codemie/workflows/workflow_generator/schemas.py b/src/codemie/workflows/workflow_generator/schemas.py
+index bba575453..93b4d7b9e 100644
+--- a/src/codemie/workflows/workflow_generator/schemas.py
++++ b/src/codemie/workflows/workflow_generator/schemas.py
+@@ -357,6 +357,28 @@ class WorkflowPlan(BaseModel):
+     )
+ 
+ 
++class RefinePlan(BaseModel):
++    """Structured output from RefinePlannerNode — combines intent and step plans in one LLM call."""
++
++    intent: WorkflowIntent = Field(
++        description=(
++            "Complete desired WorkflowIntent for the refined workflow. "
++            "workflow_name and workflow_description should match the existing workflow unless "
++            "the refine_prompt explicitly requests renaming. "
++            "steps must list ALL steps in the final workflow — preserved, modified, and new — "
++            "in execution order. Removed steps must be absent."
++        )
++    )
++    plans: list[StepPlan] = Field(
++        description=(
++            "One StepPlan per step in intent.steps, in the same order. "
++            "Preserved steps carry a description that matches the original node configuration "
++            "so the generator can reproduce them faithfully. "
++            "Modified and new steps carry the desired change description."
++        )
++    )
++
++
+ class GeneratedCondition(BaseModel):
+     expression: str = Field(
+         description="Python expression evaluated against context store variables using bare names (e.g. status == 'ok')"
+diff --git a/src/codemie/workflows/workflow_generator/state.py b/src/codemie/workflows/workflow_generator/state.py
+index 73e8ba40e..5a6a2c32d 100644
+--- a/src/codemie/workflows/workflow_generator/state.py
++++ b/src/codemie/workflows/workflow_generator/state.py
+@@ -33,3 +33,5 @@ class WorkflowGeneratorState(TypedDict):
+     failed_step_ids: list  # list[str] — step IDs to regenerate; [] on first run or clean validation
+     result: Optional[Any]  # CreateWorkflowRequest | None
+     error: Optional[str]
++    existing_yaml_config: Optional[str]  # set by the refine path; absent on the generate path
++    refine_prompt: Optional[str]         # user's refinement instruction; absent on the generate path
+diff --git a/src/codemie/workflows/workflow_generator/state_keys.py b/src/codemie/workflows/workflow_generator/state_keys.py
+index 741ab5e7c..9ba8661f1 100644
+--- a/src/codemie/workflows/workflow_generator/state_keys.py
++++ b/src/codemie/workflows/workflow_generator/state_keys.py
+@@ -27,3 +27,5 @@ VALIDATION_ATTEMPTS = "validation_attempts"
+ FAILED_STEP_IDS = "failed_step_ids"
+ RESULT = "result"
+ ERROR = "error"
++EXISTING_YAML_CONFIG = "existing_yaml_config"
++REFINE_PROMPT = "refine_prompt"
+diff --git a/src/codemie/workflows/workflow_generator/workflow_refiner.py b/src/codemie/workflows/workflow_generator/workflow_refiner.py
+new file mode 100644
+index 000000000..8ccbee9db
+--- /dev/null
++++ b/src/codemie/workflows/workflow_generator/workflow_refiner.py
+@@ -0,0 +1,100 @@
++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from __future__ import annotations
++
++from typing import Optional
++
++from langgraph.constants import END
++from langgraph.graph import StateGraph
++
++from codemie.workflows.workflow_generator.nodes.config_assembly import ConfigAssemblyNode
++from codemie.workflows.workflow_generator.nodes.node_generator import NodeGeneratorNode
++from codemie.workflows.workflow_generator.nodes.node_generator_router import NodeGeneratorRouterNode
++from codemie.workflows.workflow_generator.nodes.node_regenerator import NodeRegeneratorNode
++from codemie.workflows.workflow_generator.nodes.refine_planner import RefinePlannerNode
++from codemie.workflows.workflow_generator.nodes.tools_selector import ToolsSelectorNode
++from codemie.workflows.workflow_generator.nodes.validation import ValidationNode
++from codemie.workflows.workflow_generator.state import WorkflowGeneratorState
++from codemie.workflows.workflow_generator import state_keys as sk
++
++
++def _route_from_router(state: WorkflowGeneratorState) -> str:
++    if state.get(sk.ERROR):
++        return END
++    if state.get(sk.CURRENT_NODE_INDEX, 0) < len(state[sk.INTENT].steps):
++        return "generate"
++    return "assemble"
++
++
++def _route_after_validation(state: WorkflowGeneratorState) -> str:
++    if state.get(sk.ERROR):
++        return END
++    if state.get(sk.VALIDATION_ERRORS):
++        return "node_regenerator"
++    return END
++
++
++class WorkflowRefinerGraph:
++    def __init__(self, llm_model: str, request_id: Optional[str] = None):
++        self.llm_model = llm_model
++        self.request_id = request_id
++        self._refine_planner_node = RefinePlannerNode(llm_model, request_id)
++        self._router_node = NodeGeneratorRouterNode()
++        self._generator_node = NodeGeneratorNode(llm_model, request_id)
++        self._regenerator_node = NodeRegeneratorNode(llm_model, request_id)
++        self._config_assembly_node = ConfigAssemblyNode()
++        self._tools_selector_node = ToolsSelectorNode(llm_model, request_id)
++        self._validation_node = ValidationNode()
++        self.graph = self._build_graph()
++
++    def _build_graph(self):
++        workflow = StateGraph(WorkflowGeneratorState)
++
++        workflow.add_node("refine_planner", self._refine_planner_node)
++        workflow.add_node("node_generator_router", self._router_node)
++        workflow.add_node("node_generator", self._generator_node)
++        workflow.add_node("node_regenerator", self._regenerator_node)
++        workflow.add_node("config_assembly", self._config_assembly_node)
++        workflow.add_node("tools_selector", self._tools_selector_node)
++        workflow.add_node("validation", self._validation_node)
++
++        workflow.set_entry_point("refine_planner")
++        workflow.add_edge("refine_planner", "node_generator_router")
++        workflow.add_conditional_edges(
++            "node_generator_router",
++            _route_from_router,
++            {
++                "generate": "node_generator",
++                "assemble": "config_assembly",
++                END: END,
++            },
++        )
++        workflow.add_edge("node_generator", "tools_selector")
++        workflow.add_edge("tools_selector", "node_generator_router")
++        workflow.add_edge("config_assembly", "validation")
++        workflow.add_conditional_edges(
++            "validation",
++            _route_after_validation,
++            {
++                "node_regenerator": "node_regenerator",
++                END: END,
++            },
++        )
++        workflow.add_edge("node_regenerator", "config_assembly")
++
++        return workflow.compile()
++
++    def run(self, initial_state: WorkflowGeneratorState) -> WorkflowGeneratorState:
++        return self.graph.invoke(initial_state)
+diff --git a/tests/codemie/rest_api/routers/test_workflow.py b/tests/codemie/rest_api/routers/test_workflow.py
+index 6375b24dd..4deb8806f 100644
+--- a/tests/codemie/rest_api/routers/test_workflow.py
++++ b/tests/codemie/rest_api/routers/test_workflow.py
+@@ -12,6 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++from datetime import datetime
+ from unittest.mock import MagicMock, patch
+ 
+ import pytest
+@@ -30,7 +31,9 @@ from codemie.core.workflow_models import (
+     WorkflowEvaluationRequest,
+     WorkflowMode,
+ )
++
+ from codemie.rest_api.main import app
++from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
+ from codemie.rest_api.security.user import User
+ from codemie.service.workflow_service import WorkflowService
+ import codemie.rest_api.routers.workflow as workflow_router
+@@ -909,3 +912,69 @@ async def test_evaluate_workflow_dataset_not_found(workflow_config, workflow_eva
+             )
+ 
+     assert response.status_code == status.HTTP_400_BAD_REQUEST
++
++
++# ── EPMCDME-12616: refine and revert endpoints ──────────────────────────────────
++
++
++@pytest.mark.asyncio
++async def test_refine_workflow_success(workflow_config, request_header):
++    refined_yaml = "name: refined-workflow\n"
++    with (
++        patch(
++            "codemie.service.workflow_service.WorkflowService.get_workflow",
++            return_value=workflow_config,
++        ),
++        patch("codemie.core.ability.Ability.can", return_value=True),
++        patch(
++            "codemie.service.workflow_generator_service.WorkflowGeneratorService.refine_workflow",
++            return_value=WorkflowRefineResponse(yaml_config=refined_yaml),
++        ) as mock_refine,
++    ):
++        transport = ASGITransport(app=app)
++        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++            response = await ac.post(
++                f"/v1/workflows/{workflow_config.id}/refine",
++                json={"yaml_config": "name: old\n", "refine_prompt": "improve it"},
++                headers=request_header,
++            )
++        assert response.status_code == 200
++        assert response.json()["yaml_config"] == refined_yaml
++        mock_refine.assert_called_once()
++
++
++@pytest.mark.asyncio
++async def test_refine_workflow_access_denied(workflow_config, request_header):
++    with (
++        patch(
++            "codemie.service.workflow_service.WorkflowService.get_workflow",
++            return_value=workflow_config,
++        ),
++        patch("codemie.core.ability.Ability.can", return_value=False),
++    ):
++        transport = ASGITransport(app=app)
++        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++            response = await ac.post(
++                f"/v1/workflows/{workflow_config.id}/refine",
++                json={"yaml_config": "name: old\n"},
++                headers=request_header,
++            )
++        assert response.status_code == 401
++
++
++@pytest.mark.asyncio
++async def test_refine_workflow_not_found(request_header):
++    with patch(
++        "codemie.service.workflow_service.WorkflowService.get_workflow",
++        side_effect=KeyError("not found"),
++    ):
++        transport = ASGITransport(app=app)
++        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++            response = await ac.post(
++                "/v1/workflows/nonexistent/refine",
++                json={"yaml_config": "name: old\n"},
++                headers=request_header,
++            )
++        assert response.status_code == 404
++
++
+diff --git a/tests/codemie/service/test_workflow_generator_service.py b/tests/codemie/service/test_workflow_generator_service.py
+index ecc0db7a1..26fab656f 100644
+--- a/tests/codemie/service/test_workflow_generator_service.py
++++ b/tests/codemie/service/test_workflow_generator_service.py
+@@ -12,11 +12,14 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
+-from unittest.mock import Mock, patch
++from unittest.mock import MagicMock, Mock, patch
+ 
+ import pytest
+ 
++from codemie.core.exceptions import ExtendedHTTPException
+ from codemie.core.workflow_models.workflow_models import CreateWorkflowRequest, WorkflowMode
++from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
++from codemie.rest_api.security.user import User as _User
+ 
+ 
+ def test_metric_constants_importable():
+@@ -243,3 +246,115 @@ def test_generate_falls_back_to_default_when_config_model_empty(mock_llm_svc, mo
+         WorkflowGeneratorService.generate(nl_query="test", user=_make_user())
+ 
+     mock_graph_class.assert_called_once_with(llm_model="gpt-4o", request_id=None)
++
++
++# ── EPMCDME-12616: refine_workflow tests (graph-based) ──────────────────────────
++
++EXAMPLE_PROJECT = "example_project"
++EXAMPLE_YAML = "name: my-workflow\nstates:\n  - id: state1\n"
++REFINED_YAML = "name: my-workflow\nstates:\n  - id: state1\n    description: improved\n"
++
++
++@pytest.fixture
++def refine_user():
++    return _User(id="123", username="testuser", name="Test User", project_names=[EXAMPLE_PROJECT])
++
++
++@patch("codemie.service.workflow_generator_service.request_summary_manager")
++@patch("codemie.service.workflow_generator_service.emit_llm_token_metric")
++@patch("codemie.service.workflow_generator_service.WorkflowRefinerGraph")
++@patch("codemie.service.workflow_generator_service.ToolsInfoService")
++@patch("codemie.service.workflow_generator_service.llm_service")
++def test_refine_workflow_returns_response(
++    mock_llm_svc, mock_tools_svc, mock_graph_class, mock_emit, mock_summary, refine_user
++):
++    from codemie.core.workflow_models.workflow_models import CreateWorkflowRequest, WorkflowMode
++    from codemie.service.workflow_generator_service import WorkflowGeneratorService
++
++    mock_llm_svc.default_llm_model = "gpt-4o"
++    mock_tools_svc.get_tools_info.return_value = []
++
++    create_req = CreateWorkflowRequest(
++        name="my-workflow",
++        description="",
++        project=EXAMPLE_PROJECT,
++        mode=WorkflowMode.SEQUENTIAL,
++        states=[],
++        assistants=[],
++        yaml_config=REFINED_YAML,
++    )
++    mock_graph = Mock()
++    mock_graph.run.return_value = {"result": create_req, "error": None, "validation_errors": []}
++    mock_graph_class.return_value = mock_graph
++
++    result = WorkflowGeneratorService.refine_workflow(
++        yaml_config=EXAMPLE_YAML,
++        refine_prompt="improve descriptions",
++        user=refine_user,
++        llm_model="gpt-4o",
++        request_id="req-1",
++    )
++
++    assert isinstance(result, WorkflowRefineResponse)
++    assert result.yaml_config == REFINED_YAML
++    mock_emit.assert_called_once()
++    mock_summary.clear_summary.assert_called_once_with("req-1")
++
++
++@patch("codemie.service.workflow_generator_service.request_summary_manager")
++@patch("codemie.service.workflow_generator_service.WorkflowRefinerGraph")
++@patch("codemie.service.workflow_generator_service.ToolsInfoService")
++@patch("codemie.service.workflow_generator_service.llm_service")
++def test_refine_workflow_raises_on_graph_error(
++    mock_llm_svc, mock_tools_svc, mock_graph_class, mock_summary, refine_user
++):
++    from codemie.service.workflow_generator_service import WorkflowGeneratorService
++
++    mock_llm_svc.default_llm_model = "gpt-4o"
++    mock_tools_svc.get_tools_info.return_value = []
++
++    mock_graph = Mock()
++    mock_graph.run.return_value = {
++        "result": None,
++        "error": "Validation failed after 3 retries",
++        "validation_errors": ["missing field"],
++    }
++    mock_graph_class.return_value = mock_graph
++
++    with pytest.raises(ExtendedHTTPException) as exc_info:
++        WorkflowGeneratorService.refine_workflow(
++            yaml_config=EXAMPLE_YAML,
++            refine_prompt=None,
++            user=refine_user,
++            llm_model=None,
++            request_id="req-2",
++        )
++
++    assert exc_info.value.code == 500
++    mock_summary.clear_summary.assert_called_once_with("req-2")
++
++
++@patch("codemie.service.workflow_generator_service.request_summary_manager")
++@patch("codemie.service.workflow_generator_service.WorkflowRefinerGraph")
++@patch("codemie.service.workflow_generator_service.ToolsInfoService")
++@patch("codemie.service.workflow_generator_service.llm_service")
++def test_refine_workflow_raises_500_on_unexpected_exception(
++    mock_llm_svc, mock_tools_svc, mock_graph_class, mock_summary, refine_user
++):
++    from codemie.service.workflow_generator_service import WorkflowGeneratorService
++
++    mock_llm_svc.default_llm_model = "gpt-4o"
++    mock_tools_svc.get_tools_info.return_value = []
++    mock_graph_class.side_effect = RuntimeError("LLM unavailable")
++
++    with pytest.raises(ExtendedHTTPException) as exc_info:
++        WorkflowGeneratorService.refine_workflow(
++            yaml_config=EXAMPLE_YAML,
++            refine_prompt=None,
++            user=refine_user,
++            llm_model=None,
++            request_id="req-3",
++        )
++
++    assert exc_info.value.code == 500
++    mock_summary.clear_summary.assert_called_once_with("req-3")
+diff --git a/tests/codemie/service/test_workflow_service.py b/tests/codemie/service/test_workflow_service.py
+index 320510e3e..71953172e 100644
+--- a/tests/codemie/service/test_workflow_service.py
++++ b/tests/codemie/service/test_workflow_service.py
+@@ -12,6 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++from datetime import datetime
+ from unittest.mock import patch, MagicMock
+ from uuid import UUID
+ 
+@@ -34,6 +35,8 @@ from codemie.core.workflow_models import (
+     WorkflowNextState,
+     WorkflowState,
+ )
++from codemie.core.exceptions import ExtendedHTTPException
++
+ from codemie.rest_api.models.conversation import GeneratedMessage
+ from codemie.rest_api.security.user import User
+ from codemie.service.workflow_service import WorkflowService
+@@ -939,3 +942,6 @@ def test_update_workflow_values_start_hint_cleared(
+     workflow_service._update_workflow_values(workflow_config, updated_config, user)
+ 
+     assert workflow_config.start_hint == updated_hint
++
++
++
+diff --git a/tests/codemie/workflows/workflow_generator/test_refine_planner.py b/tests/codemie/workflows/workflow_generator/test_refine_planner.py
+new file mode 100644
+index 000000000..ad9c4d2b5
+--- /dev/null
++++ b/tests/codemie/workflows/workflow_generator/test_refine_planner.py
+@@ -0,0 +1,169 @@
++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from __future__ import annotations
++
++from unittest.mock import Mock, patch
++
++from codemie.workflows.workflow_generator import state_keys as sk
++from codemie.workflows.workflow_generator.schemas import (
++    RefinePlan,
++    StepPlan,
++    WorkflowIntent,
++    WorkflowStep,
++)
++
++_EXISTING_YAML = (
++    "name: my-workflow\n"
++    "assistants:\n"
++    "  - id: a1\n"
++    "    model: gpt-4.1\n"
++    "    system_prompt: You are a helper.\n"
++    "states:\n"
++    "  - id: step1\n"
++    "    assistant_id: a1\n"
++    "    task: Do something.\n"
++    "    next:\n"
++    "      state_id: end\n"
++)
++
++_REFINE_PROMPT = "Improve the system prompt to be more specific."
++
++
++def _make_refine_plan() -> RefinePlan:
++    intent = WorkflowIntent(
++        workflow_name="my-workflow",
++        workflow_description="A refined workflow",
++        steps=[
++            WorkflowStep(
++                id="step1",
++                description="Do something with improved prompt",
++                state_type="agent",
++                next_step_id="end",
++            )
++        ],
++        data_sources=[],
++        ambiguities=[],
++    )
++    plans = [StepPlan(step_id="step1", transition_type="simple", next_step_id="end")]
++    return RefinePlan(intent=intent, plans=plans)
++
++
++class TestRefinePlannerNode:
++    def test_emits_intent_and_step_plans(self):
++        from codemie.workflows.workflow_generator.nodes.refine_planner import RefinePlannerNode
++
++        mock_llm = Mock()
++        mock_llm.with_structured_output.return_value.invoke.return_value = _make_refine_plan()
++
++        with patch(
++            "codemie.workflows.workflow_generator.nodes.refine_planner.get_llm_by_credentials",
++            return_value=mock_llm,
++        ):
++            node = RefinePlannerNode(llm_model="gpt-4o", request_id="req-1")
++            state = {
++                sk.EXISTING_YAML_CONFIG: _EXISTING_YAML,
++                sk.REFINE_PROMPT: _REFINE_PROMPT,
++                sk.AVAILABLE_TOOLS: [],
++                sk.PROJECT: "demo",
++                sk.USER: Mock(),
++            }
++            result = node(state)
++
++        assert result[sk.CURRENT_NODE_INDEX] == 0
++        assert result[sk.PREVIOUS_NODE] is None
++        intent = result[sk.INTENT]
++        assert intent.workflow_name == "my-workflow"
++        assert len(intent.steps) == 1
++        assert intent.steps[0].id == "step1"
++        step_plans = result[sk.STEP_PLANS]
++        assert len(step_plans) == 1
++        assert step_plans[0].step_id == "step1"
++
++    def test_uses_structured_output_with_refine_plan(self):
++        from codemie.workflows.workflow_generator.nodes.refine_planner import RefinePlannerNode
++
++        mock_llm = Mock()
++        mock_structured = Mock()
++        mock_llm.with_structured_output.return_value = mock_structured
++        mock_structured.invoke.return_value = _make_refine_plan()
++
++        with patch(
++            "codemie.workflows.workflow_generator.nodes.refine_planner.get_llm_by_credentials",
++            return_value=mock_llm,
++        ):
++            node = RefinePlannerNode(llm_model="gpt-4o", request_id=None)
++            state = {
++                sk.EXISTING_YAML_CONFIG: _EXISTING_YAML,
++                sk.REFINE_PROMPT: None,
++                sk.AVAILABLE_TOOLS: [],
++                sk.PROJECT: "demo",
++                sk.USER: Mock(),
++            }
++            node(state)
++
++        mock_llm.with_structured_output.assert_called_once_with(RefinePlan)
++
++    def test_formats_available_tools_into_prompt(self):
++        from codemie.workflows.workflow_generator.nodes.refine_planner import RefinePlannerNode
++
++        mock_llm = Mock()
++        mock_structured = Mock()
++        mock_llm.with_structured_output.return_value = mock_structured
++        mock_structured.invoke.return_value = _make_refine_plan()
++
++        tools = [{"tools": [{"name": "web_search", "description": "Search the web"}]}]
++
++        with patch(
++            "codemie.workflows.workflow_generator.nodes.refine_planner.get_llm_by_credentials",
++            return_value=mock_llm,
++        ):
++            node = RefinePlannerNode(llm_model="gpt-4o", request_id=None)
++            state = {
++                sk.EXISTING_YAML_CONFIG: _EXISTING_YAML,
++                sk.REFINE_PROMPT: "add web search",
++                sk.AVAILABLE_TOOLS: tools,
++                sk.PROJECT: "demo",
++                sk.USER: Mock(),
++            }
++            node(state)
++
++        prompt_arg = mock_structured.invoke.call_args[0][0]
++        assert "web_search" in prompt_arg
++
++    def test_none_refine_prompt_uses_empty_string(self):
++        from codemie.workflows.workflow_generator.nodes.refine_planner import RefinePlannerNode
++
++        mock_llm = Mock()
++        mock_structured = Mock()
++        mock_llm.with_structured_output.return_value = mock_structured
++        mock_structured.invoke.return_value = _make_refine_plan()
++
++        with patch(
++            "codemie.workflows.workflow_generator.nodes.refine_planner.get_llm_by_credentials",
++            return_value=mock_llm,
++        ):
++            node = RefinePlannerNode(llm_model="gpt-4o", request_id=None)
++            state = {
++                sk.EXISTING_YAML_CONFIG: _EXISTING_YAML,
++                sk.REFINE_PROMPT: None,
++                sk.AVAILABLE_TOOLS: [],
++                sk.PROJECT: "demo",
++                sk.USER: Mock(),
++            }
++            node(state)
++
++        prompt_arg = mock_structured.invoke.call_args[0][0]
++        # refine_prompt placeholder should be empty string, not "None"
++        assert "None" not in prompt_arg
+diff --git a/tests/codemie/workflows/workflow_generator/test_workflow_refiner.py b/tests/codemie/workflows/workflow_generator/test_workflow_refiner.py
+new file mode 100644
+index 000000000..7648beca8
+--- /dev/null
++++ b/tests/codemie/workflows/workflow_generator/test_workflow_refiner.py
+@@ -0,0 +1,73 @@
++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from __future__ import annotations
++
++from unittest.mock import Mock, patch
++
++
++class TestWorkflowRefinerGraph:
++    def test_instantiates_with_llm_model(self):
++        from codemie.workflows.workflow_generator.workflow_refiner import WorkflowRefinerGraph
++
++        graph = WorkflowRefinerGraph(llm_model="gpt-4o", request_id=None)
++        assert graph.llm_model == "gpt-4o"
++        assert graph.request_id is None
++
++    def test_run_invokes_compiled_graph(self):
++        from codemie.workflows.workflow_generator.workflow_refiner import WorkflowRefinerGraph
++
++        expected_state = {"result": Mock(), "error": None, "validation_errors": []}
++        graph = WorkflowRefinerGraph(llm_model="gpt-4o", request_id="req-1")
++        with patch.object(graph, "graph") as mock_compiled:
++            mock_compiled.invoke.return_value = expected_state
++            initial_state = {
++                "existing_yaml_config": "name: test\n",
++                "refine_prompt": "improve it",
++                "user": Mock(),
++                "project": "demo",
++                "available_tools": [],
++                "nl_query": "",
++                "intent": None,
++                "step_plans": None,
++                "current_node_index": 0,
++                "previous_node": None,
++                "node_plan": None,
++                "generated_config": None,
++                "validation_errors": [],
++                "validation_attempts": 0,
++                "failed_step_ids": [],
++                "result": None,
++                "error": None,
++            }
++            result = graph.run(initial_state)
++
++        mock_compiled.invoke.assert_called_once_with(initial_state)
++        assert result is expected_state
++
++    def test_does_not_import_workflow_generator_graph(self):
++        """WorkflowRefinerGraph must not depend on WorkflowGeneratorGraph."""
++        import ast
++        import pathlib
++
++        source = pathlib.Path(
++            "src/codemie/workflows/workflow_generator/workflow_refiner.py"
++        ).read_text()
++        tree = ast.parse(source)
++        for node in ast.walk(tree):
++            if isinstance(node, (ast.Import, ast.ImportFrom)):
++                names = [alias.name for alias in getattr(node, "names", [])]
++                assert "WorkflowGeneratorGraph" not in names, (
++                    "workflow_refiner.py must not import WorkflowGeneratorGraph"
++                )

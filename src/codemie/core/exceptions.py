@@ -157,6 +157,16 @@ class ServiceUnavailableError(PlatformToolError):
         super().__init__(message, details=details)
 
 
+class WorkflowGenerationError(Exception):
+    """Raised by the workflow service layer when generation or refinement fails."""
+
+    def __init__(self, message: str, details: str = None, help: str = None):
+        self.message = message
+        self.details = details
+        self.help = help
+        super().__init__(message)
+
+
 class TokenLimitExceededException(ValueError):
     """
     Raised when LLM response is truncated due to max_tokens limit during tool calling.

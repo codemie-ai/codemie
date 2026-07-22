@@ -19,7 +19,10 @@ from codemie.core.dependecies import get_current_project
 from codemie.core.workflow_models import WorkflowConfig, WorkflowExecution, WorkflowExecutionStatusEnum, WorkflowMode
 from codemie.rest_api.security.user import User
 from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
-from codemie.service.monitoring.metrics_constants import MetricsAttributes
+from codemie.service.monitoring.metrics_constants import (
+    MetricsAttributes,
+    WORKFLOW_AI_REFINE_TOTAL_METRIC,
+)
 
 
 class WorkflowMonitoringService(BaseMonitoringService):
@@ -228,6 +231,28 @@ class WorkflowMonitoringService(BaseMonitoringService):
         if additional_attributes:
             attributes.update(additional_attributes)
         cls.send_count_metric(name=cls.WORKFLOW_BASE_METRIC + "_deleted_total", attributes=attributes)
+
+    @classmethod
+    def send_workflow_ai_refine_metric(
+        cls,
+        user_id: str,
+        user_name: str,
+        workflow_id: str,
+        workflow_name: str,
+        project: str,
+        success: bool,
+        llm_model: Optional[str] = None,
+        mode: WorkflowMode = WorkflowMode.SEQUENTIAL,
+        additional_attributes: Optional[dict] = None,
+    ):
+        attributes = cls._build_workflow_attributes(
+            project, success, user_id, user_name, workflow_id, workflow_name, mode
+        )
+        if llm_model:
+            attributes[MetricsAttributes.LLM_MODEL] = llm_model
+        if additional_attributes:
+            attributes.update(additional_attributes)
+        cls.send_count_metric(name=WORKFLOW_AI_REFINE_TOTAL_METRIC, attributes=attributes)
 
     @classmethod
     def _build_workflow_attributes(cls, project, success, user_id, user_name, workflow_id, workflow_name, mode):
