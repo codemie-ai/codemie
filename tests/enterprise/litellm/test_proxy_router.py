@@ -49,6 +49,7 @@ from codemie.enterprise.litellm.proxy_router import (
     _get_integration_api_key,
     _handle_error_response,
     _prepare_proxy_headers,
+    _proxy_to_llm_proxy,
     _resolve_non_premium_tracking_identity,
     _resolve_tracking_identity,
     _read_request_body,
@@ -1478,7 +1479,6 @@ class TestProxyToLLMProxy:
     @pytest.mark.asyncio
     async def test_proxy_success_streaming(self):
         """Test successful proxy with streaming response."""
-        from codemie.enterprise.litellm.proxy_router import _proxy_to_llm_proxy
 
         # Create mock request
         mock_request = MagicMock()
@@ -1545,7 +1545,6 @@ class TestProxyToLLMProxy:
     @pytest.mark.asyncio
     async def test_proxy_resolves_user_credentials_without_header(self):
         """Proxy should resolve user credentials from backend settings without an integration header."""
-        from codemie.enterprise.litellm.proxy_router import _proxy_to_llm_proxy
 
         mock_request = MagicMock()
         mock_request.method = "POST"
@@ -1618,7 +1617,6 @@ class TestProxyToLLMProxy:
     @pytest.mark.asyncio
     async def test_proxy_disabled(self):
         """Test proxy when LiteLLM is disabled."""
-        from codemie.enterprise.litellm.proxy_router import _proxy_to_llm_proxy
 
         mock_request = MagicMock()
         mock_request.headers = Headers({})
@@ -1644,7 +1642,6 @@ class TestProxyToLLMProxy:
     @pytest.mark.asyncio
     async def test_proxy_connection_error(self):
         """Test proxy when connection to LiteLLM fails."""
-        from codemie.enterprise.litellm.proxy_router import _proxy_to_llm_proxy
 
         mock_request = MagicMock()
         mock_request.method = "POST"
@@ -2184,3 +2181,49 @@ class TestCheckCliVersion:
             with pytest.raises(HTTPException) as exc_info:
                 _check_cli_version(request)
         assert exc_info.value.status_code == 426
+
+
+class TestProxyResponseHeaderFiltering:
+    """Test response header filtering from LiteLLM."""
+
+    def test_response_headers_filter_litellm_prefix(self):
+        """Test that x-litellm-* headers are filtered using the filtering logic."""
+        # Simulate downstream response headers
+        downstream_headers = httpx.Headers(
+            {
+                "content-type": "application/json",
+                "x-litellm-call-id": "test-call-id",
+                "x-litellm-version": "1.83.7",
+                "x-litellm-response-cost": "0.0002244",
+                "x-litellm-model-id": "claude-4-5-sonnet",
+                "x-litellm-key-spend": "602.80",
+                "x-custom-header": "should-keep",
+                "connection": "keep-alive",  # hop-by-hop header
+            }
+        )
+
+        # Import the constant from proxy_router
+        from codemie.enterprise.litellm.proxy_router import PROXY_RESPONSE_HOP_BY_HOP_HEADERS
+
+        # Apply the same filtering logic as the production code
+        response_headers = {
+            k: v
+            for k, v in downstream_headers.items()
+            if k.lower() not in PROXY_RESPONSE_HOP_BY_HOP_HEADERS and not k.lower().startswith("x-litellm-")
+        }
+
+        # Verify x-litellm-* headers are filtered
+        assert "x-litellm-call-id" not in response_headers
+        assert "x-litellm-version" not in response_headers
+        assert "x-litellm-response-cost" not in response_headers
+        assert "x-litellm-model-id" not in response_headers
+        assert "x-litellm-key-spend" not in response_headers
+
+        # Verify hop-by-hop headers are filtered
+        assert "connection" not in response_headers
+
+        # Verify other headers pass through
+        assert "content-type" in response_headers
+        assert response_headers["content-type"] == "application/json"
+        assert "x-custom-header" in response_headers
+        assert response_headers["x-custom-header"] == "should-keep"

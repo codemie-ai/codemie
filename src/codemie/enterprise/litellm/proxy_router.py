@@ -1363,12 +1363,15 @@ async def _proxy_to_llm_proxy(
 
         return Response(content=f"Error connecting to downstream service: {e}", status_code=503)
 
-    # Strip hop-by-hop headers before forwarding the upstream response.
+    # Strip hop-by-hop headers and LiteLLM internal headers before forwarding the upstream response.
     # Starlette's StreamingResponse manages its own transfer framing, so
     # forwarding headers like transfer-encoding or connection from the upstream
     # would create protocol conflicts with the client.
+    # LiteLLM internal headers (x-litellm-*) should not be exposed to clients.
     response_headers = {
-        k: v for k, v in downstream_response.headers.items() if k.lower() not in PROXY_RESPONSE_HOP_BY_HOP_HEADERS
+        k: v
+        for k, v in downstream_response.headers.items()
+        if k.lower() not in PROXY_RESPONSE_HOP_BY_HOP_HEADERS and not k.lower().startswith("x-litellm-")
     }
 
     # Return streaming response with optional usage tracking

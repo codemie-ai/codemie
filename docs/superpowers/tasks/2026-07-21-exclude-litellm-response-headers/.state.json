@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-light",
+  "slug": "exclude-litellm-response-headers",
+  "branch": "EPMCDME-13640_proxy-header-filtering",
+  "phase": "maintenance",
+  "started_at": "2026-07-21T17:00:00Z",
+  "completed_at": "2026-07-21T17:15:00Z",
+  "last_sync_commit": "f324fd60b8c733ad3d954247f38a283e8c41db09"
+}
