@@ -138,6 +138,26 @@ model_list:
       label: "GPT-5.3 Codex 2026-02-24"
       forbidden_for_web: true
 
+  - model_name: kimi-k2.6
+    litellm_params:
+      model: azure_ai/codemie-kimi-k2.6
+      api_base: https://codemie-kimi-sweden-central.services.ai.azure.com
+      litellm_credential_name: default_azure_openai_credential
+    model_info:
+      id: kimi-k2.6-swedencentral
+      base_model: azure_ai/kimi-k2.6
+      label: "Kimi K2.6"
+
+  - model_name: kimi-k2.7-code
+    litellm_params:
+      model: azure_ai/kimi-k2.7-code-2026-06-12
+      api_base: https://codemie-swedencentral.services.ai.azure.com
+      litellm_credential_name: default_azure_openai_credential
+    model_info:
+      id: kimi-k2.7-code-swedencentral
+      base_model: azure_ai/kimi-k2.6
+      label: "Kimi K2.7 Code"
+
   - model_name: gpt-image-1.5
     litellm_params:
       model: azure/codemie-gpt-image-1.5-2025-12-16
