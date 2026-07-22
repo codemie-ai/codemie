@@ -140,8 +140,8 @@ model_list:
 
   - model_name: kimi-k2.6
     litellm_params:
-      model: azure_ai/codemie-kimi-k2.6
-      api_base: https://codemie-kimi-sweden-central.services.ai.azure.com
+      model: azure_ai/kimi-k2.6-2026-04-20
+      api_base: https://codemie-swedencentral.services.ai.azure.com
       litellm_credential_name: default_azure_openai_credential
     model_info:
       id: kimi-k2.6-swedencentral
