@@ -1403,7 +1403,7 @@ class LangGraphAgent(WorkspaceAwareAgent):
         tool_call = message.tool_calls[0]
         tool_name = tool_call["name"]
         unpacked_args = unpack_json_strings(tool_call["args"])
-        return tool_name, str(unpacked_args)
+        return tool_name, json.dumps(unpacked_args)
 
     @staticmethod
     def _tool_call_id_to_uuid(tool_call_id: str) -> UUID:

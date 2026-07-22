@@ -532,7 +532,7 @@ class TestLangGraphMultiAssistantSupervisor:
         task_two_thought = next(thought for thought in thoughts if thought["id"] == str(second_run_id))
 
         assert len(task_one_thought["children"]) == 1
-        assert task_one_thought["children"][0]["input_text"] == "{'query': 'task one'}"
+        assert task_one_thought["children"][0]["input_text"] == '{"query": "task one"}'
         assert task_one_thought["children"][0]["parent_id"] == str(first_run_id)
         assert task_two_thought["children"] == []
 
@@ -644,7 +644,7 @@ class TestLangGraphMultiAssistantSupervisor:
 
         supervisor_agent._on_tool_start.assert_called_once()
         call_args = supervisor_agent._on_tool_start.call_args
-        assert call_args.args == ("search_tool", "{'query': 'test'}")
+        assert call_args.args == ("search_tool", '{"query": "test"}')
         assert call_args.kwargs.get("run_id") is not None
         supervisor_agent._on_supervisor_handoff.assert_not_called()
 
@@ -666,7 +666,7 @@ class TestLangGraphMultiAssistantSupervisor:
 
         supervisor_agent._on_tool_start.assert_called_once()
         call_args = supervisor_agent._on_tool_start.call_args
-        assert call_args.args == ("search_tool", "{'query': 'test'}")
+        assert call_args.args == ("search_tool", '{"query": "test"}')
         assert call_args.kwargs["author"] == "analyst:inner-1"
         assert call_args.kwargs.get("run_id") is not None
 

@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "flow": "sdlc-light",
+  "slug": "fix-list-parameter-parsing",
+  "branch": "EPMCDME-13152_fix-list-parameter-parsing",
+  "phase": "main",
+  "started_at": "2026-07-14T00:00:00Z"
+}

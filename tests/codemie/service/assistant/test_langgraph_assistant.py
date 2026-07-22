@@ -168,7 +168,7 @@ class TestLangGraphAgent:
         agent_for_parse_update._LangGraphAgent__parse_update_type(value)
 
         # _on_tool_start called with tool name, args, run_id, and tool_call_count
-        agent_for_parse_update._on_tool_start.assert_called_once_with("test_tool", "{'arg': 1}", run_id=ANY)
+        agent_for_parse_update._on_tool_start.assert_called_once_with("test_tool", '{"arg": 1}', run_id=ANY)
         # No error or end should be called
         agent_for_parse_update._on_tool_end.assert_not_called()
         agent_for_parse_update._on_tool_error.assert_not_called()
@@ -599,7 +599,7 @@ class TestLangGraphAgent:
         tool_name, tool_args = LangGraphAgent._get_tool_call_args(message)
 
         assert tool_name == "search_tool"
-        assert tool_args == "{'query': 'python testing', 'limit': 5}"
+        assert tool_args == '{"query": "python testing", "limit": 5}'
 
     def test_get_last_ai_message_content(self, agent):
         """Test extraction of last AI message content"""
