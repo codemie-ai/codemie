@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from sqlmodel import select, and_, func, or_, text, Session
 
 from codemie.chains.base import Thought
+from codemie.core.interactive import InteractiveRequest
 from codemie.clients.postgres import get_session
 from codemie.configs import config, logger
 from codemie.core.dependecies import get_stt_openai_client
@@ -33,6 +34,7 @@ from codemie.core.models import AssistantChatRequest, UpdateConversationRequest,
 from codemie.core.utils import safe_divide
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.conversation import (
+    ChatTurnData,
     Conversation,
     ConversationMetrics,
     GeneratedMessage,
@@ -136,6 +138,7 @@ class ConversationService:
         thoughts: List[Thought],
         status: ConversationStatus = ConversationStatus.SUCCESS,
         user_message_received_at: datetime | None = None,
+        interactive_request: InteractiveRequest | None = None,
         request_id: Optional[str] = None,
     ):
         should_create_conversation = False
@@ -176,20 +179,24 @@ class ConversationService:
         replace_latest_variant = request.has_persisted_history_variant()
 
         conversation.update_chat_history(
-            user_query=request.text,
-            user_query_raw=request.content_raw or html.escape(request.text or ""),
-            assistant_id=assistant.id,
+            ChatTurnData(
+                user_query=request.text,
+                user_query_raw=request.content_raw or html.escape(request.text or ""),
+                assistant_id=assistant.id,
+                assistant_response=assistant_response,
+                thoughts=thoughts,
+                history_index=history_index,
+                file_names=request.file_names,
+                time_elapsed=time_elapsed,
+                input_tokens=tokens_usage.input_tokens,
+                output_tokens=tokens_usage.output_tokens,
+                money_spent=tokens_usage.money_spent,
+                user_message_received_at=user_message_received_at,
+                interactive_request=interactive_request,
+                interactive_response=request.interactive_response,
+            ),
             project=assistant.project,
-            assistant_response=assistant_response,
-            thoughts=thoughts,
-            history_index=history_index,
-            file_names=request.file_names,
-            time_elapsed=time_elapsed,
-            input_tokens=tokens_usage.input_tokens,
-            output_tokens=tokens_usage.output_tokens,
-            money_spent=tokens_usage.money_spent,
             replace_latest_variant=replace_latest_variant,
-            user_message_received_at=user_message_received_at,
         )
         AgentWorkspaceService().sync_uploaded_files(
             conversation_id=request.conversation_id,

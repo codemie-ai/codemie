@@ -26,7 +26,9 @@ from codemie.agents.langgraph_agent import LangGraphAgent
 from codemie.agents.utils import validate_json_schema
 from codemie.configs import config
 from codemie.configs.logger import logger
+from codemie.configs.customer_config import customer_config
 from codemie.core.dependecies import get_disable_prompt_cache, set_disable_prompt_cache
+from codemie.core.interactive import render_interactive_elements_prompt
 from codemie.core.models import AssistantChatRequest, IdeChatRequest, ToolConfig
 from codemie.core.template_security import render_system_prompt_template, TemplateSecurityError
 from codemie.core.thread import MessageQueue
@@ -434,6 +436,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         assistant: Assistant,
         user: User,
         request: AssistantChatRequest,
+        thread_generator: MessageQueue = None,
     ) -> str:
         """Prepare system prompt with optional IDE decorations and output schema."""
         system_prompt = cls.get_system_prompt(assistant, user_id=user.id, current_user=user.username)
@@ -448,6 +451,20 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             schema = json.dumps(request.output_schema)
             output_schema_prompt = cls.suggested_json_prompt.format(schema=schema)
             system_prompt = f"{system_prompt}\n{output_schema_prompt}"
+
+        interactive_config = getattr(assistant, "interactive_features", None)
+        if (
+            interactive_config
+            and interactive_config.any_enabled()
+            and customer_config.is_feature_enabled("interactiveElements")
+            # Only advertise request_user_input when it is actually registered — the
+            # tool needs the stream (thread_generator) to deliver its request chunk,
+            # so gating here mirrors _append_request_user_input_tool_if_enabled and
+            # avoids telling the model to call a tool that is absent in non-streaming paths.
+            and thread_generator is not None
+        ):
+            catalog = customer_config.get_feature_setting("interactiveElements", "catalog", None)
+            system_prompt = f"{system_prompt}{render_interactive_elements_prompt(interactive_config, catalog)}"
 
         return system_prompt
 
@@ -553,7 +570,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         )
 
         # Prepare system prompt with decorations and schema
-        system_prompt = cls._prepare_system_prompt(assistant, user, request)
+        system_prompt = cls._prepare_system_prompt(assistant, user, request, thread_generator)
 
         # Select agent class based on configuration
         agent_class = LangGraphAgent if config.ENABLE_LANGGRAPH_AITOOLS_AGENT and not is_react else AIToolsAgent

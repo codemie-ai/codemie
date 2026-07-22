@@ -40,6 +40,7 @@ from codemie_tools.research.tools_vars import (
 )
 from codemie_tools.data_management.code_executor.tools_vars import CODE_EXECUTOR_TOOL
 from codemie.configs import config
+from codemie.configs.customer_config import customer_config
 from codemie.configs.logger import logger
 from codemie.core.constants import CodeIndexType, ToolType
 from codemie.core.dependecies import get_llm_by_credentials
@@ -575,7 +576,36 @@ class ToolkitService:
             )
         )
 
-        return cls._append_workspace_image_tool_if_enabled(tools, assistant, request, user)
+        tools = cls._append_workspace_image_tool_if_enabled(tools, assistant, request, user)
+        return cls._append_request_user_input_tool_if_enabled(tools, assistant, thread_generator)
+
+    @classmethod
+    def _append_request_user_input_tool_if_enabled(cls, tools, assistant, thread_generator):
+        """Register the interactive input tool when the assistant enables any interactive feature.
+
+        Gated by the platform-level ``features:interactiveElements`` customer flag so a disabled
+        deployment removes the tool from the catalog entirely, not just from the UI.
+        """
+        interactive_config = getattr(assistant, "interactive_features", None)
+        if (
+            interactive_config
+            and interactive_config.any_enabled()
+            and thread_generator is not None
+            and customer_config.is_feature_enabled("interactiveElements")
+        ):
+            from codemie.agents.tools.interactive.request_user_input import RequestUserInputTool
+            from codemie.core.interactive import enabled_element_types
+
+            catalog = customer_config.get_feature_setting("interactiveElements", "catalog", None)
+            # A catalog override can leave the feature flags on while resolving to zero
+            # allowed element types; constructing the tool would then raise. Skip instead
+            # (fail-closed, like render_interactive_elements_prompt) so a misconfigured
+            # catalog never 500s every chat for the assistant.
+            if enabled_element_types(interactive_config, catalog):
+                tools.append(
+                    RequestUserInputTool(config=interactive_config, thread_generator=thread_generator, catalog=catalog)
+                )
+        return tools
 
     @classmethod
     def get_core_tools(

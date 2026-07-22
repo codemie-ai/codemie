@@ -1,0 +1,72 @@
+{
+  "decision": "request-changes",
+  "confidence": "medium",
+  "rationale": "All three lenses ran against the full backend branch diff with the spec. The backend is thoroughly hardened (payload byte cap, iterative depth/element caps, regex match-timeout, strict per-kind payload validation with extra-key rejection, ownership check before history read) and every ticket acceptance criterion is functionally met and tested — notably 'disabled features removed from the catalog, not just hidden' is enforced at three server-side layers (dynamic args schema omits disabled types, prompt lists only enabled types, tool+prompt gated by per-assistant config AND the customer flag, with validate_surface as runtime defense-in-depth). Four real major issues block. One earlier-suspected issue (unvalidated persistence outside two handlers) was RAISED by the blind lens but REFUTED by the edge and acceptance lenses, which confirmed HedgedAssistantHandler inherits StandardAssistantHandler.process_request so all AssistantChatRequest entry points validate — not emitted. Deferred (not emitted): answer intake gated on READ not write (likely intentional, mirrors the send path), form-kind per-field length cap only bounded by the 64KB total, and date min/max that fail to parse silently disabling that bound (3 deferred). Spec-sync items (docs, not code): the shipped 'submit' kind + Dropdown/DatePicker {value} payloads are undocumented in spec section 1, the module lives at core/interactive.py not the spec's chains/interactive.py, and the Helm ConfigMap note from section 2 is not evidenced — update spec.md rather than the code.",
+  "risk_flags": ["security", "validation-bypass", "availability"],
+  "business_review": [
+    {"criterion": "Actions delivered structured, agent continues (turn-based)", "status": "pass", "notes": "request_user_input return_direct=True + emission; response replayed via materialize_interactive_message_text; action/submit validated."},
+    {"criterion": "MultipleChoice single/multi via maxAllowedSelections", "status": "pass", "notes": "max_allowed_selections (ge=1) + server cap re-check in _validate_selected."},
+    {"criterion": "Short form submit, structured return", "status": "pass", "notes": "TextField/CheckBox/Dropdown/DatePicker validated in _validate_submit_response; persisted as interactive_response."},
+    {"criterion": "Validation required/regex/email, invalid blocked (server re-check)", "status": "partial", "notes": "Full server re-validation exists, but only the 'submit' kind validates all element types; narrower kinds skip required checks — see CR-003."},
+    {"criterion": "Agent pauses until explicit input, resumes after", "status": "pass", "notes": "return_direct ends turn; test_interactive_turn_end asserts one LLM call + one chunk."},
+    {"criterion": "Element state updates without breaking chat context", "status": "pass", "notes": "immutable messages; submitted state derived by request_id; duplicate answered rejected — but see CR-002 for the bypass."},
+    {"criterion": "Interactive features config field/persistence (backend)", "status": "pass", "notes": "AssistantRequest.interactive_features + JSONB column (hedging_config precedent)."},
+    {"criterion": "Disabled features removed from agent-exposed catalog, server-side", "status": "pass", "notes": "build_surface_args_schema omits disabled types; prompt lists only enabled; tool+prompt gated by config AND customer flag; validate_surface runtime reject."},
+    {"criterion": "Text-only chat not regressed", "status": "pass", "notes": "wire fields Optional/None; tool appended only when enabled+flagged; to_chat_history unchanged when response None."},
+    {"criterion": "Persistence of interactive_request/response", "status": "pass", "notes": "GeneratedMessage carries both; passed through update_chat_history + conversation_service; verified round-trips via GET."},
+    {"criterion": "Alembic migration + customer flag", "status": "pass", "notes": "migration i1n2t3e4r5a6 additive nullable JSONB, reversible; customer-config flag default off."},
+    {"criterion": "Response wire contract matches spec section 1", "status": "partial", "notes": "Shipped 'submit' kind + Dropdown/DatePicker {value} payloads undocumented in spec section 1; module at core/interactive.py not spec's chains/interactive.py. Doc drift; reconcile spec."},
+    {"criterion": "Deployment gate + Helm ConfigMap note (spec section 2)", "status": "partial", "notes": "customer-config flag + enforcement present; no Helm ConfigMap note evidenced (chart likely out-of-repo)."}
+  ],
+  "standards_review": [
+    {"check": "commit-format", "status": "pass", "notes": "commits follow 'EPMCDME-13259: ...' per git-workflow guide."},
+    {"check": "code-quality", "status": "pass", "notes": "ruff clean on changed files; typed exceptions, no obvious quality-guide violations."},
+    {"check": "security", "status": "partial", "notes": "security guide present; ReDoS timeout + caps solid, but the regex dependency is undeclared (CR-001) and kind-based validation can be under-run (CR-003)."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "title": "`regex` (the ReDoS-timeout security control) is imported at module top but not a declared dependency",
+      "file": "src/codemie/core/interactive.py",
+      "line": 31,
+      "problem": "`import regex` runs at import time on the core boot path (core/interactive.py is imported by rest_api/models/conversation.py, the handlers, and the tool). pyproject.toml declares no direct `regex` dependency; it is resolved only transitively via poetry.lock, with an in-code TODO to promote it.",
+      "impact": "Any dependency bump that drops the transitive provider of `regex` makes `import regex` raise ImportError, cascading to conversation/assistant/handler modules failing to import -> the backend won't start (500 on all chat+assistant endpoints), not just the interactive feature. The ReDoS defense silently rests on an undeclared package.",
+      "recommendation": "Add `regex` as an explicit direct dependency in pyproject.toml and run poetry lock; or import it lazily inside _validate_field_value with a graceful fallback so a missing package degrades regex validation instead of crashing module import."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "title": "Client-controlled history_index defeats the 'already answered' duplicate guard and can replace the wrong turn",
+      "file": "src/codemie/service/conversation/interactive_intake.py",
+      "line": 50,
+      "problem": "validate_interactive_intake treats a stored response as 'being replaced' when `message_index >= replacing_history_index`, and replacing_history_index is taken verbatim from the client (request.history_index in assistant_handlers._validate_interactive_response). The comparison is `>=`.",
+      "impact": "A client re-POSTs interactive_response for an already-answered request_id with history_index=0 (or any value <= the stored answer's index): being_replaced is true for the prior answer, the 422 'already answered' branch never fires, and the duplicate is accepted and re-materialized into the LLM prompt. The same low index also feeds update_chat_history/_build_retained_history, so it can delete/replace the wrong turn and corrupt history. Scope is the caller's own conversation (ownership enforced), so it is a self-inflicted integrity/idempotency + history-corruption gap, not cross-tenant.",
+      "recommendation": "Do not trust the raw history_index as the replace anchor for the answered-state check. Only treat a stored response as replaceable when its history_index EQUALS the request's replaced turn (== not >=), and reject a history_index that does not correspond to the request's own turn."
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "triage": "patch",
+      "title": "Response re-validation keyed on the untrusted `kind`; a narrower kind skips required-field validation",
+      "file": "src/codemie/core/interactive.py",
+      "line": 481,
+      "problem": "validate_response_values dispatches on response.kind (documented as untrusted), but each non-submit branch validates only its own subset: 'action' checks a button id only; 'choice' checks only MultipleChoice; 'form' checks only text_field/checkbox (never dropdown/date_picker); 'text_fallback' validates nothing. Only 'submit' validates all element types together. Nothing checks the chosen kind is appropriate for the surface.",
+      "impact": "The agent renders a form with a required email text_field + required date_picker + a Submit button. A client POSTs kind='action', payload={action:'<submit button id>'} — a valid button id — so the action branch accepts it and the required/email/date rules are never evaluated; an empty/invalid structured answer is persisted and replayed to the LLM. This contradicts the docstring's 'a caller cannot skip validation by lying about kind' and the 'invalid input is blocked' criterion. Confined to the caller's own conversation.",
+      "recommendation": "Validate the response against the actual surface shape regardless of declared kind (e.g. always run the full submit-style per-element validation), or reject a kind that does not match the surface's element mix."
+    },
+    {
+      "id": "CR-004",
+      "severity": "major",
+      "triage": "patch",
+      "title": "Surface depth/element-count guard runs after the tool args-schema pydantic parse, not before it",
+      "file": "src/codemie/core/interactive.py",
+      "line": 216,
+      "problem": "_check_surface_limits is iterative and documented to run BEFORE pydantic parsing to prevent RecursionError, but it is invoked only inside validate_surface, which the tool calls from execute(). LangChain validates raw tool args against the recursive column/row union args_schema (build_surface_args_schema) BEFORE execute() runs, so on the primary tool-call path the recursive pydantic parse happens first and the guard never pre-screens it.",
+      "impact": "A model-authored (prompt-injectable) surface nested beyond MAX_SURFACE_DEPTH is parsed recursively by pydantic during tool-arg validation and can raise RecursionError / deep-stack blow-up inside the agent turn instead of the clean ValueError the guard promises. Blast radius is the agent's own turn (tool error), not a direct user 500, but the documented recursion-safety guarantee does not hold on the path that receives untrusted surfaces.",
+      "recommendation": "Enforce the depth/element-count cap by or ahead of the args-schema parse — e.g. a max_length on children at each level and/or an annotated validator in build_surface_args_schema — so the cap applies during tool-arg validation, not only afterward in validate_surface."
+    }
+  ]
+}

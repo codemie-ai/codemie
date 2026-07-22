@@ -256,5 +256,17 @@ class CustomerConfig(BaseModel):
         component_id = f"features:{feature_key}"
         return self.is_component_enabled(component_id)
 
+    def get_feature_setting(self, feature_key: str, setting_name: str, default=None):
+        """Read an extra setting from a ``features:<feature_key>`` component's settings.
+
+        ``ComponentSetting`` allows extra fields, so features can carry structured config
+        (e.g. an interactive-elements ``catalog``). Returns ``default`` when absent.
+        """
+        component_id = f"features:{feature_key}"
+        component = next((c for c in self.components if c.id == component_id), None)
+        if component is None:
+            return default
+        return getattr(component.settings, setting_name, default)
+
 
 customer_config = CustomerConfig()

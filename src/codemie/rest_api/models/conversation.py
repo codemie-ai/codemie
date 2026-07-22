@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Literal, Optional
 
@@ -21,6 +22,7 @@ from codemie_tools.base.models import Tool
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from codemie.chains.base import Thought
+from codemie.core.interactive import InteractiveRequest, InteractiveResponse
 from codemie.clients.postgres import get_session
 from codemie.configs import config, logger
 from codemie.core.ability import Owned, Action
@@ -41,6 +43,30 @@ from sqlalchemy import Boolean
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.mutable import MutableList
 from enum import StrEnum
+
+
+@dataclass
+class ChatTurnData:
+    """Per-turn payload for persisting one chat exchange (user + assistant messages).
+
+    Bundles the fields that always travel together from upsert down to message
+    construction, so the persistence methods stay well under the parameter limit.
+    """
+
+    user_query: str
+    user_query_raw: str
+    assistant_id: str
+    assistant_response: str
+    thoughts: List[Thought]
+    history_index: int
+    time_elapsed: float
+    input_tokens: int
+    output_tokens: int
+    file_names: list[str]
+    money_spent: float
+    user_message_received_at: datetime | None = None
+    interactive_request: Optional[InteractiveRequest] = None
+    interactive_response: Optional[InteractiveResponse] = None
 
 
 class Operator(BaseModel):
@@ -105,6 +131,9 @@ class GeneratedMessage(ChatMessage):
     ## Workflow execution reference fields
     workflow_execution_ref: Optional[bool] = None  # Marker that this is a reference to workflow execution
     execution_id: Optional[str] = None  # Reference to WorkflowExecution.execution_id
+    ## Interactive element fields (assistant message carries the request, user message the response)
+    interactive_request: Optional[InteractiveRequest] = None
+    interactive_response: Optional[InteractiveResponse] = None
 
     @classmethod
     @model_validator(mode="before")
@@ -293,40 +322,29 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
         return sum(money_spent) if money_spent else 0
 
     @staticmethod
-    def _build_chat_history_messages(
-        user_query: str,
-        user_query_raw: str,
-        assistant_id: str,
-        assistant_response: str,
-        thoughts: List[Thought],
-        history_index: int,
-        time_elapsed: float,
-        input_tokens: int,
-        output_tokens: int,
-        file_names: list[str],
-        money_spent: float,
-        user_message_received_at: datetime | None = None,
-    ) -> tuple[GeneratedMessage, GeneratedMessage]:
+    def _build_chat_history_messages(turn: ChatTurnData) -> tuple[GeneratedMessage, GeneratedMessage]:
         assistant_responded_at = datetime.now()
         user_message = GeneratedMessage(
-            date=user_message_received_at or assistant_responded_at,
+            date=turn.user_message_received_at or assistant_responded_at,
             role=ChatRole.USER,
-            message_raw=user_query_raw,
-            file_names=file_names,
-            history_index=history_index,
-            message=user_query,
+            message_raw=turn.user_query_raw,
+            file_names=turn.file_names,
+            history_index=turn.history_index,
+            message=turn.user_query,
+            interactive_response=turn.interactive_response,
         )
         assistant_message = GeneratedMessage(
             date=assistant_responded_at,
             role=ChatRole.ASSISTANT,
-            message=assistant_response,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            money_spent=money_spent,
-            response_time=time_elapsed,
-            history_index=history_index,
-            thoughts=thoughts,
-            assistant_id=assistant_id,
+            message=turn.assistant_response,
+            input_tokens=turn.input_tokens,
+            output_tokens=turn.output_tokens,
+            money_spent=turn.money_spent,
+            response_time=turn.time_elapsed,
+            history_index=turn.history_index,
+            thoughts=turn.thoughts,
+            assistant_id=turn.assistant_id,
+            interactive_request=turn.interactive_request,
         )
         return user_message, assistant_message
 
@@ -357,41 +375,12 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
         retained_history.reverse()
         return retained_history
 
-    def update_chat_history(
-        self,
-        user_query: str,
-        user_query_raw: str,
-        assistant_id: str,
-        project: str,
-        assistant_response: str,
-        thoughts: List[Thought],
-        history_index: int,
-        time_elapsed: float,
-        input_tokens: int,
-        output_tokens: int,
-        file_names: list[str],
-        money_spent: float,
-        replace_latest_variant: bool = False,
-        user_message_received_at: datetime | None = None,
-    ):
-        user_message, assistant_message = self._build_chat_history_messages(
-            user_query=user_query,
-            user_query_raw=user_query_raw,
-            assistant_id=assistant_id,
-            assistant_response=assistant_response,
-            thoughts=thoughts,
-            history_index=history_index,
-            time_elapsed=time_elapsed,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            file_names=file_names,
-            money_spent=money_spent,
-            user_message_received_at=user_message_received_at,
-        )
+    def update_chat_history(self, turn: ChatTurnData, project: str, replace_latest_variant: bool = False):
+        user_message, assistant_message = self._build_chat_history_messages(turn)
 
         retained_history = self._build_retained_history(
             existing_history=list(self.history or []),
-            history_index=history_index,
+            history_index=turn.history_index,
             replace_latest_variant=replace_latest_variant,
         )
 
@@ -607,10 +596,26 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
         for (role, _), message in unique_messages.items():
             match role:
                 case ChatRole.USER.value:
-                    chat_message = ChatMessage(role=ChatRole.USER, message=message.message or "")
+                    user_text = message.message or ""
+                    if message.interactive_response is not None:
+                        from codemie.service.conversation.interactive_intake import (
+                            materialize_interactive_message_text,
+                        )
+
+                        user_text = materialize_interactive_message_text(user_text, message.interactive_response)
+                    chat_message = ChatMessage(role=ChatRole.USER, message=user_text)
                     chat_messages.append(chat_message)
                 case ChatRole.ASSISTANT.value:
-                    chat_message = ChatMessage(role=ChatRole.ASSISTANT, message=message.message or "")
+                    assistant_text = message.message or ""
+                    if message.interactive_request is not None:
+                        from codemie.service.conversation.interactive_intake import (
+                            materialize_interactive_request_text,
+                        )
+
+                        assistant_text = materialize_interactive_request_text(
+                            assistant_text, message.interactive_request
+                        )
+                    chat_message = ChatMessage(role=ChatRole.ASSISTANT, message=assistant_text)
                     chat_messages.append(chat_message)
                 case _:
                     # Skip messages with unknown roles

@@ -190,6 +190,21 @@ components:
       enabled: false
       name: "Request Hedging"
       description: "Race a fast-path tool against the agent pipeline to reduce response latency"
+  - id: "features:interactiveElements"
+    settings:
+      enabled: true
+      name: "Interactive Chat Elements"
+      description: "Allow assistants to request structured user input via interactive chat elements"
+      # Optional catalog override: gate which registered element types each interactive
+      # feature exposes to agents, without a code change. Omit to use the built-in
+      # registry defaults (core/interactive.py). New element TYPES still require a model
+      # in the registry — this only toggles membership of already-registered elements.
+      # catalog:
+      #   layout: [text, column, row]
+      #   features:
+      #     action_buttons: [button]
+      #     choice: [multiple_choice, dropdown]
+      #     short_forms: [text_field, checkbox, date_picker, button]
 
   - id: "features:personalLiteLLMIntegrations"
     settings:

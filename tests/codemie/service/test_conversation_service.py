@@ -311,9 +311,8 @@ def test_upsert_chat_history_with_missing_history_index(
 
     # Verify that update_chat_history was called with history_index=2
     mock_update_chat_history.assert_called_once()
-    args, kwargs = mock_update_chat_history.call_args
-    assert 'history_index' in kwargs, "history_index not found in kwargs"
-    assert kwargs['history_index'] == 2, f"Expected history_index to be 2, got {kwargs['history_index']}"
+    turn = mock_update_chat_history.call_args.args[0]
+    assert turn.history_index == 2, f"Expected history_index to be 2, got {turn.history_index}"
 
     # Verify other mocks were called
     mock_conv_update.assert_called_once()
@@ -676,5 +675,5 @@ def test_upsert_chat_history_content_raw_fallback(
     )
 
     mock_update_chat_history.assert_called_once()
-    _, kwargs = mock_update_chat_history.call_args
-    assert kwargs["user_query_raw"] == expected_raw
+    turn = mock_update_chat_history.call_args.args[0]
+    assert turn.user_query_raw == expected_raw

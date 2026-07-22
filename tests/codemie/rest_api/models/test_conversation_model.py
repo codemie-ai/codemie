@@ -14,7 +14,7 @@
 
 from unittest.mock import patch, MagicMock
 
-from codemie.rest_api.models.conversation import Conversation, ConversationListItem, GeneratedMessage
+from codemie.rest_api.models.conversation import ChatTurnData, Conversation, ConversationListItem, GeneratedMessage
 from datetime import datetime
 from codemie.core.models import ChatRole
 
@@ -52,18 +52,20 @@ def test_update_chat_history_replaces_only_latest_variant_for_same_turn():
     )
 
     conversation.update_chat_history(
-        user_query="User Msg 3",
-        user_query_raw="User Msg 3",
-        assistant_id="assistant-id",
+        ChatTurnData(
+            user_query="User Msg 3",
+            user_query_raw="User Msg 3",
+            assistant_id="assistant-id",
+            assistant_response="AI Msg 3",
+            thoughts=[],
+            history_index=20,
+            time_elapsed=0,
+            input_tokens=0,
+            output_tokens=0,
+            file_names=[],
+            money_spent=0.0,
+        ),
         project="test-project",
-        assistant_response="AI Msg 3",
-        thoughts=[],
-        history_index=20,
-        time_elapsed=0,
-        input_tokens=0,
-        output_tokens=0,
-        file_names=[],
-        money_spent=0.0,
         replace_latest_variant=True,
     )
 

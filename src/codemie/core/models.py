@@ -36,6 +36,7 @@ from pydantic import (
 )
 from pydantic.alias_generators import to_camel
 
+from codemie.core.interactive import InteractiveResponse
 from codemie.configs import config
 from codemie.core.ability import Owned
 from codemie.core.constants import CodeIndexType, ChatRole, BackgroundTaskStatus, DatasourceTypes
@@ -575,6 +576,10 @@ class AssistantChatRequest(FileNamesCountValidatorMixin, ConfiguredModel):
     history_index: Optional[int] = Field(default=None)
     mcp_server_single_usage: Optional[bool] = None  # Use conversation default if not specified
     workflow_execution_id: Optional[str] = Field(None, description="Identifier for the workflow execution")
+    interactive_response: Optional[InteractiveResponse] = Field(
+        default=None,
+        description="Structured user response to an earlier interactive request emitted by the agent",
+    )
     version: Optional[int] = Field(None, description="Optional version number to use specific assistant configuration")
     sub_assistants_versions: Optional[dict[str, int]] = Field(
         None,

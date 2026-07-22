@@ -447,6 +447,7 @@ class TestPrepareSystemPrompt:
 
         assistant = Mock(spec=Assistant)
         assistant.skill_ids = []
+        assistant.interactive_features = None
         user = Mock(spec=User)
         user.id = 'user-123'
         user.username = "test@email.com"
@@ -499,6 +500,7 @@ class TestPrepareSystemPrompt:
 
         assistant = Mock(spec=Assistant)
         assistant.skill_ids = []
+        assistant.interactive_features = None
         user = Mock(spec=User)
         user.id = 'user-123'
         user.username = "test@email.com"
@@ -523,6 +525,7 @@ class TestPrepareSystemPrompt:
 
         assistant = Mock(spec=Assistant)
         assistant.skill_ids = []
+        assistant.interactive_features = None
         assistant.suggested_json_prompt = "JSON format: {schema}"
 
         user = Mock(spec=User)
@@ -753,6 +756,7 @@ class TestPrepareWorkflowSystemPrompt:
 
         assistant = Mock(spec=Assistant)
         assistant.skill_ids = []
+        assistant.interactive_features = None
         user = Mock(spec=User)
 
         # Act
@@ -782,6 +786,7 @@ class TestPrepareWorkflowSystemPrompt:
 
         assistant = Mock(spec=Assistant)
         assistant.skill_ids = []
+        assistant.interactive_features = None
         user = Mock(spec=User)
         user.id = 'user-123'
         user.username = "test@email.com"
@@ -846,6 +851,7 @@ class TestPrepareWorkflowSystemPrompt:
 
         assistant = Mock(spec=Assistant)
         assistant.skill_ids = []
+        assistant.interactive_features = None
         user = Mock(spec=User)
         user.id = 'user-123'
         user.username = "test@email.com"
@@ -981,3 +987,31 @@ class TestEnsureUniqueSlug:
             result = AssistantService.ensure_unique_slug("knowledge-companion", empty_project)
             assert result == "knowledge-companion"
         mock_get_by_fields.assert_not_called()
+
+
+class TestInteractivePromptGating:
+    @patch('codemie.service.assistant_service.AssistantService.get_system_prompt')
+    def test_prompt_injected_only_with_thread_generator(self, mock_get_prompt):
+        from unittest.mock import MagicMock, patch as _patch
+        from codemie.core.interactive import InteractiveFeaturesConfig
+        from codemie.service.assistant_service import AssistantService
+
+        mock_get_prompt.return_value = "Base"
+        assistant = Mock(spec=Assistant)
+        assistant.skill_ids = []
+        assistant.interactive_features = InteractiveFeaturesConfig(action_buttons=True)
+        user = Mock(spec=User)
+        user.id = "u"
+        user.username = "u@e.com"
+        request = AssistantChatRequest(text="hi", file_names=[])
+
+        flag = MagicMock()
+        flag.is_feature_enabled.return_value = True
+        with _patch("codemie.service.assistant_service.customer_config", flag):
+            # Non-streaming (no thread_generator): tool absent -> prompt must NOT advertise it
+            without = AssistantService._prepare_system_prompt(assistant, user, request, None)
+            # Streaming (thread_generator present): prompt advertises the tool
+            with_tg = AssistantService._prepare_system_prompt(assistant, user, request, MagicMock())
+
+        assert "request_user_input" not in without
+        assert "request_user_input" in with_tg

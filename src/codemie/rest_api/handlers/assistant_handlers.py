@@ -29,6 +29,7 @@ from fastapi import BackgroundTasks, Request, status
 from starlette.responses import StreamingResponse
 
 from codemie.chains.base import Thought, StreamedGenerationResult
+from codemie.core.interactive import InteractiveRequest
 from codemie.configs import config, logger
 from codemie.configs.customer_config import customer_config
 from codemie.core.ability import Ability, Action
@@ -73,6 +74,7 @@ from codemie.configs.pyroscope_config import pyroscope_profile
 
 # Constants
 NDJSON_MEDIA_TYPE = "application/x-ndjson"
+ACCESS_DENIED_MESSAGE = "Access denied"
 
 
 @dataclass
@@ -85,6 +87,7 @@ class ChatHistoryData:
     thoughts: List[Thought]
     status: ConversationStatus = ConversationStatus.SUCCESS
     user_message_received_at: datetime | None = None
+    interactive_request: InteractiveRequest | None = None
 
 
 class AssistantRequestHandler(ABC):
@@ -110,6 +113,29 @@ class AssistantRequestHandler(ABC):
         - error_detail_level: Error verbosity (minimal/standard/full)
         """
         pass
+
+    def _validate_interactive_response(self, request: AssistantChatRequest) -> None:
+        """Validate an incoming interactive response against the stored conversation history."""
+        if request.interactive_response is None:
+            return
+        from codemie.service.conversation.interactive_intake import validate_interactive_intake
+
+        conversation = Conversation.find_by_id(request.conversation_id) if request.conversation_id else None
+        if conversation and not Ability(self.user).can(Action.READ, conversation):
+            # Verify ownership BEFORE reading history, so intake cannot become an
+            # existence/answered-state oracle for another user's conversation.
+            raise ExtendedHTTPException(
+                code=status.HTTP_403_FORBIDDEN,
+                message=ACCESS_DENIED_MESSAGE,
+                details=f"You don't have permission to access conversation {request.conversation_id}.",
+            )
+        history = conversation.history if conversation else []
+        # A re-submit replaces the turn at request.history_index (like editing the
+        # previous request); pass it so a response being overwritten there is not
+        # treated as "already answered".
+        validate_interactive_intake(
+            history, request.interactive_response, replacing_history_index=request.history_index
+        )
 
     def _populate_conversation_history(self, request: AssistantChatRequest) -> None:
         """
@@ -158,7 +184,7 @@ class AssistantRequestHandler(ABC):
             )
             raise ExtendedHTTPException(
                 code=status.HTTP_403_FORBIDDEN,
-                message="Access denied",
+                message=ACCESS_DENIED_MESSAGE,
                 details=f"You don't have permission to access conversation {request.conversation_id}.",
                 help="Please ensure you have the correct permissions or contact the conversation owner.",
             )
@@ -221,7 +247,7 @@ class AssistantRequestHandler(ABC):
             )
             raise ExtendedHTTPException(
                 code=status.HTTP_403_FORBIDDEN,
-                message="Access denied",
+                message=ACCESS_DENIED_MESSAGE,
                 details=f"You don't have permission to access conversation {request.conversation_id}.",
                 help="Please ensure you have the correct permissions or contact the conversation owner.",
             )
@@ -373,6 +399,7 @@ class AssistantRequestHandler(ABC):
             thoughts=self._filter_thoughts(data.thoughts),
             status=data.status,
             user_message_received_at=data.user_message_received_at,
+            interactive_request=data.interactive_request,
             request_id=self.request_uuid,
         )
         request_summary_manager.clear_summary(self.request_uuid)
@@ -446,6 +473,9 @@ class StandardAssistantHandler(AssistantRequestHandler):
         Process assistant request with error handling options.
         """
         self._sync_uploaded_files_to_workspace(request)
+
+        # Validate structured interactive responses against the stored conversation
+        self._validate_interactive_response(request)
 
         # Populate conversation history if conversation_id is provided
         self._populate_conversation_history(request)
@@ -638,6 +668,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
 
         # We pass an empty string to avoid sending the default None value in the chat history.
         response = StreamedGenerationResult(generated="")
+        interactive_request = None
         while True:
             value = generator_queue.queue.get()
             if isinstance(value, BaseException):
@@ -647,6 +678,9 @@ class StandardAssistantHandler(AssistantRequestHandler):
                 generation_result = json.loads(value, object_hook=lambda d: SimpleNamespace(**d))
                 if generation_result.generated is not None:
                     response = generation_result
+                if getattr(generation_result, "interactive_request", None) is not None:
+                    # Re-parse as a plain dict so the typed model survives persistence
+                    interactive_request = InteractiveRequest(**json.loads(value)["interactive_request"])
                 yield value
                 generator_queue.queue.task_done()
                 continue
@@ -658,6 +692,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
                     response=response.generated,
                     thoughts=generator_queue.thoughts,
                     user_message_received_at=user_message_received_at,
+                    interactive_request=interactive_request,
                 )
             )
             final_chunk = self._build_final_chunk(agent, execution_start, include_tool_errors, error_detail_level)
@@ -944,6 +979,9 @@ class A2AAssistantHandler(AssistantRequestHandler):
         Note: Error handling parameters not yet implemented for A2A.
         """
         self._sync_uploaded_files_to_workspace(request)
+
+        # Validate structured interactive responses against the stored conversation
+        self._validate_interactive_response(request)
 
         # Populate conversation history if conversation_id is provided
         self._populate_conversation_history(request)

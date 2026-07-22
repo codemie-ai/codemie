@@ -110,6 +110,7 @@ langchain-google-community = "3.0.5"
 langchain-openai = "^1.2.1"
 litellm = "1.84"
 langchain-tavily = "^0.2.13"
+regex = "^2024.9.11"  # match-time timeout for bounded regex validation (ReDoS defense) in core/interactive.py
 markdownify = "^1.2.0"
 markitdown = {extras = ["all"], version = "^0.1.2"}
 matplotlib = "3.10.8"

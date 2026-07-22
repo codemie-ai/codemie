@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "runner": "poetry",
+  "repo": "codemie",
+  "gates": [
+    {"id": "lint", "command": "poetry run ruff check <changed> && ruff format --check", "available": true},
+    {"id": "build", "command": "import smoke + poetry check --lock", "available": true},
+    {"id": "license", "command": "poetry run python scripts/license_headers/check_license_headers.py", "available": true},
+    {"id": "unit", "command": "poetry run pytest <affected interactive suites>", "available": true}
+  ],
+  "ui_globs": ["\\.(tsx|jsx|css|html)$"],
+  "detected_at": "2026-07-16T00:00:00Z"
+}

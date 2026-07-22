@@ -18,6 +18,7 @@ from typing import Optional, List, Iterator
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel, Field, model_validator
 
+from codemie.core.interactive import InteractiveRequest
 from codemie.configs import logger
 from codemie.core.models import ChatMessage
 from codemie.core.errors import AgentErrorDetails, ToolErrorDetails
@@ -138,6 +139,9 @@ class StreamedGenerationResult(BaseModel):
     )
     error_details: Optional[dict] = Field(
         default=None, description="Provide full information about the execution_error field."
+    )
+    interactive_request: Optional[InteractiveRequest] = Field(
+        default=None, description="Interactive UI request emitted by the request_user_input tool"
     )
 
 
