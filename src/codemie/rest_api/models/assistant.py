@@ -33,7 +33,13 @@ from sqlmodel import Field as SQLField, Session, select, Column, and_, Index, te
 
 from codemie.core.ability import Owned, Ability, Action
 from codemie.core.constants import DEMO_PROJECT
-from codemie.core.models import AssistantChatRequest, ChatMessage, CreatedByUser, ToolConfig
+from codemie.core.models import (
+    AssistantChatRequest,
+    ChatMessage,
+    CreatedByUser,
+    FileNamesCountValidatorMixin,
+    ToolConfig,
+)
 from codemie.rest_api.a2a.types import AgentCard
 from codemie.rest_api.models.base import (
     CommonBaseModel,
@@ -1386,7 +1392,7 @@ class AssistantHealthCheckResponse(BaseModel):
     error: Optional[AssistantHealthCheckError] = Field(default=None, description="Error details if health check failed")
 
 
-class VirtualAssistantChatRequest(BaseModel):
+class VirtualAssistantChatRequest(FileNamesCountValidatorMixin, BaseModel):
     """
     Request model for ephemeral virtual assistant inference.
     The assistant definition is provided inline; no database record is used.
@@ -1481,6 +1487,7 @@ class VirtualAssistantChatRequest(BaseModel):
         default_factory=list,
         description='File URLs previously uploaded via the files endpoint.',
     )
+
     history: list[ChatMessage] | str = Field(
         default_factory=list,
         description='Conversation history messages or serialized string.',

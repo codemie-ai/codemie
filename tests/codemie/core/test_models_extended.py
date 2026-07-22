@@ -37,6 +37,7 @@ from codemie.core.models import (
     ToolConfig,
     UserResponse,
 )
+from codemie.rest_api.models.assistant import VirtualAssistantChatRequest
 
 
 def _compile_sql(statement) -> str:
@@ -478,3 +479,57 @@ class TestAssistantChatRequestSubAssistantsVersionsValidator:
 
         # Assert - Pydantic validation catches type mismatch
         assert "sub_assistants_versions" in str(exc_info.value)
+
+
+class TestAssistantChatRequestFileNamesCountValidator:
+    """Test file_names count validator on AssistantChatRequest."""
+
+    def test_accepts_exactly_20_file_names(self):
+        request = AssistantChatRequest(
+            text="hello",
+            file_names=["file_{}.txt".format(i) for i in range(20)],
+        )
+        assert len(request.file_names) == 20
+
+    def test_raises_on_21_file_names(self):
+        from fastapi.exceptions import RequestValidationError
+
+        with pytest.raises(RequestValidationError):
+            AssistantChatRequest(
+                text="hello",
+                file_names=["file_{}.txt".format(i) for i in range(21)],
+            )
+
+    def test_accepts_zero_file_names(self):
+        request = AssistantChatRequest(text="hello", file_names=[])
+        assert request.file_names == []
+
+    def test_accepts_none_file_names(self):
+        request = AssistantChatRequest(text="hello", file_names=None)
+        assert request.file_names is None
+
+
+class TestVirtualAssistantChatRequestFileNamesCountValidator:
+    """Test file_names count validator on VirtualAssistantChatRequest."""
+
+    def test_accepts_exactly_20_file_names(self):
+        request = VirtualAssistantChatRequest(
+            file_names=["file_{}.txt".format(i) for i in range(20)],
+        )
+        assert len(request.file_names) == 20
+
+    def test_raises_on_21_file_names(self):
+        from fastapi.exceptions import RequestValidationError
+
+        with pytest.raises(RequestValidationError):
+            VirtualAssistantChatRequest(
+                file_names=["file_{}.txt".format(i) for i in range(21)],
+            )
+
+    def test_accepts_zero_file_names(self):
+        request = VirtualAssistantChatRequest(file_names=[])
+        assert request.file_names == []
+
+    def test_accepts_none_file_names(self):
+        request = VirtualAssistantChatRequest(file_names=None)
+        assert request.file_names is None

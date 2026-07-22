@@ -17,7 +17,7 @@ from enum import Enum
 from typing import Any, List, Optional
 
 from codemie.core.ability import Ability, Action, Owned
-from codemie.core.models import TokensUsage, UserEntity
+from codemie.core.models import FileNamesCountValidatorMixin, TokensUsage, UserEntity
 from codemie.rest_api.models.base import BaseModelWithSQLSupport, CommonBaseModel, PydanticListType, PydanticType
 from codemie.rest_api.models.conversation import GeneratedMessage
 from codemie.rest_api.security.user import User
@@ -307,7 +307,7 @@ class WorkflowExecutionResponse(BaseModel):
         return v or []
 
 
-class CreateWorkflowExecutionRequest(BaseModel):
+class CreateWorkflowExecutionRequest(FileNamesCountValidatorMixin, BaseModel):
     user_input: Optional[str] = ""
     file_name: Optional[str] = None
     file_names: Optional[list[str]] = None
@@ -333,7 +333,7 @@ class CreateWorkflowExecutionRequest(BaseModel):
     )
 
 
-class ResumeWorkflowExecutionRequest(BaseModel):
+class ResumeWorkflowExecutionRequest(FileNamesCountValidatorMixin, BaseModel):
     user_input: str | None = None
     file_names: list[str] | None = None
 

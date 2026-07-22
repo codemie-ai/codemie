@@ -17,11 +17,12 @@ import uuid
 from abc import abstractmethod, ABC
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Optional, Any
+from typing import TYPE_CHECKING, Optional, Any, ClassVar
 from typing_extensions import Annotated
 
 
 import requests
+from fastapi.exceptions import RequestValidationError
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import (
     BaseModel,
@@ -518,7 +519,26 @@ class ToolConfig(ConfiguredModel):
         return self
 
 
-class AssistantChatRequest(ConfiguredModel):
+class FileNamesCountValidatorMixin:
+    MAX_FILE_COUNT: ClassVar[int] = 20
+
+    @field_validator("file_names")
+    @classmethod
+    def validate_file_names_count(cls, file_names: Optional[list[str]]) -> Optional[list[str]]:
+        if file_names and len(file_names) > cls.MAX_FILE_COUNT:
+            raise RequestValidationError(
+                [
+                    {
+                        "loc": ["file_names"],
+                        "msg": f"Too many files. Maximum count is {cls.MAX_FILE_COUNT}",
+                        "type": "value_error",
+                    }
+                ]
+            )
+        return file_names
+
+
+class AssistantChatRequest(FileNamesCountValidatorMixin, ConfiguredModel):
     _history_variant_persisted: bool = PrivateAttr(default=False)
 
     @staticmethod
@@ -535,6 +555,7 @@ class AssistantChatRequest(ConfiguredModel):
     text: Optional[str] = None
     content_raw: Optional[str] = Field(default="")
     file_names: Optional[list[str]] = Field(default_factory=list)
+
     llm_model: Optional[str] = None
     enable_image_generation: Optional[bool] = Field(
         default=None,

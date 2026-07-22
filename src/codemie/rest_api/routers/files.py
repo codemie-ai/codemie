@@ -23,6 +23,7 @@ from starlette import status
 from codemie.configs import config
 from codemie_tools.base.file_object import normalise_mime
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.models import AssistantChatRequest
 from codemie.core.constants import MermaidContentType, MermaidResponseType, MermaidMimeType
 from codemie.repository.repository_factory import FileRepositoryFactory
 from codemie.rest_api.models.files import WriteFileResponse, MermaidRequest, BulkWriteFileResponse
@@ -230,6 +231,14 @@ def write_files_bulk(files: List[UploadFile] = File(...), user: User = Depends(a
             message="No files provided",
             details="No files were provided for upload.",
             help="Please provide at least one file to upload.",
+        ) from None
+
+    if len(files) > AssistantChatRequest.MAX_FILE_COUNT:
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message=f"Too many files. Maximum count is {AssistantChatRequest.MAX_FILE_COUNT}",
+            details=f"Received {len(files)} files but the maximum allowed is {AssistantChatRequest.MAX_FILE_COUNT}.",
+            help="Please split your upload into multiple requests.",
         ) from None
 
     fs_repo = FileRepositoryFactory().get_current_repository()

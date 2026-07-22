@@ -988,3 +988,20 @@ async def test_write_files_bulk_calls_cache_invalidate_per_file(authenticated_us
     filenames = {c.kwargs["filename"] for c in calls}
     assert filenames == {"a.pdf", "b.html"}
     assert all(c.kwargs["repo"] is mock_fs_repo for c in calls)
+
+
+@pytest.mark.anyio
+async def test_write_files_bulk_too_many_files(authenticated_user, auth_headers, mocker):
+    mocker.patch("codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            "/v1/files/bulk",
+            files=[("files", (f"file_{i}.txt", b"content", "text/plain")) for i in range(21)],
+            headers=auth_headers,
+        )
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    body = response.json()
+    assert "Too many files" in body["error"]["message"]
