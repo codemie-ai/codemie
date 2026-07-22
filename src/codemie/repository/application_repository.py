@@ -67,13 +67,14 @@ class ApplicationRepository:
 
         Code Review R4: Separated from _apply_search to allow count queries without ORDER BY.
 
-        Searches both name and display_name independently (EPMCDME-13637) and description
-        (partial, case-insensitive). A project is matched when the query hits either its
-        technical name or its human-readable display name.
+        Searches display_name (falling back to the technical name only when display_name
+        isn't set - same COALESCE(display_name, name) convention as Application.search_by_name,
+        EPMCDME-13465) and description (partial, case-insensitive). A project with a
+        display_name is never matched by its raw technical name (EPMCDME-13520).
 
         Args:
             statement: Base SELECT statement
-            search: Optional search string (substring match on name, display_name, description)
+            search: Optional search string (substring match on display_name/name and description)
 
         Returns:
             Modified SELECT statement with search filters only (no ordering)
@@ -82,12 +83,11 @@ class ApplicationRepository:
             return statement
 
         escaped_query = escape_like_wildcards(search)
+        display_or_name = func.coalesce(Application.display_name, Application.name)
         return statement.where(
             or_(
-                Application.name == search,
-                Application.display_name == search,
-                Application.name.ilike(f"%{escaped_query}%", escape="\\"),
-                Application.display_name.ilike(f"%{escaped_query}%", escape="\\"),
+                display_or_name == search,
+                display_or_name.ilike(f"%{escaped_query}%", escape="\\"),
                 Application.description.ilike(f"%{escaped_query}%", escape="\\"),
             )
         )
@@ -98,12 +98,12 @@ class ApplicationRepository:
 
         Code Review R4: Now delegates to _apply_search_filters + adds ordering.
         Code Review R1: Ordering is composed to ensure stability:
-        - When search is provided: exact match on name OR display_name ranks first
+        - When search is provided: exact match first, then fuzzy matches
         - Stable secondary ordering (date desc, name asc) applied by caller
 
         Args:
             statement: Base SELECT statement
-            search: Optional search string (substring match on name, display_name)
+            search: Optional search string (substring match on name)
 
         Returns:
             Modified SELECT statement with search filters and ordering
@@ -112,12 +112,8 @@ class ApplicationRepository:
         if not search:
             return statement
 
-        return statement.order_by(
-            case(
-                (or_(Application.name == search, Application.display_name == search), 1),
-                else_=2,
-            )
-        )
+        display_or_name = func.coalesce(Application.display_name, Application.name)
+        return statement.order_by(case((display_or_name == search, 1), else_=2))
 
     @staticmethod
     def _apply_assigned_budget_filter(

@@ -623,12 +623,12 @@ class TestApplicationRepositoryVisibilityHelpers:
         assert "applications.name" in query_text
         assert "applications.description" in query_text
 
-    def test_apply_search_filters_matches_both_name_and_display_name(self):
-        """_apply_search_filters checks both name and display_name independently (EPMCDME-13637).
-
-        Replaces the old COALESCE(display_name, name) convention so that a project with
-        a display_name set can still be found by its technical name.
-        """
+    def test_apply_search_filters_matches_display_name_via_coalesce(self):
+        """_apply_search_filters matches display_name when present, falling back to the
+        technical name only when display_name isn't set - same COALESCE(display_name, name)
+        convention as Application.search_by_name (EPMCDME-13465), so GET /v1/projects?search=
+        finds projects by display name instead of requiring a client-side full-table scan
+        (EPMCDME-13520)."""
         # Arrange
         from sqlmodel import select
 
@@ -639,40 +639,11 @@ class TestApplicationRepositoryVisibilityHelpers:
 
         # Assert
         query_text = _compile_sql(result)
-        assert "applications.name" in query_text
-        assert "applications.display_name" in query_text
-        assert "coalesce" not in query_text
-
-    def test_apply_search_filters_name_ilike_present_when_display_name_set(self):
-        """name ilike must appear in the compiled WHERE even when display_name is set (EPMCDME-13637)."""
-        # Arrange
-        from sqlmodel import select
-
-        base_statement = select(Application)
-
-        # Act
-        result = application_repository._apply_search_filters(base_statement, "epm-fdeg")
-
-        # Assert
-        query_text = _compile_sql(result)
-        assert "applications.name" in query_text
-        assert "applications.display_name" in query_text
-
-    def test_apply_search_adds_ordering_covering_both_name_and_display_name(self):
-        """_apply_search ordering boosts exact match on name OR display_name (EPMCDME-13637)."""
-        # Arrange
-        from sqlmodel import select
-
-        base_statement = select(Application)
-
-        # Act
-        result = application_repository._apply_search(base_statement, "epm-fdeg")
-
-        # Assert
-        query_text = _compile_sql(result)
-        assert "applications.name" in query_text
-        assert "applications.display_name" in query_text
-        assert "coalesce" not in query_text
+        assert "coalesce(applications.display_name, applications.name)" in query_text
+        # Guard against a regressive OR'd bare-name match outside the COALESCE, which would
+        # silently restore matching by the raw technical name even when display_name is set.
+        assert "applications.name ilike" not in query_text
+        assert "applications.name =" not in query_text
 
     def test_apply_search_delegates_to_apply_search_filters(self):
         """_apply_search delegates filtering to _apply_search_filters."""
