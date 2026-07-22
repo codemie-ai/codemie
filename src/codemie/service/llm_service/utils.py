@@ -56,6 +56,16 @@ def _resolve_effective_project(
     return project
 
 
+def _is_shared_asset_creds_override(setting: object, asset: object) -> bool:
+    """Return True when a shared asset should force project budget (nulling personal creds)."""
+    if asset is None or not config.LLM_PROXY_SHARED_ASSET_PROJECT_BUDGET_ROUTING_ENABLED:
+        return False
+    is_shared = getattr(asset, 'shared', None)
+    if is_shared is None:
+        is_shared = getattr(asset, 'project_space_visible', True)
+    return bool(is_shared and not getattr(setting, 'is_global', False))
+
+
 def set_llm_context(
     asset: AssistantBase | WorkflowConfigBase | IndexInfo | None,
     fallback_project_name: str | None,
@@ -69,6 +79,7 @@ def set_llm_context(
 
     try:
         litellm_creds = SettingsService.get_litellm_creds(project_name=effective_project, user_id=user.id)
+        is_global_integration = False
         if litellm_creds:
             setting = SettingsService.retrieve_setting(
                 {
@@ -81,13 +92,15 @@ def set_llm_context(
             # doing so would trigger USER_CREDENTIALS_BYPASS mode in llm_factory and skip override customer injection.
             if getattr(setting, "setting_type", None) == SettingType.PROJECT.value:
                 litellm_creds = None
-            elif asset is not None and config.LLM_PROXY_SHARED_ASSET_PROJECT_BUDGET_ROUTING_ENABLED:
-                is_shared = getattr(asset, 'shared', None)
-                if is_shared is None:
-                    is_shared = getattr(asset, 'project_space_visible', True)
-                if is_shared and not getattr(setting, 'is_global', False):
-                    litellm_creds = None  # shared asset → force project budget when user has non-global personal key
-        litellm_context = LiteLLMContext(credentials=litellm_creds, current_project=effective_project)
+            elif _is_shared_asset_creds_override(setting, asset):
+                litellm_creds = None  # shared asset → force project budget when user has non-global personal key
+            if litellm_creds and getattr(setting, 'is_global', False):
+                is_global_integration = True
+        litellm_context = LiteLLMContext(
+            credentials=litellm_creds,
+            current_project=effective_project,
+            is_global=is_global_integration,
+        )
         set_litellm_context(litellm_context)
         dial_creds = SettingsService.get_dial_creds(effective_project)
         set_dial_credentials(dial_creds)

@@ -512,3 +512,108 @@ class TestResolveEffectiveProjectSharing:
         ctx = mock_set_litellm.call_args[0][0]
         assert isinstance(ctx, LiteLLMContext)
         assert ctx.current_project == "proj-a"
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_set_llm_context_global_integration_sets_is_global_on_context(
+        self, mock_settings, mock_dial, mock_set_litellm
+    ):
+        """Global USER integration → LiteLLMContext.is_global=True propagated to context."""
+        personal_creds = LiteLLMCredentials(api_key="global-key", url="https://litellm.test.com")
+        mock_settings.get_litellm_creds.return_value = personal_creds
+
+        mock_setting = MagicMock()
+        mock_setting.setting_type = "user"
+        mock_setting.is_global = True
+        mock_settings.retrieve_setting.return_value = mock_setting
+        mock_settings.get_dial_creds.return_value = None
+
+        asset = MagicMock()
+        asset.project = "some-project"
+        asset.shared = False
+        asset.is_global = False
+        user = _make_user()
+
+        set_llm_context(asset, None, user)
+
+        ctx = mock_set_litellm.call_args[0][0]
+        assert ctx.is_global is True
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_set_llm_context_non_global_integration_context_is_global_false(
+        self, mock_settings, mock_dial, mock_set_litellm
+    ):
+        """Non-global personal key → LiteLLMContext.is_global remains False."""
+        personal_creds = LiteLLMCredentials(api_key="personal-key", url="https://litellm.test.com")
+        mock_settings.get_litellm_creds.return_value = personal_creds
+
+        mock_setting = MagicMock()
+        mock_setting.setting_type = "user"
+        mock_setting.is_global = False
+        mock_settings.retrieve_setting.return_value = mock_setting
+        mock_settings.get_dial_creds.return_value = None
+
+        asset = MagicMock()
+        asset.project = "some-project"
+        asset.shared = False
+        asset.is_global = False
+        user = _make_user()
+
+        set_llm_context(asset, None, user)
+
+        ctx = mock_set_litellm.call_args[0][0]
+        assert ctx.is_global is False
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_set_llm_context_asset_none_global_integration_sets_is_global(
+        self, mock_settings, mock_dial, mock_set_litellm
+    ):
+        """asset=None + global USER integration → shared-asset branch skipped, is_global=True still set."""
+        personal_creds = LiteLLMCredentials(api_key="global-key", url="https://litellm.test.com")
+        mock_settings.get_litellm_creds.return_value = personal_creds
+
+        mock_setting = MagicMock()
+        mock_setting.setting_type = "user"
+        mock_setting.is_global = True
+        mock_settings.retrieve_setting.return_value = mock_setting
+        mock_settings.get_dial_creds.return_value = None
+
+        user = _make_user()
+
+        set_llm_context(None, "fallback-project", user)
+
+        ctx = mock_set_litellm.call_args[0][0]
+        assert ctx.credentials == personal_creds
+        assert ctx.is_global is True
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_set_llm_context_project_scoped_setting_with_is_global_true_nulls_creds(
+        self, mock_settings, mock_dial, mock_set_litellm
+    ):
+        """PROJECT-scoped setting with is_global=True → credentials nulled, is_global remains False."""
+        personal_creds = LiteLLMCredentials(api_key="some-key", url="https://litellm.test.com")
+        mock_settings.get_litellm_creds.return_value = personal_creds
+
+        mock_setting = MagicMock()
+        mock_setting.setting_type = "project"  # PROJECT-scoped — must be nulled
+        mock_setting.is_global = True  # anomalous but should not override the PROJECT nulling
+        mock_settings.retrieve_setting.return_value = mock_setting
+        mock_settings.get_dial_creds.return_value = None
+
+        asset = MagicMock()
+        asset.project = "some-project"
+        asset.is_global = False
+        user = _make_user()
+
+        set_llm_context(asset, None, user)
+
+        ctx = mock_set_litellm.call_args[0][0]
+        assert ctx.credentials is None
+        assert ctx.is_global is False

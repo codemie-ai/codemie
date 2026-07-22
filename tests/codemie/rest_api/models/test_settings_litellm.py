@@ -109,5 +109,9 @@ class TestLiteLLMContext:
         serialized = context.model_dump()
 
         # Assert
-        expected = {"credentials": {"api_key": "key", "url": "https://test.com"}, "current_project": "test-project"}
+        expected = {
+            "credentials": {"api_key": "key", "url": "https://test.com"},
+            "current_project": "test-project",
+            "is_global": False,
+        }
         assert serialized == expected

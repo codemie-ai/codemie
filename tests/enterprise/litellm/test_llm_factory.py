@@ -661,3 +661,56 @@ class TestLiteLLMChatOpenAI:
 
         assert result is not None
         assert (result.generation_info or {}).get("litellm_cost") is None
+
+
+class TestConfigureDirectRuntimeOverrides:
+    """Tests for _configure_direct_runtime_overrides — bypass-mode user injection behaviour."""
+
+    def test_global_integration_bypass_does_not_inject_user(self):
+        """Global LiteLLM integration (is_global=True) in bypass mode must NOT set model_kwargs[user]."""
+        from codemie.enterprise.litellm.llm_factory import _configure_direct_runtime_overrides
+        from codemie.rest_api.models.settings import LiteLLMContext, LiteLLMCredentials
+
+        creds = LiteLLMCredentials(api_key="global-key", url="http://litellm:4000")
+        context = LiteLLMContext(credentials=creds, current_project="test-project", is_global=True)
+        request_params: dict = {}
+
+        with patch("codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime") as mock_resolve:
+            mock_resolve.return_value = ("member-ref-123", {}, None, None)
+
+            _configure_direct_runtime_overrides(
+                llm_model_details=MagicMock(),
+                litellm_context=context,
+                user_email="user@test.com",
+                user_id="uid-1",
+                creds=creds,
+                merged_headers={},
+                request_params=request_params,
+            )
+
+        assert "model_kwargs" not in request_params
+
+    def test_non_global_bypass_injects_user_for_spend_tracking(self):
+        """Non-global personal key (is_global=False) in bypass mode injects model_kwargs[user]."""
+        from codemie.enterprise.litellm.llm_factory import _configure_direct_runtime_overrides
+        from codemie.rest_api.models.settings import LiteLLMContext, LiteLLMCredentials
+
+        creds = LiteLLMCredentials(api_key="personal-key", url="http://litellm:4000")
+        context = LiteLLMContext(credentials=creds, current_project="test-project", is_global=False)
+        request_params: dict = {}
+
+        with patch("codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime") as mock_resolve:
+            mock_resolve.return_value = ("member-ref-123", {}, None, None)
+
+            _configure_direct_runtime_overrides(
+                llm_model_details=MagicMock(),
+                litellm_context=context,
+                user_email="user@test.com",
+                user_id="uid-1",
+                creds=creds,
+                merged_headers={},
+                request_params=request_params,
+            )
+
+        mock_resolve.assert_called_once()
+        assert request_params.get("model_kwargs", {}).get("user") == "member-ref-123"
