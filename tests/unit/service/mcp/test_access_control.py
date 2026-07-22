@@ -55,6 +55,7 @@ def _server(
     arguments: str | None = None,
     mcp_connect_url: str | None = None,
     enabled: bool = True,
+    use_custom_config: bool = False,
 ) -> MCPServerDetails:
     return MCPServerDetails(
         name=name,
@@ -64,6 +65,7 @@ def _server(
         command=command,
         arguments=arguments,
         mcp_connect_url=mcp_connect_url,
+        use_custom_config=use_custom_config,
     )
 
 
@@ -326,13 +328,45 @@ class TestResolveCatalogConfig:
         assert result.config.command == "uvx"
 
     def test_inline_config_wins_over_catalog(self):
+        # use_custom_config=True means: use inline config, skip catalog entirely
         inline_cfg = MCPServerConfig(command="npx")
-        server = _server("s1", mcp_config_id="cat-1", config=inline_cfg)
+        server = _server("s1", mcp_config_id="cat-1", config=inline_cfg, use_custom_config=True)
         with patch(_FIND_BY_ID) as find_by_id:
             result = MCPAccessControlService.resolve_catalog_config(server)
         assert result is server
         assert result.config is inline_cfg
         find_by_id.assert_not_called()
+
+    def test_custom_config_true_with_config_returns_server_unchanged(self):
+        # use_custom_config=True + inline config → server returned as-is, catalog not touched
+        inline_cfg = MCPServerConfig(command="uvx")
+        server = _server("s1", config=inline_cfg, use_custom_config=True)
+        with patch(_FIND_BY_ID) as find_by_id:
+            result = MCPAccessControlService.resolve_catalog_config(server)
+        assert result is server
+        assert result.config is inline_cfg
+        find_by_id.assert_not_called()
+
+    def test_custom_config_true_with_no_config_returns_none(self):
+        # use_custom_config=True but no inline config → warning and None
+        server = _server("s1", use_custom_config=True)
+        with patch(_FIND_BY_ID) as find_by_id:
+            result = MCPAccessControlService.resolve_catalog_config(server)
+        assert result is None
+        find_by_id.assert_not_called()
+
+    def test_global_mode_fetches_catalog_overwriting_inline(self):
+        # use_custom_config=False + mcp_config_id + inline config → catalog config wins
+        catalog_config = MCPServerConfigData(command="uvx", args=["mcp-server"])
+        entry = _catalog_entry("cat-1", config=catalog_config)
+        inline_cfg = MCPServerConfig(command="npx")
+        server = _server("s1", mcp_config_id="cat-1", config=inline_cfg, use_custom_config=False)
+        with patch(_FIND_BY_ID, return_value=entry):
+            result = MCPAccessControlService.resolve_catalog_config(server)
+        assert result is not server
+        assert result is not None
+        assert result.config is not None
+        assert result.config.command == "uvx"
 
     def test_returns_none_when_config_conversion_fails(self):
         catalog_config = MagicMock()

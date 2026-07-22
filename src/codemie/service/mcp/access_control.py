@@ -29,6 +29,7 @@ _CATALOG_REF_ALLOWED_FIELDS = frozenset(
         "description",
         "enabled",
         "mcp_config_id",
+        "use_custom_config",
         "tools",
         "tools_tokens_size_limit",
         "settings",
@@ -156,17 +157,18 @@ class MCPAccessControlService:
 
     @staticmethod
     def resolve_catalog_config(mcp_server: MCPServerDetails) -> MCPServerDetails | None:
-        """When mcp_config_id is set and no inline override exists, fetch the connection config from the catalog.
+        """Resolve MCP config based on use_custom_config flag."""
 
-        Returns mcp_server unchanged if no mcp_config_id, or if the server already carries an
-        inline `config` override (inline wins wholesale over the catalog).
-        Returns None if the catalog entry is unavailable or cannot be resolved — the caller
-        must skip the server in that case.
-        """
+        # If custom mode is enabled, use inline config
+        if mcp_server.use_custom_config:
+            if mcp_server.config is None:
+                logger.warning(f"MCP server '{mcp_server.name}': custom mode enabled but no config present")
+                return None
+            return mcp_server
+
+        # Global mode: fetch from catalog
         config_id = mcp_server.mcp_config_id
         if not config_id:
-            return mcp_server
-        if mcp_server.config is not None:
             return mcp_server
 
         entry = MCPConfig.find_by_id(config_id)

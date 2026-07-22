@@ -173,6 +173,7 @@ class MCPServerDetails(BaseModel):
     config: Optional[MCPServerConfig] = Field(
         None, description="The MCP server configuration with command, args and environment variables"
     )
+    use_custom_config: bool = Field(False, description="If True, use custom config; if False, use catalog reference")
     mcp_connect_url: Optional[str] = Field(None, description="URL of the MCP-Connect server")
     tools_tokens_size_limit: Optional[int] = Field(None, description="Maximum size of the tokens for the tools")
     command: Optional[str] = Field(
