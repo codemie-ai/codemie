@@ -310,6 +310,32 @@ class SQLActivityEventRepository(ActivityEventRepository):
         )
         return [r for (r,) in session.execute(stmt).all()]
 
+    def get_domain_mapping(self, session: Session) -> dict:
+        from codemie.rest_api.models.activity_event import DomainFilterEntry
+
+        stmt = (
+            select(ActivityEvent.domain, ActivityEvent.event_type, ActivityEvent.entity_type)
+            .distinct()
+            .order_by(ActivityEvent.domain, ActivityEvent.event_type)
+        )
+        rows = session.execute(stmt).all()
+
+        raw: dict[str, dict[str, set]] = {}
+        for domain, event_type, entity_type in rows:
+            if domain not in raw:
+                raw[domain] = {'event_types': set(), 'entity_types': set()}
+            raw[domain]['event_types'].add(event_type)
+            if entity_type is not None:
+                raw[domain]['entity_types'].add(entity_type)
+
+        return {
+            domain: DomainFilterEntry(
+                event_types=sorted(data['event_types']),
+                entity_types=sorted(data['entity_types']),
+            )
+            for domain, data in raw.items()
+        }
+
     def delete_older_than(self, cutoff: datetime, session: Session) -> int:
         stmt = delete(ActivityEvent).where(ActivityEvent.created_at < cutoff)
         result = session.execute(stmt)

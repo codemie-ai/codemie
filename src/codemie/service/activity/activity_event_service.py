@@ -74,6 +74,7 @@ class ActivityEventService:
                 domains=activity_event_repository.get_distinct_domains(session),
                 event_types=activity_event_repository.get_distinct_event_types(session),
                 entity_types=activity_event_repository.get_distinct_entity_types(session),
+                mapping=activity_event_repository.get_domain_mapping(session),
             )
 
 

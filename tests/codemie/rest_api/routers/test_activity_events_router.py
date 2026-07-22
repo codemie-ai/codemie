@@ -169,6 +169,28 @@ class TestGetFilterOptions:
         assert response.entity_types == ["user"]
 
     @patch("codemie.rest_api.routers.activity_events_router.activity_event_service")
+    def test_returns_mapping_field(self, mock_svc):
+        from codemie.rest_api.models.activity_event import DomainFilterEntry
+
+        mock_svc.get_filter_options.return_value = ActivityEventFilterOptions(
+            domains=["budget_management"],
+            event_types=["budget.created"],
+            entity_types=["budget"],
+            mapping={
+                "budget_management": DomainFilterEntry(
+                    event_types=["budget.created"],
+                    entity_types=["budget"],
+                )
+            },
+        )
+
+        result = get_filter_options(_=None)
+
+        assert "budget_management" in result.mapping
+        assert result.mapping["budget_management"].event_types == ["budget.created"]
+        assert result.mapping["budget_management"].entity_types == ["budget"]
+
+    @patch("codemie.rest_api.routers.activity_events_router.activity_event_service")
     def test_wraps_unexpected_exception_in_http_500(self, mock_svc):
         mock_svc.get_filter_options.side_effect = RuntimeError("db error")
 

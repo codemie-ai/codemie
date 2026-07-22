@@ -33,7 +33,13 @@ class ActivityEventListItem(BaseModel):
     created_at: datetime
 
 
+class DomainFilterEntry(BaseModel):
+    event_types: list[str]
+    entity_types: list[str]
+
+
 class ActivityEventFilterOptions(BaseModel):
     domains: list[str]
     event_types: list[str]
     entity_types: list[str]
+    mapping: dict[str, DomainFilterEntry] = {}

@@ -112,6 +112,7 @@ class TestGetFilterOptions:
         mock_repo.get_distinct_domains.return_value = ["budget_management", "user_management"]
         mock_repo.get_distinct_event_types.return_value = ["budget.created", "user.created"]
         mock_repo.get_distinct_entity_types.return_value = ["budget", "user"]
+        mock_repo.get_domain_mapping.return_value = {}
         mock_session_cls.return_value.__enter__ = MagicMock(return_value=MagicMock())
         mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -126,10 +127,31 @@ class TestGetFilterOptions:
     @patch("codemie.service.activity.activity_event_service.activity_event_repository")
     @patch("codemie.service.activity.activity_event_service.Session")
     @patch("codemie.service.activity.activity_event_service.PostgresClient")
+    def test_mapping_included_in_response(self, mock_pg, mock_session_cls, mock_repo):
+        from codemie.rest_api.models.activity_event import DomainFilterEntry
+
+        mock_repo.get_distinct_domains.return_value = ['budget_management']
+        mock_repo.get_distinct_event_types.return_value = ['budget.created']
+        mock_repo.get_distinct_entity_types.return_value = ['budget']
+        mock_repo.get_domain_mapping.return_value = {
+            'budget_management': DomainFilterEntry(event_types=['budget.created'], entity_types=['budget'])
+        }
+        mock_session_cls.return_value.__enter__ = MagicMock(return_value=MagicMock())
+        mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+        opts = ActivityEventService().get_filter_options()
+
+        assert 'budget_management' in opts.mapping
+        assert opts.mapping['budget_management'].event_types == ['budget.created']
+
+    @patch("codemie.service.activity.activity_event_service.activity_event_repository")
+    @patch("codemie.service.activity.activity_event_service.Session")
+    @patch("codemie.service.activity.activity_event_service.PostgresClient")
     def test_returns_empty_lists_when_table_has_no_events(self, mock_pg, mock_session_cls, mock_repo):
         mock_repo.get_distinct_domains.return_value = []
         mock_repo.get_distinct_event_types.return_value = []
         mock_repo.get_distinct_entity_types.return_value = []
+        mock_repo.get_domain_mapping.return_value = {}
         mock_session_cls.return_value.__enter__ = MagicMock(return_value=MagicMock())
         mock_session_cls.return_value.__exit__ = MagicMock(return_value=False)
 

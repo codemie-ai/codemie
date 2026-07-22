@@ -45,6 +45,22 @@ def _create_dto(**kwargs) -> ActivityEventCreate:
     return ActivityEventCreate(**defaults)
 
 
+def test_get_domain_mapping_groups_by_domain():
+    session = MagicMock()
+    session.execute.return_value.all.return_value = [
+        ('budget_management', 'budget.created', 'budget'),
+        ('budget_management', 'budget.updated', 'project_budget_group'),
+        ('user_management', 'user.created', 'user'),
+    ]
+
+    result = _repo().get_domain_mapping(session)
+
+    assert set(result['budget_management'].event_types) == {'budget.created', 'budget.updated'}
+    assert set(result['budget_management'].entity_types) == {'budget', 'project_budget_group'}
+    assert result['user_management'].event_types == ['user.created']
+    assert result['user_management'].entity_types == ['user']
+
+
 def test_insert_adds_and_flushes_event():
     session = MagicMock()
     dto = _create_dto()
