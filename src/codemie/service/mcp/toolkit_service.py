@@ -354,22 +354,37 @@ class MCPToolkitService:
         except MCPAuthenticationRequiredException as exc:
             auth_payload = cls._build_auth_required_server_payload(
                 caught_payload=exc.payload,
-                mcp_server=mcp_server,
+                mcp_server=cls._with_resolved_catalog_config(mcp_server),
                 execution_context=per_server_context,
             )
             return None, auth_payload, None
         except MCPToolLoadException as exc:
+            resolved_server = cls._with_resolved_catalog_config(mcp_server)
             auth_payload = cls._build_auth_configured_tool_challenge_payload(
-                mcp_server=mcp_server,
+                mcp_server=resolved_server,
                 exc=exc,
                 execution_context=per_server_context,
             )
             if auth_payload is not None:
                 return None, auth_payload, None
-            disc_candidate = cls._build_discovery_candidate_from_challenge(mcp_server, exc)
+            disc_candidate = cls._build_discovery_candidate_from_challenge(resolved_server, exc)
             if disc_candidate is None:
                 raise
             return None, None, disc_candidate
+
+    @staticmethod
+    def _with_resolved_catalog_config(mcp_server: MCPServerDetails) -> MCPServerDetails:
+        """Return the server with its catalog config resolved, for error classification only.
+
+        Global-mode servers arrive with config=None (only mcp_config_id is sent), so the
+        exception classifiers cannot see the catalog url/auth_config and would skip OAuth
+        discovery entirely. Resolved lazily: the success path must not pay for an extra
+        catalog lookup, and the original server is still used for the call itself so
+        credential and alias resolution stay unchanged.
+        """
+        from codemie.service.mcp.access_control import MCPAccessControlService
+
+        return MCPAccessControlService.resolve_catalog_config(mcp_server) or mcp_server
 
     @classmethod
     def _run_discovery_probe_and_collect_failures(
