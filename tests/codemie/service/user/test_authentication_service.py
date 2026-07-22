@@ -922,6 +922,219 @@ class TestAuthenticatePersistentUser:
             assert exc_info.value.code == 401
             assert exc_info.value.message == "Account is deactivated"
 
+    @pytest.mark.asyncio
+    async def test_authenticate_persistent_user_first_login_calls_budget_sync_after_commit(self):
+        """Budget sync is called with correct args after the session commits on first IDP login"""
+        user_id = str(uuid4())
+        auth_token = "token-budget"
+
+        idp_user = security_user.User(
+            id=user_id,
+            username="svc-account",
+            name="Service Account",
+            email="svc@example.com",
+            user_type="service",
+            roles=[],
+            project_names=["project1", "project2"],
+            admin_project_names=[],
+            knowledge_bases=[],
+            is_admin=False,
+        )
+
+        created_user = UserDB(
+            id=user_id,
+            email="svc@example.com",
+            username="svc-account",
+            name="Service Account",
+            is_active=True,
+            deleted_at=None,
+        )
+
+        mock_session = AsyncMock()
+
+        expected_user = security_user.User(
+            id=user_id,
+            username="svc-account",
+            name="Service Account",
+            email="svc@example.com",
+            user_type="service",
+            roles=[],
+            project_names=["project1", "project2"],
+            admin_project_names=[],
+            knowledge_bases=[],
+            is_admin=False,
+            auth_token=auth_token,
+        )
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
+            patch(
+                "codemie.service.user.authentication_service.AuthenticationService._create_first_login_user",
+                new_callable=AsyncMock,
+            ) as mock_create,
+            patch(
+                "codemie.service.user.authentication_service.AuthenticationService._sync_budget_for_idp_projects",
+                new_callable=AsyncMock,
+            ) as mock_budget_sync,
+            patch(
+                "codemie.service.user.authentication_service.AuthenticationService._finalize_authentication",
+                new_callable=AsyncMock,
+            ) as mock_finalize,
+            patch("codemie.service.user.authentication_service.config") as mock_config,
+        ):
+            mock_config.IDP_PROVIDER = "keycloak"
+            mock_get_session.return_value = _make_async_session_cm(mock_session)
+            mock_user_repo.aget_by_id = AsyncMock(return_value=None)
+            mock_create.return_value = created_user
+            mock_finalize.return_value = expected_user
+
+            result = await AuthenticationService.authenticate_persistent_user(user_id, idp_user, auth_token)
+
+            assert result == expected_user
+            mock_budget_sync.assert_called_once_with(user_id, ["project1", "project2"])
+
+    @pytest.mark.asyncio
+    async def test_authenticate_persistent_user_first_login_budget_sync_failure_is_non_fatal(self):
+        """Budget sync failure on first IDP login does not break authentication"""
+        user_id = str(uuid4())
+        auth_token = "token-budget-fail"
+
+        idp_user = security_user.User(
+            id=user_id,
+            username="svc-account",
+            name="Service Account",
+            email="svc@example.com",
+            user_type="service",
+            roles=[],
+            project_names=["project1"],
+            admin_project_names=[],
+            knowledge_bases=[],
+            is_admin=False,
+        )
+
+        created_user = UserDB(
+            id=user_id,
+            email="svc@example.com",
+            username="svc-account",
+            name="Service Account",
+            is_active=True,
+            deleted_at=None,
+        )
+
+        mock_session = AsyncMock()
+
+        expected_user = security_user.User(
+            id=user_id,
+            username="svc-account",
+            name="Service Account",
+            email="svc@example.com",
+            user_type="service",
+            roles=[],
+            project_names=["project1"],
+            admin_project_names=[],
+            knowledge_bases=[],
+            is_admin=False,
+            auth_token=auth_token,
+        )
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
+            patch(
+                "codemie.service.user.authentication_service.AuthenticationService._create_first_login_user",
+                new_callable=AsyncMock,
+            ) as mock_create,
+            patch(
+                "codemie.service.user.authentication_service.AuthenticationService._sync_budget_for_idp_projects",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("db unavailable"),
+            ),
+            patch(
+                "codemie.service.user.authentication_service.AuthenticationService._finalize_authentication",
+                new_callable=AsyncMock,
+            ) as mock_finalize,
+            patch("codemie.service.user.authentication_service.config") as mock_config,
+        ):
+            mock_config.IDP_PROVIDER = "keycloak"
+            mock_get_session.return_value = _make_async_session_cm(mock_session)
+            mock_user_repo.aget_by_id = AsyncMock(return_value=None)
+            mock_create.return_value = created_user
+            mock_finalize.return_value = expected_user
+
+            result = await AuthenticationService.authenticate_persistent_user(user_id, idp_user, auth_token)
+
+            assert result == expected_user
+
+
+class TestSyncBudgetForIdpProjects:
+    """Tests for _sync_budget_for_idp_projects helper internals"""
+
+    @pytest.mark.asyncio
+    async def test_syncs_each_project_with_committed_session(self):
+        """Calls _sync_project_budget_member_added per project and commits each session"""
+        user_id = str(uuid4())
+
+        mock_session = MagicMock()
+        mock_session_cm = MagicMock()
+        mock_session_cm.__enter__ = MagicMock(return_value=mock_session)
+        mock_session_cm.__exit__ = MagicMock(return_value=False)
+
+        async def fake_to_thread(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with (
+            patch("codemie.service.user.authentication_service.asyncio") as mock_asyncio,
+            patch("codemie.clients.postgres.get_session", return_value=mock_session_cm),
+            patch(
+                "codemie.service.project.project_assignment_service.ProjectAssignmentService"
+                "._sync_project_budget_member_added"
+            ) as mock_sync,
+        ):
+            mock_asyncio.to_thread.side_effect = fake_to_thread
+
+            await AuthenticationService._sync_budget_for_idp_projects(user_id, ["project1", "project2"])
+
+        assert mock_sync.call_count == 2
+        mock_sync.assert_any_call(mock_session, "project1", user_id, actor_id=None)
+        mock_sync.assert_any_call(mock_session, "project2", user_id, actor_id=None)
+        assert mock_session.commit.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_per_project_exception_is_swallowed_and_loop_continues(self):
+        """A failure on one project does not prevent processing remaining projects"""
+        user_id = str(uuid4())
+
+        mock_session = MagicMock()
+        mock_session_cm = MagicMock()
+        mock_session_cm.__enter__ = MagicMock(return_value=mock_session)
+        mock_session_cm.__exit__ = MagicMock(return_value=False)
+
+        call_count = 0
+
+        async def fake_to_thread_failing_first(fn, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("DB error on project1")
+            return fn(*args, **kwargs)
+
+        with (
+            patch("codemie.service.user.authentication_service.asyncio") as mock_asyncio,
+            patch("codemie.clients.postgres.get_session", return_value=mock_session_cm),
+            patch(
+                "codemie.service.project.project_assignment_service.ProjectAssignmentService"
+                "._sync_project_budget_member_added"
+            ) as mock_sync,
+        ):
+            mock_asyncio.to_thread.side_effect = fake_to_thread_failing_first
+
+            # Must not raise — per-project exception is swallowed
+            await AuthenticationService._sync_budget_for_idp_projects(user_id, ["project1", "project2"])
+
+        # project2 was still processed despite project1 failing
+        mock_sync.assert_called_once_with(mock_session, "project2", user_id, actor_id=None)
+
 
 class TestEnsureProjectExists:
     """Tests for ensure_project_exists() method"""

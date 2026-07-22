@@ -18,6 +18,8 @@ Addresses Code Review MEDIUM #5: Layering violation fix.
 Moves assignment logic from router to service layer following API->Service->Repository pattern.
 """
 
+from typing import Optional
+
 import asyncio
 from datetime import UTC, datetime, timezone
 
@@ -116,7 +118,9 @@ class ProjectAssignmentService:
         return budget.soft_budget, budget.max_budget
 
     @staticmethod
-    def _sync_project_budget_member_added(session: Session, project_name: str, user_id: str, actor_id: str) -> None:
+    def _sync_project_budget_member_added(
+        session: Session, project_name: str, user_id: str, actor_id: Optional[str]
+    ) -> None:
         """Create conservative allocations for a newly added member on active project budgets."""
         assignments = session.exec(
             select(ProjectBudgetAssignment).where(

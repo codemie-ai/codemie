@@ -23,6 +23,7 @@ Handles user authentication including:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 from uuid import UUID
 
@@ -264,6 +265,28 @@ class AuthenticationService:
                 await session.commit()
             except Exception as e:
                 logger.error(f"Failed to commit project creation: {e}", exc_info=True)
+
+    @staticmethod
+    async def _sync_budget_for_idp_projects(user_id: str, project_names: list[str]) -> None:
+        from codemie.clients.postgres import get_session
+        from codemie.service.project.project_assignment_service import ProjectAssignmentService
+
+        def _sync_one(project_name: str) -> None:
+            with get_session() as session:
+                ProjectAssignmentService._sync_project_budget_member_added(
+                    session, project_name, user_id, actor_id=None
+                )
+                session.commit()
+
+        for project_name in project_names:
+            try:
+                await asyncio.to_thread(_sync_one, project_name)
+            except Exception as e:
+                logger.warning(
+                    f"budget_sync_skipped_on_idp_bootstrap: user_id={user_id!r} "
+                    f"project_name={project_name!r} error={e}",
+                    exc_info=True,
+                )
 
     @staticmethod
     async def sync_idp_user_profile(session: AsyncSession, db_user: UserDB, idp_user: security_user.User) -> UserDB:
@@ -513,6 +536,7 @@ class AuthenticationService:
         AuthenticationService._validate_user_id_uuid(user_id)
 
         pre_sync_email = None
+        is_new_idp_user = False
         async with get_async_session() as session:
             db_user = await user_repository.aget_by_id(session, user_id)
 
@@ -522,6 +546,7 @@ class AuthenticationService:
                 db_user, pre_sync_email = await AuthenticationService._create_or_recover_user(
                     session, user_id, idp_user
                 )
+                is_new_idp_user = True
 
             if not db_user.is_active or db_user.deleted_at is not None:
                 raise ExtendedHTTPException(code=401, message=_ACCOUNT_DEACTIVATED)
@@ -535,6 +560,13 @@ class AuthenticationService:
             # user.login is recorded only for local auth (authenticate_and_login), where
             # we own the login endpoint and know exactly when credentials were submitted.
             await session.commit()
+
+        # Bootstrap project budget allocations for new IDP users (post-commit so user row is visible)
+        if is_new_idp_user and idp_user and idp_user.project_names:
+            try:
+                await AuthenticationService._sync_budget_for_idp_projects(db_user.id, idp_user.project_names)
+            except Exception as e:
+                logger.warning(f"budget_sync_failed_on_idp_bootstrap: user_id={db_user.id!r} error={e}", exc_info=True)
 
         if pre_sync_email and security_user_ins.email != pre_sync_email:
             from codemie.service.project.personal_project_service import personal_project_service

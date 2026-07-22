@@ -1,0 +1,65 @@
+{
+  "decision": "approve",
+  "rationale": "All 5 findings resolved in the fix-up diff. CR-001: budget sync call moved to authenticate_persistent_user after await session.commit(), so the user row is committed and visible to the new sync session before any FK insert. CR-002: _sync_one inner helper wraps the sync DB work and is dispatched via asyncio.to_thread, unblocking the event loop. CR-003: is_new_idp_user flag set in the else branch covers both the winner and race-loser paths from _create_or_recover_user. CR-004: the new outer logger.warning call includes exc_info=True. CR-005: TestSyncBudgetForIdpProjects directly tests per-project session lifecycle and per-project exception isolation; two new TestAuthenticatePersistentUser tests cover post-commit call and non-fatal failure. No new high-risk issues introduced in the fix-up.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "New async static method _sync_budget_for_idp_projects added with correct signature", "status": "pass", "notes": "Carried forward from final round — implemented at authentication_service.py with @staticmethod, async def, correct parameters and -> None return"},
+    {"kind": "spec", "item": "Per-project isolated synchronous session opened with get_session()", "status": "pass", "notes": "Carried forward — deferred import of get_session inside _sync_one; each loop iteration opens its own sync session"},
+    {"kind": "spec", "item": "Calls _sync_project_budget_member_added(session, project_name, user_id, actor_id=None)", "status": "pass", "notes": "Carried forward — exact call with actor_id=None keyword argument inside _sync_one"},
+    {"kind": "spec", "item": "Session committed after the call inside the with-block", "status": "pass", "notes": "Carried forward — session.commit() follows the service call inside the with get_session() block in _sync_one"},
+    {"kind": "spec", "item": "Per-project try/except Exception logs warning and continues (non-fatal)", "status": "pass", "notes": "Carried forward — Exception caught at asyncio.to_thread call site, logger.warning with user_id and project_name context, exc_info=True, loop continues"},
+    {"kind": "spec", "item": "actor_id=None used because no human actor in Keycloak bootstrap", "status": "pass", "notes": "Carried forward — explicit actor_id=None keyword argument at the call site in _sync_one"},
+    {"kind": "spec", "item": "Call site in create_user_from_idp placed after IDP project loop and before KB loop, wrapped in outer try/except", "status": "pass", "notes": "Design pivot: call site moved to authenticate_persistent_user post-commit (correct fix for CR-001); the spec intent (non-fatal, post-project-assignment) is satisfied"},
+    {"kind": "spec", "item": "Outer call-site warning message: budget_sync_failed_on_idp_bootstrap", "status": "pass", "notes": "Carried forward — exact f-string budget_sync_failed_on_idp_bootstrap: user_id={db_user.id!r} error={e} in authenticate_persistent_user"},
+    {"kind": "spec", "item": "actor_id: str -> Optional[str] type hint fix in _sync_project_budget_member_added", "status": "pass", "notes": "Carried forward — project_assignment_service.py signature updated in prior round"},
+    {"kind": "spec", "item": "No database migration required (column already nullable)", "status": "pass", "notes": "Carried forward — no migration file; only Python type annotation updated"},
+    {"kind": "spec", "item": "test_create_user_from_idp_success asserts helper called once with correct user_id and project_names", "status": "pass", "notes": "Test updated: stale mock_budget_sync assertion removed (call site moved); new test test_authenticate_persistent_user_first_login_calls_budget_sync_after_commit asserts mock_budget_sync.assert_called_once_with(user_id, [...])"},
+    {"kind": "spec", "item": "test_create_user_from_idp_budget_sync_failure_is_non_fatal: outer-level raise does not propagate, login completes normally", "status": "pass", "notes": "Test moved: test_authenticate_persistent_user_first_login_budget_sync_failure_is_non_fatal covers the same invariant at the correct call site in authenticate_persistent_user"}
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "Fix-up commit follows EPMCDME-####: Description format: 'EPMCDME-13582: Fix budget sync timing and event-loop blocking on IDP first login'"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "import asyncio placed correctly in stdlib imports section. asyncio.to_thread used correctly. Inner _sync_one helper cleanly separates sync/async concerns. No apparent Ruff violations."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No secrets logged — user_id sanitized with !r. Parameterized SQLAlchemy queries. Thread-pool offload does not introduce shared mutable state (each _sync_one call gets its own session). Non-fatal budget sync does not weaken authentication."
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Budget sync call removed from create_user_from_idp. is_new_idp_user flag added before async with block (False), set to True in else branch. Post-commit call added in authenticate_persistent_user after await session.commit() and after the async with block closes, guaranteeing the user row is visible to the new sync session."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "Inner _sync_one(project_name) sync helper wraps get_session() + _sync_project_budget_member_added + session.commit(). Per-project loop now does await asyncio.to_thread(_sync_one, project_name), offloading all sync DB work to the thread pool and freeing the asyncio event loop."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "is_new_idp_user = True is set in the else branch of authenticate_persistent_user, which covers both the winner path (direct _create_first_login_user success) and the race-loser recovery path (IntegrityError caught in _create_or_recover_user, user re-fetched). Both paths set the flag; post-commit budget sync fires for either."
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "The old logger.warning without exc_info=True in create_user_from_idp was removed entirely. The new outer logger.warning in authenticate_persistent_user includes exc_info=True, preserving the full stack trace on outer failures."
+    },
+    {
+      "id": "CR-005",
+      "status": "resolved",
+      "notes": "TestSyncBudgetForIdpProjects added with test_syncs_each_project_with_committed_session (verifies _sync_project_budget_member_added called per project, session.commit called per project, correct args) and test_per_project_exception_is_swallowed_and_loop_continues (verifies first-project failure does not prevent second project). Two new TestAuthenticatePersistentUser tests cover post-commit call and non-fatal failure path."
+    }
+  ]
+}

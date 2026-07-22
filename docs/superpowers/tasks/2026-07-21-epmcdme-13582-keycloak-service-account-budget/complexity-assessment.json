@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "task": "Add _sync_project_budget_member_added call in create_user_from_idp so service accounts get a budget record on first Keycloak login",
+  "generated": "2026-07-21T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 12,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Change is inside create_user_from_idp, the authentication first-login path — auth red flag applied, bumping from M to L. Primary implementation risk is the sync/async session boundary: _sync_project_budget_member_added requires a synchronous sqlmodel.Session but the insertion point is an AsyncSession context. Established bridging patterns exist in the codebase (post-commit isolated sync session), but an unguarded exception in the new call could disrupt the login flow."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Two Service-layer components touched: AuthenticationService.create_user_from_idp (modified to add the call) and ProjectAssignmentService._sync_project_budget_member_added (possibly extended with an async overload). Both are in the same tier with no cross-layer coordination required."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M (3) to L (4): change is inside create_user_from_idp, the Keycloak first-login authentication path — auth/authorization red flag applies"
+  ],
+  "split_recommendation": null
+}

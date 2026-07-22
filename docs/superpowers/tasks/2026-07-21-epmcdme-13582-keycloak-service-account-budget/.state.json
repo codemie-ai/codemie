@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "flow": "sdlc-task",
+  "slug": "epmcdme-13582-keycloak-service-account-budget",
+  "branch": "EPMCDME-13582_project-budget-not-applied-to-member-enforcement",
+  "phase": "maintenance",
+  "started_at": "2026-07-21T00:00:00Z",
+  "completed_at": "2026-07-21T12:00:00Z",
+  "last_sync_commit": "HEAD",
+  "actual_complexity": {
+    "size": "S",
+    "notes": "Predicted S matched. 3 files touched. Technical risk justified at L: sync/async boundary required asyncio.to_thread + inner _sync_one helper; call site had to move from create_user_from_idp to post-commit in authenticate_persistent_user (PostgreSQL READ COMMITTED visibility). Code review surfaced 5 findings requiring one fix-up round."
+  }
+}
