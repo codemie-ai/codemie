@@ -85,8 +85,8 @@ def set_llm_context(
                 is_shared = getattr(asset, 'shared', None)
                 if is_shared is None:
                     is_shared = getattr(asset, 'project_space_visible', True)
-                if is_shared:
-                    litellm_creds = None  # shared asset → force project budget even when user has personal key
+                if is_shared and not getattr(setting, 'is_global', False):
+                    litellm_creds = None  # shared asset → force project budget when user has non-global personal key
         litellm_context = LiteLLMContext(credentials=litellm_creds, current_project=effective_project)
         set_litellm_context(litellm_context)
         dial_creds = SettingsService.get_dial_creds(effective_project)

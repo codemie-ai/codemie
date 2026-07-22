@@ -418,6 +418,7 @@ class TestResolveEffectiveProjectSharing:
 
         mock_setting = MagicMock()
         mock_setting.setting_type = "user"  # not PROJECT — would normally allow bypass
+        mock_setting.is_global = False  # non-global key — shared-asset routing must still null it
         mock_settings.retrieve_setting.return_value = mock_setting
         mock_settings.get_dial_creds.return_value = None
 
@@ -434,6 +435,36 @@ class TestResolveEffectiveProjectSharing:
         assert isinstance(ctx, LiteLLMContext)
         assert ctx.credentials is None  # shared asset → key must not bypass project budget
         assert ctx.current_project == "proj-a"
+
+    @patch('codemie.service.llm_service.utils.set_litellm_context')
+    @patch('codemie.service.llm_service.utils.set_dial_credentials')
+    @patch('codemie.service.llm_service.utils.SettingsService')
+    def test_set_llm_context_global_integration_shared_asset_creds_preserved(
+        self, mock_settings, mock_dial, mock_set_litellm
+    ):
+        """Global USER integration (is_global=True) + shared asset → creds preserved; bypasses project budget."""
+        personal_creds = LiteLLMCredentials(api_key="global-user-key", url="https://litellm.test.com")
+        mock_settings.get_litellm_creds.return_value = personal_creds
+
+        mock_setting = MagicMock()
+        mock_setting.setting_type = "user"
+        mock_setting.is_global = True  # global USER integration
+        mock_settings.retrieve_setting.return_value = mock_setting
+        mock_settings.get_dial_creds.return_value = None
+
+        asset = MagicMock()
+        asset.project = "other-project"
+        asset.shared = True  # shared asset — normally nulls creds
+        asset.is_global = False  # not a marketplace assistant
+        user = _make_user()
+
+        set_llm_context(asset, None, user)
+
+        mock_set_litellm.assert_called_once()
+        ctx = mock_set_litellm.call_args[0][0]
+        assert isinstance(ctx, LiteLLMContext)
+        assert ctx.credentials == personal_creds  # global integration must NOT be nulled
+        assert ctx.current_project == "other-project"
 
     @patch('codemie.service.llm_service.utils.set_litellm_context')
     @patch('codemie.service.llm_service.utils.set_dial_credentials')
