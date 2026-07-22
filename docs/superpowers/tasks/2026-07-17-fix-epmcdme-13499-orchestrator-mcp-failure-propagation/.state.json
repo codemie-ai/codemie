@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "flow": "sdlc-light",
+  "slug": "fix-epmcdme-13499-orchestrator-mcp-failure-propagation",
+  "branch": "fix/epmcdme-13499-orchestrator-mcp-failure-propagation",
+  "phase": "main",
+  "started_at": "2026-07-17T11:04:00Z"
+}

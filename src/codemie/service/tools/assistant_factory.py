@@ -23,6 +23,7 @@ from codemie.core.models import AssistantChatRequest
 from codemie.core.constants import UniqueThoughtParentIds
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
+from codemie.service.mcp.models import MCPToolLoadException
 
 
 def _validate_remote_entity_exists_and_cleanup(assistant: Assistant) -> Optional[str]:
@@ -141,7 +142,6 @@ def create_assistant_executors(
                 from codemie.service.assistant.assistant_version_service import AssistantVersionService
 
                 assistant = AssistantVersionService.apply_version_to_assistant(assistant, version_number)
-
             factory = AssistantFactory(
                 assistant=assistant,
                 user=user,
@@ -154,5 +154,7 @@ def create_assistant_executors(
             executors.append(executor)
         except Exception as e:
             logger.error(f"Failed to create executor for assistant {assistant.id}: {str(e)}")
+            if isinstance(e, MCPToolLoadException):
+                raise
 
     return executors
