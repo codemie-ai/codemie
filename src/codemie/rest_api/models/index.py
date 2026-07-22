@@ -1236,7 +1236,7 @@ class IndexKnowledgeBaseRequest(BaseModel):
 class IndexKnowledgeBaseConfluenceRequest(CronExpressionValidatorMixin, IndexKnowledgeBaseRequest):
     cql: Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)]
     setting_id: Optional[str] = None
-    include_restricted_content: Optional[bool] = False
+    include_restricted_content: Optional[bool] = True
     include_archived_content: Optional[bool] = False
     include_attachments: Optional[bool] = False
     include_comments: Optional[bool] = False

@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-light",
+  "slug": "epmcdme-10548-include-restricted-content-default",
+  "branch": "EPMCDME-10548",
+  "phase": "maintenance",
+  "started_at": "2026-07-13T14:30:00Z",
+  "completed_at": "2026-07-13T10:24:43Z",
+  "last_sync_commit": "22c4179e001a952d26505bc6c33ef02c7bdd3f17"
+}

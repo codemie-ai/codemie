@@ -42,7 +42,7 @@ class TestIndexKnowledgeBaseConfluenceConfig(unittest.TestCase):
         self.assertEqual(result.cql, 'cql', "Expected cql to be 'cql'")
         self.assertEqual(result.pages_per_request, 20, "Expected pages_per_request to be 20")
         self.assertEqual(result.max_pages, 1000, "Expected max_pages to be 1000")
-        self.assertFalse(result.include_restricted_content, "Expected include_restricted_content to be False")
+        self.assertTrue(result.include_restricted_content, "Expected include_restricted_content to be True by default")
         self.assertFalse(result.include_archived_content, "Expected include_archived_content to be False")
         self.assertFalse(result.include_attachments, "Expected include_attachments to be False")
         self.assertFalse(result.include_comments, "Expected include_comments to be False")
@@ -56,10 +56,32 @@ class TestIndexKnowledgeBaseConfluenceConfig(unittest.TestCase):
         self.assertEqual(result.cql, 'cql', "Expected cql to be 'cql'")
         self.assertEqual(result.pages_per_request, 20, "Expected pages_per_request to be 20")
         self.assertEqual(result.max_pages, 1000, "Expected max_pages to be 1000")
-        self.assertFalse(result.include_restricted_content, "Expected include_restricted_content to be False")
+        self.assertTrue(result.include_restricted_content, "Expected include_restricted_content to be True by default")
         self.assertFalse(result.include_archived_content, "Expected include_archived_content to be False")
         self.assertFalse(result.include_attachments, "Expected include_attachments to be False")
         self.assertFalse(result.include_comments, "Expected include_comments to be False")
+
+    def test_to_confluence_index_info_preserves_include_restricted_content(self):
+        config = IndexKnowledgeBaseConfluenceConfig(
+            cql='test cql',
+            include_restricted_content=True,
+        )
+
+        result = config.to_confluence_index_info()
+
+        self.assertEqual(result.cql, 'test cql')
+        self.assertTrue(result.include_restricted_content, "Expected include_restricted_content to be preserved")
+
+    def test_from_confluence_index_info_preserves_include_restricted_content(self):
+        index_info = ConfluenceIndexInfo(
+            cql='test cql',
+            include_restricted_content=True,
+        )
+
+        result = IndexKnowledgeBaseConfluenceConfig.from_confluence_index_info(index_info)
+
+        self.assertEqual(result.cql, 'test cql')
+        self.assertTrue(result.include_restricted_content, "Expected include_restricted_content to be preserved")
 
 
 class TestConfluenceDatasourceProcessor(unittest.TestCase):
@@ -337,7 +359,7 @@ class TestConfluenceDatasourceProcessor(unittest.TestCase):
         self.assertFalse(loader.include_archived_content)
         self.assertFalse(loader.include_comments)
         self.assertFalse(loader.include_attachments)
-        self.assertFalse(loader.include_restricted_content)
+        self.assertTrue(loader.include_restricted_content)
         self.assertFalse(loader.keep_newlines)
         self.assertTrue(loader.keep_markdown_format)
 

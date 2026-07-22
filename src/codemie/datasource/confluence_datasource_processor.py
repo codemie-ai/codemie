@@ -44,7 +44,7 @@ from codemie.service.llm_service.llm_service import llm_service
 
 class IndexKnowledgeBaseConfluenceConfig(BaseModel):
     cql: str
-    include_restricted_content: Optional[bool] = False
+    include_restricted_content: Optional[bool] = True
     include_archived_content: Optional[bool] = False
     include_attachments: Optional[bool] = False
     include_comments: Optional[bool] = False
@@ -57,12 +57,14 @@ class IndexKnowledgeBaseConfluenceConfig(BaseModel):
     def to_confluence_index_info(self) -> ConfluenceIndexInfo:
         return ConfluenceIndexInfo(
             cql=self.cql,
+            include_restricted_content=self.include_restricted_content,
         )
 
     @classmethod
     def from_confluence_index_info(cls, index_info: ConfluenceIndexInfo):
         return IndexKnowledgeBaseConfluenceConfig(
             cql=index_info.cql,
+            include_restricted_content=index_info.include_restricted_content,
         )
 
 

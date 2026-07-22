@@ -266,6 +266,7 @@ def test_reindex_jira(
 def mock_confluence_index_info_full(mock_base_index_info):
     mock_confluence_info = MagicMock(spec=ConfluenceIndexInfo)
     mock_confluence_info.cql = "test_cql_query"
+    mock_confluence_info.include_restricted_content = False
 
     mock_base_index_info.index_type = "confluence"
     mock_base_index_info.setting_id = "test_setting_id_confluence"
