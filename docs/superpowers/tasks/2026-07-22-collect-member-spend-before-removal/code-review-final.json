@@ -1,0 +1,24 @@
+{
+  "decision": "approve",
+  "rationale": "All blocking findings addressed. CR-002 (rollover observability) fixed: logger.debug upgraded to logger.warning with current_spend and prev_period_spend values included. Core implementation correct: fail-open ordering, no enterprise imports, correct delta logic, all plan ACs met.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {"id": "AC-1", "criterion": "_capture_terminal_member_spend() static async helper added", "status": "pass", "notes": "Method present and correctly structured"},
+    {"id": "AC-2", "criterion": "Fetches via collect_member_budget_spend_for_refs() for specific provider_member_ref", "status": "pass", "notes": "Called with {ref} single-element set"},
+    {"id": "AC-3", "criterion": "Writes terminal row to project_spend_tracking", "status": "pass", "notes": "insert_member_budget_entries called with ProjectSpendTracking row"},
+    {"id": "AC-4", "criterion": "Called via _run_budget_provider_coro() bridge", "status": "pass", "notes": "Confirmed in loop modification"},
+    {"id": "AC-5", "criterion": "Called STRICTLY BEFORE delete_member_allocation()", "status": "pass", "notes": "Capture try-block precedes delete try-block; _run_budget_provider_coro is synchronous/blocking"},
+    {"id": "AC-6", "criterion": "Fail-open: two separate try/except blocks", "status": "pass", "notes": "Two distinct try/except with logger.warning()"},
+    {"id": "AC-7", "criterion": "No enterprise imports in core", "status": "pass", "notes": "No codemie.enterprise.litellm imports"},
+    {"id": "AC-8", "criterion": "provider_member_ref read from metadata dict only", "status": "pass", "notes": "Exact dict navigation used"},
+    {"id": "AC-9", "criterion": "Delta computation correct; skip if delta<=0; bootstrap uses full spend", "status": "pass", "notes": "Normal delta and bootstrap correct. Rollover path now emits logger.warning with current_spend and prev_period_spend values — terminal removal skip is visible in prod monitoring."},
+    {"id": "AC-10", "criterion": "Tests cover all required paths", "status": "partial", "notes": "Missing: rollover/negative-delta scenario test; no test for provider_metadata=None (code handles it but untested). Deferred — not blocking."}
+  ],
+  "standards_review": [
+    {"standard": "commit-format", "status": "pass", "notes": "Both commits follow EPMCDME-13619: <description> format"},
+    {"standard": "code-quality", "status": "pass", "notes": "Import order follows isort/Ruff; no visible Ruff violations in diff"},
+    {"standard": "security", "status": "pass", "notes": "No secrets in committed code"}
+  ],
+  "findings": []
+}

@@ -631,7 +631,7 @@ async def _shutdown_services(app: FastAPI, tasks: list):
 async def lifespan(app: FastAPI):
     logger.info(f"Starting CodeMie application. Config={config.to_safe_dict()}")
 
-    from codemie.enterprise.litellm.project_member_runtime_sync import set_main_event_loop
+    from codemie.core.event_loop import set_main_event_loop
 
     set_main_event_loop(asyncio.get_running_loop())
 

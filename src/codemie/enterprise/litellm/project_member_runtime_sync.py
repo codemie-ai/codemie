@@ -31,12 +31,7 @@ from codemie.service.budget.budget_resolution_service import _resolution_cache, 
 from codemie.service.budget.provider import BudgetProviderMemberState
 from codemie.service.budget.provider_registry import get_active_provider
 
-_main_event_loop: asyncio.AbstractEventLoop | None = None
-
-
-def set_main_event_loop(loop: asyncio.AbstractEventLoop) -> None:
-    global _main_event_loop
-    _main_event_loop = loop
+from codemie.core.event_loop import get_main_event_loop
 
 
 _ALLOWED_SYNC_STATUSES = {SyncStatus.OK.value, SyncStatus.NOOP.value}
@@ -338,7 +333,7 @@ def resync_project_member_allocations_sync(project_name: str, enforce_limit: boo
     """
     coro = resync_project_member_allocations(project_name=project_name, enforce_limit=enforce_limit)
 
-    loop = _main_event_loop
+    loop = get_main_event_loop()
     try:
         current_loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -395,7 +390,7 @@ def ensure_project_member_runtime_ready_sync(
     # run_coroutine_threadsafe + future.result() would deadlock in that case
     # because the loop is blocked waiting for the sync caller to return and
     # can never schedule the new coroutine.
-    loop = _main_event_loop
+    loop = get_main_event_loop()
     try:
         current_loop = asyncio.get_running_loop()
     except RuntimeError:

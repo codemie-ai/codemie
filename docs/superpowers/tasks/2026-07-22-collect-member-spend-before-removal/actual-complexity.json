@@ -1,0 +1,28 @@
+{
+  "feature_area": "budget spend-tracking project-member-removal litellm",
+  "task": "Collect member spend synchronously before LiteLLM customer deletion in _sync_project_budget_member_removed() to prevent spend loss on mid-period member removal.",
+  "generated": "2026-07-22T00:00:00Z",
+  "mode": "actual",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 14,
+  "size": "S",
+  "key_reasoning": [
+    "Component Scope (M): new _capture_terminal_member_spend() helper inside ProjectAssignmentService + modified loop + 3-line repository singleton; spans Service and Repository components plus invocation of External layer via existing provider protocol — 2-3 components across 2-3 layers, no new class or module",
+    "Technical Risk (M): async/sync boundary via _run_budget_provider_coro() required wrapping both provider call and DB write in a single coroutine; ordering constraint (fetch before soft-delete) required careful loop restructuring; zero prior test coverage for _sync_project_budget_member_removed(); mitigated by direct analog pattern in collect_member_budget_reset_window()",
+    "Red flags applied: none — no migration, no new external service, no schema change, no auth involvement, no vague criteria"
+  ],
+  "files_changed": [
+    "src/codemie/repository/project_spend_tracking_repository.py (+3 lines — module-level singleton)",
+    "src/codemie/service/project/project_assignment_service.py (+~80 lines — helper + loop modification)",
+    "tests/codemie/service/project/test_project_assignment_service.py (+~260 lines — 22 new tests)"
+  ],
+  "affected_layers_detail": ["Service", "Repository", "External (LiteLLM via existing provider protocol)"],
+  "routing": "superpowers:subagent-driven-development — direct implementation, no planning needed"
+}

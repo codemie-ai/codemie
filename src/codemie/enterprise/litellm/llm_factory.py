@@ -392,7 +392,7 @@ def _mirror_platform_budget_assignment(*, user_id: str | None, customer: Any | N
         return
     import asyncio
 
-    from .project_member_runtime_sync import _main_event_loop
+    from codemie.core.event_loop import _main_event_loop
     from codemie.service.budget.budget_enums import BudgetCategory as CoreBudgetCategory
     from codemie.service.budget.budget_service import budget_service
 

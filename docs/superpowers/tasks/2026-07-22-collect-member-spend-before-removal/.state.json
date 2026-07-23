@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-light",
+  "slug": "collect-member-spend-before-removal",
+  "branch": "EPMCDME-13619",
+  "phase": "maintenance",
+  "started_at": "2026-07-22T00:00:00Z",
+  "completed_at": "2026-07-23T00:00:00Z",
+  "last_sync_commit": "f71cabb201efca3320420676688472bc25c03b4a"
+}

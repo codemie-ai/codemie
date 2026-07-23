@@ -20,11 +20,17 @@ from uuid import uuid4
 
 import pytest
 
+from decimal import Decimal
+from unittest.mock import AsyncMock
+
+
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
+from codemie.repository.project_spend_tracking_repository import ProjectSpendTrackingRepository
 from codemie.rest_api.models.user_management import UserDB, UserProject
-from codemie.service.budget.budget_enums import AllocationMode, SyncStatus
+from codemie.service.budget.budget_enums import AllocationMode, BudgetCategory, SyncStatus
 from codemie.service.budget.budget_models import Budget, ProjectBudgetAssignment, ProjectMemberBudgetAssignment
+from codemie.service.budget.provider import MemberBudgetSpendSnapshot
 from codemie.service.project.project_assignment_service import ProjectAssignmentService, project_assignment_service
 
 
@@ -848,3 +854,273 @@ class TestProjectAssignmentServiceSingleton:
         # Assert
         assert project_assignment_service is not None
         assert isinstance(project_assignment_service, ProjectAssignmentService)
+
+
+class TestProjectSpendTrackingRepositorySingleton:
+    def test_singleton_exists_and_is_correct_type(self):
+        from codemie.repository.project_spend_tracking_repository import project_spend_tracking_repository
+
+        assert project_spend_tracking_repository is not None
+        assert isinstance(project_spend_tracking_repository, ProjectSpendTrackingRepository)
+
+
+class TestCaptureTerminalMemberSpend:
+    """Unit tests for ProjectAssignmentService._capture_terminal_member_spend."""
+
+    def _make_allocation(self, provider_member_ref=None):
+        raw = {}
+        if provider_member_ref:
+            raw["provider_member_ref"] = provider_member_ref
+        return ProjectMemberBudgetAssignment(
+            project_name="myproject",
+            budget_category="platform",
+            project_budget_id="bgt-1",
+            user_id="user-abc",
+            allocation_mode="equal",
+            allocated_soft_budget=50.0,
+            allocated_max_budget=100.0,
+            assigned_by="admin",
+            budget_id="bgt-1",
+            provider_metadata={"raw": raw} if raw else {},
+        )
+
+    def _make_snapshot(self, spend="5.00"):
+        return MemberBudgetSpendSnapshot(
+            project_name="myproject",
+            budget_category=BudgetCategory.PLATFORM,
+            budget_id="bgt-1",
+            user_id="user-abc",
+            spend=Decimal(spend),
+            provider_subject_id="subj-1",
+        )
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.project.project_assignment_service.project_spend_tracking_repository")
+    @patch("codemie.service.project.project_assignment_service.get_async_session")
+    async def test_happy_path_bootstrap_no_prev_row(self, mock_get_session, mock_repo):
+        """Bootstrap case: no previous row — daily_spend equals full snapshot spend."""
+        now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc)
+        allocation = self._make_allocation(provider_member_ref="ref-1")
+        snapshot = self._make_snapshot("5.00")
+
+        mock_provider = AsyncMock()
+        mock_provider.collect_member_budget_spend_for_refs.return_value = [snapshot]
+
+        mock_session = AsyncMock()
+        mock_get_session.return_value.__aenter__.return_value = mock_session
+
+        mock_repo.get_latest_before_by_member_budget_ids = AsyncMock(return_value={})
+        mock_repo.insert_member_budget_entries = AsyncMock()
+
+        await ProjectAssignmentService._capture_terminal_member_spend(allocation, mock_provider, now)
+
+        mock_provider.collect_member_budget_spend_for_refs.assert_awaited_once_with({"ref-1"})
+        mock_repo.insert_member_budget_entries.assert_awaited_once()
+        inserted_rows = mock_repo.insert_member_budget_entries.call_args[0][1]
+        assert len(inserted_rows) == 1
+        row = inserted_rows[0]
+        assert row.daily_spend == Decimal("5.0000000000")
+        assert row.cumulative_spend == Decimal("5.0000000000")
+        assert row.budget_period_spend == Decimal("5.0000000000")
+        assert row.project_name == "myproject"
+        assert row.user_id == "user-abc"
+        assert row.budget_id == "bgt-1"
+        assert row.budget_category == "platform"
+        assert row.spend_date == now
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.project.project_assignment_service.project_spend_tracking_repository")
+    @patch("codemie.service.project.project_assignment_service.get_async_session")
+    async def test_happy_path_with_prev_row_computes_delta(self, mock_get_session, mock_repo):
+        """Delta case: previous row exists — daily_spend is the difference."""
+        now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc)
+        allocation = self._make_allocation(provider_member_ref="ref-1")
+        snapshot = self._make_snapshot("9.00")
+
+        prev_row = MagicMock()
+        prev_row.budget_period_spend = Decimal("6.00")
+        prev_row.cumulative_spend = Decimal("20.00")
+
+        mock_provider = AsyncMock()
+        mock_provider.collect_member_budget_spend_for_refs.return_value = [snapshot]
+
+        mock_session = AsyncMock()
+        mock_get_session.return_value.__aenter__.return_value = mock_session
+
+        mock_repo.get_latest_before_by_member_budget_ids = AsyncMock(
+            return_value={("myproject", "bgt-1", "user-abc"): prev_row}
+        )
+        mock_repo.insert_member_budget_entries = AsyncMock()
+
+        await ProjectAssignmentService._capture_terminal_member_spend(allocation, mock_provider, now)
+
+        inserted_rows = mock_repo.insert_member_budget_entries.call_args[0][1]
+        row = inserted_rows[0]
+        assert row.daily_spend == Decimal("3.0000000000")  # 9 - 6
+        assert row.cumulative_spend == Decimal("23.0000000000")  # 20 + 3
+        assert row.budget_period_spend == Decimal("9.0000000000")
+
+    @pytest.mark.asyncio
+    async def test_no_provider_member_ref_skips_silently(self):
+        """No provider_member_ref in metadata — collection skipped, no error."""
+        now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc)
+        allocation = self._make_allocation(provider_member_ref=None)
+        mock_provider = AsyncMock()
+
+        await ProjectAssignmentService._capture_terminal_member_spend(allocation, mock_provider, now)
+
+        mock_provider.collect_member_budget_spend_for_refs.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.project.project_assignment_service.project_spend_tracking_repository")
+    @patch("codemie.service.project.project_assignment_service.get_async_session")
+    async def test_zero_delta_skips_insert(self, mock_get_session, mock_repo):
+        """Delta is zero — row insert is skipped."""
+        now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc)
+        allocation = self._make_allocation(provider_member_ref="ref-1")
+        snapshot = self._make_snapshot("6.00")
+
+        prev_row = MagicMock()
+        prev_row.budget_period_spend = Decimal("6.00")
+        prev_row.cumulative_spend = Decimal("20.00")
+
+        mock_provider = AsyncMock()
+        mock_provider.collect_member_budget_spend_for_refs.return_value = [snapshot]
+
+        mock_session = AsyncMock()
+        mock_get_session.return_value.__aenter__.return_value = mock_session
+
+        mock_repo.get_latest_before_by_member_budget_ids = AsyncMock(
+            return_value={("myproject", "bgt-1", "user-abc"): prev_row}
+        )
+        mock_repo.insert_member_budget_entries = AsyncMock()
+
+        await ProjectAssignmentService._capture_terminal_member_spend(allocation, mock_provider, now)
+
+        mock_repo.insert_member_budget_entries.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_empty_provider_snapshots_skips(self):
+        """Provider returns no snapshots — insert skipped."""
+        now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc)
+        allocation = self._make_allocation(provider_member_ref="ref-1")
+        mock_provider = AsyncMock()
+        mock_provider.collect_member_budget_spend_for_refs.return_value = []
+
+        await ProjectAssignmentService._capture_terminal_member_spend(allocation, mock_provider, now)
+
+        mock_provider.collect_member_budget_spend_for_refs.assert_awaited_once_with({"ref-1"})
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.project.project_assignment_service.project_spend_tracking_repository")
+    @patch("codemie.service.project.project_assignment_service.get_async_session")
+    async def test_provider_subject_id_falls_back_to_ref_when_snapshot_has_none(self, mock_get_session, mock_repo):
+        """Snapshot with provider_subject_id=None — row falls back to provider_member_ref."""
+        now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=timezone.utc)
+        allocation = self._make_allocation(provider_member_ref="ref-fallback")
+        snapshot = MemberBudgetSpendSnapshot(
+            project_name="myproject",
+            budget_category=BudgetCategory.PLATFORM,
+            budget_id="bgt-1",
+            user_id="user-abc",
+            spend=Decimal("7.00"),
+            provider_subject_id=None,
+        )
+
+        mock_provider = AsyncMock()
+        mock_provider.collect_member_budget_spend_for_refs.return_value = [snapshot]
+
+        mock_session = AsyncMock()
+        mock_get_session.return_value.__aenter__.return_value = mock_session
+
+        mock_repo.get_latest_before_by_member_budget_ids = AsyncMock(return_value={})
+        mock_repo.insert_member_budget_entries = AsyncMock()
+
+        await ProjectAssignmentService._capture_terminal_member_spend(allocation, mock_provider, now)
+
+        inserted_rows = mock_repo.insert_member_budget_entries.call_args[0][1]
+        row = inserted_rows[0]
+        assert row.provider_subject_id == "ref-fallback"
+
+
+class TestSyncProjectBudgetMemberRemoved:
+    """Unit tests for ProjectAssignmentService._sync_project_budget_member_removed."""
+
+    def _make_allocation(self, category="platform", provider_member_ref="ref-1"):
+        raw = {"provider_member_ref": provider_member_ref} if provider_member_ref else {}
+        return ProjectMemberBudgetAssignment(
+            project_name="myproject",
+            budget_category=category,
+            project_budget_id="bgt-1",
+            user_id="user-abc",
+            allocation_mode="equal",
+            allocated_soft_budget=50.0,
+            allocated_max_budget=100.0,
+            assigned_by="admin",
+            budget_id="bgt-1",
+            provider_metadata={"raw": raw},
+        )
+
+    @patch("codemie.service.project.project_assignment_service.get_active_provider")
+    def test_spend_capture_failure_is_fail_open(self, mock_get_provider):
+        """Exception in spend capture is swallowed; deletion still proceeds."""
+        session = MagicMock()
+        alloc = self._make_allocation()
+        session.exec.return_value.all.return_value = [alloc]
+
+        mock_provider = MagicMock()
+        mock_provider.delete_member_allocation.return_value = MagicMock()
+        mock_get_provider.return_value = mock_provider
+
+        with patch.object(ProjectAssignmentService, "_run_budget_provider_coro") as mock_run:
+            mock_run.side_effect = [Exception("LiteLLM timeout"), None]
+            ProjectAssignmentService._sync_project_budget_member_removed(session, "myproject", "user-abc")
+
+        assert alloc.deleted_at is not None
+        assert mock_run.call_count == 2
+
+    @patch("codemie.service.project.project_assignment_service.get_active_provider")
+    def test_no_allocations_returns_early(self, mock_get_provider):
+        """No active allocations: provider never called."""
+        session = MagicMock()
+        session.exec.return_value.all.return_value = []
+
+        ProjectAssignmentService._sync_project_budget_member_removed(session, "myproject", "user-abc")
+
+        mock_get_provider.assert_not_called()
+
+    @patch("codemie.service.project.project_assignment_service.get_active_provider")
+    def test_allocation_soft_deleted_after_capture_and_delete(self, mock_get_provider):
+        """deleted_at is set on allocation after both capture and delete run."""
+        session = MagicMock()
+        alloc = self._make_allocation()
+        session.exec.return_value.all.return_value = [alloc]
+
+        mock_provider = MagicMock()
+        mock_get_provider.return_value = mock_provider
+
+        with patch.object(ProjectAssignmentService, "_run_budget_provider_coro", return_value=None):
+            ProjectAssignmentService._sync_project_budget_member_removed(session, "myproject", "user-abc")
+
+        assert alloc.deleted_at is not None
+        session.flush.assert_called_once()
+
+    @patch("codemie.service.project.project_assignment_service.ProjectAssignmentService._capture_terminal_member_spend")
+    @patch("codemie.service.project.project_assignment_service.get_active_provider")
+    def test_bulk_removal_captures_spend_per_allocation(self, mock_get_provider, mock_capture):
+        """Bulk removal: _capture_terminal_member_spend fires once per allocation."""
+        session = MagicMock()
+        alloc1 = self._make_allocation(category="platform", provider_member_ref="ref-1")
+        alloc2 = self._make_allocation(category="cli", provider_member_ref="ref-2")
+        session.exec.return_value.all.return_value = [alloc1, alloc2]
+
+        mock_provider = MagicMock()
+        mock_get_provider.return_value = mock_provider
+        mock_capture.return_value = MagicMock()
+
+        with patch.object(ProjectAssignmentService, "_run_budget_provider_coro", return_value=None):
+            ProjectAssignmentService._sync_project_budget_member_removed(session, "myproject", "user-abc")
+
+        assert mock_capture.call_count == 2
+        assert alloc1.deleted_at is not None
+        assert alloc2.deleted_at is not None

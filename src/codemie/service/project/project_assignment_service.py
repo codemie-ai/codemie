@@ -22,26 +22,22 @@ from typing import Optional
 
 import asyncio
 from datetime import UTC, datetime, timezone
+from decimal import Decimal
+from uuid import uuid4
 
 from sqlmodel import Session, select
 
-from codemie.configs.logger import logger
+from codemie.clients.postgres import get_async_session
 from codemie.configs import config
+from codemie.configs.logger import logger
 from codemie.core.constants import Environment
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
+from codemie.repository.project_spend_tracking_repository import project_spend_tracking_repository
 from codemie.repository.user_project_repository import user_project_repository
 from codemie.repository.user_repository import user_repository
 from codemie.rest_api.models.user_management import UserProject
 from codemie.rest_api.security.user import User
-from codemie.service.budget.budget_enums import AllocationMode, SyncStatus
-from codemie.service.budget.budget_resolution_service import _resolution_cache
-from codemie.service.budget.budget_models import (
-    Budget,
-    ProjectBudgetAssignment,
-    ProjectMemberBudgetAssignment,
-    build_shared_project_budget_id,
-)
 from codemie.service.activity.activity_models import (
     ActivityDomain,
     ActivityEntityType,
@@ -49,7 +45,16 @@ from codemie.service.activity.activity_models import (
     UserManagementEvent,
 )
 from codemie.service.activity.activity_repository import activity_event_repository
+from codemie.service.budget.budget_enums import AllocationMode, SyncStatus
+from codemie.service.budget.budget_models import (
+    Budget,
+    ProjectBudgetAssignment,
+    ProjectMemberBudgetAssignment,
+    build_shared_project_budget_id,
+)
+from codemie.service.budget.budget_resolution_service import _resolution_cache
 from codemie.service.budget.provider_registry import get_active_provider
+from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 
 
 _USER_NOT_FOUND = "User not found"
@@ -65,10 +70,21 @@ class ProjectAssignmentService:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # No running loop in this thread (normal for sync route handler thread pool).
+            # No running loop in this thread (sync route handler thread pool).
+            # Prefer the main app loop so coroutines can use the asyncpg pool.
+            from codemie.core.event_loop import get_main_event_loop
+
+            main_loop = get_main_event_loop()
+            if main_loop is not None and main_loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(coro, main_loop)
+                try:
+                    return future.result(timeout=30)
+                except TimeoutError:
+                    future.cancel()
+                    logger.warning("Project budget provider sync timed out after 30s; skipping")
+                    return None
             return asyncio.run(coro)
-        # Running inside an async context (e.g. called directly from async code or tests).
-        # Submit to the running loop from this thread and block until done.
+        # Running inside an async context (e.g. tests). Submit to the running loop.
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         try:
             return future.result(timeout=30)
@@ -88,6 +104,78 @@ class ProjectAssignmentService:
             "sync_status": member_state.sync_status,
             "raw": raw,
         }
+
+    @staticmethod
+    async def _capture_terminal_member_spend(
+        allocation: ProjectMemberBudgetAssignment,
+        provider,
+        now: datetime,
+    ) -> None:
+        """Capture a terminal spend snapshot before the LiteLLM customer is deleted."""
+        ref = (allocation.provider_metadata or {}).get("raw", {}).get("provider_member_ref")
+        if not ref:
+            logger.debug(
+                f"budget_event=project_member_spend_snapshot_skipped component=project_assignment_service "
+                f"user_id={allocation.user_id!r} project_name={allocation.project_name!r} "
+                f"reason=no_provider_member_ref"
+            )
+            return
+
+        snapshots = await provider.collect_member_budget_spend_for_refs({ref})
+        if not snapshots:
+            logger.debug(
+                f"budget_event=project_member_spend_snapshot_skipped component=project_assignment_service "
+                f"user_id={allocation.user_id!r} project_name={allocation.project_name!r} "
+                f"reason=no_snapshots_returned"
+            )
+            return
+
+        snapshot = snapshots[0]
+        current_spend = Decimal(str(snapshot.spend)).quantize(Decimal("0.0000000001"))
+
+        async with get_async_session() as db_session:
+            prev_rows = await project_spend_tracking_repository.get_latest_before_by_member_budget_ids(
+                db_session,
+                [(snapshot.project_name, snapshot.budget_id, snapshot.user_id)],
+                now,
+            )
+            prev_row = prev_rows.get((snapshot.project_name, snapshot.budget_id, snapshot.user_id))
+
+            if prev_row is None:
+                daily_spend = current_spend
+                cumulative_spend = current_spend
+            else:
+                prev_period_spend = Decimal(str(prev_row.budget_period_spend)).quantize(Decimal("0.0000000001"))
+                delta = current_spend - prev_period_spend
+                if delta <= Decimal("0"):
+                    logger.warning(
+                        f"budget_event=project_member_spend_snapshot_skipped component=project_assignment_service "
+                        f"user_id={allocation.user_id!r} project_name={allocation.project_name!r} "
+                        f"reason=zero_delta current_spend={current_spend} prev_period_spend={prev_period_spend}"
+                    )
+                    return
+                daily_spend = delta
+                cumulative_spend = Decimal(str(prev_row.cumulative_spend)).quantize(Decimal("0.0000000001")) + delta
+
+            row = ProjectSpendTracking(
+                id=uuid4(),
+                project_name=snapshot.project_name,
+                spend_date=now,
+                daily_spend=daily_spend,
+                cumulative_spend=cumulative_spend,
+                budget_period_spend=current_spend,
+                budget_id=snapshot.budget_id,
+                budget_category=snapshot.budget_category.value,
+                user_id=snapshot.user_id,
+                provider_subject_id=snapshot.provider_subject_id or ref,
+            )
+            await project_spend_tracking_repository.insert_member_budget_entries(db_session, [row])
+
+        logger.info(
+            f"budget_event=project_member_spend_snapshot_captured component=project_assignment_service "
+            f"user_id={allocation.user_id!r} project_name={allocation.project_name!r} "
+            f"budget_id={snapshot.budget_id!r} daily_spend={daily_spend} cumulative_spend={cumulative_spend}"
+        )
 
     @staticmethod
     def _get_member_added_allocation_amounts(
@@ -193,6 +281,15 @@ class ProjectAssignmentService:
         now = datetime.now(tz=timezone.utc)
         changed = False
         for allocation in allocations:
+            try:
+                ProjectAssignmentService._run_budget_provider_coro(
+                    ProjectAssignmentService._capture_terminal_member_spend(allocation, provider, now)
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"budget_event=project_member_spend_snapshot_failed component=project_assignment_service "
+                    f"user_id={user_id!r} allocation_id={allocation.id!r}: {exc}"
+                )
             try:
                 ProjectAssignmentService._run_budget_provider_coro(
                     provider.delete_member_allocation(allocation=allocation)
