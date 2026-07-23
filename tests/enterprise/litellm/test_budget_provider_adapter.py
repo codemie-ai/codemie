@@ -26,7 +26,7 @@ from codemie.enterprise.litellm.budget_provider_adapter import (
     _normalize_personal_budget_identifier,
 )
 from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
-from codemie.service.budget.provider import MemberBudgetSpendSnapshot
+from codemie.service.budget.provider import BudgetResetReconciliationTarget, MemberBudgetSpendSnapshot
 
 
 @pytest.mark.asyncio
@@ -245,3 +245,70 @@ async def test_sync_member_allocation_uses_effective_max_budget_when_provided():
     assert result.sync_status == SyncStatus.OK
     _, call_kwargs = mock_to_thread.call_args
     assert call_kwargs.get("allocated_max_budget") == 500.0
+
+
+def _legacy_budget_target(provider_budget_ref: str = "prtr-dmod") -> BudgetResetReconciliationTarget:
+    return BudgetResetReconciliationTarget(
+        entity_type="budget",
+        budget_id="prtr-dmod-platform-43f987c9",
+        provider_budget_ref=provider_budget_ref,
+        budget_reset_at="2026-06-01T00:00:00Z",
+        metadata={"provider": "litellm", "provider_budget_ref": provider_budget_ref, "sync_status": "ok"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconcile_legacy_budget_ref_falls_back_to_key_lookup():
+    service = SimpleNamespace(
+        get_budget_info_map=lambda budget_ids: {},
+        get_all_keys_spending=lambda: [
+            SimpleNamespace(key_alias="prtr-dmod", budget_reset_at="2026-08-01T00:00:00Z"),
+        ],
+    )
+    adapter = LiteLLMBudgetEnforcementProvider(service=service)
+
+    result = await adapter.reconcile_budget_reset_timestamps(targets=[_legacy_budget_target()])
+
+    assert len(result.items) == 1
+    item = result.items[0]
+    assert item.error is None
+    assert item.refreshed_budget_reset_at == "2026-08-01T00:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_budget_map_hit_does_not_fetch_keys():
+    def _fail_keys():
+        raise AssertionError("get_all_keys_spending must not be called when budget_map resolves all targets")
+
+    service = SimpleNamespace(
+        get_budget_info_map=lambda budget_ids: {
+            "child-budget-1:shared": SimpleNamespace(budget_reset_at="2026-08-01T00:00:00Z"),
+        },
+        get_all_keys_spending=_fail_keys,
+    )
+    adapter = LiteLLMBudgetEnforcementProvider(service=service)
+    target = BudgetResetReconciliationTarget(
+        entity_type="budget",
+        budget_id="child-budget-1:shared",
+        provider_budget_ref="child-budget-1:shared",
+        budget_reset_at="2026-06-01T00:00:00Z",
+        metadata={"provider": "litellm"},
+    )
+
+    result = await adapter.reconcile_budget_reset_timestamps(targets=[target])
+
+    assert result.items[0].error is None
+    assert result.items[0].refreshed_budget_reset_at == "2026-08-01T00:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_reports_missing_when_ref_not_in_budgets_or_keys():
+    service = SimpleNamespace(
+        get_budget_info_map=lambda budget_ids: {},
+        get_all_keys_spending=lambda: [],
+    )
+    adapter = LiteLLMBudgetEnforcementProvider(service=service)
+
+    result = await adapter.reconcile_budget_reset_timestamps(targets=[_legacy_budget_target("ghost-ref")])
+
+    assert result.items[0].error == "provider entity missing during reset reconciliation"

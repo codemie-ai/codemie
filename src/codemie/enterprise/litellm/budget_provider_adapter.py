@@ -755,80 +755,96 @@ class LiteLLMBudgetEnforcementProvider:
         service = self._get_service()
         if service is None:
             return BudgetResetReconciliationResult(
-                items=[
-                    BudgetResetReconciliationItem(
-                        entity_type=target.entity_type,
-                        budget_id=target.budget_id,
-                        provider_budget_ref=target.provider_budget_ref,
-                        provider_member_ref=target.provider_member_ref,
-                        error="litellm service unavailable",
-                    )
-                    for target in targets
-                ]
+                items=[self._reconciliation_item(target, error="litellm service unavailable") for target in targets]
             )
 
-        budget_targets = [target for target in targets if not _is_project_virtual_key_target(target)]
-        key_targets = [target for target in targets if _is_project_virtual_key_target(target)]
+        budget_map = await self._fetch_reconciliation_budget_map(service, targets)
+        key_map = await self._fetch_reconciliation_key_map(service, targets, budget_map)
 
-        budget_map: dict[str, Any] = {}
-        budget_ids = [target.provider_budget_ref for target in budget_targets if target.provider_budget_ref]
-        if budget_ids:
-            budget_map = await asyncio.to_thread(service.get_budget_info_map, budget_ids)
-
-        key_map: dict[str, Any] = {}
-        if key_targets:
-            keys = await asyncio.to_thread(service.get_all_keys_spending)
-            key_map = {key.key_alias: key for key in keys if key.key_alias}
-
-        items: list[BudgetResetReconciliationItem] = []
-        for target in targets:
-            provider_ref = target.provider_budget_ref
-            provider_member_ref = target.provider_member_ref
-
-            if _is_project_virtual_key_target(target):
-                provider_state = key_map.get(provider_ref) if provider_ref else None
-            else:
-                provider_state = budget_map.get(provider_ref) if provider_ref else None
-
-            if provider_state is None:
-                items.append(
-                    BudgetResetReconciliationItem(
-                        entity_type=target.entity_type,
-                        budget_id=target.budget_id,
-                        provider_budget_ref=provider_ref,
-                        provider_member_ref=provider_member_ref,
-                        error="provider entity missing during reset reconciliation",
-                    )
-                )
-                continue
-
-            refreshed_budget_reset_at = _normalize_budget_reset_at(
-                getattr(provider_state, "budget_reset_at", None),
-                target.budget_reset_at,
-            )
-            if not refreshed_budget_reset_at:
-                items.append(
-                    BudgetResetReconciliationItem(
-                        entity_type=target.entity_type,
-                        budget_id=target.budget_id,
-                        provider_budget_ref=provider_ref,
-                        provider_member_ref=provider_member_ref,
-                        error="provider entity returned empty budget_reset_at",
-                    )
-                )
-                continue
-
-            items.append(
-                BudgetResetReconciliationItem(
-                    entity_type=target.entity_type,
-                    budget_id=target.budget_id,
-                    provider_budget_ref=provider_ref,
-                    provider_member_ref=provider_member_ref,
-                    refreshed_budget_reset_at=refreshed_budget_reset_at,
-                )
-            )
-
+        items = [self._reconcile_target(target, budget_map, key_map) for target in targets]
         return BudgetResetReconciliationResult(items=items)
+
+    @staticmethod
+    async def _fetch_reconciliation_budget_map(
+        service: "LiteLLMService",
+        targets: list[BudgetResetReconciliationTarget],
+    ) -> dict[str, Any]:
+        budget_ids = [
+            target.provider_budget_ref
+            for target in targets
+            if target.provider_budget_ref and not _is_project_virtual_key_target(target)
+        ]
+        if not budget_ids:
+            return {}
+        return await asyncio.to_thread(service.get_budget_info_map, budget_ids)
+
+    @staticmethod
+    async def _fetch_reconciliation_key_map(
+        service: "LiteLLMService",
+        targets: list[BudgetResetReconciliationTarget],
+        budget_map: dict[str, Any],
+    ) -> dict[str, Any]:
+        # Legacy backfilled project budgets store a raw LiteLLM key alias as
+        # provider_budget_ref (no "codemie:project:" prefix, no raw.key_alias),
+        # so they route as budget targets but only exist as virtual keys.
+        needs_keys = any(
+            _is_project_virtual_key_target(target)
+            or (target.provider_budget_ref and target.provider_budget_ref not in budget_map)
+            for target in targets
+        )
+        if not needs_keys:
+            return {}
+        keys = await asyncio.to_thread(service.get_all_keys_spending)
+        return {key.key_alias: key for key in keys if key.key_alias}
+
+    @classmethod
+    def _reconcile_target(
+        cls,
+        target: BudgetResetReconciliationTarget,
+        budget_map: dict[str, Any],
+        key_map: dict[str, Any],
+    ) -> BudgetResetReconciliationItem:
+        provider_state = cls._resolve_reconciliation_state(target, budget_map, key_map)
+        if provider_state is None:
+            return cls._reconciliation_item(target, error="provider entity missing during reset reconciliation")
+
+        refreshed_budget_reset_at = _normalize_budget_reset_at(
+            getattr(provider_state, "budget_reset_at", None),
+            target.budget_reset_at,
+        )
+        if not refreshed_budget_reset_at:
+            return cls._reconciliation_item(target, error="provider entity returned empty budget_reset_at")
+
+        return cls._reconciliation_item(target, refreshed_budget_reset_at=refreshed_budget_reset_at)
+
+    @staticmethod
+    def _resolve_reconciliation_state(
+        target: BudgetResetReconciliationTarget,
+        budget_map: dict[str, Any],
+        key_map: dict[str, Any],
+    ) -> Any:
+        provider_ref = target.provider_budget_ref
+        if not provider_ref:
+            return None
+        if _is_project_virtual_key_target(target):
+            return key_map.get(provider_ref)
+        return budget_map.get(provider_ref) or key_map.get(provider_ref)
+
+    @staticmethod
+    def _reconciliation_item(
+        target: BudgetResetReconciliationTarget,
+        *,
+        refreshed_budget_reset_at: str | None = None,
+        error: str | None = None,
+    ) -> BudgetResetReconciliationItem:
+        return BudgetResetReconciliationItem(
+            entity_type=target.entity_type,
+            budget_id=target.budget_id,
+            provider_budget_ref=target.provider_budget_ref,
+            provider_member_ref=target.provider_member_ref,
+            refreshed_budget_reset_at=refreshed_budget_reset_at,
+            error=error,
+        )
 
     async def provision_global_user(self, *, user_id: str, username: str) -> None:
         """Ensure a LiteLLM customer record exists for a new Codemie user.
