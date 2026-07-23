@@ -464,16 +464,59 @@ class MCPToolLoadException(Exception):
     including server identification and original error context.
     """
 
-    def __init__(self, server_name: str, original_error: Exception):
+    def __init__(
+        self,
+        server_name: str,
+        original_error: Exception,
+        assistant_name: str | None = None,
+        assistant_id: str | None = None,
+    ):
         """
         Initialize the MCP tool load error.
 
         Args:
             server_name: Name of the MCP server that failed to load tools
             original_error: The original exception that caused the failure
+            assistant_name: Optional name of the assistant whose MCP server failed
+            assistant_id: Optional id of the assistant whose MCP server failed
         """
         self.server_name = server_name
         self.original_error = original_error
-        super().__init__(
-            f"Failed to load MCP tools from {server_name}: {type(original_error).__name__}: {original_error}"
-        )
+        self.assistant_name = assistant_name
+        self.assistant_id = assistant_id
+        super().__init__(self._build_message())
+
+    def _build_message(self) -> str:
+        # Callers upstream prefix this text with their own labels ("Assistant Error: ",
+        # the exception class name), so the message itself stays colon-free to keep the
+        # rendered error readable.
+        if self.assistant_name or self.assistant_id:
+            label = self.assistant_name or "unknown"
+            suffix = f" (id={self.assistant_id})" if self.assistant_id else ""
+            subject = f"Sub-assistant '{label}'{suffix} failed"
+        else:
+            subject = "Failed"
+
+        error_type = type(self.original_error).__name__
+        error_text = str(self.original_error).strip()
+        cause = f"{error_text} ({error_type})" if error_text else error_type
+
+        return f"{subject} to load MCP tools from '{self.server_name}' - {cause}"
+
+    def attach_assistant_context(
+        self,
+        assistant_name: str | None = None,
+        assistant_id: str | None = None,
+    ) -> "MCPToolLoadException":
+        """
+        Attach the identity of the assistant the failing MCP server belongs to.
+
+        Called while the exception propagates out of a sub-assistant build, where the
+        assistant is known but the MCP server name is not. The first caller wins so that
+        nested orchestrators keep the innermost (actually failing) sub-assistant.
+        """
+        if self.assistant_name is None and self.assistant_id is None:
+            self.assistant_name = assistant_name
+            self.assistant_id = assistant_id
+            self.args = (self._build_message(),)
+        return self

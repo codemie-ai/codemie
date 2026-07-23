@@ -152,9 +152,14 @@ def create_assistant_executors(
             )
             executor = factory.build()
             executors.append(executor)
+        except MCPToolLoadException as e:
+            e.attach_assistant_context(assistant_name=assistant.name, assistant_id=assistant.id)
+            logger.error(
+                f"Failed to create executor for sub-assistant '{assistant.name}' (id={assistant.id}) "
+                f"due to MCP server '{e.server_name}': {str(e.original_error)}"
+            )
+            raise
         except Exception as e:
             logger.error(f"Failed to create executor for assistant {assistant.id}: {str(e)}")
-            if isinstance(e, MCPToolLoadException):
-                raise
 
     return executors

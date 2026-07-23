@@ -25,6 +25,7 @@ from codemie.core.thread import MessageQueue
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.security.user import User
 
+from codemie.service.mcp.models import MCPToolLoadException
 from codemie.service.skills.skill_contributions import SkillContributionsResolver
 from codemie.service.subagents.builtin_subagents_registry import BuiltinSubagentsRegistry
 from codemie.service.subagents.builtin_subagents import BuiltinSubagent
@@ -233,6 +234,14 @@ class LangGraphAssistantBuilder:
                         llm_model=llm_model,
                         agent_name=agent_name,
                     )
+                )
+            except MCPToolLoadException as e:
+                # Builtin subagent failures stay non-fatal, but the log must still name the
+                # subagent and the MCP server that broke it.
+                e.attach_assistant_context(assistant_name=agent_name)
+                logger.error(
+                    f"Failed to create builtin subagent executor for {builtin.value} "
+                    f"due to MCP server '{e.server_name}': {str(e.original_error)}"
                 )
             except Exception as e:
                 logger.error(f"Failed to create builtin subagent executor for {builtin.value}: {e}")
