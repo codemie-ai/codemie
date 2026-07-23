@@ -169,13 +169,40 @@ class SystemPromptValidationResponse(BaseModel):
 
 
 def _apply_template_filters(templates, parsed_filters):
+    """Apply search and categorical filters to template list.
+
+    Filters templates by search term and optional metadata. Search is performed
+    as case-insensitive substring matching across three fields: name, description,
+    and system_prompt. Categorical and author filters are applied sequentially
+    after search, each reducing the result set.
+
+    Args:
+        templates: List of AssistantBase template objects to filter.
+        parsed_filters: Dict with optional keys:
+            - "search" or "name": substring to match in name, description, or system_prompt (case-insensitive)
+            - "categories": list of category strings to match against template.categories
+            - "created_by": username or name to match against template.created_by
+
+    Returns:
+        Filtered list of template objects matching all applied filters (AND semantics).
+        Returns all templates if parsed_filters is None or empty dict.
+    """
     if not parsed_filters:
         return templates
     name_filter = parsed_filters.get("search") or parsed_filters.get("name")
     categories_filter = parsed_filters.get("categories")
     created_by_filter = parsed_filters.get("created_by")
     if name_filter:
-        templates = [t for t in templates if name_filter.lower() in t.name.lower()]
+        name_filter_lower = name_filter.lower()
+        templates = [
+            t
+            for t in templates
+            if (
+                name_filter_lower in t.name.lower()
+                or name_filter_lower in t.description.lower()
+                or name_filter_lower in t.system_prompt.lower()
+            )
+        ]
     if categories_filter:
         templates = [t for t in templates if any(c in (t.categories or []) for c in categories_filter)]
     if created_by_filter:

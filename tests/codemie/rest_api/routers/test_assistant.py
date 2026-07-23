@@ -20,9 +20,9 @@ from sqlalchemy.exc import IntegrityError
 
 from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException
 from codemie.core.models import AssistantChatRequest
-from codemie.rest_api.models.assistant import Assistant
+from codemie.rest_api.models.assistant import Assistant, AssistantBase, CreatedByUser
 from codemie.rest_api.models.guardrail import GuardrailEntity, GuardrailSource
-from codemie.rest_api.routers.assistant import _ask_assistant, _ask_virtual_assistant
+from codemie.rest_api.routers.assistant import _ask_assistant, _ask_virtual_assistant, _apply_template_filters
 from codemie.rest_api.security.user import User
 
 
@@ -699,3 +699,183 @@ class TestAssistantDetailEnrichment:
 
         body = json.loads(response.body)
         assert body["user_abilities"] == ["read", "write", "delete"]
+
+
+# Fixtures for template filter testing
+@pytest.fixture
+def template_with_content():
+    """Template fixture for filter testing."""
+    return AssistantBase(
+        id="template-1",
+        name="Python Code Review Assistant",
+        description="Reviews Python code for best practices",
+        system_prompt="You are a Python expert. Review the code and provide feedback.",
+        categories=["coding", "review"],
+        created_by=CreatedByUser(id="user-1", name="Alice", username="alice"),
+    )
+
+
+@pytest.fixture
+def template_data_processing():
+    """Template for data processing workflows."""
+    return AssistantBase(
+        id="template-2",
+        name="Data Processing Pipeline",
+        description="Helps design ETL and data transformation workflows",
+        system_prompt="You are a data engineer. Help optimize data pipelines.",
+        categories=["data", "etl"],
+        created_by=CreatedByUser(id="user-2", name="Bob", username="bob"),
+    )
+
+
+@pytest.fixture
+def template_documentation():
+    """Template for documentation generation."""
+    return AssistantBase(
+        id="template-3",
+        name="Tech Writer",
+        description="Generates technical documentation from code",
+        system_prompt="You help write clear, accurate technical documentation.",
+        categories=["docs"],
+        created_by=None,
+    )
+
+
+class TestApplyTemplateFilters:
+    """Unit tests for _apply_template_filters function."""
+
+    def test_empty_filters_returns_all_templates(
+        self, template_with_content, template_data_processing, template_documentation
+    ):
+        """Empty filter dict returns all templates."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {})
+        assert result == templates
+
+    def test_none_filters_returns_all_templates(
+        self, template_with_content, template_data_processing, template_documentation
+    ):
+        """None filters returns all templates."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, None)
+        assert result == templates
+
+    def test_name_filter_substring_match(self, template_with_content, template_data_processing, template_documentation):
+        """Search filter matches substring in name (case-insensitive)."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"search": "Python"})
+        assert result == [template_with_content]
+
+    def test_name_filter_case_insensitive(
+        self, template_with_content, template_data_processing, template_documentation
+    ):
+        """Name filter is case-insensitive."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"search": "python code review"})
+        assert result == [template_with_content]
+
+    def test_name_filter_no_match(self, template_with_content, template_data_processing, template_documentation):
+        """Name filter returns empty list when no match."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"search": "Nonexistent"})
+        assert result == []
+
+    def test_name_filter_using_name_key(self, template_with_content, template_data_processing, template_documentation):
+        """Name filter works with 'name' key as alias for 'search'."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"name": "Pipeline"})
+        assert result == [template_data_processing]
+
+    def test_description_filter_currently_not_matching(
+        self, template_with_content, template_data_processing, template_documentation
+    ):
+        """Description filter should match but currently does not (failing test for new feature)."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"search": "best practices"})
+        assert len(result) == 1
+        assert result[0].id == "template-1"
+
+    def test_description_filter_case_insensitive(
+        self, template_with_content, template_data_processing, template_documentation
+    ):
+        """Description filter is case-insensitive."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"search": "BEST PRACTICES"})
+        assert len(result) == 1
+        assert result[0].id == "template-1"
+
+    def test_description_filter_no_match(self, template_with_content, template_data_processing, template_documentation):
+        """Description filter returns empty when no match in description."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"search": "nonexistent phrase"})
+        assert result == []
+
+    def test_system_prompt_filter_currently_not_matching(
+        self, template_with_content, template_data_processing, template_documentation
+    ):
+        """System_prompt filter should match but currently does not (failing test for new feature)."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"search": "Python expert"})
+        assert len(result) == 1
+        assert result[0].id == "template-1"
+
+    def test_system_prompt_filter_case_insensitive(
+        self, template_with_content, template_data_processing, template_documentation
+    ):
+        """System_prompt filter is case-insensitive."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"search": "data engineer"})
+        assert len(result) == 1
+        assert result[0].id == "template-2"
+
+    def test_system_prompt_filter_no_match(
+        self, template_with_content, template_data_processing, template_documentation
+    ):
+        """System_prompt filter returns empty when no match."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"search": "nonexistent system prompt phrase"})
+        assert result == []
+
+    def test_search_matches_across_all_three_fields(
+        self, template_with_content, template_data_processing, template_documentation
+    ):
+        """Search should match if term appears in name, description, or system_prompt."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+
+        result = _apply_template_filters(templates, {"search": "Code"})
+        assert template_with_content in result
+
+        result = _apply_template_filters(templates, {"search": "Engineer"})
+        assert template_data_processing in result
+
+    def test_search_no_match_across_all_three_fields(
+        self, template_with_content, template_data_processing, template_documentation
+    ):
+        """Search returns empty when no match in any of the three fields."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"search": "completely_unique_phrase_not_in_any_field"})
+        assert result == []
+
+    def test_description_search_combined_with_categories_filter(
+        self, template_with_content, template_data_processing, template_documentation
+    ):
+        """Description search works in combination with categories filter."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"search": "Helps", "categories": ["data"]})
+        assert result == [template_data_processing]
+
+    def test_description_search_combined_with_created_by_filter(
+        self, template_with_content, template_data_processing, template_documentation
+    ):
+        """Description search works in combination with created_by filter."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"search": "ETL", "created_by": "bob"})
+        assert result == [template_data_processing]
+
+    def test_combined_filters_no_match_when_search_matches_but_categories_dont(
+        self, template_with_content, template_data_processing, template_documentation
+    ):
+        """No result when search matches but other filters exclude it."""
+        templates = [template_with_content, template_data_processing, template_documentation]
+        result = _apply_template_filters(templates, {"search": "Pipeline", "categories": ["docs"]})
+        assert result == []

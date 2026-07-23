@@ -1,0 +1,20 @@
+{
+  "decision": "approve",
+  "rationale": "Implementation correctly extends template search to description and system_prompt fields. Efficient case-insensitive substring matching applied consistently. Comprehensive test coverage (17 tests) validates all scenarios: baseline name search, new fields independently, combined with categorical filters, edge cases, and no-match states. Clear docstring documents behavior and parameter semantics. No security, correctness, or maintainability concerns. Backward compatible, low-risk change meeting all acceptance criteria.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "criterion": "code-quality",
+      "status": "pass",
+      "notes": "Implementation is minimal, focused, and leverages existing patterns. Docstring is clear. Tests follow project conventions."
+    },
+    {
+      "criterion": "commit-format",
+      "status": "pass",
+      "notes": "Commits follow conventional-commit format with proper task references."
+    }
+  ],
+  "findings": []
+}

@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-light",
+  "slug": "extend-template-search-backend",
+  "branch": "EPMCDME-13583_extend-template-search",
+  "phase": "maintenance",
+  "started_at": "2026-07-21T00:00:00Z",
+  "completed_at": "2026-07-21T00:00:00Z",
+  "last_sync_commit": "4827ad2"
+}
