@@ -22,27 +22,17 @@ Treat LiteLLM proxy behavior as provider-backed enterprise functionality.
 
 Evidence: app startup registers LiteLLM providers conditionally at `src/codemie/rest_api/main.py:265`.
 
-## Traffic Tagging Headers
+## Outbound Request Tagging
 
-Inject `X-CodeMie-Version` and `X-CodeMie-Project` on outbound LLM requests via the internal (non-LiteLLM) path only.
-
-**Helper**: `_build_codemie_tagging_headers()` in `src/codemie/core/dependecies.py` — always emits `X-CodeMie-Version: config.APP_VERSION`; emits `X-CodeMie-Project` only when `get_current_project()` returns a non-empty string.
-
-**Precedence rule**: Codemie tags are seeded first; model YAML `client_headers` are merged on top and win on collision.
-
-**Per-provider injection sites** (all in `src/codemie/core/dependecies.py`):
-
-| Provider | Factory | Header argument |
-|---|---|---|
-| Azure / DIAL | `get_llm_by_credentials_raw()` | `AzureChatOpenAI(default_headers=merged_headers)` |
-| Vertex AI | `get_vertex_llm()` | `ChatVertexAI(client_options={"additional_headers": merged_headers})` |
-| Anthropic direct | `get_anthropic_llm()` | `ChatAnthropic(model_kwargs={"extra_headers": merged_headers})` |
-| AWS Bedrock | `get_bedrock_llm()` | **Not injected** — uses request-body fields, not HTTP headers |
+Direct provider calls and LiteLLM-proxied calls tag traffic through different mechanisms;
+never mix them. When touching outbound LLM requests, route header changes through the
+shared header-building helper rather than adding them at individual call sites.
 
 | Avoid | Prefer |
 |---|---|
-| Adding `X-CodeMie-*` headers on the LiteLLM path | LiteLLM path uses `x-litellm-tags`; keep the two paths separate |
-| Injecting user-identifying information | Tagging headers carry version and project only |
-| Overriding `client_headers` from model config | Seed Codemie tags first; let `client_headers` win |
+| Adding `X-CodeMie-*` headers on the LiteLLM path | LiteLLM tags via `x-litellm-tags`; direct provider factories tag via headers |
+| Assuming one header mechanism fits every provider | Each provider client takes headers through its own argument; some (e.g. Bedrock) accept no custom HTTP headers at all |
+| Letting injected defaults override model-config `client_headers` | Seed defaults first; explicit model config wins on collision |
+| Tagging with user-identifying information | Carry only non-personal context (app version, project) |
 
-Evidence: helper and injection sites at `src/codemie/core/dependecies.py`; constants at `src/codemie/core/constants.py` (`HEADER_CODEMIE_VERSION`, `HEADER_CODEMIE_TAGGING_PROJECT`); introduced in EPMCDME-12602.
+Evidence: `_build_codemie_tagging_headers()` and the per-provider factories in `src/codemie/core/dependecies.py`; header constants in `src/codemie/core/constants.py`.

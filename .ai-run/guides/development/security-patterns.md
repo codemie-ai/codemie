@@ -21,3 +21,16 @@ Keep credentials in configuration and never log sensitive values.
 | Logging tokens, API keys, or full auth headers | Log sanitized operation context |
 
 Evidence: README documents environment variables for Azure OpenAI local setup at `README.md:47`.
+
+## Untrusted Input Handling
+
+Parse external input exactly as received; reject what cannot be parsed. Any lossy
+normalization before a security decision means the decision is made on data that was
+never actually sent.
+
+| Avoid | Prefer |
+|---|---|
+| Lossy repair before parsing (`errors="ignore"`/`"replace"`, stripping, silent coercion) | Strict parsing that fails closed on malformed input |
+| Guessing what a malformed payload meant | Reject it explicitly (error or `None`) |
+
+Evidence: strict UTF-8 decode with explicit rejection at `src/codemie/triggers/bindings/gitlab_webhook_security.py:68`.

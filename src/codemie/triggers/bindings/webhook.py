@@ -30,6 +30,7 @@ from codemie.triggers.actors.assistant import invoke_assistant
 from codemie.triggers.actors.datasource import reindex_code, reindex_confluence, reindex_google, reindex_jira
 from codemie.triggers.actors.workflow import invoke_workflow
 from codemie.triggers.bindings.github_webhook_security import GitHubWebhookSecurity
+from codemie.triggers.bindings.gitlab_webhook_security import GitLabWebhookSecurity
 from codemie.triggers.bindings.utils import resolve_trigger_user, validate_assistant, validate_datasource
 from codemie.triggers.trigger_exceptions import NotImplementedDatasource
 from codemie.triggers.trigger_models import (
@@ -55,6 +56,10 @@ class WebhookService:
     GITHUB_EVENT_FILTER = "github_event_filter"
     GITHUB_REQUIRE_SHA256 = "github_require_sha256"
 
+    # GitLab webhook security (plaintext token verification)
+    GITLAB_WEBHOOK_TOKEN = "gitlab_webhook_token"
+    GITLAB_EVENT_FILTER = "gitlab_event_filter"
+
     # Webhook configuration
     RESOURCE_TYPE = "resource_type"
     WEBHOOK = "webhook"
@@ -65,6 +70,7 @@ class WebhookService:
 
     # Response messages
     WEBHOOK_INVOKED_SUCCESSFULLY = "Webhook invoked successfully"
+    WEBHOOK_EVENT_FILTERED = "Webhook received, event filtered out"
     WEBHOOK_NOT_FOUND_OR_NOT_ENABLED = "Webhook with ID '{}' not found or not enabled"
     INVALID_SECURITY_HEADER = "Invalid security header"
     ASSISTANT_NOT_FOUND = "Assistant with id '{}' not found"
@@ -122,8 +128,14 @@ class WebhookService:
                 status_code=status.HTTP_400_BAD_REQUEST, detail=cls.WEBHOOK_NOT_FOUND_OR_NOT_ENABLED.format(webhook_id)
             )
 
-        # Verify webhook security (supports GitHub signature and legacy header authentication)
-        cls.verify_security_header(request, setting, raw_payload)
+        # Verify webhook security (supports GitHub signature and legacy header authentication).
+        # A False return means verification passed but the event was filtered out and must
+        # be ACKed with 200 without invoking the downstream handler (e.g. GitLab MR action
+        # filter) — required by providers that auto-deactivate webhooks after repeated
+        # non-2xx responses.
+        should_dispatch = cls.verify_security_header(request, setting, raw_payload)
+        if should_dispatch is False:
+            return BaseResponse(message=cls.WEBHOOK_EVENT_FILTERED, data=setting)
 
         logger.info(
             "Processing webhook request - Webhook: '%s', Project: '%s', "
@@ -181,7 +193,12 @@ class WebhookService:
 
     @classmethod
     def _send_verification_metric(
-        cls, webhook_id: str, setting, success: bool, verification_method: str, additional_attributes: dict = None
+        cls,
+        webhook_id: str,
+        setting,
+        success: bool,
+        verification_method: str,
+        additional_attributes: dict | None = None,
     ):
         """
         Send webhook verification metric (DRY helper).
@@ -208,22 +225,26 @@ class WebhookService:
         )
 
     @classmethod
-    def verify_security_header(cls, request: Request, setting, raw_payload: bytes):
-        """
-        Verify webhook security using GitHub signature or legacy header authentication.
+    def verify_security_header(cls, request: Request, setting, raw_payload: bytes) -> bool:
+        """Verify webhook security and decide whether to dispatch to the handler.
 
-        This method supports three security modes (in priority order):
+        Supports three security modes (in priority order):
         1. GitHub Webhook Signature Verification (HMAC-SHA256)
+        1.5. GitLab Webhook Token Verification (plaintext constant-time compare)
         2. Legacy Header-Based Authentication
-        3. No Security - Logs warning but allows
+        3. No Security — logs a warning but allows
 
-        Args:
-            request: FastAPI Request object
-            setting: Webhook settings from SettingsService
-            raw_payload: Raw request body as bytes (required for signature verification)
+        Returns:
+            True if the request should be dispatched to the resource handler.
+            False if the request authenticated but was filtered out and must be
+            ACKed with 200 without invoking the resource handler (currently only
+            reached by the GitLab MR-action filter). Providers such as GitLab
+            auto-deactivate webhook endpoints after repeated non-2xx responses,
+            so filtered events must not surface as 4xx.
 
         Raises:
-            HTTPException: If security verification fails
+            HTTPException: On authentication failure (401 for token/signature
+            mismatch, 400/500 for configuration issues in the GitHub path).
         """
         webhook_id = setting.credential("webhook_id")
         github_secret = setting.credential(cls.GITHUB_WEBHOOK_SECRET)
@@ -232,6 +253,12 @@ class WebhookService:
         # Priority 1: GitHub signature verification
         if github_secret and is_github_webhook:
             return cls._verify_github_signature(request, setting, raw_payload, webhook_id, github_secret)
+
+        # Priority 1.5: GitLab token verification
+        gitlab_token = setting.credential(cls.GITLAB_WEBHOOK_TOKEN)
+        is_gitlab_webhook = GitLabWebhookSecurity.is_gitlab_webhook(request)
+        if gitlab_token and is_gitlab_webhook:
+            return cls._verify_gitlab_token(request, setting, raw_payload, webhook_id, gitlab_token)
 
         # Priority 2: Legacy header authentication
         security_header_name = setting.credential(cls.SECURE_HEADER_NAME)
@@ -246,19 +273,15 @@ class WebhookService:
     @classmethod
     def _verify_github_signature(
         cls, request: Request, setting, raw_payload: bytes, webhook_id: str, github_secret: str
-    ):
-        """
-        Verify GitHub webhook signature and event type.
+    ) -> bool:
+        """Verify GitHub webhook signature and event type.
 
-        Args:
-            request: FastAPI Request object
-            setting: Webhook settings from SettingsService
-            raw_payload: Raw request body as bytes
-            webhook_id: Webhook identifier
-            github_secret: GitHub webhook secret
+        Returns:
+            True when the signature is valid and the event passes the filter
+            — the request should be dispatched to the resource handler.
 
         Raises:
-            HTTPException: If signature verification fails
+            HTTPException: If signature verification fails.
         """
         try:
             require_sha256 = setting.credential(cls.GITHUB_REQUIRE_SHA256)
@@ -292,6 +315,7 @@ class WebhookService:
                     "delivery_id": github_metadata.get('delivery_id'),
                 },
             )
+            return True
 
         except HTTPException as e:
             logger.error(
@@ -312,21 +336,101 @@ class WebhookService:
             raise
 
     @classmethod
-    def _verify_legacy_header(
-        cls, request: Request, setting, webhook_id: str, security_header_name: str, security_header_value: str
-    ):
-        """
-        Verify legacy header-based authentication.
+    def _verify_gitlab_token(
+        cls, request: Request, setting, raw_payload: bytes, webhook_id: str, gitlab_token: str
+    ) -> bool:
+        """Verify GitLab webhook token and apply the MR-action filter.
 
-        Args:
-            request: FastAPI Request object
-            setting: Webhook settings from SettingsService
-            webhook_id: Webhook identifier
-            security_header_name: Name of the security header
-            security_header_value: Expected value of the security header
+        Delegates the token check and MR-action filtering to
+        ``GitLabWebhookSecurity.verify_and_filter`` — this method only owns the
+        logging and monitoring metrics tied to ``setting`` (project, user, alias),
+        which the security class cannot see.
+
+        Returns:
+            True — request authenticated and should be dispatched.
+            False — authenticated but filtered out; caller ACKs with 200 without
+            invoking the resource handler (GitLab auto-deactivates webhook
+            endpoints after repeated non-2xx responses).
 
         Raises:
-            HTTPException: If header verification fails
+            HTTPException: 401 on token mismatch only.
+        """
+        event_filter = setting.credential(cls.GITLAB_EVENT_FILTER)
+        try:
+            dispatch, filtered_action = GitLabWebhookSecurity.verify_and_filter(
+                request=request,
+                expected_token=gitlab_token,
+                event_filter=event_filter,
+                raw_payload=raw_payload,
+            )
+        except HTTPException as e:
+            logger.error(
+                f"GitLab webhook verification failed. "
+                f"WebhookID: '{webhook_id}', Project: '{setting.project_name}', "
+                f"UserID: '{setting.user_id}', Error: {e.detail}"
+            )
+            cls._send_verification_metric(
+                webhook_id,
+                setting,
+                success=False,
+                verification_method="gitlab_token",
+                additional_attributes={
+                    "error_cause": "gitlab_token_invalid",
+                    "status_code": e.status_code,
+                },
+            )
+            raise
+
+        if not dispatch:
+            logger.info(
+                "GitLab MR action '%s' filtered out for WebhookID '%s' (allowed: %s). "
+                "Acknowledging with 200 without invoking resource.",
+                filtered_action,
+                webhook_id,
+                event_filter,
+            )
+            cls._send_verification_metric(
+                webhook_id,
+                setting,
+                success=True,
+                verification_method="gitlab_token",
+                additional_attributes={
+                    "filtered_action": filtered_action or "none",
+                    "event_filter": event_filter,
+                },
+            )
+            return False
+
+        metadata = GitLabWebhookSecurity.extract_gitlab_metadata(request)
+        logger.info(
+            f"GitLab webhook token verified successfully. "
+            f"WebhookID: '{webhook_id}', Event: {metadata.get('event_type')}, "
+            f"Delivery ID: {metadata.get('delivery_id')}, "
+            f"Project: '{setting.project_name}', UserID: '{setting.user_id}'"
+        )
+        cls._send_verification_metric(
+            webhook_id,
+            setting,
+            success=True,
+            verification_method="gitlab_token",
+            additional_attributes={
+                "event_type": metadata.get("event_type"),
+                "delivery_id": metadata.get("delivery_id"),
+            },
+        )
+        return True
+
+    @classmethod
+    def _verify_legacy_header(
+        cls, request: Request, setting, webhook_id: str, security_header_name: str, security_header_value: str
+    ) -> bool:
+        """Verify legacy header-based authentication.
+
+        Returns:
+            True — header matched; dispatch the request.
+
+        Raises:
+            HTTPException: If header verification fails.
         """
         security_header = request.headers.get(security_header_name)
 
@@ -350,15 +454,15 @@ class WebhookService:
             f"Project: '{setting.project_name}', UserID: '{setting.user_id}'"
         )
         cls._send_verification_metric(webhook_id, setting, success=True, verification_method="legacy_header")
+        return True
 
     @classmethod
-    def _handle_no_security(cls, webhook_id: str, setting):
-        """
-        Handle webhooks with no security configuration.
+    def _handle_no_security(cls, webhook_id: str, setting) -> bool:
+        """Handle webhooks with no security configuration.
 
-        Args:
-            webhook_id: Webhook identifier
-            setting: Webhook settings from SettingsService
+        Returns:
+            True — no auth configured is treated as "dispatch" for backward
+            compatibility (a warning is logged and metric emitted).
         """
         logger.warning(
             f"Webhook '{webhook_id}' has NO security configuration. "
@@ -373,6 +477,7 @@ class WebhookService:
             verification_method="none",
             additional_attributes={"security_warning": "no_authentication_configured"},
         )
+        return True
 
     @classmethod
     def handle_assistant(

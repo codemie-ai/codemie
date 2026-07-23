@@ -67,6 +67,8 @@ async def invoke_webhook(
     except NotImplementedDatasource as e:
         logger.error(f"Not implemented webhook {webhook_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing webhook {webhook_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Webhook processing failed")

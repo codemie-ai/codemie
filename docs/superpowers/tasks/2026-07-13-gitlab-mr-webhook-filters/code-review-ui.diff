@@ -1,0 +1,262 @@
+diff --git a/src/pages/integrations/components/SettingsForm/CredentialFields.tsx b/src/pages/integrations/components/SettingsForm/CredentialFields.tsx
+index f7dba2798..c09ba2918 100644
+--- a/src/pages/integrations/components/SettingsForm/CredentialFields.tsx
++++ b/src/pages/integrations/components/SettingsForm/CredentialFields.tsx
+@@ -19,6 +19,7 @@ import { Control, Controller, useWatch, useFormState } from 'react-hook-form'
+ import ExternalSvg from '@/assets/icons/external.svg?react'
+ import PasswordToggleButton from '@/authentication/components/PasswordToggleButton'
+ import Autocomplete from '@/components/form/Autocomplete'
++import { Checkbox } from '@/components/form/Checkbox'
+ import Input from '@/components/form/Input'
+ import Switch from '@/components/form/Switch'
+ import Textarea from '@/components/form/Textarea'
+@@ -50,6 +51,7 @@ const CredentialFields: React.FC<CredentialFieldsProps> = ({
+   const formValues = useWatch({ control })
+   const formState = useFormState({ control })
+   const [passwordVisibility, setPasswordVisibility] = useState<Record<string, boolean>>({})
++  const [emptySelectionBlocked, setEmptySelectionBlocked] = useState<Record<string, boolean>>({})
+ 
+   const togglePasswordVisibility = (fieldName: string) => {
+     setPasswordVisibility((prev) => ({
+@@ -194,6 +196,74 @@ const CredentialFields: React.FC<CredentialFieldsProps> = ({
+                       onChange={field.onChange}
+                     />
+                   )}
++
++                  {type === CredentialComponentType.multiselect &&
++                    (() => {
++                      // Each option's `value` may bundle multiple raw backend tokens as a
++                      // comma-separated string (e.g. "approved,unapproved" for one checkbox) —
++                      // normalize to individual tokens for storage/comparison, never compare the
++                      // option's raw `value` as a single atomic string.
++                      const optionTokens = (option: { value: string | number | boolean }) =>
++                        String(option.value)
++                          .split(',')
++                          .map((entry) => entry.trim())
++                          .filter(Boolean)
++                      const allTokens = options.flatMap(optionTokens)
++                      const selected =
++                        value === undefined || value === null || value === ''
++                          ? allTokens
++                          : String(value)
++                              .split(',')
++                              .map((entry) => entry.trim())
++                              .filter(Boolean)
++
++                      const toggleOption = (
++                        option: { value: string | number | boolean },
++                        checked: boolean
++                      ) => {
++                        const tokens = optionTokens(option)
++                        const next = checked
++                          ? [...new Set([...selected, ...tokens])]
++                          : selected.filter((entry) => !tokens.includes(entry))
++
++                        if (next.length === 0) {
++                          setEmptySelectionBlocked((prev) => ({ ...prev, [name]: true }))
++                          return
++                        }
++
++                        setEmptySelectionBlocked((prev) => ({ ...prev, [name]: false }))
++                        field.onChange(next.join(','))
++                      }
++
++                      return (
++                        <div className="flex flex-col gap-2">
++                          {label && (
++                            <span className="text-xs text-text-quaternary">
++                              {getPlaceholder(label)}
++                            </span>
++                          )}
++                          <div className="flex flex-col gap-2 border border-border-secondary rounded-lg p-3">
++                            {options.map((option) => (
++                              <Checkbox
++                                key={String(option.value)}
++                                id={`${name}-${option.value}`}
++                                label={option.label}
++                                checked={optionTokens(option).every((token) =>
++                                  selected.includes(token)
++                                )}
++                                onChange={(checked) => toggleOption(option, checked)}
++                              />
++                            ))}
++                          </div>
++                          {emptySelectionBlocked[name] && (
++                            <span className="text-xs text-text-error">
++                              At least one merge request action must stay selected.
++                            </span>
++                          )}
++                          {error && <span className="text-xs text-text-error">{error}</span>}
++                        </div>
++                      )
++                    })()}
+                 </div>
+               )
+             }}
+diff --git a/src/pages/integrations/components/SettingsForm/__tests__/CredentialFields.test.tsx b/src/pages/integrations/components/SettingsForm/__tests__/CredentialFields.test.tsx
+new file mode 100644
+index 000000000..b611aaa1d
+--- /dev/null
++++ b/src/pages/integrations/components/SettingsForm/__tests__/CredentialFields.test.tsx
+@@ -0,0 +1,121 @@
++// Copyright 2026 EPAM Systems, Inc. ("EPAM")
++//
++// Licensed under the Apache License, Version 2.0 (the "License");
++// you may not use this file except in compliance with the License.
++// You may obtain a copy of the License at
++//
++//     http://www.apache.org/licenses/LICENSE-2.0
++//
++// Unless required by applicable law or agreed to in writing, software
++// distributed under the License is distributed on an "AS IS" BASIS,
++// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++// See the License for the specific language governing permissions and
++// limitations under the License.
++//
++
++import { render, screen } from '@testing-library/react'
++import userEvent from '@testing-library/user-event'
++import { useForm } from 'react-hook-form'
++import { describe, it, expect, vi } from 'vitest'
++
++import { CredentialComponentType, CredentialFieldConfig } from '@/types/settingsUI'
++
++import CredentialFields from '../CredentialFields'
++
++const MR_ACTION_OPTIONS = [
++  { value: 'open', label: 'Created (open)' },
++  { value: 'update', label: 'Updated' },
++  { value: 'close', label: 'Closed' },
++  { value: 'reopen', label: 'Reopened' },
++  { value: 'merge', label: 'Merged' },
++  { value: 'approved,unapproved', label: 'Approved / Unapproved' },
++]
++
++const gitlabEventFilterField: Record<string, CredentialFieldConfig> = {
++  gitlab_event_filter: {
++    label: 'GitLab MR Event Filter',
++    type: CredentialComponentType.multiselect,
++    options: MR_ACTION_OPTIONS,
++  },
++}
++
++function Wrapper({ defaultValue }: { defaultValue?: string }) {
++  const { control } = useForm({
++    defaultValues: { gitlab_event_filter: defaultValue },
++  })
++  return <CredentialFields control={control as any} credentialFields={gitlabEventFilterField} />
++}
++
++describe('CredentialFields — multiselect (GitLab MR event filter)', () => {
++  it('renders one checkbox per configured MR action', () => {
++    render(<Wrapper defaultValue="" />)
++
++    MR_ACTION_OPTIONS.forEach((option) => {
++      expect(screen.getByRole('checkbox', { name: option.label })).toBeInTheDocument()
++    })
++  })
++
++  it('defaults to every action checked when no filter is stored (backward-compatible "allow all")', () => {
++    render(<Wrapper defaultValue="" />)
++
++    MR_ACTION_OPTIONS.forEach((option) => {
++      expect(screen.getByRole('checkbox', { name: option.label })).toBeChecked()
++    })
++  })
++
++  it('reflects a previously stored filter as only the matching boxes checked', () => {
++    render(<Wrapper defaultValue="open,merge" />)
++
++    expect(screen.getByRole('checkbox', { name: 'Created (open)' })).toBeChecked()
++    expect(screen.getByRole('checkbox', { name: 'Merged' })).toBeChecked()
++    expect(screen.getByRole('checkbox', { name: 'Updated' })).not.toBeChecked()
++    expect(screen.getByRole('checkbox', { name: 'Closed' })).not.toBeChecked()
++  })
++
++  it('treats the combined Approved/Unapproved option as checked when both raw actions are stored', () => {
++    render(<Wrapper defaultValue="open,approved,unapproved" />)
++
++    expect(screen.getByRole('checkbox', { name: 'Approved / Unapproved' })).toBeChecked()
++    expect(screen.getByRole('checkbox', { name: 'Created (open)' })).toBeChecked()
++    expect(screen.getByRole('checkbox', { name: 'Merged' })).not.toBeChecked()
++  })
++
++  it('serializes both raw actions when the combined Approved/Unapproved box is checked', async () => {
++    const user = userEvent.setup()
++    const onSubmit = vi.fn()
++
++    function CaptureWrapper() {
++      const { control, handleSubmit } = useForm({ defaultValues: { gitlab_event_filter: 'open' } })
++      return (
++        <form onSubmit={handleSubmit(onSubmit)}>
++          <CredentialFields control={control as any} credentialFields={gitlabEventFilterField} />
++          <button type="submit">Save</button>
++        </form>
++      )
++    }
++
++    render(<CaptureWrapper />)
++    await user.click(screen.getByRole('checkbox', { name: 'Approved / Unapproved' }))
++    await user.click(screen.getByRole('button', { name: 'Save' }))
++
++    expect(onSubmit).toHaveBeenCalledWith(
++      expect.objectContaining({ gitlab_event_filter: 'open,approved,unapproved' }),
++      expect.anything()
++    )
++  })
++
++  it('prevents unchecking the last remaining selected action', async () => {
++    const user = userEvent.setup()
++    render(<Wrapper defaultValue="open" />)
++
++    const openCheckbox = screen.getByRole('checkbox', { name: 'Created (open)' })
++    expect(openCheckbox).toBeChecked()
++
++    await user.click(openCheckbox)
++
++    expect(screen.getByRole('checkbox', { name: 'Created (open)' })).toBeChecked()
++    expect(
++      screen.getByText(/at least one merge request action must stay selected/i)
++    ).toBeInTheDocument()
++  })
++})
+diff --git a/src/types/settingsUI.ts b/src/types/settingsUI.ts
+index eb85492b6..1f43ee79d 100644
+--- a/src/types/settingsUI.ts
++++ b/src/types/settingsUI.ts
+@@ -23,6 +23,7 @@ export enum CredentialComponentType {
+   switch = 'switch',
+   textarea = 'textarea',
+   select = 'select',
++  multiselect = 'multiselect',
+   record = 'record',
+   message = 'message',
+ }
+diff --git a/src/utils/settingsUIConfig.ts b/src/utils/settingsUIConfig.ts
+index e53ed7eb3..9e434d15e 100644
+--- a/src/utils/settingsUIConfig.ts
++++ b/src/utils/settingsUIConfig.ts
+@@ -771,6 +771,23 @@ export const CREDENTIAL_UI_MAPPING: CredentialUIMap = {
+         placeholder:
+           'GitHub Event Filter: Optional field, comma-separated events, e.g. "pull_request,push"',
+       },
++      gitlab_webhook_token: {
++        label: 'GitLab Webhook Secret Token',
++        placeholder: 'GitLab Webhook Secret Token: Optional field',
++        sensitive: true,
++      },
++      gitlab_event_filter: {
++        label: 'Trigger on merge request actions',
++        type: CredentialComponentType.multiselect,
++        options: [
++          { value: 'open', label: 'Created (open)' },
++          { value: 'update', label: 'Updated' },
++          { value: 'close', label: 'Closed' },
++          { value: 'reopen', label: 'Reopened' },
++          { value: 'merge', label: 'Merged' },
++          { value: 'approved,unapproved', label: 'Approved / Unapproved' },
++        ],
++      },
+       resource_type: {
+         placeholder: 'Resource Type',
+         type: CredentialComponentType.select,

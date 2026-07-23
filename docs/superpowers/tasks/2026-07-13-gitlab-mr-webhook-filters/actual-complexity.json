@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "task": "Add a checkbox-group UI (CredentialComponentType.multiselect) for GitLab merge-request webhook event filtering in the settings form, replacing an initially-implemented free-text field that failed a code review against the story's acceptance criteria, plus a follow-up round fixing a stale-validation-message remount bug and generalizing a hardcoded error message.",
+  "generated": "2026-07-14",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 18,
+  "size": "M",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Touched 5 components in the settings-form subsystem: new MultiSelectCheckboxGroup.tsx, CredentialFields.tsx (new rendering branch + dispatch), SettingsForm.tsx (cross-cutting key={credentialType} remount fix affecting every credential type, not just GitLab), settingsUIConfig.ts (new gitlab_event_filter config with combined-token option), and types/settingsUI.ts. The last is the shared CredentialFieldConfig contract consumed by every credential type in settingsUIConfig.ts (jira, git, aws, sql, webhook, etc.), which is a core shared utility — bumped from L to XL per the 'touches core shared utilities' red flag."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "The story's acceptance criteria were concrete enough to fail review once (free-text field rejected) and then trigger a second follow-up round for two further findings (stale validation message on remount, hardcoded error message needing to be configurable). This pattern of rework across two review cycles is exactly the 'risk of rework if assumptions prove wrong' scenario the L tier describes."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L (4) to XL (5): touches core shared utilities — CredentialFieldConfig in types/settingsUI.ts is the shared type contract used by every credential type's field configuration in settingsUIConfig.ts"
+  ],
+  "split_recommendation": null
+}

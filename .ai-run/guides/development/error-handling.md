@@ -21,3 +21,17 @@ Log internal detail while returning safe client-facing messages.
 | Swallowing exceptions without context | Log with useful type and operation context |
 
 Evidence: authentication catches unexpected errors and returns a sanitized auth error at `src/codemie/rest_api/security/authentication.py:109`.
+
+## Accurate Error Details
+
+An error message must describe the failure that actually happened. If one code path can
+fail for several distinct reasons, branch and produce a distinct message per reason —
+incident diagnosis depends on it.
+
+| Avoid | Prefer |
+|---|---|
+| Interpolating a possibly-absent value into a message (`"... 'None' ..."`) | Checking the value first and naming the real state |
+| One catch-all message for unrelated failure modes | One message per failure mode |
+| Silently substituting a default when input cannot be processed | Logging the substitution with identifying context (entity/correlation ID) |
+
+Evidence: distinct error paths and a logged fallback at `src/codemie/triggers/bindings/webhook.py:352`.

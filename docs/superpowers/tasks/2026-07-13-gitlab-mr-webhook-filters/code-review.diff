@@ -1,0 +1,667 @@
+diff --git a/.env b/.env
+index d6415daee..a5e175ef6 100644
+--- a/.env
++++ b/.env
+@@ -11,3 +11,16 @@ OPENAI_API_VERSION=2025-04-01-preview
+ GITLAB_IDENTIFIERS=["gitlab", "gitbud", "git.epam.com", "git.garage.epam.com"]
+ CODEMIE_PRECOMMIT_ENABLED=false
+ LITELLM_PREMIUM_MODELS_ALIASES=["opus"]
++
++# =============================================================================
++# User Management / Local Auth
++# All flags below are required for local login to work.
++# Override any value in your personal .env (loaded after this file).
++# =============================================================================
++ENABLE_USER_MANAGEMENT=True
++IDP_PROVIDER=local
++SUPERADMIN_EMAIL=admin@codemie.ai
++SUPERADMIN_PASSWORD=password
++EMAIL_VERIFICATION_ENABLED=false
++PASSWORD_MIN_LENGTH=1
++RATE_LIMIT_LOGIN=200/minute
+diff --git a/docs/webhook-configuration.md b/docs/webhook-configuration.md
+new file mode 100644
+index 000000000..290c4f518
+--- /dev/null
++++ b/docs/webhook-configuration.md
+@@ -0,0 +1,62 @@
++# Webhook Configuration Guide
++
++## Supported Providers
++
++- GitHub
++- GitLab
++
++## GitHub Webhooks
++
++1. GitHub repository → Settings → Webhooks.
++2. Payload URL: `https://<your-codemie-host>/v1/webhooks/{webhook_id}`.
++3. Secret: generate a secret in CodeMie settings and paste it into GitHub.
++4. Optional **GitHub Event Filter**: comma-separated event types, e.g. `pull_request,push`.
++
++Security: GitHub signs each delivery with HMAC-SHA256 (SHA-1 fallback for legacy),
++sent in `X-Hub-Signature-256`. CodeMie verifies the signature against the stored secret.
++
++## GitLab Webhooks
++
++1. GitLab project → Settings → Webhooks.
++2. URL: `https://<your-codemie-host>/v1/webhooks/{webhook_id}`.
++3. **Secret token**: generate a token in CodeMie (`GitLab Webhook Secret Token`) and paste
++   the same value into GitLab's "Secret token" field.
++4. Trigger: enable **Merge request events**.
++
++### Security model (important)
++
++GitLab does **not** sign the payload. It sends the configured secret token *verbatim*
++in the `X-Gitlab-Token` header. CodeMie verifies it with a constant-time comparison
++against the stored `GitLab Webhook Secret Token`. (This differs from GitHub, which sends
++an HMAC signature.) Always use HTTPS so the plaintext token is not exposed in transit.
++
++### MR event filtering
++
++Set **GitLab MR Event Filter** to a comma-separated list of merge-request actions. Only
++those actions trigger the workflow; every other MR action returns `400` and does not run.
++Leaving the filter empty triggers on **all** MR actions (default behavior).
++
++Supported actions:
++
++- `open` — merge request created
++- `close` — merge request closed
++- `merge` — merge request merged
++- `update` — merge request updated (commits, description, etc.)
++- `reopen` — merge request reopened
++- `approved` — approval added
++- `unapproved` — approval removed
++
++Examples:
++
++- `open` — only on creation.
++- `merge` — only when merged.
++- `open,merge,reopen` — on creation, merge, or reopen.
++
++## Troubleshooting
++
++- **401 Invalid GitLab token** — the `X-Gitlab-Token` sent by GitLab does not match the
++  stored `GitLab Webhook Secret Token`. Re-copy the token into both places (no extra spaces).
++- **400 GitLab MR event action '…' is not allowed** — the MR action is not in your filter.
++  Add it to **GitLab MR Event Filter**, or clear the filter to allow all actions.
++- **Workflow not triggering** — confirm the webhook is enabled, the token matches, and the
++  MR action is within the filter. Check CodeMie logs for the delivery and verification result.
+diff --git a/src/codemie/triggers/bindings/gitlab_webhook_security.py b/src/codemie/triggers/bindings/gitlab_webhook_security.py
+new file mode 100644
+index 000000000..ec57c4667
+--- /dev/null
++++ b/src/codemie/triggers/bindings/gitlab_webhook_security.py
+@@ -0,0 +1,98 @@
++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++import hmac
++import json
++from typing import Optional
++
++from fastapi import Request
++
++
++
++class GitLabWebhookSecurity:
++    """GitLab webhook detection, token verification, and MR event validation.
++
++    Unlike GitHub (which signs the payload with HMAC-SHA256 and sends the digest
++    in X-Hub-Signature-256), GitLab sends the configured *secret token verbatim*
++    in the X-Gitlab-Token header. Verification is therefore a constant-time
++    comparison of the header value against the stored token — there is no HMAC
++    and the request body is not involved in authentication.
++    """
++
++    HEADER_EVENT = "X-Gitlab-Event"
++    HEADER_DELIVERY = "X-Gitlab-Delivery"
++    HEADER_TOKEN = "X-Gitlab-Token"
++    USER_AGENT_PREFIX = "GitLab/"
++
++    # The closed set of merge-request actions the event filter recognizes.
++    MR_ACTIONS = {"open", "close", "merge", "update", "reopen", "approved", "unapproved"}
++
++    @classmethod
++    def is_gitlab_webhook(cls, request: Request) -> bool:
++        """Detect a GitLab webhook from its headers / user agent."""
++        headers = request.headers
++        has_event = cls.HEADER_EVENT in headers
++        has_token = cls.HEADER_TOKEN in headers
++        has_gitlab_agent = headers.get("User-Agent", "").startswith(cls.USER_AGENT_PREFIX)
++        return has_event or has_token or has_gitlab_agent
++
++    @classmethod
++    def verify_token(cls, request: Request, expected_token: str) -> bool:
++        """Verify the plaintext GitLab secret token (constant-time compare)."""
++        if not expected_token:
++            return False
++        received = request.headers.get(cls.HEADER_TOKEN, "")
++        if not received:
++            return False
++        return hmac.compare_digest(received, expected_token)
++
++    @classmethod
++    def extract_mr_action(cls, body) -> Optional[str]:
++        """Return the MR action for merge_request events, else None.
++
++        Accepts a dict, a JSON str, or raw bytes.
++        """
++        if isinstance(body, (bytes, bytearray)):
++            body = body.decode("utf-8", errors="ignore")
++        if isinstance(body, str):
++            try:
++                body = json.loads(body)
++            except (json.JSONDecodeError, TypeError):
++                return None
++        if not isinstance(body, dict):
++            return None
++        if body.get("object_kind") != "merge_request":
++            return None
++        action = body.get("action")
++        return action if action in cls.MR_ACTIONS else None
++
++    @classmethod
++    def validate_mr_event_type(cls, body, allowed_actions: list) -> bool:
++        """True if no filter is set (allow all) or the MR action is allowed."""
++        if not allowed_actions:
++            return True
++        action = cls.extract_mr_action(body)
++        if action is None:
++            return False
++        return action in allowed_actions
++
++    @classmethod
++    def extract_gitlab_metadata(cls, request: Request) -> dict:
++        """Extract GitLab metadata from webhook request headers."""
++        headers = request.headers
++        return {
++            "event_type": headers.get(cls.HEADER_EVENT, ""),
++            "delivery_id": headers.get(cls.HEADER_DELIVERY, ""),
++            "user_agent": headers.get("User-Agent", ""),
++        }
+diff --git a/src/codemie/triggers/bindings/webhook.py b/src/codemie/triggers/bindings/webhook.py
+index a1a84ea20..1493101ed 100644
+--- a/src/codemie/triggers/bindings/webhook.py
++++ b/src/codemie/triggers/bindings/webhook.py
+@@ -12,6 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++import json
+ from enum import Enum
+ 
+ from fastapi import BackgroundTasks, HTTPException, Request, status
+@@ -30,6 +31,7 @@ from codemie.triggers.actors.assistant import invoke_assistant
+ from codemie.triggers.actors.datasource import reindex_code, reindex_confluence, reindex_google, reindex_jira
+ from codemie.triggers.actors.workflow import invoke_workflow
+ from codemie.triggers.bindings.github_webhook_security import GitHubWebhookSecurity
++from codemie.triggers.bindings.gitlab_webhook_security import GitLabWebhookSecurity
+ from codemie.triggers.bindings.utils import resolve_trigger_user, validate_assistant, validate_datasource
+ from codemie.triggers.trigger_exceptions import NotImplementedDatasource
+ from codemie.triggers.trigger_models import (
+@@ -55,6 +57,10 @@ class WebhookService:
+     GITHUB_EVENT_FILTER = "github_event_filter"
+     GITHUB_REQUIRE_SHA256 = "github_require_sha256"
+ 
++    # GitLab webhook security (plaintext token verification)
++    GITLAB_WEBHOOK_TOKEN = "gitlab_webhook_token"
++    GITLAB_EVENT_FILTER = "gitlab_event_filter"
++
+     # Webhook configuration
+     RESOURCE_TYPE = "resource_type"
+     WEBHOOK = "webhook"
+@@ -67,6 +73,8 @@ class WebhookService:
+     WEBHOOK_INVOKED_SUCCESSFULLY = "Webhook invoked successfully"
+     WEBHOOK_NOT_FOUND_OR_NOT_ENABLED = "Webhook with ID '{}' not found or not enabled"
+     INVALID_SECURITY_HEADER = "Invalid security header"
++    INVALID_GITLAB_TOKEN = "Invalid GitLab token"
++    GITLAB_EVENT_NOT_ALLOWED = "GitLab MR event action '{}' is not allowed for this webhook"
+     ASSISTANT_NOT_FOUND = "Assistant with id '{}' not found"
+     WORKFLOW_NOT_FOUND = "Workflow with id '{}' not found"
+     DATASOURCE_NOT_FOUND = "Datasource with id '{}' not found"
+@@ -210,10 +218,11 @@ class WebhookService:
+     @classmethod
+     def verify_security_header(cls, request: Request, setting, raw_payload: bytes):
+         """
+-        Verify webhook security using GitHub signature or legacy header authentication.
++        Verify webhook security using GitHub signature, GitLab token, or legacy header authentication.
+ 
+         This method supports three security modes (in priority order):
+         1. GitHub Webhook Signature Verification (HMAC-SHA256)
++        1.5. GitLab Webhook Token Verification (plaintext constant-time compare)
+         2. Legacy Header-Based Authentication
+         3. No Security - Logs warning but allows
+ 
+@@ -233,6 +242,12 @@ class WebhookService:
+         if github_secret and is_github_webhook:
+             return cls._verify_github_signature(request, setting, raw_payload, webhook_id, github_secret)
+ 
++        # Priority 1.5: GitLab token verification
++        gitlab_token = setting.credential(cls.GITLAB_WEBHOOK_TOKEN)
++        is_gitlab_webhook = GitLabWebhookSecurity.is_gitlab_webhook(request)
++        if gitlab_token and is_gitlab_webhook:
++            return cls._verify_gitlab_token(request, setting, raw_payload, webhook_id, gitlab_token)
++
+         # Priority 2: Legacy header authentication
+         security_header_name = setting.credential(cls.SECURE_HEADER_NAME)
+         security_header_value = setting.credential(cls.SECURE_HEADER_VALUE)
+@@ -311,6 +326,71 @@ class WebhookService:
+             )
+             raise
+ 
++    @classmethod
++    def _verify_gitlab_token(cls, request: Request, setting, raw_payload: bytes, webhook_id: str, gitlab_token: str):
++        """Verify GitLab webhook token and MR event filter.
++
++        GitLab authenticates via a plaintext secret token in the X-Gitlab-Token
++        header (constant-time compared against the stored token). When a
++        gitlab_event_filter is configured, only the listed MR actions are
++        allowed; an empty/unset filter allows all actions.
++
++        Raises:
++            HTTPException: 401 on token mismatch, 400 on a filtered-out MR action.
++        """
++        try:
++            if not GitLabWebhookSecurity.verify_token(request, gitlab_token):
++                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=cls.INVALID_GITLAB_TOKEN)
++
++            event_filter = setting.credential(cls.GITLAB_EVENT_FILTER)
++            if event_filter:
++                allowed_actions = [a.strip() for a in event_filter.split(',') if a.strip()]
++                try:
++                    body = json.loads(raw_payload) if raw_payload else {}
++                except (json.JSONDecodeError, TypeError):
++                    body = {}
++                if not GitLabWebhookSecurity.validate_mr_event_type(body, allowed_actions):
++                    action = GitLabWebhookSecurity.extract_mr_action(body)
++                    raise HTTPException(
++                        status_code=status.HTTP_400_BAD_REQUEST,
++                        detail=cls.GITLAB_EVENT_NOT_ALLOWED.format(action),
++                    )
++
++            metadata = GitLabWebhookSecurity.extract_gitlab_metadata(request)
++            logger.info(
++                f"GitLab webhook token verified successfully. "
++                f"WebhookID: '{webhook_id}', Event: {metadata.get('event_type')}, "
++                f"Delivery ID: {metadata.get('delivery_id')}, "
++                f"Project: '{setting.project_name}', UserID: '{setting.user_id}'"
++            )
++            cls._send_verification_metric(
++                webhook_id,
++                setting,
++                success=True,
++                verification_method="gitlab_token",
++                additional_attributes={
++                    "event_type": metadata.get("event_type"),
++                    "delivery_id": metadata.get("delivery_id"),
++                },
++            )
++        except HTTPException as e:
++            logger.error(
++                f"GitLab webhook verification failed. "
++                f"WebhookID: '{webhook_id}', Project: '{setting.project_name}', "
++                f"UserID: '{setting.user_id}', Error: {e.detail}"
++            )
++            cls._send_verification_metric(
++                webhook_id,
++                setting,
++                success=False,
++                verification_method="gitlab_token",
++                additional_attributes={
++                    "error_cause": "gitlab_verification_failed",
++                    "status_code": e.status_code,
++                },
++            )
++            raise
++
+     @classmethod
+     def _verify_legacy_header(
+         cls, request: Request, setting, webhook_id: str, security_header_name: str, security_header_value: str
+diff --git a/tests/triggers/bindings/conftest.py b/tests/triggers/bindings/conftest.py
+new file mode 100644
+index 000000000..c560eeb99
+--- /dev/null
++++ b/tests/triggers/bindings/conftest.py
+@@ -0,0 +1,74 @@
++import pytest
++
++
++def _mr_payload(action: str, state: str = "opened", **attr_overrides) -> dict:
++    """Build a GitLab merge_request webhook payload for the given action."""
++    object_attributes = {
++        "id": 100,
++        "iid": 1,
++        "title": "Add test feature",
++        "description": "Test merge request",
++        "source_branch": "feature/test",
++        "target_branch": "main",
++        "state": state,
++        "url": "https://gitlab.com/group/test-project/-/merge_requests/1",
++    }
++    object_attributes.update(attr_overrides)
++    return {
++        "object_kind": "merge_request",
++        "action": action,
++        "event_type": "merge_request",
++        "user": {"id": 1, "name": "John Doe", "username": "johndoe"},
++        "project": {
++            "id": 12345,
++            "name": "test-project",
++            "path_with_namespace": "group/test-project",
++        },
++        "object_attributes": object_attributes,
++    }
++
++
++@pytest.fixture
++def gitlab_mr_open_payload():
++    return _mr_payload("open", "opened")
++
++
++@pytest.fixture
++def gitlab_mr_close_payload():
++    return _mr_payload("close", "closed")
++
++
++@pytest.fixture
++def gitlab_mr_merge_payload():
++    return _mr_payload("merge", "merged", merge_commit_sha="xyz789", merge_user_id=1)
++
++
++@pytest.fixture
++def gitlab_mr_update_payload():
++    return _mr_payload("update", "opened", description="Updated description")
++
++
++@pytest.fixture
++def gitlab_mr_reopen_payload():
++    return _mr_payload("reopen", "opened")
++
++
++@pytest.fixture
++def gitlab_mr_approved_payload():
++    return _mr_payload("approved", "opened")
++
++
++@pytest.fixture
++def gitlab_mr_unapproved_payload():
++    return _mr_payload("unapproved", "opened")
++
++
++@pytest.fixture
++def gitlab_push_payload():
++    """Non-MR event, for negative testing."""
++    return {
++        "object_kind": "push",
++        "event_type": "push",
++        "ref": "refs/heads/main",
++        "project": {"id": 12345, "name": "test-project"},
++    }
+diff --git a/tests/triggers/bindings/test_gitlab_webhook_security.py b/tests/triggers/bindings/test_gitlab_webhook_security.py
+new file mode 100644
+index 000000000..e1b0ea5f3
+--- /dev/null
++++ b/tests/triggers/bindings/test_gitlab_webhook_security.py
+@@ -0,0 +1,115 @@
++import pytest
++from unittest.mock import Mock
++from codemie.triggers.bindings.gitlab_webhook_security import GitLabWebhookSecurity
++
++
++@pytest.fixture
++def mock_gitlab_request():
++    """Mock FastAPI Request with GitLab headers."""
++    request = Mock()
++    request.headers = {
++        "X-Gitlab-Event": "Merge Request Hook",
++        "X-Gitlab-Delivery": "12345-67890-abcdef",
++        "X-Gitlab-Token": "test_token_signature",
++        "User-Agent": "GitLab/16.0",
++    }
++    request.body = b'{"object_kind":"merge_request","action":"open"}'
++    return request
++
++
++def test_is_gitlab_webhook_with_gitlab_headers(mock_gitlab_request):
++    """Test detection of GitLab webhook from headers."""
++    assert GitLabWebhookSecurity.is_gitlab_webhook(mock_gitlab_request) is True
++
++
++def test_is_gitlab_webhook_with_github_headers():
++    """Test that GitHub webhooks are NOT detected as GitLab."""
++    request = Mock()
++    request.headers = {
++        "X-GitHub-Event": "pull_request",
++        "X-Hub-Signature-256": "sha256=abcd1234",
++        "User-Agent": "GitHub-Hookshot/123abc",
++    }
++    assert GitLabWebhookSecurity.is_gitlab_webhook(request) is False
++
++
++def test_extract_mr_action_open(gitlab_mr_open_payload):
++    """Test extraction of MR action 'open' from GitLab event."""
++    action = GitLabWebhookSecurity.extract_mr_action(gitlab_mr_open_payload)
++    assert action == "open"
++
++
++def test_extract_mr_action_merge(gitlab_mr_merge_payload):
++    """Test extraction of MR action 'merge' from GitLab event."""
++    action = GitLabWebhookSecurity.extract_mr_action(gitlab_mr_merge_payload)
++    assert action == "merge"
++
++
++def test_extract_mr_action_non_mr_event():
++    """Test extraction returns None for non-MR events."""
++    payload = {"object_kind": "push", "action": None}
++    action = GitLabWebhookSecurity.extract_mr_action(payload)
++    assert action is None
++
++
++def test_validate_mr_event_type_allowed(gitlab_mr_open_payload):
++    """Test MR action validation passes for allowed actions."""
++    allowed_actions = ["open", "merge"]
++    result = GitLabWebhookSecurity.validate_mr_event_type(gitlab_mr_open_payload, allowed_actions)
++    assert result is True
++
++
++def test_validate_mr_event_type_not_allowed(gitlab_mr_merge_payload):
++    """Test MR action validation fails for disallowed actions."""
++    allowed_actions = ["open"]  # merge not allowed
++    result = GitLabWebhookSecurity.validate_mr_event_type(gitlab_mr_merge_payload, allowed_actions)
++    assert result is False
++
++
++def test_validate_mr_event_type_empty_filter(gitlab_mr_open_payload):
++    """Test MR action validation passes when no filter is specified."""
++    allowed_actions = []
++    result = GitLabWebhookSecurity.validate_mr_event_type(gitlab_mr_open_payload, allowed_actions)
++    assert result is True
++
++
++def test_verify_token_valid(mock_gitlab_request):
++    """Test valid GitLab token verification.
++
++    GitLab sends the configured secret verbatim in the X-Gitlab-Token header
++    (plaintext shared secret, NOT an HMAC of the body). Verification is a
++    constant-time comparison of the header against the stored token.
++    """
++    token = "test_token"
++    mock_gitlab_request.headers["X-Gitlab-Token"] = token
++
++    result = GitLabWebhookSecurity.verify_token(mock_gitlab_request, token)
++    assert result is True
++
++
++def test_verify_token_invalid(mock_gitlab_request):
++    """Test invalid GitLab token fails verification."""
++    # The mock's X-Gitlab-Token header is "test_token_signature", which does
++    # not match the expected token, so verification should fail.
++    result = GitLabWebhookSecurity.verify_token(mock_gitlab_request, "correct_token")
++    assert result is False
++
++
++def test_verify_token_empty_expected(mock_gitlab_request):
++    """Test verification fails when no expected token is configured."""
++    assert GitLabWebhookSecurity.verify_token(mock_gitlab_request, "") is False
++
++
++def test_verify_token_missing_header():
++    """Test verification fails when the X-Gitlab-Token header is absent."""
++    request = Mock()
++    request.headers = {"X-Gitlab-Event": "Merge Request Hook"}
++    assert GitLabWebhookSecurity.verify_token(request, "some_token") is False
++
++
++def test_extract_gitlab_metadata(mock_gitlab_request):
++    """Test extraction of GitLab metadata from headers."""
++    metadata = GitLabWebhookSecurity.extract_gitlab_metadata(mock_gitlab_request)
++    assert metadata["event_type"] == "Merge Request Hook"
++    assert metadata["delivery_id"] == "12345-67890-abcdef"
++    assert "GitLab" in metadata["user_agent"]
+diff --git a/tests/triggers/bindings/test_webhook.py b/tests/triggers/bindings/test_webhook.py
+new file mode 100644
+index 000000000..37ec0865e
+--- /dev/null
++++ b/tests/triggers/bindings/test_webhook.py
+@@ -0,0 +1,129 @@
++import pytest
++from unittest.mock import Mock, patch
++from fastapi import HTTPException
++
++from codemie.triggers.bindings.webhook import WebhookService
++from codemie.service.monitoring.webhook_monitoring_service import WebhookMonitoringService
++
++
++class _FakeSetting:
++    """Minimal stand-in for a Settings object in verify_security_header."""
++
++    def __init__(self, creds: dict):
++        self._creds = creds
++        self.project_name = "test-project"
++        self.user_id = "user-1"
++        self.alias = "gitlab-hook"
++
++    def credential(self, key):
++        return self._creds.get(key)
++
++
++def _gitlab_request(token_header: str):
++    request = Mock()
++    request.headers = {
++        "X-Gitlab-Event": "Merge Request Hook",
++        "X-Gitlab-Delivery": "abc-123",
++        "X-Gitlab-Token": token_header,
++        "User-Agent": "GitLab/16.0",
++    }
++    return request
++
++
++@pytest.fixture(autouse=True)
++def _silence_metrics():
++    with patch.object(WebhookMonitoringService, "send_webhook_invocation_metric", return_value=None):
++        yield
++
++
++def test_gitlab_allowed_action_passes():
++    setting = _FakeSetting(
++        {
++            "webhook_id": "w1",
++            "gitlab_webhook_token": "tok",
++            "gitlab_event_filter": "open,merge",
++        }
++    )
++    request = _gitlab_request("tok")
++    raw = b'{"object_kind":"merge_request","action":"open"}'
++    # Should NOT raise.
++    WebhookService.verify_security_header(request, setting, raw)
++
++
++def test_gitlab_filtered_action_raises_400():
++    setting = _FakeSetting(
++        {
++            "webhook_id": "w1",
++            "gitlab_webhook_token": "tok",
++            "gitlab_event_filter": "open,merge",
++        }
++    )
++    request = _gitlab_request("tok")
++    raw = b'{"object_kind":"merge_request","action":"update"}'
++    with pytest.raises(HTTPException) as exc:
++        WebhookService.verify_security_header(request, setting, raw)
++    assert exc.value.status_code == 400
++
++
++def test_gitlab_invalid_token_raises_401():
++    setting = _FakeSetting({"webhook_id": "w1", "gitlab_webhook_token": "tok"})
++    request = _gitlab_request("WRONG")
++    with pytest.raises(HTTPException) as exc:
++        WebhookService.verify_security_header(request, setting, b"{}")
++    assert exc.value.status_code == 401
++
++
++def test_gitlab_empty_filter_allows_all():
++    setting = _FakeSetting({"webhook_id": "w1", "gitlab_webhook_token": "tok"})
++    request = _gitlab_request("tok")
++    raw = b'{"object_kind":"merge_request","action":"update"}'
++    # No filter configured -> allow all -> must NOT raise.
++    WebhookService.verify_security_header(request, setting, raw)
++
++
++def test_gitlab_without_configured_token_falls_through_to_legacy():
++    """Backward compat: GitLab-looking request but no gitlab_webhook_token
++    configured must fall through to legacy-header auth, not force a 401."""
++    setting = _FakeSetting(
++        {
++            "webhook_id": "w1",
++            "secure_header_name": "X-Secure",
++            "secure_header_value": "expected",
++        }
++    )
++    request = _gitlab_request("irrelevant")
++    request.headers["X-Secure"] = "expected"
++    # Legacy header matches -> must NOT raise.
++    WebhookService.verify_security_header(request, setting, b"{}")
++
++
++@pytest.mark.parametrize(
++    "fixture_name, expected_action",
++    [
++        ("gitlab_mr_open_payload", "open"),
++        ("gitlab_mr_close_payload", "close"),
++        ("gitlab_mr_merge_payload", "merge"),
++        ("gitlab_mr_update_payload", "update"),
++        ("gitlab_mr_reopen_payload", "reopen"),
++        ("gitlab_mr_approved_payload", "approved"),
++        ("gitlab_mr_unapproved_payload", "unapproved"),
++    ],
++)
++def test_all_mr_actions_extracted_and_self_filter(request, fixture_name, expected_action):
++    from codemie.triggers.bindings.gitlab_webhook_security import GitLabWebhookSecurity
++
++    payload = request.getfixturevalue(fixture_name)
++    assert GitLabWebhookSecurity.extract_mr_action(payload) == expected_action
++    # A filter containing exactly this action allows it...
++    assert GitLabWebhookSecurity.validate_mr_event_type(payload, [expected_action]) is True
++    # ...and a filter without it rejects it.
++    others = [a for a in GitLabWebhookSecurity.MR_ACTIONS if a != expected_action]
++    assert GitLabWebhookSecurity.validate_mr_event_type(payload, others) is False
++
++
++def test_push_event_is_not_an_mr_action(gitlab_push_payload):
++    from codemie.triggers.bindings.gitlab_webhook_security import GitLabWebhookSecurity
++
++    assert GitLabWebhookSecurity.extract_mr_action(gitlab_push_payload) is None
++    # With an MR filter set, a push event is filtered out (not an MR action).
++    assert GitLabWebhookSecurity.validate_mr_event_type(gitlab_push_payload, ["open"]) is False

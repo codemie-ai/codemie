@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-light",
+  "slug": "gitlab-mr-webhook-filters",
+  "branch": "EPMCDME-8384_gitlab-mr-webhook-filters",
+  "phase": "maintenance",
+  "started_at": "2026-07-13T00:00:00Z",
+  "completed_at": "2026-07-14T12:19:00Z",
+  "last_sync_commit": "312e15330"
+}

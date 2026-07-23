@@ -1,0 +1,53 @@
+{
+  "decision": "request-changes",
+  "rationale": "Acceptance lens: AC1/AC3/AC5 and the CSV-format design constraint all pass cleanly against the diff — no acceptance findings. Blind and edge-case lenses (run independently, both with full coverage, no lens failures) each surfaced a real defect in the new multiselect branch of the shared CredentialFields renderer. CR-001 (edge-case, confirmed by reading the current file plus SettingsForm.tsx's reset() call) is a genuine UX bug: switching credential type and back leaves a false 'must stay selected' error visible. CR-002 (blind) is a design flaw specific to this being a generic/shared component: hardcoded GitLab-MR wording will misfire the moment a second multiselect field is added. Both are fixable inline without re-architecture. 4 additional lens findings were triaged as non-blocking and dropped from findings[]: accessibility grouping (no role=group/fieldset — no accessibility guide found in repo to make this blocking, deferred), partial approved/unapproved token state from malformed legacy data (deferred, low likelihood, no path in this diff produces it), whitespace-only stored value silently rendering as nothing-selected with no error (dismissed, minor, requires corrupted data), and DOM id containing a comma being CSS-selector-unsafe (dismissed, minor, no current querySelector usage against it). Token order not being preserved on save (blind lens) was dismissed as cosmetic — the backend and this component both treat the CSV as an unordered set.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "criterion": "AC1 — Users can define specific merge request event actions (Created, Updated, Closed, Reopened, Merged, Approved/Unapproved) in the webhook integration settings",
+      "status": "pass",
+      "notes": "settingsUIConfig.ts adds gitlab_event_filter as CredentialComponentType.multiselect with exactly the 6 named options; CredentialFields.tsx renders one checkbox per option."
+    },
+    {
+      "criterion": "AC3 — UI validation prevents saving a webhook with none of the event types selected",
+      "status": "pass",
+      "notes": "toggleOption() never calls field.onChange when the resulting token set would be empty; the value can only be mutated through this guarded path, so an empty selection can never reach the form's submitted value."
+    },
+    {
+      "criterion": "AC5 — No regression for existing webhooks (default to \"all events\" if no filters are selected)",
+      "status": "pass",
+      "notes": "undefined/null/'' stored value renders as every checkbox checked, and is never written back unless the user interacts, preserving the backend's existing empty-filter-allows-all semantics."
+    },
+    {
+      "criterion": "Design constraint — stored format stays a comma-separated string of raw GitLab action tokens (open, close, merge, update, reopen, approved, unapproved), matching the existing backend contract with no schema change",
+      "status": "pass",
+      "notes": "optionTokens() normalizes the bundled 'approved,unapproved' option into individual tokens before storage; field.onChange always writes next.join(',') as a flat token list."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "git-workflow.md commit message format (EPMCDME-XXXX: Capital sentence)",
+      "status": "pass",
+      "notes": "Commit 89e3d2ff1 'EPMCDME-8384: Add GitLab MR event filter checkbox UI' matches the required pattern."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "triage": "patch",
+      "severity": "major",
+      "problem": "emptySelectionBlocked[name] is local useState in CredentialFields.tsx, cleared only inside toggleOption on a successful (non-empty) selection change. CredentialFields is mounted once and reused across credential-type switches (SettingsForm.tsx renders it unkeyed by credentialType); handleCredentialTypeChange calls reset({...getCredentialDefaults(newType)}), which resets the RHF value out from under CredentialFields without notifying it. If a user triggers the blocked state on gitlab_event_filter, then switches credential type away and back, the field's value resets (all boxes correctly re-render checked) but the stale emptySelectionBlocked['gitlab_event_filter'] = true is never cleared.",
+      "impact": "User sees a persistent, false 'At least one merge request action must stay selected' error with no way to dismiss it short of re-toggling a checkbox to force a commit through toggleOption, even though the field is actually fully populated and valid.",
+      "recommendation": "Clear emptySelectionBlocked[name] whenever the underlying value changes for a reason other than toggleOption (e.g. a useEffect keyed on value inside the Controller render), or derive the blocked message transiently from selected.length === 0 within the current render instead of persisting it across renders in state."
+    },
+    {
+      "id": "CR-002",
+      "triage": "patch",
+      "severity": "major",
+      "problem": "CredentialComponentType.multiselect is a general-purpose enum value on a shared, data-driven form renderer used by many credential types, but CredentialFields.tsx hardcodes 'At least one merge request action must stay selected.' for every field of type multiselect, regardless of which config uses it.",
+      "impact": "Works correctly today because gitlab_event_filter is the only multiselect field in the codebase. The moment a second, unrelated multiselect field is added (e.g. a resource-type filter for a different credential type), users will see GitLab/MR-specific wording on an unrelated field.",
+      "recommendation": "Add an optional per-field message (e.g. CredentialFieldConfig.emptySelectionError) with a generic fallback, or derive the message from the field's own label instead of hardcoding MR-specific copy in the shared renderer."
+    }
+  ]
+}

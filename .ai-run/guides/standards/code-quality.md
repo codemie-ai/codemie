@@ -16,6 +16,8 @@ Keep modern Python type hints and first-party imports aligned with package names
 | Avoid | Prefer |
 |---|---|
 | Untyped public functions in new code | Explicit parameter and return types |
+| `typing.Optional[X]` and bare `list`/`dict` annotations | `X \| None` unions and parameterized generics (`list[str]`, `dict[str, str]`); add `from __future__ import annotations` in new modules |
+| Leaving a duck-typed parameter unannotated | Spell out the accepted union (e.g. `bytes \| str \| dict[str, object]`) |
 | Treating generated or external code like normal source | Respect configured ignores for `src/external/*` and generated plugin code |
 
 Evidence: project packages are `codemie` and `codemie_tools` at `pyproject.toml:16`; Ruff first-party imports are configured at `pyproject.toml:209`.

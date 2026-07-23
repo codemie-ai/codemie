@@ -7,6 +7,7 @@ Place tests beside the behavior area under `tests/codemie/`, `tests/codemie_tool
 | Avoid | Prefer |
 |---|---|
 | A broad test file unrelated to the changed package | Match the nearest existing test directory |
+| Creating a new top-level `tests/` subtree for a new area | Mirror `src/` under an existing root (e.g. `tests/codemie/<package path>/`) and reuse its fixtures |
 | Testing external services live by default | Mock provider boundaries unless integration is required |
 
 Evidence: tests are organized under package-specific directories in `tests/`; pytest dependencies are declared at `pyproject.toml:157`.
