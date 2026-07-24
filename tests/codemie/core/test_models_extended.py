@@ -158,10 +158,9 @@ class TestApplicationSearchByName:
             mock_session.exec.assert_called_once()
 
     @patch("codemie.core.models.Session")
-    def test_search_by_name_prefers_display_name_over_technical_name(self, mock_session_class):
-        """search_by_name matches display_name exclusively via COALESCE(display_name, name)
-        when present, never the raw technical name (EPMCDME-13486). Used by
-        /v1/admin/applications, backing the project-search autocomplete across the app."""
+    def test_search_by_name_matches_display_name_via_coalesce(self, mock_session_class):
+        """search_by_name still uses COALESCE(display_name, name) for display_name matching
+        (EPMCDME-13486 regression guard). Used by /v1/admin/applications."""
         # Arrange
         mock_session = MagicMock()
         mock_session_class.return_value.__enter__.return_value = mock_session
@@ -175,11 +174,26 @@ class TestApplicationSearchByName:
             # Assert
             query_text = _compile_sql(mock_session.exec.call_args[0][0])
             assert "coalesce(applications.display_name, applications.name)" in query_text
-            # Guard against a regressive fallback that would OR in a bare name match
-            # outside the COALESCE, which would silently restore matching by the raw
-            # technical name even when display_name is set.
-            assert "applications.name ilike" not in query_text
-            assert "applications.name =" not in query_text
+
+    @patch("codemie.core.models.Session")
+    def test_search_by_name_matches_both_name_and_display_name(self, mock_session_class):
+        """search_by_name also matches the raw technical name independently (EPMCDME-13637).
+        A project with a display_name must be findable by its technical name too."""
+        # Arrange
+        mock_session = MagicMock()
+        mock_session_class.return_value.__enter__.return_value = mock_session
+        mock_session.exec.return_value.all.return_value = []
+
+        mock_engine = MagicMock()
+        with patch.object(Application, "get_engine", return_value=mock_engine):
+            # Act
+            Application.search_by_name("epm-fdeg")
+
+            # Assert
+            query_text = _compile_sql(mock_session.exec.call_args[0][0])
+            assert "coalesce(applications.display_name, applications.name)" in query_text
+            assert "applications.name ilike" in query_text
+            assert "applications.name = 'epm-fdeg'" in query_text
 
 
 class TestUserResponseModel:

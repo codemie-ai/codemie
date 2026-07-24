@@ -412,14 +412,20 @@ class Application(BaseModelWithSQLSupport, Owned, table=True):
         if name_query:
             # Security: Escape LIKE wildcards to prevent information leakage (Story 2, NFR-3.1)
             escaped_query = escape_like_wildcards(name_query)
-            # Match display_name when present, falling back to the technical name
-            # only when display_name isn't set - a project with a display_name is
-            # never matched by its raw technical name (EPMCDME-13486).
+            # Match display_name when present AND the raw technical name independently
+            # so a project with a display_name is still searchable by its name (EPMCDME-13637).
             display_or_name = func.coalesce(cls.display_name, cls.name)
             stmt = (
                 select(cls)
-                .where(or_(display_or_name == name_query, display_or_name.ilike(f"%{escaped_query}%", escape="\\")))
-                .order_by(case((display_or_name == name_query, 1), else_=2))
+                .where(
+                    or_(
+                        display_or_name == name_query,
+                        display_or_name.ilike(f"%{escaped_query}%", escape="\\"),
+                        cls.name == name_query,
+                        cls.name.ilike(f"%{escaped_query}%", escape="\\"),
+                    )
+                )
+                .order_by(case((or_(display_or_name == name_query, cls.name == name_query), 1), else_=2))
             )
         else:
             stmt = select(cls)

@@ -1,0 +1,205 @@
+diff --git a/src/codemie/core/models.py b/src/codemie/core/models.py
+index 73a1501e5..5b4ba0932 100644
+--- a/src/codemie/core/models.py
++++ b/src/codemie/core/models.py
+@@ -412,14 +412,20 @@ class Application(BaseModelWithSQLSupport, Owned, table=True):
+         if name_query:
+             # Security: Escape LIKE wildcards to prevent information leakage (Story 2, NFR-3.1)
+             escaped_query = escape_like_wildcards(name_query)
+-            # Match display_name when present, falling back to the technical name
+-            # only when display_name isn't set - a project with a display_name is
+-            # never matched by its raw technical name (EPMCDME-13486).
++            # Match display_name when present AND the raw technical name independently
++            # so a project with a display_name is still searchable by its name (EPMCDME-13637).
+             display_or_name = func.coalesce(cls.display_name, cls.name)
+             stmt = (
+                 select(cls)
+-                .where(or_(display_or_name == name_query, display_or_name.ilike(f"%{escaped_query}%", escape="\\")))
+-                .order_by(case((display_or_name == name_query, 1), else_=2))
++                .where(
++                    or_(
++                        display_or_name == name_query,
++                        display_or_name.ilike(f"%{escaped_query}%", escape="\\"),
++                        cls.name == name_query,
++                        cls.name.ilike(f"%{escaped_query}%", escape="\\"),
++                    )
++                )
++                .order_by(case((or_(display_or_name == name_query, cls.name == name_query), 1), else_=2))
+             )
+         else:
+             stmt = select(cls)
+diff --git a/src/codemie/repository/application_repository.py b/src/codemie/repository/application_repository.py
+index 5122dfb30..3fbb498e1 100644
+--- a/src/codemie/repository/application_repository.py
++++ b/src/codemie/repository/application_repository.py
+@@ -67,14 +67,12 @@ class ApplicationRepository:
+ 
+         Code Review R4: Separated from _apply_search to allow count queries without ORDER BY.
+ 
+-        Searches display_name (falling back to the technical name only when display_name
+-        isn't set - same COALESCE(display_name, name) convention as Application.search_by_name,
+-        EPMCDME-13465) and description (partial, case-insensitive). A project with a
+-        display_name is never matched by its raw technical name (EPMCDME-13520).
++        OR-matches both COALESCE(display_name, name) and the raw technical name so a
++        project is discoverable by either field (EPMCDME-13637). Also matches description.
+ 
+         Args:
+             statement: Base SELECT statement
+-            search: Optional search string (substring match on display_name/name and description)
++            search: Optional search string (substring match on display_name, name, description)
+ 
+         Returns:
+             Modified SELECT statement with search filters only (no ordering)
+@@ -88,6 +86,8 @@ class ApplicationRepository:
+             or_(
+                 display_or_name == search,
+                 display_or_name.ilike(f"%{escaped_query}%", escape="\\"),
++                Application.name == search,
++                Application.name.ilike(f"%{escaped_query}%", escape="\\"),
+                 Application.description.ilike(f"%{escaped_query}%", escape="\\"),
+             )
+         )
+@@ -113,7 +113,9 @@ class ApplicationRepository:
+             return statement
+ 
+         display_or_name = func.coalesce(Application.display_name, Application.name)
+-        return statement.order_by(case((display_or_name == search, 1), else_=2))
++        return statement.order_by(
++            case((or_(display_or_name == search, Application.name == search), 1), else_=2)
++        )
+ 
+     @staticmethod
+     def _apply_assigned_budget_filter(
+@@ -399,10 +401,11 @@ class ApplicationRepository:
+             data_statement = data_statement.order_by(order_expr, Application.name.asc())
+         elif search:
+             # Relevance ordering takes precedence over caller-provided sort when search is active.
+-            # Exact match compares against COALESCE(display_name, name) to match _apply_search_filters.
++            # Exact match covers both COALESCE(display_name, name) and the raw technical name,
++            # keeping priority consistent with _apply_search_filters' OR logic (EPMCDME-13637).
+             display_or_name = func.coalesce(Application.display_name, Application.name)
+             data_statement = data_statement.order_by(
+-                case((display_or_name == search, 1), else_=2),
++                case((or_(display_or_name == search, Application.name == search), 1), else_=2),
+                 Application.date.desc(),
+                 Application.name.asc(),
+             )
+diff --git a/tests/codemie/core/test_models_extended.py b/tests/codemie/core/test_models_extended.py
+index 837584aa2..0aecb57cd 100644
+--- a/tests/codemie/core/test_models_extended.py
++++ b/tests/codemie/core/test_models_extended.py
+@@ -158,10 +158,9 @@ class TestApplicationSearchByName:
+             mock_session.exec.assert_called_once()
+ 
+     @patch("codemie.core.models.Session")
+-    def test_search_by_name_prefers_display_name_over_technical_name(self, mock_session_class):
+-        """search_by_name matches display_name exclusively via COALESCE(display_name, name)
+-        when present, never the raw technical name (EPMCDME-13486). Used by
+-        /v1/admin/applications, backing the project-search autocomplete across the app."""
++    def test_search_by_name_matches_display_name_via_coalesce(self, mock_session_class):
++        """search_by_name still uses COALESCE(display_name, name) for display_name matching
++        (EPMCDME-13486 regression guard). Used by /v1/admin/applications."""
+         # Arrange
+         mock_session = MagicMock()
+         mock_session_class.return_value.__enter__.return_value = mock_session
+@@ -175,11 +174,26 @@ class TestApplicationSearchByName:
+             # Assert
+             query_text = _compile_sql(mock_session.exec.call_args[0][0])
+             assert "coalesce(applications.display_name, applications.name)" in query_text
+-            # Guard against a regressive fallback that would OR in a bare name match
+-            # outside the COALESCE, which would silently restore matching by the raw
+-            # technical name even when display_name is set.
+-            assert "applications.name ilike" not in query_text
+-            assert "applications.name =" not in query_text
++
++    @patch("codemie.core.models.Session")
++    def test_search_by_name_matches_both_name_and_display_name(self, mock_session_class):
++        """search_by_name also matches the raw technical name independently (EPMCDME-13637).
++        A project with a display_name must be findable by its technical name too."""
++        # Arrange
++        mock_session = MagicMock()
++        mock_session_class.return_value.__enter__.return_value = mock_session
++        mock_session.exec.return_value.all.return_value = []
++
++        mock_engine = MagicMock()
++        with patch.object(Application, "get_engine", return_value=mock_engine):
++            # Act
++            Application.search_by_name("epm-fdeg")
++
++            # Assert
++            query_text = _compile_sql(mock_session.exec.call_args[0][0])
++            assert "coalesce(applications.display_name, applications.name)" in query_text
++            assert "applications.name ilike" in query_text
++            assert "applications.name = 'epm-fdeg'" in query_text
+ 
+ 
+ class TestUserResponseModel:
+diff --git a/tests/codemie/repository/test_application_repository_extended.py b/tests/codemie/repository/test_application_repository_extended.py
+index 5bfadbc16..414c6d853 100644
+--- a/tests/codemie/repository/test_application_repository_extended.py
++++ b/tests/codemie/repository/test_application_repository_extended.py
+@@ -624,11 +624,7 @@ class TestApplicationRepositoryVisibilityHelpers:
+         assert "applications.description" in query_text
+ 
+     def test_apply_search_filters_matches_display_name_via_coalesce(self):
+-        """_apply_search_filters matches display_name when present, falling back to the
+-        technical name only when display_name isn't set - same COALESCE(display_name, name)
+-        convention as Application.search_by_name (EPMCDME-13465), so GET /v1/projects?search=
+-        finds projects by display name instead of requiring a client-side full-table scan
+-        (EPMCDME-13520)."""
++        """_apply_search_filters includes COALESCE(display_name, name) match (EPMCDME-13465)."""
+         # Arrange
+         from sqlmodel import select
+ 
+@@ -640,10 +636,23 @@ class TestApplicationRepositoryVisibilityHelpers:
+         # Assert
+         query_text = _compile_sql(result)
+         assert "coalesce(applications.display_name, applications.name)" in query_text
+-        # Guard against a regressive OR'd bare-name match outside the COALESCE, which would
+-        # silently restore matching by the raw technical name even when display_name is set.
+-        assert "applications.name ilike" not in query_text
+-        assert "applications.name =" not in query_text
++
++    def test_apply_search_filters_matches_both_name_and_display_name(self):
++        """_apply_search_filters OR-matches name AND display_name so a project is
++        found by its technical name even when display_name is set (EPMCDME-13637)."""
++        # Arrange
++        from sqlmodel import select
++
++        base_statement = select(Application)
++
++        # Act
++        result = application_repository._apply_search_filters(base_statement, "epm-fdeg")
++
++        # Assert
++        query_text = _compile_sql(result)
++        assert "coalesce(applications.display_name, applications.name)" in query_text
++        assert "applications.name ilike" in query_text
++        assert "applications.name =" in query_text
+ 
+     def test_apply_search_delegates_to_apply_search_filters(self):
+         """_apply_search delegates filtering to _apply_search_filters."""
+@@ -677,3 +686,23 @@ class TestApplicationRepositoryVisibilityHelpers:
+         query_text = _compile_sql(result)
+         # Should have CASE expression for exact-match-first ordering
+         assert "case" in query_text or "order by" in query_text
++
++    def test_apply_search_exact_match_priority_covers_both_name_and_display_name(self):
++        """_apply_search ordering gives priority to exact technical-name matches too (EPMCDME-13637).
++
++        If a project has display_name set, COALESCE(display_name, name) != technical_name,
++        so the priority CASE must also check applications.name directly to rank exact
++        technical-name matches at position 1."""
++        # Arrange
++        from sqlmodel import select
++
++        base_statement = select(Application)
++
++        # Act
++        result = application_repository._apply_search(base_statement, "epm-fdeg")
++
++        # Assert
++        query_text = _compile_sql(result)
++        # The CASE expression must include applications.name = '...' so that a project
++        # with display_name set is still ranked #1 when its technical name is the query.
++        assert "applications.name = 'epm-fdeg'" in query_text

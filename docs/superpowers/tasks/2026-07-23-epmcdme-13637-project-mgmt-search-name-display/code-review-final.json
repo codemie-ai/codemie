@@ -1,0 +1,68 @@
+{
+  "decision": "approve",
+  "rationale": "All three lenses ran and produced parseable outputs (blind: 8 raw findings; edge-case: 5 findings; acceptance: 6 criteria checked). After deduplication and triage: 0 patch findings, 0 decision_needed findings, 3 defer findings, 9 dismiss findings.\n\nDefers: (B-D1) No GIN trigram index on display_name — pre-existing, not introduced by this diff (COALESCE ILIKE on display_name was already unindexed before this branch); (B-D2) update_project stores empty-string display_name — pre-existing bug in update_project, out of diff scope; the new cls.name OR arm actually mitigates the user-visible impact; (B-D3) No explicit test for NULL display_name case (spec criterion 4d) — pre-existing COALESCE tests cover this behavior implicitly; the COALESCE logic is unchanged so the regression concern is low.\n\nNote: two working-tree changes are uncommitted at review time — the _apply_search ORDER BY fix in application_repository.py (@@ -399) and test_apply_search_exact_match_priority_covers_both_name_and_display_name. These should be committed before the MR is merged; they are included in this review's diff (code-review.diff regenerated with working-tree changes via git diff <merge-base> working-tree).\n\nBlind lens finding B5/B6 (test variable scope) were false positives caused by abbreviated diff — actual tests correctly call query_text = _compile_sql(result). Blind lens finding B4 (docstring regression guard language) is accurate but not blocking: the retained COALESCE assertion still guards display_name searchability; the removed negative assertions guarded exclusivity which is now intentionally reversed by EPMCDME-13637.\n\nAll spec criteria for the backend pass or are deferred for pre-existing reasons. Implementation is correct, security (escape_like_wildcards + escape=\\\\ on all ILIKE) preserved, no SQL injection vectors.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "application_repository.py — _apply_search_filters adds Application.name == search and Application.name.ilike() as OR conditions",
+      "status": "pass",
+      "notes": "Hunk @@ -88 adds both conditions inside the existing OR block. Matches spec exactly."
+    },
+    {
+      "kind": "spec",
+      "item": "application_repository.py — ordering updated: case((or_(display_or_name == search, Application.name == search), 1), else_=2)",
+      "status": "pass",
+      "notes": "_apply_order_by (@@ -113) and _apply_search (@@ -399, working tree) both updated to OR-match ordering. Spec pattern matched exactly."
+    },
+    {
+      "kind": "spec",
+      "item": "models.py — Application.search_by_name adds cls.name == name_query and cls.name.ilike() as OR conditions",
+      "status": "pass",
+      "notes": "Four-branch OR in .where() and updated .order_by() in search_by_name. Matches spec."
+    },
+    {
+      "kind": "spec",
+      "item": "Tests — project found by exact/partial name when display_name set; display_name search regression guard",
+      "status": "pass",
+      "notes": "test_search_by_name_matches_both_name_and_display_name and test_apply_search_filters_matches_both_name_and_display_name cover criteria 4a/4b; COALESCE tests cover 4c regression guard."
+    },
+    {
+      "kind": "spec",
+      "item": "Tests — project without display_name still found by name (regression guard)",
+      "status": "partial",
+      "notes": "No new explicit test for NULL display_name case (spec criterion 4d). Implicit coverage via existing COALESCE tests + unchanged COALESCE logic. Deferred — not blocking."
+    },
+    {
+      "kind": "spec",
+      "item": "Tests — exact name match ordered before partial match",
+      "status": "pass",
+      "notes": "test_apply_search_exact_match_priority_covers_both_name_and_display_name (working tree, not yet committed) asserts the CASE expression includes applications.name = 'epm-fdeg'. Ordering structure verified."
+    },
+    {
+      "kind": "spec",
+      "item": "escape_like_wildcards applied to all ILIKE parameters; no SQL injection",
+      "status": "pass",
+      "notes": "escaped_query used for all .ilike() calls (both existing and new). escape=\\\\ present. SQLAlchemy ORM parameter binding for equality. No raw string concatenation."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "Both commits match EPMCDME-NNNNN: Capital-sentence format. Note: 2 working-tree changes (application_repository.py ordering comment + ordering test) are not yet committed — developer should commit before MR."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "Changed files are within size limits. SQLAlchemy ORM patterns consistent with project conventions. Minor: COALESCE OR conditions are redundant for NULL display_name rows (4 conditions collapse to 2), but this is harmless and consistent with the existing codebase style."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "escape_like_wildcards preserved on all ILIKE inputs. SQLAlchemy parameterized queries for equality checks. No new attack surface."
+    }
+  ],
+  "findings": []
+}

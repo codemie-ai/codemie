@@ -67,14 +67,12 @@ class ApplicationRepository:
 
         Code Review R4: Separated from _apply_search to allow count queries without ORDER BY.
 
-        Searches display_name (falling back to the technical name only when display_name
-        isn't set - same COALESCE(display_name, name) convention as Application.search_by_name,
-        EPMCDME-13465) and description (partial, case-insensitive). A project with a
-        display_name is never matched by its raw technical name (EPMCDME-13520).
+        OR-matches both COALESCE(display_name, name) and the raw technical name so a
+        project is discoverable by either field (EPMCDME-13637). Also matches description.
 
         Args:
             statement: Base SELECT statement
-            search: Optional search string (substring match on display_name/name and description)
+            search: Optional search string (substring match on display_name, name, description)
 
         Returns:
             Modified SELECT statement with search filters only (no ordering)
@@ -88,6 +86,8 @@ class ApplicationRepository:
             or_(
                 display_or_name == search,
                 display_or_name.ilike(f"%{escaped_query}%", escape="\\"),
+                Application.name == search,
+                Application.name.ilike(f"%{escaped_query}%", escape="\\"),
                 Application.description.ilike(f"%{escaped_query}%", escape="\\"),
             )
         )
@@ -113,7 +113,7 @@ class ApplicationRepository:
             return statement
 
         display_or_name = func.coalesce(Application.display_name, Application.name)
-        return statement.order_by(case((display_or_name == search, 1), else_=2))
+        return statement.order_by(case((or_(display_or_name == search, Application.name == search), 1), else_=2))
 
     @staticmethod
     def _apply_assigned_budget_filter(
@@ -399,10 +399,11 @@ class ApplicationRepository:
             data_statement = data_statement.order_by(order_expr, Application.name.asc())
         elif search:
             # Relevance ordering takes precedence over caller-provided sort when search is active.
-            # Exact match compares against COALESCE(display_name, name) to match _apply_search_filters.
+            # Exact match covers both COALESCE(display_name, name) and the raw technical name,
+            # keeping priority consistent with _apply_search_filters' OR logic (EPMCDME-13637).
             display_or_name = func.coalesce(Application.display_name, Application.name)
             data_statement = data_statement.order_by(
-                case((display_or_name == search, 1), else_=2),
+                case((or_(display_or_name == search, Application.name == search), 1), else_=2),
                 Application.date.desc(),
                 Application.name.asc(),
             )
