@@ -180,6 +180,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
 
     def _execute_sandbox_script(self, script_path: str, export_files: Optional[list[str]] = None) -> str:
         user_workdir = self._get_user_workdir()
+        self._validate_export_paths(export_files, user_workdir)
 
         if self.config.sandbox_mode == SandboxMode.JOBS:
             return self._execute_sandbox_script_jobs(script_path, export_files, user_workdir)

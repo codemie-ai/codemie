@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import logging
+import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -50,6 +51,19 @@ from codemie_tools.data_management.code_executor.tools_vars import (
 )
 
 logger = logging.getLogger(__name__)
+
+_BLOCKED_EXPORT_PATH_PREFIXES: frozenset[str] = frozenset(
+    {
+        "/proc",
+        "/etc",
+        "/sys",
+        "/var",
+        "/root",
+        "/boot",
+        "/dev",
+        "/run",
+    }
+)
 
 # Apply Kubernetes performance patch on module load
 # This fixes the slow file upload issue in llm-sandbox (1s delay per 4KB chunk)
@@ -403,6 +417,7 @@ class CodeExecutorTool(CodeMieTool):
         Raises:
             ToolException: If execution fails
         """
+        self._validate_export_paths(export_files, self._get_user_workdir())
         try:
             if self.config.sandbox_mode == SandboxMode.JOBS:
                 self._validate_code_security_policy(code)
@@ -564,6 +579,21 @@ class CodeExecutorTool(CodeMieTool):
                 f"{', '.join([v.description for v in violations[:3]])}"
             )
             raise ToolException(error_msg)
+
+    @staticmethod
+    def _validate_export_paths(export_files: Optional[List[str]], workdir: str) -> None:
+        if not export_files:
+            return
+        normalized_workdir = os.path.normpath(workdir)
+        for path in export_files:
+            if os.path.isabs(path):
+                raise ToolException(f"Export path must be relative to the working directory: {path!r}")
+            normalized = os.path.normpath(os.path.join(workdir, path))
+            if not normalized.startswith(normalized_workdir + os.sep):
+                raise ToolException(f"Export path must resolve inside the working directory: {path!r}")
+            for blocked in _BLOCKED_EXPORT_PATH_PREFIXES:
+                if normalized == blocked or normalized.startswith(blocked + os.sep):
+                    raise ToolException(f"Export path targets a restricted system directory: {path!r}")
 
     def _execute_code_sandbox(self, session, code: str) -> Tuple[Any, float]:
         """

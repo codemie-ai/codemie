@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task_description": "Add sandbox-only file path whitelist to CodeExecutorTool to block access to /proc, /etc, /sys, /var and prevent path traversal in export_files.",
+  "feature_area": "code-executor sandbox file-path security",
+  "dimensions": {
+    "scope": {
+      "score": 2,
+      "rationale": "Primary change is one new static method in code_executor_tool.py plus one call site. Secondary call site in WorkspaceScriptRunner. New test file. 2-3 files total."
+    },
+    "complexity": {
+      "score": 3,
+      "rationale": "Path normalization and traversal detection require careful ordering: absolute-path reject, os.path.normpath, workdir-containment check, blocked-prefix check. Edge cases (double-slash, symlinks) need thought but the algorithm is well-understood."
+    },
+    "risk": {
+      "score": 4,
+      "rationale": "Security-sensitive code: a missed edge case (symlinks, double-slash join, relative absolute path joining) could leave the gap open. But the blast radius of getting it wrong is contained to sandbox execution only."
+    },
+    "integration": {
+      "score": 2,
+      "rationale": "Touches only the Code Executor module. No database, no API layer, no external service changes. Both JOBS and SHARED paths covered by one injection point."
+    },
+    "test_coverage": {
+      "score": 3,
+      "rationale": "13 new test cases needed: allowed paths, all 4 blocked dirs, nested, path traversal in/out of workdir, absolute paths, None/empty inputs, JOBS mode confirmation."
+    },
+    "uncertainty": {
+      "score": 1,
+      "rationale": "Problem space is well-understood. Technical analysis identifies the exact injection point and algorithm. No ambiguity in requirements."
+    }
+  },
+  "total": 15,
+  "size": "M",
+  "routing_verdict": "PROCEED",
+  "split_recommendation": []
+}

@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "flow": "sdlc-standard",
+  "slug": "epmcdme-13689-sandbox-file-path-whitelist",
+  "branch": "EPMCDME-13689",
+  "phase": "maintenance",
+  "started_at": "2026-07-24T00:00:00Z",
+  "completed_at": "2026-07-24T00:00:00Z"
+}

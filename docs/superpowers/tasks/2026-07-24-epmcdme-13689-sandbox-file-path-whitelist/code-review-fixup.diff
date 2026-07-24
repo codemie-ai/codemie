@@ -1,0 +1,160 @@
+diff --git a/src/codemie_tools/data_management/code_executor/code_executor_tool.py b/src/codemie_tools/data_management/code_executor/code_executor_tool.py
+index edaa449b7..0837cf9f5 100644
+--- a/src/codemie_tools/data_management/code_executor/code_executor_tool.py
++++ b/src/codemie_tools/data_management/code_executor/code_executor_tool.py
+@@ -52,10 +52,18 @@ from codemie_tools.data_management.code_executor.tools_vars import (
+ 
+ logger = logging.getLogger(__name__)
+ 
+-_BLOCKED_EXPORT_PATH_PREFIXES: frozenset[str] = frozenset({
+-    "/proc", "/etc", "/sys", "/var",
+-    "/root", "/boot", "/dev", "/run",
+-})
++_BLOCKED_EXPORT_PATH_PREFIXES: frozenset[str] = frozenset(
++    {
++        "/proc",
++        "/etc",
++        "/sys",
++        "/var",
++        "/root",
++        "/boot",
++        "/dev",
++        "/run",
++    }
++)
+ 
+ # Apply Kubernetes performance patch on module load
+ # This fixes the slow file upload issue in llm-sandbox (1s delay per 4KB chunk)
+@@ -579,19 +587,13 @@ class CodeExecutorTool(CodeMieTool):
+         normalized_workdir = os.path.normpath(workdir)
+         for path in export_files:
+             if os.path.isabs(path):
+-                raise ToolException(
+-                    f"Export path must be relative to the working directory: {path!r}"
+-                )
++                raise ToolException(f"Export path must be relative to the working directory: {path!r}")
+             normalized = os.path.normpath(os.path.join(workdir, path))
+             if not normalized.startswith(normalized_workdir + os.sep):
+-                raise ToolException(
+-                    f"Export path must resolve inside the working directory: {path!r}"
+-                )
++                raise ToolException(f"Export path must resolve inside the working directory: {path!r}")
+             for blocked in _BLOCKED_EXPORT_PATH_PREFIXES:
+                 if normalized == blocked or normalized.startswith(blocked + os.sep):
+-                    raise ToolException(
+-                        f"Export path targets a restricted system directory: {path!r}"
+-                    )
++                    raise ToolException(f"Export path targets a restricted system directory: {path!r}")
+ 
+     def _execute_code_sandbox(self, session, code: str) -> Tuple[Any, float]:
+         """
+diff --git a/tests/codemie_tools/data_management/code_executor/test_export_path_validation.py b/tests/codemie_tools/data_management/code_executor/test_export_path_validation.py
+index 209b266e8..f4235be1c 100644
+--- a/tests/codemie_tools/data_management/code_executor/test_export_path_validation.py
++++ b/tests/codemie_tools/data_management/code_executor/test_export_path_validation.py
+@@ -18,6 +18,7 @@ import pytest
+ from langchain_core.tools import ToolException
+ 
+ from codemie_tools.data_management.code_executor.code_executor_tool import CodeExecutorTool
++from codemie_tools.data_management.code_executor.models import SandboxMode
+ from codemie_tools.data_management.workspace.execute_workspace_script_tool import WorkspaceScriptRunner
+ 
+ WORKDIR = "/home/codemie/test_user"
+@@ -38,23 +39,30 @@ def test_validate_export_paths_normalizes_to_inside_workdir():
+     CodeExecutorTool._validate_export_paths(["subdir/../output.csv"], WORKDIR)
+ 
+ 
+-@pytest.mark.parametrize("path", [
+-    "/proc/1/environ",
+-    "/etc/passwd",
+-    "/sys/class/net",
+-    "/var/log/syslog",
+-    "/proc/net/tcp",
+-])
++@pytest.mark.parametrize(
++    "path",
++    [
++        "/proc/1/environ",
++        "/etc/passwd",
++        "/sys/class/net",
++        "/var/log/syslog",
++        "/proc/net/tcp",
++    ],
++)
+ def test_validate_export_paths_absolute_path_raises(path):
+     with pytest.raises(ToolException):
+         CodeExecutorTool._validate_export_paths([path], WORKDIR)
+ 
+ 
+-@pytest.mark.parametrize("path", [
+-    "../../etc/passwd",
+-    "../other_user/data.csv",
+-    "..",
+-])
++@pytest.mark.parametrize(
++    "path",
++    [
++        "../../etc/passwd",
++        "../other_user/data.csv",
++        "..",
++        "subdir/..",
++    ],
++)
+ def test_validate_export_paths_traversal_raises(path):
+     with pytest.raises(ToolException):
+         CodeExecutorTool._validate_export_paths([path], WORKDIR)
+@@ -62,22 +70,43 @@ def test_validate_export_paths_traversal_raises(path):
+ 
+ def test_execute_sandbox_blocks_bad_export_path_before_io():
+     tool = CodeExecutorTool(file_repository=MagicMock(), user_id="test_user")
+-    with patch.object(tool, "_sandbox_session", side_effect=AssertionError("should not reach session")), \
+-         patch(
+-             "codemie_tools.data_management.code_executor.code_executor_tool.run_via_jobs",
+-             side_effect=AssertionError("should not reach jobs I/O"),
+-         ):
++    with (
++        patch.object(tool, "_sandbox_session", side_effect=AssertionError("should not reach session")),
++        patch(
++            "codemie_tools.data_management.code_executor.code_executor_tool.run_via_jobs",
++            side_effect=AssertionError("should not reach jobs I/O"),
++        ),
++    ):
+         with pytest.raises(ToolException, match="working directory"):
+             tool._execute_sandbox("print('hi')", export_files=["../../etc/passwd"])
+ 
+ 
+ def test_execute_sandbox_script_blocks_bad_export_path_before_io():
+     tool = WorkspaceScriptRunner(file_repository=MagicMock(), user_id="test_user")
+-    with patch.object(tool, "_sandbox_session", side_effect=AssertionError("should not reach session")), \
+-         patch.object(tool, "_get_script_content", return_value="print('hi')"), \
+-         patch.object(tool, "_validate_code_security"), \
+-         patch.object(
+-             tool, "_execute_code_sandbox", side_effect=AssertionError("should not reach execution")
+-         ):
++    with (
++        patch.object(tool, "_sandbox_session", side_effect=AssertionError("should not reach session")),
++        patch.object(tool, "_get_script_content", return_value="print('hi')"),
++        patch.object(tool, "_validate_code_security"),
++        patch.object(tool, "_execute_code_sandbox", side_effect=AssertionError("should not reach execution")),
++    ):
++        with pytest.raises(ToolException, match="working directory"):
++            tool._execute_sandbox_script("/workspace/script.py", export_files=["../other_user/secret.txt"])
++
++
++def test_execute_sandbox_blocks_bad_export_path_jobs_mode():
++    tool = CodeExecutorTool(file_repository=MagicMock(), user_id="test_user")
++    tool.config = tool.config.model_copy(update={"sandbox_mode": SandboxMode.JOBS})
++    with patch(
++        "codemie_tools.data_management.code_executor.code_executor_tool.run_via_jobs",
++        side_effect=AssertionError("should not reach jobs runner"),
++    ):
++        with pytest.raises(ToolException, match="working directory"):
++            tool._execute_sandbox("print('hi')", export_files=["../../etc/passwd"])
++
++
++def test_execute_sandbox_script_blocks_bad_export_path_jobs_mode():
++    tool = WorkspaceScriptRunner(file_repository=MagicMock(), user_id="test_user")
++    tool.config = tool.config.model_copy(update={"sandbox_mode": SandboxMode.JOBS})
++    with patch.object(tool, "_execute_sandbox_script_jobs", side_effect=AssertionError("should not reach jobs runner")):
+         with pytest.raises(ToolException, match="working directory"):
+             tool._execute_sandbox_script("/workspace/script.py", export_files=["../other_user/secret.txt"])
