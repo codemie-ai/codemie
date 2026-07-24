@@ -561,12 +561,15 @@ class AuthenticationService:
             # we own the login endpoint and know exactly when credentials were submitted.
             await session.commit()
 
-        # Bootstrap project budget allocations for new IDP users (post-commit so user row is visible)
+        # Bootstrap project budget allocations for new IDP users (post-commit so user row is visible).
+        # Uses the `user_id` parameter, not `db_user.id` — `db_user` is detached once the async
+        # session above closes (expire_on_commit=True), so touching its attributes here raises
+        # DetachedInstanceError on every first login.
         if is_new_idp_user and idp_user and idp_user.project_names:
             try:
-                await AuthenticationService._sync_budget_for_idp_projects(db_user.id, idp_user.project_names)
+                await AuthenticationService._sync_budget_for_idp_projects(user_id, idp_user.project_names)
             except Exception as e:
-                logger.warning(f"budget_sync_failed_on_idp_bootstrap: user_id={db_user.id!r} error={e}", exc_info=True)
+                logger.warning(f"budget_sync_failed_on_idp_bootstrap: user_id={user_id!r} error={e}", exc_info=True)
 
         if pre_sync_email and security_user_ins.email != pre_sync_email:
             from codemie.service.project.personal_project_service import personal_project_service
