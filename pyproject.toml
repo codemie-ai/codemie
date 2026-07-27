@@ -101,7 +101,7 @@ boto3 = "^1.43.12"
 chardet = "^5.2.0"
 elastic-transport = "8.17.1"
 elasticsearch = "8.19.3"
-gitpython = "^3.1.52"
+gitpython = "^3.1.55"
 google-api-python-client = "^2.137.0"
 googlemaps = "^4.10.0"
 httpx = "^0.28.1"
@@ -168,6 +168,7 @@ vsdx = "^0.6.1"
 starlette = "~1.3.1"  # Security (EPMCDME-12870): pin >=1.3.1 to fix CVE-2026-48818 and CVE-2026-54283
 # Security (EPMCDME-13006): pin ^8.2.1 to fix GHSA-rpj2-4hq8-938g (CWE-502 unsafe YAML deserialization in vcrpy, arbitrary code exec)
 vcrpy = "^8.2.1"
+
 
 [tool.poetry.extras]
 enterprise = ["codemie-enterprise"]
