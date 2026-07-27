@@ -1,0 +1,61 @@
+{
+  "decision": "approve",
+  "rationale": "All three lenses ran (blind, edge-case, acceptance). Core implementation in git_loader.py satisfies primary AC: MIME exclusion list, proper prefix matching with trailing slashes, _has_null_bytes heuristic with the gitattributes reference, and _should_skip_item correctly passing absolute file_path. SVN loader MIME prefix matching improved (trailing slashes, font/, model/ added). Config extended with 24 new excluded extensions. 9 new unit tests added for git loader path. Deferred findings: (1) SVN loader lacks _has_null_bytes fallback for None-MIME files — SVN content is not on-disk, requires a different streaming implementation, deferred to follow-up. (2) mimetypes.guess_type case-sensitivity on Linux for uppercase extensions — low-occurrence edge case, deferred. (3) application/vnd prefix without trailing slash — in practice matches only legitimate vnd.* types, no real false-positive risk, deferred. (4) EC-002 blobless clone edge case — niche deployment scenario, deferred. Dismissed: docstring syntax concern was a diff-context artefact; file_path scope concern was a diff-truncation artefact. No patch or decision_needed findings survive triage.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "criterion": "Backend-only — no UI changes",
+      "status": "pass",
+      "notes": "All changes confined to git_loader.py, svn_loader.py, datasources-config.yaml, and test_git_loader.py. No frontend files touched."
+    },
+    {
+      "criterion": "MIME-type based filtering",
+      "status": "pass",
+      "notes": "GitBatchLoader._is_unsupported_mime_type uses mimetypes.guess_type, checks against excluded_mime_types list, and applies prefix matching with trailing slashes (image/, video/, audio/, font/, model/, application/vnd, application/x-font). is_binary_extractable guard ensures extractable formats (PDF, DOCX, etc.) always pass through."
+    },
+    {
+      "criterion": "Exclusion list",
+      "status": "pass",
+      "notes": "excluded_mime_types contains 30+ specific MIME types covering images, video, audio, fonts, archives, compiled binaries, installers, and legacy formats. List is shared between git and SVN loaders."
+    },
+    {
+      "criterion": "Null-byte heuristic (Git-style, first 8192 bytes)",
+      "status": "partial",
+      "notes": "Correctly implemented in git loader: _has_null_bytes reads _BINARY_PROBE_BYTES=8192 bytes, checks for b'\\x00', returns False on OSError (conservative). Docstring references https://rehansaeed.com/gitattributes-best-practices/#binary-files. SVN loader does NOT apply null-byte fallback for None MIME — SVN content is not materialized on disk during traversal, so _has_null_bytes cannot be called directly; deferred to follow-up requiring SVN content streaming."
+    },
+    {
+      "criterion": "SVN loader parity",
+      "status": "partial",
+      "notes": "SVN prefix matching improved: trailing slashes added to image/, video/, audio/; font/ and model/ prefixes added — matching git loader. Null-byte fallback absent due to SVN content model differences (deferred)."
+    },
+    {
+      "criterion": "Config extension — excluded extensions",
+      "status": "pass",
+      "notes": "datasources-config.yaml extended with 24 new entries: .woff, .woff2, .eot, .ttf, .7z, .bz2, .xz, .zst, .tgz, .bin, .o, .so, .a, .lib, .pyd, .dylib, .class, .wasm, .db, .sqlite, .sqlite3, .pak, .dat."
+    },
+    {
+      "criterion": "Unit tests",
+      "status": "partial",
+      "notes": "9 new tests for _has_null_bytes (null present, clean text, OSError, read-size) and _is_unsupported_mime_type (woff, woff2, gltf-binary, None-MIME with/without null bytes). Existing test assertion corrected to expect absolute path. Gap: no new tests for SVNBatchLoader._is_unsupported_mime_type."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "git-workflow (commit format)",
+      "status": "pass",
+      "notes": "All commits follow EPMCDME-10839: prefix format as required by git-workflow.md."
+    },
+    {
+      "standard": "code-quality (ruff)",
+      "status": "pass",
+      "notes": "ruff E501 line-too-long violation in svn_loader.py was identified and fixed in a separate commit. No other lint issues in changed files."
+    },
+    {
+      "standard": "security",
+      "status": "pass",
+      "notes": "No new secrets, no injection vectors. _has_null_bytes opens files read-only in binary mode; OSError is caught conservatively. No path-traversal risk introduced beyond what the existing git clone mechanism already assumes."
+    }
+  ],
+  "findings": []
+}

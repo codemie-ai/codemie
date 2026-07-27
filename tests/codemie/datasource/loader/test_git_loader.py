@@ -23,7 +23,7 @@ from langchain_core.documents import Document
 from codemie.core.constants import CodeIndexType
 from codemie.core.models import GitRepo
 from codemie.core.utils import check_file_type
-from codemie.datasource.loader.git_loader import GitBatchLoader, _build_clone_url
+from codemie.datasource.loader.git_loader import GitBatchLoader, _build_clone_url, _has_null_bytes
 from codemie.rest_api.models.settings import Credentials, GitAuthType
 
 
@@ -106,6 +106,49 @@ class TestGitBatchLoader(unittest.TestCase):
         documents = self.loader._process_file(item, file_path)
 
         self.assertEqual(documents, [])
+
+    # --- MIME prefix wildcard tests ---
+
+    def test_is_unsupported_returns_true_for_woff(self):
+        self.assertTrue(GitBatchLoader._is_unsupported_mime_type("font.woff"))
+
+    def test_is_unsupported_returns_true_for_woff2(self):
+        self.assertTrue(GitBatchLoader._is_unsupported_mime_type("font.woff2"))
+
+    @patch("mimetypes.guess_type", return_value=("model/gltf-binary", None))
+    def test_is_unsupported_returns_true_for_gltf_binary(self, _mock_mime):
+        self.assertTrue(GitBatchLoader._is_unsupported_mime_type("/repo/assets/model.bin"))
+
+    # --- _has_null_bytes tests ---
+
+    @patch("builtins.open", new_callable=mock_open, read_data=b"hello\x00world")
+    def test_has_null_bytes_returns_true_when_null_in_chunk(self, _mock_file):
+        self.assertTrue(_has_null_bytes("/some/binary.bin"))
+
+    @patch("builtins.open", new_callable=mock_open, read_data=b"#!/usr/bin/env python\nprint('hello')")
+    def test_has_null_bytes_returns_false_for_clean_text(self, _mock_file):
+        self.assertFalse(_has_null_bytes("/some/script.py"))
+
+    @patch("builtins.open", side_effect=OSError)
+    def test_has_null_bytes_returns_false_on_oserror(self, _mock_file):
+        self.assertFalse(_has_null_bytes("/nonexistent/file"))
+
+    @patch("builtins.open", new_callable=mock_open, read_data=b"data")
+    def test_has_null_bytes_reads_at_most_8192_bytes(self, mock_file):
+        _has_null_bytes("/some/file")
+        mock_file().read.assert_called_once_with(8192)
+
+    # --- MIME=None + null-byte heuristic integration ---
+
+    @patch("codemie.datasource.loader.git_loader._has_null_bytes", return_value=True)
+    @patch("mimetypes.guess_type", return_value=(None, None))
+    def test_is_unsupported_mime_none_with_null_bytes(self, _mock_mime, _mock_null):
+        self.assertTrue(GitBatchLoader._is_unsupported_mime_type("/repo/data/unknown_binary"))
+
+    @patch("codemie.datasource.loader.git_loader._has_null_bytes", return_value=False)
+    @patch("mimetypes.guess_type", return_value=(None, None))
+    def test_is_unsupported_mime_none_without_null_bytes(self, _mock_mime, _mock_null):
+        self.assertFalse(GitBatchLoader._is_unsupported_mime_type("/repo/data/unknown_text"))
 
     def test_build_clone_url_with_creds_and_at(self):
         creds = Credentials(token_name="username", token="password", url="url")
@@ -248,7 +291,7 @@ class TestGitBatchLoader(unittest.TestCase):
         item.path = 'some_path'
         mock_is_unsupported_mime_type.return_value = True
         self.assertTrue(self.loader._should_skip_item(item))
-        mock_is_unsupported_mime_type.assert_called_once_with(item.path)
+        mock_is_unsupported_mime_type.assert_called_once_with(os.path.join(self.repo_path, item.path))
 
     # --- _is_unsupported_mime_type: binary-extractable files are always allowed ---
 

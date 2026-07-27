@@ -77,6 +77,25 @@ excluded_mime_types = [
     # Add more specific MIME types as needed
 ]
 
+_BINARY_PROBE_BYTES = 8192
+
+
+def _has_null_bytes(file_path: str) -> bool:
+    """Return True if the first 8 KB of *file_path* contains a null byte.
+
+    Uses the same heuristic git itself applies when no textconv attribute is
+    set.  Any I/O error is treated as non-binary (conservative: let the later
+    UTF-8 decode step fail rather than silently dropping a legitimate file).
+
+    See: https://rehansaeed.com/gitattributes-best-practices/#binary-files
+    """
+    try:
+        with open(file_path, "rb") as fh:
+            chunk = fh.read(_BINARY_PROBE_BYTES)
+        return b"\x00" in chunk
+    except OSError:
+        return False
+
 
 def _build_clone_url(creds, repo):
     if not creds:
@@ -307,7 +326,7 @@ class GitBatchLoader(GitLoader, BaseDatasourceLoader):
         if not GitBatchLoader._is_blob(item):
             logger.debug(f"File is not a blob. File={item.path}")
             return True
-        if self._is_unsupported_mime_type(item.path):
+        if self._is_unsupported_mime_type(file_path):
             logger.debug(f"File mime_type is not supported. File={item.path}")
             return True
         # uses filter to skip files
@@ -326,18 +345,23 @@ class GitBatchLoader(GitLoader, BaseDatasourceLoader):
     @classmethod
     def _is_unsupported_mime_type(cls, item_path):
         """
-        Determines if a file is binary based on its MIME type and extension, or by reading its content.
-        If binary or couldn't be read, file should be skipped from processing
+        Determines if a file is binary and should be skipped during indexing.
 
-        :param item_path: Path to the file
+        Returns True (skip) when the file is NOT binary-extractable AND either:
+        - the MIME type is in the exclusion list / matches a known binary prefix, OR
+        - the MIME type is unknown (None) and the file contains null bytes.
+
+        :param item_path: Absolute path to the file on disk
         :return: True if the file is binary, False otherwise
         """
         if is_binary_extractable(item_path):
-            return False  # always allow binary-extractable formats
+            return False
         mime_type, _ = mimetypes.guess_type(item_path, strict=False)
-        return mime_type in excluded_mime_types or (
-            mime_type and mime_type.startswith(('image', 'video', 'audio', 'application/vnd', 'application/x-font'))
-        )
+        if mime_type is not None:
+            return mime_type in excluded_mime_types or mime_type.startswith(
+                ('image/', 'video/', 'audio/', 'font/', 'model/', 'application/vnd', 'application/x-font')
+            )
+        return _has_null_bytes(item_path)
 
     def _process_file(self, item, file_path: str) -> list[Document]:
         """

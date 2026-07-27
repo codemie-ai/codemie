@@ -90,6 +90,29 @@ loaders:
         - .zip
         - .xls
         - .lock
+        - .woff
+        - .woff2
+        - .eot
+        - .ttf
+        - .7z
+        - .bz2
+        - .xz
+        - .zst
+        - .tgz
+        - .bin
+        - .o
+        - .so
+        - .a
+        - .lib
+        - .pyd
+        - .dylib
+        - .class
+        - .wasm
+        - .db
+        - .sqlite
+        - .sqlite3
+        - .pak
+        - .dat
       docs_only:
         - .md
         - .toml

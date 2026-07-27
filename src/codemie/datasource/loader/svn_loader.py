@@ -182,7 +182,10 @@ class SVNBatchLoader(BaseDatasourceLoader):
             return False
         mime_type, _ = mimetypes.guess_type(path, strict=False)
         return mime_type in excluded_mime_types or (
-            mime_type and mime_type.startswith(("image", "video", "audio", "application/vnd", "application/x-font"))
+            mime_type
+            and mime_type.startswith(
+                ("image/", "video/", "audio/", "font/", "model/", "application/vnd", "application/x-font")
+            )
         )
 
     def _process_content(self, content: bytes, rel_path: str, fname: str) -> list[Document]:
