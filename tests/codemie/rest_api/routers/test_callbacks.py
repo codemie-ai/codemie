@@ -359,6 +359,52 @@ class TestDatasourceCallbackEdgeCases:
         assert "Received callback" in log_call_args
 
 
+class TestDatasourceCallbackMetadataPreservation:
+    """Tests for metadata preservation during provider datasource reindexing (EPMCDME-10036)."""
+
+    @patch('codemie.rest_api.routers.callbacks.IndexInfo.find_by_id')
+    def test_metadata_preserved_on_completed_callback(self, mock_find_by_id, client, mock_index_with_provider_fields):
+        """Test that description and project_space_visible are preserved on completion (EPMCDME-10036)."""
+        # Arrange
+        mock_find_by_id.return_value = mock_index_with_provider_fields
+        mock_index_with_provider_fields.description = "Updated description from user edit"
+        mock_index_with_provider_fields.project_space_visible = True
+        index_id = "test-index-123"
+        payload = {"status": "Completed"}
+        headers = {"X-Callback-OTP": "test-otp-token"}
+
+        # Act
+        response = client.post(f"/v1/callbacks/index/{index_id}", json=payload, headers=headers)
+
+        # Assert - Verify metadata is preserved
+        assert response.status_code == 200
+        # complete_progress should be called to update progress fields only
+        mock_index_with_provider_fields.complete_progress.assert_called_once()
+        # Verify metadata was preserved (not overwritten)
+        assert mock_index_with_provider_fields.description == "Updated description from user edit"
+        assert mock_index_with_provider_fields.project_space_visible is True
+
+    @patch('codemie.rest_api.routers.callbacks.IndexInfo.find_by_id')
+    def test_metadata_preserved_when_visibility_toggled(self, mock_find_by_id, client, mock_index_with_provider_fields):
+        """Test metadata preservation when visibility is toggled during reindex (EPMCDME-10036)."""
+        # Arrange
+        mock_find_by_id.return_value = mock_index_with_provider_fields
+        mock_index_with_provider_fields.description = "Some description"
+        mock_index_with_provider_fields.project_space_visible = False
+        index_id = "test-index-123"
+        payload = {"status": "Completed"}
+        headers = {"X-Callback-OTP": "test-otp-token"}
+
+        # Act
+        response = client.post(f"/v1/callbacks/index/{index_id}", json=payload, headers=headers)
+
+        # Assert - Verify project_space_visible=False is preserved
+        assert response.status_code == 200
+        mock_index_with_provider_fields.complete_progress.assert_called_once()
+        assert mock_index_with_provider_fields.project_space_visible is False
+        assert mock_index_with_provider_fields.description == "Some description"
+
+
 class TestDatasourceCallbackIntegration:
     """Integration-style tests for complete callback workflows."""
 

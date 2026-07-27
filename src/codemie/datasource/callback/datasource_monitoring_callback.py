@@ -86,7 +86,7 @@ class DatasourceMonitoringCallback(DatasourceProcessorCallback):
             usage_summary = request_summary_manager.get_summary(self.request_uuid)
             self.index.tokens_usage = usage_summary.tokens_usage if usage_summary else None
             try:
-                self.index.update()
+                self.index.update_progress(tokens_usage=self.index.tokens_usage)
             except IndexDeletedException:
                 request_summary_manager.clear_summary(self.request_uuid)
                 return
@@ -144,7 +144,7 @@ class DatasourceMonitoringCallback(DatasourceProcessorCallback):
             usage_summary = request_summary_manager.get_summary(self.request_uuid)
             self.index.tokens_usage = usage_summary.tokens_usage if usage_summary else None
             try:
-                self.index.update()
+                self.index.update_progress(tokens_usage=self.index.tokens_usage)
             except IndexDeletedException:
                 request_summary_manager.clear_summary(self.request_uuid)
                 return

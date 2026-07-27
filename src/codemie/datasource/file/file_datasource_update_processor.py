@@ -220,7 +220,7 @@ class FileDatasourceUpdateProcessor(FileDatasourceProcessor):
                     **(self.index.processing_info or {}),
                     **stats_without_counts,
                 }
-                self.index.update()
+                self.index.update_progress(is_fetching=False, processing_info=self.index.processing_info)
 
                 logger.info(
                     f"IndexDatasource. Started. "
@@ -338,4 +338,8 @@ class FileDatasourceUpdateProcessor(FileDatasourceProcessor):
         # Item 6: sync current__chunks_state with the actual ES document count.
         self.index.current__chunks_state = self._load_es_chunks_count()
 
-        self.index.update()
+        self.index.update_progress(
+            uploaded_files=self.index.uploaded_files,
+            processed_files=self.index.processed_files,
+            current__chunks_state=self.index.current__chunks_state,
+        )

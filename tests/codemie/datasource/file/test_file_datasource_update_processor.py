@@ -384,7 +384,31 @@ class TestOnProcessEnd:
         proc = make_processor()
         with patch.object(proc, "_load_es_chunks_count", return_value=0):
             proc._on_process_end()
-        mock_index.update.assert_called()
+        mock_index.update_progress.assert_called()
+
+    def test_description_preserved_through_reindex(self, make_processor, mock_index):
+        """Verify update_progress() is called to preserve metadata (EPMCDME-10036)."""
+        updated_description = "Updated description"
+        proc = make_processor(description=updated_description)
+        mock_index.description = "old description"
+
+        with patch.object(proc, "_load_es_chunks_count", return_value=0):
+            proc._on_process_end()
+
+        # update_progress should be called, which preserves metadata by using targeted SQL
+        mock_index.update_progress.assert_called()
+
+    def test_project_space_visible_preserved_through_reindex(self, make_processor, mock_index):
+        """Verify update_progress() is called to preserve metadata (EPMCDME-10036)."""
+        updated_visibility = True
+        proc = make_processor(project_space_visible=updated_visibility)
+        mock_index.project_space_visible = False
+
+        with patch.object(proc, "_load_es_chunks_count", return_value=0):
+            proc._on_process_end()
+
+        # update_progress should be called, which preserves metadata by using targeted SQL
+        mock_index.update_progress.assert_called()
 
 
 # ---------------------------------------------------------------------------

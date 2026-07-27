@@ -62,10 +62,10 @@ class TestDatasourceMonitoringCallback:
     @patch("codemie.datasource.callback.datasource_monitoring_callback.request_summary_manager")
     @patch.object(DatasourceMonitoringService, "send_indexing_metrics")
     @patch.object(DatasourceMonitoringService, "send_datasource_tokens_usage_metric")
-    @patch.object(IndexInfo, "update")
+    @patch.object(IndexInfo, "update_progress")
     def test_on_complete_with_tokens_usage(
         self,
-        mock_update,
+        mock_update_progress,
         mock_send_tokens_metric,
         mock_send_indexing_metrics,
         mock_request_summary_manager,
@@ -91,7 +91,7 @@ class TestDatasourceMonitoringCallback:
 
         # Verify index was updated with token usage
         assert mock_index_info.tokens_usage == mock_tokens_usage
-        mock_update.assert_called_once()
+        mock_update_progress.assert_called_once()
 
         # Verify send_datasource_tokens_usage_metric was called with correct parameters
         mock_send_tokens_metric.assert_called_once_with(
@@ -106,7 +106,7 @@ class TestDatasourceMonitoringCallback:
     @patch("codemie.datasource.callback.datasource_monitoring_callback.request_summary_manager")
     @patch.object(DatasourceMonitoringService, "send_indexing_metrics")
     @patch.object(DatasourceMonitoringService, "send_datasource_tokens_usage_metric")
-    @patch.object(IndexInfo, "update")
+    @patch.object(IndexInfo, "update_progress")
     def test_on_complete_without_tokens_usage(
         self,
         mock_update,
@@ -145,10 +145,10 @@ class TestDatasourceMonitoringCallback:
     @patch("codemie.datasource.callback.datasource_monitoring_callback.request_summary_manager")
     @patch.object(DatasourceMonitoringService, "send_indexing_metrics")
     @patch.object(DatasourceMonitoringService, "send_datasource_tokens_usage_metric")
-    @patch.object(IndexInfo, "update")
+    @patch.object(IndexInfo, "update_progress")
     def test_on_error_with_tokens_usage(
         self,
-        mock_update,
+        mock_update_progress,
         mock_send_tokens_metric,
         mock_send_indexing_metrics,
         mock_request_summary_manager,
@@ -184,7 +184,7 @@ class TestDatasourceMonitoringCallback:
 
         # Verify index was updated with token usage
         assert mock_index_info.tokens_usage == mock_tokens_usage
-        mock_update.assert_called_once()
+        mock_update_progress.assert_called_once()
 
         # Verify send_datasource_tokens_usage_metric was called with correct parameters including error attributes
         mock_send_tokens_metric.assert_called_once_with(
@@ -200,7 +200,7 @@ class TestDatasourceMonitoringCallback:
     @patch("codemie.datasource.callback.datasource_monitoring_callback.request_summary_manager")
     @patch.object(DatasourceMonitoringService, "send_indexing_metrics")
     @patch.object(DatasourceMonitoringService, "send_datasource_tokens_usage_metric")
-    @patch.object(IndexInfo, "update")
+    @patch.object(IndexInfo, "update_progress")
     def test_on_error_without_tokens_usage(
         self,
         mock_update,

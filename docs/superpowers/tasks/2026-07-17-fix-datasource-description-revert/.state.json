@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-light",
+  "slug": "fix-datasource-description-revert",
+  "branch": "EPMCDME-10036_fix-datasource-description-revert",
+  "phase": "maintenance",
+  "started_at": "2026-07-17T00:00:00Z",
+  "completed_at": "2026-07-20T20:15:00Z",
+  "last_sync_commit": "37353d1cc"
+}

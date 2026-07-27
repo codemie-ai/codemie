@@ -325,7 +325,7 @@ class BaseDatasourceProcessor(ABC):
             self.index.processing_info = merged
         else:
             self.index.processing_info = {**existing, **load_stats}
-        self.index.update()
+        self.index.update_progress(processing_info=self.index.processing_info)
         return load_stats
 
     def _create_or_update_scheduler(self, cron_expression: Optional[str] = None, timezone: Optional[str] = None):
@@ -682,7 +682,7 @@ class BaseDatasourceProcessor(ABC):
 
                     # Check if datasource was deleted during batch processing
                     try:
-                        index.update()
+                        index.update_progress(complete_state=index.complete_state)
                     except IndexDeletedException:
                         logger.info(f"Datasource {index.id} was deleted during batch processing, stopping")
                         raise
@@ -698,7 +698,7 @@ class BaseDatasourceProcessor(ABC):
 
                 # Check if datasource was deleted during final batch
                 try:
-                    index.update()
+                    index.update_progress(complete_state=index.complete_state)
                 except IndexDeletedException:
                     logger.info(f"Datasource {index.id} was deleted during final batch, stopping")
                     raise
