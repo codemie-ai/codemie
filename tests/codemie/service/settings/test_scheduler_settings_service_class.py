@@ -172,7 +172,7 @@ def test_get_scheduler_settings_returns_matching(mock_get_all):
     """Test getting scheduler settings for datasources."""
 
     def credential_mock(key):
-        mapping = {"resource_id": "res1", "schedule": "0 9 * * *", "is_enabled": True}
+        mapping = {"resource_id": "res1", "schedule": "0 9 * * *", "is_enabled": True, "timezone": None}
         return mapping.get(key)
 
     mock_schedule = Mock(spec=Settings)
@@ -184,7 +184,7 @@ def test_get_scheduler_settings_returns_matching(mock_get_all):
         user_id="user123", datasource_ids=["res1", "res2"]
     )
 
-    assert result == {"res1": "0 9 * * *"}
+    assert result == {"res1": {"cron_expression": "0 9 * * *", "timezone": "UTC"}}
 
 
 @patch.object(Settings, "get_all_by_fields")
@@ -231,3 +231,101 @@ def test_delete_schedule_returns_false_when_not_found(mock_get_all):
     result = SchedulerSettingsService.delete_schedule(resource_id="res123", user_id="user123")
 
     assert result is False
+
+
+# ===================== timezone threading tests =====================
+
+
+def test_create_new_schedule_stores_timezone_credential():
+    result = SchedulerSettingsService._create_new_schedule(
+        user_id="u1",
+        project_name="p",
+        resource_type=RESOURCE_TYPE_DATASOURCE,
+        resource_id="r1",
+        resource_name="name",
+        cron_expression="0 9 * * *",
+        is_enabled=True,
+        timezone="Europe/Warsaw",
+    )
+    creds = {c.key: c.value for c in result.credential_values}
+    assert creds["timezone"] == "Europe/Warsaw"
+    assert len(result.credential_values) == 5
+
+
+def test_create_new_schedule_without_timezone_has_4_credentials():
+    result = SchedulerSettingsService._create_new_schedule(
+        user_id="u1",
+        project_name="p",
+        resource_type=RESOURCE_TYPE_DATASOURCE,
+        resource_id="r1",
+        resource_name="name",
+        cron_expression="0 9 * * *",
+        is_enabled=True,
+    )
+    assert len(result.credential_values) == 4
+    keys = {c.key for c in result.credential_values}
+    assert "timezone" not in keys
+
+
+def test_update_schedule_values_updates_existing_timezone():
+    creds = [
+        Mock(key="schedule", value="0 9 * * *"),
+        Mock(key="is_enabled", value=True),
+        Mock(key="timezone", value="UTC"),
+    ]
+    schedule = Mock(spec=Settings)
+    schedule.credential_values = creds
+    schedule.alias = f"{DATASOURCE_SCHEDULE_ALIAS_PREFIX}name"
+
+    SchedulerSettingsService._update_schedule_values(schedule, "0 10 * * *", True, "name", timezone="Europe/Warsaw")
+
+    tz_cred = next(c for c in creds if c.key == "timezone")
+    assert tz_cred.value == "Europe/Warsaw"
+
+
+def test_update_schedule_values_adds_timezone_when_absent():
+    creds = [
+        Mock(key="schedule", value="0 9 * * *"),
+        Mock(key="is_enabled", value=True),
+    ]
+    schedule = Mock(spec=Settings)
+    schedule.credential_values = creds
+    schedule.alias = f"{DATASOURCE_SCHEDULE_ALIAS_PREFIX}name"
+
+    SchedulerSettingsService._update_schedule_values(schedule, "0 9 * * *", True, "name", timezone="America/New_York")
+
+    keys = [c.key for c in schedule.credential_values]
+    assert "timezone" in keys
+    tz_val = next(c.value for c in schedule.credential_values if c.key == "timezone")
+    assert tz_val == "America/New_York"
+
+
+def test_update_schedule_values_none_timezone_leaves_absent():
+    creds = [
+        Mock(key="schedule", value="0 9 * * *"),
+        Mock(key="is_enabled", value=True),
+    ]
+    schedule = Mock(spec=Settings)
+    schedule.credential_values = creds
+    schedule.alias = f"{DATASOURCE_SCHEDULE_ALIAS_PREFIX}name"
+
+    SchedulerSettingsService._update_schedule_values(schedule, "0 9 * * *", True, "name", timezone=None)
+
+    keys = [c.key for c in schedule.credential_values]
+    assert "timezone" not in keys
+
+
+@patch.object(Settings, "get_all_by_fields")
+def test_get_scheduler_settings_returns_dict_with_timezone(mock_get_all):
+    def credential_mock(key):
+        mapping = {"resource_id": "res1", "schedule": "0 9 * * *", "is_enabled": True, "timezone": "Asia/Tokyo"}
+        return mapping.get(key)
+
+    mock_schedule = Mock(spec=Settings)
+    mock_schedule.credential = Mock(side_effect=credential_mock)
+    mock_schedule.alias = f"{DATASOURCE_SCHEDULE_ALIAS_PREFIX}resource1"
+    mock_get_all.return_value = [mock_schedule]
+
+    result = SchedulerSettingsService.get_scheduler_settings_for_datasources(user_id="user123", datasource_ids=["res1"])
+
+    assert result == {"res1": {"cron_expression": "0 9 * * *", "timezone": "Asia/Tokyo"}}

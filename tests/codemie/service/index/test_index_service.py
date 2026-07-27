@@ -230,3 +230,39 @@ def test_get_users_as_user(mock_session_class, mock_user):
     assert result[0]["id"] == "user1"
     assert result[0]["username"] == "User One"
     mock_session_class.assert_called_once_with(IndexInfo.get_engine())
+
+
+# ===================== enrich_index_with_schedule tests =====================
+
+
+@patch(
+    "codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.get_scheduler_settings_for_datasources"
+)
+def test_enrich_index_with_schedule_returns_timezone(mock_get, mock_index_info):
+    mock_user = MagicMock()
+    mock_user.id = "u1"
+    mock_get.return_value = {
+        "62028826-c9e5-4f9b-85df-fffccc271ee7": {
+            "cron_expression": "0 9 * * *",
+            "timezone": "Europe/Warsaw",
+        }
+    }
+
+    result = IndexStatusService.enrich_index_with_schedule(mock_index_info, mock_user)
+
+    assert result["cron_expression"] == "0 9 * * *"
+    assert result["timezone"] == "Europe/Warsaw"
+
+
+@patch(
+    "codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.get_scheduler_settings_for_datasources"
+)
+def test_enrich_index_with_schedule_no_schedule(mock_get, mock_index_info):
+    mock_user = MagicMock()
+    mock_user.id = "u1"
+    mock_get.return_value = {}
+
+    result = IndexStatusService.enrich_index_with_schedule(mock_index_info, mock_user)
+
+    assert result["cron_expression"] is None
+    assert result["timezone"] == "UTC"

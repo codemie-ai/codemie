@@ -19,9 +19,13 @@ from unittest.mock import Mock
 
 from fastapi import status
 
+from unittest.mock import MagicMock
+
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.rest_api.models.settings import SettingRequest
 from codemie.service.settings.settings_request_validator import (
     validate_datasource_type_for_scheduler,
+    validate_timezone_value,
     UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES,
 )
 
@@ -86,3 +90,34 @@ def test_unsupported_scheduler_datasource_types_is_frozenset():
 def test_unsupported_scheduler_datasource_types_contains(index_type):
     """Each unsupported type must be present in the constant."""
     assert index_type in UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES
+
+
+def _make_request_with_timezone(tz_value):
+    cred = MagicMock()
+    cred.key = "timezone"
+    cred.value = tz_value
+    req = MagicMock(spec=SettingRequest)
+    req.credential_values = [cred]
+    return req
+
+
+def _make_request_without_timezone():
+    req = MagicMock(spec=SettingRequest)
+    req.credential_values = []
+    return req
+
+
+@pytest.mark.parametrize("tz", ["UTC", "Europe/Warsaw", "America/New_York"])
+def test_validate_timezone_value_valid(tz):
+    validate_timezone_value(_make_request_with_timezone(tz))
+
+
+def test_validate_timezone_value_absent_is_allowed():
+    validate_timezone_value(_make_request_without_timezone())
+
+
+@pytest.mark.parametrize("tz", ["UTC+2", "Bad/Zone", "not_a_timezone", ""])
+def test_validate_timezone_value_invalid(tz):
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        validate_timezone_value(_make_request_with_timezone(tz))
+    assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY

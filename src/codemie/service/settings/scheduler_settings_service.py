@@ -14,8 +14,9 @@
 
 """Scheduler Settings Service for managing datasource cron scheduling."""
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from croniter import croniter
 from apscheduler.triggers.cron import CronTrigger
@@ -23,6 +24,7 @@ from fastapi import status
 from sqlalchemy.orm.attributes import flag_modified
 
 from codemie.configs import logger
+from codemie.configs.config import config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.settings import CredentialValues, Settings, SettingType
 from codemie.service.settings.base_settings import BaseSettingsService, SearchFields
@@ -49,6 +51,7 @@ class SchedulerSettingsService(BaseSettingsService):
         resource_name: str,
         cron_expression: str | None,
         resource_type: str = RESOURCE_TYPE_DATASOURCE,
+        timezone: Optional[str] = None,
     ) -> Settings | None:
         """
         Handle scheduler creation, update, or deletion based on cron_expression value.
@@ -78,6 +81,7 @@ class SchedulerSettingsService(BaseSettingsService):
                 resource_name=resource_name,
                 cron_expression=cron_expression,
                 is_enabled=True,
+                timezone=timezone,
             )
         else:
             # Delete the schedule if it exists (cron_expression is None or empty)
@@ -96,6 +100,7 @@ class SchedulerSettingsService(BaseSettingsService):
         resource_name: str,
         cron_expression: str,
         is_enabled: bool = True,
+        timezone: Optional[str] = None,
     ) -> Settings | None:
         """
         Create or update scheduler setting for automatic datasource reindexing.
@@ -129,7 +134,7 @@ class SchedulerSettingsService(BaseSettingsService):
                 # Update existing schedule
                 logger.info(f"Updating existing schedule for datasource {resource_id}")
                 SchedulerSettingsService._update_schedule_values(
-                    existing_schedule, cron_expression, is_enabled, resource_name
+                    existing_schedule, cron_expression, is_enabled, resource_name, timezone=timezone
                 )
                 flag_modified(existing_schedule, "credential_values")
                 existing_schedule.update()
@@ -145,6 +150,7 @@ class SchedulerSettingsService(BaseSettingsService):
                     resource_name=resource_name,
                     cron_expression=cron_expression,
                     is_enabled=is_enabled,
+                    timezone=timezone,
                 )
                 new_schedule.save()
                 return new_schedule
@@ -195,22 +201,25 @@ class SchedulerSettingsService(BaseSettingsService):
         return None
 
     @staticmethod
-    def _update_schedule_values(schedule: Settings, cron_expression: str, is_enabled: bool, resource_name: str):
-        """
-        Update schedule credential values.
-
-        Args:
-            schedule: Existing Settings object
-            cron_expression: New cron expression
-            is_enabled: Whether the schedule is enabled
-            resource_name: Name of the resource
-        """
+    def _update_schedule_values(
+        schedule: Settings,
+        cron_expression: str,
+        is_enabled: bool,
+        resource_name: str,
+        timezone: Optional[str] = None,
+    ):
         # Update credential values
         for cred in schedule.credential_values:
             if cred.key == "schedule":
                 cred.value = cron_expression
             elif cred.key == "is_enabled":
                 cred.value = is_enabled
+            elif cred.key == "timezone" and timezone is not None:
+                cred.value = timezone
+
+        # Add timezone credential if provided and not already present
+        if timezone is not None and not any(c.key == "timezone" for c in schedule.credential_values):
+            schedule.credential_values.append(CredentialValues(key="timezone", value=timezone))
 
         # Update alias to reflect resource name (using index router prefix)
         schedule.alias = f"{DATASOURCE_SCHEDULE_ALIAS_PREFIX}{resource_name}"
@@ -224,6 +233,7 @@ class SchedulerSettingsService(BaseSettingsService):
         resource_name: str,
         cron_expression: str,
         is_enabled: bool,
+        timezone: Optional[str] = None,
     ) -> Settings:
         """
         Create new scheduler setting.
@@ -246,6 +256,8 @@ class SchedulerSettingsService(BaseSettingsService):
             CredentialValues(key="resource_id", value=resource_id),
             CredentialValues(key="is_enabled", value=True),
         ]
+        if timezone is not None:
+            credential_values.append(CredentialValues(key="timezone", value=timezone))
 
         new_schedule = Settings(
             user_id=user_id,
@@ -260,7 +272,7 @@ class SchedulerSettingsService(BaseSettingsService):
         return new_schedule
 
     @staticmethod
-    def get_scheduler_settings_for_datasources(user_id: str, datasource_ids: List[str]) -> Dict[str, str]:
+    def get_scheduler_settings_for_datasources(user_id: str, datasource_ids: List[str]) -> Dict[str, dict]:
         """
         Get cron expressions for multiple datasources from index router schedules only.
 
@@ -285,16 +297,17 @@ class SchedulerSettingsService(BaseSettingsService):
 
         all_settings = Settings.get_all_by_fields(search_fields)
 
-        # Build mapping of resource_id -> cron_expression (only for index router schedules)
+        # Build mapping of resource_id -> {cron_expression, timezone} (only for index router schedules)
         schedule_map = {}
         for setting in all_settings:
             resource_id = setting.credential("resource_id")
             schedule = setting.credential("schedule")
             is_enabled = setting.credential("is_enabled")
+            timezone = setting.credential("timezone")
             has_index_router_alias = setting.alias and setting.alias.startswith(DATASOURCE_SCHEDULE_ALIAS_PREFIX)
 
             if resource_id in datasource_ids and is_enabled and has_index_router_alias:
-                schedule_map[resource_id] = schedule
+                schedule_map[resource_id] = {"cron_expression": schedule, "timezone": timezone or config.TIMEZONE}
 
         return schedule_map
 
@@ -450,4 +463,18 @@ def _validate_minimum_hourly_frequency(cron_expr: str, cron: croniter) -> None:
                 "Please use a schedule that runs hourly or less frequently "
                 "(e.g., '0 * * * *' for hourly, '0 */2 * * *' for every 2 hours, '0 0 * * *' for daily)"
             ),
+        )
+
+
+def validate_timezone_string(timezone_str: Optional[str]) -> None:
+    if timezone_str is None:
+        return
+    try:
+        ZoneInfo(timezone_str)
+    except (KeyError, ValueError):
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Invalid timezone",
+            details=f"'{timezone_str}' is not a recognised IANA timezone name.",
+            help="Provide an IANA timezone name such as 'Europe/Warsaw', 'America/New_York', or 'UTC'.",
         )

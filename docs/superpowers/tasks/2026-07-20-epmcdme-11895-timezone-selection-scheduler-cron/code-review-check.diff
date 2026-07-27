@@ -1,0 +1,253 @@
+diff --git a/src/codemie/datasource/code/code_datasource_processor.py b/src/codemie/datasource/code/code_datasource_processor.py
+index 894575469..75450664a 100644
+--- a/src/codemie/datasource/code/code_datasource_processor.py
++++ b/src/codemie/datasource/code/code_datasource_processor.py
+@@ -182,6 +182,7 @@ def index_code_datasource_in_background(
+     background_tasks,
+     guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None,
+     cron_expression: Optional[str] = None,
++    timezone: Optional[str] = None,
+ ):
+     def process():
+         datasource_processor = CodeDatasourceProcessor.create_processor(
+@@ -193,7 +194,7 @@ def index_code_datasource_in_background(
+         datasource_processor.process()
+ 
+         # Create scheduler if cron_expression was provided
+-        datasource_processor._create_or_update_scheduler(cron_expression)
++        datasource_processor._create_or_update_scheduler(cron_expression, timezone=timezone)
+ 
+     run_in_background(process, git_repo.name, background_tasks)
+ 
+@@ -208,6 +209,7 @@ def update_code_datasource_in_background(
+     resume_indexing: bool,
+     guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None,
+     cron_expression: Optional[str] = None,
++    timezone: Optional[str] = None,
+ ):
+     def process():
+         index = IndexInfo.filter_by_project_and_repo(project_name=app_name, repo_name=repo_name)[0]
+@@ -224,6 +226,6 @@ def update_code_datasource_in_background(
+             datasource_processor.reprocess()
+ 
+         # Update scheduler if cron_expression was provided in the update request
+-        datasource_processor._create_or_update_scheduler(cron_expression)
++        datasource_processor._create_or_update_scheduler(cron_expression, timezone=timezone)
+ 
+     run_in_background(process, git_repo.name, background_tasks)
+diff --git a/src/codemie/datasource/svn/svn_index_service.py b/src/codemie/datasource/svn/svn_index_service.py
+index 72adb8842..865e27ac6 100644
+--- a/src/codemie/datasource/svn/svn_index_service.py
++++ b/src/codemie/datasource/svn/svn_index_service.py
+@@ -63,6 +63,7 @@ class SVNIndexService:
+         resume_indexing: bool,
+         guardrail_assignments: Optional[List["GuardrailAssignmentItem"]] = None,
+         cron_expression: Optional[str] = None,
++        timezone: Optional[str] = None,
+     ) -> None:
+         from codemie.datasource.code.code_datasource_processor import run_in_background
+         from codemie.datasource.svn.svn_datasource_processor import SVNDatasourceProcessor
+@@ -88,6 +89,6 @@ class SVNIndexService:
+                 processor.resume()
+             else:
+                 processor.reprocess()
+-            processor._create_or_update_scheduler(cron_expression)
++            processor._create_or_update_scheduler(cron_expression, timezone=timezone)
+ 
+         run_in_background(process, svn_repo.name, background_tasks)
+diff --git a/src/codemie/rest_api/routers/index.py b/src/codemie/rest_api/routers/index.py
+index 1be63841b..946b913c0 100644
+--- a/src/codemie/rest_api/routers/index.py
++++ b/src/codemie/rest_api/routers/index.py
+@@ -527,6 +527,7 @@ def create_index_application(
+         background_tasks=tasks,
+         guardrail_assignments=create_git_repo_request.guardrail_assignments,
+         cron_expression=create_git_repo_request.cron_expression if cron_expression_provided else None,
++        timezone=create_git_repo_request.timezone,
+     )
+ 
+     return BaseResponse(
+@@ -599,7 +600,9 @@ def create_svn_index_application(
+             guardrail_assignments=create_svn_repo_request.guardrail_assignments,
+         )
+         processor.process()
+-        processor._create_or_update_scheduler(create_svn_repo_request.cron_expression, timezone=create_svn_repo_request.timezone)
++        processor._create_or_update_scheduler(
++            create_svn_repo_request.cron_expression, timezone=create_svn_repo_request.timezone
++        )
+ 
+     run_in_background(process, svn_repo.name, tasks)
+ 
+@@ -712,7 +715,9 @@ def update_svn_index_application(
+             processor.resume()
+         else:
+             processor.reprocess()
+-        processor._create_or_update_scheduler(request.cron_expression if cron_expression_provided else None, timezone=request.timezone)
++        processor._create_or_update_scheduler(
++            request.cron_expression if cron_expression_provided else None, timezone=request.timezone
++        )
+ 
+     run_in_background(process, svn_repo.name, tasks)
+ 
+@@ -855,6 +860,7 @@ def _handle_svn_reindex(
+         resume_indexing=resume_indexing,
+         guardrail_assignments=request.guardrail_assignments,
+         cron_expression=request.cron_expression if cron_expression_provided else None,
++        timezone=request.timezone,
+     )
+ 
+     if resume_indexing:
+@@ -952,6 +958,7 @@ def update_index_application(
+         resume_indexing=resume_indexing,
+         guardrail_assignments=request.guardrail_assignments,
+         cron_expression=request.cron_expression if cron_expression_provided else None,
++        timezone=request.timezone,
+     )
+ 
+     if resume_indexing:
+diff --git a/src/codemie/service/settings/scheduler_settings_service.py b/src/codemie/service/settings/scheduler_settings_service.py
+index 20546bce8..e46ca3443 100644
+--- a/src/codemie/service/settings/scheduler_settings_service.py
++++ b/src/codemie/service/settings/scheduler_settings_service.py
+@@ -470,7 +470,7 @@ def validate_timezone_string(timezone_str: Optional[str]) -> None:
+         return
+     try:
+         ZoneInfo(timezone_str)
+-    except (ZoneInfoNotFoundError, KeyError):
++    except (ZoneInfoNotFoundError, KeyError, ValueError):
+         raise ExtendedHTTPException(
+             code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+             message="Invalid timezone",
+diff --git a/src/codemie/service/settings/settings_request_validator.py b/src/codemie/service/settings/settings_request_validator.py
+index 2a7df733b..daa0f6a83 100644
+--- a/src/codemie/service/settings/settings_request_validator.py
++++ b/src/codemie/service/settings/settings_request_validator.py
+@@ -517,8 +517,6 @@ def validate_cron_expression(request: SettingRequest) -> None:
+ 
+ 
+ def validate_timezone_value(request: SettingRequest) -> None:
+-    timezone_cred = next(
+-        (cred for cred in request.credential_values if cred.key == "timezone"), None
+-    )
++    timezone_cred = next((cred for cred in request.credential_values if cred.key == "timezone"), None)
+     if timezone_cred is not None and isinstance(timezone_cred.value, str):
+         validate_timezone_string(timezone_cred.value)
+diff --git a/tests/codemie/rest_api/routers/test_settings_cron_validation.py b/tests/codemie/rest_api/routers/test_settings_cron_validation.py
+index 0c1b571fe..9f9c9a033 100644
+--- a/tests/codemie/rest_api/routers/test_settings_cron_validation.py
++++ b/tests/codemie/rest_api/routers/test_settings_cron_validation.py
+@@ -14,7 +14,6 @@
+ 
+ import pytest
+ from fastapi import status
+-from pydantic import ValidationError
+ from unittest.mock import MagicMock
+ 
+ from codemie.core.exceptions import ExtendedHTTPException
+@@ -269,7 +268,8 @@ def test_mixin_no_timezone_defaults_to_none():
+     assert req.timezone is None
+ 
+ 
+-@pytest.mark.parametrize("tz", ["UTC+2", "Bad/Zone", "not_a_timezone"])
++@pytest.mark.parametrize("tz", ["UTC+2", "Bad/Zone", "not_a_timezone", ""])
+ def test_mixin_invalid_timezone_raises_422(tz):
+-    with pytest.raises(ValidationError):
++    with pytest.raises(ExtendedHTTPException) as exc_info:
+         IndexKnowledgeBaseConfluenceRequest(**_make_confluence_request(timezone=tz))
++    assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+diff --git a/tests/codemie/service/index/test_index_service.py b/tests/codemie/service/index/test_index_service.py
+index 8a4539649..579f17ff2 100644
+--- a/tests/codemie/service/index/test_index_service.py
++++ b/tests/codemie/service/index/test_index_service.py
+@@ -235,7 +235,9 @@ def test_get_users_as_user(mock_session_class, mock_user):
+ # ===================== enrich_index_with_schedule tests =====================
+ 
+ 
+-@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.get_scheduler_settings_for_datasources")
++@patch(
++    "codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.get_scheduler_settings_for_datasources"
++)
+ def test_enrich_index_with_schedule_returns_timezone(mock_get, mock_index_info):
+     mock_user = MagicMock()
+     mock_user.id = "u1"
+@@ -252,7 +254,9 @@ def test_enrich_index_with_schedule_returns_timezone(mock_get, mock_index_info):
+     assert result["timezone"] == "Europe/Warsaw"
+ 
+ 
+-@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.get_scheduler_settings_for_datasources")
++@patch(
++    "codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.get_scheduler_settings_for_datasources"
++)
+ def test_enrich_index_with_schedule_no_schedule(mock_get, mock_index_info):
+     mock_user = MagicMock()
+     mock_user.id = "u1"
+diff --git a/tests/codemie/service/settings/test_scheduler_settings_service.py b/tests/codemie/service/settings/test_scheduler_settings_service.py
+index 4eb8e4f1e..6f3a6157c 100644
+--- a/tests/codemie/service/settings/test_scheduler_settings_service.py
++++ b/tests/codemie/service/settings/test_scheduler_settings_service.py
+@@ -85,7 +85,7 @@ def test_validate_timezone_string_none_is_allowed():
+     validate_timezone_string(None)
+ 
+ 
+-@pytest.mark.parametrize("tz", ["UTC+2", "Europe/Nowhere", "Bad/Zone", "not_a_timezone"])
++@pytest.mark.parametrize("tz", ["UTC+2", "Europe/Nowhere", "Bad/Zone", "not_a_timezone", ""])
+ def test_validate_timezone_string_invalid(tz):
+     with pytest.raises(ExtendedHTTPException) as exc_info:
+         validate_timezone_string(tz)
+diff --git a/tests/codemie/service/settings/test_scheduler_settings_service_class.py b/tests/codemie/service/settings/test_scheduler_settings_service_class.py
+index 170e74e05..fe1c963d7 100644
+--- a/tests/codemie/service/settings/test_scheduler_settings_service_class.py
++++ b/tests/codemie/service/settings/test_scheduler_settings_service_class.py
+@@ -326,8 +326,6 @@ def test_get_scheduler_settings_returns_dict_with_timezone(mock_get_all):
+     mock_schedule.alias = f"{DATASOURCE_SCHEDULE_ALIAS_PREFIX}resource1"
+     mock_get_all.return_value = [mock_schedule]
+ 
+-    result = SchedulerSettingsService.get_scheduler_settings_for_datasources(
+-        user_id="user123", datasource_ids=["res1"]
+-    )
++    result = SchedulerSettingsService.get_scheduler_settings_for_datasources(user_id="user123", datasource_ids=["res1"])
+ 
+     assert result == {"res1": {"cron_expression": "0 9 * * *", "timezone": "Asia/Tokyo"}}
+diff --git a/tests/codemie/service/settings/test_settings_request_validator.py b/tests/codemie/service/settings/test_settings_request_validator.py
+index 1148f4497..f3ada2773 100644
+--- a/tests/codemie/service/settings/test_settings_request_validator.py
++++ b/tests/codemie/service/settings/test_settings_request_validator.py
+@@ -116,7 +116,7 @@ def test_validate_timezone_value_absent_is_allowed():
+     validate_timezone_value(_make_request_without_timezone())
+ 
+ 
+-@pytest.mark.parametrize("tz", ["UTC+2", "Bad/Zone", "not_a_timezone"])
++@pytest.mark.parametrize("tz", ["UTC+2", "Bad/Zone", "not_a_timezone", ""])
+ def test_validate_timezone_value_invalid(tz):
+     with pytest.raises(ExtendedHTTPException) as exc_info:
+         validate_timezone_value(_make_request_with_timezone(tz))
+diff --git a/tests/codemie/triggers/bindings/test_cron.py b/tests/codemie/triggers/bindings/test_cron.py
+index 148164982..cb34a003c 100644
+--- a/tests/codemie/triggers/bindings/test_cron.py
++++ b/tests/codemie/triggers/bindings/test_cron.py
+@@ -618,7 +618,11 @@ def test_valid_setting_includes_timezone(cron_instance, mock_setting):
+     mock_setting.update_date = datetime.now()
+     cron_instance.jobs = {}
+ 
+-    with patch.object(cron_instance, "_Cron__validate_resource", return_value={"resource_name": "a", "project_name": "p", "index_type": "", "jql": ""}):
++    with patch.object(
++        cron_instance,
++        "_Cron__validate_resource",
++        return_value={"resource_name": "a", "project_name": "p", "index_type": "", "jql": ""},
++    ):
+         result = cron_instance._Cron__valid_setting(mock_setting)
+ 
+     assert result is not False
+@@ -637,7 +641,11 @@ def test_valid_setting_timezone_missing_returns_none(cron_instance, mock_setting
+     mock_setting.update_date = datetime.now()
+     cron_instance.jobs = {}
+ 
+-    with patch.object(cron_instance, "_Cron__validate_resource", return_value={"resource_name": "a", "project_name": "p", "index_type": "", "jql": ""}):
++    with patch.object(
++        cron_instance,
++        "_Cron__validate_resource",
++        return_value={"resource_name": "a", "project_name": "p", "index_type": "", "jql": ""},
++    ):
+         result = cron_instance._Cron__valid_setting(mock_setting)
+ 
+     assert result is not False

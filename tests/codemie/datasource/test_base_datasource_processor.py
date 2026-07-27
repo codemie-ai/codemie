@@ -517,3 +517,34 @@ class TestLoadAndProcessDocumentsEmbeddingDrain:
         processor._load_and_process_documents(loader=loader, index=mock_index, batch_size=10)
 
         mock_rsm.update_llm_run.assert_not_called()
+
+
+# ===================== _create_or_update_scheduler timezone tests =====================
+
+
+@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.handle_schedule")
+def test_create_or_update_scheduler_passes_timezone(mock_handle, processor):
+    processor.index.repo_name = "my-repo"
+    processor._create_or_update_scheduler(cron_expression="0 9 * * *", timezone="Europe/Warsaw")
+
+    mock_handle.assert_called_once()
+    _, kwargs = mock_handle.call_args
+    assert kwargs["timezone"] == "Europe/Warsaw"
+
+
+@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.handle_schedule")
+def test_create_or_update_scheduler_no_timezone_passes_none(mock_handle, processor):
+    processor.index.repo_name = "my-repo"
+    processor._create_or_update_scheduler(cron_expression="0 9 * * *")
+
+    mock_handle.assert_called_once()
+    _, kwargs = mock_handle.call_args
+    assert kwargs["timezone"] is None
+
+
+@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.handle_schedule")
+def test_create_or_update_scheduler_none_cron_skips_handle(mock_handle, processor):
+    processor.cron_expression = None
+    processor._create_or_update_scheduler()
+
+    mock_handle.assert_not_called()

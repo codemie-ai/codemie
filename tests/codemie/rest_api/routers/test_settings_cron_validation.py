@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.settings.settings_request_validator import validate_cron_expression
 from codemie.rest_api.models.settings import SettingRequest
+from codemie.rest_api.models.index import IndexKnowledgeBaseConfluenceRequest
 
 
 class TestScheduleCredentialValidation:
@@ -239,3 +240,36 @@ class TestScheduleCredentialParametrized:
         else:
             with pytest.raises(ExtendedHTTPException):
                 validate_cron_expression(mock_request)
+
+
+# ===================== CronExpressionValidatorMixin timezone tests =====================
+
+
+def _make_confluence_request(**kwargs):
+    """Minimal valid IndexKnowledgeBaseConfluenceRequest for mixin tests."""
+    defaults = {
+        "name": "test-ds-01",
+        "project_name": "proj",
+        "description": "desc",
+        "cql": "space=KEY",
+    }
+    defaults.update(kwargs)
+    return defaults
+
+
+@pytest.mark.parametrize("tz", ["UTC", "Europe/Warsaw", "America/New_York"])
+def test_mixin_valid_timezone_accepted(tz):
+    req = IndexKnowledgeBaseConfluenceRequest(**_make_confluence_request(timezone=tz))
+    assert req.timezone == tz
+
+
+def test_mixin_no_timezone_defaults_to_none():
+    req = IndexKnowledgeBaseConfluenceRequest(**_make_confluence_request())
+    assert req.timezone is None
+
+
+@pytest.mark.parametrize("tz", ["UTC+2", "Bad/Zone", "not_a_timezone", ""])
+def test_mixin_invalid_timezone_raises_422(tz):
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        IndexKnowledgeBaseConfluenceRequest(**_make_confluence_request(timezone=tz))
+    assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY

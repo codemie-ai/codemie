@@ -23,6 +23,7 @@ from codemie.rest_api.models.settings import SettingRequest
 from codemie.service.settings.scheduler_settings_service import (
     _validate_minimum_hourly_frequency,
     INVALID_CRON_EXPRESSION_MESSAGE,
+    validate_timezone_string,
 )
 from apscheduler.triggers.cron import CronTrigger
 from croniter import croniter
@@ -206,6 +207,9 @@ def validate_scheduler_request(request: SettingRequest) -> None:
 
     # Extract and validate cron expression (schedule)
     validate_cron_expression(request)
+
+    # Validate timezone (optional credential)
+    validate_timezone_value(request)
 
 
 def validate_datasource_type_for_scheduler(datasource: IndexInfo) -> None:
@@ -510,3 +514,9 @@ def validate_cron_expression(request: SettingRequest) -> None:
             details="Please provide a cron expression for the scheduler.",
             help=CRON_EXPRESSION_HELP_MESSAGE,
         )
+
+
+def validate_timezone_value(request: SettingRequest) -> None:
+    timezone_cred = next((cred for cred in request.credential_values if cred.key == "timezone"), None)
+    if timezone_cred is not None and isinstance(timezone_cred.value, str):
+        validate_timezone_string(timezone_cred.value)

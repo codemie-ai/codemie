@@ -527,6 +527,7 @@ def create_index_application(
         background_tasks=tasks,
         guardrail_assignments=create_git_repo_request.guardrail_assignments,
         cron_expression=create_git_repo_request.cron_expression if cron_expression_provided else None,
+        timezone=create_git_repo_request.timezone,
     )
 
     return BaseResponse(
@@ -599,7 +600,9 @@ def create_svn_index_application(
             guardrail_assignments=create_svn_repo_request.guardrail_assignments,
         )
         processor.process()
-        processor._create_or_update_scheduler(create_svn_repo_request.cron_expression)
+        processor._create_or_update_scheduler(
+            create_svn_repo_request.cron_expression, timezone=create_svn_repo_request.timezone
+        )
 
     run_in_background(process, svn_repo.name, tasks)
 
@@ -696,7 +699,7 @@ def update_svn_index_application(
 
     if skip_reindex:
         if cron_expression_provided:
-            _update_datasource_scheduler(user.id, index_info, request.cron_expression)
+            _update_datasource_scheduler(user.id, index_info, request.cron_expression, timezone=request.timezone)
         return BaseResponse(message=f"{repo_name} updated successfully!")
 
     def process():
@@ -712,7 +715,9 @@ def update_svn_index_application(
             processor.resume()
         else:
             processor.reprocess()
-        processor._create_or_update_scheduler(request.cron_expression if cron_expression_provided else None)
+        processor._create_or_update_scheduler(
+            request.cron_expression if cron_expression_provided else None, timezone=request.timezone
+        )
 
     run_in_background(process, svn_repo.name, tasks)
 
@@ -841,7 +846,7 @@ def _handle_svn_reindex(
             setting_id=svn_repo.setting_id,
         )
         if cron_expression_provided:
-            _update_datasource_scheduler(user.id, index_info, request.cron_expression)
+            _update_datasource_scheduler(user.id, index_info, request.cron_expression, timezone=request.timezone)
         return BaseResponse(message=f"{repo_name} updated successfully!")
 
     SVNIndexService.reindex(
@@ -855,6 +860,7 @@ def _handle_svn_reindex(
         resume_indexing=resume_indexing,
         guardrail_assignments=request.guardrail_assignments,
         cron_expression=request.cron_expression if cron_expression_provided else None,
+        timezone=request.timezone,
     )
 
     if resume_indexing:
@@ -939,7 +945,7 @@ def update_index_application(
 
     if skip_reindex:
         if cron_expression_provided:
-            _update_datasource_scheduler(user.id, index_info, request.cron_expression)
+            _update_datasource_scheduler(user.id, index_info, request.cron_expression, timezone=request.timezone)
         return BaseResponse(message=f"{repo_name} updated successfully!")
 
     update_code_datasource_in_background(
@@ -952,6 +958,7 @@ def update_index_application(
         resume_indexing=resume_indexing,
         guardrail_assignments=request.guardrail_assignments,
         cron_expression=request.cron_expression if cron_expression_provided else None,
+        timezone=request.timezone,
     )
 
     if resume_indexing:
@@ -1421,7 +1428,7 @@ def update_knowledge_base_google(
 
     else:
         if cron_expression_provided:
-            _update_datasource_scheduler(user.id, kb_index[0], request.cron_expression)
+            _update_datasource_scheduler(user.id, kb_index[0], request.cron_expression, timezone=request.timezone)
         return BaseResponse(message=EDIT_SUCCESSFUL)
 
 
@@ -1496,7 +1503,7 @@ def update_knowledge_base_confluence(
 
     if full_reindex is not True and resume_indexing is not True:
         if cron_expression_provided:
-            _update_datasource_scheduler(user.id, kb_index[0], request.cron_expression)
+            _update_datasource_scheduler(user.id, kb_index[0], request.cron_expression, timezone=request.timezone)
         return BaseResponse(message=EDIT_SUCCESSFUL)
 
     confluence_creds = SettingsService.get_confluence_creds(
@@ -1567,7 +1574,7 @@ def update_knowledge_base_jira(
 
     if not full_reindex and not incremental_reindex:
         if cron_expression_provided:
-            _update_datasource_scheduler(user.id, kb_index, request.cron_expression)
+            _update_datasource_scheduler(user.id, kb_index, request.cron_expression, timezone=request.timezone)
         return BaseResponse(message=EDIT_SUCCESSFUL)
 
     jira_creds = SettingsService.get_jira_creds(
@@ -1647,7 +1654,7 @@ def update_knowledge_base_xray(
 
     if not full_reindex and not incremental_reindex:
         if cron_expression_provided:
-            _update_datasource_scheduler(user.id, kb_index, request.cron_expression)
+            _update_datasource_scheduler(user.id, kb_index, request.cron_expression, timezone=request.timezone)
         return BaseResponse(message=EDIT_SUCCESSFUL)
 
     xray_creds = SettingsService.get_xray_creds(
@@ -1727,7 +1734,7 @@ def update_knowledge_base_azure_devops_wiki(
 
     if not full_reindex and not incremental_reindex:
         if cron_expression_provided:
-            _update_datasource_scheduler(user.id, kb_index, request.cron_expression)
+            _update_datasource_scheduler(user.id, kb_index, request.cron_expression, timezone=request.timezone)
         return BaseResponse(message=EDIT_SUCCESSFUL)
 
     azure_devops_creds = SettingsService.get_azure_devops_creds(
@@ -1837,7 +1844,7 @@ def update_knowledge_base_azure_devops_work_item(
 
     if not full_reindex and not incremental_reindex:
         if cron_expression_provided:
-            _update_datasource_scheduler(user.id, kb_index, request.cron_expression)
+            _update_datasource_scheduler(user.id, kb_index, request.cron_expression, timezone=request.timezone)
         return BaseResponse(message=EDIT_SUCCESSFUL)
 
     azure_devops_creds = SettingsService.get_azure_devops_creds(
@@ -2012,7 +2019,7 @@ def update_knowledge_base_sharepoint(
         if cron_expression_provided:
             stored_auth_type = kb_index.sharepoint.auth_type if kb_index.sharepoint else "integration"
             if stored_auth_type not in ("oauth_codemie", "oauth_custom"):
-                _update_datasource_scheduler(user.id, kb_index, request.cron_expression)
+                _update_datasource_scheduler(user.id, kb_index, request.cron_expression, timezone=request.timezone)
             else:
                 logger.info(
                     f"Skipping scheduler update for SharePoint datasource '{kb_index.id}' "
@@ -2318,7 +2325,12 @@ def _get_elasticsearch_stats(index: IndexInfo) -> Optional[ElasticsearchStatsRes
         return None
 
 
-def _update_datasource_scheduler(user_id: str, index_info: IndexInfo, cron_expression: str) -> None:
+def _update_datasource_scheduler(
+    user_id: str,
+    index_info: IndexInfo,
+    cron_expression: str,
+    timezone: Optional[str] = None,
+) -> None:
     """
     Update or create scheduler settings for a datasource.
     If cron_expression is empty string, deletes existing schedule.
@@ -2327,6 +2339,7 @@ def _update_datasource_scheduler(user_id: str, index_info: IndexInfo, cron_expre
         user_id: ID of the user
         index_info: IndexInfo object for the datasource
         cron_expression: Cron expression for scheduling, or empty string to remove schedule
+        timezone: Optional IANA timezone name (e.g. 'Europe/Warsaw')
     """
     from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService
 
@@ -2336,6 +2349,7 @@ def _update_datasource_scheduler(user_id: str, index_info: IndexInfo, cron_expre
         resource_id=index_info.id,
         resource_name=index_info.repo_name,
         cron_expression=cron_expression,
+        timezone=timezone,
     )
 
 

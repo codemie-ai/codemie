@@ -327,13 +327,17 @@ class IndexStatusService:
 
         try:
             scheduler_map = SchedulerSettingsService.get_scheduler_settings_for_datasources(user.id, [str(index.id)])
-            cron_expression = scheduler_map.get(str(index.id))
+            schedule_entry = scheduler_map.get(str(index.id))
         except Exception as e:
             logger.error(f"Failed to fetch scheduler settings for index {index.id}: {e}", exc_info=True)
-            cron_expression = None
+            schedule_entry = None
 
-        # Convert to dict and add cron_expression
+        cron_expression = schedule_entry["cron_expression"] if schedule_entry else None
+        timezone = (schedule_entry["timezone"] if schedule_entry else None) or config.TIMEZONE
+
+        # Convert to dict and add schedule fields
         index_dict = index.model_dump()
         index_dict["cron_expression"] = cron_expression
+        index_dict["timezone"] = timezone
 
         return index_dict

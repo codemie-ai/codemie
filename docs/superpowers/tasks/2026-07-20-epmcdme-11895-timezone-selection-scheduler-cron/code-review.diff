@@ -1,0 +1,973 @@
+diff --git a/.local.env b/.local.env
+new file mode 100644
+index 000000000..e69de29bb
+diff --git a/pyproject.toml b/pyproject.toml
+index f3f44d0d5..f47b03ee8 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -26,6 +26,7 @@ azure-mgmt-storage = "^21.1.0"
+ azure-storage-blob = "^12.23.1"
+ apscheduler = "^3.10.4"
+ croniter = "^3.0.3"
++tzdata = ">=2024.1"
+ datasets = "^2.20.0"
+ exporter = "^0.0.4"
+ fastapi = "^0.133.0"
+diff --git a/src/codemie/datasource/base_datasource_processor.py b/src/codemie/datasource/base_datasource_processor.py
+index 281ce0e3e..7e806b214 100644
+--- a/src/codemie/datasource/base_datasource_processor.py
++++ b/src/codemie/datasource/base_datasource_processor.py
+@@ -328,7 +328,7 @@ class BaseDatasourceProcessor(ABC):
+         self.index.update()
+         return load_stats
+ 
+-    def _create_or_update_scheduler(self, cron_expression: Optional[str] = None):
++    def _create_or_update_scheduler(self, cron_expression: Optional[str] = None, timezone: Optional[str] = None):
+         """
+         Create, update, or delete scheduler setting for automatic datasource reindexing.
+ 
+@@ -366,6 +366,7 @@ class BaseDatasourceProcessor(ABC):
+                 resource_id=self.index.id,
+                 resource_name=self.index.repo_name,
+                 cron_expression=cron_expr,
++                timezone=timezone,
+             )
+             if result:
+                 logger.info(f"Scheduler created/updated for datasource {self.index.id}")
+diff --git a/src/codemie/rest_api/models/index.py b/src/codemie/rest_api/models/index.py
+index c59bcc924..0173b470f 100644
+--- a/src/codemie/rest_api/models/index.py
++++ b/src/codemie/rest_api/models/index.py
+@@ -46,6 +46,7 @@ from codemie.service.guardrail.guardrail_service import GuardrailService
+ from codemie.service.settings.scheduler_settings_service import (
+     SchedulerSettingsService,
+     validate_cron_expression,
++    validate_timezone_string,
+ )
+ 
+ 
+@@ -111,14 +112,16 @@ class IncompatibleIndexTypeException(Exception): ...
+ 
+ 
+ class CronExpressionValidatorMixin:
+-    """Mixin to add cron_expression validation to request models."""
++    """Mixin to add cron_expression and optional timezone validation to request models."""
++
++    timezone: Optional[str] = None
+ 
+     @model_validator(mode='after')
+     def validate_cron_expression_field(self):
+-        """Validate cron_expression if explicitly provided."""
+-        # Only validate if the field was explicitly set in the request
+         if 'cron_expression' in self.model_fields_set:
+             validate_cron_expression(self.cron_expression)
++        if 'timezone' in self.model_fields_set:
++            validate_timezone_string(self.timezone)
+         return self
+ 
+ 
+diff --git a/src/codemie/rest_api/models/settings.py b/src/codemie/rest_api/models/settings.py
+index 236585a29..51e2d4b69 100644
+--- a/src/codemie/rest_api/models/settings.py
++++ b/src/codemie/rest_api/models/settings.py
+@@ -215,6 +215,7 @@ class Scheduler(BaseModel):
+     is_enabled: bool
+     resource_type: str
+     resource_id: str
++    timezone: Optional[str] = None
+ 
+ 
+ class SettingRequest(BaseModel):
+diff --git a/src/codemie/rest_api/routers/index.py b/src/codemie/rest_api/routers/index.py
+index 79e17c1ed..1be63841b 100644
+--- a/src/codemie/rest_api/routers/index.py
++++ b/src/codemie/rest_api/routers/index.py
+@@ -599,7 +599,7 @@ def create_svn_index_application(
+             guardrail_assignments=create_svn_repo_request.guardrail_assignments,
+         )
+         processor.process()
+-        processor._create_or_update_scheduler(create_svn_repo_request.cron_expression)
++        processor._create_or_update_scheduler(create_svn_repo_request.cron_expression, timezone=create_svn_repo_request.timezone)
+ 
+     run_in_background(process, svn_repo.name, tasks)
+ 
+@@ -696,7 +696,7 @@ def update_svn_index_application(
+ 
+     if skip_reindex:
+         if cron_expression_provided:
+-            _update_datasource_scheduler(user.id, index_info, request.cron_expression)
++            _update_datasource_scheduler(user.id, index_info, request.cron_expression, timezone=request.timezone)
+         return BaseResponse(message=f"{repo_name} updated successfully!")
+ 
+     def process():
+@@ -712,7 +712,7 @@ def update_svn_index_application(
+             processor.resume()
+         else:
+             processor.reprocess()
+-        processor._create_or_update_scheduler(request.cron_expression if cron_expression_provided else None)
++        processor._create_or_update_scheduler(request.cron_expression if cron_expression_provided else None, timezone=request.timezone)
+ 
+     run_in_background(process, svn_repo.name, tasks)
+ 
+@@ -841,7 +841,7 @@ def _handle_svn_reindex(
+             setting_id=svn_repo.setting_id,
+         )
+         if cron_expression_provided:
+-            _update_datasource_scheduler(user.id, index_info, request.cron_expression)
++            _update_datasource_scheduler(user.id, index_info, request.cron_expression, timezone=request.timezone)
+         return BaseResponse(message=f"{repo_name} updated successfully!")
+ 
+     SVNIndexService.reindex(
+@@ -939,7 +939,7 @@ def update_index_application(
+ 
+     if skip_reindex:
+         if cron_expression_provided:
+-            _update_datasource_scheduler(user.id, index_info, request.cron_expression)
++            _update_datasource_scheduler(user.id, index_info, request.cron_expression, timezone=request.timezone)
+         return BaseResponse(message=f"{repo_name} updated successfully!")
+ 
+     update_code_datasource_in_background(
+@@ -1421,7 +1421,7 @@ def update_knowledge_base_google(
+ 
+     else:
+         if cron_expression_provided:
+-            _update_datasource_scheduler(user.id, kb_index[0], request.cron_expression)
++            _update_datasource_scheduler(user.id, kb_index[0], request.cron_expression, timezone=request.timezone)
+         return BaseResponse(message=EDIT_SUCCESSFUL)
+ 
+ 
+@@ -1488,7 +1488,7 @@ def update_knowledge_base_confluence(
+ 
+     if full_reindex is not True and resume_indexing is not True:
+         if cron_expression_provided:
+-            _update_datasource_scheduler(user.id, kb_index[0], request.cron_expression)
++            _update_datasource_scheduler(user.id, kb_index[0], request.cron_expression, timezone=request.timezone)
+         return BaseResponse(message=EDIT_SUCCESSFUL)
+ 
+     confluence_creds = SettingsService.get_confluence_creds(
+@@ -1559,7 +1559,7 @@ def update_knowledge_base_jira(
+ 
+     if not full_reindex and not incremental_reindex:
+         if cron_expression_provided:
+-            _update_datasource_scheduler(user.id, kb_index, request.cron_expression)
++            _update_datasource_scheduler(user.id, kb_index, request.cron_expression, timezone=request.timezone)
+         return BaseResponse(message=EDIT_SUCCESSFUL)
+ 
+     jira_creds = SettingsService.get_jira_creds(
+@@ -1639,7 +1639,7 @@ def update_knowledge_base_xray(
+ 
+     if not full_reindex and not incremental_reindex:
+         if cron_expression_provided:
+-            _update_datasource_scheduler(user.id, kb_index, request.cron_expression)
++            _update_datasource_scheduler(user.id, kb_index, request.cron_expression, timezone=request.timezone)
+         return BaseResponse(message=EDIT_SUCCESSFUL)
+ 
+     xray_creds = SettingsService.get_xray_creds(
+@@ -1719,7 +1719,7 @@ def update_knowledge_base_azure_devops_wiki(
+ 
+     if not full_reindex and not incremental_reindex:
+         if cron_expression_provided:
+-            _update_datasource_scheduler(user.id, kb_index, request.cron_expression)
++            _update_datasource_scheduler(user.id, kb_index, request.cron_expression, timezone=request.timezone)
+         return BaseResponse(message=EDIT_SUCCESSFUL)
+ 
+     azure_devops_creds = SettingsService.get_azure_devops_creds(
+@@ -1829,7 +1829,7 @@ def update_knowledge_base_azure_devops_work_item(
+ 
+     if not full_reindex and not incremental_reindex:
+         if cron_expression_provided:
+-            _update_datasource_scheduler(user.id, kb_index, request.cron_expression)
++            _update_datasource_scheduler(user.id, kb_index, request.cron_expression, timezone=request.timezone)
+         return BaseResponse(message=EDIT_SUCCESSFUL)
+ 
+     azure_devops_creds = SettingsService.get_azure_devops_creds(
+@@ -2004,7 +2004,7 @@ def update_knowledge_base_sharepoint(
+         if cron_expression_provided:
+             stored_auth_type = kb_index.sharepoint.auth_type if kb_index.sharepoint else "integration"
+             if stored_auth_type not in ("oauth_codemie", "oauth_custom"):
+-                _update_datasource_scheduler(user.id, kb_index, request.cron_expression)
++                _update_datasource_scheduler(user.id, kb_index, request.cron_expression, timezone=request.timezone)
+             else:
+                 logger.info(
+                     f"Skipping scheduler update for SharePoint datasource '{kb_index.id}' "
+@@ -2320,7 +2320,12 @@ def _get_elasticsearch_stats(index: IndexInfo) -> Optional[ElasticsearchStatsRes
+         return None
+ 
+ 
+-def _update_datasource_scheduler(user_id: str, index_info: IndexInfo, cron_expression: str) -> None:
++def _update_datasource_scheduler(
++    user_id: str,
++    index_info: IndexInfo,
++    cron_expression: str,
++    timezone: Optional[str] = None,
++) -> None:
+     """
+     Update or create scheduler settings for a datasource.
+     If cron_expression is empty string, deletes existing schedule.
+@@ -2329,6 +2334,7 @@ def _update_datasource_scheduler(user_id: str, index_info: IndexInfo, cron_expre
+         user_id: ID of the user
+         index_info: IndexInfo object for the datasource
+         cron_expression: Cron expression for scheduling, or empty string to remove schedule
++        timezone: Optional IANA timezone name (e.g. 'Europe/Warsaw')
+     """
+     from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService
+ 
+@@ -2338,6 +2344,7 @@ def _update_datasource_scheduler(user_id: str, index_info: IndexInfo, cron_expre
+         resource_id=index_info.id,
+         resource_name=index_info.repo_name,
+         cron_expression=cron_expression,
++        timezone=timezone,
+     )
+ 
+ 
+diff --git a/src/codemie/service/index/index_service.py b/src/codemie/service/index/index_service.py
+index 55877ff99..9e981ffa5 100644
+--- a/src/codemie/service/index/index_service.py
++++ b/src/codemie/service/index/index_service.py
+@@ -327,13 +327,17 @@ class IndexStatusService:
+ 
+         try:
+             scheduler_map = SchedulerSettingsService.get_scheduler_settings_for_datasources(user.id, [str(index.id)])
+-            cron_expression = scheduler_map.get(str(index.id))
++            schedule_entry = scheduler_map.get(str(index.id))
+         except Exception as e:
+             logger.error(f"Failed to fetch scheduler settings for index {index.id}: {e}", exc_info=True)
+-            cron_expression = None
++            schedule_entry = None
+ 
+-        # Convert to dict and add cron_expression
++        cron_expression = schedule_entry["cron_expression"] if schedule_entry else None
++        timezone = schedule_entry["timezone"] if schedule_entry else None
++
++        # Convert to dict and add schedule fields
+         index_dict = index.model_dump()
+         index_dict["cron_expression"] = cron_expression
++        index_dict["timezone"] = timezone
+ 
+         return index_dict
+diff --git a/src/codemie/service/settings/scheduler_settings_service.py b/src/codemie/service/settings/scheduler_settings_service.py
+index def0995c2..20546bce8 100644
+--- a/src/codemie/service/settings/scheduler_settings_service.py
++++ b/src/codemie/service/settings/scheduler_settings_service.py
+@@ -14,8 +14,9 @@
+ 
+ """Scheduler Settings Service for managing datasource cron scheduling."""
+ 
+-from typing import Dict, List
++from typing import Dict, List, Optional
+ from datetime import datetime, timezone
++from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+ 
+ from croniter import croniter
+ from apscheduler.triggers.cron import CronTrigger
+@@ -49,6 +50,7 @@ class SchedulerSettingsService(BaseSettingsService):
+         resource_name: str,
+         cron_expression: str | None,
+         resource_type: str = RESOURCE_TYPE_DATASOURCE,
++        timezone: Optional[str] = None,
+     ) -> Settings | None:
+         """
+         Handle scheduler creation, update, or deletion based on cron_expression value.
+@@ -78,6 +80,7 @@ class SchedulerSettingsService(BaseSettingsService):
+                 resource_name=resource_name,
+                 cron_expression=cron_expression,
+                 is_enabled=True,
++                timezone=timezone,
+             )
+         else:
+             # Delete the schedule if it exists (cron_expression is None or empty)
+@@ -96,6 +99,7 @@ class SchedulerSettingsService(BaseSettingsService):
+         resource_name: str,
+         cron_expression: str,
+         is_enabled: bool = True,
++        timezone: Optional[str] = None,
+     ) -> Settings | None:
+         """
+         Create or update scheduler setting for automatic datasource reindexing.
+@@ -129,7 +133,7 @@ class SchedulerSettingsService(BaseSettingsService):
+                 # Update existing schedule
+                 logger.info(f"Updating existing schedule for datasource {resource_id}")
+                 SchedulerSettingsService._update_schedule_values(
+-                    existing_schedule, cron_expression, is_enabled, resource_name
++                    existing_schedule, cron_expression, is_enabled, resource_name, timezone=timezone
+                 )
+                 flag_modified(existing_schedule, "credential_values")
+                 existing_schedule.update()
+@@ -145,6 +149,7 @@ class SchedulerSettingsService(BaseSettingsService):
+                     resource_name=resource_name,
+                     cron_expression=cron_expression,
+                     is_enabled=is_enabled,
++                    timezone=timezone,
+                 )
+                 new_schedule.save()
+                 return new_schedule
+@@ -195,22 +200,25 @@ class SchedulerSettingsService(BaseSettingsService):
+         return None
+ 
+     @staticmethod
+-    def _update_schedule_values(schedule: Settings, cron_expression: str, is_enabled: bool, resource_name: str):
+-        """
+-        Update schedule credential values.
+-
+-        Args:
+-            schedule: Existing Settings object
+-            cron_expression: New cron expression
+-            is_enabled: Whether the schedule is enabled
+-            resource_name: Name of the resource
+-        """
++    def _update_schedule_values(
++        schedule: Settings,
++        cron_expression: str,
++        is_enabled: bool,
++        resource_name: str,
++        timezone: Optional[str] = None,
++    ):
+         # Update credential values
+         for cred in schedule.credential_values:
+             if cred.key == "schedule":
+                 cred.value = cron_expression
+             elif cred.key == "is_enabled":
+                 cred.value = is_enabled
++            elif cred.key == "timezone" and timezone is not None:
++                cred.value = timezone
++
++        # Add timezone credential if provided and not already present
++        if timezone is not None and not any(c.key == "timezone" for c in schedule.credential_values):
++            schedule.credential_values.append(CredentialValues(key="timezone", value=timezone))
+ 
+         # Update alias to reflect resource name (using index router prefix)
+         schedule.alias = f"{DATASOURCE_SCHEDULE_ALIAS_PREFIX}{resource_name}"
+@@ -224,6 +232,7 @@ class SchedulerSettingsService(BaseSettingsService):
+         resource_name: str,
+         cron_expression: str,
+         is_enabled: bool,
++        timezone: Optional[str] = None,
+     ) -> Settings:
+         """
+         Create new scheduler setting.
+@@ -246,6 +255,8 @@ class SchedulerSettingsService(BaseSettingsService):
+             CredentialValues(key="resource_id", value=resource_id),
+             CredentialValues(key="is_enabled", value=True),
+         ]
++        if timezone is not None:
++            credential_values.append(CredentialValues(key="timezone", value=timezone))
+ 
+         new_schedule = Settings(
+             user_id=user_id,
+@@ -260,7 +271,7 @@ class SchedulerSettingsService(BaseSettingsService):
+         return new_schedule
+ 
+     @staticmethod
+-    def get_scheduler_settings_for_datasources(user_id: str, datasource_ids: List[str]) -> Dict[str, str]:
++    def get_scheduler_settings_for_datasources(user_id: str, datasource_ids: List[str]) -> Dict[str, dict]:
+         """
+         Get cron expressions for multiple datasources from index router schedules only.
+ 
+@@ -285,16 +296,17 @@ class SchedulerSettingsService(BaseSettingsService):
+ 
+         all_settings = Settings.get_all_by_fields(search_fields)
+ 
+-        # Build mapping of resource_id -> cron_expression (only for index router schedules)
++        # Build mapping of resource_id -> {cron_expression, timezone} (only for index router schedules)
+         schedule_map = {}
+         for setting in all_settings:
+             resource_id = setting.credential("resource_id")
+             schedule = setting.credential("schedule")
+             is_enabled = setting.credential("is_enabled")
++            timezone = setting.credential("timezone")
+             has_index_router_alias = setting.alias and setting.alias.startswith(DATASOURCE_SCHEDULE_ALIAS_PREFIX)
+ 
+             if resource_id in datasource_ids and is_enabled and has_index_router_alias:
+-                schedule_map[resource_id] = schedule
++                schedule_map[resource_id] = {"cron_expression": schedule, "timezone": timezone}
+ 
+         return schedule_map
+ 
+@@ -451,3 +463,17 @@ def _validate_minimum_hourly_frequency(cron_expr: str, cron: croniter) -> None:
+                 "(e.g., '0 * * * *' for hourly, '0 */2 * * *' for every 2 hours, '0 0 * * *' for daily)"
+             ),
+         )
++
++
++def validate_timezone_string(timezone_str: Optional[str]) -> None:
++    if timezone_str is None:
++        return
++    try:
++        ZoneInfo(timezone_str)
++    except (ZoneInfoNotFoundError, KeyError):
++        raise ExtendedHTTPException(
++            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
++            message="Invalid timezone",
++            details=f"'{timezone_str}' is not a recognised IANA timezone name.",
++            help="Provide an IANA timezone name such as 'Europe/Warsaw', 'America/New_York', or 'UTC'.",
++        )
+diff --git a/src/codemie/service/settings/settings_request_validator.py b/src/codemie/service/settings/settings_request_validator.py
+index c268823d7..2a7df733b 100644
+--- a/src/codemie/service/settings/settings_request_validator.py
++++ b/src/codemie/service/settings/settings_request_validator.py
+@@ -23,6 +23,7 @@ from codemie.rest_api.models.settings import SettingRequest
+ from codemie.service.settings.scheduler_settings_service import (
+     _validate_minimum_hourly_frequency,
+     INVALID_CRON_EXPRESSION_MESSAGE,
++    validate_timezone_string,
+ )
+ from apscheduler.triggers.cron import CronTrigger
+ from croniter import croniter
+@@ -207,6 +208,9 @@ def validate_scheduler_request(request: SettingRequest) -> None:
+     # Extract and validate cron expression (schedule)
+     validate_cron_expression(request)
+ 
++    # Validate timezone (optional credential)
++    validate_timezone_value(request)
++
+ 
+ def validate_datasource_type_for_scheduler(datasource: IndexInfo) -> None:
+     """
+@@ -510,3 +514,11 @@ def validate_cron_expression(request: SettingRequest) -> None:
+             details="Please provide a cron expression for the scheduler.",
+             help=CRON_EXPRESSION_HELP_MESSAGE,
+         )
++
++
++def validate_timezone_value(request: SettingRequest) -> None:
++    timezone_cred = next(
++        (cred for cred in request.credential_values if cred.key == "timezone"), None
++    )
++    if timezone_cred is not None and isinstance(timezone_cred.value, str):
++        validate_timezone_string(timezone_cred.value)
+diff --git a/src/codemie/triggers/bindings/cron.py b/src/codemie/triggers/bindings/cron.py
+index a558953a7..5bf58c9c0 100644
+--- a/src/codemie/triggers/bindings/cron.py
++++ b/src/codemie/triggers/bindings/cron.py
+@@ -19,7 +19,7 @@ import platform
+ import threading
+ from concurrent.futures import ThreadPoolExecutor
+ from datetime import datetime
+-from typing import Dict
++from typing import Dict, Optional
+ from croniter import croniter
+ from apscheduler.executors.asyncio import AsyncIOExecutor
+ from apscheduler.executors.pool import ThreadPoolExecutor as APSThreadPoolExecutor
+@@ -262,6 +262,7 @@ class Cron:
+                     index_type=valid_setting.get("index_type"),
+                     jql=valid_setting.get("jql"),
+                     prompt=valid_setting.get("prompt"),
++                    timezone=valid_setting.get("timezone"),
+                 )
+ 
+     def __updated_setting(self, setting):
+@@ -356,12 +357,15 @@ class Cron:
+         if resource_details is None:
+             return False
+ 
++        timezone = self.__get_cred_value(setting, "timezone")
++
+         return {
+             "schedule": schedule,
+             "resource_type": resource_type,
+             "resource_id": resource_id,
+             "is_enabled": is_enabled,
+             "prompt": prompt,
++            "timezone": timezone,
+             **resource_details,
+         }
+ 
+@@ -378,13 +382,14 @@ class Cron:
+         index_type=None,
+         jql=None,
+         prompt=None,
++        timezone: Optional[str] = None,
+     ):
+         """Parse cron expression"""
+         if not is_enabled:
+             self.__remove_disabled_job(job_id)
+             return
+ 
+-        cron_trigger = self.__create_cron_trigger(cron_expression)
++        cron_trigger = self.__create_cron_trigger(cron_expression, timezone=timezone)
+         instance = self.__schedule_job_by_type(
+             resource_type,
+             index_type,
+@@ -421,7 +426,7 @@ class Cron:
+         return re.sub(r"\b7\b", "0", day_of_week)
+ 
+     @staticmethod
+-    def __create_cron_trigger(cron_expression):
++    def __create_cron_trigger(cron_expression, timezone: Optional[str] = None):
+         """Create cron trigger from expression"""
+         minute, hour, day_of_month, month, day_of_week = cron_expression.split()
+         day_of_week = Cron.__normalize_day_of_week(day_of_week)
+@@ -431,6 +436,7 @@ class Cron:
+             day=day_of_month,
+             month=month,
+             day_of_week=day_of_week,
++            timezone=timezone or config.TIMEZONE,
+         )
+ 
+     def __schedule_job_by_type(
+diff --git a/tests/codemie/datasource/test_base_datasource_processor.py b/tests/codemie/datasource/test_base_datasource_processor.py
+index 13bbd9067..b99a02d16 100644
+--- a/tests/codemie/datasource/test_base_datasource_processor.py
++++ b/tests/codemie/datasource/test_base_datasource_processor.py
+@@ -517,3 +517,34 @@ class TestLoadAndProcessDocumentsEmbeddingDrain:
+         processor._load_and_process_documents(loader=loader, index=mock_index, batch_size=10)
+ 
+         mock_rsm.update_llm_run.assert_not_called()
++
++
++# ===================== _create_or_update_scheduler timezone tests =====================
++
++
++@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.handle_schedule")
++def test_create_or_update_scheduler_passes_timezone(mock_handle, processor):
++    processor.index.repo_name = "my-repo"
++    processor._create_or_update_scheduler(cron_expression="0 9 * * *", timezone="Europe/Warsaw")
++
++    mock_handle.assert_called_once()
++    _, kwargs = mock_handle.call_args
++    assert kwargs["timezone"] == "Europe/Warsaw"
++
++
++@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.handle_schedule")
++def test_create_or_update_scheduler_no_timezone_passes_none(mock_handle, processor):
++    processor.index.repo_name = "my-repo"
++    processor._create_or_update_scheduler(cron_expression="0 9 * * *")
++
++    mock_handle.assert_called_once()
++    _, kwargs = mock_handle.call_args
++    assert kwargs["timezone"] is None
++
++
++@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.handle_schedule")
++def test_create_or_update_scheduler_none_cron_skips_handle(mock_handle, processor):
++    processor.cron_expression = None
++    processor._create_or_update_scheduler()
++
++    mock_handle.assert_not_called()
+diff --git a/tests/codemie/rest_api/routers/test_index.py b/tests/codemie/rest_api/routers/test_index.py
+index 684d90de7..c76e08aab 100644
+--- a/tests/codemie/rest_api/routers/test_index.py
++++ b/tests/codemie/rest_api/routers/test_index.py
+@@ -1230,3 +1230,40 @@ def test_put_file_datasource_blocked_while_indexing_returns_409(mock_use_case_cl
+ 
+     assert response.status_code == 409
+     assert response.json()['error']['message'] == "Indexing or fetching is in progress."
++
++
++# ===================== _update_datasource_scheduler timezone tests =====================
++
++
++@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.handle_schedule")
++def test_update_datasource_scheduler_passes_timezone(mock_handle):
++    from codemie.rest_api.routers.index import _update_datasource_scheduler
++    from codemie.rest_api.models.index import IndexInfo
++
++    index_info = MagicMock(spec=IndexInfo)
++    index_info.project_name = "proj"
++    index_info.id = "abc-123"
++    index_info.repo_name = "my-repo"
++
++    _update_datasource_scheduler("user-1", index_info, "0 9 * * *", timezone="America/New_York")
++
++    mock_handle.assert_called_once()
++    _, kwargs = mock_handle.call_args
++    assert kwargs["timezone"] == "America/New_York"
++
++
++@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.handle_schedule")
++def test_update_datasource_scheduler_no_timezone_passes_none(mock_handle):
++    from codemie.rest_api.routers.index import _update_datasource_scheduler
++    from codemie.rest_api.models.index import IndexInfo
++
++    index_info = MagicMock(spec=IndexInfo)
++    index_info.project_name = "proj"
++    index_info.id = "abc-123"
++    index_info.repo_name = "my-repo"
++
++    _update_datasource_scheduler("user-1", index_info, "0 9 * * *")
++
++    mock_handle.assert_called_once()
++    _, kwargs = mock_handle.call_args
++    assert kwargs["timezone"] is None
+diff --git a/tests/codemie/rest_api/routers/test_settings_cron_validation.py b/tests/codemie/rest_api/routers/test_settings_cron_validation.py
+index 2029bfed6..0c1b571fe 100644
+--- a/tests/codemie/rest_api/routers/test_settings_cron_validation.py
++++ b/tests/codemie/rest_api/routers/test_settings_cron_validation.py
+@@ -14,11 +14,13 @@
+ 
+ import pytest
+ from fastapi import status
++from pydantic import ValidationError
+ from unittest.mock import MagicMock
+ 
+ from codemie.core.exceptions import ExtendedHTTPException
+ from codemie.service.settings.settings_request_validator import validate_cron_expression
+ from codemie.rest_api.models.settings import SettingRequest
++from codemie.rest_api.models.index import IndexKnowledgeBaseConfluenceRequest
+ 
+ 
+ class TestScheduleCredentialValidation:
+@@ -239,3 +241,35 @@ class TestScheduleCredentialParametrized:
+         else:
+             with pytest.raises(ExtendedHTTPException):
+                 validate_cron_expression(mock_request)
++
++
++# ===================== CronExpressionValidatorMixin timezone tests =====================
++
++
++def _make_confluence_request(**kwargs):
++    """Minimal valid IndexKnowledgeBaseConfluenceRequest for mixin tests."""
++    defaults = {
++        "name": "test-ds-01",
++        "project_name": "proj",
++        "description": "desc",
++        "cql": "space=KEY",
++    }
++    defaults.update(kwargs)
++    return defaults
++
++
++@pytest.mark.parametrize("tz", ["UTC", "Europe/Warsaw", "America/New_York"])
++def test_mixin_valid_timezone_accepted(tz):
++    req = IndexKnowledgeBaseConfluenceRequest(**_make_confluence_request(timezone=tz))
++    assert req.timezone == tz
++
++
++def test_mixin_no_timezone_defaults_to_none():
++    req = IndexKnowledgeBaseConfluenceRequest(**_make_confluence_request())
++    assert req.timezone is None
++
++
++@pytest.mark.parametrize("tz", ["UTC+2", "Bad/Zone", "not_a_timezone"])
++def test_mixin_invalid_timezone_raises_422(tz):
++    with pytest.raises(ValidationError):
++        IndexKnowledgeBaseConfluenceRequest(**_make_confluence_request(timezone=tz))
+diff --git a/tests/codemie/service/index/test_index_service.py b/tests/codemie/service/index/test_index_service.py
+index 020dbcdbf..8a4539649 100644
+--- a/tests/codemie/service/index/test_index_service.py
++++ b/tests/codemie/service/index/test_index_service.py
+@@ -230,3 +230,35 @@ def test_get_users_as_user(mock_session_class, mock_user):
+     assert result[0]["id"] == "user1"
+     assert result[0]["username"] == "User One"
+     mock_session_class.assert_called_once_with(IndexInfo.get_engine())
++
++
++# ===================== enrich_index_with_schedule tests =====================
++
++
++@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.get_scheduler_settings_for_datasources")
++def test_enrich_index_with_schedule_returns_timezone(mock_get, mock_index_info):
++    mock_user = MagicMock()
++    mock_user.id = "u1"
++    mock_get.return_value = {
++        "62028826-c9e5-4f9b-85df-fffccc271ee7": {
++            "cron_expression": "0 9 * * *",
++            "timezone": "Europe/Warsaw",
++        }
++    }
++
++    result = IndexStatusService.enrich_index_with_schedule(mock_index_info, mock_user)
++
++    assert result["cron_expression"] == "0 9 * * *"
++    assert result["timezone"] == "Europe/Warsaw"
++
++
++@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.get_scheduler_settings_for_datasources")
++def test_enrich_index_with_schedule_no_schedule(mock_get, mock_index_info):
++    mock_user = MagicMock()
++    mock_user.id = "u1"
++    mock_get.return_value = {}
++
++    result = IndexStatusService.enrich_index_with_schedule(mock_index_info, mock_user)
++
++    assert result["cron_expression"] is None
++    assert result["timezone"] is None
+diff --git a/tests/codemie/service/settings/test_scheduler_settings_service.py b/tests/codemie/service/settings/test_scheduler_settings_service.py
+index 4d4dbc21b..4eb8e4f1e 100644
+--- a/tests/codemie/service/settings/test_scheduler_settings_service.py
++++ b/tests/codemie/service/settings/test_scheduler_settings_service.py
+@@ -18,7 +18,10 @@ import pytest
+ from fastapi import status
+ 
+ from codemie.core.exceptions import ExtendedHTTPException
+-from codemie.service.settings.scheduler_settings_service import validate_cron_expression
++from codemie.service.settings.scheduler_settings_service import (
++    validate_cron_expression,
++    validate_timezone_string,
++)
+ 
+ 
+ @pytest.mark.parametrize(
+@@ -71,3 +74,20 @@ def test_validate_cron_expression_too_frequent(cron_expression):
+ def test_validate_cron_expression_exactly_hourly():
+     """Test that hourly expressions are valid (boundary case)."""
+     validate_cron_expression("0 * * * *")
++
++
++@pytest.mark.parametrize("tz", ["UTC", "Europe/Warsaw", "America/New_York", "Asia/Tokyo"])
++def test_validate_timezone_string_valid(tz):
++    validate_timezone_string(tz)
++
++
++def test_validate_timezone_string_none_is_allowed():
++    validate_timezone_string(None)
++
++
++@pytest.mark.parametrize("tz", ["UTC+2", "Europe/Nowhere", "Bad/Zone", "not_a_timezone"])
++def test_validate_timezone_string_invalid(tz):
++    with pytest.raises(ExtendedHTTPException) as exc_info:
++        validate_timezone_string(tz)
++    assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
++    assert "IANA" in exc_info.value.help
+diff --git a/tests/codemie/service/settings/test_scheduler_settings_service_class.py b/tests/codemie/service/settings/test_scheduler_settings_service_class.py
+index 3c1bf6182..170e74e05 100644
+--- a/tests/codemie/service/settings/test_scheduler_settings_service_class.py
++++ b/tests/codemie/service/settings/test_scheduler_settings_service_class.py
+@@ -172,7 +172,7 @@ def test_get_scheduler_settings_returns_matching(mock_get_all):
+     """Test getting scheduler settings for datasources."""
+ 
+     def credential_mock(key):
+-        mapping = {"resource_id": "res1", "schedule": "0 9 * * *", "is_enabled": True}
++        mapping = {"resource_id": "res1", "schedule": "0 9 * * *", "is_enabled": True, "timezone": None}
+         return mapping.get(key)
+ 
+     mock_schedule = Mock(spec=Settings)
+@@ -184,7 +184,7 @@ def test_get_scheduler_settings_returns_matching(mock_get_all):
+         user_id="user123", datasource_ids=["res1", "res2"]
+     )
+ 
+-    assert result == {"res1": "0 9 * * *"}
++    assert result == {"res1": {"cron_expression": "0 9 * * *", "timezone": None}}
+ 
+ 
+ @patch.object(Settings, "get_all_by_fields")
+@@ -231,3 +231,103 @@ def test_delete_schedule_returns_false_when_not_found(mock_get_all):
+     result = SchedulerSettingsService.delete_schedule(resource_id="res123", user_id="user123")
+ 
+     assert result is False
++
++
++# ===================== timezone threading tests =====================
++
++
++def test_create_new_schedule_stores_timezone_credential():
++    result = SchedulerSettingsService._create_new_schedule(
++        user_id="u1",
++        project_name="p",
++        resource_type=RESOURCE_TYPE_DATASOURCE,
++        resource_id="r1",
++        resource_name="name",
++        cron_expression="0 9 * * *",
++        is_enabled=True,
++        timezone="Europe/Warsaw",
++    )
++    creds = {c.key: c.value for c in result.credential_values}
++    assert creds["timezone"] == "Europe/Warsaw"
++    assert len(result.credential_values) == 5
++
++
++def test_create_new_schedule_without_timezone_has_4_credentials():
++    result = SchedulerSettingsService._create_new_schedule(
++        user_id="u1",
++        project_name="p",
++        resource_type=RESOURCE_TYPE_DATASOURCE,
++        resource_id="r1",
++        resource_name="name",
++        cron_expression="0 9 * * *",
++        is_enabled=True,
++    )
++    assert len(result.credential_values) == 4
++    keys = {c.key for c in result.credential_values}
++    assert "timezone" not in keys
++
++
++def test_update_schedule_values_updates_existing_timezone():
++    creds = [
++        Mock(key="schedule", value="0 9 * * *"),
++        Mock(key="is_enabled", value=True),
++        Mock(key="timezone", value="UTC"),
++    ]
++    schedule = Mock(spec=Settings)
++    schedule.credential_values = creds
++    schedule.alias = f"{DATASOURCE_SCHEDULE_ALIAS_PREFIX}name"
++
++    SchedulerSettingsService._update_schedule_values(schedule, "0 10 * * *", True, "name", timezone="Europe/Warsaw")
++
++    tz_cred = next(c for c in creds if c.key == "timezone")
++    assert tz_cred.value == "Europe/Warsaw"
++
++
++def test_update_schedule_values_adds_timezone_when_absent():
++    creds = [
++        Mock(key="schedule", value="0 9 * * *"),
++        Mock(key="is_enabled", value=True),
++    ]
++    schedule = Mock(spec=Settings)
++    schedule.credential_values = creds
++    schedule.alias = f"{DATASOURCE_SCHEDULE_ALIAS_PREFIX}name"
++
++    SchedulerSettingsService._update_schedule_values(schedule, "0 9 * * *", True, "name", timezone="America/New_York")
++
++    keys = [c.key for c in schedule.credential_values]
++    assert "timezone" in keys
++    tz_val = next(c.value for c in schedule.credential_values if c.key == "timezone")
++    assert tz_val == "America/New_York"
++
++
++def test_update_schedule_values_none_timezone_leaves_absent():
++    creds = [
++        Mock(key="schedule", value="0 9 * * *"),
++        Mock(key="is_enabled", value=True),
++    ]
++    schedule = Mock(spec=Settings)
++    schedule.credential_values = creds
++    schedule.alias = f"{DATASOURCE_SCHEDULE_ALIAS_PREFIX}name"
++
++    SchedulerSettingsService._update_schedule_values(schedule, "0 9 * * *", True, "name", timezone=None)
++
++    keys = [c.key for c in schedule.credential_values]
++    assert "timezone" not in keys
++
++
++@patch.object(Settings, "get_all_by_fields")
++def test_get_scheduler_settings_returns_dict_with_timezone(mock_get_all):
++    def credential_mock(key):
++        mapping = {"resource_id": "res1", "schedule": "0 9 * * *", "is_enabled": True, "timezone": "Asia/Tokyo"}
++        return mapping.get(key)
++
++    mock_schedule = Mock(spec=Settings)
++    mock_schedule.credential = Mock(side_effect=credential_mock)
++    mock_schedule.alias = f"{DATASOURCE_SCHEDULE_ALIAS_PREFIX}resource1"
++    mock_get_all.return_value = [mock_schedule]
++
++    result = SchedulerSettingsService.get_scheduler_settings_for_datasources(
++        user_id="user123", datasource_ids=["res1"]
++    )
++
++    assert result == {"res1": {"cron_expression": "0 9 * * *", "timezone": "Asia/Tokyo"}}
+diff --git a/tests/codemie/service/settings/test_settings_request_validator.py b/tests/codemie/service/settings/test_settings_request_validator.py
+index d1b27ff58..1148f4497 100644
+--- a/tests/codemie/service/settings/test_settings_request_validator.py
++++ b/tests/codemie/service/settings/test_settings_request_validator.py
+@@ -19,9 +19,13 @@ from unittest.mock import Mock
+ 
+ from fastapi import status
+ 
++from unittest.mock import MagicMock
++
+ from codemie.core.exceptions import ExtendedHTTPException
++from codemie.rest_api.models.settings import SettingRequest
+ from codemie.service.settings.settings_request_validator import (
+     validate_datasource_type_for_scheduler,
++    validate_timezone_value,
+     UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES,
+ )
+ 
+@@ -86,3 +90,34 @@ def test_unsupported_scheduler_datasource_types_is_frozenset():
+ def test_unsupported_scheduler_datasource_types_contains(index_type):
+     """Each unsupported type must be present in the constant."""
+     assert index_type in UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES
++
++
++def _make_request_with_timezone(tz_value):
++    cred = MagicMock()
++    cred.key = "timezone"
++    cred.value = tz_value
++    req = MagicMock(spec=SettingRequest)
++    req.credential_values = [cred]
++    return req
++
++
++def _make_request_without_timezone():
++    req = MagicMock(spec=SettingRequest)
++    req.credential_values = []
++    return req
++
++
++@pytest.mark.parametrize("tz", ["UTC", "Europe/Warsaw", "America/New_York"])
++def test_validate_timezone_value_valid(tz):
++    validate_timezone_value(_make_request_with_timezone(tz))
++
++
++def test_validate_timezone_value_absent_is_allowed():
++    validate_timezone_value(_make_request_without_timezone())
++
++
++@pytest.mark.parametrize("tz", ["UTC+2", "Bad/Zone", "not_a_timezone"])
++def test_validate_timezone_value_invalid(tz):
++    with pytest.raises(ExtendedHTTPException) as exc_info:
++        validate_timezone_value(_make_request_with_timezone(tz))
++    assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+diff --git a/tests/codemie/triggers/bindings/test_cron.py b/tests/codemie/triggers/bindings/test_cron.py
+index 720ceecc9..148164982 100644
+--- a/tests/codemie/triggers/bindings/test_cron.py
++++ b/tests/codemie/triggers/bindings/test_cron.py
+@@ -600,3 +600,67 @@ def test_schedule_datasource_job_sharepoint_schedules_job(cron_instance):
+     mock_scheduler.add_job.assert_called_once()
+     call_kwargs = mock_scheduler.add_job.call_args
+     assert call_kwargs[0][0] is reindex_sharepoint
++
++
++# ===================== Timezone threading in trigger engine (Task 7) =====================
++
++
++def test_valid_setting_includes_timezone(cron_instance, mock_setting):
++    """__valid_setting should extract the timezone credential and include it in the result."""
++    mock_setting.credential_values = [
++        MagicMock(key="schedule", value="0 9 * * *"),
++        MagicMock(key="resource_type", value="assistant"),
++        MagicMock(key="resource_id", value="res-1"),
++        MagicMock(key="is_enabled", value=True),
++        MagicMock(key="prompt", value="run it"),
++        MagicMock(key="timezone", value="Europe/Warsaw"),
++    ]
++    mock_setting.update_date = datetime.now()
++    cron_instance.jobs = {}
++
++    with patch.object(cron_instance, "_Cron__validate_resource", return_value={"resource_name": "a", "project_name": "p", "index_type": "", "jql": ""}):
++        result = cron_instance._Cron__valid_setting(mock_setting)
++
++    assert result is not False
++    assert result["timezone"] == "Europe/Warsaw"
++
++
++def test_valid_setting_timezone_missing_returns_none(cron_instance, mock_setting):
++    """When there is no timezone credential the result dict should have timezone=None."""
++    mock_setting.credential_values = [
++        MagicMock(key="schedule", value="0 9 * * *"),
++        MagicMock(key="resource_type", value="assistant"),
++        MagicMock(key="resource_id", value="res-1"),
++        MagicMock(key="is_enabled", value=True),
++        MagicMock(key="prompt", value="run it"),
++    ]
++    mock_setting.update_date = datetime.now()
++    cron_instance.jobs = {}
++
++    with patch.object(cron_instance, "_Cron__validate_resource", return_value={"resource_name": "a", "project_name": "p", "index_type": "", "jql": ""}):
++        result = cron_instance._Cron__valid_setting(mock_setting)
++
++    assert result is not False
++    assert result.get("timezone") is None
++
++
++def test_create_cron_trigger_applies_timezone():
++    """__create_cron_trigger should pass the timezone to CronTrigger."""
++    with patch("codemie.triggers.bindings.cron.CronTrigger") as mock_trigger:
++        Cron._Cron__create_cron_trigger("0 9 * * *", timezone="America/New_York")
++
++    mock_trigger.assert_called_once()
++    _, kwargs = mock_trigger.call_args
++    assert kwargs.get("timezone") == "America/New_York"
++
++
++def test_create_cron_trigger_falls_back_to_config_timezone():
++    """When no timezone given __create_cron_trigger should use config.TIMEZONE."""
++    from codemie.configs import config
++
++    with patch("codemie.triggers.bindings.cron.CronTrigger") as mock_trigger:
++        Cron._Cron__create_cron_trigger("0 9 * * *")
++
++    mock_trigger.assert_called_once()
++    _, kwargs = mock_trigger.call_args
++    assert kwargs.get("timezone") == config.TIMEZONE

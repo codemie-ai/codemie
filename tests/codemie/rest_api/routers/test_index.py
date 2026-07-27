@@ -1230,3 +1230,40 @@ def test_put_file_datasource_blocked_while_indexing_returns_409(mock_use_case_cl
 
     assert response.status_code == 409
     assert response.json()['error']['message'] == "Indexing or fetching is in progress."
+
+
+# ===================== _update_datasource_scheduler timezone tests =====================
+
+
+@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.handle_schedule")
+def test_update_datasource_scheduler_passes_timezone(mock_handle):
+    from codemie.rest_api.routers.index import _update_datasource_scheduler
+    from codemie.rest_api.models.index import IndexInfo
+
+    index_info = MagicMock(spec=IndexInfo)
+    index_info.project_name = "proj"
+    index_info.id = "abc-123"
+    index_info.repo_name = "my-repo"
+
+    _update_datasource_scheduler("user-1", index_info, "0 9 * * *", timezone="America/New_York")
+
+    mock_handle.assert_called_once()
+    _, kwargs = mock_handle.call_args
+    assert kwargs["timezone"] == "America/New_York"
+
+
+@patch("codemie.service.settings.scheduler_settings_service.SchedulerSettingsService.handle_schedule")
+def test_update_datasource_scheduler_no_timezone_passes_none(mock_handle):
+    from codemie.rest_api.routers.index import _update_datasource_scheduler
+    from codemie.rest_api.models.index import IndexInfo
+
+    index_info = MagicMock(spec=IndexInfo)
+    index_info.project_name = "proj"
+    index_info.id = "abc-123"
+    index_info.repo_name = "my-repo"
+
+    _update_datasource_scheduler("user-1", index_info, "0 9 * * *")
+
+    mock_handle.assert_called_once()
+    _, kwargs = mock_handle.call_args
+    assert kwargs["timezone"] is None

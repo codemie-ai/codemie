@@ -18,7 +18,10 @@ import pytest
 from fastapi import status
 
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.service.settings.scheduler_settings_service import validate_cron_expression
+from codemie.service.settings.scheduler_settings_service import (
+    validate_cron_expression,
+    validate_timezone_string,
+)
 
 
 @pytest.mark.parametrize(
@@ -71,3 +74,20 @@ def test_validate_cron_expression_too_frequent(cron_expression):
 def test_validate_cron_expression_exactly_hourly():
     """Test that hourly expressions are valid (boundary case)."""
     validate_cron_expression("0 * * * *")
+
+
+@pytest.mark.parametrize("tz", ["UTC", "Europe/Warsaw", "America/New_York", "Asia/Tokyo"])
+def test_validate_timezone_string_valid(tz):
+    validate_timezone_string(tz)
+
+
+def test_validate_timezone_string_none_is_allowed():
+    validate_timezone_string(None)
+
+
+@pytest.mark.parametrize("tz", ["UTC+2", "Europe/Nowhere", "Bad/Zone", "not_a_timezone", ""])
+def test_validate_timezone_string_invalid(tz):
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        validate_timezone_string(tz)
+    assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert "IANA" in exc_info.value.help

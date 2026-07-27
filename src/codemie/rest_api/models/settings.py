@@ -216,6 +216,7 @@ class Scheduler(BaseModel):
     is_enabled: bool
     resource_type: str
     resource_id: str
+    timezone: str = "UTC"
 
 
 class SettingRequest(BaseModel):

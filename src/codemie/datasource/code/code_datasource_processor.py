@@ -182,6 +182,7 @@ def index_code_datasource_in_background(
     background_tasks,
     guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None,
     cron_expression: Optional[str] = None,
+    timezone: Optional[str] = None,
 ):
     def process():
         datasource_processor = CodeDatasourceProcessor.create_processor(
@@ -193,7 +194,7 @@ def index_code_datasource_in_background(
         datasource_processor.process()
 
         # Create scheduler if cron_expression was provided
-        datasource_processor._create_or_update_scheduler(cron_expression)
+        datasource_processor._create_or_update_scheduler(cron_expression, timezone=timezone)
 
     run_in_background(process, git_repo.name, background_tasks)
 
@@ -208,6 +209,7 @@ def update_code_datasource_in_background(
     resume_indexing: bool,
     guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None,
     cron_expression: Optional[str] = None,
+    timezone: Optional[str] = None,
 ):
     def process():
         index = IndexInfo.filter_by_project_and_repo(project_name=app_name, repo_name=repo_name)[0]
@@ -224,6 +226,6 @@ def update_code_datasource_in_background(
             datasource_processor.reprocess()
 
         # Update scheduler if cron_expression was provided in the update request
-        datasource_processor._create_or_update_scheduler(cron_expression)
+        datasource_processor._create_or_update_scheduler(cron_expression, timezone=timezone)
 
     run_in_background(process, git_repo.name, background_tasks)

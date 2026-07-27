@@ -19,7 +19,7 @@ import platform
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Optional
 from croniter import croniter
 from apscheduler.executors.asyncio import AsyncIOExecutor
 from apscheduler.executors.pool import ThreadPoolExecutor as APSThreadPoolExecutor
@@ -262,6 +262,7 @@ class Cron:
                     index_type=valid_setting.get("index_type"),
                     jql=valid_setting.get("jql"),
                     prompt=valid_setting.get("prompt"),
+                    timezone=valid_setting.get("timezone"),
                 )
 
     def __updated_setting(self, setting):
@@ -356,12 +357,15 @@ class Cron:
         if resource_details is None:
             return False
 
+        timezone = self.__get_cred_value(setting, "timezone")
+
         return {
             "schedule": schedule,
             "resource_type": resource_type,
             "resource_id": resource_id,
             "is_enabled": is_enabled,
             "prompt": prompt,
+            "timezone": timezone,
             **resource_details,
         }
 
@@ -378,13 +382,14 @@ class Cron:
         index_type=None,
         jql=None,
         prompt=None,
+        timezone: Optional[str] = None,
     ):
         """Parse cron expression"""
         if not is_enabled:
             self.__remove_disabled_job(job_id)
             return
 
-        cron_trigger = self.__create_cron_trigger(cron_expression)
+        cron_trigger = self.__create_cron_trigger(cron_expression, timezone=timezone)
         instance = self.__schedule_job_by_type(
             resource_type,
             index_type,
@@ -421,7 +426,7 @@ class Cron:
         return re.sub(r"\b7\b", "0", day_of_week)
 
     @staticmethod
-    def __create_cron_trigger(cron_expression):
+    def __create_cron_trigger(cron_expression, timezone: Optional[str] = None):
         """Create cron trigger from expression"""
         minute, hour, day_of_month, month, day_of_week = cron_expression.split()
         day_of_week = Cron.__normalize_day_of_week(day_of_week)
@@ -431,6 +436,7 @@ class Cron:
             day=day_of_month,
             month=month,
             day_of_week=day_of_week,
+            timezone=timezone or config.TIMEZONE,
         )
 
     def __schedule_job_by_type(

@@ -63,6 +63,7 @@ class SVNIndexService:
         resume_indexing: bool,
         guardrail_assignments: Optional[List["GuardrailAssignmentItem"]] = None,
         cron_expression: Optional[str] = None,
+        timezone: Optional[str] = None,
     ) -> None:
         from codemie.datasource.code.code_datasource_processor import run_in_background
         from codemie.datasource.svn.svn_datasource_processor import SVNDatasourceProcessor
@@ -88,6 +89,6 @@ class SVNIndexService:
                 processor.resume()
             else:
                 processor.reprocess()
-            processor._create_or_update_scheduler(cron_expression)
+            processor._create_or_update_scheduler(cron_expression, timezone=timezone)
 
         run_in_background(process, svn_repo.name, background_tasks)

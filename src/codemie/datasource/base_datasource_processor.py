@@ -328,7 +328,7 @@ class BaseDatasourceProcessor(ABC):
         self.index.update()
         return load_stats
 
-    def _create_or_update_scheduler(self, cron_expression: Optional[str] = None):
+    def _create_or_update_scheduler(self, cron_expression: Optional[str] = None, timezone: Optional[str] = None):
         """
         Create, update, or delete scheduler setting for automatic datasource reindexing.
 
@@ -366,6 +366,7 @@ class BaseDatasourceProcessor(ABC):
                 resource_id=self.index.id,
                 resource_name=self.index.repo_name,
                 cron_expression=cron_expr,
+                timezone=timezone,
             )
             if result:
                 logger.info(f"Scheduler created/updated for datasource {self.index.id}")

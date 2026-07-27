@@ -600,3 +600,75 @@ def test_schedule_datasource_job_sharepoint_schedules_job(cron_instance):
     mock_scheduler.add_job.assert_called_once()
     call_kwargs = mock_scheduler.add_job.call_args
     assert call_kwargs[0][0] is reindex_sharepoint
+
+
+# ===================== Timezone threading in trigger engine (Task 7) =====================
+
+
+def test_valid_setting_includes_timezone(cron_instance, mock_setting):
+    """__valid_setting should extract the timezone credential and include it in the result."""
+    mock_setting.credential_values = [
+        MagicMock(key="schedule", value="0 9 * * *"),
+        MagicMock(key="resource_type", value="assistant"),
+        MagicMock(key="resource_id", value="res-1"),
+        MagicMock(key="is_enabled", value=True),
+        MagicMock(key="prompt", value="run it"),
+        MagicMock(key="timezone", value="Europe/Warsaw"),
+    ]
+    mock_setting.update_date = datetime.now()
+    cron_instance.jobs = {}
+
+    with patch.object(
+        cron_instance,
+        "_Cron__validate_resource",
+        return_value={"resource_name": "a", "project_name": "p", "index_type": "", "jql": ""},
+    ):
+        result = cron_instance._Cron__valid_setting(mock_setting)
+
+    assert result is not False
+    assert result["timezone"] == "Europe/Warsaw"
+
+
+def test_valid_setting_timezone_missing_returns_none(cron_instance, mock_setting):
+    """When there is no timezone credential the result dict should have timezone=None."""
+    mock_setting.credential_values = [
+        MagicMock(key="schedule", value="0 9 * * *"),
+        MagicMock(key="resource_type", value="assistant"),
+        MagicMock(key="resource_id", value="res-1"),
+        MagicMock(key="is_enabled", value=True),
+        MagicMock(key="prompt", value="run it"),
+    ]
+    mock_setting.update_date = datetime.now()
+    cron_instance.jobs = {}
+
+    with patch.object(
+        cron_instance,
+        "_Cron__validate_resource",
+        return_value={"resource_name": "a", "project_name": "p", "index_type": "", "jql": ""},
+    ):
+        result = cron_instance._Cron__valid_setting(mock_setting)
+
+    assert result is not False
+    assert result.get("timezone") is None
+
+
+def test_create_cron_trigger_applies_timezone():
+    """__create_cron_trigger should pass the timezone to CronTrigger."""
+    with patch("codemie.triggers.bindings.cron.CronTrigger") as mock_trigger:
+        Cron._Cron__create_cron_trigger("0 9 * * *", timezone="America/New_York")
+
+    mock_trigger.assert_called_once()
+    _, kwargs = mock_trigger.call_args
+    assert kwargs.get("timezone") == "America/New_York"
+
+
+def test_create_cron_trigger_falls_back_to_config_timezone():
+    """When no timezone given __create_cron_trigger should use config.TIMEZONE."""
+    from codemie.configs import config
+
+    with patch("codemie.triggers.bindings.cron.CronTrigger") as mock_trigger:
+        Cron._Cron__create_cron_trigger("0 9 * * *")
+
+    mock_trigger.assert_called_once()
+    _, kwargs = mock_trigger.call_args
+    assert kwargs.get("timezone") == config.TIMEZONE

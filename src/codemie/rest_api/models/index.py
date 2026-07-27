@@ -46,6 +46,7 @@ from codemie.service.guardrail.guardrail_service import GuardrailService
 from codemie.service.settings.scheduler_settings_service import (
     SchedulerSettingsService,
     validate_cron_expression,
+    validate_timezone_string,
 )
 
 
@@ -111,14 +112,16 @@ class IncompatibleIndexTypeException(Exception): ...
 
 
 class CronExpressionValidatorMixin:
-    """Mixin to add cron_expression validation to request models."""
+    """Mixin to add cron_expression and optional timezone validation to request models."""
+
+    timezone: Optional[str] = None
 
     @model_validator(mode='after')
     def validate_cron_expression_field(self):
-        """Validate cron_expression if explicitly provided."""
-        # Only validate if the field was explicitly set in the request
         if 'cron_expression' in self.model_fields_set:
             validate_cron_expression(self.cron_expression)
+        if 'timezone' in self.model_fields_set:
+            validate_timezone_string(self.timezone)
         return self
 
 
