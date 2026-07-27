@@ -92,3 +92,25 @@ class TestKubernetesInput:
         assert "my-pod" in k8s_input.suburl
         assert k8s_input.body is not None
         assert k8s_input.headers is not None
+
+
+def test_kubernetes_url_placeholder_default():
+    from codemie_tools.cloud.kubernetes.models import KubernetesConfig
+
+    schema = KubernetesConfig.model_json_schema()
+    assert schema["properties"]["url"]["placeholder"] == "Kubernetes URL e.g. https://kubernetes.codemie:6443"
+
+
+def test_kubernetes_url_default_url_override(monkeypatch):
+    from codemie.configs.customer_config import customer_config
+
+    monkeypatch.setattr(customer_config, "tool_defaults", {"kubernetes": {"url": "https://k8s.company.internal"}})
+    assert customer_config.get_tool_default("kubernetes", "url") == "https://k8s.company.internal"
+
+
+def test_url_default_wired_to_tool_default():
+    from codemie_tools.cloud.kubernetes.models import KubernetesConfig
+    from codemie.configs.customer_config import customer_config
+
+    expected = customer_config.get_tool_default(KubernetesConfig.TOOL_NAME, "url") or ""
+    assert KubernetesConfig.model_fields["url"].default == expected

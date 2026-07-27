@@ -69,6 +69,22 @@ If you prefer another provider, use the matching model config under `config/llms
 For the full environment variable reference and descriptions, see the public docs:
 https://docs.codemie.ai/admin/configuration/codemie/api-configuration
 
+### Customer Configuration
+
+Deployment-specific defaults for tool integrations (Jira, Confluence, Git, etc.) are configured in `config/customer/customer-config.yaml` under the `tool_defaults` section. This lets operators pre-fill URLs, set auth types, and configure other per-tool fields without code changes or rebuilds (a restart is required for changes to take effect).
+
+Each tool entry ships commented-out examples. Uncomment and set the relevant keys for your deployment:
+
+```yaml
+tool_defaults:
+  jira:
+    url_placeholder: "URL, e.g. https://jira.example.com/"
+    # url: "https://jira.example.com/"   # pre-fill URL for all users
+    # cloud: false                        # true = Atlassian Cloud instance
+```
+
+All supported tools and their configurable fields are documented inline in the file.
+
 ## Running the Application
 
 ### Docker 🐳

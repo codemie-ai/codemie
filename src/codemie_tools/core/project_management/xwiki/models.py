@@ -12,19 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import List, Optional
+from typing import ClassVar, List, Optional
 
 from pydantic import BaseModel, Field
 
-from codemie_tools.base.models import CodeMieToolConfig, CredentialTypes, FileConfigMixin
+from codemie_tools.base.models import (
+    CodeMieToolConfig,
+    CredentialTypes,
+    FileConfigMixin,
+    get_tool_default,
+)
 
 
 class XWikiConfig(CodeMieToolConfig, FileConfigMixin):
+    TOOL_NAME: ClassVar[str] = "xwiki"
+
     credential_type: CredentialTypes = Field(default=CredentialTypes.XWIKI, exclude=True, frozen=True)
     url: str = Field(
-        default="",
+        default=get_tool_default(TOOL_NAME, "url") or "",
         description="xWiki base URL, e.g. https://wiki.example.com",
-        json_schema_extra={"placeholder": "https://wiki.example.com"},
+        json_schema_extra={"placeholder": get_tool_default(TOOL_NAME, "url_placeholder") or ""},
     )
     username: Optional[str] = Field(default=None, description="xWiki username for Basic Auth")
     token: str = Field(
@@ -36,7 +43,7 @@ class XWikiConfig(CodeMieToolConfig, FileConfigMixin):
         },
     )
     use_bearer: bool = Field(
-        default=False,
+        default=get_tool_default(TOOL_NAME, "use_bearer") or False,
         description="Use Authorization: Bearer header instead of Basic Auth",
     )
 

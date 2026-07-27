@@ -12,20 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Dict, Any
+from typing import ClassVar, Optional, Dict, Any
 
 from pydantic import Field, BaseModel, model_validator
 
-from codemie_tools.base.models import CredentialTypes, CodeMieToolConfig, RequiredField
+from codemie_tools.base.models import (
+    CredentialTypes,
+    CodeMieToolConfig,
+    RequiredField,
+    get_tool_default,
+)
 
 
 class KeycloakConfig(CodeMieToolConfig):
     """Configuration for Keycloak integration."""
 
+    TOOL_NAME: ClassVar[str] = "keycloak"
+
     credential_type: CredentialTypes = Field(default=CredentialTypes.KEYCLOAK, exclude=True, frozen=True)
 
     base_url: str = RequiredField(
-        description="Base URL of the Keycloak server", json_schema_extra={"placeholder": "https://keycloak.example.com"}
+        default=get_tool_default(TOOL_NAME, "base_url") or "",
+        description="Base URL of the Keycloak server",
+        json_schema_extra={"placeholder": get_tool_default(TOOL_NAME, "base_url_placeholder") or ""},
     )
 
     realm: str = RequiredField(description="Keycloak realm name", json_schema_extra={"placeholder": "master"})

@@ -1,0 +1,215 @@
+diff --git a/src/codemie_tools/azure_devops/test_plan/models.py b/src/codemie_tools/azure_devops/test_plan/models.py
+index 6338c0c0a..939b0bdfb 100644
+--- a/src/codemie_tools/azure_devops/test_plan/models.py
++++ b/src/codemie_tools/azure_devops/test_plan/models.py
+@@ -33,6 +33,7 @@ class AzureDevOpsTestPlanConfig(CodeMieToolConfig):
+     credential_type: CredentialTypes = Field(default=CredentialTypes.AZURE_DEVOPS, exclude=True, frozen=True)
+ 
+     organization_url: str = RequiredField(
++        default=config_url("DEFAULT_AZURE_DEVOPS_TOOL_URL"),
+         description="Azure DevOps organization URL",
+         json_schema_extra={
+             "placeholder": "https://dev.azure.com/your-organization",
+diff --git a/src/codemie_tools/azure_devops/wiki/models.py b/src/codemie_tools/azure_devops/wiki/models.py
+index 2409a47b1..bf977ddca 100644
+--- a/src/codemie_tools/azure_devops/wiki/models.py
++++ b/src/codemie_tools/azure_devops/wiki/models.py
+@@ -43,6 +43,7 @@ class AzureDevOpsWikiConfig(CodeMieToolConfig, FileConfigMixin):
+     credential_type: CredentialTypes = Field(default=CredentialTypes.AZURE_DEVOPS, exclude=True, frozen=True)
+ 
+     organization_url: str = RequiredField(
++        default=config_url("DEFAULT_AZURE_DEVOPS_TOOL_URL"),
+         description="Azure DevOps organization URL",
+         json_schema_extra={
+             "placeholder": "https://dev.azure.com/your-organization",
+diff --git a/src/codemie_tools/azure_devops/work_item/models.py b/src/codemie_tools/azure_devops/work_item/models.py
+index b45099391..11cf40047 100644
+--- a/src/codemie_tools/azure_devops/work_item/models.py
++++ b/src/codemie_tools/azure_devops/work_item/models.py
+@@ -38,6 +38,7 @@ class AzureDevOpsWorkItemConfig(CodeMieToolConfig, FileConfigMixin):
+     credential_type: CredentialTypes = Field(default=CredentialTypes.AZURE_DEVOPS, exclude=True, frozen=True)
+ 
+     organization_url: str = RequiredField(
++        default=config_url("DEFAULT_AZURE_DEVOPS_TOOL_URL"),
+         description="Azure DevOps organization URL",
+         json_schema_extra={
+             "placeholder": "https://dev.azure.com/your-organization",
+diff --git a/src/codemie_tools/notification/email/models.py b/src/codemie_tools/notification/email/models.py
+index f46443a20..8f58db6d7 100644
+--- a/src/codemie_tools/notification/email/models.py
++++ b/src/codemie_tools/notification/email/models.py
+@@ -89,8 +89,8 @@ class EmailToolConfig(CodeMieToolConfig):
+     @model_validator(mode="after")
+     def validate_oauth_fields(self) -> "EmailToolConfig":
+         if self.auth_type == EmailAuthType.OAUTH_AZURE:
+-            if not self.oauth_authority:
++            if not (self.oauth_authority and self.oauth_authority.strip()):
+                 raise ValueError("oauth_authority must be a non-empty URL when auth_type is oauth_azure")
+-            if not self.oauth_scope:
++            if not (self.oauth_scope and self.oauth_scope.strip()):
+                 raise ValueError("oauth_scope must be a non-empty string when auth_type is oauth_azure")
+         return self
+diff --git a/tests/codemie_tools/azure_devops/test_plan/test_models.py b/tests/codemie_tools/azure_devops/test_plan/test_models.py
+new file mode 100644
+index 000000000..0054e9b28
+--- /dev/null
++++ b/tests/codemie_tools/azure_devops/test_plan/test_models.py
+@@ -0,0 +1,28 @@
++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from codemie_tools.azure_devops.test_plan.models import AzureDevOpsTestPlanConfig
++
++
++def test_ado_test_plan_organization_url_placeholder_default():
++    schema = AzureDevOpsTestPlanConfig.model_json_schema()
++    assert schema["properties"]["organization_url"]["placeholder"] == "https://dev.azure.com/your-organization"
++
++
++def test_ado_test_plan_organization_url_default_url_override(monkeypatch):
++    from codemie.configs import config as app_config
++    from codemie_tools.base.models import config_url
++
++    monkeypatch.setattr(app_config, "DEFAULT_AZURE_DEVOPS_TOOL_URL", "https://dev.azure.com/myorg")
++    assert config_url("DEFAULT_AZURE_DEVOPS_TOOL_URL") == "https://dev.azure.com/myorg"
+diff --git a/tests/codemie_tools/azure_devops/wiki/test_models.py b/tests/codemie_tools/azure_devops/wiki/test_models.py
+new file mode 100644
+index 000000000..7d3e32bb3
+--- /dev/null
++++ b/tests/codemie_tools/azure_devops/wiki/test_models.py
+@@ -0,0 +1,28 @@
++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++from codemie_tools.azure_devops.wiki.models import AzureDevOpsWikiConfig
++
++
++def test_ado_wiki_organization_url_placeholder_default():
++    schema = AzureDevOpsWikiConfig.model_json_schema()
++    assert schema["properties"]["organization_url"]["placeholder"] == "https://dev.azure.com/your-organization"
++
++
++def test_ado_wiki_organization_url_default_url_override(monkeypatch):
++    from codemie.configs import config as app_config
++    from codemie_tools.base.models import config_url
++
++    monkeypatch.setattr(app_config, "DEFAULT_AZURE_DEVOPS_TOOL_URL", "https://dev.azure.com/myorg")
++    assert config_url("DEFAULT_AZURE_DEVOPS_TOOL_URL") == "https://dev.azure.com/myorg"
+diff --git a/tests/codemie_tools/azure_devops/work_item/test_models.py b/tests/codemie_tools/azure_devops/work_item/test_models.py
+index d154c2c57..62ebe6379 100644
+--- a/tests/codemie_tools/azure_devops/work_item/test_models.py
++++ b/tests/codemie_tools/azure_devops/work_item/test_models.py
+@@ -18,3 +18,11 @@ from codemie_tools.azure_devops.work_item.models import AzureDevOpsWorkItemConfi
+ def test_ado_work_item_organization_url_placeholder_default():
+     schema = AzureDevOpsWorkItemConfig.model_json_schema()
+     assert schema["properties"]["organization_url"]["placeholder"] == "https://dev.azure.com/your-organization"
++
++
++def test_ado_work_item_organization_url_default_url_override(monkeypatch):
++    from codemie.configs import config as app_config
++    from codemie_tools.base.models import config_url
++
++    monkeypatch.setattr(app_config, "DEFAULT_AZURE_DEVOPS_TOOL_URL", "https://dev.azure.com/myorg")
++    assert config_url("DEFAULT_AZURE_DEVOPS_TOOL_URL") == "https://dev.azure.com/myorg"
+diff --git a/tests/codemie_tools/cloud/kubernetes/test_models.py b/tests/codemie_tools/cloud/kubernetes/test_models.py
+index dd69b58b2..f90c3ffb2 100644
+--- a/tests/codemie_tools/cloud/kubernetes/test_models.py
++++ b/tests/codemie_tools/cloud/kubernetes/test_models.py
+@@ -99,3 +99,11 @@ def test_kubernetes_url_placeholder_default():
+ 
+     schema = KubernetesConfig.model_json_schema()
+     assert schema["properties"]["url"]["placeholder"] == "https://kubernetes.default.svc"
++
++
++def test_kubernetes_url_default_url_override(monkeypatch):
++    from codemie.configs import config as app_config
++    from codemie_tools.base.models import config_url
++
++    monkeypatch.setattr(app_config, "DEFAULT_KUBERNETES_TOOL_URL", "https://k8s.company.internal")
++    assert config_url("DEFAULT_KUBERNETES_TOOL_URL") == "https://k8s.company.internal"
+diff --git a/tests/codemie_tools/code/sonar/test_models.py b/tests/codemie_tools/code/sonar/test_models.py
+index 7f792bef0..3b55ca592 100644
+--- a/tests/codemie_tools/code/sonar/test_models.py
++++ b/tests/codemie_tools/code/sonar/test_models.py
+@@ -18,3 +18,11 @@ from codemie_tools.code.models import SonarConfig
+ def test_sonar_url_placeholder_default():
+     schema = SonarConfig.model_json_schema()
+     assert schema["properties"]["url"]["placeholder"] == "https://sonarqube.example.com"
++
++
++def test_sonar_url_default_url_override(monkeypatch):
++    from codemie.configs import config as app_config
++    from codemie_tools.base.models import config_url
++
++    monkeypatch.setattr(app_config, "DEFAULT_SONAR_TOOL_URL", "https://sonar.company.com")
++    assert config_url("DEFAULT_SONAR_TOOL_URL") == "https://sonar.company.com"
+diff --git a/tests/codemie_tools/data_management/elastic/test_models.py b/tests/codemie_tools/data_management/elastic/test_models.py
+index 81061021e..c3ee2e852 100644
+--- a/tests/codemie_tools/data_management/elastic/test_models.py
++++ b/tests/codemie_tools/data_management/elastic/test_models.py
+@@ -18,3 +18,11 @@ from codemie_tools.data_management.elastic.models import ElasticConfig
+ def test_elastic_url_placeholder_default():
+     schema = ElasticConfig.model_json_schema()
+     assert schema["properties"]["url"]["placeholder"] == "https://your-elastic-instance.com"
++
++
++def test_elastic_url_default_url_override(monkeypatch):
++    from codemie.configs import config as app_config
++    from codemie_tools.base.models import config_url
++
++    monkeypatch.setattr(app_config, "DEFAULT_ELASTIC_TOOL_URL", "https://elastic.company.com")
++    assert config_url("DEFAULT_ELASTIC_TOOL_URL") == "https://elastic.company.com"
+diff --git a/tests/codemie_tools/itsm/test_servicenow_models.py b/tests/codemie_tools/itsm/test_servicenow_models.py
+index d959b90ce..e64d0910c 100644
+--- a/tests/codemie_tools/itsm/test_servicenow_models.py
++++ b/tests/codemie_tools/itsm/test_servicenow_models.py
+@@ -18,3 +18,11 @@ from codemie_tools.itsm.servicenow.models import ServiceNowConfig
+ def test_servicenow_url_placeholder_default():
+     schema = ServiceNowConfig.model_json_schema()
+     assert schema["properties"]["url"]["placeholder"] == "https://your-instance.service-now.com"
++
++
++def test_servicenow_url_default_url_override(monkeypatch):
++    from codemie.configs import config as app_config
++    from codemie_tools.base.models import config_url
++
++    monkeypatch.setattr(app_config, "DEFAULT_SERVICENOW_TOOL_URL", "https://mycompany.service-now.com")
++    assert config_url("DEFAULT_SERVICENOW_TOOL_URL") == "https://mycompany.service-now.com"
+diff --git a/tests/codemie_tools/report_portal/test_models.py b/tests/codemie_tools/report_portal/test_models.py
+index 50b751028..3fe6ec76b 100644
+--- a/tests/codemie_tools/report_portal/test_models.py
++++ b/tests/codemie_tools/report_portal/test_models.py
+@@ -18,3 +18,11 @@ from codemie_tools.report_portal.models import ReportPortalConfig
+ def test_reportportal_url_placeholder_default():
+     schema = ReportPortalConfig.model_json_schema()
+     assert schema["properties"]["url"]["placeholder"] == "https://reportportal.example.com"
++
++
++def test_reportportal_url_default_url_override(monkeypatch):
++    from codemie.configs import config as app_config
++    from codemie_tools.base.models import config_url
++
++    monkeypatch.setattr(app_config, "DEFAULT_REPORTPORTAL_TOOL_URL", "https://rp.company.com")
++    assert config_url("DEFAULT_REPORTPORTAL_TOOL_URL") == "https://rp.company.com"

@@ -1,0 +1,125 @@
+{
+  "task": "Make integration URL defaults configurable via environment variables by adding config_url() utility and 18 DEFAULT_*_TOOL_URL config fields, updating all 21 integration models, and fixing CR-001/CR-002.",
+  "generated": "2026-07-20T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 5,
+      "label": "XL",
+      "affected": "Config(BaseSettings), config_url utility, 21 integration tool config models (Jira, Confluence, GitLab, GitHub, AzureDevOps, Keycloak, Elastic, Email, Xray, Zephyr, ServiceNow, ReportPortal, Kubernetes, Sonar, XWiki, SharePoint, ADO Wiki, ADO Work Item, ADO Test Plan, Code, AzureDevOps Git), Helm values.yaml",
+      "layers": "Config, Agent-Tool, Infrastructure, Base/Foundation"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M",
+      "risk_factors": "config_url() is evaluated at class-definition time (Field default/placeholder argument), relying on the app config singleton being importable at model-module import time; lazy import inside config_url() mitigates circular-import risk but is a new pattern in this codebase; Helm empty-string override semantics change (CR-001); oauth_authority/oauth_scope empty-string guard (CR-002) adds runtime validation that could raise on misconfigured deployments",
+      "mitigation": "Deferred import in config_url() breaks circular dependency; empty-string guard in EmailToolConfig.validate_oauth_fields is guarded by auth_type check so it only fires when oauth is explicitly chosen; Helm override entries match Python defaults so no behavioral change unless explicitly set"
+    },
+    "file_change_estimate": {
+      "score": 6,
+      "label": "XXL",
+      "modified_files": 40,
+      "modified_file_list": [
+        ".ai-run/sdlc-factory/doctor.json",
+        "deploy-templates/values.yaml",
+        "src/codemie/configs/config.py",
+        "src/codemie_tools/base/models.py",
+        "src/codemie_tools/access_management/keycloak/models.py",
+        "src/codemie_tools/azure_devops/test_plan/models.py",
+        "src/codemie_tools/azure_devops/wiki/models.py",
+        "src/codemie_tools/azure_devops/work_item/models.py",
+        "src/codemie_tools/cloud/kubernetes/models.py",
+        "src/codemie_tools/code/models.py",
+        "src/codemie_tools/core/project_management/confluence/models.py",
+        "src/codemie_tools/core/project_management/jira/models.py",
+        "src/codemie_tools/core/project_management/xwiki/models.py",
+        "src/codemie_tools/core/vcs/azure_devops_git/models.py",
+        "src/codemie_tools/core/vcs/github/models.py",
+        "src/codemie_tools/core/vcs/gitlab/models.py",
+        "src/codemie_tools/data_management/elastic/models.py",
+        "src/codemie_tools/data_management/sharepoint/__init__.py",
+        "src/codemie_tools/data_management/sharepoint/models.py",
+        "src/codemie_tools/itsm/servicenow/models.py",
+        "src/codemie_tools/notification/email/models.py",
+        "src/codemie_tools/qa/xray/models.py",
+        "src/codemie_tools/qa/zephyr/models.py",
+        "src/codemie_tools/report_portal/models.py",
+        "tests/codemie_tools/access_management/keycloak/test_models.py",
+        "tests/codemie_tools/azure_devops/work_item/test_models.py",
+        "tests/codemie_tools/cloud/kubernetes/test_models.py",
+        "tests/codemie_tools/code/sonar/test_models.py",
+        "tests/codemie_tools/core/project_management/confluence/test_models.py",
+        "tests/codemie_tools/core/project_management/jira/test_models.py",
+        "tests/codemie_tools/core/project_management/xwiki/test_models.py",
+        "tests/codemie_tools/core/vcs/azure_devops_git/test_models.py",
+        "tests/codemie_tools/core/vcs/github/test_models.py",
+        "tests/codemie_tools/core/vcs/gitlab/test_models.py",
+        "tests/codemie_tools/data_management/elastic/test_models.py",
+        "tests/codemie_tools/itsm/test_servicenow_models.py",
+        "tests/codemie_tools/notification/email/test_models.py",
+        "tests/codemie_tools/qa/xray/test_xray_models.py",
+        "tests/codemie_tools/qa/zephyr/test_zephyr_models.py",
+        "tests/codemie_tools/report_portal/test_models.py"
+      ],
+      "new_files": 5,
+      "new_file_list": [
+        "tests/codemie_tools/access_management/__init__.py",
+        "tests/codemie_tools/access_management/keycloak/__init__.py",
+        "tests/codemie_tools/base/test_config_url.py",
+        "tests/codemie_tools/data_management/sharepoint/__init__.py",
+        "tests/codemie_tools/data_management/sharepoint/test_models.py"
+      ],
+      "affected_dirs": [
+        ".ai-run",
+        "deploy-templates",
+        "src",
+        "tests"
+      ]
+    },
+    "dependencies": {
+      "score": 2,
+      "label": "S",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 4,
+      "label": "L",
+      "layers_changed": ["Config", "Agent-Tool", "Infrastructure"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 22,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 55,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "config_url() added to src/codemie_tools/base/models.py — a shared foundation module imported by every tool config class — and 18 DEFAULT_*_TOOL_URL fields added to the central Config(BaseSettings) in config.py, with 21 integration models updated as consumers. Red flag 'touches core shared utilities' bumped from L (4) to XL (5)."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "55 files changed per diffstat (5426 insertions, 43 deletions): 24 production src files across 14 integration-model packages plus config.py, values.yaml, and base/models.py; 21 test files updated/created. 16+ modified files maps directly to XXL (6)."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Three distinct architectural layers touched: Config/Settings (config.py adding 18 env-var fields), Agent-Tool (21 tool config models consuming config_url()), and Infrastructure/Deployment (values.yaml with per-deployment DEFAULT_*_TOOL_URL override entries). No database schema migration and no new cross-system calls introduced."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "config_url() is evaluated at Field() argument resolution time (class definition), meaning it fires on module import; the deferred import inside config_url() is a new pattern in this codebase. CR-002 email oauth guard adds runtime validation. Both are low blast-radius changes with clear mitigations, keeping risk at M (3)."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L (4) to XL (5): config_url() added to src/codemie_tools/base/models.py, a core shared utility imported by all 21+ integration tool config classes"
+  ],
+  "split_recommendation": null
+}

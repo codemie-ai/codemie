@@ -12,19 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Dict, Any
+from typing import ClassVar, Optional, Dict, Any
 
 from pydantic import model_validator, Field
 
-from codemie_tools.base.models import CodeMieToolConfig, CredentialTypes, FileConfigMixin
+from codemie_tools.base.models import (
+    CodeMieToolConfig,
+    CredentialTypes,
+    FileConfigMixin,
+    get_tool_default,
+)
 
 
 class JiraConfig(CodeMieToolConfig, FileConfigMixin):
+    TOOL_NAME: ClassVar[str] = "jira"
+
     credential_type: CredentialTypes = Field(default=CredentialTypes.JIRA, exclude=True, frozen=True)
     url: str = Field(
-        default="",
+        default=get_tool_default(TOOL_NAME, "url") or "",
         description="URL to your Jira instance, e.g. https://jira.example.com/ or https://jira.example.com/jira/",
-        json_schema_extra={"placeholder": "https://jira.example.com/"},
+        json_schema_extra={"placeholder": get_tool_default(TOOL_NAME, "url_placeholder") or ""},
     )
     username: Optional[str] = Field(
         default=None,
@@ -41,7 +48,8 @@ class JiraConfig(CodeMieToolConfig, FileConfigMixin):
         },
     )
     cloud: Optional[bool] = Field(
-        default=False, description="Is this a Jira Cloud instance? Toggle on if using Atlassian Cloud"
+        default=get_tool_default(TOOL_NAME, "cloud") or False,
+        description="Is this a Jira Cloud instance? Toggle on if using Atlassian Cloud",
     )
 
     @model_validator(mode='before')

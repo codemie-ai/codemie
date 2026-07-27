@@ -15,7 +15,7 @@
 import logging
 import yaml
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import Dict, List, Optional, Union
 from importlib.metadata import version, PackageNotFoundError
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from codemie.configs.config import config
@@ -74,6 +74,7 @@ class Component(BaseModel):
 class CustomerConfig(BaseModel):
     components: List[Component] = Field(default_factory=list)
     preconfigured_assistants: List[PreconfiguredAssistant] = Field(default_factory=list)
+    tool_defaults: Dict[str, Dict[str, Union[str, bool]]] = Field(default_factory=dict)
     config_path: Path = Field(default=Path(f'{config.CUSTOMER_CONFIG_DIR}/customer-config.yaml'))
 
     @staticmethod
@@ -115,6 +116,8 @@ class CustomerConfig(BaseModel):
                 ]
             else:
                 self.preconfigured_assistants = []
+
+            self.tool_defaults = config_data.get("tool_defaults", {})
 
             logging.debug(f"Successfully loaded {len(self.components)} components")
         except yaml.YAMLError as exc:
@@ -255,6 +258,9 @@ class CustomerConfig(BaseModel):
         """
         component_id = f"features:{feature_key}"
         return self.is_component_enabled(component_id)
+
+    def get_tool_default(self, tool: str, field: str) -> Optional[Union[str, bool]]:
+        return (self.tool_defaults.get(tool) or {}).get(field)
 
     def get_feature_setting(self, feature_key: str, setting_name: str, default=None):
         """Read an extra setting from a ``features:<feature_key>`` component's settings.

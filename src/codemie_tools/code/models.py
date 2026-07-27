@@ -12,9 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import ClassVar
+
 from pydantic import Field
 
-from codemie_tools.base.models import CodeMieToolConfig, RequiredField, CredentialTypes
+from codemie_tools.base.models import (
+    CodeMieToolConfig,
+    RequiredField,
+    CredentialTypes,
+    get_tool_default,
+)
 
 
 class SonarConfig(CodeMieToolConfig):
@@ -26,9 +33,13 @@ class SonarConfig(CodeMieToolConfig):
     - sonar_project_name -> sonar_project_name
     """
 
+    TOOL_NAME: ClassVar[str] = "sonar"
+
     credential_type: CredentialTypes = Field(default=CredentialTypes.SONAR, exclude=True, frozen=True)
     url: str = RequiredField(
-        description="SonarQube server URL", json_schema_extra={"placeholder": "https://sonarqube.example.com"}
+        default=get_tool_default(TOOL_NAME, "url") or "",
+        description="SonarQube server URL",
+        json_schema_extra={"placeholder": get_tool_default(TOOL_NAME, "url_placeholder") or ""},
     )
     token: str = RequiredField(
         description="SonarQube authentication token",

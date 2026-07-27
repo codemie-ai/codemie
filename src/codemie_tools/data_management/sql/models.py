@@ -13,10 +13,16 @@
 # limitations under the License.
 
 from enum import Enum
-from typing import Optional, Dict, Any, TYPE_CHECKING
+from typing import ClassVar, Optional, Dict, Any, TYPE_CHECKING
 
 from pydantic import AliasChoices, BaseModel, model_validator, field_validator, Field
-from codemie_tools.base.models import CodeMieToolConfig, CredentialTypes
+
+from codemie_tools.base.models import (
+    CodeMieToolConfig,
+    CredentialTypes,
+    RequiredField,
+    get_tool_default,
+)
 
 if TYPE_CHECKING:
     from influxdb_client import InfluxDBClient
@@ -37,9 +43,14 @@ class SQLToolInput(BaseModel):
 
 
 class SQLConfig(CodeMieToolConfig):
+    TOOL_NAME: ClassVar[str] = "sql"
+
     credential_type: CredentialTypes = Field(default=CredentialTypes.SQL, exclude=True, frozen=True)
     # Common fields
-    dialect: str
+    dialect: str = RequiredField(
+        default=get_tool_default(TOOL_NAME, "dialect") or "",
+        description="Database dialect",
+    )
     host: str = Field(validation_alias=AliasChoices("host", "url"))
     port: str
 

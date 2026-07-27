@@ -320,3 +320,59 @@ preconfigured_assistants:
   - id: "amna-sct-tsql-to-pgsql-converter"
     settings:
       enabled: false
+
+tool_defaults:
+  jira:
+    url_placeholder: "URL, e.g. https://jira.example.com/ or https://jira.example.com/jira/"
+    # url: "https://jira.example.com/"   # pre-fill URL for all users
+    # cloud: false                        # true = Atlassian Cloud instance
+  confluence:
+    url_placeholder: "URL, e.g. http://confluence.example.com/"
+    # url: "https://confluence.example.com/"
+    # cloud: false                        # true = Atlassian Cloud instance
+  xwiki:
+    url_placeholder: "URL, e.g. https://wiki.example.com"
+    # url: "https://wiki.example.com"
+    # use_bearer: false                  # true = Authorization: Bearer instead of Basic Auth
+  sharepoint:
+    url_placeholder: "SharePoint URL, e.g. https://yourtenant.sharepoint.com"
+    # url: "https://yourtenant.sharepoint.com"
+  git:
+    url_placeholder: "URL"
+    # url: "https://git.example.com"
+    # auth_type: "pat"                   # pat = Personal Access Token | github_app = GitHub Application
+  azuredevops:
+    url_placeholder: "URL, e.g. https://dev.azure.com"
+    # url: "https://dev.azure.com/myorg"
+  keycloak:
+    base_url_placeholder: 'Keycloak Base URL, e.g. "https://keycloak.example.com/auth"'
+    # base_url: "https://keycloak.example.com/auth"
+  elastic:
+    url_placeholder: 'Elastic URL, e.g. "https://localhost:9200"'
+    # url: "https://localhost:9200"
+  kubernetes:
+    url_placeholder: "Kubernetes URL e.g. https://kubernetes.codemie:6443"
+    # url: "https://kubernetes.codemie:6443"
+  servicenow:
+    url_placeholder: "Instance URL, f.ex. https://dev000000.service-now.com/"
+    # url: "https://dev000000.service-now.com/"
+  report_portal:
+    url_placeholder: "Report Portal URL, e.g. https://reportportal.example.com/"
+    # url: "https://reportportal.example.com/"
+  sonar:
+    url_placeholder: 'SonarQube Server URL (e.g. "http://localhost:9000")'
+    # url: "https://sonarqube.example.com"
+  sql:
+    # dialect: "mysql"               # postgres | mysql | mssql | influxdb
+  xray:
+    base_url_placeholder: "URL, e.g. https://xray.cloud.getxray.app"
+    # base_url: "https://xray.cloud.getxray.app"
+  zephyr:
+    url_placeholder: "URL, e.g. https://prod-api.zephyr4jiracloud.com/v2 or https://api.zephyrscale.smartbear.com/v2"
+    # url: "https://api.zephyrscale.smartbear.com/v2"
+  email:
+    smtp_url_placeholder: "SMTP Server URL (e.g. smtp.office365.com:587)"
+    # smtp_url: "smtp.office365.com:587"
+    # auth_type: "basic"                 # basic = Basic Auth, oauth_azure = Microsoft Entra ID OAuth
+    # oauth_authority: "https://login.microsoftonline.com/<tenant-id>"
+    # oauth_scope: "https://outlook.office365.com/.default"

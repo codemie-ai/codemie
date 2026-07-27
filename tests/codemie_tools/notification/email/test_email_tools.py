@@ -233,6 +233,8 @@ class TestEmailTool(unittest.TestCase):
             oauth_client_secret="secret",
             oauth_tenant_id="tenant",
             oauth_from_email="sender@example.com",
+            oauth_authority="https://login.microsoftonline.com",
+            oauth_scope="https://outlook.office365.com/.default",
         )
         self.assertEqual(config_oauth.auth_type, EmailAuthType.OAUTH_AZURE)
         self.assertEqual(config_oauth.oauth_client_id, "id")

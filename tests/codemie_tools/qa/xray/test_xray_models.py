@@ -161,3 +161,25 @@ class TestXrayExecuteGraphQLInput:
         input_data = XrayExecuteGraphQLInput(graphql=mutation)
         assert input_data.graphql == mutation
         assert "mutation" in input_data.graphql
+
+
+def test_xray_base_url_placeholder_default():
+    from codemie_tools.qa.xray.models import XrayConfig
+
+    schema = XrayConfig.model_json_schema()
+    assert schema["properties"]["base_url"]["placeholder"] == "URL, e.g. https://xray.cloud.getxray.app"
+
+
+def test_xray_base_url_default_url_override(monkeypatch):
+    from codemie.configs.customer_config import customer_config
+
+    monkeypatch.setattr(customer_config, "tool_defaults", {"xray": {"base_url": "https://xray.company.com"}})
+    assert customer_config.get_tool_default("xray", "base_url") == "https://xray.company.com"
+
+
+def test_base_url_default_wired_to_tool_default():
+    from codemie_tools.qa.xray.models import XrayConfig
+    from codemie.configs.customer_config import customer_config
+
+    expected = customer_config.get_tool_default(XrayConfig.TOOL_NAME, "base_url") or ""
+    assert XrayConfig.model_fields["base_url"].default == expected

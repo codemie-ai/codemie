@@ -72,3 +72,39 @@ class TestConfluenceConfig(unittest.TestCase):
         self.assertIn("HTTP: GET/rest/api/content/123456 -> 200", result)
         mock_validate.assert_called_once()
         mock_confluence_class.assert_called_once()
+
+
+def test_confluence_url_placeholder_default():
+    from codemie_tools.core.project_management.confluence.models import ConfluenceConfig
+
+    schema = ConfluenceConfig.model_json_schema()
+    assert schema["properties"]["url"]["placeholder"] == "URL, e.g. http://confluence.example.com/"
+
+
+def test_confluence_url_default_url_override(monkeypatch):
+    from codemie.configs.customer_config import customer_config
+
+    monkeypatch.setattr(customer_config, "tool_defaults", {"confluence": {"url": "https://confluence.company.com/"}})
+    assert customer_config.get_tool_default("confluence", "url") == "https://confluence.company.com/"
+
+
+def test_confluence_cloud_default_false():
+    from codemie_tools.core.project_management.confluence.models import ConfluenceConfig
+
+    config = ConfluenceConfig(url="https://confluence.example.com", token="tok")
+    assert config.cloud is False
+
+
+def test_confluence_is_cloud_tool_default_override(monkeypatch):
+    from codemie.configs.customer_config import customer_config
+
+    monkeypatch.setattr(customer_config, "tool_defaults", {"confluence": {"cloud": True}})
+    assert customer_config.get_tool_default("confluence", "cloud") is True
+
+
+def test_url_default_wired_to_tool_default():
+    from codemie_tools.core.project_management.confluence.models import ConfluenceConfig
+    from codemie.configs.customer_config import customer_config
+
+    expected = customer_config.get_tool_default(ConfluenceConfig.TOOL_NAME, "url") or ""
+    assert ConfluenceConfig.model_fields["url"].default == expected

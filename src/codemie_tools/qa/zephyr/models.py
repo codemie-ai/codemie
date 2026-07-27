@@ -12,14 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import ClassVar, Optional
 from pydantic import BaseModel, Field
-from codemie_tools.base.models import CodeMieToolConfig, CredentialTypes
+
+from codemie_tools.base.models import CodeMieToolConfig, CredentialTypes, get_tool_default
 
 
 class ZephyrConfig(CodeMieToolConfig):
+    TOOL_NAME: ClassVar[str] = "zephyr"
+
     credential_type: CredentialTypes = Field(default=CredentialTypes.ZEPHYR_SCALE, exclude=True, frozen=True)
-    url: str
+    url: str = Field(
+        default=get_tool_default(TOOL_NAME, "url") or "",
+        description="Zephyr Scale API URL",
+        json_schema_extra={"placeholder": get_tool_default(TOOL_NAME, "url_placeholder") or ""},
+    )
     token: str
 
 

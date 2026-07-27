@@ -13,11 +13,16 @@
 # limitations under the License.
 
 from enum import Enum
-from typing import Optional
-
-from codemie_tools.base.models import CodeMieToolConfig, RequiredField, CredentialTypes
+from typing import ClassVar, Optional
 
 from pydantic import Field
+
+from codemie_tools.base.models import (
+    CodeMieToolConfig,
+    RequiredField,
+    CredentialTypes,
+    get_tool_default,
+)
 
 
 class EmailAuthType(str, Enum):
@@ -28,16 +33,19 @@ class EmailAuthType(str, Enum):
 
 
 class EmailToolConfig(CodeMieToolConfig):
+    TOOL_NAME: ClassVar[str] = "email"
+
     credential_type: CredentialTypes = Field(default=CredentialTypes.EMAIL, exclude=True, frozen=True)
 
     # Common field
     url: str = RequiredField(
+        default=get_tool_default(TOOL_NAME, "smtp_url") or "",
         description="SMTP server URL including port, e.g. smtp.gmail.com:587 or smtp.office365.com:587",
-        json_schema_extra={"placeholder": "smtp.gmail.com:587"},
+        json_schema_extra={"placeholder": get_tool_default(TOOL_NAME, "smtp_url_placeholder") or ""},
     )
 
     auth_type: EmailAuthType = Field(
-        default=EmailAuthType.BASIC,
+        default=EmailAuthType(get_tool_default(TOOL_NAME, "auth_type") or "basic"),
         description="Authentication type: basic (basic auth) or oauth_azure (Microsoft Entra ID OAuth)",
     )
 
@@ -75,12 +83,12 @@ class EmailToolConfig(CodeMieToolConfig):
         json_schema_extra={"placeholder": "12345678-1234-1234-1234-123456789012"},
     )
     oauth_authority: Optional[str] = Field(
-        default="https://login.microsoftonline.com",
+        default=get_tool_default(TOOL_NAME, "oauth_authority") or "",
         description="OAuth authority base URL without tenant_id (optional, defaults to https://login.microsoftonline.com)",
         json_schema_extra={"placeholder": "https://login.microsoftonline.com"},
     )
     oauth_scope: Optional[str] = Field(
-        default="https://outlook.office365.com/.default",
+        default=get_tool_default(TOOL_NAME, "oauth_scope") or "",
         description="OAuth scope for token acquisition (optional, defaults to https://outlook.office365.com/.default)",
         json_schema_extra={"placeholder": "https://outlook.office365.com/.default"},
     )

@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "task": "Make integration URL defaults/placeholders configurable via deployment env vars via a utility function in codemie_tools/base/models.py applied across ~18-20 CodeMieToolConfig subclass files, ~15 new Config(BaseSettings) fields, and matching Helm values entries.",
+  "generated": "2026-07-17T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 24,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "file_change_estimate",
+      "reason": "~18-20 CodeMieToolConfig model files + codemie_tools/base/models.py + codemie/configs/config.py + deploy-templates/values.yaml + possible settings.py and preconfigured_workflows.py = 23+ modified files; comfortably above the 16-file XXL threshold."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "New utility lives in codemie_tools/base/models.py — the core shared foundation all CodeMieToolConfig subclasses depend on — plus app config layer (Config(BaseSettings)) and deployment layer (Helm values). 'Touches core shared utilities' red flag bumped score from L (4) to XL (5)."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Multiple open design decisions before coding can start: (1) os.getenv-at-class-definition vs Config(BaseSettings) import — wrong choice means redoing all 20 files; (2) scope of three special cases (ZephyrSquad constant in api_wrapper.py, ZephyrConfig bare annotation, SharePointCredentials not a CodeMieToolConfig subclass); (3) Elastic dual-URL ambiguity (DEFAULT_ELASTIC_TOOL_URL vs existing ELASTIC_URL); (4) whether CHANGEME_URL seeding script is in scope."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Agent-Tool config layer (codemie_tools/**/models.py), base utilities layer (codemie_tools/base/models.py), app config layer (codemie/configs/config.py), and deployment/infrastructure layer (deploy-templates/values.yaml) — 4 distinct layers including deployment infrastructure."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L (4) to XL (5): new utility function added to codemie_tools/base/models.py, the core shared foundation for all CodeMieToolConfig subclasses across every integration"
+  ],
+  "split_recommendation": null
+}

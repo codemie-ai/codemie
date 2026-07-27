@@ -12,18 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Union, Dict, Any
+from typing import ClassVar, Union, Dict, Any
 
 from pydantic import BaseModel, Field
 
-from codemie_tools.base.models import CodeMieToolConfig, RequiredField, CredentialTypes
+from codemie_tools.base.models import (
+    CodeMieToolConfig,
+    RequiredField,
+    CredentialTypes,
+    get_tool_default,
+)
 
 
 class ServiceNowConfig(CodeMieToolConfig):
+    TOOL_NAME: ClassVar[str] = "servicenow"
+
     credential_type: CredentialTypes = Field(default=CredentialTypes.SERVICENOW, exclude=True, frozen=True)
     url: str = RequiredField(
+        default=get_tool_default(TOOL_NAME, "url") or "",
         description="ServiceNow instance URL",
-        json_schema_extra={"placeholder": "https://your-instance.service-now.com"},
+        json_schema_extra={"placeholder": get_tool_default(TOOL_NAME, "url_placeholder") or ""},
     )
     api_key: str = RequiredField(
         description="ServiceNow API key for authentication",

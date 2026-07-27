@@ -1,0 +1,71 @@
+{
+  "decision": "request-changes",
+  "rationale": "Three Azure DevOps configs (WorkItem, Wiki, TestPlan) have config_url imported but organization_url unchanged — a direct spec integration-inventory failure (CR-001). Model-level default-value and override tests are missing for five integrations plus the three ADO configs (CR-002). Minor: new validate_oauth_fields does not guard whitespace-only strings (CR-003). One deferred finding: Helm values.yaml uses pre-filled example URLs instead of the spec's empty strings (UX improvement but spec deviation). All three review lenses ran successfully; spec was audited with 3 fail and 2 partial criteria. 11 findings dismissed (class-definition-time baking by design, silent empty fallback by design, single ADO URL key by design, etc.).",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "config_url utility in base/models.py with lazy import to avoid circular imports", "status": "pass", "notes": "Implemented correctly at models.py:47-50"},
+    {"kind": "spec", "item": "18 DEFAULT_*_TOOL_URL fields in Config(BaseSettings) with non-empty string defaults", "status": "pass", "notes": "All 18 fields present in config.py lines 752-777"},
+    {"kind": "spec", "item": "json_schema_extra placeholder always a static string, never config_url()", "status": "pass", "notes": "All placeholder values are static strings throughout the diff"},
+    {"kind": "spec", "item": "JiraConfig.url — default=config_url('DEFAULT_JIRA_TOOL_URL')", "status": "pass", "notes": "Implemented"},
+    {"kind": "spec", "item": "ConfluenceConfig.url — default=config_url('DEFAULT_CONFLUENCE_TOOL_URL')", "status": "pass", "notes": "Implemented"},
+    {"kind": "spec", "item": "XWikiConfig.url — default=config_url('DEFAULT_XWIKI_TOOL_URL')", "status": "pass", "notes": "Implemented"},
+    {"kind": "spec", "item": "GitlabConfig.url — default=config_url('DEFAULT_GITLAB_TOOL_URL')", "status": "pass", "notes": "Implemented"},
+    {"kind": "spec", "item": "GithubConfig.url — default=config_url('DEFAULT_GITHUB_TOOL_URL')", "status": "pass", "notes": "Implemented; previously hardcoded string replaced"},
+    {"kind": "spec", "item": "AzureDevOpsGitConfig.url — default=config_url('DEFAULT_AZURE_DEVOPS_TOOL_URL')", "status": "pass", "notes": "Implemented"},
+    {"kind": "spec", "item": "AzureDevOpsWorkItemConfig.organization_url — default=config_url('DEFAULT_AZURE_DEVOPS_TOOL_URL')", "status": "fail", "notes": "config_url imported but organization_url field unchanged; no default= argument added to RequiredField(...)"},
+    {"kind": "spec", "item": "AzureDevOpsWikiConfig.organization_url — default=config_url('DEFAULT_AZURE_DEVOPS_TOOL_URL')", "status": "fail", "notes": "config_url imported but organization_url field unchanged; no default= argument added"},
+    {"kind": "spec", "item": "AzureDevOpsTestPlanConfig.organization_url — default=config_url('DEFAULT_AZURE_DEVOPS_TOOL_URL')", "status": "fail", "notes": "config_url imported but organization_url field unchanged; no default= argument added"},
+    {"kind": "spec", "item": "KeycloakConfig.base_url — default=config_url('DEFAULT_KEYCLOAK_TOOL_URL')", "status": "pass", "notes": "Implemented"},
+    {"kind": "spec", "item": "ElasticConfig.url — default=config_url('DEFAULT_ELASTIC_TOOL_URL')", "status": "pass", "notes": "Implemented"},
+    {"kind": "spec", "item": "EmailToolConfig.url (SMTP) — default=config_url('DEFAULT_EMAIL_SMTP_TOOL_URL')", "status": "pass", "notes": "Implemented"},
+    {"kind": "spec", "item": "EmailToolConfig.oauth_authority — default=config_url('DEFAULT_EMAIL_OAUTH_AUTHORITY_TOOL_URL')", "status": "pass", "notes": "Implemented with model_validator for OAUTH_AZURE validation"},
+    {"kind": "spec", "item": "EmailToolConfig.oauth_scope — default=config_url('DEFAULT_EMAIL_OAUTH_SCOPE_TOOL_URL')", "status": "pass", "notes": "Implemented with model_validator for OAUTH_AZURE validation"},
+    {"kind": "spec", "item": "XrayConfig.base_url — default=config_url('DEFAULT_XRAY_TOOL_URL')", "status": "pass", "notes": "Implemented"},
+    {"kind": "spec", "item": "ZephyrConfig.url — bare annotation converted to Field(default=config_url(...))", "status": "pass", "notes": "Correctly converted; token field remains required"},
+    {"kind": "spec", "item": "ServiceNowConfig.url — default=config_url('DEFAULT_SERVICENOW_TOOL_URL')", "status": "pass", "notes": "Implemented"},
+    {"kind": "spec", "item": "ReportPortalConfig.url — default=config_url('DEFAULT_REPORTPORTAL_TOOL_URL')", "status": "pass", "notes": "Implemented"},
+    {"kind": "spec", "item": "KubernetesConfig.url — default=config_url('DEFAULT_KUBERNETES_TOOL_URL')", "status": "pass", "notes": "Implemented"},
+    {"kind": "spec", "item": "SonarConfig.url — default=config_url('DEFAULT_SONAR_TOOL_URL')", "status": "pass", "notes": "Implemented"},
+    {"kind": "spec", "item": "SharePointConfig (new class) with url=RequiredField(default=config_url(...)) and static placeholder", "status": "pass", "notes": "New class correctly implemented in data_management/sharepoint/models.py"},
+    {"kind": "spec", "item": "Two assertions per integration: default-value assertion + test_*_default_url_override", "status": "partial", "notes": "test_config_url.py covers generic mechanism (all 18 attrs via parametrized override); per-model override tests missing for ElasticConfig, KubernetesConfig, ServiceNowConfig, ReportPortalConfig, SonarConfig; no tests for ADO wiki/test_plan; AzureDevOpsWorkItemConfig has placeholder test only"},
+    {"kind": "spec", "item": "deploy-templates/values.yaml — 18 entries, value: \"\" (empty) per spec", "status": "partial", "notes": "All 18 entries present but use pre-filled example URLs instead of value: \"\" — deferred; see rationale"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "partial", "notes": "README documents '<TICKET-ID>: Short Description'; commits use 'feat(EPMCDME-10928):' / 'style(EPMCDME-10928):' — conventional-commit prefix wrapping the ticket ID. Not marked blocking in README; informational deviation only."},
+    {"kind": "code-quality", "status": "pass", "notes": "Unused config_url imports in ADO wiki/work_item/test_plan won't fail ruff — F401 suppressed for src/codemie_tools/* in pyproject.toml line 234"},
+    {"kind": "security", "status": "pass", "notes": "Only URL string defaults and config reads introduced; no auth surface, secrets, or injection vectors"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie_tools/azure_devops/work_item/models.py",
+      "title": "ADO WorkItem/Wiki/TestPlan: config_url imported but organization_url not updated",
+      "problem": "AzureDevOpsWorkItemConfig, AzureDevOpsWikiConfig, and AzureDevOpsTestPlanConfig each import config_url in this diff but the organization_url = RequiredField(...) call is unchanged — no default=config_url('DEFAULT_AZURE_DEVOPS_TOOL_URL') argument was added. Plan Task 6 Step 1 is marked [x] complete but the implementation for three of the four Azure DevOps configs is missing.",
+      "impact": "These three configs do not receive deployment-configurable organization_url defaults, defeating the feature's purpose for the majority of Azure DevOps usage. AzureDevOpsGitConfig.url was correctly updated; the three sub-service configs were not. The imports are dead code.",
+      "recommendation": "In each of the three files, add default=config_url(\"DEFAULT_AZURE_DEVOPS_TOOL_URL\") to the organization_url RequiredField(...) call — identical pattern to AzureDevOpsGitConfig. Also add model-level tests: a placeholder assertion and a test_ado_<service>_organization_url_default_url_override test for each."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie_tools/",
+      "title": "Per-model test_*_default_url_override tests missing for 5 integrations",
+      "problem": "ElasticConfig, KubernetesConfig, ServiceNowConfig, ReportPortalConfig, and SonarConfig have no model-level default-value or override tests. AzureDevOpsWorkItemConfig test file has a placeholder assertion but no default-value test or override test. No test files exist for ADO wiki and test_plan (required by CR-001 fix). Spec requires both a default-value assertion and a named test_*_default_url_override per integration.",
+      "impact": "Regressions in these integrations' URL wiring go undetected by CI. test_config_url.py covers the generic config_url() mechanism but does not verify each model's Field definition actually wires to the correct config attr — a typo in the config_attr string would pass all existing tests.",
+      "recommendation": "For Elastic, Kubernetes, ServiceNow, ReportPortal, Sonar: add test_<integration>_url_default_value and test_<integration>_url_default_url_override following the Jira/GitLab test pattern. After fixing CR-001, add equivalent tests for ADO wiki and test_plan."
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie_tools/notification/email/models.py",
+      "title": "validate_oauth_fields does not guard whitespace-only oauth_authority/oauth_scope",
+      "problem": "The new model_validator uses `if not self.oauth_authority` which passes for whitespace-only strings like ' ' when auth_type is OAUTH_AZURE.",
+      "impact": "EmailToolConfig with auth_type=OAUTH_AZURE constructed with oauth_authority=' ' passes model validation and reaches the OAuth token acquisition call with an effectively empty authority URL, causing an opaque network error at send time rather than a clear validation failure at construction.",
+      "recommendation": "Change `if not self.oauth_authority:` to `if not (self.oauth_authority and self.oauth_authority.strip()):` and apply the same fix to the oauth_scope check."
+    }
+  ]
+}

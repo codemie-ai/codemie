@@ -79,3 +79,38 @@ class TestJiraConfig(unittest.TestCase):
         self.assertIn("HTTP: GET /rest/api/2/issue/TEST-123 -> 200", result)
         mock_validate.assert_called_once()
         mock_jira_class.assert_called_once()
+
+
+def test_jira_url_placeholder_default():
+    schema = JiraConfig.model_json_schema()
+    assert (
+        schema["properties"]["url"]["placeholder"]
+        == "URL, e.g. https://jira.example.com/ or https://jira.example.com/jira/"
+    )
+
+
+def test_jira_url_default_url_override(monkeypatch):
+    from codemie.configs.customer_config import customer_config
+
+    monkeypatch.setattr(customer_config, "tool_defaults", {"jira": {"url": "https://my-jira.company.com/"}})
+    assert customer_config.get_tool_default("jira", "url") == "https://my-jira.company.com/"
+
+
+def test_jira_cloud_default_false():
+    config = JiraConfig(url="https://jira.example.com", token="tok")
+    assert config.cloud is False
+
+
+def test_jira_is_cloud_tool_default_override(monkeypatch):
+    from codemie.configs.customer_config import customer_config
+
+    monkeypatch.setattr(customer_config, "tool_defaults", {"jira": {"cloud": True}})
+    assert customer_config.get_tool_default("jira", "cloud") is True
+
+
+def test_url_default_wired_to_tool_default():
+    from codemie_tools.core.project_management.jira.models import JiraConfig
+    from codemie.configs.customer_config import customer_config
+
+    expected = customer_config.get_tool_default(JiraConfig.TOOL_NAME, "url") or ""
+    assert JiraConfig.model_fields["url"].default == expected

@@ -17,6 +17,10 @@ from typing import List, Optional, Any
 
 from pydantic import BaseModel, model_validator, Field
 
+from codemie.configs.customer_config import customer_config
+
+get_tool_default = customer_config.get_tool_default
+
 
 def RequiredField(default="", **kwargs):
     """

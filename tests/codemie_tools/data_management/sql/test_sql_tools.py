@@ -432,3 +432,18 @@ def test_create_db_connection_empty_credentials_bypass_validation(mock_create_en
 
     expected_connection_string = "postgresql+psycopg://:@localhost:5432/test_db"
     mock_create_engine.assert_called_with(expected_connection_string)
+
+
+def test_dialect_from_tool_defaults(monkeypatch):
+    from codemie.configs.customer_config import customer_config
+
+    monkeypatch.setattr(customer_config, "tool_defaults", {"sql": {"dialect": "postgres"}})
+    assert customer_config.get_tool_default("sql", "dialect") == "postgres"
+
+
+def test_dialect_default_wired_to_tool_default():
+    from codemie_tools.data_management.sql.models import SQLConfig
+    from codemie.configs.customer_config import customer_config
+
+    expected = customer_config.get_tool_default(SQLConfig.TOOL_NAME, "dialect") or ""
+    assert SQLConfig.model_fields["dialect"].default == expected

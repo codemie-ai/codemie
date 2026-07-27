@@ -12,20 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, Dict, Any, Union
+from typing import ClassVar, Optional, Dict, Any, Union
 
 from pydantic import BaseModel, Field, model_validator
 
-from codemie_tools.base.models import CodeMieToolConfig, CredentialTypes, RequiredField
+from codemie_tools.base.models import (
+    CodeMieToolConfig,
+    CredentialTypes,
+    RequiredField,
+    get_tool_default,
+)
 
 
 class KubernetesConfig(CodeMieToolConfig):
     """Configuration for Kubernetes integration."""
 
+    TOOL_NAME: ClassVar[str] = "kubernetes"
+
     credential_type: CredentialTypes = Field(default=CredentialTypes.KUBERNETES, exclude=True, frozen=True)
 
     url: str = RequiredField(
-        description="Kubernetes API Server URL", json_schema_extra={"placeholder": "https://kubernetes.default.svc"}
+        default=get_tool_default(TOOL_NAME, "url") or "",
+        description="Kubernetes API Server URL",
+        json_schema_extra={"placeholder": get_tool_default(TOOL_NAME, "url_placeholder") or ""},
     )
 
     token: str = RequiredField(

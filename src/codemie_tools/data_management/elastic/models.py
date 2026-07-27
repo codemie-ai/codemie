@@ -12,16 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Tuple, Optional
+from typing import ClassVar, Tuple, Optional
 from pydantic import BaseModel, Field, model_validator
 
-from codemie_tools.base.models import CodeMieToolConfig, CredentialTypes, RequiredField
+from codemie_tools.base.models import (
+    CodeMieToolConfig,
+    CredentialTypes,
+    RequiredField,
+    get_tool_default,
+)
 
 
 class ElasticConfig(CodeMieToolConfig):
+    TOOL_NAME: ClassVar[str] = "elastic"
+
     credential_type: CredentialTypes = Field(default=CredentialTypes.ELASTIC, exclude=True, frozen=True)
     url: str = RequiredField(
-        description="Elasticsearch instance URL", json_schema_extra={"placeholder": "https://your-elastic-instance.com"}
+        default=get_tool_default(TOOL_NAME, "url") or "",
+        description="Elasticsearch instance URL",
+        json_schema_extra={"placeholder": get_tool_default(TOOL_NAME, "url_placeholder") or ""},
     )
     api_key: Optional[Tuple[str, str]] = Field(
         default=None,

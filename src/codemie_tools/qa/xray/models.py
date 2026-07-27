@@ -12,9 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Dict, Optional
+from typing import Any, ClassVar, Dict, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
-from codemie_tools.base.models import CodeMieToolConfig, CredentialTypes, RequiredField
+
+from codemie_tools.base.models import (
+    CodeMieToolConfig,
+    CredentialTypes,
+    RequiredField,
+    get_tool_default,
+)
 
 
 class XrayConfig(CodeMieToolConfig):
@@ -24,10 +30,14 @@ class XrayConfig(CodeMieToolConfig):
     manual and automated testing workflows with GraphQL API access.
     """
 
+    TOOL_NAME: ClassVar[str] = "xray"
+
     credential_type: CredentialTypes = Field(default=CredentialTypes.XRAY, exclude=True, frozen=True)
 
     base_url: str = RequiredField(
-        description="Xray Cloud base URL", json_schema_extra={"placeholder": "https://xray.cloud.getxray.app"}
+        default=get_tool_default(TOOL_NAME, "base_url") or "",
+        description="Xray Cloud base URL",
+        json_schema_extra={"placeholder": get_tool_default(TOOL_NAME, "base_url_placeholder") or ""},
     )
 
     client_id: str = RequiredField(

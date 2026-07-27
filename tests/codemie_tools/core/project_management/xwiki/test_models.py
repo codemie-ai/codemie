@@ -274,3 +274,39 @@ class TestSearchInputModels:
         assert m.number == 10
         assert m.start == 0
         assert m.is_markdown is False
+
+
+def test_xwiki_url_placeholder_default():
+    from codemie_tools.core.project_management.xwiki.models import XWikiConfig
+
+    schema = XWikiConfig.model_json_schema()
+    assert schema["properties"]["url"]["placeholder"] == "URL, e.g. https://wiki.example.com"
+
+
+def test_xwiki_url_default_url_override(monkeypatch):
+    from codemie.configs.customer_config import customer_config
+
+    monkeypatch.setattr(customer_config, "tool_defaults", {"xwiki": {"url": "https://wiki.company.com"}})
+    assert customer_config.get_tool_default("xwiki", "url") == "https://wiki.company.com"
+
+
+def test_xwiki_use_bearer_default_false():
+    from codemie_tools.core.project_management.xwiki.models import XWikiConfig
+
+    config = XWikiConfig()
+    assert config.use_bearer is False
+
+
+def test_xwiki_use_bearer_tool_default_override(monkeypatch):
+    from codemie.configs.customer_config import customer_config
+
+    monkeypatch.setattr(customer_config, "tool_defaults", {"xwiki": {"use_bearer": True}})
+    assert customer_config.get_tool_default("xwiki", "use_bearer") is True
+
+
+def test_url_default_wired_to_tool_default():
+    from codemie_tools.core.project_management.xwiki.models import XWikiConfig
+    from codemie.configs.customer_config import customer_config
+
+    expected = customer_config.get_tool_default(XWikiConfig.TOOL_NAME, "url") or ""
+    assert XWikiConfig.model_fields["url"].default == expected

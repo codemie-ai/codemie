@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-standard",
+  "slug": "epmcdme-10928-configurable-integration-url-defaults",
+  "branch": "EPMCDME-10928_configurable-integration-url-defaults",
+  "phase": "maintenance",
+  "started_at": "2026-07-17T00:00:00Z",
+  "completed_at": "2026-07-20T08:00:00Z",
+  "last_sync_commit": "d4de07580ed1b1bc3b103b8e85ccdc2021f422a6"
+}

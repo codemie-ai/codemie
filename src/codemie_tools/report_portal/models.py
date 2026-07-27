@@ -12,11 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import ClassVar, Optional
 
 from pydantic import BaseModel, Field
 
-from codemie_tools.base.models import CodeMieToolConfig, CredentialTypes, RequiredField
+from codemie_tools.base.models import (
+    CodeMieToolConfig,
+    CredentialTypes,
+    RequiredField,
+    get_tool_default,
+)
 
 PAGE_NUMBER_DESCRIPTION = "Number of page to retrieve. Pass if page.totalPages > 1"
 
@@ -24,10 +29,14 @@ PAGE_NUMBER_DESCRIPTION = "Number of page to retrieve. Pass if page.totalPages >
 class ReportPortalConfig(CodeMieToolConfig):
     """Configuration for Report Portal integration."""
 
+    TOOL_NAME: ClassVar[str] = "report_portal"
+
     credential_type: CredentialTypes = Field(default=CredentialTypes.REPORT_PORTAL, exclude=True, frozen=True)
 
     url: str = RequiredField(
-        description="Report Portal endpoint URL", json_schema_extra={"placeholder": "https://reportportal.example.com"}
+        default=get_tool_default(TOOL_NAME, "url") or "",
+        description="Report Portal endpoint URL",
+        json_schema_extra={"placeholder": get_tool_default(TOOL_NAME, "url_placeholder") or ""},
     )
     api_key: str = RequiredField(
         description="Report Portal API key for authentication",
