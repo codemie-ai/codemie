@@ -16,6 +16,15 @@ from __future__ import annotations
 
 from unittest.mock import Mock, patch
 
+import pytest
+
+from codemie.configs import config
+
+pytestmark = pytest.mark.skipif(
+    not config.WORKFLOW_GENERATION_ENABLED,
+    reason="WORKFLOW_GENERATION_ENABLED is False",
+)
+
 
 class TestWorkflowRefinerGraph:
     def test_instantiates_with_llm_model(self):

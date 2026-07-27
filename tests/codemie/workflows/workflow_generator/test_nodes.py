@@ -14,7 +14,9 @@
 
 from unittest.mock import Mock, patch
 
+import pytest
 
+from codemie.configs import config
 from codemie.workflows.workflow_generator.schemas import (
     GeneratedAssistant,
     GeneratedNextState,
@@ -27,6 +29,11 @@ from codemie.workflows.workflow_generator.schemas import (
     WorkflowStep,
 )
 from codemie.workflows.workflow_generator.state import WorkflowGeneratorState
+
+pytestmark = pytest.mark.skipif(
+    not config.WORKFLOW_GENERATION_ENABLED,
+    reason="WORKFLOW_GENERATION_ENABLED is False",
+)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

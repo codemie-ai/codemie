@@ -16,10 +16,16 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from codemie.configs import config
 from codemie.core.exceptions import WorkflowGenerationError
 from codemie.core.workflow_models.workflow_models import CreateWorkflowRequest, WorkflowMode
 from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
 from codemie.rest_api.security.user import User as _User
+
+pytestmark = pytest.mark.skipif(
+    not config.WORKFLOW_GENERATION_ENABLED,
+    reason="WORKFLOW_GENERATION_ENABLED is False",
+)
 
 
 def test_metric_constants_importable():

@@ -717,6 +717,7 @@ class Config(BaseSettings):
     CONVERSATION_ANALYSIS_BATCH_SIZE: int = 20  # Conversations per batch per pod
     CONVERSATION_ANALYSIS_MAX_RETRIES: int = 3  # Max retry attempts for failed analyses
     CONVERSATION_ANALYSIS_LLM_MODEL: str = "gemini-3-flash"
+    WORKFLOW_GENERATION_ENABLED: bool = False
     WORKFLOW_GENERATOR_LLM_MODEL: str = ""  # Workflow generator model; falls back to global default when empty
     CONVERSATION_ANALYSIS_PROJECTS_FILTER: list[str] = ["demo", "codemie", "epm-cdme"]  # Project filter
 

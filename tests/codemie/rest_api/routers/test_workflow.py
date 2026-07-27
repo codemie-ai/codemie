@@ -31,6 +31,7 @@ from codemie.core.workflow_models import (
     WorkflowMode,
 )
 
+from codemie.configs import config
 from codemie.rest_api.main import app
 from codemie.rest_api.models.workflow_generator import WorkflowRefineResponse
 from codemie.rest_api.security.user import User
@@ -916,6 +917,7 @@ async def test_evaluate_workflow_dataset_not_found(workflow_config, workflow_eva
 # ── EPMCDME-12616: refine and revert endpoints ──────────────────────────────────
 
 
+@pytest.mark.skipif(not config.WORKFLOW_GENERATION_ENABLED, reason="WORKFLOW_GENERATION_ENABLED is False")
 @pytest.mark.asyncio
 async def test_refine_workflow_success(workflow_config, request_header):
     refined_yaml = "name: refined-workflow\n"
@@ -942,6 +944,7 @@ async def test_refine_workflow_success(workflow_config, request_header):
         mock_refine.assert_called_once()
 
 
+@pytest.mark.skipif(not config.WORKFLOW_GENERATION_ENABLED, reason="WORKFLOW_GENERATION_ENABLED is False")
 @pytest.mark.asyncio
 async def test_refine_workflow_access_denied(workflow_config, request_header):
     with (
@@ -961,6 +964,7 @@ async def test_refine_workflow_access_denied(workflow_config, request_header):
         assert response.status_code == 401
 
 
+@pytest.mark.skipif(not config.WORKFLOW_GENERATION_ENABLED, reason="WORKFLOW_GENERATION_ENABLED is False")
 @pytest.mark.asyncio
 async def test_refine_workflow_not_found(request_header):
     with patch(

@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import pytest
+
+from codemie.configs import config
 from codemie.workflows.workflow_generator.schemas import (
     WorkflowStep,
     WorkflowIntent,
@@ -20,6 +23,11 @@ from codemie.workflows.workflow_generator.schemas import (
     GeneratedWorkflowConfig,
 )
 from codemie.workflows.workflow_generator.state import WorkflowGeneratorState
+
+pytestmark = pytest.mark.skipif(
+    not config.WORKFLOW_GENERATION_ENABLED,
+    reason="WORKFLOW_GENERATION_ENABLED is False",
+)
 
 
 def test_workflow_step_instantiation():

@@ -14,10 +14,17 @@
 
 from unittest.mock import Mock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
+from codemie.configs import config
 from codemie.core.workflow_models.workflow_models import CreateWorkflowRequest, WorkflowMode
 from codemie.rest_api.models.workflow_generator import WorkflowGeneratorResponse
+
+pytestmark = pytest.mark.skipif(
+    not config.WORKFLOW_GENERATION_ENABLED,
+    reason="WORKFLOW_GENERATION_ENABLED is False",
+)
 
 
 def _make_app():

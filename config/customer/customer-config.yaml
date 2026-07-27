@@ -190,6 +190,11 @@ components:
       enabled: false
       name: "Request Hedging"
       description: "Race a fast-path tool against the agent pipeline to reduce response latency"
+  - id: "features:workflowAI"
+    settings:
+      enabled: false
+      name: "Workflow AI Generation"
+      description: "Enable AI-powered workflow generation and refinement from natural language descriptions"
   - id: "features:interactiveElements"
     settings:
       enabled: true

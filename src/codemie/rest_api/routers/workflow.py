@@ -21,7 +21,7 @@ from codemie.rest_api.models.workflow_generator import WorkflowGeneratorRequest,
 from codemie.service.llm_service.utils import set_llm_context
 from codemie.service.workflow_generator_service import WorkflowGeneratorService
 
-from codemie.configs import logger
+from codemie.configs import config, logger
 from codemie.core.ability import Ability, Action
 from codemie.rest_api.models.assistant import MCPServerDetails
 from codemie.service.mcp.access_control import MCPAccessControlService
@@ -392,49 +392,6 @@ async def update_workflow(
         ) from e
 
 
-@router.post(
-    "/workflows/{workflow_id}/refine",
-    status_code=status.HTTP_200_OK,
-    response_model=WorkflowRefineResponse,
-)
-def refine_workflow(
-    workflow_id: str,
-    request: WorkflowRefineRequest,
-    raw_request: Request,
-    user: User = Depends(authenticate),
-):
-    from codemie.configs.logger import set_logging_info
-    from codemie.service.llm_service.utils import set_llm_context
-
-    try:
-        workflow = workflow_service.get_workflow(workflow_id)
-    except KeyError:
-        raise_not_found(resource_id=workflow_id, resource_type="Workflow")
-
-    if not Ability(user).can(Action.WRITE, workflow):
-        raise_access_denied("refine")
-
-    request_id = raw_request.state.uuid
-    set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
-    set_llm_context(None, user.current_project, user)
-
-    try:
-        return WorkflowGeneratorService.refine_workflow(
-            yaml_config=request.yaml_config,
-            refine_prompt=request.refine_prompt,
-            user=user,
-            llm_model=request.llm_model,
-            request_id=request_id,
-        )
-    except WorkflowGenerationError as exc:
-        raise ExtendedHTTPException(
-            code=500,
-            message=exc.message,
-            details=exc.details,
-            help=exc.help,
-        ) from exc
-
-
 @router.delete(
     "/workflows/{workflow_id}",
     status_code=status.HTTP_200_OK,
@@ -553,34 +510,78 @@ async def get_custom_node_schema(custom_node_id: str, user: User = Depends(authe
     return CustomNodeInfoService.get_node_schema(custom_node_id)
 
 
-@router.post(
-    "/workflows/generate",
-    status_code=status.HTTP_200_OK,
-    response_model=WorkflowGeneratorResponse,
-    response_model_exclude_none=True,
-)
-def generate_workflow(
-    raw_request: Request,
-    request: WorkflowGeneratorRequest,
-    user: User = Depends(authenticate),
-):
-    """Generate a workflow configuration from a natural language description."""
-    request_id = raw_request.state.uuid
-    set_llm_context(None, user.current_project, user)
+if config.WORKFLOW_GENERATION_ENABLED:
 
-    try:
-        return WorkflowGeneratorService.generate(
-            nl_query=request.text,
-            user=user,
-            llm_model=request.llm_model,
-            persist=request.persist,
-            guardrail_ids=request.guardrail_ids,
-            request_id=request_id,
-        )
-    except WorkflowGenerationError as exc:
-        raise ExtendedHTTPException(
-            code=500,
-            message=exc.message,
-            details=exc.details,
-            help=exc.help,
-        ) from exc
+    @router.post(
+        "/workflows/generate",
+        status_code=status.HTTP_200_OK,
+        response_model=WorkflowGeneratorResponse,
+        response_model_exclude_none=True,
+    )
+    def generate_workflow(
+        raw_request: Request,
+        request: WorkflowGeneratorRequest,
+        user: User = Depends(authenticate),
+    ):
+        """Generate a workflow configuration from a natural language description."""
+        request_id = raw_request.state.uuid
+        set_llm_context(None, user.current_project, user)
+
+        try:
+            return WorkflowGeneratorService.generate(
+                nl_query=request.text,
+                user=user,
+                llm_model=request.llm_model,
+                persist=request.persist,
+                guardrail_ids=request.guardrail_ids,
+                request_id=request_id,
+            )
+        except WorkflowGenerationError as exc:
+            raise ExtendedHTTPException(
+                code=500,
+                message=exc.message,
+                details=exc.details,
+                help=exc.help,
+            ) from exc
+
+    @router.post(
+        "/workflows/{workflow_id}/refine",
+        status_code=status.HTTP_200_OK,
+        response_model=WorkflowRefineResponse,
+    )
+    def refine_workflow(
+        workflow_id: str,
+        request: WorkflowRefineRequest,
+        raw_request: Request,
+        user: User = Depends(authenticate),
+    ):
+        from codemie.configs.logger import set_logging_info
+        from codemie.service.llm_service.utils import set_llm_context
+
+        try:
+            workflow = workflow_service.get_workflow(workflow_id)
+        except KeyError:
+            raise_not_found(resource_id=workflow_id, resource_type="Workflow")
+
+        if not Ability(user).can(Action.WRITE, workflow):
+            raise_access_denied("refine")
+
+        request_id = raw_request.state.uuid
+        set_logging_info(uuid=request_id, user_id=user.id, user_email=user.username)
+        set_llm_context(None, user.current_project, user)
+
+        try:
+            return WorkflowGeneratorService.refine_workflow(
+                yaml_config=request.yaml_config,
+                refine_prompt=request.refine_prompt,
+                user=user,
+                llm_model=request.llm_model,
+                request_id=request_id,
+            )
+        except WorkflowGenerationError as exc:
+            raise ExtendedHTTPException(
+                code=500,
+                message=exc.message,
+                details=exc.details,
+                help=exc.help,
+            ) from exc

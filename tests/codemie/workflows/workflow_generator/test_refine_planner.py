@@ -16,12 +16,20 @@ from __future__ import annotations
 
 from unittest.mock import Mock, patch
 
+import pytest
+
+from codemie.configs import config
 from codemie.workflows.workflow_generator import state_keys as sk
 from codemie.workflows.workflow_generator.schemas import (
     RefinePlan,
     StepPlan,
     WorkflowIntent,
     WorkflowStep,
+)
+
+pytestmark = pytest.mark.skipif(
+    not config.WORKFLOW_GENERATION_ENABLED,
+    reason="WORKFLOW_GENERATION_ENABLED is False",
 )
 
 _EXISTING_YAML = (

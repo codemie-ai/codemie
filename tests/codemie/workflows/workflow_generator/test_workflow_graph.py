@@ -14,6 +14,9 @@
 
 from unittest.mock import Mock, patch
 
+import pytest
+
+from codemie.configs import config
 from codemie.core.workflow_models.workflow_models import CreateWorkflowRequest
 from codemie.workflows.workflow_generator.schemas import (
     MappedNode,
@@ -23,6 +26,11 @@ from codemie.workflows.workflow_generator.schemas import (
     WorkflowStep,
 )
 from codemie.workflows.workflow_generator.state import WorkflowGeneratorState
+
+pytestmark = pytest.mark.skipif(
+    not config.WORKFLOW_GENERATION_ENABLED,
+    reason="WORKFLOW_GENERATION_ENABLED is False",
+)
 
 
 def _make_intent(*step_ids: str) -> WorkflowIntent:
