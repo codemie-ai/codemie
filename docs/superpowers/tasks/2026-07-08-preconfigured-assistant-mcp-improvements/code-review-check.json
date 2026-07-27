@@ -1,0 +1,51 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 resolved: both restricted-mode tests now configure the validate_fields / _validate_mcp_server_names mocks to return a non-blocking value ('' and None respectively), allowing execution to reach sanitize_for_save(), and each test asserts mock_sanitize.assert_called_once_with([_MCP_SERVER_A]) to confirm the call. This exactly matches the CR-001 recommendation. The fix-up diff is 4 lines of test-only additions — no production code, no new imports, no security surface change. No new high-risk issues identified; confirmation pass not dispatched.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "REQ-1.1: _validate_mcp_server_names() with `or []` guard for None mcp_servers", "status": "pass", "notes": "Method at assistant.py:961; (self.mcp_servers or []) guard present"},
+    {"kind": "spec", "item": "REQ-1.2: O(n^2) duplicate detection pattern", "status": "pass", "notes": "Exact {n for n in names if names.count(n) > 1} at assistant.py:963"},
+    {"kind": "spec", "item": "REQ-1.3: Error message: 'Duplicate MCP server names detected: ...'", "status": "pass", "notes": "Exact string at assistant.py:964"},
+    {"kind": "spec", "item": "REQ-1.4: Registered in validate_fields() alongside existing validations", "status": "pass", "notes": "Inserted at assistant.py:914-916"},
+    {"kind": "spec", "item": "REQ-2.1: Create path calls validate_fields() before sanitize_for_save() (fail-fast)", "status": "pass", "notes": "Correct order in preconfigured_assistants.py:220-224; safe on create path since existing_assistant=None means no ES hit for _check_slug_uniqueness"},
+    {"kind": "spec", "item": "REQ-2.2: validated_mcp_servers local variable; no template cache mutation", "status": "pass", "notes": "Local variable used throughout; assistant_template.mcp_servers not reassigned"},
+    {"kind": "spec", "item": "REQ-2.3: Update path calls _validate_mcp_server_names() not validate_fields()", "status": "pass", "notes": "preconfigured_assistants.py:144 — avoids false slug-conflict on id=None templates"},
+    {"kind": "spec", "item": "REQ-2.4: validated_mcp_servers used in fields_to_check, new_ids, everywhere", "status": "pass", "notes": "fields_to_check and new_ids both reference validated_mcp_servers"},
+    {"kind": "spec", "item": "REQ-2.5: ValidationException propagates (fail-fast on both paths)", "status": "pass", "notes": "No try/except wraps the raise ValidationException calls"},
+    {"kind": "spec", "item": "REQ-2.6: sanitize_for_save() raises ValidationException in restricted mode — must not be caught", "status": "pass", "notes": "Production code correct; restricted-mode tests now verify sanitize_for_save() is reached and called — CR-001 resolved"},
+    {"kind": "spec", "item": "REQ-3.1: config_ids from validated_mcp_servers on create", "status": "pass", "notes": "preconfigured_assistants.py:252"},
+    {"kind": "spec", "item": "REQ-3.2: adjust_usage(increments=config_ids, decrements=set()) after save() on create", "status": "pass", "notes": "Called after preconfigured_assistant.save(refresh=True)"},
+    {"kind": "spec", "item": "REQ-3.3: old_ids captured from existing_assistant BEFORE setattr loop", "status": "pass", "notes": "Captured inside `if updates:` before `for field, value in updates.items()` loop"},
+    {"kind": "spec", "item": "REQ-3.4: adjust_usage(increments=new-old, decrements=old-new) after save() on update", "status": "pass", "notes": "After existing_assistant.save(); correct set-difference deltas"},
+    {"kind": "spec", "item": "REQ-3.5: adjust_usage failure logs warning and continues", "status": "pass", "notes": "try/except with logger.warning on both paths"},
+    {"kind": "spec", "item": "REQ-3.6: adjust_usage NOT called if save() raises (TOCTOU ordering invariant)", "status": "pass", "notes": "adjust_usage only reachable after save() returns normally; save() exception propagates before adjust_usage"},
+    {"kind": "story-ac", "item": "AC-1: Create/update with multiple MCP servers with distinct labels", "status": "pass", "notes": "_validate_mcp_server_names() enforced on both create and update paths"},
+    {"kind": "story-ac", "item": "AC-2: Uniqueness and validity of all MCP plugin labels and endpoints", "status": "pass", "notes": "_validate_mcp_server_names() + sanitize_for_save() wired on both paths"},
+    {"kind": "story-ac", "item": "AC-3: No duplicate plugin IDs; configuration accurately reflected", "status": "pass", "notes": "sanitize_for_save() handles mcp_config_id deduplication (pre-existing service); wiring is correct per spec"},
+    {"kind": "story-ac", "item": "AC-4: Errors surfaced with clear, specific messages", "status": "pass", "notes": "ValidationException messages clear in production; restricted-mode test coverage now verified (CR-001 resolved)"},
+    {"kind": "story-ac", "item": "AC-5: Automated tests for multi-MCP scenarios (>2)", "status": "pass", "notes": "test_create_with_n_mcp_servers_saves_and_tracks and test_update_with_n_new_mcp_servers_delta_tracked both parametrized [1,2,3,4]"},
+    {"kind": "story-ac", "item": "AC-6: No regressions for 1-MCP or 2-MCP use cases", "status": "pass", "notes": "Parametrized tests cover server_count=1 and server_count=2 on both create and update paths"}
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All implementation commits follow EPMCDME-8996: Description format; merge commits are standard and non-blocking"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "New _validate_mcp_server_names() uses Optional[str] annotation consistent with the surrounding assistant.py file conventions; Ruff gate would flag if configured differently"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No new auth, secrets, injection, or unsafe I/O introduced; sanitize_for_save() delegation is the correct security boundary for restricted-mode enforcement"
+    }
+  ],
+  "findings": [],
+  "finding_status": {
+    "CR-001": "resolved"
+  }
+}

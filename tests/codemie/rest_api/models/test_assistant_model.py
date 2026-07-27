@@ -913,6 +913,21 @@ class TestCheckSlugUniqueness:
 
         assert assistant._check_slug_uniqueness() == ""
 
+    @patch.object(Assistant, 'get_by_fields')
+    def test_returns_conflict_when_self_id_is_none(self, mock_get_by_fields):
+        # Template objects (YAML-loaded) always have id=None.
+        # _check_slug_uniqueness cannot distinguish "same record update" from "conflict"
+        # when self.id is None — it always returns a conflict for any ES hit.
+        # Fix: callers must not invoke validate_fields() on template objects.
+        existing = self._make_assistant(slug="my-slug", assistant_id="existing-uuid")
+        mock_get_by_fields.return_value = existing
+        template = self._make_assistant(slug="my-slug", assistant_id=None)
+
+        error = template._check_slug_uniqueness()
+
+        assert error
+        assert "my-slug" in error
+
 
 class TestAssistantListResponse:
     """Tests for AssistantListResponse model to ensure it includes required fields for minimal response."""
@@ -966,3 +981,71 @@ class TestAssistantListResponse:
         data = response.model_dump()
         assert 'shared' in data
         assert data['shared'] is False
+
+
+class TestAssistantValidateMCPServerNames:
+    def _make_assistant(self, mcp_servers=None):
+        return Assistant(
+            name="Test",
+            description="Desc",
+            system_prompt="Prompt",
+            project="demo",
+            mcp_servers=mcp_servers or [],
+        )
+
+    def test_no_mcp_servers_no_error(self):
+        a = self._make_assistant()
+        assert a._validate_mcp_server_names() is None
+
+    def test_one_mcp_server_no_error(self):
+        a = self._make_assistant([MCPServerDetails(name="server-a", command="uvx", arguments="--help")])
+        assert a._validate_mcp_server_names() is None
+
+    def test_two_distinct_names_no_error(self):
+        a = self._make_assistant(
+            [
+                MCPServerDetails(name="server-a", command="uvx", arguments="--help"),
+                MCPServerDetails(name="server-b", command="uvx", arguments="--help"),
+            ]
+        )
+        assert a._validate_mcp_server_names() is None
+
+    def test_duplicate_names_returns_error(self):
+        a = self._make_assistant(
+            [
+                MCPServerDetails(name="server-a", command="uvx", arguments="--help"),
+                MCPServerDetails(name="server-a", command="uvx", arguments="--other"),
+            ]
+        )
+        result = a._validate_mcp_server_names()
+        assert result is not None
+        assert "Duplicate MCP server names" in result
+        assert "server-a" in result
+
+    def test_three_servers_one_duplicate_returns_error(self):
+        a = self._make_assistant(
+            [
+                MCPServerDetails(name="server-a", command="uvx", arguments="--help"),
+                MCPServerDetails(name="server-b", command="uvx", arguments="--help"),
+                MCPServerDetails(name="server-a", command="uvx", arguments="--other"),
+            ]
+        )
+        result = a._validate_mcp_server_names()
+        assert result is not None
+        assert "server-a" in result
+
+    def test_validate_fields_propagates_mcp_names_error(self):
+        a = self._make_assistant(
+            [
+                MCPServerDetails(name="dup", command="uvx", arguments="--help"),
+                MCPServerDetails(name="dup", command="uvx", arguments="--other"),
+            ]
+        )
+        with (
+            patch.object(a, '_check_slug_uniqueness', return_value=None),
+            patch.object(a, '_check_categories', return_value=None),
+            patch.object(a, '_validate_assistant_ids', return_value=None),
+            patch.object(a, '_validate_prompt_variables', return_value=None),
+        ):
+            result = a.validate_fields()
+        assert "Duplicate MCP server names" in result

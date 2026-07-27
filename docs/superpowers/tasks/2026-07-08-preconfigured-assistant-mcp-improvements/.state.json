@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-standard",
+  "slug": "preconfigured-assistant-mcp-improvements",
+  "branch": "EPMCDME-8996_mcp-assistant-creation-update-improvements",
+  "phase": "main",
+  "started_at": "2026-07-08T00:00:00Z",
+  "completed_at": null,
+  "last_sync_commit": null
+}

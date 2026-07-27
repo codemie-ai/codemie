@@ -14,6 +14,7 @@
 
 from typing import Dict
 
+from codemie.core.exceptions import ValidationException
 from codemie.rest_api.models.assistant import Assistant, Context
 from codemie.configs import logger
 from codemie.configs.customer_config import customer_config
@@ -23,6 +24,8 @@ from codemie.rest_api.models.index import IndexInfo
 from codemie.service.assistant.assistant_service import assistant_service
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.guardrail.guardrail_service import GuardrailService
+from codemie.service.mcp.access_control import MCPAccessControlService
+from codemie.service.mcp_config_service import MCPConfigService
 from external.deployment_scripts.index_util import create_index_from_dump
 
 
@@ -138,6 +141,12 @@ def get_all_contexts(assistant_slug: str, assistant_template: Assistant) -> list
 def update_assistant_content(
     existing_assistant: Assistant, assistant_template: Assistant, context: list[Context] | None = None
 ):
+    validated_mcp_servers = assistant_template.mcp_servers
+    if assistant_template.mcp_servers:
+        if error := assistant_template._validate_mcp_server_names():
+            raise ValidationException(f"MCP validation failed for template '{existing_assistant.slug}': {error}")
+        validated_mcp_servers = MCPAccessControlService.sanitize_for_save(assistant_template.mcp_servers)
+
     fields_to_check = {
         'description': assistant_template.description,
         'system_prompt': assistant_template.system_prompt,
@@ -146,7 +155,7 @@ def update_assistant_content(
         'icon_url': assistant_template.icon_url,
         'llm_model_type': llm_service.default_llm_model,
         'categories': assistant_template.categories,
-        'mcp_servers': assistant_template.mcp_servers,
+        'mcp_servers': validated_mcp_servers,
     }
 
     updates = {
@@ -159,12 +168,23 @@ def update_assistant_content(
         updates['context'] = context
 
     if updates:
+        if 'mcp_servers' in updates:
+            old_ids = {s.mcp_config_id for s in (existing_assistant.mcp_servers or []) if s.enabled and s.mcp_config_id}
+            new_ids = {s.mcp_config_id for s in (validated_mcp_servers or []) if s.enabled and s.mcp_config_id}
+
         for field, value in updates.items():
             logger.info(f"Updating {field} for assistant '{existing_assistant.slug}'")
             setattr(existing_assistant, field, value)
 
         existing_assistant.save()
         logger.info(f"Assistant '{existing_assistant.slug}' updated successfully.")
+
+        if 'mcp_servers' in updates:
+            try:
+                MCPConfigService.adjust_usage(increments=new_ids - old_ids, decrements=old_ids - new_ids)
+            except Exception as e:
+                logger.warning(f"Failed to track MCP usage changes for '{existing_assistant.slug}': {e}", exc_info=True)
+
         return True
 
     return False
@@ -193,8 +213,15 @@ def create_preconfigured_assistant(assistant_slug: str, project_name: str = CODE
     if existing_assistant:
         logger.info(f"Assistant '{assistant_slug}' already exists.")
         preconfigured_assistant_ids[assistant_slug] = existing_assistant.id
+        # update_assistant_content handles MCP validation internally
         update_assistant_content(existing_assistant, assistant_template, all_contexts)
         return
+
+    validated_mcp_servers = assistant_template.mcp_servers
+    if assistant_template.mcp_servers:
+        if error := assistant_template.validate_fields():
+            raise ValidationException(f"MCP validation failed for template '{assistant_slug}': {error}")
+        validated_mcp_servers = MCPAccessControlService.sanitize_for_save(assistant_template.mcp_servers)
 
     # Create the new preconfigured assistant using details from assistant template
     preconfigured_assistant = Assistant(
@@ -213,10 +240,17 @@ def create_preconfigured_assistant(assistant_slug: str, project_name: str = CODE
         shared=assistant_template.shared,
         temperature=assistant_template.temperature,
         categories=assistant_template.categories,
-        mcp_servers=assistant_template.mcp_servers,
+        mcp_servers=validated_mcp_servers,
     )
 
     # Save the new assistant
     preconfigured_assistant.save(refresh=True)
     preconfigured_assistant_ids[assistant_slug] = preconfigured_assistant.id
     logger.info(f"Assistant '{assistant_slug}' created successfully.")
+
+    if validated_mcp_servers:
+        config_ids = {s.mcp_config_id for s in validated_mcp_servers if s.enabled and s.mcp_config_id}
+        try:
+            MCPConfigService.adjust_usage(increments=config_ids, decrements=set())
+        except Exception as e:
+            logger.warning(f"Failed to track MCP usage on create for '{assistant_slug}': {e}", exc_info=True)

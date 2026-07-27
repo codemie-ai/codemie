@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "task": "Add MCP plugin label uniqueness validation, endpoint validation, and multi-MCP test coverage to the preconfigured_assistant creation and update flows.",
+  "generated": "2026-07-08T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 14,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Three components touched across two layers: preconfigured_assistants.py (deployment script — two functions modified), AssistantBase.validate_fields() in assistant.py (shared model validation method used on every assistant save path), and the corresponding test file for the deployment script. AssistantBase.validate_fields() is a core shared utility that triggers the red-flag bump from M to L."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Acceptance criteria are concrete (name uniqueness, endpoint validation, >2 MCP test coverage, no regressions), but one behavioral design decision is explicitly open: whether sanitize_for_save() should raise a hard error or emit a warning when called from the deployment script in restricted mode with inline-config templates (affects aws_waf_template.yaml in restricted-mode deployments). This must be decided before implementation to avoid unintended startup failures."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M (3) to L (4): AssistantBase.validate_fields() is a shared utility invoked on every assistant creation and update path across the codebase — adding _validate_mcp_server_names() touches a core shared utility."
+  ],
+  "split_recommendation": null
+}

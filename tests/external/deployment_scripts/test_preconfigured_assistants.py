@@ -14,7 +14,8 @@
 
 import pytest
 from unittest.mock import ANY, patch, MagicMock, call
-from codemie.rest_api.models.assistant import Assistant, Context
+from codemie.core.exceptions import ValidationException
+from codemie.rest_api.models.assistant import Assistant, Context, MCPServerDetails
 from codemie.rest_api.models.index import IndexInfo
 from codemie.service.llm_service.llm_service import LLMService
 from external.deployment_scripts.preconfigured_assistants import (
@@ -345,6 +346,45 @@ def test_update_assistant_content_icon_url(mock_logger, mock_assistant, mock_ass
     mock_logger.info.assert_any_call(f"Assistant '{mock_assistant.slug}' updated successfully.")
 
 
+# ---------------------------------------------------------------------------
+# CR-002 regression: template id=None must not raise slug-conflict
+# ---------------------------------------------------------------------------
+
+
+@patch('codemie.rest_api.models.assistant.Assistant.get_by_fields')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+@patch('external.deployment_scripts.preconfigured_assistants.llm_service')
+def test_update_assistant_content_mcp_template_id_none_does_not_raise(
+    mock_llm_service,
+    mock_sanitize,
+    mock_get_by_fields,
+    mock_assistant,
+):
+    """CR-002: update path must not raise slug-conflict when template.id is None."""
+    mock_llm_service.default_llm_model = LLMService.BASE_NAME_GPT_41
+
+    template = Assistant(
+        name="Codemie Onboarding",
+        slug="codemie-onboarding",
+        project="codemie",
+        description="desc",
+        system_prompt="prompt",
+        mcp_servers=[_MCP_SERVER_A],
+    )
+    assert template.id is None
+
+    # Simulate persisted record in ES — before fix this triggers slug-conflict
+    persisted = MagicMock()
+    persisted.id = "some-real-uuid"
+    mock_get_by_fields.return_value = persisted
+    mock_sanitize.return_value = [_MCP_SERVER_A]
+    mock_assistant.mcp_servers = []  # differs from template → triggers update
+
+    update_assistant_content(mock_assistant, template)
+
+    mock_assistant.save.assert_called_once()
+
+
 @patch('external.deployment_scripts.preconfigured_assistants.customer_config')
 @patch('external.deployment_scripts.preconfigured_assistants.assistant_service')
 @patch('external.deployment_scripts.preconfigured_assistants.create_preconfigured_assistant')
@@ -434,4 +474,425 @@ def test_delete_disabled_assistant_not_exists(mock_logger, mock_get_by_fields):
 
     # Verify
     assert result is False
-    mock_get_by_fields.assert_called_once_with({"slug.keyword": "test-assistant"})
+
+
+# ---------------------------------------------------------------------------
+# task-2: sanitize_for_save + validate_fields wired into create path
+# ---------------------------------------------------------------------------
+
+_MCP_SERVER_A = MCPServerDetails(name="server-a", command="uvx", arguments="--help")
+_MCP_SERVER_B = MCPServerDetails(name="server-b", command="uvx", arguments="--other")
+_MCP_SERVER_C = MCPServerDetails(name="server-c", command="uvx", arguments="--third")
+
+
+@patch('codemie.rest_api.models.assistant.Assistant.get_by_fields')
+@patch('external.deployment_scripts.preconfigured_assistants.assistant_service.get_assistant_template_by_slug')
+@patch('external.deployment_scripts.preconfigured_assistants.get_all_contexts')
+@patch('codemie.rest_api.models.assistant.Assistant.save')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+@patch('external.deployment_scripts.preconfigured_assistants.llm_service')
+def test_create_new_with_one_mcp_server_calls_sanitize(
+    mock_llm_service,
+    mock_sanitize,
+    mock_save,
+    mock_get_all_contexts,
+    mock_get_template,
+    mock_get_by_fields,
+    mock_context,
+    mock_assistant_template,
+):
+    mock_llm_service.default_llm_model = LLMService.BASE_NAME_GPT_41
+    mock_get_by_fields.return_value = None
+    mock_assistant_template.mcp_servers = [_MCP_SERVER_A]
+    mock_assistant_template.validate_fields.return_value = ""
+    mock_sanitize.return_value = [_MCP_SERVER_A]
+    mock_get_template.return_value = mock_assistant_template
+    mock_get_all_contexts.return_value = [mock_context]
+
+    create_preconfigured_assistant("test-slug")
+
+    mock_sanitize.assert_called_once_with([_MCP_SERVER_A])
+    mock_save.assert_called_once()
+
+
+@patch('codemie.rest_api.models.assistant.Assistant.get_by_fields')
+@patch('external.deployment_scripts.preconfigured_assistants.assistant_service.get_assistant_template_by_slug')
+@patch('external.deployment_scripts.preconfigured_assistants.get_all_contexts')
+@patch('codemie.rest_api.models.assistant.Assistant.save')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+@patch('external.deployment_scripts.preconfigured_assistants.llm_service')
+def test_create_new_with_three_mcp_servers_all_propagated(
+    mock_llm_service,
+    mock_sanitize,
+    mock_save,
+    mock_get_all_contexts,
+    mock_get_template,
+    mock_get_by_fields,
+    mock_context,
+    mock_assistant_template,
+):
+    mock_llm_service.default_llm_model = LLMService.BASE_NAME_GPT_41
+    mock_get_by_fields.return_value = None
+    three_servers = [_MCP_SERVER_A, _MCP_SERVER_B, _MCP_SERVER_C]
+    mock_assistant_template.mcp_servers = three_servers
+    mock_assistant_template.validate_fields.return_value = ""
+    mock_sanitize.return_value = three_servers
+    mock_get_template.return_value = mock_assistant_template
+    mock_get_all_contexts.return_value = [mock_context]
+
+    create_preconfigured_assistant("test-slug")
+
+    mock_sanitize.assert_called_once_with(three_servers)
+    mock_save.assert_called_once()
+
+
+@patch('codemie.rest_api.models.assistant.Assistant.get_by_fields')
+@patch('external.deployment_scripts.preconfigured_assistants.assistant_service.get_assistant_template_by_slug')
+@patch('external.deployment_scripts.preconfigured_assistants.get_all_contexts')
+@patch('codemie.rest_api.models.assistant.Assistant.save')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+@patch('external.deployment_scripts.preconfigured_assistants.llm_service')
+def test_create_new_with_duplicate_mcp_names_raises(
+    mock_llm_service,
+    mock_sanitize,
+    mock_save,
+    mock_get_all_contexts,
+    mock_get_template,
+    mock_get_by_fields,
+    mock_context,
+    mock_assistant_template,
+):
+    mock_llm_service.default_llm_model = LLMService.BASE_NAME_GPT_41
+    mock_get_by_fields.return_value = None
+    dup_servers = [_MCP_SERVER_A, MCPServerDetails(name="server-a", command="uvx", arguments="--other")]
+    mock_assistant_template.mcp_servers = dup_servers
+    mock_sanitize.return_value = dup_servers
+    mock_assistant_template.validate_fields.return_value = "Duplicate MCP server names detected: server-a"
+    mock_get_template.return_value = mock_assistant_template
+    mock_get_all_contexts.return_value = [mock_context]
+
+    with pytest.raises(ValidationException):
+        create_preconfigured_assistant("test-slug")
+
+    mock_save.assert_not_called()
+
+
+@patch('codemie.rest_api.models.assistant.Assistant.get_by_fields')
+@patch('external.deployment_scripts.preconfigured_assistants.assistant_service.get_assistant_template_by_slug')
+@patch('external.deployment_scripts.preconfigured_assistants.get_all_contexts')
+@patch('codemie.rest_api.models.assistant.Assistant.save')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+@patch('external.deployment_scripts.preconfigured_assistants.llm_service')
+def test_create_new_restricted_mode_inline_servers_raises(
+    mock_llm_service,
+    mock_sanitize,
+    mock_save,
+    mock_get_all_contexts,
+    mock_get_template,
+    mock_get_by_fields,
+    mock_context,
+    mock_assistant_template,
+):
+    mock_llm_service.default_llm_model = LLMService.BASE_NAME_GPT_41
+    mock_get_by_fields.return_value = None
+    mock_assistant_template.mcp_servers = [_MCP_SERVER_A]
+    mock_assistant_template.validate_fields.return_value = ""
+    mock_sanitize.side_effect = ValidationException("MCP server 'server-a' requires mcp_config_id in restricted mode")
+    mock_get_template.return_value = mock_assistant_template
+    mock_get_all_contexts.return_value = [mock_context]
+
+    with pytest.raises(ValidationException):
+        create_preconfigured_assistant("test-slug")
+
+    mock_save.assert_not_called()
+    mock_sanitize.assert_called_once_with([_MCP_SERVER_A])
+    mock_get_by_fields.assert_called_once_with({"slug.keyword": "test-slug"})
+
+
+# ---------------------------------------------------------------------------
+# task-3: sanitize_for_save + validate_fields wired into update path
+# ---------------------------------------------------------------------------
+
+
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+def test_update_with_one_mcp_server_calls_sanitize(
+    mock_sanitize,
+    mock_assistant_template,
+    mock_context,
+):
+    mock_sanitize.return_value = [_MCP_SERVER_A]
+    mock_assistant_template.mcp_servers = [_MCP_SERVER_A]
+    mock_assistant_template._validate_mcp_server_names.return_value = None
+
+    existing = MagicMock(spec=Assistant)
+    existing.description = mock_assistant_template.description
+    existing.system_prompt = mock_assistant_template.system_prompt
+    existing.conversation_starters = mock_assistant_template.conversation_starters
+    existing.toolkits = mock_assistant_template.toolkits
+    existing.icon_url = mock_assistant_template.icon_url
+    existing.llm_model_type = mock_assistant_template.llm_model_type
+    existing.categories = mock_assistant_template.categories
+    existing.mcp_servers = []  # force a diff so save is called
+    existing.context = None
+
+    with patch('external.deployment_scripts.preconfigured_assistants.llm_service') as mock_llm:
+        mock_llm.default_llm_model = LLMService.BASE_NAME_GPT_41
+        update_assistant_content(existing, mock_assistant_template)
+
+    mock_sanitize.assert_called_once_with([_MCP_SERVER_A])
+
+
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+def test_update_with_duplicate_mcp_names_raises(
+    mock_sanitize,
+    mock_assistant_template,
+    mock_context,
+):
+    dup_servers = [_MCP_SERVER_A, MCPServerDetails(name="server-a", command="uvx", arguments="--other")]
+    mock_sanitize.return_value = dup_servers
+    mock_assistant_template.mcp_servers = dup_servers
+    mock_assistant_template._validate_mcp_server_names.return_value = "Duplicate MCP server names detected: server-a"
+
+    existing = MagicMock(spec=Assistant)
+    existing.slug = "test-slug"
+
+    with pytest.raises(ValidationException):
+        update_assistant_content(existing, mock_assistant_template)
+
+
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+def test_update_restricted_mode_inline_servers_raises(
+    mock_sanitize,
+    mock_assistant_template,
+    mock_context,
+):
+    mock_assistant_template.mcp_servers = [_MCP_SERVER_A]
+    mock_assistant_template._validate_mcp_server_names.return_value = None
+    mock_sanitize.side_effect = ValidationException("MCP server 'server-a' requires mcp_config_id in restricted mode")
+
+    existing = MagicMock(spec=Assistant)
+    existing.slug = "test-slug"
+
+    with pytest.raises(ValidationException):
+        update_assistant_content(existing, mock_assistant_template)
+
+    mock_sanitize.assert_called_once_with([_MCP_SERVER_A])
+
+
+# ---------------------------------------------------------------------------
+# task-4: MCPConfigService.adjust_usage wired into create and update paths
+# ---------------------------------------------------------------------------
+
+_MCP_CATALOG_A = MCPServerDetails(name="catalog-a", mcp_config_id="cfg-111", enabled=True)
+_MCP_CATALOG_B = MCPServerDetails(name="catalog-b", mcp_config_id="cfg-222", enabled=True)
+_MCP_CATALOG_DISABLED = MCPServerDetails(name="catalog-disabled", mcp_config_id="cfg-333", enabled=False)
+
+
+@patch('codemie.rest_api.models.assistant.Assistant.get_by_fields')
+@patch('external.deployment_scripts.preconfigured_assistants.assistant_service.get_assistant_template_by_slug')
+@patch('external.deployment_scripts.preconfigured_assistants.get_all_contexts')
+@patch('codemie.rest_api.models.assistant.Assistant.save')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPConfigService.adjust_usage')
+@patch('external.deployment_scripts.preconfigured_assistants.llm_service')
+def test_create_new_with_catalog_servers_increments_usage(
+    mock_llm_service,
+    mock_adjust_usage,
+    mock_sanitize,
+    mock_save,
+    mock_get_all_contexts,
+    mock_get_template,
+    mock_get_by_fields,
+    mock_context,
+    mock_assistant_template,
+):
+    mock_llm_service.default_llm_model = LLMService.BASE_NAME_GPT_41
+    mock_get_by_fields.return_value = None
+    catalog_servers = [_MCP_CATALOG_A, _MCP_CATALOG_B, _MCP_CATALOG_DISABLED]
+    mock_assistant_template.mcp_servers = catalog_servers
+    mock_assistant_template.validate_fields.return_value = ""
+    mock_sanitize.return_value = catalog_servers
+    mock_get_template.return_value = mock_assistant_template
+    mock_get_all_contexts.return_value = [mock_context]
+
+    create_preconfigured_assistant("test-slug")
+
+    mock_adjust_usage.assert_called_once_with(increments={"cfg-111", "cfg-222"}, decrements=set())
+
+
+@patch('codemie.rest_api.models.assistant.Assistant.get_by_fields')
+@patch('external.deployment_scripts.preconfigured_assistants.assistant_service.get_assistant_template_by_slug')
+@patch('external.deployment_scripts.preconfigured_assistants.get_all_contexts')
+@patch('codemie.rest_api.models.assistant.Assistant.save')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPConfigService.adjust_usage')
+@patch('external.deployment_scripts.preconfigured_assistants.llm_service')
+def test_create_new_adjust_usage_failure_warns_and_continues(
+    mock_llm_service,
+    mock_adjust_usage,
+    mock_sanitize,
+    mock_save,
+    mock_get_all_contexts,
+    mock_get_template,
+    mock_get_by_fields,
+    mock_context,
+    mock_assistant_template,
+):
+    mock_llm_service.default_llm_model = LLMService.BASE_NAME_GPT_41
+    mock_get_by_fields.return_value = None
+    mock_assistant_template.mcp_servers = [_MCP_CATALOG_A]
+    mock_assistant_template.validate_fields.return_value = ""
+    mock_sanitize.return_value = [_MCP_CATALOG_A]
+    mock_adjust_usage.side_effect = Exception("DB unavailable")
+    mock_get_template.return_value = mock_assistant_template
+    mock_get_all_contexts.return_value = [mock_context]
+
+    # Should not raise — warn and continue
+    create_preconfigured_assistant("test-slug")
+
+    mock_save.assert_called_once()
+
+
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPConfigService.adjust_usage')
+def test_update_with_catalog_servers_delta_adjust_usage(
+    mock_adjust_usage,
+    mock_sanitize,
+    mock_assistant_template,
+    mock_context,
+):
+    new_servers = [_MCP_CATALOG_A, _MCP_CATALOG_B]
+    mock_sanitize.return_value = new_servers
+    mock_assistant_template.mcp_servers = new_servers
+    mock_assistant_template._validate_mcp_server_names.return_value = None
+
+    existing = MagicMock(spec=Assistant)
+    existing.slug = "test-slug"
+    existing.description = mock_assistant_template.description
+    existing.system_prompt = mock_assistant_template.system_prompt
+    existing.conversation_starters = mock_assistant_template.conversation_starters
+    existing.toolkits = mock_assistant_template.toolkits
+    existing.icon_url = mock_assistant_template.icon_url
+    existing.llm_model_type = mock_assistant_template.llm_model_type
+    existing.categories = mock_assistant_template.categories
+    existing.mcp_servers = [_MCP_CATALOG_A]  # A already present; B is new
+    existing.context = None
+
+    with patch('external.deployment_scripts.preconfigured_assistants.llm_service') as mock_llm:
+        mock_llm.default_llm_model = LLMService.BASE_NAME_GPT_41
+        update_assistant_content(existing, mock_assistant_template)
+
+    mock_adjust_usage.assert_called_once_with(increments={"cfg-222"}, decrements=set())
+
+
+# ---------------------------------------------------------------------------
+# task-5: multi-MCP scenario regression tests (1, 2, >2 servers)
+# ---------------------------------------------------------------------------
+
+
+def _make_catalog_server(name: str, config_id: str, enabled: bool = True) -> MCPServerDetails:
+    return MCPServerDetails(name=name, mcp_config_id=config_id, enabled=enabled)
+
+
+@pytest.mark.parametrize("server_count", [1, 2, 3, 4])
+@patch('codemie.rest_api.models.assistant.Assistant.get_by_fields')
+@patch('external.deployment_scripts.preconfigured_assistants.assistant_service.get_assistant_template_by_slug')
+@patch('external.deployment_scripts.preconfigured_assistants.get_all_contexts')
+@patch('codemie.rest_api.models.assistant.Assistant.save')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPConfigService.adjust_usage')
+@patch('external.deployment_scripts.preconfigured_assistants.llm_service')
+def test_create_with_n_mcp_servers_saves_and_tracks(
+    mock_llm_service,
+    mock_adjust_usage,
+    mock_sanitize,
+    mock_save,
+    mock_get_all_contexts,
+    mock_get_template,
+    mock_get_by_fields,
+    server_count,
+    mock_context,
+    mock_assistant_template,
+):
+    mock_llm_service.default_llm_model = LLMService.BASE_NAME_GPT_41
+    mock_get_by_fields.return_value = None
+    servers = [_make_catalog_server(f"srv-{i}", f"cfg-{i:03d}") for i in range(server_count)]
+    mock_assistant_template.mcp_servers = servers
+    mock_assistant_template.validate_fields.return_value = ""
+    mock_sanitize.return_value = servers
+    mock_get_template.return_value = mock_assistant_template
+    mock_get_all_contexts.return_value = [mock_context]
+
+    create_preconfigured_assistant("test-slug")
+
+    mock_save.assert_called_once()
+    expected_ids = {f"cfg-{i:03d}" for i in range(server_count)}
+    mock_adjust_usage.assert_called_once_with(increments=expected_ids, decrements=set())
+
+
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPConfigService.adjust_usage')
+def test_update_save_failure_does_not_call_adjust_usage(
+    mock_adjust_usage,
+    mock_sanitize,
+    mock_assistant_template,
+):
+    new_servers = [_MCP_CATALOG_A, _MCP_CATALOG_B]
+    mock_sanitize.return_value = new_servers
+    mock_assistant_template.mcp_servers = new_servers
+    mock_assistant_template._validate_mcp_server_names.return_value = None
+
+    existing = MagicMock(spec=Assistant)
+    existing.slug = "test-slug"
+    existing.description = mock_assistant_template.description
+    existing.system_prompt = mock_assistant_template.system_prompt
+    existing.conversation_starters = mock_assistant_template.conversation_starters
+    existing.toolkits = mock_assistant_template.toolkits
+    existing.icon_url = mock_assistant_template.icon_url
+    existing.llm_model_type = mock_assistant_template.llm_model_type
+    existing.categories = mock_assistant_template.categories
+    existing.mcp_servers = [_MCP_CATALOG_A]
+    existing.context = None
+    existing.save.side_effect = Exception("ES write failed")
+
+    with patch('external.deployment_scripts.preconfigured_assistants.llm_service') as mock_llm:
+        mock_llm.default_llm_model = LLMService.BASE_NAME_GPT_41
+        with pytest.raises(Exception, match="ES write failed"):
+            update_assistant_content(existing, mock_assistant_template)
+
+    mock_adjust_usage.assert_not_called()
+
+
+@pytest.mark.parametrize("server_count", [1, 2, 3, 4])
+@patch('external.deployment_scripts.preconfigured_assistants.MCPAccessControlService.sanitize_for_save')
+@patch('external.deployment_scripts.preconfigured_assistants.MCPConfigService.adjust_usage')
+def test_update_with_n_new_mcp_servers_delta_tracked(
+    mock_adjust_usage,
+    mock_sanitize,
+    server_count,
+    mock_context,
+    mock_assistant_template,
+):
+    new_servers = [_make_catalog_server(f"srv-{i}", f"cfg-{i:03d}") for i in range(server_count)]
+    mock_sanitize.return_value = new_servers
+    mock_assistant_template.mcp_servers = new_servers
+    mock_assistant_template._validate_mcp_server_names.return_value = None
+
+    existing = MagicMock(spec=Assistant)
+    existing.slug = "test-slug"
+    existing.description = mock_assistant_template.description
+    existing.system_prompt = mock_assistant_template.system_prompt
+    existing.conversation_starters = mock_assistant_template.conversation_starters
+    existing.toolkits = mock_assistant_template.toolkits
+    existing.icon_url = mock_assistant_template.icon_url
+    existing.llm_model_type = mock_assistant_template.llm_model_type
+    existing.categories = mock_assistant_template.categories
+    existing.mcp_servers = []  # no prior servers — all are new
+    existing.context = None
+
+    with patch('external.deployment_scripts.preconfigured_assistants.llm_service') as mock_llm:
+        mock_llm.default_llm_model = LLMService.BASE_NAME_GPT_41
+        update_assistant_content(existing, mock_assistant_template)
+
+    expected_new_ids = {f"cfg-{i:03d}" for i in range(server_count)}
+    mock_adjust_usage.assert_called_once_with(increments=expected_new_ids, decrements=set())

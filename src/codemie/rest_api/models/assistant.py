@@ -911,6 +911,10 @@ class AssistantBase(CommonBaseModel, Owned):
         if prompt_variables_error:
             return prompt_variables_error
 
+        mcp_names_error = self._validate_mcp_server_names()
+        if mcp_names_error:
+            return mcp_names_error
+
         return ""
 
     def _check_slug_uniqueness(self) -> Optional[str]:
@@ -952,6 +956,13 @@ class AssistantBase(CommonBaseModel, Owned):
         if duplicate_keys:
             return f'Duplicate prompt variable keys detected: {", ".join(duplicate_keys)}'
 
+        return None
+
+    def _validate_mcp_server_names(self) -> Optional[str]:
+        names = [s.name for s in (self.mcp_servers or [])]
+        duplicates = {n for n in names if names.count(n) > 1}
+        if duplicates:
+            return f"Duplicate MCP server names detected: {', '.join(sorted(duplicates))}"
         return None
 
     def _validate_assistant_ids(self) -> Optional[str]:
