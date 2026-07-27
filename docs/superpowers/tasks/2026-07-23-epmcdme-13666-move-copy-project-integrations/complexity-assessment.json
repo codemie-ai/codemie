@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "task": "Add a backend endpoint that moves or copies project-scoped integrations (Settings rows with setting_type=PROJECT) between CodeMie projects with move|copy mode, project existence and permission validation, alias-collision handling, and automated tests.",
+  "generated": "2026-07-23",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 5, "label": "XL" },
+    "technical_risk":       { "score": 6, "label": "XXL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 25,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "New route(s) on the Project Settings router plus new write paths in SettingsService (~1600 lines) and new query helpers on the Settings model, with per-credential-type policy branches spanning AWS/Bedrock, LiteLLM budgets, Google OAuth, Scheduler and Webhook handling. SettingsService is a core shared utility consumed by datasources, assistants, workflows, MCP toolkits and A2A, so the blast radius extends well past the endpoint itself."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "The technical analysis lists ten unresolved design decisions: selection granularity (all vs explicit id list), atomicity (validate-all-then-apply vs partial success), alias-collision policy (reject/skip/auto-suffix), which credential types are excluded, copy semantics for created_by/user_id/default/is_global, the permission bar (admin on both projects vs admin/maintainer), whether a dry-run validate endpoint is needed, whether references are fixed up or only reported, cache-invalidation scope, and route placement. These are architectural choices, not detail confirmations."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "No move/clone/copy/transfer endpoint exists for any entity in the codebase, so there is no precedent to copy. Three critical risks are documented: move-as-delete+create destroys AWS Bedrock entities and revokes Google OAuth tokens (R1); workflows referencing integration_alias hard-fail with ValueError as soon as project_name changes (R2); a verbatim WEBHOOK copy violates the global webhook_id uniqueness invariant (R3). The operation mutates encrypted credential rows in place with no DB unique constraint backing the read-then-write alias check (R5, R6), create_setting silently auto-creates a missing target project (R7), and copy must bypass both the masking and decrypting read paths to avoid double-encryption (R8). Effects are largely irreversible and several failure modes are silent."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Expected touch set: project_settings.py router, service/settings/settings.py, models/settings.py (request/response models and a cross-project query), likely settings_util.py or a new dedicated transfer service module, plus LiteLLM cache invalidation, and two to three new test modules under tests/codemie/rest_api/routers and tests/codemie/service/settings. Roughly 8-10 files across 3+ directories."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "API (router), Service (SettingsService and per-type validators), DB-Persistence (Settings read/write, no schema migration), and External side effects (LiteLLM credential/budget caches, Bedrock orchestration, Google OAuth token lifecycle). Four distinct layers, no migration and no new external service."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L (4) to XL (5): touches core shared utilities — SettingsService and the Settings model are consumed by datasources, assistants, workflows, MCP toolkits and A2A.",
+    "Requirements Clarity bumped from L (4) to XL (5): vague acceptance criteria — the AC permits consumers to 'behave according to the current implementation' and leaves collision, atomicity and exclusion policy undefined.",
+    "Technical Risk bumped from XL (5) to XXL (6): security-sensitive operation — the endpoint duplicates and relocates encrypted credential material and must re-validate authorization against two projects (settings_util access check, _check_permission)."
+  ],
+  "split_recommendation": null
+}

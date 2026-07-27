@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "task": "Added POST /v1/settings/transfer, which moves or copies every transferable project integration between two CodeMie projects behind an admin/maintainer guard, with all-or-nothing validation and 40 automated tests.",
+  "generated": "2026-07-23",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 21,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Three new components — settings.py router, settings_transfer.py request/response models, and SettingsTransferService — plus a two-line router registration in main.py. No existing module was modified beyond that registration, so the predicted blast radius into SettingsService, the Settings model and their downstream consumers never materialised. Cross-cutting coupling is real but read-only: the service reuses Settings.check_alias_unique from the create path, imports exclusion prefixes owned by three other subsystems (SettingsService.INTERNAL_PREFIX, the LiteLLM project-key prefix, DATASOURCE_SCHEDULE_ALIAS_PREFIX) and invalidates the LiteLLM credential cache."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "The shipped code encodes a set of policy decisions that the ticket did not specify and that had to be invented during implementation: which credential types are copy-blocked (WEBHOOK and SCHEDULER, because copying a trigger duplicates its firing), which aliases are subsystem-managed and never transferred, all-or-nothing atomicity, reject-on-collision rather than skip or auto-suffix, the admin-or-maintainer permission bar, and the decision to leave alias-based references to fail rather than fix them up. These are visible as long explanatory docstrings on the route and the service. They were resolved in a single pass with no rework, which keeps this at L rather than XL."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "No transfer/clone precedent existed in the codebase, and the risk was not theoretical: one code-review round produced six blocking findings, including a critical defect where _apply returned ORM rows across a session boundary (expire_on_commit=True) so every successful transfer would have raised DetachedInstanceError and returned 500 after committing, and a crash on NULL-alias rows in copy mode. The operation relocates or duplicates encrypted credential ciphertext verbatim, move mutates rows in place and is not trivially reversible, and correctness depends on non-obvious invariants (globally-unique webhook_id, project-name-embedded LiteLLM budget aliases, index-router-managed scheduler rows, type-blind alias uniqueness, non-project-keyed encryption, the Google OAuth shared-token guard). Held below XXL because there was no schema migration, no data migration, no deletion path, and the change is purely additive."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Four distinct layers: API (new router), Service (SettingsTransferService), DB-Persistence (explicit get_session transaction with a manual session.get/add/commit write path — the layer where the critical defect lived, plus application_repository reads for project existence), and External (clear_litellm_user_credentials_cache invalidation). No schema change and no migration, which is what keeps this off XL."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L (4) to XL (5): security-sensitive operation — the endpoint relocates and duplicates encrypted credential material across project boundaries and gates on an admin/maintainer authorization guard.",
+    "Requirements Clarity bumped from M (3) to L (4): vague acceptance criteria — collision policy, atomicity, copy-blocked types and subsystem exclusions were all undefined in the ticket and had to be decided during implementation."
+  ],
+  "split_recommendation": null
+}

@@ -148,6 +148,22 @@ class ApplicationRepository:
         statement = select(Application).where(Application.name == name)
         return session.exec(statement).first()
 
+    def get_active_by_name(self, session: Session, name: str) -> Optional[Application]:
+        """Get a non-soft-deleted application by name.
+
+        Unlike get_by_name, this excludes soft-deleted projects (deleted_at IS NOT NULL).
+        Use when a project must be usable, not merely present in the table.
+
+        Args:
+            session: Database session
+            name: Application/project name
+
+        Returns:
+            Application if it exists and is not soft-deleted, otherwise None
+        """
+        statement = select(Application).where(Application.name == name, Application.deleted_at.is_(None))
+        return session.exec(statement).first()
+
     def get_by_name_case_insensitive(self, session: Session, name: str) -> Optional[Application]:
         """Get application by name using case-insensitive lookup."""
         statement = select(Application).where(func.lower(Application.name) == name.lower())

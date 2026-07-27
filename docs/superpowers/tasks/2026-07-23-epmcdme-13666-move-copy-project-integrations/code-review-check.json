@@ -1,0 +1,67 @@
+{
+  "decision": "approve",
+  "rationale": "Targeted re-check of the six blocking findings from code-review-final.json against the fix-up diff (317f720c..HEAD, 341 insertions across 5 files). All six are resolved. CR-001 and CR-002 were the two confirmed runtime defects and both now carry regression tests that fail against the old implementation: the CR-001 test uses a session double reproducing expire_on_commit plus close, and that double was verified to crash the old return-ORM-rows pattern (UnmappedInstanceError), so the test has teeth rather than passing vacuously. Test count rose 28 to 40 for the transfer suites; the combined run with the pre-existing project/user settings suites is 77 passed. make ruff and make license-check are clean. No new high-risk issue is suspected in the fix-up diff, so no confirmation pass was dispatched. business_review and standards_review are carried forward from the final round with the two rows the fixes changed updated in place.",
+  "confidence": "high",
+  "risk_flags": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "evidence": "_apply now returns tuple[list[TransferredIntegration], bool]; DTOs and the has_litellm flag are materialized inside the loop before session.commit(), and transfer() reads no ORM attribute after the session closes. Regression tests TestApplyDoesNotLeakOrmState::test_move_payload_survives_commit_expiry and ::test_copy_payload_and_litellm_flag_survive_commit_expiry assert both that commit really expired the instances (row.__dict__ == {}) and that the payload is still intact."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "evidence": "_validate_aliases was split; _validate_aliases_present now runs over all candidates in transfer() before _partition, so alias-less trigger rows are rejected before skipped_payload is built. Test test_null_alias_trigger_row_is_rejected_before_response_construction asserts 422 naming the row id, and that get_session is never called."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "evidence": "TestCollisionMatrix adds the five spec section 5.1 cases with Settings.check_alias_unique unmocked (Settings.get_by_fields is faked one layer below, reproducing its equality-on-supplied-keys and first-match semantics, so the real rule executes). test_collision_mid_set_leaves_nothing_written covers spec section 6 atomicity. test_copy_preserves_every_clone_field asserts created_by, is_global, default, setting_hash and setting_type on the clone."
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "evidence": "The 409 details and help now both name the target project and note the conflicting row may be project-scoped or owned by another user. Test test_conflict_help_names_the_target_project pins it."
+    },
+    {
+      "id": "CR-005",
+      "status": "resolved",
+      "evidence": ".ai-run/sdlc-factory/doctor.json restored to the origin/main revision; git diff origin/main for that path is empty. A follow-up commit also untracked the generated code-review.diff artifact for the same reason."
+    },
+    {
+      "id": "CR-006",
+      "status": "resolved",
+      "evidence": "All three new modules now open with from __future__ import annotations. typing.Optional and typing.List are gone: str | None, list[Settings], tuple[str, ...], tuple[list[Settings], list[Settings]] and tuple[list[TransferredIntegration], bool] replace them. make ruff passes."
+    }
+  ],
+  "business_review": [
+    {"criterion": "Backend endpoint to move or copy integrations between two projects", "status": "pass", "evidence": "routers/settings.py POST /v1/settings/transfer; registered in main.py"},
+    {"criterion": "Endpoint accepts source and target project identifiers", "status": "pass", "evidence": "TransferSettingsRequest.source_project_name/target_project_name"},
+    {"criterion": "Requires an explicit mode value: move or copy", "status": "pass", "evidence": "TransferMode enum, mode field required with no default"},
+    {"criterion": "Rejects missing or unsupported mode with a clear validation error", "status": "pass", "evidence": "test_transfer_rejects_invalid_payload[missing-mode],[unsupported-mode]; TestTransferSettingsRequest"},
+    {"criterion": "Move: integrations moved from X to Y", "status": "pass", "evidence": "CR-001 resolved; test_move_payload_survives_commit_expiry confirms the move path completes past commit"},
+    {"criterion": "Move: moved integrations no longer assigned to X", "status": "pass", "evidence": "single-row project_name mutation"},
+    {"criterion": "Copy: copied to Y and remain in X", "status": "pass", "evidence": "CR-001 resolved; test_copy_creates_new_row_and_leaves_source asserts the source row is untouched"},
+    {"criterion": "Copied integrations preserve required configuration", "status": "pass", "evidence": "_clone copies all 13 Settings fields; test_copy_preserves_every_clone_field now asserts the four previously unasserted ones"},
+    {"criterion": "Validates both projects exist", "status": "pass", "evidence": "_validate_projects via application_repository.get_by_name plus deleted_at check"},
+    {"criterion": "Validates caller permissions", "status": "pass", "evidence": "authenticate + admin_or_maintainer_access_only; test_admin_guard_denies_non_elevated_user"},
+    {"criterion": "Empty source project handled with a clear response", "status": "pass", "evidence": "test_empty_source_returns_zero_counts_without_writing"},
+    {"criterion": "Invalid source/target input gives clear errors", "status": "pass", "evidence": "422 blank name, 422 same-project, 404 missing project"},
+    {"criterion": "Dependent entities handled consistently on move", "status": "pass", "evidence": "row id preserved so id-based consumers resolve; alias breakage documented as pre-existing"},
+    {"criterion": "Expected behaviour for affected entities documented or reflected", "status": "pass", "evidence": "OpenAPI docstring in routers/settings.py"},
+    {"criterion": "Existing integration creation and edit behaviour not regressed", "status": "pass", "evidence": "additive diff; 77-test run including the existing project/user settings suites passes"},
+    {"criterion": "Automated tests cover move, copy, missing/invalid mode, invalid project, empty source, permissions", "status": "pass", "evidence": "CR-003 resolved; 40 tests across the two transfer suites"}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow.md commit format EPMCDME-####: Description", "status": "pass", "notes": "all 11 commits conform"},
+    {"standard": "code-quality.md Ruff configuration", "status": "pass", "notes": "make ruff clean"},
+    {"standard": "code-quality.md license headers", "status": "pass", "notes": "make license-check clean, 1958 files"},
+    {"standard": "code-quality.md types and imports", "status": "pass", "notes": "CR-006 resolved across all three new modules"},
+    {"standard": "security-patterns.md authentication and authorization", "status": "pass", "notes": "central authenticate dependency plus documented role helper"},
+    {"standard": "security-patterns.md secret handling", "status": "pass", "notes": "no credential values logged"},
+    {"standard": "security-patterns.md untrusted input handling", "status": "pass", "notes": "strict Pydantic enum parsing, fails closed"},
+    {"standard": "error-handling.md accurate error details", "status": "pass", "notes": "CR-004 resolved"}
+  ],
+  "findings": []
+}

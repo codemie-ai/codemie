@@ -83,6 +83,40 @@ class TestApplicationRepositoryBasicOperations:
         # Assert
         assert result is None
 
+    def test_get_active_by_name_filters_soft_deleted_in_query(self):
+        """get_active_by_name restricts the query to deleted_at IS NULL, unlike get_by_name."""
+        # Arrange
+        mock_session = MagicMock()
+        expected_app = Application(
+            id="proj-a",
+            name="proj-a",
+            project_type="shared",
+            date=datetime.now(),
+            update_date=datetime.now(),
+        )
+        mock_session.exec.return_value.first.return_value = expected_app
+
+        # Act
+        result = application_repository.get_active_by_name(mock_session, "proj-a")
+
+        # Assert
+        assert result == expected_app
+        query_text = _compile_sql(mock_session.exec.call_args[0][0])
+        assert "applications.name" in query_text
+        assert "applications.deleted_at is null" in query_text
+
+    def test_get_active_by_name_returns_none_when_not_found(self):
+        """get_active_by_name returns None when the query yields nothing (missing or soft-deleted)."""
+        # Arrange
+        mock_session = MagicMock()
+        mock_session.exec.return_value.first.return_value = None
+
+        # Act
+        result = application_repository.get_active_by_name(mock_session, "nonexistent")
+
+        # Assert
+        assert result is None
+
     def test_exists_by_name_returns_true_when_project_exists(self):
         """exists_by_name returns True when project exists."""
         # Arrange

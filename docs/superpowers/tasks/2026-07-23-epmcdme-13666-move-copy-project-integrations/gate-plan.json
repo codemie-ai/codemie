@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "mode": "guide-first",
+  "guide": ".ai-run/guides/quality-gates.md",
+  "runner": "poetry",
+  "gates": [
+    {"id": "lint", "command": "make ruff", "available": true, "source": "guide:Lint And Format"},
+    {"id": "build", "command": "make build", "available": true, "source": "guide:Build"},
+    {"id": "license", "command": "make license-check", "available": true, "autofix": "make license-fix", "source": "guide:License Headers"},
+    {"id": "gitleaks", "command": "make gitleaks", "available": false, "skip_if": "Docker is unavailable", "source": "guide:Secret Scan"},
+    {"id": "unit", "command": "make test", "available": true, "source": "guide:Tests"},
+    {"id": "coverage", "command": "make coverage", "available": true, "skip_if": "user did not request coverage", "source": "guide:Coverage"},
+    {"id": "sonar", "command": "make sonar-local", "available": false, "skip_if": "Sonar configuration, network access, or credentials unavailable", "source": "guide:Static Analysis"},
+    {"id": "verify", "command": "make verify", "available": true, "source": "guide:Full Verification", "note": "composite of ruff + license + gitleaks + test; components run individually for per-gate reporting"},
+    {"id": "affected", "command": null, "available": false, "note": "no changed-file-aware test command configured for pytest in this repo"},
+    {"id": "ui", "command": null, "available": false, "note": "Python backend; no UI test script configured"}
+  ],
+  "ui_globs": ["\\.(tsx|jsx|css|html|vue|svelte)$", "src/(ui|frontend|components)/"],
+  "detected_at": "2026-07-23T16:10:00Z"
+}

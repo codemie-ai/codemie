@@ -1,0 +1,102 @@
+{
+  "decision": "request-changes",
+  "rationale": "Three lenses ran (blind, edge-case, acceptance) over a 919-line diff with the approved spec available. Two confirmed runtime defects block: the service returns expired, detached ORM rows across the session boundary and then reads their attributes, so every non-empty transfer commits and then raises DetachedInstanceError (reproduced by the edge-case lens against a real SQLAlchemy engine; the codebase documents this exact hazard at service/user/application_service.py:52-54), and a NULL-alias WEBHOOK/SCHEDULER row in copy mode raises pydantic ValidationError before the blank-alias guard runs (reproduced directly). Three further blocking items: three test groups the approved spec section 10 explicitly required are absent, the 409 help text names the wrong project, and a machine-specific tooling artifact is committed in the feature changeset. One standards violation on typing conventions for new modules. Triage dropped 9 findings as dismiss (lens speculation refuted against source: the .keyword suffix is stripped for PostgreSQL so there is no Elasticsearch/SQL split and no page-size truncation; clear_litellm_user_credentials_cache(None) does clear all; encryption is not project- or row-keyed so verbatim ciphertext is correct; _clone covers all 13 Settings fields today) and recorded 6 as defer (documented, accepted, or pre-existing: read-then-write concurrency without a DB constraint, per-process cache locality, naive-vs-aware datetime divergence already present in settings.py:523, user-scoped rows re-parented without a target-membership check, router-level dependency inheritance, and tests asserting raised exceptions rather than responses per existing house convention).",
+  "confidence": "high",
+  "risk_flags": ["security", "correctness"],
+  "business_review": [
+    {"criterion": "Backend endpoint to move or copy integrations between two projects", "status": "pass", "evidence": "routers/settings.py POST /v1/settings/transfer; registered in main.py"},
+    {"criterion": "Endpoint accepts source and target project identifiers", "status": "pass", "evidence": "TransferSettingsRequest.source_project_name/target_project_name"},
+    {"criterion": "Requires an explicit mode value: move or copy", "status": "pass", "evidence": "TransferMode enum, mode field required with no default"},
+    {"criterion": "Rejects missing or unsupported mode with a clear validation error", "status": "pass", "evidence": "test_transfer_rejects_invalid_payload[missing-mode],[unsupported-mode]; TestTransferSettingsRequest"},
+    {"criterion": "Move: integrations moved from X to Y", "status": "partial", "evidence": "_apply in-place update; blocked at runtime by CR-001"},
+    {"criterion": "Move: moved integrations no longer assigned to X", "status": "pass", "evidence": "single-row project_name mutation"},
+    {"criterion": "Copy: copied to Y and remain in X", "status": "partial", "evidence": "test_copy_creates_new_row_and_leaves_source; blocked at runtime by CR-001"},
+    {"criterion": "Copied integrations preserve required configuration", "status": "pass", "evidence": "_clone copies all 13 Settings fields; ciphertext verbatim"},
+    {"criterion": "Validates both projects exist", "status": "pass", "evidence": "_validate_projects via application_repository.get_by_name plus deleted_at check"},
+    {"criterion": "Validates caller permissions", "status": "pass", "evidence": "authenticate + admin_or_maintainer_access_only; test_admin_guard_denies_non_elevated_user"},
+    {"criterion": "Empty source project handled with a clear response", "status": "pass", "evidence": "test_empty_source_returns_zero_counts_without_writing"},
+    {"criterion": "Invalid source/target input gives clear errors", "status": "pass", "evidence": "422 blank name, 422 same-project, 404 missing project"},
+    {"criterion": "Dependent entities handled consistently on move", "status": "pass", "evidence": "row id preserved so id-based consumers resolve; alias breakage documented as pre-existing"},
+    {"criterion": "Expected behaviour for affected entities documented or reflected", "status": "pass", "evidence": "OpenAPI docstring in routers/settings.py"},
+    {"criterion": "Existing integration creation and edit behaviour not regressed", "status": "pass", "evidence": "additive diff only; 65-test regression run over existing project/user settings suites passed"},
+    {"criterion": "Automated tests cover move, copy, missing/invalid mode, invalid project, empty source, permissions", "status": "partial", "evidence": "28 tests pass, but spec section 10 test groups are missing - see CR-003"}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow.md commit format EPMCDME-####: Description", "status": "pass", "notes": "all 8 commits conform"},
+    {"standard": "code-quality.md Ruff configuration", "status": "pass", "notes": "make ruff clean"},
+    {"standard": "code-quality.md license headers", "status": "pass", "notes": "make license-check clean, 1956 files"},
+    {"standard": "code-quality.md types and imports", "status": "fail", "notes": "guide requires X | None unions, parameterized generics and from __future__ import annotations in new modules; all three new modules use typing.Optional/List, none has the future import, and two methods return bare tuple - see CR-006"},
+    {"standard": "security-patterns.md authentication and authorization", "status": "pass", "notes": "central authenticate dependency plus documented role helper"},
+    {"standard": "security-patterns.md secret handling", "status": "pass", "notes": "no credential values logged; only actor id, mode and project names"},
+    {"standard": "security-patterns.md untrusted input handling", "status": "pass", "notes": "strict Pydantic enum parsing, fails closed"},
+    {"standard": "error-handling.md accurate error details", "status": "fail", "notes": "409 help text directs the admin to the wrong project - see CR-004"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/settings/settings_transfer_service.py",
+      "line": 213,
+      "problem": "_apply returns ORM instances after session.commit() and after the with get_session() block closes. SQLAlchemy Session defaults to expire_on_commit=True and Session.__exit__ closes the session, so the returned rows are both expired and detached. transfer() then reads row.credential_type for the LiteLLM check and row.id / row.alias / row.credential_type when building TransferredIntegration.",
+      "impact": "Every non-empty transfer, move or copy, commits the write and then raises DetachedInstanceError, returning 500. The caller sees a failure for an operation that actually mutated the database. An admin retrying a move gets 200 'No transferable integrations found'; retrying a copy gets a 409 alias conflict against rows the apparently failed first call created. The LiteLLM cache clear is also never reached. Every test misses it because get_session is replaced with a MagicMock.",
+      "recommendation": "Materialize plain values inside the session before the block exits - build the TransferredIntegration DTOs and a has_litellm flag there and return those instead of ORM rows. The codebase precedent is session.expunge() before commit (service/user/application_service.py:51-56). Add at least one test that drives a real session rather than a MagicMock.",
+      "sources": ["edge-case", "acceptance"]
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/settings/settings_transfer_service.py",
+      "line": 398,
+      "problem": "skipped_payload is built from _partition's skipped rows before _validate_aliases runs, and the blank-alias guard is applied only to transferable. SkippedIntegration.alias is typed str (required) while Settings.alias is Optional[str], and _is_subsystem_managed returns False for a falsy alias, so an alias-less WEBHOOK or SCHEDULER row reaches the DTO constructor.",
+      "impact": "A copy against a project containing a legacy webhook or scheduler row with a NULL or empty alias raises pydantic ValidationError and returns an unhandled 500 instead of the intended 422 that names the offending row. Reproduced directly. The same row shape is handled gracefully on the transferable path, so the behaviour is inconsistent.",
+      "recommendation": "Run the blank-alias guard over all candidates before _partition, so alias-less rows are rejected uniformly with the existing 422.",
+      "sources": ["blind", "edge-case"]
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/settings/test_settings_transfer_service.py",
+      "line": 815,
+      "problem": "Three test groups the approved spec section 10 explicitly requires are absent. (a) The collision matrix asserted with Settings.check_alias_unique left unmocked - both collision tests patch it out, so the type-blind PROJECT branch and owner-scoped USER branch are never exercised. (b) The atomicity test 'a collision detected mid-set leaves nothing written'. (c) Copy field-preservation assertions for created_by, is_global, default and setting_hash - created_by is set to None before the act, so its propagation is never tested.",
+      "impact": "The most subtle behaviour in the spec is unverified: the collision tests would pass identically if the wrong setting_type or user_id were forwarded. The all-or-nothing guarantee rests entirely on call ordering inside transfer() with no test pinning it, so a future refactor could introduce partial writes silently.",
+      "recommendation": "Add the four matrix cases with check_alias_unique unmocked, the mid-set collision atomicity test, and distinguishable non-default values for the four unasserted clone fields.",
+      "sources": ["acceptance"]
+    },
+    {
+      "id": "CR-004",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/settings/settings_transfer_service.py",
+      "line": 339,
+      "problem": "The 409 help text reads 'Rename the conflicting integrations in the source project and retry', but the conflicting row lives in the target project. The details line names the target correctly while the help line contradicts it.",
+      "impact": "An admin follows the guidance, inspects the source project, finds nothing named in the error, and cannot act. The blocking row may belong to another user in a project the admin was not looking at. This violates the documented error-handling standard that an error message must describe the failure that actually happened.",
+      "recommendation": "Correct the help text to direct the admin at the target project, and include the conflicting row's scope and owner in the details so the conflict is actionable.",
+      "sources": ["edge-case"]
+    },
+    {
+      "id": "CR-005",
+      "severity": "major",
+      "triage": "patch",
+      "file": ".ai-run/sdlc-factory/doctor.json",
+      "line": 1,
+      "problem": "A local tooling-environment artifact is committed in the feature changeset. It records a machine-specific git version, downgraded from 2.54.0 to 2.50.0, plus a refreshed checked_at timestamp. It has no relation to the feature.",
+      "impact": "The file will churn and conflict on every developer machine, and it ships environment metadata in a security-sensitive feature MR where it invites no scrutiny.",
+      "recommendation": "Remove the file from this changeset and either gitignore it or regenerate it in CI.",
+      "sources": ["blind", "acceptance"]
+    },
+    {
+      "id": "CR-006",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/settings/settings_transfer_service.py",
+      "line": 17,
+      "problem": "All three new modules violate the documented typing convention in .ai-run/guides/standards/code-quality.md, which requires X | None unions over typing.Optional[X], parameterized generics over bare list/dict, and from __future__ import annotations in new modules. The code uses typing.Optional and typing.List throughout, omits the future import, and _subsystem_managed_prefixes and _partition both return an unparameterized tuple - the latter losing the tuple[list[Settings], list[Settings]] shape the approved plan's own Interfaces block specified.",
+      "impact": "New modules diverge from the documented standard on the day they are added, and the bare tuple returns leave callers unable to see the shape from the signature.",
+      "recommendation": "Add from __future__ import annotations to the three new modules, replace Optional[X] with X | None and List[X] with list[X], and give both tuple returns explicit element types.",
+      "sources": ["standards"]
+    }
+  ]
+}

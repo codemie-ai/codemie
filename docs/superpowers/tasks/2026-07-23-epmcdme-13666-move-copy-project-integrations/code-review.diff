@@ -1,0 +1,982 @@
+﻿diff --git a/.ai-run/sdlc-factory/doctor.json b/.ai-run/sdlc-factory/doctor.json
+index 62b05f573..338b454f3 100644
+--- a/.ai-run/sdlc-factory/doctor.json
++++ b/.ai-run/sdlc-factory/doctor.json
+@@ -1,10 +1,10 @@
+ {
+-  "checked_at": "2026-07-09T00:00:00Z",
++  "checked_at": "2026-07-23T00:00:00Z",
+   "ttl_days": 7,
+-  "fingerprint": "node-v22.21.0-git-2.54.0",
++  "fingerprint": "node-v22.21.0-git-2.50.0",
+   "checks": {
+     "superpowers": "ok",
+     "node": "v22.21.0",
+-    "git": "2.54.0"
++    "git": "2.50.0"
+   }
+ }
+diff --git a/src/codemie/rest_api/main.py b/src/codemie/rest_api/main.py
+index b58b510e2..725e1e836 100644
+--- a/src/codemie/rest_api/main.py
++++ b/src/codemie/rest_api/main.py
+@@ -65,6 +65,7 @@ from codemie.rest_api.routers import (
+     workflow_executions,
+     user_settings,
+     project_settings,
++    settings,
+     projects,
+     cost_centers,
+     llm_models,
+@@ -823,6 +824,7 @@ app.include_router(workflow_marketplace.router)
+ app.include_router(workflow_executions.router)
+ app.include_router(user_settings.router)
+ app.include_router(project_settings.router)
++app.include_router(settings.router)
+ app.include_router(projects.router)
+ app.include_router(cost_centers.router)
+ app.include_router(llm_models.router)
+diff --git a/src/codemie/rest_api/models/settings_transfer.py b/src/codemie/rest_api/models/settings_transfer.py
+new file mode 100644
+index 000000000..7183f4229
+--- /dev/null
++++ b/src/codemie/rest_api/models/settings_transfer.py
+@@ -0,0 +1,57 @@
++# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++"""Request and response models for moving or copying integrations between projects."""
++
++from enum import Enum
++from typing import List
++
++from pydantic import BaseModel, Field
++
++from codemie_tools.base.models import CredentialTypes
++
++
++class TransferMode(str, Enum):
++    """Operation mode for a project integration transfer."""
++
++    MOVE = "move"
++    COPY = "copy"
++
++
++class TransferSettingsRequest(BaseModel):
++    source_project_name: str = Field(min_length=1)
++    target_project_name: str = Field(min_length=1)
++    mode: TransferMode
++
++
++class TransferredIntegration(BaseModel):
++    id: str
++    alias: str
++    credential_type: CredentialTypes
++
++
++class SkippedIntegration(BaseModel):
++    alias: str
++    credential_type: CredentialTypes
++
++
++class TransferSettingsResponse(BaseModel):
++    message: str
++    source_project_name: str
++    target_project_name: str
++    mode: TransferMode
++    transferred_count: int
++    transferred: List[TransferredIntegration] = Field(default_factory=list)
++    skipped_count: int = 0
++    skipped: List[SkippedIntegration] = Field(default_factory=list)
+diff --git a/src/codemie/rest_api/routers/settings.py b/src/codemie/rest_api/routers/settings.py
+new file mode 100644
+index 000000000..6835e8cc4
+--- /dev/null
++++ b/src/codemie/rest_api/routers/settings.py
+@@ -0,0 +1,75 @@
++# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++"""Settings endpoints that span both the user and project scopes."""
++
++from fastapi import APIRouter, Depends, status
++
++from codemie.configs.logger import logger
++from codemie.rest_api.models.settings_transfer import TransferSettingsRequest, TransferSettingsResponse
++from codemie.rest_api.security.authentication import User, admin_or_maintainer_access_only, authenticate
++from codemie.service.settings.settings_transfer_service import SettingsTransferService
++
++router = APIRouter(
++    tags=["Settings"],
++    prefix="/v1",
++    dependencies=[],
++)
++
++
++@router.post(
++    "/settings/transfer",
++    status_code=status.HTTP_200_OK,
++    response_model=TransferSettingsResponse,
++    # authenticate must run first: it populates request.state.user, which the guard reads.
++    dependencies=[Depends(authenticate), Depends(admin_or_maintainer_access_only)],
++)
++def transfer_settings(request: TransferSettingsRequest, user: User = Depends(authenticate)):
++    """
++    Move or copy every transferable integration from one project to another.
++
++    Requires administrator or maintainer privileges. Both project-scoped and user-scoped
++    integrations are transferred; a user-scoped integration keeps its owner and only changes
++    which project it is attached to.
++
++    **`move`** updates each integration in place, so entities that reference an integration by
++    id (datasources, assistants, Bedrock entities, A2A) keep working. References made *by alias*
++    resolve against the referencing entity's own project and will fail after a move: workflow
++    tool nodes raise an error, per-user MCP integration overrides are ignored, and re-saving an
++    assistant-user mapping to a moved integration is rejected. This matches existing behaviour
++    for integrations that become unavailable.
++
++    **`copy`** duplicates each integration into the target project and leaves the source
++    untouched. Webhook and scheduler integrations are **not** copied — copying a trigger would
++    duplicate its firing — and are listed in `skipped`. They are transferred normally by `move`.
++
++    Integrations managed by other subsystems are never transferred and are not reported: aliases
++    beginning with `__internal__` (IDE plugin settings), `codemie:project:` (LiteLLM budget keys)
++    or `Schedule_` (datasource schedules), and the `project_member_budget_tracking_enabled` flag.
++
++    The operation is all-or-nothing: if any alias already exists in the target project, or either
++    project is missing, nothing is changed.
++    """
++    logger.info(
++        "settings_transfer_requested: actor_user_id=%s mode=%s source=%r target=%r",
++        user.id,
++        request.mode.value,
++        request.source_project_name,
++        request.target_project_name,
++    )
++    return SettingsTransferService.transfer(
++        source_project_name=request.source_project_name,
++        target_project_name=request.target_project_name,
++        mode=request.mode,
++    )
+diff --git a/src/codemie/service/settings/settings_transfer_service.py b/src/codemie/service/settings/settings_transfer_service.py
+new file mode 100644
+index 000000000..105c6760b
+--- /dev/null
++++ b/src/codemie/service/settings/settings_transfer_service.py
+@@ -0,0 +1,255 @@
++# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++"""Move or copy integrations between projects."""
++
++from datetime import UTC, datetime
++from typing import List, Optional
++from uuid import uuid4
++
++from fastapi import status
++
++from codemie.clients.postgres import get_session
++from codemie.configs.logger import logger
++from codemie.core.exceptions import ExtendedHTTPException
++from codemie.repository.application_repository import application_repository
++from codemie.rest_api.models.settings import PROJECT_NAME_TERM, CredentialValues, Settings
++from codemie.rest_api.models.settings_transfer import (
++    SkippedIntegration,
++    TransferMode,
++    TransferredIntegration,
++    TransferSettingsResponse,
++)
++from codemie.service.settings.scheduler_settings_service import DATASOURCE_SCHEDULE_ALIAS_PREFIX
++from codemie.service.settings.settings import SettingsService
++from codemie_tools.base.models import CredentialTypes
++
++
++class SettingsTransferService:
++    """Move or copy every transferable integration from one project to another."""
++
++    # Mirrors codemie.enterprise.litellm.budget_provider_adapter._PROJECT_KEY_ALIAS_PREFIX.
++    # Redeclared rather than imported because that name is private to the enterprise package;
++    # test_litellm_prefix_matches_budget_provider_adapter guards against drift.
++    LITELLM_PROJECT_KEY_ALIAS_PREFIX = "codemie:project:"
++
++    # Trigger bindings: copying one duplicates its firing, so they are move-only.
++    COPY_BLOCKED_TYPES = (CredentialTypes.WEBHOOK, CredentialTypes.SCHEDULER)
++
++    @classmethod
++    def _subsystem_managed_prefixes(cls) -> tuple:
++        return (
++            SettingsService.INTERNAL_PREFIX,
++            cls.LITELLM_PROJECT_KEY_ALIAS_PREFIX,
++            DATASOURCE_SCHEDULE_ALIAS_PREFIX,
++        )
++
++    @classmethod
++    def _is_subsystem_managed(cls, alias: Optional[str]) -> bool:
++        """Rows written and owned by other subsystems are never transferred."""
++        if not alias:
++            return False
++        if alias == SettingsService.ENFORCE_MEMBER_SPEND_LIMITS_ALIAS:
++            return True
++        return any(alias.startswith(prefix) for prefix in cls._subsystem_managed_prefixes())
++
++    @classmethod
++    def _select_candidates(cls, source_project_name: str) -> List[Settings]:
++        """All integrations attached to the source project, both scopes, minus subsystem-managed rows."""
++        rows = Settings.get_all_by_fields({PROJECT_NAME_TERM: source_project_name})
++        candidates = [row for row in rows if not cls._is_subsystem_managed(row.alias)]
++        logger.info(
++            "settings_transfer: selected %s of %s rows in project %r",
++            len(candidates),
++            len(rows),
++            source_project_name,
++        )
++        return candidates
++
++    @classmethod
++    def _partition(cls, candidates: List[Settings], mode: TransferMode) -> tuple:
++        """Split candidates into (transferable, skipped). Only copy mode ever skips."""
++        if mode is not TransferMode.COPY:
++            return list(candidates), []
++
++        transferable = []
++        skipped = []
++        for row in candidates:
++            if row.credential_type in cls.COPY_BLOCKED_TYPES:
++                skipped.append(row)
++            else:
++                transferable.append(row)
++        return transferable, skipped
++
++    @classmethod
++    def _validate_projects(cls, source_project_name: str, target_project_name: str) -> None:
++        """Both projects must exist and differ. Never auto-creates a missing project."""
++        if source_project_name == target_project_name:
++            raise ExtendedHTTPException(
++                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
++                message="Invalid transfer request",
++                details="Source and target projects must be different.",
++                help="Choose a target project other than the source project.",
++            )
++
++        with get_session() as session:
++            for label, name in (("Source", source_project_name), ("Target", target_project_name)):
++                project = application_repository.get_by_name(session, name)
++                if project is None or project.deleted_at is not None:
++                    raise ExtendedHTTPException(
++                        code=status.HTTP_404_NOT_FOUND,
++                        message="Project not found",
++                        details=f"{label} project '{name}' does not exist.",
++                        help="Check the project name and try again.",
++                    )
++
++    @classmethod
++    def _validate_aliases(cls, candidates: List[Settings], target_project_name: str) -> None:
++        """Reuse the create-path uniqueness rule so a transfer cannot produce a forbidden state."""
++        blank = [row for row in candidates if not row.alias]
++        if blank:
++            details = ", ".join(f"{row.id} ({row.credential_type})" for row in blank)
++            raise ExtendedHTTPException(
++                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
++                message="Integration without an alias",
++                details=f"These integrations have no alias and cannot be transferred: {details}.",
++                help="Give each integration an alias before transferring the project.",
++            )
++
++        colliding = []
++        for row in candidates:
++            try:
++                Settings.check_alias_unique(
++                    project_name=target_project_name,
++                    alias=row.alias,
++                    setting_id=None,
++                    user_id=row.user_id,
++                    setting_type=row.setting_type,
++                )
++            except ValueError:
++                colliding.append(row.alias)
++
++        if colliding:
++            raise ExtendedHTTPException(
++                code=status.HTTP_409_CONFLICT,
++                message="Alias conflict in target project",
++                details=(
++                    f"Project '{target_project_name}' already has integrations with these aliases: "
++                    f"{', '.join(colliding)}."
++                ),
++                help="Rename the conflicting integrations in the source project and retry.",
++            )
++
++    @classmethod
++    def _clone(cls, row: Settings, target_project_name: str, now: datetime) -> Settings:
++        """Verbatim clone apart from id, project and timestamps. Ciphertext is carried over as-is."""
++        return Settings(
++            id=str(uuid4()),
++            project_name=target_project_name,
++            alias=row.alias,
++            credential_type=row.credential_type,
++            credential_values=[CredentialValues(key=cred.key, value=cred.value) for cred in row.credential_values],
++            user_id=row.user_id,
++            created_by=row.created_by,
++            setting_type=row.setting_type,
++            is_global=row.is_global,
++            default=row.default,
++            setting_hash=row.setting_hash,
++            date=now,
++            update_date=now,
++        )
++
++    @classmethod
++    def _apply(cls, candidates: List[Settings], target_project_name: str, mode: TransferMode) -> List[Settings]:
++        """Write every row inside one session so the operation is all-or-nothing."""
++        now = datetime.now(UTC)
++        written = []
++        with get_session() as session:
++            for candidate in candidates:
++                row = session.get(Settings, candidate.id)
++                if row is None:
++                    raise ExtendedHTTPException(
++                        code=status.HTTP_409_CONFLICT,
++                        message="Integration changed during transfer",
++                        details=f"Integration '{candidate.alias}' no longer exists. No changes were applied.",
++                        help="Retry the transfer.",
++                    )
++                if mode is TransferMode.MOVE:
++                    row.project_name = target_project_name
++                    row.update_date = now
++                    session.add(row)
++                    written.append(row)
++                else:
++                    clone = cls._clone(row, target_project_name, now)
++                    session.add(clone)
++                    written.append(clone)
++            session.commit()
++        return written
++
++    @classmethod
++    def transfer(
++        cls, source_project_name: str, target_project_name: str, mode: TransferMode
++    ) -> TransferSettingsResponse:
++        """Move or copy every transferable integration from the source project to the target project."""
++        cls._validate_projects(source_project_name, target_project_name)
++
++        candidates = cls._select_candidates(source_project_name)
++        transferable, skipped = cls._partition(candidates, mode)
++
++        skipped_payload = [SkippedIntegration(alias=row.alias, credential_type=row.credential_type) for row in skipped]
++
++        if not transferable:
++            return TransferSettingsResponse(
++                message=f"No transferable integrations found in project '{source_project_name}'.",
++                source_project_name=source_project_name,
++                target_project_name=target_project_name,
++                mode=mode,
++                transferred_count=0,
++                transferred=[],
++                skipped_count=len(skipped_payload),
++                skipped=skipped_payload,
++            )
++
++        cls._validate_aliases(transferable, target_project_name)
++        written = cls._apply(transferable, target_project_name, mode)
++
++        if any(row.credential_type == CredentialTypes.LITE_LLM for row in written):
++            from codemie.enterprise.litellm.credentials import clear_litellm_user_credentials_cache
++
++            clear_litellm_user_credentials_cache(None)
++
++        transferred_payload = [
++            TransferredIntegration(id=row.id, alias=row.alias, credential_type=row.credential_type) for row in written
++        ]
++        logger.info(
++            "settings_transfer: %s %s integration(s) from %r to %r (%s skipped)",
++            mode.value,
++            len(transferred_payload),
++            source_project_name,
++            target_project_name,
++            len(skipped_payload),
++        )
++        return TransferSettingsResponse(
++            message=(
++                f"Transferred {len(transferred_payload)} integration(s) from "
++                f"'{source_project_name}' to '{target_project_name}'."
++            ),
++            source_project_name=source_project_name,
++            target_project_name=target_project_name,
++            mode=mode,
++            transferred_count=len(transferred_payload),
++            transferred=transferred_payload,
++            skipped_count=len(skipped_payload),
++            skipped=skipped_payload,
++        )
+diff --git a/tests/codemie/rest_api/routers/test_settings_transfer.py b/tests/codemie/rest_api/routers/test_settings_transfer.py
+new file mode 100644
+index 000000000..516ab3756
+--- /dev/null
++++ b/tests/codemie/rest_api/routers/test_settings_transfer.py
+@@ -0,0 +1,184 @@
++# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++"""Tests for POST /v1/settings/transfer (move/copy project integrations)."""
++
++from unittest.mock import MagicMock, patch
++
++import pytest
++from fastapi import FastAPI, status
++from httpx import ASGITransport, AsyncClient
++
++from codemie.core.exceptions import ExtendedHTTPException
++from codemie.rest_api.models.settings_transfer import TransferMode, TransferSettingsResponse
++from codemie.rest_api.routers.settings import router
++from codemie.rest_api.security.authentication import admin_or_maintainer_access_only
++from codemie.rest_api.security.user import User
++
++app = FastAPI()
++app.include_router(router)
++
++
++@pytest.fixture
++def anyio_backend():
++    return 'asyncio'
++
++
++@pytest.fixture
++def admin_user():
++    return User(id="admin-1", username="admin@example.com", roles=["admin"], project_names=[], admin_project_names=[])
++
++
++# NOTE: a non-elevated User cannot be built here. User.resolve_is_admin forces is_admin=True
++# whenever ENV == local (src/codemie/rest_api/security/user.py:60-61), and pytest.ini sets
++# ENV=local. The guard is therefore covered by two tests: one overriding the dependency to
++# prove it is wired to the route, and one calling the guard directly to prove it denies.
++
++
++def _ok_response():
++    return TransferSettingsResponse(
++        message="Transferred 1 integration(s) from 'source' to 'target'.",
++        source_project_name="source",
++        target_project_name="target",
++        mode=TransferMode.MOVE,
++        transferred_count=1,
++        transferred=[{"id": "row-1", "alias": "jira-prod", "credential_type": "Jira"}],
++        skipped_count=0,
++        skipped=[],
++    )
++
++
++@pytest.mark.anyio
++@patch("codemie.rest_api.routers.settings.SettingsTransferService.transfer")
++@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
++async def test_transfer_move_success(mock_authenticate, mock_transfer, admin_user):
++    # Arrange
++    mock_authenticate.return_value = admin_user
++    mock_transfer.return_value = _ok_response()
++
++    # Act
++    transport = ASGITransport(app=app)
++    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++        response = await ac.post(
++            "/v1/settings/transfer",
++            headers={"user-id": "admin-1"},
++            json={"source_project_name": "source", "target_project_name": "target", "mode": "move"},
++        )
++
++    # Assert
++    assert response.status_code == status.HTTP_200_OK
++    body = response.json()
++    assert body["transferred_count"] == 1
++    assert body["mode"] == "move"
++    mock_transfer.assert_called_once_with(
++        source_project_name="source", target_project_name="target", mode=TransferMode.MOVE
++    )
++
++
++@pytest.mark.anyio
++async def test_admin_guard_denies_non_elevated_user():
++    """The guard itself rejects a user without global elevated permissions."""
++    # Arrange
++    request = MagicMock()
++    request.state.user.id = "user-1"
++    request.state.user.is_admin_or_maintainer = False
++
++    # Act / Assert
++    with pytest.raises(ExtendedHTTPException) as excinfo:
++        await admin_or_maintainer_access_only(request)
++
++    assert excinfo.value.code == status.HTTP_403_FORBIDDEN
++
++
++@pytest.mark.anyio
++@patch("codemie.rest_api.routers.settings.SettingsTransferService.transfer")
++@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
++async def test_transfer_is_guarded_by_admin_dependency(mock_authenticate, mock_transfer, admin_user):
++    """A denial from the admin guard blocks the route before the service is reached."""
++    # Arrange
++    mock_authenticate.return_value = admin_user
++
++    def _deny():
++        raise ExtendedHTTPException(
++            code=status.HTTP_403_FORBIDDEN,
++            message="Access denied",
++            details="This action requires administrator or maintainer privileges.",
++        )
++
++    app.dependency_overrides[admin_or_maintainer_access_only] = _deny
++
++    # Act / Assert
++    try:
++        transport = ASGITransport(app=app)
++        with pytest.raises(ExtendedHTTPException) as excinfo:
++            async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++                await ac.post(
++                    "/v1/settings/transfer",
++                    headers={"user-id": "admin-1"},
++                    json={"source_project_name": "source", "target_project_name": "target", "mode": "move"},
++                )
++
++        assert excinfo.value.code == status.HTTP_403_FORBIDDEN
++        mock_transfer.assert_not_called()
++    finally:
++        app.dependency_overrides = {}
++
++
++@pytest.mark.anyio
++@pytest.mark.parametrize(
++    "payload",
++    [
++        {"source_project_name": "source", "target_project_name": "target"},
++        {"source_project_name": "source", "target_project_name": "target", "mode": "teleport"},
++        {"source_project_name": "", "target_project_name": "target", "mode": "move"},
++    ],
++    ids=["missing-mode", "unsupported-mode", "blank-source"],
++)
++@patch("codemie.rest_api.routers.settings.SettingsTransferService.transfer")
++@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
++async def test_transfer_rejects_invalid_payload(mock_authenticate, mock_transfer, admin_user, payload):
++    # Arrange
++    mock_authenticate.return_value = admin_user
++
++    # Act
++    transport = ASGITransport(app=app)
++    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++        response = await ac.post("/v1/settings/transfer", headers={"user-id": "admin-1"}, json=payload)
++
++    # Assert
++    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
++    mock_transfer.assert_not_called()
++
++
++@pytest.mark.anyio
++@patch("codemie.rest_api.routers.settings.SettingsTransferService.transfer")
++@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
++async def test_transfer_propagates_service_errors(mock_authenticate, mock_transfer, admin_user):
++    # Arrange
++    mock_authenticate.return_value = admin_user
++    mock_transfer.side_effect = ExtendedHTTPException(
++        code=status.HTTP_409_CONFLICT, message="Alias conflict in target project", details="jira-prod"
++    )
++
++    # Act / Assert
++    transport = ASGITransport(app=app)
++    with pytest.raises(ExtendedHTTPException) as excinfo:
++        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++            await ac.post(
++                "/v1/settings/transfer",
++                headers={"user-id": "admin-1"},
++                json={"source_project_name": "source", "target_project_name": "target", "mode": "move"},
++            )
++
++    assert excinfo.value.code == status.HTTP_409_CONFLICT
+diff --git a/tests/codemie/service/settings/test_settings_transfer_service.py b/tests/codemie/service/settings/test_settings_transfer_service.py
+new file mode 100644
+index 000000000..b39b20464
+--- /dev/null
++++ b/tests/codemie/service/settings/test_settings_transfer_service.py
+@@ -0,0 +1,343 @@
++# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++"""Tests for the project integration transfer service and its request/response models."""
++
++from unittest.mock import MagicMock, patch
++
++import pytest
++from fastapi import status
++from pydantic import ValidationError
++
++from codemie.core.exceptions import ExtendedHTTPException
++from codemie.rest_api.models.settings import CredentialValues, Settings, SettingType
++from codemie.rest_api.models.settings_transfer import TransferMode, TransferSettingsRequest
++from codemie.service.settings.settings_transfer_service import SettingsTransferService
++from codemie_tools.base.models import CredentialTypes
++
++
++def _setting(alias, credential_type=CredentialTypes.JIRA, setting_type=SettingType.PROJECT, user_id="u1", id_=None):
++    return Settings(
++        id=id_ or f"id-{alias}",
++        project_name="source",
++        alias=alias,
++        credential_type=credential_type,
++        credential_values=[],
++        user_id=user_id,
++        setting_type=setting_type,
++    )
++
++
++class TestTransferSettingsRequest:
++    def test_accepts_move_and_copy(self):
++        # Arrange / Act
++        move = TransferSettingsRequest(source_project_name="x", target_project_name="y", mode="move")
++        copy = TransferSettingsRequest(source_project_name="x", target_project_name="y", mode="copy")
++
++        # Assert
++        assert move.mode is TransferMode.MOVE
++        assert copy.mode is TransferMode.COPY
++
++    def test_rejects_unknown_mode(self):
++        # Arrange / Act / Assert
++        with pytest.raises(ValidationError):
++            TransferSettingsRequest(source_project_name="x", target_project_name="y", mode="teleport")
++
++    def test_rejects_missing_mode(self):
++        # Arrange / Act / Assert
++        with pytest.raises(ValidationError):
++            TransferSettingsRequest(source_project_name="x", target_project_name="y")
++
++    def test_rejects_blank_project_name(self):
++        # Arrange / Act / Assert
++        with pytest.raises(ValidationError):
++            TransferSettingsRequest(source_project_name="", target_project_name="y", mode="move")
++
++
++class TestSelectCandidates:
++    def test_litellm_prefix_matches_budget_provider_adapter(self):
++        # Arrange
++        from codemie.enterprise.litellm.budget_provider_adapter import _PROJECT_KEY_ALIAS_PREFIX
++
++        # Assert
++        assert SettingsTransferService.LITELLM_PROJECT_KEY_ALIAS_PREFIX == _PROJECT_KEY_ALIAS_PREFIX
++
++    @patch("codemie.service.settings.settings_transfer_service.Settings.get_all_by_fields")
++    def test_drops_subsystem_managed_rows(self, mock_get_all):
++        # Arrange
++        keep = _setting("jira-prod")
++        mock_get_all.return_value = [
++            keep,
++            _setting("__internal__IDE_abc"),
++            _setting("codemie:project:source:category:premium_models", CredentialTypes.LITE_LLM),
++            _setting("Schedule_my-datasource", CredentialTypes.SCHEDULER),
++            _setting("project_member_budget_tracking_enabled", CredentialTypes.ENVIRONMENT_VARS),
++        ]
++
++        # Act
++        result = SettingsTransferService._select_candidates("source")
++
++        # Assert
++        assert [s.alias for s in result] == ["jira-prod"]
++        mock_get_all.assert_called_once_with({"project_name.keyword": "source"})
++
++    @patch("codemie.service.settings.settings_transfer_service.Settings.get_all_by_fields")
++    def test_keeps_both_setting_types(self, mock_get_all):
++        # Arrange
++        mock_get_all.return_value = [
++            _setting("project-cred", setting_type=SettingType.PROJECT),
++            _setting("user-cred", setting_type=SettingType.USER),
++        ]
++
++        # Act
++        result = SettingsTransferService._select_candidates("source")
++
++        # Assert
++        assert {s.alias for s in result} == {"project-cred", "user-cred"}
++
++
++class TestPartition:
++    def test_copy_skips_trigger_types(self):
++        # Arrange
++        jira = _setting("jira-prod", CredentialTypes.JIRA)
++        hook = _setting("gitlab-hook", CredentialTypes.WEBHOOK)
++        cron = _setting("nightly", CredentialTypes.SCHEDULER)
++
++        # Act
++        transferable, skipped = SettingsTransferService._partition([jira, hook, cron], TransferMode.COPY)
++
++        # Assert
++        assert [s.alias for s in transferable] == ["jira-prod"]
++        assert {s.alias for s in skipped} == {"gitlab-hook", "nightly"}
++
++    def test_move_skips_nothing(self):
++        # Arrange
++        rows = [
++            _setting("jira-prod", CredentialTypes.JIRA),
++            _setting("gitlab-hook", CredentialTypes.WEBHOOK),
++            _setting("nightly", CredentialTypes.SCHEDULER),
++        ]
++
++        # Act
++        transferable, skipped = SettingsTransferService._partition(rows, TransferMode.MOVE)
++
++        # Assert
++        assert len(transferable) == 3
++        assert skipped == []
++
++
++class TestValidateProjects:
++    def test_rejects_same_source_and_target(self):
++        # Arrange / Act / Assert
++        with pytest.raises(ExtendedHTTPException) as excinfo:
++            SettingsTransferService._validate_projects("same", "same")
++
++        assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
++
++    @patch("codemie.service.settings.settings_transfer_service.application_repository")
++    @patch("codemie.service.settings.settings_transfer_service.get_session")
++    def test_rejects_missing_source_project(self, mock_get_session, mock_repo):
++        # Arrange
++        mock_get_session.return_value.__enter__.return_value = MagicMock()
++        mock_repo.get_by_name.side_effect = [None, MagicMock(deleted_at=None)]
++
++        # Act / Assert
++        with pytest.raises(ExtendedHTTPException) as excinfo:
++            SettingsTransferService._validate_projects("missing", "target")
++
++        assert excinfo.value.code == status.HTTP_404_NOT_FOUND
++        assert "missing" in excinfo.value.details
++
++    @patch("codemie.service.settings.settings_transfer_service.application_repository")
++    @patch("codemie.service.settings.settings_transfer_service.get_session")
++    def test_rejects_soft_deleted_target_project(self, mock_get_session, mock_repo):
++        # Arrange
++        mock_get_session.return_value.__enter__.return_value = MagicMock()
++        mock_repo.get_by_name.side_effect = [MagicMock(deleted_at=None), MagicMock(deleted_at="2026-01-01")]
++
++        # Act / Assert
++        with pytest.raises(ExtendedHTTPException) as excinfo:
++            SettingsTransferService._validate_projects("source", "target")
++
++        assert excinfo.value.code == status.HTTP_404_NOT_FOUND
++
++
++class TestValidateAliases:
++    @patch("codemie.service.settings.settings_transfer_service.Settings.check_alias_unique")
++    def test_passes_when_no_collisions(self, mock_check):
++        # Arrange
++        mock_check.return_value = True
++        rows = [_setting("jira-prod"), _setting("git-main")]
++
++        # Act
++        SettingsTransferService._validate_aliases(rows, "target")
++
++        # Assert
++        assert mock_check.call_count == 2
++        assert mock_check.call_args_list[0].kwargs["setting_id"] is None
++        assert mock_check.call_args_list[0].kwargs["project_name"] == "target"
++
++    @patch("codemie.service.settings.settings_transfer_service.Settings.check_alias_unique")
++    def test_reports_every_colliding_alias(self, mock_check):
++        # Arrange
++        mock_check.side_effect = [ValueError("dup"), True, ValueError("dup")]
++        rows = [_setting("a"), _setting("b"), _setting("c")]
++
++        # Act / Assert
++        with pytest.raises(ExtendedHTTPException) as excinfo:
++            SettingsTransferService._validate_aliases(rows, "target")
++
++        assert excinfo.value.code == status.HTTP_409_CONFLICT
++        assert "a" in excinfo.value.details
++        assert "c" in excinfo.value.details
++
++    def test_rejects_row_with_empty_alias(self):
++        # Arrange
++        row = _setting("placeholder")
++        row.alias = None
++
++        # Act / Assert
++        with pytest.raises(ExtendedHTTPException) as excinfo:
++            SettingsTransferService._validate_aliases([row], "target")
++
++        assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
++        assert row.id in excinfo.value.details
++
++
++class TestTransfer:
++    def _session_mock(self, rows_by_id):
++        session = MagicMock()
++        session.get.side_effect = lambda model, id_: rows_by_id.get(id_)
++        return session
++
++    @patch("codemie.service.settings.settings_transfer_service.get_session")
++    @patch.object(SettingsTransferService, "_validate_aliases")
++    @patch.object(SettingsTransferService, "_validate_projects")
++    @patch.object(SettingsTransferService, "_select_candidates")
++    def test_move_updates_project_name_in_place(self, mock_select, _mock_projects, _mock_aliases, mock_get_session):
++        # Arrange
++        row = _setting("jira-prod", id_="row-1")
++        mock_select.return_value = [row]
++        session = self._session_mock({"row-1": row})
++        mock_get_session.return_value.__enter__.return_value = session
++
++        # Act
++        response = SettingsTransferService.transfer("source", "target", TransferMode.MOVE)
++
++        # Assert
++        assert row.project_name == "target"
++        assert row.id == "row-1"
++        assert response.transferred_count == 1
++        assert response.transferred[0].id == "row-1"
++        assert response.skipped_count == 0
++        session.commit.assert_called_once()
++
++    @patch("codemie.service.settings.settings_transfer_service.get_session")
++    @patch.object(SettingsTransferService, "_validate_aliases")
++    @patch.object(SettingsTransferService, "_validate_projects")
++    @patch.object(SettingsTransferService, "_select_candidates")
++    def test_copy_creates_new_row_and_leaves_source(self, mock_select, _mp, _ma, mock_get_session):
++        # Arrange
++        row = _setting("jira-prod", id_="row-1")
++        row.created_by = None
++        row.credential_values = [CredentialValues(key="token", value="test-fake-cipher")]
++        mock_select.return_value = [row]
++        session = self._session_mock({"row-1": row})
++        mock_get_session.return_value.__enter__.return_value = session
++
++        # Act
++        response = SettingsTransferService.transfer("source", "target", TransferMode.COPY)
++
++        # Assert
++        assert row.project_name == "source"
++        added = session.add.call_args_list[-1].args[0]
++        assert added.project_name == "target"
++        assert added.id != "row-1"
++        assert added.alias == "jira-prod"
++        assert added.user_id == row.user_id
++        assert added.credential_values[0].value == "test-fake-cipher"
++        assert added.credential_values is not row.credential_values
++        assert response.transferred[0].id == added.id
++        session.commit.assert_called_once()
++
++    @patch("codemie.enterprise.litellm.credentials.clear_litellm_user_credentials_cache")
++    @patch("codemie.service.settings.settings_transfer_service.get_session")
++    @patch.object(SettingsTransferService, "_validate_aliases")
++    @patch.object(SettingsTransferService, "_validate_projects")
++    @patch.object(SettingsTransferService, "_select_candidates")
++    def test_clears_litellm_cache_only_when_litellm_transferred(
++        self, mock_select, _mp, _ma, mock_get_session, mock_clear
++    ):
++        # Arrange
++        row = _setting("llm-key", CredentialTypes.LITE_LLM, id_="row-1")
++        mock_select.return_value = [row]
++        mock_get_session.return_value.__enter__.return_value = self._session_mock({"row-1": row})
++
++        # Act
++        SettingsTransferService.transfer("source", "target", TransferMode.MOVE)
++
++        # Assert
++        mock_clear.assert_called_once_with(None)
++
++    @patch("codemie.enterprise.litellm.credentials.clear_litellm_user_credentials_cache")
++    @patch("codemie.service.settings.settings_transfer_service.get_session")
++    @patch.object(SettingsTransferService, "_validate_aliases")
++    @patch.object(SettingsTransferService, "_validate_projects")
++    @patch.object(SettingsTransferService, "_select_candidates")
++    def test_no_cache_clear_without_litellm(self, mock_select, _mp, _ma, mock_get_session, mock_clear):
++        # Arrange
++        row = _setting("jira-prod", id_="row-1")
++        mock_select.return_value = [row]
++        mock_get_session.return_value.__enter__.return_value = self._session_mock({"row-1": row})
++
++        # Act
++        SettingsTransferService.transfer("source", "target", TransferMode.MOVE)
++
++        # Assert
++        mock_clear.assert_not_called()
++
++    @patch("codemie.service.settings.settings_transfer_service.get_session")
++    @patch.object(SettingsTransferService, "_validate_aliases")
++    @patch.object(SettingsTransferService, "_validate_projects")
++    @patch.object(SettingsTransferService, "_select_candidates")
++    def test_empty_source_returns_zero_counts_without_writing(self, mock_select, _mp, _ma, mock_get_session):
++        # Arrange
++        mock_select.return_value = []
++
++        # Act
++        response = SettingsTransferService.transfer("source", "target", TransferMode.MOVE)
++
++        # Assert
++        assert response.transferred_count == 0
++        assert response.transferred == []
++        assert "no transferable integrations" in response.message.lower()
++        mock_get_session.assert_not_called()
++
++    @patch("codemie.service.settings.settings_transfer_service.get_session")
++    @patch.object(SettingsTransferService, "_validate_aliases")
++    @patch.object(SettingsTransferService, "_validate_projects")
++    @patch.object(SettingsTransferService, "_select_candidates")
++    def test_copy_reports_skipped_trigger_types(self, mock_select, _mp, _ma, mock_get_session):
++        # Arrange
++        hook = _setting("gitlab-hook", CredentialTypes.WEBHOOK, id_="row-2")
++        mock_select.return_value = [hook]
++
++        # Act
++        response = SettingsTransferService.transfer("source", "target", TransferMode.COPY)
++
++        # Assert
++        assert response.transferred_count == 0
++        assert response.skipped_count == 1
++        assert response.skipped[0].alias == "gitlab-hook"
++        mock_get_session.assert_not_called()

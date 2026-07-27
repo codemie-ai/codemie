@@ -1,0 +1,10 @@
+﻿{
+  "schema": 1,
+  "flow": "sdlc-task",
+  "slug": "epmcdme-13666-move-copy-project-integrations",
+  "branch": "EPMCDME-13666_move-copy-project-integrations",
+  "phase": "maintenance",
+  "started_at": "2026-07-23T00:00:00Z",
+  "completed_at": "2026-07-23T16:20:00Z",
+  "last_sync_commit": "65c9bf32c554ea9475de21d62f3e4fc7c1dfb556"
+}
