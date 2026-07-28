@@ -14,6 +14,7 @@
 
 from codemie.core.constants import DatasourceTypes
 from codemie.datasource.exceptions import (
+    ConnectionException,
     InvalidQueryException,
     MissingIntegrationException,
     UnauthorizedException,
@@ -21,6 +22,7 @@ from codemie.datasource.exceptions import (
 )
 from codemie.datasource.confluence_datasource_processor import ConfluenceDatasourceProcessor
 from codemie.datasource.jira.jira_datasource_processor import JiraDatasourceProcessor
+from codemie.datasource.loader.git_loader import GitBatchLoader
 from codemie.datasource.loader.svn_loader import SVNBatchLoader
 from codemie.datasource.xray.xray_datasource_processor import XrayDatasourceProcessor
 from codemie.datasource.azure_devops_wiki.azure_devops_wiki_datasource_processor import (
@@ -50,8 +52,18 @@ class IndexHealthCheckService:
                     return cls.health_check_azure_devops_work_item(request, user_id)
                 case DatasourceTypes.SVN:
                     return cls.health_check_svn(request, user_id)
+                case DatasourceTypes.GIT:
+                    return cls.health_check_git(request, user_id)
                 case _:
                     return DatasourceHealthCheckResponse(implemented=False)
+        except ConnectionException as e:
+            return DatasourceHealthCheckResponse(
+                error=ErrorMessage(
+                    message=str(e),
+                    details=f"An error occurred while checking the connection: {str(e)}",
+                    help="Please check the repository URL and credentials, then try again.",
+                )
+            )
         except MissingIntegrationException as e:
             return DatasourceHealthCheckResponse(
                 error=ErrorMessage(
@@ -188,6 +200,30 @@ class IndexHealthCheckService:
             creds=svn_creds,
         )
         return DatasourceHealthCheckResponse(documents_count=stats.get(SVNBatchLoader.HEAD_REVISION_KEY, 0))
+
+    @classmethod
+    def health_check_git(cls, request: DatasourceHealthCheckRequest, user_id: str):
+        if not request.git_url:
+            return DatasourceHealthCheckResponse(
+                error=ErrorMessage(
+                    message="Git repository URL is required",
+                    details="Provide git_url in the request to test the Git connection.",
+                    help="Include the Git repository URL (e.g. https://github.com/owner/repo) in the request.",
+                    field_error="git_url",
+                )
+            )
+        if not request.setting_id:
+            GitBatchLoader.test_public_access(request.git_url)
+            return DatasourceHealthCheckResponse(documents_count=0)
+
+        git_creds = SettingsService.get_git_creds(
+            user_id=user_id,
+            project_name=request.project_name,
+            repo_link=request.git_url,
+            setting_id=request.setting_id,
+        )
+        GitBatchLoader.test_connection(request.git_url, git_creds)
+        return DatasourceHealthCheckResponse(documents_count=0)
 
     @classmethod
     def get_invalid_field(cls, index_type: str):

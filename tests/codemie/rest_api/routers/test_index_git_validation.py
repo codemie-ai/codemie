@@ -140,48 +140,48 @@ class TestCreateDatasourceValidation:
         assert exc_info.value.message == "Invalid Git Integration Configuration"
         assert "missing a required token" in exc_info.value.details
 
+    @patch('codemie.rest_api.routers.index.GitBatchLoader.test_public_access')
     @patch('codemie.rest_api.routers.index.ensure_application_exists')
     @patch('codemie.rest_api.routers.index.index_code_datasource_in_background')
     @patch('codemie.rest_api.routers.index.Application.get_by_id')
     @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
     @patch('codemie.rest_api.routers.index.request_summary_manager.create_request_summary')
-    def test_create_datasource_without_setting_id_skips_validation(
+    def test_create_datasource_without_setting_id_probes_public_access(
         self,
         mock_summary,
         mock_index_filter,
         mock_get_app,
         mock_index_bg,
         mock_ensure_app,
+        mock_test_public_access,
     ):
-        """Test that creating a datasource without git integration skips validation."""
+        """Test that creating a datasource without integration probes public accessibility."""
         from codemie.rest_api.routers.index import create_index_application
 
         mock_index_filter.return_value = []
-
         mock_app = Mock()
         mock_app.name = "test-app"
         mock_get_app.return_value = mock_app
+        mock_test_public_access.return_value = None  # public access succeeds
 
         mock_request = Mock()
         mock_request.state.uuid = "uuid123"
         mock_request.state.user.is_demo_user = False
-        mock_user_model = Mock()
-        mock_request.state.user.as_user_model.return_value = mock_user_model
+        mock_request.state.user.as_user_model.return_value = Mock()
 
         mock_user = Mock()
         mock_user.id = "user123"
 
         create_git_repo_request = CreateIndexRequest(
             name="test-repo",
-            link="https://gitlab.com/repo",
+            link="https://github.com/owner/public-repo",
             branch="main",
-            setting_id=None,  # No git integration
+            setting_id=None,
             description="Test repo",
             index_type="code",
             guardrail_assignments=None,
         )
 
-        # Act - should not raise exception
         result = create_index_application(
             app_name="test-app",
             create_git_repo_request=create_git_repo_request,
@@ -190,8 +190,197 @@ class TestCreateDatasourceValidation:
             user=mock_user,
         )
 
-        # Assert - should succeed (using datasource name, not project name)
+        mock_test_public_access.assert_called_once_with("https://github.com/owner/public-repo")
         assert result.message == "Indexing of datasource test-repo has been started in the background"
+
+    @patch('codemie.rest_api.routers.index.GitBatchLoader.test_public_access')
+    @patch('codemie.rest_api.routers.index.ensure_application_exists')
+    @patch('codemie.rest_api.routers.index.Application.get_by_id')
+    @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
+    @patch('codemie.rest_api.routers.index.request_summary_manager.create_request_summary')
+    def test_create_datasource_public_repo_inaccessible(
+        self,
+        mock_summary,
+        mock_index_filter,
+        mock_get_app,
+        mock_ensure_app,
+        mock_test_public_access,
+    ):
+        """Test that creating a datasource with inaccessible public URL raises 422."""
+        from codemie.datasource.exceptions import ConnectionException
+        from codemie.rest_api.routers.index import create_index_application
+
+        mock_index_filter.return_value = []
+        mock_app = Mock()
+        mock_app.name = "test-app"
+        mock_get_app.return_value = mock_app
+        mock_test_public_access.side_effect = ConnectionException("git", "Repository not publicly accessible")
+
+        mock_request = Mock()
+        mock_request.state.uuid = "uuid123"
+        mock_request.state.user.is_demo_user = False
+        mock_request.state.user.as_user_model.return_value = Mock()
+
+        mock_user = Mock()
+        mock_user.id = "user123"
+
+        create_git_repo_request = CreateIndexRequest(
+            name="test-repo",
+            link="https://github.com/owner/private-repo",
+            branch="main",
+            setting_id=None,
+            description="Test repo",
+            index_type="code",
+            guardrail_assignments=None,
+        )
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            create_index_application(
+                app_name="test-app",
+                create_git_repo_request=create_git_repo_request,
+                request=mock_request,
+                tasks=Mock(),
+                user=mock_user,
+            )
+
+        assert exc_info.value.code == 422
+        assert exc_info.value.message == "Repository Not Publicly Accessible"
+        assert "Please select a Git integration" in exc_info.value.details
+
+    @patch('codemie.rest_api.routers.index.GitBatchLoader.test_public_access')
+    @patch('codemie.rest_api.routers.index.update_code_datasource_in_background')
+    @patch('codemie.rest_api.routers.index.GitRepo.get_by_app_id')
+    @patch('codemie.rest_api.routers.index.Application.get_by_id')
+    @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
+    @patch('codemie.rest_api.routers.index.request_summary_manager.create_request_summary')
+    @patch('codemie.rest_api.routers.index.Ability')
+    def test_reindex_public_repo_probes_accessibility(
+        self,
+        mock_ability,
+        mock_summary,
+        mock_index_info,
+        mock_get_app,
+        mock_get_repos,
+        mock_update_bg,
+        mock_test_public_access,
+    ):
+        """Test that reindexing a datasource with setting_id=None probes public accessibility."""
+        from codemie.rest_api.routers.index import update_index_application
+
+        mock_index = Mock()
+        mock_index.project_name = "test-project"
+        mock_index.index_type = "git"
+        mock_index_info.return_value = [mock_index]
+
+        mock_ability_instance = Mock()
+        mock_ability_instance.can.return_value = True
+        mock_ability.return_value = mock_ability_instance
+
+        mock_app = Mock()
+        mock_app.name = "test-app"
+        mock_get_app.return_value = mock_app
+
+        mock_repo = Mock()
+        mock_repo.name = "test-repo"
+        mock_repo.link = "https://github.com/owner/public-repo"
+        mock_repo.setting_id = None  # previously created without integration
+        mock_get_repos.return_value = [mock_repo]
+
+        mock_test_public_access.return_value = None
+
+        mock_request = Mock()
+        mock_request.name = None
+        mock_request.model_fields_set = set()
+
+        mock_raw_request = Mock()
+        mock_raw_request.state.uuid = "uuid123"
+
+        mock_user = Mock()
+        mock_user.id = "user123"
+        mock_user.as_user_model.return_value = Mock()
+
+        update_index_application(
+            app_name="test-app",
+            repo_name="test-repo",
+            tasks=Mock(),
+            request=mock_request,
+            raw_request=mock_raw_request,
+            full_reindex=True,
+            skip_reindex=False,
+            resume_indexing=False,
+            user=mock_user,
+        )
+
+        mock_test_public_access.assert_called_once_with("https://github.com/owner/public-repo")
+
+    @patch('codemie.rest_api.routers.index.GitBatchLoader.test_public_access')
+    @patch('codemie.rest_api.routers.index.update_code_datasource_in_background')
+    @patch('codemie.rest_api.routers.index.GitRepo.get_by_app_id')
+    @patch('codemie.rest_api.routers.index.Application.get_by_id')
+    @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
+    @patch('codemie.rest_api.routers.index.request_summary_manager.create_request_summary')
+    @patch('codemie.rest_api.routers.index.Ability')
+    def test_reindex_public_repo_inaccessible(
+        self,
+        mock_ability,
+        mock_summary,
+        mock_index_info,
+        mock_get_app,
+        mock_get_repos,
+        mock_update_bg,
+        mock_test_public_access,
+    ):
+        """Test that reindexing raises 422 when public repo becomes inaccessible."""
+        from codemie.datasource.exceptions import ConnectionException
+        from codemie.rest_api.routers.index import update_index_application
+
+        mock_index = Mock()
+        mock_index.project_name = "test-project"
+        mock_index.index_type = "git"
+        mock_index_info.return_value = [mock_index]
+
+        mock_ability_instance = Mock()
+        mock_ability_instance.can.return_value = True
+        mock_ability.return_value = mock_ability_instance
+
+        mock_app = Mock()
+        mock_app.name = "test-app"
+        mock_get_app.return_value = mock_app
+
+        mock_repo = Mock()
+        mock_repo.name = "test-repo"
+        mock_repo.link = "https://github.com/owner/now-private-repo"
+        mock_repo.setting_id = None
+        mock_get_repos.return_value = [mock_repo]
+
+        mock_test_public_access.side_effect = ConnectionException("git", "Repository not publicly accessible")
+
+        mock_request = Mock()
+        mock_request.name = None
+        mock_request.model_fields_set = set()
+
+        mock_raw_request = Mock()
+        mock_raw_request.state.uuid = "uuid123"
+
+        mock_user = Mock()
+        mock_user.id = "user123"
+        mock_user.as_user_model.return_value = Mock()
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            update_index_application(
+                app_name="test-app",
+                repo_name="test-repo",
+                tasks=Mock(),
+                request=mock_request,
+                raw_request=mock_raw_request,
+                full_reindex=True,
+                skip_reindex=False,
+                resume_indexing=False,
+                user=mock_user,
+            )
+
+        assert exc_info.value.code == 422
+        assert exc_info.value.message == "Repository Not Publicly Accessible"
 
 
 class TestReindexValidation:

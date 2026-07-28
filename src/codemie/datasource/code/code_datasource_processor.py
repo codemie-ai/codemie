@@ -110,12 +110,14 @@ class CodeDatasourceProcessor(BaseDatasourceProcessor):
         self.repo.save()
 
     def _init_loader(self) -> GitBatchLoader:
-        creds = SettingsService.get_git_creds(
-            user_id=self.user.id,
-            project_name=self.index.project_name,
-            repo_link=self.repo.link,
-            setting_id=self.index.setting_id,
-        )
+        creds = None
+        if self.index.setting_id is not None:
+            creds = SettingsService.get_git_creds(
+                user_id=self.user.id,
+                project_name=self.index.project_name,
+                repo_link=self.repo.link,
+                setting_id=self.index.setting_id,
+            )
         return GitBatchLoader.create_loader(
             self.repo,
             creds,

@@ -53,6 +53,7 @@ from codemie.datasource.confluence_datasource_processor import (
     ConfluenceDatasourceProcessor,
 )
 from codemie.datasource.datasources_config import STORAGE_CONFIG
+from codemie.datasource.exceptions import ConnectionException
 from codemie.datasource.loader.git_loader import GitBatchLoader
 from codemie.service.aws_bedrock.bedrock_knowledge_base_service import BedrockKnowledgeBaseService
 from codemie.service.provider.datasource import (
@@ -2404,7 +2405,17 @@ def _validate_git_credentials(user_id: str, project_name: str, repo_link: str, s
         ExtendedHTTPException: If credentials are invalid or missing required fields
     """
     if not setting_id:
-        # No git integration configured, skip validation
+        try:
+            GitBatchLoader.test_public_access(repo_link)
+        except ConnectionException:
+            raise ExtendedHTTPException(
+                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message="Repository Not Publicly Accessible",
+                details="The repository URL is not accessible without authentication. "
+                "Please select a Git integration to provide credentials.",
+                help="Go to Settings > Integrations and add a Git integration, "
+                "then select it when creating the datasource.",
+            )
         return
 
     try:

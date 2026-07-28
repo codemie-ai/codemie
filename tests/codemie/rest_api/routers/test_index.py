@@ -238,6 +238,7 @@ def mock_create_processor() -> Generator[MagicMock, None, None]:
         yield mocked_processor_cls
 
 
+@patch('codemie.rest_api.routers.index.GitBatchLoader.test_public_access')
 @patch('codemie.rest_api.routers.index.SettingsService.get_git_creds')
 @patch('codemie.core.ability.Ability.can')
 @patch('codemie.rest_api.routers.index.IndexInfo.filter_by_project_and_repo')
@@ -265,6 +266,7 @@ async def test_index_application_link_with_spaces(
     mock_filter,
     mock_can,
     mock_get_creds,
+    mock_test_public_access,
     client_method: Callable,
     endpoint_format: str,
     existing_indexes: list,
@@ -275,6 +277,8 @@ async def test_index_application_link_with_spaces(
 ) -> None:
     # Mock git credentials validation
     mock_get_creds.return_value = MagicMock(token="test_token")
+    # No git integration is selected in the payload, so the router probes public access
+    mock_test_public_access.return_value = None
     expected_response = f"{expected_response} of datasource demo has been started in the background"
     expected_created_status_code = status.HTTP_201_CREATED
     for idx in existing_indexes:

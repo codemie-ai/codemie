@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
 import os
 import unittest
 from unittest.mock import patch, mock_open, MagicMock, Mock
@@ -23,6 +24,7 @@ from langchain_core.documents import Document
 from codemie.core.constants import CodeIndexType
 from codemie.core.models import GitRepo
 from codemie.core.utils import check_file_type
+from codemie.datasource.exceptions import ConnectionException
 from codemie.datasource.loader.git_loader import GitBatchLoader, _build_clone_url, _has_null_bytes
 from codemie.rest_api.models.settings import Credentials, GitAuthType
 
@@ -429,6 +431,88 @@ class TestGitBatchLoader(unittest.TestCase):
             request_uuid=None,
             datasource_id="",
         )
+
+    @patch('codemie.datasource.loader.git_loader.git_cmd.Git')
+    def test_test_public_access_success(self, mock_git_cls):
+        """test_public_access returns None when ls-remote succeeds."""
+        mock_git_cls.return_value.execute.return_value = "abc123\tHEAD"
+        # Should not raise
+        GitBatchLoader.test_public_access("https://github.com/owner/public-repo")
+
+    @patch('codemie.datasource.loader.git_loader.git_cmd.Git')
+    def test_test_public_access_git_command_error(self, mock_git_cls):
+        """test_public_access raises ConnectionException on GitCommandError."""
+        from git.exc import GitCommandError
+
+        mock_git_cls.return_value.execute.side_effect = GitCommandError("ls-remote", 128)
+        with pytest.raises(ConnectionException):
+            GitBatchLoader.test_public_access("https://github.com/owner/private-repo")
+
+    @patch('codemie.datasource.loader.git_loader.git_cmd.Git')
+    def test_test_public_access_generic_exception(self, mock_git_cls):
+        """test_public_access raises ConnectionException on any other exception (e.g. timeout)."""
+        mock_git_cls.return_value.execute.side_effect = Exception("timed out")
+        with pytest.raises(ConnectionException):
+            GitBatchLoader.test_public_access("https://github.com/owner/slow-repo")
+
+    @patch('codemie.datasource.loader.git_loader.git_cmd.Git')
+    def test_test_connection_uses_auth_url(self, mock_git_cls):
+        """test_connection builds an auth URL from creds and runs ls-remote on it."""
+        mock_execute = mock_git_cls.return_value.execute
+        mock_execute.return_value = "abc123\tHEAD"
+
+        creds = Credentials(
+            url="https://github.com",
+            token="mytoken",
+            token_name="oauth2",
+            auth_type="pat",
+        )
+        GitBatchLoader.test_connection("https://github.com/owner/repo", creds)
+
+        # The execute call must receive the auth-embedded URL, not the plain one
+        cmd_list = mock_execute.call_args[0][0]  # first positional arg is the command list
+        auth_url = cmd_list[cmd_list.index("--quiet") + 1]
+        assert "mytoken" in auth_url, f"Expected auth URL after --quiet, got: {cmd_list}"
+        assert "-c" not in cmd_list, f"No extraHeader expected without header auth, got: {cmd_list}"
+
+    @patch('codemie.datasource.loader.git_loader.git_cmd.Git')
+    def test_test_connection_uses_header_auth(self, mock_git_cls):
+        """test_connection adds the http.extraHeader option when creds use header auth."""
+        mock_execute = mock_git_cls.return_value.execute
+        mock_execute.return_value = "abc123\tHEAD"
+
+        creds = Credentials(
+            url="https://onprem.example.com",
+            token="mytoken",
+            token_name="oauth2",
+            auth_type="pat",
+            use_header_auth=True,
+        )
+        GitBatchLoader.test_connection("https://onprem.example.com/owner/repo", creds)
+
+        # Must mirror create_loader: -c http.extraHeader=... placed before the ls-remote subcommand
+        cmd_list = mock_execute.call_args[0][0]
+        assert "-c" in cmd_list, f"Expected header auth option, got: {cmd_list}"
+        header_option = cmd_list[cmd_list.index("-c") + 1]
+        expected_token = base64.b64encode(b":mytoken").decode()
+        assert header_option == f"http.extraHeader=Authorization: Basic {expected_token}"
+        assert cmd_list.index("-c") < cmd_list.index("ls-remote")
+
+    @patch('codemie.datasource.loader.git_loader.git_cmd.Git')
+    def test_test_connection_raises_on_failure(self, mock_git_cls):
+        """test_connection raises ConnectionException when ls-remote fails."""
+        from git.exc import GitCommandError
+
+        mock_git_cls.return_value.execute.side_effect = GitCommandError("ls-remote", 128)
+
+        creds = Credentials(
+            url="https://github.com",
+            token="mytoken",
+            token_name="oauth2",
+            auth_type="pat",
+        )
+        with pytest.raises(ConnectionException):
+            GitBatchLoader.test_connection("https://github.com/owner/private-repo", creds)
 
 
 @pytest.fixture

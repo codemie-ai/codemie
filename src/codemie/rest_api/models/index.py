@@ -1408,6 +1408,7 @@ class DatasourceHealthCheckRequest(BaseModel):
     setting_id: Optional[str] = None
     svn_repo_url: Optional[str] = None
     svn_branch: Optional[str] = "trunk"
+    git_url: Optional[str] = None
 
 
 class ErrorMessage(BaseModel):
