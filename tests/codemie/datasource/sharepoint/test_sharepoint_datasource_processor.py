@@ -897,3 +897,39 @@ class TestEncryptDecryptOauthToken:
 
         assert result == "plain-token"
         mock_service.decrypt.assert_called_once_with("encrypted-value")
+
+
+class TestSharePointMultiChunkRetrievability:
+    """Every chunk of a SharePoint file must keep a distinct identity."""
+
+    def test_pdf_pages_spanning_two_batches_get_unique_identities(self, sharepoint_processor):
+        source = "https://tenant.sharepoint.com/sites/testsite/report.pdf"
+        pages = [
+            Document(
+                page_content=f"Content of page {n}.",
+                metadata={"source": source, "title": "report.pdf", "type": "document", "page": n},
+            )
+            for n in range(1, 26)
+        ]
+
+        first_batch = sharepoint_processor._split_documents(pages[:20])
+        second_batch = sharepoint_processor._split_documents(pages[20:])
+
+        chunks = first_batch[source] + second_batch[source]
+        identities = [(doc.metadata["source"], doc.metadata["chunk_num"]) for doc in chunks]
+
+        assert len(chunks) == 25
+        assert len(set(identities)) == 25
+
+    def test_docx_chunks_keep_their_numbers(self, sharepoint_processor):
+        source = "https://tenant.sharepoint.com/sites/testsite/handbook.docx"
+        document = Document(
+            page_content="word " * 6000,
+            metadata={"source": source, "title": "handbook.docx", "type": "document"},
+        )
+
+        result = sharepoint_processor._split_documents([document])
+
+        chunks = result[source]
+        assert len(chunks) > 1
+        assert len({doc.metadata["chunk_num"] for doc in chunks}) == len(chunks)

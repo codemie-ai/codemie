@@ -97,6 +97,7 @@ class BaseDatasourceProcessor(ABC):
         self.request_uuid = request_uuid
         self.guardrail_assignments = guardrail_assignments
         self.cron_expression = cron_expression
+        self._reset_chunk_numbering()
         if user:
             set_logging_info(uuid=request_uuid, user_id=user.id, user_email=user.username)
         # Capture the active OTel context from the HTTP handler thread so that process(),
@@ -574,6 +575,21 @@ class BaseDatasourceProcessor(ABC):
             guardrail_assignments=self.guardrail_assignments,
         )
 
+    def _reset_chunk_numbering(self) -> None:
+        """Begin a fresh per-source chunk sequence for a new indexing run."""
+        self._chunk_counters: dict[Optional[str], int] = defaultdict(int)
+
+    def _next_chunk_num(self, identity_key: Optional[str]) -> int:
+        """Return the next 1-based chunk number for ``identity_key``.
+
+        The counter spans the whole indexing run rather than a single batch. A file larger
+        than the loader batch size is split across several ``_split_documents`` calls, and
+        per-batch numbering would restart mid-file, giving two of its chunks the same
+        identity and collapsing them at retrieval.
+        """
+        self._chunk_counters[identity_key] += 1
+        return self._chunk_counters[identity_key]
+
     def _split_documents(self, docs: list[Document]) -> dict[str, list[Document]]:
         """
         Splits a list of documents into smaller chunks and organizes them into a dictionary.
@@ -581,7 +597,7 @@ class BaseDatasourceProcessor(ABC):
         This method performs the following steps:
         1. Iterates over each document in the provided list.
         2. Uses a text splitter to split the document's content into smaller chunks.
-        3. Assigns metadata to each chunk, including a unique identifier if the document is split into multiple chunks.
+        3. Assigns metadata to each chunk, including a chunk number unique within its source file.
         4. Processes each chunk and adds it to a list associated with the document's key.
         5. Skips a document if it doesn't have any chunks.
         6. Returns a dictionary where the keys are document identifiers and the values are lists of document chunks.
@@ -605,13 +621,23 @@ class BaseDatasourceProcessor(ABC):
         documents_dict: dict[str, list[Document]] = defaultdict(list)
         for document in docs:
             split_chunks = self._get_splitter(document).split_text(document.page_content)
-            chunk_list = []
-            for chunk_number, chunk in enumerate(split_chunks, start=1):
-                chunk_metadata = document.metadata.copy()
-                if len(split_chunks) > 1:
-                    chunk_metadata["chunk_num"] = chunk_number
-                chunk_list.append(self._process_chunk(chunk, chunk_metadata, document))
             document_key = document.metadata.get("file_path", document.metadata.get(self.SOURCE))
+            # Numbering is keyed on the source, not on document_key: retrieval identifies a
+            # chunk by source plus chunk_num, and a compound file (an email body and its
+            # attachments, a zip's members) yields documents that share one source while
+            # carrying different file_path values. Counting per document_key would restart
+            # those at 1 and make their identities collide.
+            identity_key = document.metadata.get(self.SOURCE, document_key)
+            chunk_list = []
+            for chunk in split_chunks:
+                chunk_number = self._next_chunk_num(identity_key)
+                chunk_metadata = document.metadata.copy()
+                chunk_metadata["chunk_num"] = chunk_number
+                processed_chunk = self._process_chunk(chunk, chunk_metadata, document)
+                # Subclasses rebuild metadata from their own whitelist, so the chunk number is
+                # re-applied here: chunk identity is the base class's contract, not theirs.
+                processed_chunk.metadata["chunk_num"] = chunk_number
+                chunk_list.append(processed_chunk)
             # Fix: append to existing list if key exists
             documents_dict[document_key].extend(chunk_list)
         for callback in self.callbacks:
@@ -663,6 +689,7 @@ class BaseDatasourceProcessor(ABC):
         embeddings_model = llm_service.get_embedding_deployment_name(self.index.embeddings_model)
         store = self._get_store_by_index(self._index_name, embeddings_model)
         store._store._create_index_if_not_exists()
+        self._reset_chunk_numbering()
         docs_batch = []
         loaded_docs = 0
         initial_complete_state = index.complete_state

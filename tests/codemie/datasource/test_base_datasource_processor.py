@@ -548,3 +548,147 @@ def test_create_or_update_scheduler_none_cron_skips_handle(mock_handle, processo
     processor._create_or_update_scheduler()
 
     mock_handle.assert_not_called()
+class SourceKeyedProcessor(ConcreteDatasourceProcessor):
+    """Uses the production metadata key so document grouping matches real connectors."""
+
+    SOURCE = "source"
+
+
+class MetadataStrippingProcessor(SourceKeyedProcessor):
+    """Mirrors SharePoint, Jira and the other connectors that rebuild chunk metadata."""
+
+    def _process_chunk(self, chunk: str, chunk_metadata, document: Document) -> Document:
+        return Document(
+            page_content=chunk,
+            metadata={"source": document.metadata.get("source", "")},
+        )
+
+
+class TestChunkIdentity:
+    """Chunk numbering is the base class's contract, not the subclass's."""
+
+    def test_single_chunk_documents_are_numbered(self, mock_user, mock_index):
+        processor = SourceKeyedProcessor("ds", mock_user, mock_index)
+        page = Document(page_content="short page", metadata={"source": "https://host/file.pdf"})
+
+        result = processor._split_documents([page])
+
+        assert [doc.metadata["chunk_num"] for doc in result["https://host/file.pdf"]] == [1]
+
+    def test_numbering_continues_across_batches(self, mock_user, mock_index):
+        processor = SourceKeyedProcessor("ds", mock_user, mock_index)
+        source = "https://host/file.pdf"
+        first_page = Document(page_content="page one text", metadata={"source": source})
+        second_page = Document(page_content="page two text", metadata={"source": source})
+
+        first_batch = processor._split_documents([first_page])
+        second_batch = processor._split_documents([second_page])
+
+        assert [doc.metadata["chunk_num"] for doc in first_batch[source]] == [1]
+        assert [doc.metadata["chunk_num"] for doc in second_batch[source]] == [2]
+
+    def test_metadata_stripping_subclass_still_gets_chunk_num(self, mock_user, mock_index):
+        processor = MetadataStrippingProcessor("ds", mock_user, mock_index)
+        source = "https://host/file.docx"
+        document = Document(page_content="body", metadata={"source": source, "title": "T"})
+
+        result = processor._split_documents([document])
+
+        assert result[source][0].metadata["chunk_num"] == 1
+
+    def test_numbering_is_independent_per_file(self, mock_user, mock_index):
+        processor = SourceKeyedProcessor("ds", mock_user, mock_index)
+        first = Document(page_content="alpha", metadata={"source": "https://host/a.pdf"})
+        second = Document(page_content="beta", metadata={"source": "https://host/b.pdf"})
+
+        result = processor._split_documents([first, second])
+
+        assert result["https://host/a.pdf"][0].metadata["chunk_num"] == 1
+        assert result["https://host/b.pdf"][0].metadata["chunk_num"] == 1
+
+    def test_documents_sharing_a_source_share_one_sequence(self, mock_user, mock_index):
+        """A compound file (.msg body plus attachments, a .zip's members) yields documents
+        that share one source but carry different file_path values. Chunk identity at
+        retrieval is source plus chunk_num, so those documents must share one sequence."""
+        processor = SourceKeyedProcessor("ds", mock_user, mock_index)
+        source = "https://host/mail.msg"
+        body = Document(page_content="mail body", metadata={"source": source})
+        attachment = Document(
+            page_content="attachment text",
+            metadata={"source": source, "file_path": "report.pdf"},
+        )
+
+        result = processor._split_documents([body, attachment])
+
+        identities = [
+            (doc.metadata["source"], doc.metadata["chunk_num"]) for chunks in result.values() for doc in chunks
+        ]
+        assert len(identities) == 2
+        assert len(set(identities)) == 2
+
+    def test_chunk_numbering_restarts_on_a_new_run(self, mock_user, mock_index):
+        """The counter spans one indexing run. A processor reused for a second run must
+        restart, or the second run's chunks are numbered past the first run's."""
+        processor = SourceKeyedProcessor("ds", mock_user, mock_index)
+        source = "https://host/file.pdf"
+        page = Document(page_content="page text", metadata={"source": source})
+
+        processor._split_documents([page])
+        processor._reset_chunk_numbering()
+        second_run = processor._split_documents([page])
+
+        assert [doc.metadata["chunk_num"] for doc in second_run[source]] == [1]
+
+    def test_chunk_counters_initialized_on_construction(self, mock_user, mock_index):
+        """The reset in the indexing entry point is only meaningful if the attribute is a
+        real, always-present piece of state rather than lazily conjured on first use."""
+        processor = SourceKeyedProcessor("ds", mock_user, mock_index)
+
+        assert processor._chunk_counters == {}
+
+
+class TestChunkNumberingResetsPerRun:
+    """The reset lives in the indexing entry point, so it is tested through it."""
+
+    @patch('codemie.datasource.base_datasource_processor.request_summary_manager')
+    @patch('codemie.datasource.base_datasource_processor.ElasticSearchClient')
+    @patch('codemie.datasource.base_datasource_processor.llm_service')
+    @patch.object(SourceKeyedProcessor, '_update_complete_state_estimate')
+    @patch.object(SourceKeyedProcessor, '_get_store_by_index')
+    def test_second_run_restarts_numbering(
+        self,
+        mock_get_store,
+        mock_update_state,
+        mock_llm_service,
+        mock_es_client,
+        mock_rsm,
+        mock_user,
+        mock_index,
+    ):
+        mock_store = MagicMock()
+        mock_store._store._create_index_if_not_exists.return_value = None
+        mock_store.embeddings.consume_last_usage.return_value = None
+        mock_get_store.return_value = mock_store
+        mock_llm_service.get_embedding_deployment_name.return_value = "emb-model"
+        mock_es_client.get_client.return_value.indices.exists.return_value.meta.status = 404
+        mock_index.embeddings_model = "text-embedding-3-small"
+        mock_index.complete_state = 0
+
+        processor = SourceKeyedProcessor("ds", mock_user, mock_index)
+        processor.index = mock_index
+
+        source = "https://host/file.pdf"
+        assigned_numbers = []
+
+        def split_and_record(docs, index, store):
+            for chunks in processor._split_documents(docs).values():
+                assigned_numbers.extend(doc.metadata["chunk_num"] for doc in chunks)
+            return len(docs)
+
+        with patch.object(SourceKeyedProcessor, '_process_batch', side_effect=split_and_record):
+            for _ in range(2):
+                loader = MagicMock()
+                loader.lazy_load.return_value = iter([Document(page_content="page text", metadata={"source": source})])
+                processor._load_and_process_documents(loader=loader, index=mock_index, batch_size=10)
+
+        assert assigned_numbers == [1, 1]

@@ -176,10 +176,14 @@ class FileDatasourceProcessor(BaseDatasourceProcessor):
         return pre_processed_documents
 
     def _process_chunks(self, documents: List[Document]) -> None:
-        counter = 1
+        """Number chunks through the run-wide per-source allocator.
+
+        Retrieval identifies a chunk by source plus chunk_num. A local counter would
+        restart at 1 for every batch, so a source split across loader batches would
+        produce colliding identities and RRF deduplication would drop its later chunks.
+        """
         for document in documents:
-            document.metadata["chunk_num"] = counter
-            counter += 1
+            document.metadata["chunk_num"] = self._next_chunk_num(document.metadata.get(self.SOURCE))
 
     @classmethod
     def _get_splitter(cls, document: Document = None) -> Union[RecursiveCharacterTextSplitter, RecursiveJsonSplitter]:
@@ -319,10 +323,11 @@ class FileDatasourceProcessor(BaseDatasourceProcessor):
                 json_documents_dict[document_key].extend(split_docs)
         for callback in self.callbacks:
             callback.on_split_documents(docs)
-        # Add chunk number.
+        # Chunk numbers are assigned unconditionally: identity must be stable even for a
+        # single-chunk group, because more chunks of the same source may arrive in a
+        # later batch.
         for docs in json_documents_dict.values():
-            if len(docs) > 1:
-                self._process_chunks(docs)
+            self._process_chunks(docs)
         return json_documents_dict
 
     def _split_list_with_documents(self, docs: List[Document]) -> dict[str, List[Document]]:
@@ -353,10 +358,11 @@ class FileDatasourceProcessor(BaseDatasourceProcessor):
             list_documents_dict[document_key].extend(chunk_list)
         for callback in self.callbacks:
             callback.on_split_documents(docs)
-        # Add chunk number.
+        # Chunk numbers are assigned unconditionally: identity must be stable even for a
+        # single-chunk group, because more chunks of the same source may arrive in a
+        # later batch.
         for docs in list_documents_dict.values():
-            if len(docs) > 1:
-                self._process_chunks(docs)
+            self._process_chunks(docs)
         return list_documents_dict
 
     def _split_documents(self, docs: list[Document]) -> dict[str, list[Document]]:

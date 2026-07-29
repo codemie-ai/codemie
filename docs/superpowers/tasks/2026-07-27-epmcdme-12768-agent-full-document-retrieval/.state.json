@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-task",
+  "slug": "epmcdme-12768-agent-full-document-retrieval",
+  "branch": "EPMCDME-12768_sharepoint-multipage-doc-indexing",
+  "phase": "maintenance",
+  "started_at": "2026-07-27T00:00:00Z",
+  "completed_at": "2026-07-27T00:00:00Z",
+  "last_sync_commit": "1a6e76c718aa83fc9fe37a79585f7d200e1f7620"
+}

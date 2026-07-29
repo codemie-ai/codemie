@@ -99,6 +99,9 @@ class SearchAndRerankKB(SearchAndRerankBase):
         self.chain = KBSourcesSelectorChain(
             query=self.query, sources=[], llm_model=self.llm_model, request_id=self.request_id
         )
+        # Number of indexed chunks per source, captured from the routing aggregation.
+        # Lets the tool response state how much of a document it actually carries.
+        self.source_chunk_totals: dict[str, int] = {}
 
     @staticmethod
     def _get_meta_search_fields() -> tuple[str, str, str]:
@@ -208,6 +211,9 @@ class SearchAndRerankKB(SearchAndRerankBase):
         # Process the aggregation results
         for bucket in results.get("aggregations", {}).get("unique_sources", {}).get("buckets", []):
             chunks_count = bucket["doc_count"]  # Number of chunks for this source
+            # Recorded for every source, including the ones excluded from routing below:
+            # the tool response needs the total to say how much of a document it carries.
+            self.source_chunk_totals[bucket["key"]] = chunks_count
 
             # Only include sources with manageable chunk counts
             if chunks_count <= self.MAX_CHUNKS_FOR_SINGLE_DOCUMENT:

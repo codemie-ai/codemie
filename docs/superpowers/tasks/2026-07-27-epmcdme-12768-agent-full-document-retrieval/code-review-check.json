@@ -1,0 +1,40 @@
+{
+  "decision": "request-changes",
+  "rationale": "Three of the four original findings are resolved and verified. CR-001 was resolved by reverting the offending commit wholesale — confirmed byte-identical to its pre-change state, the delimiter constant gone from the tree, and the nine modules sharing that delimiter unaffected again. CR-002 and CR-003 were fixed in place and their tests strengthened rather than loosened. CR-004 remains open by explicit user decision to defer, and the check round records honestly that the deferral leaves the shipped notice actively misleading for documents above the routing ceiling, not merely incomplete: such sources can never be routed, so the advice to retry with a narrower query cannot succeed, and the fix-up made that text more prominent by moving it to the head where truncation can no longer remove it. The check round also surfaced one new major issue (CR-005) introduced by the CR-003 fix — the unverified-coverage path shipped a bare part count with no caution, which reads as reassurance beside a verified count. It was fixed inline in this same round with its own failing-first test. The decision stays request-changes because CR-004 is unresolved; it is recorded for the human, not for another automated round.",
+  "confidence": "high",
+  "risk_flags": ["shared-tool-output-format", "affects-all-datasources", "misleading-guidance-for-large-documents"],
+  "business_review": [
+    {"criterion": "A repeated request within one conversation obtains document content that the earlier response did not include.", "status": "partial", "notes": "Carried forward. Mechanism is indirect and no end-to-end verification is recorded for this run."},
+    {"criterion": "A response that omits part of a document states that it is partial, and a response that includes everything is distinguishable from one that does not.", "status": "pass", "notes": "Upgraded from partial: an unverified total is now stated explicitly instead of omitted, so the two are no longer identical in shape. The LLM-routing and Bedrock formatting paths remain outside this construction."},
+    {"criterion": "A partial response conveys what is missing and how to obtain it.", "status": "partial", "notes": "Carried forward. Counts and a remedy are stated, but not which parts are missing, and the remedy is unachievable for sources above the routing ceiling — see CR-004."},
+    {"criterion": "The model is instructed not to substitute its own content for a missing part.", "status": "pass", "notes": "Upgraded to hold on the unverified path too, after CR-005."},
+    {"criterion": "Shortening a response for replay preserves whole blocks and leaves the response an accurate description of itself.", "status": "na", "notes": "Withdrawn from this change: the implementation was reverted as a net regression. The criterion is unmet and the work is not attempted here."},
+    {"criterion": "Responses that omit nothing gain no misleading completeness claims.", "status": "pass", "notes": "Carried forward."}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow.md commit format", "status": "pass", "notes": "All commits including the revert use the documented form."},
+    {"standard": "code-quality.md", "status": "pass", "notes": "make ruff passes."},
+    {"standard": "security-patterns.md", "status": "na", "notes": "No security surface."},
+    {"standard": "No internal ticket ids or internal URLs in source", "status": "pass", "notes": "Confined to branch and commit subjects."}
+  ],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "Commit reverted; _truncate_text back to character truncation, SOURCE_DOCUMENT_DELIMITER absent from the tree, accompanying test removed."},
+    {"id": "CR-002", "status": "resolved", "notes": "Notice appended to the coverage lines in the head; pinned by test_notice_precedes_the_document_blocks. Residual: format_response cannot invalidate its own coverage line after downstream truncation — out of reach at this site."},
+    {"id": "CR-003", "status": "resolved", "notes": "An unverified total is stated rather than omitted; the test that pinned silence was rewritten into a positive contract assertion. Residual: the LLM-routing and Bedrock paths still build their own text."},
+    {"id": "CR-004", "status": "unresolved", "notes": "Deferred by explicit user decision. Verified untouched. Shipped guidance is misleading for documents above the routing ceiling."},
+    {"id": "CR-005", "status": "resolved", "notes": "New in this round: unverified coverage shipped without a guardrail. Fixed with a distinct notice and a failing-first test; the stale field comment and the total<=0 guard were corrected alongside."}
+  ],
+  "findings": [
+    {
+      "id": "CR-005",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["check-round"],
+      "file": "src/codemie/agents/tools/kb/search_kb.py",
+      "line": 215,
+      "problem": "The unverified-coverage branch introduced while fixing CR-003 emitted a bare part count and never set the incompleteness flag, so it was the only path shipping without the no-invention guardrail.",
+      "impact": "Beside a verified 'N of N' line, a bare count with no caution reads as completeness — more reassuring than the silence it replaced, on exactly the paths where completeness cannot be established.",
+      "recommendation": "Fixed in this round: a distinct unverified notice carries the guardrail and the retry instruction, the wording was changed to 'total not verified' so it cannot read as reassurance, and a total of zero is now treated as unverified rather than as a valid total."
+    }
+  ]
+}

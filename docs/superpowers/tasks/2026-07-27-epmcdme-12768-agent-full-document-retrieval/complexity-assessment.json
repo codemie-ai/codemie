@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Replace the hardcoded SKILL_TOOL_NAME exception for preserving full tool output in conversation-history replay with a configurable, prefix-matching tool registry so repeated turns see the full retrieved document instead of a truncated head.",
+  "generated": "2026-07-27",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 20,
+  "size": "M",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Four decision points across three components must change in lockstep — callback_utils.py:68 (sets preserve_full_output) and :76 (2500 vs 600 summary limit at ingest) on the write side, history_projection_service.py:178 (re-derives the flag on read) and :574 (fallback summarizer) on the read side — plus a config/constants declaration and a new shared prefix-matching helper consumed by both sides. A fifth SKILL_TOOL_NAME usage (assistant_handlers.py:337) governs native-vs-text replay mode and must be deliberately excluded, so the boundary has to be reasoned about rather than mechanically replaced. Fixing only the flag sites leaves the summary sites truncating at 600 and the bug half-fixed."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "The chosen direction (hardcode to registry) is settled, but several design decisions remain open with real rework risk: whether registered retrieval tools get true unbounded preservation (current skill semantics) or a new finite generous limit such as AI_AGENT_HISTORY_REPLAY_PRESERVED_TOOL_RESULT_LIMIT; where the registry lives (service/constants.py alongside SKILL_TOOL_NAME vs configs/config.py as a list[str], noting DynamicConfigService supports scalars only); prefix vs glob/regex matching semantics; and whether the existing _KB_TOOL_PREFIX in stale_datasource_service.py:70 is centralized or left duplicated. The unbounded-vs-capped question in particular determines whether an extra config key and an extra truncation branch are in scope."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Two genuine novelties for this codebase. (1) Prefix matching has no precedent among tool registries — DYNAMIC_WEB_SEARCH_TOOLS, DYNAMIC_CODE_INTERPRETER_TOOLS and HTTP_BLOCKED_TOOLS all use exact `in` membership, and exact matching cannot work here because adapt_tool_name (agents/utils.py:281-286) substitutes a hash into the search_kb_{} template above the 64-char cap; only the search_kb_ prefix reliably survives. (2) Three mutually inconsistent normalizers (callback_utils.py:58 replace+lower, :110 lower only, history_projection_service.py:523-537 strip/regex/collapse/slice-to-64) mean a lookup can match on the write path and silently miss on the read path — a plausible-looking implementation can ship broken. Context-budget risk is verified, not hypothetical: preserve_full_output bypasses truncation with no cap (:481-482) and _has_pinned_tool_records (:385-391) feeds should_replay_tools via `or` (:272), so preserved turns replay outside BOTH the 4-turn full and 6-turn summary windows for the whole conversation, with search_kb capped at 20000 tokens per call and history compaction disabled by default — no downstream safety net. Verification is degraded: _summarize_tool_output, _build_tool_metadata, _truncate_text and preserve_full_output have zero assertions, all fixtures use ~25-char outputs so no existing test would catch a truncation regression, and ~47 pre-existing unit failures on main make a before/after baseline mandatory. Held at L rather than XL because rollback is trivial (revert the registry default) and the preserve_full_output mechanism itself already exists."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M (3) to L (4): touches core shared utilities — callback_utils.py is shared by both the streaming and invoke callback paths for every agent tool call, and the new prefix-matching helper becomes a shared utility consumed by both the write and read sides."
+  ],
+  "split_recommendation": null
+}

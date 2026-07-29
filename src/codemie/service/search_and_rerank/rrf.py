@@ -94,20 +94,25 @@ class RRF:
 
     def _filter_duplicates(self, results: dict) -> list:
         """
-        Filter out duplicate documents. Each source should only have one document.
+        Filter out duplicate documents.
+
+        A chunk is identified by its source plus its chunk number. Documents indexed before
+        chunk numbering was enforced carry no chunk number; for those the Elasticsearch
+        document id is used instead, so their chunks stay distinct rather than collapsing
+        into a single surviving entry.
         """
         seen_sources = set()
         filtered_results = []
 
-        for value in results.values():
+        for doc_id, value in results.items():
             try:
                 _, doc = value
             except ValueError:
                 doc = value
 
             source = doc.metadata[self.source_field]
-            chunk = doc.metadata.get(self.chunk_field, 0)
-            key = f"{source}-{chunk}"
+            chunk = doc.metadata.get(self.chunk_field)
+            key = f"{source}-{chunk}" if chunk is not None else f"{source}-id:{doc_id}"
 
             if key not in seen_sources:
                 filtered_results.append(doc)

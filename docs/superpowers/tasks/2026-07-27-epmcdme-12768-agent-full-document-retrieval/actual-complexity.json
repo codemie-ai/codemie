@@ -1,0 +1,84 @@
+{
+  "task": "Report per-source chunk coverage in the knowledge-base search tool response, using an Elasticsearch aggregation total that was previously discarded, plus a notice telling the model to re-query rather than invent missing content.",
+  "generated": "2026-07-27",
+  "dimensions": {
+    "component_scope": {
+      "score": 3,
+      "label": "M",
+      "affected": "SearchAndRerankKB (search/rerank service), SearchKBTool (knowledge-base agent tool), their unit test suites",
+      "layers": "Service, Agent-Tool"
+    },
+    "requirements_clarity": {
+      "score": 4,
+      "label": "L",
+      "status": "Partially Clear",
+      "gaps": "Coverage is derived from indexed chunk counts rather than retrievable chunk counts; the discrepancy is known and deferred by explicit user decision. A second planned item (block-boundary truncation in conversation history replay) was specified, implemented, then found to be a net regression that could drop all document content, and was reverted - the requirement rested on an assumption that did not survive review."
+    },
+    "technical_risk": {
+      "score": 4,
+      "label": "L",
+      "risk_factors": "Model-facing text on a shared tool used by every knowledge-base datasource, so a wrong coverage claim propagates to every KB-backed agent; no prior precedent in the codebase for a coverage/completeness statement; an absent or malformed totals map must degrade to 'not verified' rather than silently imply completeness; notice placement matters because downstream token reducers cut from the tail.",
+      "mitigation": "isinstance guard on the totals map so a missing total yields an explicit unverified notice instead of an invented claim; coverage lines and notices emitted ahead of content so tail truncation cannot strip the guardrail; two full code-review rounds (4 blocking findings, one critical, plus a fifth caught in the check round); change is pure formatting with no persistence, so rollback is trivial."
+    },
+    "file_change_estimate": {
+      "score": 3,
+      "label": "M",
+      "modified_files": 4,
+      "modified_file_list": [
+        "src/codemie/agents/tools/kb/search_kb.py",
+        "src/codemie/service/search_and_rerank/kb.py",
+        "tests/codemie/agents/tools/kb/test_search_kb.py",
+        "tests/codemie/service/search_and_rerank/test_kb.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": [
+        "src/codemie/agents/tools/kb/",
+        "src/codemie/service/search_and_rerank/",
+        "tests/codemie/agents/tools/kb/",
+        "tests/codemie/service/search_and_rerank/"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 2,
+      "label": "S",
+      "layers_changed": ["Service", "Agent-Tool"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 17,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 4,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Diff is small but the surface is high-leverage: format_response emits text the LLM reads on every knowledge-base retrieval across all datasources. Review surfaced 4 blocking findings (one critical) in round one and a fifth in the check round - notably that the unverified path originally shipped without any notice, which is exactly the case where completeness cannot be vouched for, and that a trailing notice is the first thing lost to tail-cutting token reducers. No precedent for this pattern existed in the codebase."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Rework materialised rather than merely being a risk: the block-boundary truncation task was implemented per plan, judged a net regression capable of dropping all document content, and reverted - real effort that leaves no trace in the final diff. A known semantic gap (indexed vs retrievable chunk totals) remains open by explicit user decision."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Two components in a producer/consumer handoff: SearchAndRerankKB records source_chunk_totals from the existing routing aggregation (including sources it excludes from routing), and SearchKBTool consumes it defensively. The consumer is a tool shared by every knowledge-base datasource, so the blast radius exceeds the two files."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "4 files, roughly 95 insertions, no new files - but spread across two production subsystems and their mirrored test directories."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from S to M: touches a core shared utility - the search_kb tool is the single retrieval surface for every knowledge-base datasource, so wording correctness carried weight beyond the two files changed.",
+    "Requirements Clarity bumped from M to L: unresolved semantics deferred by explicit decision (coverage counted from indexed rather than retrievable chunks) combined with a planned item whose underlying assumption failed review and was reverted."
+  ],
+  "split_recommendation": null
+}

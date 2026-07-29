@@ -1,0 +1,93 @@
+{
+  "task": "Give every chunk of a multi-page document a stable identity so all chunks of a SharePoint file survive retrieval deduplication instead of collapsing into one.",
+  "generated": "2026-07-27",
+  "dimensions": {
+    "component_scope": {
+      "score": 4,
+      "label": "L",
+      "affected": "BaseDatasourceProcessor (shared abstract base subclassed by 7 connectors), RRF reciprocal-rank-fusion deduplication",
+      "layers": "Datasource/Indexing, Service (search and rerank), persisted Elasticsearch chunk-metadata contract"
+    },
+    "requirements_clarity": {
+      "score": 3,
+      "label": "M",
+      "status": "Partially Clear",
+      "gaps": "The outcome (all chunks retrievable) was unambiguous, but two definitional questions were left open at implementation time and only surfaced in review: what constitutes chunk identity for a compound file whose documents share one source but carry different file_path values, and what the counter's lifetime is across reused processor instances. Both are now pinned down by comments in _split_documents and _next_chunk_num and by dedicated tests."
+    },
+    "technical_risk": {
+      "score": 4,
+      "label": "L",
+      "risk_factors": "Change lands in shared code on the hot path of every knowledge base: BaseDatasourceProcessor._split_documents runs for all 7 connectors, and RRF._filter_duplicates runs on every retrieval. No exact precedent existed for chunk numbering that spans loader batch boundaries. Already-indexed documents carry no chunk_num and cannot be migrated, so the dedup key must stay correct for two data generations simultaneously. Failure mode is silent: wrong identity drops chunks from results rather than raising. Counter is per-instance mutable state, so its reset lifecycle is load-bearing. Review empirically confirmed the risk: 2 blocking findings (chunk-identity collision for compound files, untested reset path).",
+      "mitigation": "Legacy documents without chunk_num fall back to the Elasticsearch document id as the dedup key, so no reindex or migration is required. Identity is keyed on SOURCE rather than document_key, and chunk_num is re-applied after _process_chunk so metadata-stripping subclasses cannot drop it. Behaviour is pinned by tests covering cross-batch numbering, compound files, per-run reset, metadata-stripping subclasses, legacy chunks and genuine duplicates."
+    },
+    "file_change_estimate": {
+      "score": 3,
+      "label": "M",
+      "modified_files": 5,
+      "modified_file_list": [
+        "src/codemie/datasource/base_datasource_processor.py",
+        "src/codemie/service/search_and_rerank/rrf.py",
+        "tests/codemie/datasource/sharepoint/test_sharepoint_datasource_processor.py",
+        "tests/codemie/datasource/test_base_datasource_processor.py",
+        "tests/codemie/service/search_and_rerank/test_rrf.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": [
+        "src/codemie/datasource/",
+        "src/codemie/service/search_and_rerank/",
+        "tests/codemie/datasource/",
+        "tests/codemie/datasource/sharepoint/",
+        "tests/codemie/service/search_and_rerank/"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 3,
+      "label": "M",
+      "layers_changed": [
+        "Datasource/Indexing",
+        "Service (retrieval / search and rerank)",
+        "Data persistence (Elasticsearch chunk-metadata contract, no migration)"
+      ],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 5,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Only 2 production files, but both are shared: BaseDatasourceProcessor is the abstract base that all 7 connectors subclass, and RRF sits on every retrieval path. Blast radius, not line count, sets this score."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "New approach with no precedent (numbering that survives batch boundaries), a silent failure mode, and a backward-compatibility constraint from unmigratable indexed data. One review round produced 2 blocking findings, confirming the risk was real rather than theoretical."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "5 files modified, 0 new, across 5 directories — but 272 of the 283 inserted lines are tests; net production change is 11 lines."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Indexing writes chunk identity, retrieval reads it, and the two are coupled through the persisted Elasticsearch document shape. No migration was written; the legacy fallback absorbs the older data generation instead."
+    },
+    {
+      "dimension": "dependencies",
+      "reason": "No manifest touched — no new packages, no version changes, no config additions."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M (3) to L (4): touches core shared utilities — BaseDatasourceProcessor is subclassed by 7 connectors and RRF deduplication runs on every retrieval."
+  ],
+  "split_recommendation": null
+}

@@ -177,7 +177,9 @@ class TestRRF:
             chunk_field='chunk_num',
         )
         results = rrf_instance.execute()
-        assert len(results) == 1  # Should only return one document since they have same source and default chunk value
+        # Chunks of one source that carry no chunk number are distinguished by their document
+        # id, so both survive. Collapsing them would hide every chunk of a file but one.
+        assert len(results) == 2
 
     def test_rrf_score_calculation(self):
         doc1_id = uuid.uuid4()
@@ -215,3 +217,59 @@ class TestRRF:
         assert doc1_final_score > doc2_final_score
         assert abs(doc1_final_score - (0.9 + 1 / 61)) > 0.0001
         assert abs(doc2_final_score - (0.8 + 1 / 62)) > 0.0001
+
+    def _rrf(self, search_results):
+        return RRF(
+            search_results=search_results,
+            doc_paths=[],
+            top_k=10,
+            exact_match_field='exact_match_field',
+            source_field='source',
+            chunk_field='chunk_num',
+        )
+
+    def test_numbered_chunks_of_one_source_all_survive(self):
+        search_results = [
+            [
+                Document(
+                    page_content=f"page {n}",
+                    metadata={'source': 'https://host/file.pdf', 'exact_match_field': 'p', 'chunk_num': n},
+                ),
+                0.5,
+                uuid.uuid4(),
+            ]
+            for n in range(1, 5)
+        ]
+
+        results = self._rrf(search_results).execute()
+
+        assert len(results) == 4
+        assert sorted(doc.metadata['chunk_num'] for doc in results) == [1, 2, 3, 4]
+
+    def test_legacy_chunks_without_chunk_num_survive_via_document_id(self):
+        search_results = [
+            [
+                Document(
+                    page_content=f"page {n}",
+                    metadata={'source': 'https://host/file.pdf', 'exact_match_field': 'p'},
+                ),
+                0.5,
+                uuid.uuid4(),
+            ]
+            for n in range(4)
+        ]
+
+        results = self._rrf(search_results).execute()
+
+        assert len(results) == 4
+
+    def test_genuine_duplicates_are_still_collapsed(self):
+        duplicate = {'source': 'https://host/file.pdf', 'exact_match_field': 'p', 'chunk_num': 1}
+        search_results = [
+            [Document(page_content="same chunk", metadata=dict(duplicate)), 0.5, uuid.uuid4()],
+            [Document(page_content="same chunk", metadata=dict(duplicate)), 0.4, uuid.uuid4()],
+        ]
+
+        results = self._rrf(search_results).execute()
+
+        assert len(results) == 1

@@ -129,6 +129,48 @@ def test_process_chunks(sample_file_datasource_processor):
     assert documents[0].metadata["chunk_num"] == 1
 
 
+def test_list_split_numbering_continues_across_batches(sample_file_datasource_processor):
+    """Chunk numbers of one source must not restart when its documents span two batches.
+
+    Retrieval identifies a chunk by source plus chunk_num; a restart at 1 in a later
+    batch gives two chunks the same identity and RRF deduplication drops one of them.
+    """
+    processor = sample_file_datasource_processor
+    batch1 = [
+        Document(page_content="row one", metadata={"source": "big.csv", "row": "row 1"}),
+        Document(page_content="row two", metadata={"source": "big.csv", "row": "row 2"}),
+    ]
+    batch2 = [
+        Document(page_content="row three", metadata={"source": "big.csv", "row": "row 3"}),
+    ]
+
+    first = processor._split_list_with_documents(batch1)
+    second = processor._split_list_with_documents(batch2)
+
+    first_nums = [doc.metadata["chunk_num"] for doc in first["big.csv"]]
+    second_nums = [doc.metadata["chunk_num"] for doc in second["big.csv"]]
+    assert first_nums == [1, 2]
+    assert second_nums == [3]
+
+
+def test_json_split_numbering_continues_across_batches(sample_file_datasource_processor):
+    """The JSON path must use the same per-source allocator as every other path."""
+    import json as jsonlib
+
+    processor = sample_file_datasource_processor
+    payload = jsonlib.dumps([{"content": "item text", "metadata": {"source": "data.json"}}])
+    batch1 = [Document(page_content=payload, metadata={"source": "data.json"})]
+    batch2 = [Document(page_content=payload, metadata={"source": "data.json"})]
+
+    first = processor._split_json_documents(batch1)
+    second = processor._split_json_documents(batch2)
+
+    first_nums = [doc.metadata["chunk_num"] for doc in first["data.json"]]
+    second_nums = [doc.metadata["chunk_num"] for doc in second["data.json"]]
+    assert first_nums == [1]
+    assert second_nums == [2]
+
+
 @patch("codemie.datasource.file.file_datasource_processor.RecursiveCharacterTextSplitter.from_tiktoken_encoder")
 def test_get_splitter(mock_from_tiktoken_encoder, sample_file_datasource_processor):
     sample_file_datasource_processor._get_splitter()

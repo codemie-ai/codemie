@@ -1,0 +1,66 @@
+{
+  "decision": "request-changes",
+  "rationale": "Three lenses ran and converged independently on the same defects; the two most severe were reproduced directly rather than accepted on report. CR-001 is a verified regression introduced by this change: with the summary replay limit of 600 characters and a realistic first block of 1500, the new block-boundary truncation retains 91 characters — the head only — and zero document content, where the previous code retained 600 characters of text. The delimiter it keys on is shared by nine modules (file analysis, pdf, csv, xlsx, code file reads), so the regression is not confined to knowledge-base search. CR-002 through CR-004 are design-level: the coverage header survives truncation while the blocks it counts are dropped, so a shortened response asserts a completeness it no longer has; an unknown total produces no coverage line at all, leaving complete and partial responses indistinguishable exactly as before the change; and for sources above the routing ceiling the notice instructs a retry that cannot succeed, because such sources can never be routed no matter how the query is narrowed. Taken together these mean Task 3 is a net regression as implemented, and the coverage mechanism from Task 2 is incomplete on several reachable paths. 3 findings were classified defer (duplicate delimiter constant, tool-instance state for totals, stale plan disclosure) and are listed in rationale rather than emitted. 2 were dismissed after verification: the claim that pre-existing assertions were weakened (verified additions-only, 0 removed lines across all three test files) and the claim that retained-length limits or the preserve-full-output flag were touched (verified unchanged).",
+  "confidence": "high",
+  "risk_flags": ["shared-tool-output-format", "affects-all-datasources", "regression-vs-previous-behaviour"],
+  "business_review": [
+    {"criterion": "A repeated request within one conversation obtains document content that the earlier response did not include.", "status": "partial", "notes": "Only an indirect mechanism ships (an instruction to re-query). No end-to-end verification was recorded for this run."},
+    {"criterion": "A response that omits part of a document states that it is partial, and a response that includes everything is distinguishable from one that does not.", "status": "partial", "notes": "Holds only when a total is known. With an unknown total no coverage line is emitted, so the two are indistinguishable — the original defect. Also unreached on the LLM-routing and Bedrock formatting paths, which build their own text."},
+    {"criterion": "A partial response conveys what is missing and how to obtain it.", "status": "partial", "notes": "States counts and a remedy, but never which parts are missing, and the remedy is unachievable for sources above the routing ceiling."},
+    {"criterion": "The model is instructed not to substitute its own content for a missing part.", "status": "pass", "notes": "Present in the notice and asserted by test."},
+    {"criterion": "Shortening a response for replay preserves whole blocks and leaves the response an accurate description of itself.", "status": "fail", "notes": "The boundary branch can retain zero blocks while keeping a coverage header that claims parts are included; the fallback branch still cuts mid-block with a bare marker."},
+    {"criterion": "Responses that omit nothing gain no misleading completeness claims.", "status": "pass", "notes": "No notice when count equals total; asserted by test."}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow.md commit format", "status": "pass", "notes": "Three commits use the documented ticket-first form."},
+    {"standard": "code-quality.md", "status": "pass", "notes": "make ruff passes."},
+    {"standard": "security-patterns.md", "status": "na", "notes": "No auth, secret or input-validation surface in this diff."},
+    {"standard": "No internal ticket ids or internal URLs in source", "status": "pass", "notes": "Confined to branch and commit subjects."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "critical",
+      "triage": "patch",
+      "sources": ["blind", "edge-case", "acceptance"],
+      "file": "src/codemie/service/conversation/history_projection_service.py",
+      "line": 592,
+      "problem": "The block-boundary truncation keeps only text[:boundary]. When the first block is larger than the limit, boundary points at that first block's start and everything after it is discarded, so the retained text is the head alone.",
+      "impact": "Reproduced directly: with the summary replay limit of 600 characters and a first block of 1500 characters — the ordinary case, since configured chunk sizes are 1000-2000 — the function returns 91 characters containing no document content at all, where the previous implementation returned 600 characters of text. Because the delimiter is the shared SOURCE_DOCUMENT_KEY used by nine modules, every replayed file-analysis, pdf, csv, xlsx and code-read result loses its content the same way. This is strictly worse than the behaviour the change set out to improve.",
+      "recommendation": "Take the boundary path only when it actually retains at least one whole block; otherwise fall back to plain truncation. Add tests for a single block larger than the limit and for a delimiter at index 0, and assert content survives in both."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["blind", "edge-case", "acceptance"],
+      "file": "src/codemie/agents/tools/kb/search_kb.py",
+      "line": 213,
+      "problem": "Coverage lines are emitted at the head of the response, while every downstream reducer cuts from the tail. Truncation drops blocks but always keeps the head, and the notice is the last element and therefore the first thing discarded.",
+      "impact": "A shortened response can read 'N of N parts included' while carrying fewer blocks or none, asserting a completeness it no longer has — worse than the previous silence. Meanwhile the instruction not to invent missing content, and to re-query, is removed exactly when it is most needed.",
+      "recommendation": "Place the incompleteness statement with the coverage lines at the head so both survive together, and rewrite or invalidate the coverage line when blocks are dropped."
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["acceptance", "edge-case"],
+      "file": "src/codemie/agents/tools/kb/search_kb.py",
+      "line": 210,
+      "problem": "When a per-source total is unknown the code emits no coverage line at all, and a new test pins that as intended. Unknown totals are reachable: the aggregation returns nothing on error, aggregation bucket keys are capped and skip values above the keyword index length limit, and two formatting paths never call this function.",
+      "impact": "On those paths a complete response and a partial one are byte-identical in shape, so the spec's distinguishability criterion is unmet and the original defect survives untouched.",
+      "recommendation": "Emit an explicit unknown-coverage statement rather than silence, and route the other formatting paths through the same construction."
+    },
+    {
+      "id": "CR-004",
+      "severity": "major",
+      "triage": "decision_needed",
+      "sources": ["blind", "edge-case"],
+      "file": "src/codemie/agents/tools/kb/search_kb.py",
+      "line": 215,
+      "problem": "Incompleteness is derived by comparing chunks returned by ranking against chunks indexed. For sources above the per-document routing ceiling the two can never converge, because such sources are excluded from routing and only ever surface through vector and text hits.",
+      "impact": "Every response touching a large document carries an instruction to retry with a narrower query that cannot change the outcome, inviting repeated tool calls that never clear the condition. The wording also misrepresents relevance filtering as withheld content.",
+      "recommendation": "Decide whether the coverage claim should describe retrievability rather than indexing: either restrict it to sources that can be routed whole, or fetch missing chunks by source and chunk number when coverage is partial, or word the notice to distinguish 'not relevant' from 'not available'."
+    }
+  ]
+}

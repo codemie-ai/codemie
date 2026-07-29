@@ -1,0 +1,26 @@
+{
+  "decision": "approve",
+  "rationale": "Both blocking findings from code-review.final are resolved and no new high-risk issue was introduced by the fix-up. CR-001: numbering is now keyed on the retrieval identity (self.SOURCE) rather than the storage key, so documents sharing a source can no longer start independent sequences; keying on the identity field can only merge sequences, never create a duplicate pair. The merge is safe for the datasources where file_path is meaningful — git_loader.py:358-363 and 380-384 and svn_loader.py:197-198 and 214-215 set source and file_path to the same value on both the text and the binary/compound paths, spot-verified directly, so code and SVN behavior is unchanged. CR-002: _chunk_counters is initialized in __init__, the hasattr lazy-init is gone, and the new entry-point test was mutation-checked — deleting the reset line in _load_and_process_documents makes it fail, which was confirmed by actually removing the line and observing the failure, not merely by reasoning. Every subclass defining __init__ calls super().__init__, so dropping the guard cannot raise AttributeError.",
+  "confidence": "high",
+  "risk_flags": ["shared-code-blast-radius", "legacy-index-compatibility"],
+  "business_review": [
+    {"criterion": "A multi-page PDF indexed via SharePoint returns content from pages past page 1, matching File datasource behavior.", "status": "pass", "notes": "Carried forward from code-review.final."},
+    {"criterion": "A multi-chunk DOCX indexed via SharePoint returns content from beyond its first chunk.", "status": "pass", "notes": "Carried forward from code-review.final."},
+    {"criterion": "A file larger than one processing batch (>20 Documents) is numbered continuously; no two of its chunks share a (source, chunk_num) pair.", "status": "pass", "notes": "Upgraded from partial: CR-001's compound-file collision is fixed, so the criterion now holds for compound sources too."},
+    {"criterion": "A connector whose _process_chunk rebuilds metadata still produces chunks carrying chunk_num.", "status": "pass", "notes": "Carried forward from code-review.final."},
+    {"criterion": "Retrieval against an index written before this fix returns more than one chunk per file.", "status": "pass", "notes": "Carried forward from code-review.final."},
+    {"criterion": "Genuine duplicates are still collapsed by _filter_duplicates.", "status": "partial", "notes": "Carried forward: holds for chunks carrying chunk_num; disabled for legacy chunks by the accepted _id fallback. Deferred to MR disclosure."},
+    {"criterion": "File datasource behavior is unchanged.", "status": "partial", "notes": "Carried forward: single-Document path now yields chunk_num=1 where it previously yielded none. Compatible, not identical."}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow.md commit format", "status": "pass", "notes": "Fix-up commit uses the documented EPMCDME-12768: Short description form."},
+    {"standard": "code-quality.md", "status": "pass", "notes": "make ruff passes after the fix-up."},
+    {"standard": "security-patterns.md", "status": "na", "notes": "No security surface in the fix-up diff."},
+    {"standard": "No internal ticket ids or internal URLs in source", "status": "pass", "notes": "Ticket id confined to branch and commit subjects."}
+  ],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "identity_key = document.metadata.get(self.SOURCE, document_key) at base_datasource_processor.py:629; documents_dict still grouped by document_key. Pinned by test_documents_sharing_a_source_share_one_sequence."},
+    {"id": "CR-002", "status": "resolved", "notes": "_reset_chunk_numbering() called in __init__ (base_datasource_processor.py:100), hasattr guard removed, and TestChunkNumberingResetsPerRun::test_second_run_restarts_numbering drives the entry point twice. Mutation-verified: removing the reset line makes the test fail."}
+  ],
+  "findings": []
+}

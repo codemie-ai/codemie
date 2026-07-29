@@ -1,0 +1,45 @@
+{
+  "decision": "request-changes",
+  "rationale": "Three lenses ran (blind, edge-case, acceptance); all findings were independently verified against the source before being kept. Two blocking issues survive. CR-001 is a real correctness hole in the new code: the chunk counter is keyed on file_path-or-source while retrieval identity is source alone, so a single source whose documents carry differing file_path values (a .msg/.eml body plus its attachments, or a .zip's members, all rewritten to one SharePoint webUrl) starts two counters at 1 and produces colliding (source, chunk_num) pairs that _filter_duplicates then drops — reintroducing the very defect this change fixes, for compound files. CR-002 is a genuine test gap: the _reset_chunk_numbering() call added to _load_and_process_documents is not covered, and the hasattr lazy-init in _next_chunk_num makes its removal invisible to every test. 5 findings were classified defer and are listed in the MR-disclosure notes rather than emitted: legacy indices lose duplicate-collapsing until reindexed (the approved trade-off of the _id fallback); single-chunk documents now cite as source-1, which also reaches the code tools' doc_id round-trip, not only search_kb; workflows/utils/utils.py sorts f\"{source}{chunk_num}\" lexicographically so >9-chunk files read out of order (pre-existing in kind — the File datasource already numbers chunks and already sorts this way); the SharePoint per-batch incremental-reindex cleanup deletes an earlier batch's chunks of the same file (pre-existing, not introduced here, and not reachable through any current SharePoint entry point, all of which use reprocess); and the exact-match bucket is not capped by top_k, which is by design for whole-document retrieval but raises token pressure. 3 findings were dismissed after verification: the claim that a subclass _process_chunk might return None or immutable metadata (all seven overrides return a fresh Document with a plain dict), and two duplicate framings of the legacy-dedup trade-off.",
+  "confidence": "high",
+  "risk_flags": ["shared-code-blast-radius", "legacy-index-compatibility"],
+  "business_review": [
+    {"criterion": "A multi-page PDF indexed via SharePoint returns content from pages past page 1, matching File datasource behavior.", "status": "pass", "notes": "Write path stamps chunk_num per page and re-applies it after _process_chunk; retrieval keys on it. Covered by the 25-page two-batch test. The incremental-reindex caveat is a pre-existing separate defect, recorded as a deferred disclosure."},
+    {"criterion": "A multi-chunk DOCX indexed via SharePoint returns content from beyond its first chunk.", "status": "pass", "notes": "One Document, many chunks; each keeps a distinct chunk_num. Covered by test_docx_chunks_keep_their_numbers."},
+    {"criterion": "A file larger than one processing batch (>20 Documents) is numbered continuously; no two of its chunks share a (source, chunk_num) pair.", "status": "partial", "notes": "Holds for a simple file, but fails for a compound source whose documents carry differing file_path values — see CR-001."},
+    {"criterion": "A connector whose _process_chunk rebuilds metadata still produces chunks carrying chunk_num.", "status": "pass", "notes": "All seven overrides verified to return a fresh Document with dict metadata, so the re-stamp always lands. Pinned by test_metadata_stripping_subclass_still_gets_chunk_num."},
+    {"criterion": "Retrieval against an index written before this fix returns more than one chunk per file.", "status": "pass", "notes": "Dicts are keyed by the Elasticsearch _id and chunks are stored without explicit ids, so legacy chunks have distinct ids and all survive."},
+    {"criterion": "Genuine duplicates are still collapsed by _filter_duplicates.", "status": "partial", "notes": "True for documents carrying chunk_num. For legacy documents the id fallback disables collapsing entirely — the accepted trade-off, but narrower than the criterion states. Deferred to MR disclosure."},
+    {"criterion": "File datasource behavior is unchanged.", "status": "partial", "notes": "List/JSON/CSV paths untouched; the single-Document path now yields chunk_num=1 where it previously yielded none. Compatible, not identical."}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow.md commit format", "status": "pass", "notes": "All three commits use the documented EPMCDME-12768: Short description form."},
+    {"standard": "code-quality.md", "status": "pass", "notes": "make ruff passes: format, check --fix, and check all clean."},
+    {"standard": "security-patterns.md", "status": "na", "notes": "No auth, secret, input-validation, or file/process handling surface in this diff."},
+    {"standard": "No internal ticket ids or internal URLs in source", "status": "pass", "notes": "Ticket id appears only in branch and commit subjects, never in source or test files."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["edge-case", "acceptance"],
+      "file": "src/codemie/datasource/base_datasource_processor.py",
+      "line": 624,
+      "problem": "The chunk counter is keyed on document.metadata.get(\"file_path\", metadata[SOURCE]), but retrieval identity in rrf._filter_duplicates is source plus chunk_num. When one source yields documents with differing file_path values, each gets its own counter starting at 1 under the same source.",
+      "impact": "Reachable today for compound SharePoint files. A .msg body Document carries no file_path (msg_loader.py:114-122) so it is keyed by webUrl, while its attachment Documents do carry file_path, rewritten to the attachment name (file_extraction_utils.py:171-172), and sharepoint_loader._transform_to_doc:1249-1265 then stamps the same webUrl as source on all of them. Body and attachment chunks therefore collide on (source, chunk_num) and _filter_duplicates silently drops the loser — the exact loss this ticket fixes, reappearing for .msg, .eml and .zip sources.",
+      "recommendation": "Key the counter on the field retrieval uses for identity — document.metadata.get(self.SOURCE) — while leaving the documents_dict grouping key as it is. Add a regression test with two Documents sharing a source but differing in file_path, asserting their chunk numbers do not collide."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "sources": ["blind"],
+      "file": "src/codemie/datasource/base_datasource_processor.py",
+      "line": 686,
+      "problem": "The _reset_chunk_numbering() call added to _load_and_process_documents has no test. Because _next_chunk_num lazily self-initializes behind a hasattr guard, deleting the reset line leaves every test green.",
+      "impact": "A test suite that passes with part of the fix reverted does not protect it. The behavior it guards is real: without the reset, a processor instance reused for a second indexing run continues the previous sequence, so a re-indexed file's chunks are numbered from where the last run stopped while the previously persisted chunks start at 1.",
+      "recommendation": "Initialize _chunk_counters in __init__ so the attribute always exists, and add a test that drives two indexing runs through the entry point and asserts numbering restarts at 1 on the second."
+    }
+  ]
+}

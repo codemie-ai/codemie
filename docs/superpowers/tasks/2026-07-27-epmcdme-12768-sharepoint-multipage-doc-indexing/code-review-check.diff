@@ -1,0 +1,152 @@
+diff --git a/src/codemie/datasource/base_datasource_processor.py b/src/codemie/datasource/base_datasource_processor.py
+index 955871d5b..778de4c6c 100644
+--- a/src/codemie/datasource/base_datasource_processor.py
++++ b/src/codemie/datasource/base_datasource_processor.py
+@@ -97,6 +97,7 @@ class BaseDatasourceProcessor(ABC):
+         self.request_uuid = request_uuid
+         self.guardrail_assignments = guardrail_assignments
+         self.cron_expression = cron_expression
++        self._reset_chunk_numbering()
+         if user:
+             set_logging_info(uuid=request_uuid, user_id=user.id, user_email=user.username)
+         # Capture the active OTel context from the HTTP handler thread so that process(),
+@@ -574,21 +575,19 @@ class BaseDatasourceProcessor(ABC):
+         )
+ 
+     def _reset_chunk_numbering(self) -> None:
+-        """Begin a fresh per-file chunk sequence for a new indexing run."""
+-        self._chunk_counters: dict[str, int] = defaultdict(int)
++        """Begin a fresh per-source chunk sequence for a new indexing run."""
++        self._chunk_counters: dict[Optional[str], int] = defaultdict(int)
+ 
+-    def _next_chunk_num(self, document_key: str) -> int:
+-        """Return the next 1-based chunk number for ``document_key``.
++    def _next_chunk_num(self, identity_key: Optional[str]) -> int:
++        """Return the next 1-based chunk number for ``identity_key``.
+ 
+         The counter spans the whole indexing run rather than a single batch. A file larger
+         than the loader batch size is split across several ``_split_documents`` calls, and
+         per-batch numbering would restart mid-file, giving two of its chunks the same
+         identity and collapsing them at retrieval.
+         """
+-        if not hasattr(self, "_chunk_counters"):
+-            self._reset_chunk_numbering()
+-        self._chunk_counters[document_key] += 1
+-        return self._chunk_counters[document_key]
++        self._chunk_counters[identity_key] += 1
++        return self._chunk_counters[identity_key]
+ 
+     def _split_documents(self, docs: list[Document]) -> dict[str, list[Document]]:
+         """
+@@ -622,9 +621,15 @@ class BaseDatasourceProcessor(ABC):
+         for document in docs:
+             split_chunks = self._get_splitter(document).split_text(document.page_content)
+             document_key = document.metadata.get("file_path", document.metadata.get(self.SOURCE))
++            # Numbering is keyed on the source, not on document_key: retrieval identifies a
++            # chunk by source plus chunk_num, and a compound file (an email body and its
++            # attachments, a zip's members) yields documents that share one source while
++            # carrying different file_path values. Counting per document_key would restart
++            # those at 1 and make their identities collide.
++            identity_key = document.metadata.get(self.SOURCE, document_key)
+             chunk_list = []
+             for chunk in split_chunks:
+-                chunk_number = self._next_chunk_num(document_key)
++                chunk_number = self._next_chunk_num(identity_key)
+                 chunk_metadata = document.metadata.copy()
+                 chunk_metadata["chunk_num"] = chunk_number
+                 processed_chunk = self._process_chunk(chunk, chunk_metadata, document)
+diff --git a/tests/codemie/datasource/test_base_datasource_processor.py b/tests/codemie/datasource/test_base_datasource_processor.py
+index 37ce3d182..ea1ba16a5 100644
+--- a/tests/codemie/datasource/test_base_datasource_processor.py
++++ b/tests/codemie/datasource/test_base_datasource_processor.py
+@@ -576,3 +576,90 @@ class TestChunkIdentity:
+ 
+         assert result["https://host/a.pdf"][0].metadata["chunk_num"] == 1
+         assert result["https://host/b.pdf"][0].metadata["chunk_num"] == 1
++
++    def test_documents_sharing_a_source_share_one_sequence(self, mock_user, mock_index):
++        """A compound file (.msg body plus attachments, a .zip's members) yields documents
++        that share one source but carry different file_path values. Chunk identity at
++        retrieval is source plus chunk_num, so those documents must share one sequence."""
++        processor = SourceKeyedProcessor("ds", mock_user, mock_index)
++        source = "https://host/mail.msg"
++        body = Document(page_content="mail body", metadata={"source": source})
++        attachment = Document(
++            page_content="attachment text",
++            metadata={"source": source, "file_path": "report.pdf"},
++        )
++
++        result = processor._split_documents([body, attachment])
++
++        identities = [
++            (doc.metadata["source"], doc.metadata["chunk_num"]) for chunks in result.values() for doc in chunks
++        ]
++        assert len(identities) == 2
++        assert len(set(identities)) == 2
++
++    def test_chunk_numbering_restarts_on_a_new_run(self, mock_user, mock_index):
++        """The counter spans one indexing run. A processor reused for a second run must
++        restart, or the second run's chunks are numbered past the first run's."""
++        processor = SourceKeyedProcessor("ds", mock_user, mock_index)
++        source = "https://host/file.pdf"
++        page = Document(page_content="page text", metadata={"source": source})
++
++        processor._split_documents([page])
++        processor._reset_chunk_numbering()
++        second_run = processor._split_documents([page])
++
++        assert [doc.metadata["chunk_num"] for doc in second_run[source]] == [1]
++
++    def test_chunk_counters_initialized_on_construction(self, mock_user, mock_index):
++        """The reset in the indexing entry point is only meaningful if the attribute is a
++        real, always-present piece of state rather than lazily conjured on first use."""
++        processor = SourceKeyedProcessor("ds", mock_user, mock_index)
++
++        assert processor._chunk_counters == {}
++
++
++class TestChunkNumberingResetsPerRun:
++    """The reset lives in the indexing entry point, so it is tested through it."""
++
++    @patch('codemie.datasource.base_datasource_processor.request_summary_manager')
++    @patch('codemie.datasource.base_datasource_processor.ElasticSearchClient')
++    @patch('codemie.datasource.base_datasource_processor.llm_service')
++    @patch.object(SourceKeyedProcessor, '_update_complete_state_estimate')
++    @patch.object(SourceKeyedProcessor, '_get_store_by_index')
++    def test_second_run_restarts_numbering(
++        self,
++        mock_get_store,
++        mock_update_state,
++        mock_llm_service,
++        mock_es_client,
++        mock_rsm,
++        mock_user,
++        mock_index,
++    ):
++        mock_store = MagicMock()
++        mock_store._store._create_index_if_not_exists.return_value = None
++        mock_store.embeddings.consume_last_usage.return_value = None
++        mock_get_store.return_value = mock_store
++        mock_llm_service.get_embedding_deployment_name.return_value = "emb-model"
++        mock_es_client.get_client.return_value.indices.exists.return_value.meta.status = 404
++        mock_index.embeddings_model = "text-embedding-3-small"
++        mock_index.complete_state = 0
++
++        processor = SourceKeyedProcessor("ds", mock_user, mock_index)
++        processor.index = mock_index
++
++        source = "https://host/file.pdf"
++        assigned_numbers = []
++
++        def split_and_record(docs, index, store):
++            for chunks in processor._split_documents(docs).values():
++                assigned_numbers.extend(doc.metadata["chunk_num"] for doc in chunks)
++            return len(docs)
++
++        with patch.object(SourceKeyedProcessor, '_process_batch', side_effect=split_and_record):
++            for _ in range(2):
++                loader = MagicMock()
++                loader.lazy_load.return_value = iter([Document(page_content="page text", metadata={"source": source})])
++                processor._load_and_process_documents(loader=loader, index=mock_index, batch_size=10)
++
++        assert assigned_numbers == [1, 1]

@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "task": "Fix the SharePoint datasource indexing pipeline so all chunks/pages of multi-page documents (PDF, DOCX, other formats) stay retrievable by agents instead of collapsing to one chunk at retrieval-time deduplication.",
+  "generated": "2026-07-27",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "The correct fix cannot be confined to SharePoint. It spans sharepoint_datasource_processor._process_chunk (metadata wipe), base_datasource_processor._split_documents (per-Document conditional chunk_num), and search_and_rerank/rrf._filter_duplicates (the source-chunk_num dedup key), with two further surfaces repeating the same key (workflows/utils/utils.py documents-tree, agents/utils.py code-index listing). Base scored L (3-4 components across 2-3 layers with shared utilities); bumped to XL by the 'touches core shared utilities' red flag because base_datasource_processor and rrf are consumed by Git, SVN, Confluence, GoogleDoc, ADO, Jira and Xray."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "No new abstraction or dependency is needed and precedents exist (FileDatasourceProcessor per-file numbering; composite chunk IDs from commits 7fa9b92f9/6832ff060), which caps this below novel territory. What raises it: a prior fix for this exact symptom already shipped and failed (EPMCDME-11342), so a shallow fix regresses the ticket; changing the shared base or the RRF dedup key alters retrieval for every datasource type with near-zero regression coverage on those paths; and several independent silent-truncation confounders (300s future timeout, 300s download timeout, 50MB skip, swallowed ValueError mid-iteration with tesseract-ocr missing from the image, MAX_CHUNKS_FOR_SINGLE_DOCUMENT=20) can each reproduce the same symptom and make verification ambiguous. Base L, bumped to XL by the data-migration red flag."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "The defect and acceptance criteria are precise and the root cause is verified by direct code reading, but two decisions are genuinely open and carry rework risk: WHERE to fix (SharePoint override vs base processor vs RRF key vs a combination) directly determines blast radius across seven connectors, and the scope boundary is undefined for the four other connectors with the identical metadata-rebuilding defect (jira, xray, azure_devops_wiki, azure_devops_work_item) and the two extra dedup surfaces. The remediation story for already-indexed data is also unspecified: no migration path exists and there is no defined owner or trigger for the required full reprocess."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Roughly 3-6 source files across the indexing-orchestration and retrieval layers (sharepoint_datasource_processor.py, base_datasource_processor.py, rrf.py, optionally workflows/utils/utils.py and agents/utils.py) plus 3-5 test files. Coverage is effectively zero on every touched function, so new tests are needed for _process_chunk metadata retention, multi-Document chunk numbering, and rrf._filter_duplicates with chunks sharing a source, likely with a new multi-page PDF fixture and possibly a conftest under tests/codemie/datasource/. An existing test at tests/codemie/datasource/sharepoint/test_sharepoint_datasource_processor.py:506 asserts the metadata-stripping whitelist as intended behavior and must be revised or the whitelist widened to pass chunk_num/page through. Base M, bumped to L by the data-migration red flag."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Four distinct layers: indexing/orchestration (datasource processors), shared pipeline base, retrieval/rerank (rrf + kb), and the agent-tool surface (search_kb), with Elasticsearch persistence implicated because indexed chunk metadata changes shape and existing indices must be regenerated. No API, UI or external-integration layer is touched, and no Alembic migration is needed since datasource content lives in ES with dynamic mappings. The ES metadata shape change is absorbed by dynamic mapping, so the 'significant DB schema change' red flag was deliberately not applied."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L (4) to XL (5): touches core shared utilities — base_datasource_processor._split_documents and search_and_rerank/rrf._filter_duplicates are shared by every datasource connector (Git, SVN, Confluence, GoogleDoc, ADO, Jira, Xray).",
+    "Technical Risk bumped from L (4) to XL (5): requires data migration — already-indexed SharePoint chunks lack chunk_num/page and cannot be recovered by a retrieval-only change; incremental reindex will not re-pull them because modified_since skips unchanged files and cleanup deletes by metadata.source.keyword (subject to ES ignore_above: 256), so a full reprocess is mandatory with no migration path.",
+    "File Change Estimate bumped from M (3) to L (4): same data-migration red flag."
+  ],
+  "split_recommendation": null
+}

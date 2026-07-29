@@ -1,0 +1,128 @@
+diff --git a/src/codemie/agents/tools/kb/search_kb.py b/src/codemie/agents/tools/kb/search_kb.py
+index 1f2ee432c..3ebff6dcb 100644
+--- a/src/codemie/agents/tools/kb/search_kb.py
++++ b/src/codemie/agents/tools/kb/search_kb.py
+@@ -40,8 +40,8 @@ _SUPPRESSED_CALLBACK_TYPES = AgentStreamingCallback | AgentInvokeCallback
+ 
+ COVERAGE_KEY = "**Coverage:** "
+ INCOMPLETE_NOTICE = (
+-    "\n###NOTICE###\n"
+-    "Some parts of the documents above are not included in this result. "
++    "###NOTICE###\n"
++    "Some parts of the documents listed above are not included in this result. "
+     "To obtain a missing part, call this tool again with a narrower query naming the "
+     "section or topic you need. Do not supply the missing content from your own knowledge."
+ )
+@@ -208,18 +208,22 @@ class SearchKBTool(CodeMieTool, DatasourceHealthMixin):
+         for source, count in shown.items():
+             total = self.source_chunk_totals.get(source)
+             if not total:
+-                # No known total: a coverage claim would be a guess, so make none.
++                # Saying nothing would leave a partial result shaped exactly like a complete
++                # one, which is the confusion this coverage statement exists to remove.
++                coverage_lines.append(f"{COVERAGE_KEY}{source}: {count} parts included, total unknown")
+                 continue
+             coverage_lines.append(f"{COVERAGE_KEY}{source}: {count} of {total} parts included")
+             if count < total:
+                 incomplete = True
+ 
++        # The notice belongs with the coverage lines, ahead of the content: every reducer
++        # downstream cuts from the tail, so a trailing notice is the first thing lost.
++        if incomplete:
++            coverage_lines.append(INCOMPLETE_NOTICE)
++
+         body = "\n".join(self.format_document(doc) for doc in docs)
+         head = prefix + "\n".join(coverage_lines) if coverage_lines else prefix.rstrip("\n")
+-        parts = [head, body] if head else [body]
+-        if incomplete:
+-            parts.append(INCOMPLETE_NOTICE)
+-        return "\n".join(part for part in parts if part)
++        return "\n".join(part for part in (head, body) if part)
+ 
+     def process_llm_routing_index(self, query: str, kb_index):
+         request_id = self.metadata.get(REQUEST_ID)
+diff --git a/src/codemie/service/conversation/history_projection_service.py b/src/codemie/service/conversation/history_projection_service.py
+index eb12debbf..ef5146a8c 100644
+--- a/src/codemie/service/conversation/history_projection_service.py
++++ b/src/codemie/service/conversation/history_projection_service.py
+@@ -38,9 +38,6 @@ from codemie.service.constants import (
+ 
+ TEXT_LEDGER_MODE = "text_ledger"
+ NATIVE_TOOLS_MODE = "native_tools"
+-
+-# Delimiter that separates individual result blocks inside a retrieval tool's output.
+-SOURCE_DOCUMENT_DELIMITER = "###SOURCE DOCUMENT###"
+ PLAIN_CHAT_MODE = "plain_chat"
+ GENERIC_THOUGHT_NAMES = {"CodeMie Thoughts"}
+ NORMALIZED_GENERIC_THOUGHT_NAMES = {"codemie_thoughts"}
+@@ -587,16 +584,6 @@ class ConversationHistoryProjectionService:
+     def _truncate_text(cls, text: str, limit: int) -> str:
+         if len(text) <= limit:
+             return text
+-
+-        # Prefer cutting between result blocks: a block sliced mid-content still looks
+-        # complete to the model, which is what lets a partial result pass for a whole one.
+-        boundary = text[:limit].rfind(SOURCE_DOCUMENT_DELIMITER)
+-        if boundary > 0:
+-            kept = text[:boundary].rstrip()
+-            dropped = text.count(SOURCE_DOCUMENT_DELIMITER) - kept.count(SOURCE_DOCUMENT_DELIMITER)
+-            logger.debug(f"Truncated replay tool content from {len(text)} to {len(kept)} chars at a block boundary")
+-            return f"{kept}\n...[{dropped} further block(s) omitted; call the tool again to retrieve them]"
+-
+         truncated = text[:limit].rstrip()
+         logger.debug(f"Truncated replay tool content from {len(text)} to {len(truncated)} chars")
+         return f"{truncated}\n...[truncated]"
+diff --git a/tests/codemie/agents/tools/kb/test_search_kb.py b/tests/codemie/agents/tools/kb/test_search_kb.py
+index 9a6ccca1d..ffd55eda8 100644
+--- a/tests/codemie/agents/tools/kb/test_search_kb.py
++++ b/tests/codemie/agents/tools/kb/test_search_kb.py
+@@ -587,11 +587,25 @@ def test_complete_coverage_carries_no_omission_claim():
+     assert "narrower" not in result.lower()
+ 
+ 
+-def test_unknown_total_makes_no_coverage_claim():
+-    """Without a known total, stating coverage would be a guess — so state nothing."""
++def test_unknown_total_is_stated_not_omitted():
++    """Silence would leave a partial result shaped exactly like a complete one — the very
++    defect this change exists to remove. An unknown total must be said out loud."""
+     tool = _make_tool()
+     tool.source_chunk_totals = {}
+ 
+     result = tool.format_response([_chunk("https://host/report.docx", 1, "part one")])
+ 
+-    assert "of" not in result.split("**File Content:**")[0].split("**Source:**")[0]
++    head = result.split("**Source:**")[0]
++    assert "total unknown" in head.lower()
++
++
++def test_notice_precedes_the_document_blocks():
++    """Every downstream reducer cuts from the tail, so a notice placed last is the first
++    thing lost. It has to sit with the coverage lines, ahead of the content."""
++    tool = _make_tool()
++    source = "https://host/report.docx"
++    tool.source_chunk_totals = {source: 4}
++
++    result = tool.format_response([_chunk(source, 1, "part one")])
++
++    assert result.index("narrower") < result.index("**Source:**")
+diff --git a/tests/codemie/service/conversation/test_history_projection_service.py b/tests/codemie/service/conversation/test_history_projection_service.py
+index 1eb41c532..d309bbe7f 100644
+--- a/tests/codemie/service/conversation/test_history_projection_service.py
++++ b/tests/codemie/service/conversation/test_history_projection_service.py
+@@ -575,16 +575,3 @@ def test_normalize_tool_name_combined_scenarios():
+     result = normalize(valid_chars)
+     assert result == valid_chars.lower()
+     assert TOOL_NAME_REGEX.match(result)
+-
+-
+-def test_truncation_keeps_blocks_whole_and_reports_omission():
+-    """A shortened replay must stay a truthful description of itself: whole blocks only,
+-    and an explicit statement of what it no longer carries."""
+-    block = "\n###SOURCE DOCUMENT###\n**Source:**s-{n}\n**File Content:** \n" + ("x" * 400) + "\n"
+-    text = "".join(block.replace("{n}", str(n)) for n in range(1, 6))
+-
+-    result = ConversationHistoryProjectionService._truncate_text(text, 900)
+-
+-    assert "x" * 400 in result
+-    assert not result.rstrip().endswith("x")
+-    assert "omitted" in result.lower()

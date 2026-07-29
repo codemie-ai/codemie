@@ -38,6 +38,28 @@ from codemie.templates.knowledge_base_prompt import LLM_ROUTING_KB_PROMPT
 
 _SUPPRESSED_CALLBACK_TYPES = AgentStreamingCallback | AgentInvokeCallback
 
+COVERAGE_KEY = "**Coverage:** "
+INCOMPLETE_NOTICE = (
+    "###NOTICE###\n"
+    "Some parts of the documents listed above are not included in this result. "
+    "To obtain a missing part, call this tool again with a narrower query naming the "
+    "section or topic you need. Do not supply the missing content from your own knowledge."
+)
+UNVERIFIED_NOTICE = (
+    "###NOTICE###\n"
+    "Coverage of the documents listed above could not be verified, so parts may be missing. "
+    "To obtain a specific section, call this tool again with a narrower query naming it. "
+    "Do not supply missing content from your own knowledge."
+)
+TRUNCATION_COVERAGE_SUFFIX = " — output was truncated from the end, so parts counted as included may be missing"
+OVERLIMIT_NOTICE = (
+    "###NOTICE###\n"
+    "Some documents above exceed the full-retrieval limit, so no single result can include "
+    "all of their parts. A narrower query returns the parts most relevant to it, but repeated "
+    "queries are not guaranteed to reconstruct such a document in full. "
+    "Do not supply missing content from your own knowledge."
+)
+
 
 SEARCH_KB_TOOL = ToolMetadata(
     name="search_kb",
@@ -84,6 +106,13 @@ class SearchKBTool(CodeMieTool, DatasourceHealthMixin):
     base_name: str = "search_kb"
     name_template: str = base_name + "_{}"
     tokens_size_limit: int = Field(default_factory=lambda: 20000)
+    # Indexed chunk count per source, filled from the search. A source missing from this
+    # map is reported as unverified rather than silently assumed complete.
+    source_chunk_totals: dict = Field(default_factory=dict)
+    # The search path's ceiling for retrieving a document in full (chunk count above which
+    # a source is excluded from document routing). Coverage wording depends on it: advising
+    # a narrower retry is honest only for sources that can actually be retrieved in full.
+    full_retrieval_chunk_limit: int | None = None
     description_template: str = """
     Use this tool when you need to get or search additional project context to resolve user query.
     Tool get the following input parameters: "query": string text with detailed user query which will be used to
@@ -108,6 +137,11 @@ class SearchKBTool(CodeMieTool, DatasourceHealthMixin):
             raise ToolException(self._build_health_notice())
         notice = self._build_health_notice()
 
+        # The two branches below are deliberately outside the coverage contract that
+        # format_response() applies to chunk-based retrieval: llm_routing returns an answer
+        # synthesized by an LLM over whole documents and KB_BEDROCK returns Bedrock's own
+        # retrieval text — neither carries per-source chunk counts a coverage claim could
+        # honestly be computed from.
         if self.index_info and ("llm_routing" in self.index_info.index_type):
             text = self.process_llm_routing_index(query=query, kb_index=self.index_info)
             return SearchKBResponse(text=str(self._wrap_result(str(text), notice)), image_artifacts=[])
@@ -123,13 +157,20 @@ class SearchKBTool(CodeMieTool, DatasourceHealthMixin):
             else:
                 search_class = SearchAndRerankKB
 
-            data = search_class(
+            search = search_class(
                 query=query,
                 kb_index=self.index_info,
                 llm_model=self.llm_model,
                 top_k=10,  # TODO: make it configurable
                 request_id=request_id,
-            ).execute()
+            )
+            data = search.execute()
+            totals = getattr(search, "source_chunk_totals", None)
+            # Only a real mapping is usable; anything else means the search path did not
+            # supply totals, and a coverage claim must not be invented from it.
+            self.source_chunk_totals = totals if isinstance(totals, dict) else {}
+            limit = getattr(search, "MAX_CHUNKS_FOR_SINGLE_DOCUMENT", None)
+            self.full_retrieval_chunk_limit = limit if isinstance(limit, int) else None
 
         return SearchKBResponse(
             text=str(self._wrap_result(self.format_response(data), notice)),
@@ -157,10 +198,21 @@ class SearchKBTool(CodeMieTool, DatasourceHealthMixin):
     def _limit_output_content(self, output: SearchKBResponse) -> tuple[SearchKBResponse, int]:
         """Token-limit only the text portion; image artifacts are not plain text."""
         limited_text, token_count = super()._limit_output_content(output.text)
-        return SearchKBResponse(
-            text=limited_text if isinstance(limited_text, str) else str(limited_text),
-            image_artifacts=output.image_artifacts,
-        ), token_count
+        text = limited_text if isinstance(limited_text, str) else str(limited_text)
+        if token_count > self.tokens_size_limit:
+            # Truncation cuts from the tail while the coverage lines sit at the head, so an
+            # untouched "N of N parts included" claim would survive the cut and be false.
+            text = self._mark_coverage_truncated(text)
+        return SearchKBResponse(text=text, image_artifacts=output.image_artifacts), token_count
+
+    @staticmethod
+    def _mark_coverage_truncated(text: str) -> str:
+        # Matched by containment, not prefix: the base truncation wrapper glues its own
+        # message onto the first line of the text, so the first coverage line may not
+        # start the line it sits on.
+        return "\n".join(
+            line + TRUNCATION_COVERAGE_SUFFIX if COVERAGE_KEY in line else line for line in text.split("\n")
+        )
 
     def _post_process_output_content(self, output: SearchKBResponse, *args, **kwargs) -> tuple[str, list[dict]]:
         """Return a ``(content, artifact)`` tuple consumed by ``_image_artifact_pre_model_hook``."""
@@ -179,9 +231,63 @@ class SearchKBTool(CodeMieTool, DatasourceHealthMixin):
         )
 
     def format_response(self, documents: list[Document] | tuple[list[Document], list[str]]) -> str:
-        if isinstance(documents, tuple):
-            return str(documents[1]) + "\n" + "\n".join(self.format_document(doc) for doc in documents[0])
-        return "\n".join(self.format_document(doc) for doc in documents)
+        docs = documents[0] if isinstance(documents, tuple) else documents
+        prefix = str(documents[1]) + "\n" if isinstance(documents, tuple) else ""
+
+        shown: dict[str, int] = {}
+        for doc in docs:
+            source = doc.metadata.get("source", "")
+            shown[source] = shown.get(source, 0) + 1
+
+        coverage_lines = []
+        flags: set[str] = set()
+        for source, count in shown.items():
+            line, flag = self._coverage_line(source, count)
+            coverage_lines.append(line)
+            if flag:
+                flags.add(flag)
+        coverage_lines.extend(self._coverage_notices(flags))
+
+        body = "\n".join(self.format_document(doc) for doc in docs)
+        head = prefix + "\n".join(coverage_lines) if coverage_lines else prefix.rstrip("\n")
+        return "\n".join(part for part in (head, body) if part)
+
+    def _coverage_line(self, source: str, count: int) -> tuple[str, str]:
+        """Build one source's coverage line and name the flag it raises ('' when none)."""
+        total = self.source_chunk_totals.get(source)
+        limit = self.full_retrieval_chunk_limit
+        if not isinstance(total, int) or total <= 0:
+            # Saying nothing would leave a partial result shaped exactly like a complete
+            # one, which is the confusion this coverage statement exists to remove.
+            return f"{COVERAGE_KEY}{source}: {count} parts included, total not verified", "unverified"
+        if isinstance(limit, int) and total > limit:
+            # This source is excluded from full-document routing, so the standard
+            # "retry with a narrower query" advice cannot obtain its missing parts.
+            line = (
+                f"{COVERAGE_KEY}{source}: {count} of {total} parts included "
+                f"(document exceeds the {limit}-part full-retrieval limit)"
+            )
+            return line, "over_limit" if count < total else ""
+        line = f"{COVERAGE_KEY}{source}: {count} of {total} parts included"
+        return line, "incomplete" if count < total else ""
+
+    @staticmethod
+    def _coverage_notices(flags: set[str]) -> list[str]:
+        """Pick the notices the raised flags call for.
+
+        All notices belong with the coverage lines, ahead of the content: every reducer
+        downstream cuts from the tail, so a trailing notice is the first thing lost.
+        """
+        notices = []
+        if "incomplete" in flags:
+            notices.append(INCOMPLETE_NOTICE)
+        if "over_limit" in flags:
+            notices.append(OVERLIMIT_NOTICE)
+        if flags == {"unverified"}:
+            # Unverified coverage is precisely where completeness cannot be vouched for, so
+            # it must not be the one path that ships without the guardrail.
+            notices.append(UNVERIFIED_NOTICE)
+        return notices
 
     def process_llm_routing_index(self, query: str, kb_index):
         request_id = self.metadata.get(REQUEST_ID)

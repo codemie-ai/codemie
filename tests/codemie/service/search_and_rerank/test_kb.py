@@ -754,6 +754,45 @@ class TestSearchAndRerankKB:
         assert f"Elasticsearch aggregation error for request {kb_instance.request_id}" in error_msg
         assert "Elasticsearch error" in error_msg
 
+    def test_fetch_unique_sources_records_chunk_totals(self, mocker, kb_instance):
+        """
+        Totals must be recorded for every source the aggregation returns, including the ones
+        filtered out of routing — so the tool can state how much of a document it carries.
+        """
+        agg_response = {
+            "aggregations": {
+                "unique_sources": {
+                    "buckets": [
+                        {
+                            "key": "report.docx",
+                            "doc_count": 4,
+                            "source_metadata": {
+                                "hits": {"hits": [{"_source": {"metadata": {"source": "report.docx"}}}]}
+                            },
+                        },
+                        {
+                            "key": "huge.pdf",
+                            "doc_count": kb_instance.MAX_CHUNKS_FOR_SINGLE_DOCUMENT + 5,
+                            "source_metadata": {"hits": {"hits": [{"_source": {"metadata": {"source": "huge.pdf"}}}]}},
+                        },
+                    ]
+                }
+            }
+        }
+
+        es_mock = mocker.patch(
+            'codemie.service.search_and_rerank.SearchAndRerankBase.es', new_callable=mocker.PropertyMock
+        )
+        es_mock.return_value.search.return_value = agg_response
+        mocker.patch.object(kb_instance, '_format_hit', side_effect=lambda hit, field: "formatted")
+
+        kb_instance._fetch_unique_sources("summary")
+
+        assert kb_instance.source_chunk_totals == {
+            "report.docx": 4,
+            "huge.pdf": kb_instance.MAX_CHUNKS_FOR_SINGLE_DOCUMENT + 5,
+        }
+
     def test_format_hit_with_various_metadata(self, mocker, kb_instance):
         """
         Test the _format_hit method with different metadata structures.

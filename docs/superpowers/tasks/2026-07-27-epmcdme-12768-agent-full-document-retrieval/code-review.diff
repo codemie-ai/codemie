@@ -1,0 +1,263 @@
+diff --git a/src/codemie/agents/tools/kb/search_kb.py b/src/codemie/agents/tools/kb/search_kb.py
+index ebb918008..1f2ee432c 100644
+--- a/src/codemie/agents/tools/kb/search_kb.py
++++ b/src/codemie/agents/tools/kb/search_kb.py
+@@ -38,6 +38,14 @@ from codemie.templates.knowledge_base_prompt import LLM_ROUTING_KB_PROMPT
+ 
+ _SUPPRESSED_CALLBACK_TYPES = AgentStreamingCallback | AgentInvokeCallback
+ 
++COVERAGE_KEY = "**Coverage:** "
++INCOMPLETE_NOTICE = (
++    "\n###NOTICE###\n"
++    "Some parts of the documents above are not included in this result. "
++    "To obtain a missing part, call this tool again with a narrower query naming the "
++    "section or topic you need. Do not supply the missing content from your own knowledge."
++)
++
+ 
+ SEARCH_KB_TOOL = ToolMetadata(
+     name="search_kb",
+@@ -84,6 +92,9 @@ class SearchKBTool(CodeMieTool, DatasourceHealthMixin):
+     base_name: str = "search_kb"
+     name_template: str = base_name + "_{}"
+     tokens_size_limit: int = Field(default_factory=lambda: 20000)
++    # Indexed chunk count per source, filled from the search. Empty when unknown, in which
++    # case the response makes no coverage claim rather than guessing one.
++    source_chunk_totals: dict = Field(default_factory=dict)
+     description_template: str = """
+     Use this tool when you need to get or search additional project context to resolve user query.
+     Tool get the following input parameters: "query": string text with detailed user query which will be used to
+@@ -123,13 +134,18 @@ class SearchKBTool(CodeMieTool, DatasourceHealthMixin):
+             else:
+                 search_class = SearchAndRerankKB
+ 
+-            data = search_class(
++            search = search_class(
+                 query=query,
+                 kb_index=self.index_info,
+                 llm_model=self.llm_model,
+                 top_k=10,  # TODO: make it configurable
+                 request_id=request_id,
+-            ).execute()
++            )
++            data = search.execute()
++            totals = getattr(search, "source_chunk_totals", None)
++            # Only a real mapping is usable; anything else means the search path did not
++            # supply totals, and a coverage claim must not be invented from it.
++            self.source_chunk_totals = totals if isinstance(totals, dict) else {}
+ 
+         return SearchKBResponse(
+             text=str(self._wrap_result(self.format_response(data), notice)),
+@@ -179,9 +195,31 @@ class SearchKBTool(CodeMieTool, DatasourceHealthMixin):
+         )
+ 
+     def format_response(self, documents: list[Document] | tuple[list[Document], list[str]]) -> str:
+-        if isinstance(documents, tuple):
+-            return str(documents[1]) + "\n" + "\n".join(self.format_document(doc) for doc in documents[0])
+-        return "\n".join(self.format_document(doc) for doc in documents)
++        docs = documents[0] if isinstance(documents, tuple) else documents
++        prefix = str(documents[1]) + "\n" if isinstance(documents, tuple) else ""
++
++        shown: dict[str, int] = {}
++        for doc in docs:
++            source = doc.metadata.get("source", "")
++            shown[source] = shown.get(source, 0) + 1
++
++        coverage_lines = []
++        incomplete = False
++        for source, count in shown.items():
++            total = self.source_chunk_totals.get(source)
++            if not total:
++                # No known total: a coverage claim would be a guess, so make none.
++                continue
++            coverage_lines.append(f"{COVERAGE_KEY}{source}: {count} of {total} parts included")
++            if count < total:
++                incomplete = True
++
++        body = "\n".join(self.format_document(doc) for doc in docs)
++        head = prefix + "\n".join(coverage_lines) if coverage_lines else prefix.rstrip("\n")
++        parts = [head, body] if head else [body]
++        if incomplete:
++            parts.append(INCOMPLETE_NOTICE)
++        return "\n".join(part for part in parts if part)
+ 
+     def process_llm_routing_index(self, query: str, kb_index):
+         request_id = self.metadata.get(REQUEST_ID)
+diff --git a/src/codemie/service/conversation/history_projection_service.py b/src/codemie/service/conversation/history_projection_service.py
+index ef5146a8c..eb12debbf 100644
+--- a/src/codemie/service/conversation/history_projection_service.py
++++ b/src/codemie/service/conversation/history_projection_service.py
+@@ -38,6 +38,9 @@ from codemie.service.constants import (
+ 
+ TEXT_LEDGER_MODE = "text_ledger"
+ NATIVE_TOOLS_MODE = "native_tools"
++
++# Delimiter that separates individual result blocks inside a retrieval tool's output.
++SOURCE_DOCUMENT_DELIMITER = "###SOURCE DOCUMENT###"
+ PLAIN_CHAT_MODE = "plain_chat"
+ GENERIC_THOUGHT_NAMES = {"CodeMie Thoughts"}
+ NORMALIZED_GENERIC_THOUGHT_NAMES = {"codemie_thoughts"}
+@@ -584,6 +587,16 @@ class ConversationHistoryProjectionService:
+     def _truncate_text(cls, text: str, limit: int) -> str:
+         if len(text) <= limit:
+             return text
++
++        # Prefer cutting between result blocks: a block sliced mid-content still looks
++        # complete to the model, which is what lets a partial result pass for a whole one.
++        boundary = text[:limit].rfind(SOURCE_DOCUMENT_DELIMITER)
++        if boundary > 0:
++            kept = text[:boundary].rstrip()
++            dropped = text.count(SOURCE_DOCUMENT_DELIMITER) - kept.count(SOURCE_DOCUMENT_DELIMITER)
++            logger.debug(f"Truncated replay tool content from {len(text)} to {len(kept)} chars at a block boundary")
++            return f"{kept}\n...[{dropped} further block(s) omitted; call the tool again to retrieve them]"
++
+         truncated = text[:limit].rstrip()
+         logger.debug(f"Truncated replay tool content from {len(text)} to {len(truncated)} chars")
+         return f"{truncated}\n...[truncated]"
+diff --git a/src/codemie/service/search_and_rerank/kb.py b/src/codemie/service/search_and_rerank/kb.py
+index cf70b3cbc..e86695f3d 100644
+--- a/src/codemie/service/search_and_rerank/kb.py
++++ b/src/codemie/service/search_and_rerank/kb.py
+@@ -99,6 +99,9 @@ class SearchAndRerankKB(SearchAndRerankBase):
+         self.chain = KBSourcesSelectorChain(
+             query=self.query, sources=[], llm_model=self.llm_model, request_id=self.request_id
+         )
++        # Number of indexed chunks per source, captured from the routing aggregation.
++        # Lets the tool response state how much of a document it actually carries.
++        self.source_chunk_totals: dict[str, int] = {}
+ 
+     @staticmethod
+     def _get_meta_search_fields() -> tuple[str, str, str]:
+@@ -208,6 +211,9 @@ class SearchAndRerankKB(SearchAndRerankBase):
+         # Process the aggregation results
+         for bucket in results.get("aggregations", {}).get("unique_sources", {}).get("buckets", []):
+             chunks_count = bucket["doc_count"]  # Number of chunks for this source
++            # Recorded for every source, including the ones excluded from routing below:
++            # the tool response needs the total to say how much of a document it carries.
++            self.source_chunk_totals[bucket["key"]] = chunks_count
+ 
+             # Only include sources with manageable chunk counts
+             if chunks_count <= self.MAX_CHUNKS_FOR_SINGLE_DOCUMENT:
+diff --git a/tests/codemie/agents/tools/kb/test_search_kb.py b/tests/codemie/agents/tools/kb/test_search_kb.py
+index d1daa4b31..9a6ccca1d 100644
+--- a/tests/codemie/agents/tools/kb/test_search_kb.py
++++ b/tests/codemie/agents/tools/kb/test_search_kb.py
+@@ -551,3 +551,47 @@ class TestRunRaisesToolException:
+         tool.index_info.index_type = "knowledge_base_jira"
+         result = tool._run(query="what is X")
+         assert "scheduled reindex that did not complete" in result[0]
++
++
++# ---------------------------------------------------------------------------
++# Result completeness
++# ---------------------------------------------------------------------------
++
++
++def _chunk(source: str, chunk_num: int, text: str) -> Document:
++    return Document(page_content=text, metadata={"source": source, "chunk_num": chunk_num})
++
++
++def test_partial_coverage_is_declared_and_actionable():
++    """A response missing parts of a document must say so and say what to do about it."""
++    tool = _make_tool()
++    source = "https://host/report.docx"
++    tool.source_chunk_totals = {source: 4}
++
++    result = tool.format_response([_chunk(source, 1, "part one"), _chunk(source, 2, "part two")])
++
++    assert "2 of 4" in result
++    assert "narrower" in result.lower()
++    assert "do not" in result.lower()
++
++
++def test_complete_coverage_carries_no_omission_claim():
++    """A response covering every part must not imply that something is missing."""
++    tool = _make_tool()
++    source = "https://host/report.docx"
++    tool.source_chunk_totals = {source: 2}
++
++    result = tool.format_response([_chunk(source, 1, "part one"), _chunk(source, 2, "part two")])
++
++    assert "2 of 2" in result
++    assert "narrower" not in result.lower()
++
++
++def test_unknown_total_makes_no_coverage_claim():
++    """Without a known total, stating coverage would be a guess — so state nothing."""
++    tool = _make_tool()
++    tool.source_chunk_totals = {}
++
++    result = tool.format_response([_chunk("https://host/report.docx", 1, "part one")])
++
++    assert "of" not in result.split("**File Content:**")[0].split("**Source:**")[0]
+diff --git a/tests/codemie/service/conversation/test_history_projection_service.py b/tests/codemie/service/conversation/test_history_projection_service.py
+index d309bbe7f..1eb41c532 100644
+--- a/tests/codemie/service/conversation/test_history_projection_service.py
++++ b/tests/codemie/service/conversation/test_history_projection_service.py
+@@ -575,3 +575,16 @@ def test_normalize_tool_name_combined_scenarios():
+     result = normalize(valid_chars)
+     assert result == valid_chars.lower()
+     assert TOOL_NAME_REGEX.match(result)
++
++
++def test_truncation_keeps_blocks_whole_and_reports_omission():
++    """A shortened replay must stay a truthful description of itself: whole blocks only,
++    and an explicit statement of what it no longer carries."""
++    block = "\n###SOURCE DOCUMENT###\n**Source:**s-{n}\n**File Content:** \n" + ("x" * 400) + "\n"
++    text = "".join(block.replace("{n}", str(n)) for n in range(1, 6))
++
++    result = ConversationHistoryProjectionService._truncate_text(text, 900)
++
++    assert "x" * 400 in result
++    assert not result.rstrip().endswith("x")
++    assert "omitted" in result.lower()
+diff --git a/tests/codemie/service/search_and_rerank/test_kb.py b/tests/codemie/service/search_and_rerank/test_kb.py
+index cbe8ddcdd..9aeeabecc 100644
+--- a/tests/codemie/service/search_and_rerank/test_kb.py
++++ b/tests/codemie/service/search_and_rerank/test_kb.py
+@@ -754,6 +754,45 @@ class TestSearchAndRerankKB:
+         assert f"Elasticsearch aggregation error for request {kb_instance.request_id}" in error_msg
+         assert "Elasticsearch error" in error_msg
+ 
++    def test_fetch_unique_sources_records_chunk_totals(self, mocker, kb_instance):
++        """
++        Totals must be recorded for every source the aggregation returns, including the ones
++        filtered out of routing — so the tool can state how much of a document it carries.
++        """
++        agg_response = {
++            "aggregations": {
++                "unique_sources": {
++                    "buckets": [
++                        {
++                            "key": "report.docx",
++                            "doc_count": 4,
++                            "source_metadata": {
++                                "hits": {"hits": [{"_source": {"metadata": {"source": "report.docx"}}}]}
++                            },
++                        },
++                        {
++                            "key": "huge.pdf",
++                            "doc_count": kb_instance.MAX_CHUNKS_FOR_SINGLE_DOCUMENT + 5,
++                            "source_metadata": {"hits": {"hits": [{"_source": {"metadata": {"source": "huge.pdf"}}}]}},
++                        },
++                    ]
++                }
++            }
++        }
++
++        es_mock = mocker.patch(
++            'codemie.service.search_and_rerank.SearchAndRerankBase.es', new_callable=mocker.PropertyMock
++        )
++        es_mock.return_value.search.return_value = agg_response
++        mocker.patch.object(kb_instance, '_format_hit', side_effect=lambda hit, field: "formatted")
++
++        kb_instance._fetch_unique_sources("summary")
++
++        assert kb_instance.source_chunk_totals == {
++            "report.docx": 4,
++            "huge.pdf": kb_instance.MAX_CHUNKS_FOR_SINGLE_DOCUMENT + 5,
++        }
++
+     def test_format_hit_with_various_metadata(self, mocker, kb_instance):
+         """
+         Test the _format_hit method with different metadata structures.

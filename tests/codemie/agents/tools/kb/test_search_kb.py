@@ -551,3 +551,139 @@ class TestRunRaisesToolException:
         tool.index_info.index_type = "knowledge_base_jira"
         result = tool._run(query="what is X")
         assert "scheduled reindex that did not complete" in result[0]
+
+
+# ---------------------------------------------------------------------------
+# Result completeness
+# ---------------------------------------------------------------------------
+
+
+def _chunk(source: str, chunk_num: int, text: str) -> Document:
+    return Document(page_content=text, metadata={"source": source, "chunk_num": chunk_num})
+
+
+def test_partial_coverage_is_declared_and_actionable():
+    """A response missing parts of a document must say so and say what to do about it."""
+    tool = _make_tool()
+    source = "https://host/report.docx"
+    tool.source_chunk_totals = {source: 4}
+
+    result = tool.format_response([_chunk(source, 1, "part one"), _chunk(source, 2, "part two")])
+
+    assert "2 of 4" in result
+    assert "narrower" in result.lower()
+    assert "do not" in result.lower()
+
+
+def test_complete_coverage_carries_no_omission_claim():
+    """A response covering every part must not imply that something is missing."""
+    tool = _make_tool()
+    source = "https://host/report.docx"
+    tool.source_chunk_totals = {source: 2}
+
+    result = tool.format_response([_chunk(source, 1, "part one"), _chunk(source, 2, "part two")])
+
+    assert "2 of 2" in result
+    assert "narrower" not in result.lower()
+
+
+def test_unknown_total_is_stated_not_omitted():
+    """Silence would leave a partial result shaped exactly like a complete one — the very
+    defect this change exists to remove. An unknown total must be said out loud."""
+    tool = _make_tool()
+    tool.source_chunk_totals = {}
+
+    result = tool.format_response([_chunk("https://host/report.docx", 1, "part one")])
+
+    head = result.split("**Source:**")[0]
+    assert "total not verified" in head.lower()
+
+
+def test_notice_precedes_the_document_blocks():
+    """Every downstream reducer cuts from the tail, so a notice placed last is the first
+    thing lost. It has to sit with the coverage lines, ahead of the content."""
+    tool = _make_tool()
+    source = "https://host/report.docx"
+    tool.source_chunk_totals = {source: 4}
+
+    result = tool.format_response([_chunk(source, 1, "part one")])
+
+    assert result.index("narrower") < result.index("**Source:**")
+
+
+def test_overlimit_source_does_not_promise_a_successful_retry():
+    """A source above the full-retrieval limit stays excluded from document routing no
+    matter how narrow the query is, so the notice must not promise that retrying with a
+    narrower query can obtain the missing parts."""
+    tool = _make_tool()
+    source = "https://host/big-report.docx"
+    tool.source_chunk_totals = {source: 35}
+    tool.full_retrieval_chunk_limit = 20
+
+    result = tool.format_response([_chunk(source, 1, "part one"), _chunk(source, 2, "part two")])
+
+    assert "2 of 35" in result
+    assert "full-retrieval limit" in result
+    assert "To obtain a missing part, call this tool again" not in result
+    assert "not guaranteed" in result.lower()
+    assert "do not" in result.lower()
+
+
+def test_under_limit_source_keeps_the_retry_advice():
+    """Sources within the limit remain fully retrievable — the actionable retry advice
+    must stay exactly as before when the limit is known."""
+    tool = _make_tool()
+    source = "https://host/report.docx"
+    tool.source_chunk_totals = {source: 4}
+    tool.full_retrieval_chunk_limit = 20
+
+    result = tool.format_response([_chunk(source, 1, "part one")])
+
+    assert "1 of 4" in result
+    assert "full-retrieval limit" not in result
+    assert "narrower" in result.lower()
+
+
+def test_truncation_rewrites_coverage_claims():
+    """A '2 of 2 parts included' claim survives at the head of a tail-truncated output
+    while the parts themselves are cut — the claim must be rewritten, not left false."""
+    tool = _make_tool()
+    source = "https://host/report.docx"
+    tool.source_chunk_totals = {source: 2}
+    tool.tokens_size_limit = 60
+
+    full_text = tool.format_response([_chunk(source, 1, "part one " * 100), _chunk(source, 2, "part two " * 100)])
+    assert "2 of 2 parts included" in full_text
+
+    limited, _ = tool._limit_output_content(SearchKBResponse(text=full_text, image_artifacts=[]))
+
+    assert "part two" not in limited.text
+    assert "2 of 2 parts included\n" not in limited.text
+    assert "truncated" in limited.text.lower()
+    assert "may be missing" in limited.text.lower()
+
+
+def test_no_truncation_leaves_coverage_claims_untouched():
+    """Within the token limit the coverage statement must stay exactly as formatted."""
+    tool = _make_tool()
+    source = "https://host/report.docx"
+    tool.source_chunk_totals = {source: 2}
+
+    full_text = tool.format_response([_chunk(source, 1, "part one"), _chunk(source, 2, "part two")])
+
+    limited, _ = tool._limit_output_content(SearchKBResponse(text=full_text, image_artifacts=[]))
+
+    assert limited.text == full_text
+
+
+def test_unverified_coverage_carries_the_guardrail():
+    """Unknown totals are exactly where completeness cannot be vouched for, so that path
+    must not be the one without a caution — otherwise a bare count reads as reassurance."""
+    tool = _make_tool()
+    tool.source_chunk_totals = {}
+
+    result = tool.format_response([_chunk("https://host/report.docx", 1, "part one")])
+
+    head = result.split("**Source:**")[0]
+    assert "do not" in head.lower()
+    assert "narrower" in head.lower()
