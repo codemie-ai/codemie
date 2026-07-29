@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "task": "Fix ruff pre-commit hook staged-files detection by replacing broken git ls-files -m detection with a new _ruff_staged.sh helper that reads staged blobs via git show, compares byte-exact via cmp, and is covered by 7 pytest subprocess test cases.",
+  "generated": "2026-07-28T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 10,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "file_change_estimate",
+      "reason": "6 production files touched: _ruff_staged.sh (new, ~99 lines), pre_commit.sh (modified), .pre-commit-config.yaml (modified), tests/scripts/conftest.py (new, ~79 lines), tests/scripts/test_ruff_staged_hook.py (new, ~138 lines), tests/scripts/__init__.py (new). Spans 2 new directories (scripts/git-hooks and tests/scripts). Maps to M (5-7 files, 1-2 new). The remaining 4 diff files are SDLC cleanup artifacts, not production code."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Entirely within the Developer Tooling domain — git hook shell scripts and their subprocess tests. No application layer boundaries crossed."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "New bash technique (git show + ruff stdin pipe + cmp byte comparison) with no exact codebase precedent, but uses well-understood POSIX primitives. Zero security or performance implications, trivially reversible."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

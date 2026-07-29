@@ -6,5 +6,5 @@ repos:
         entry: bash -lc 'bash scripts/git-hooks/pre_commit.sh 2>&1 | tee /dev/tty 2>/dev/null; exit ${PIPESTATUS[0]}'
         language: system
         pass_filenames: false
-        stages: [commit]
+        stages: [pre-commit]
         always_run: true

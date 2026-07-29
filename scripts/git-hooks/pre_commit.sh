@@ -40,22 +40,12 @@ if ! command -v poetry >/dev/null 2>&1; then
   exit 1
 fi
 
-# --- 1. Ruff formatting and fixes (fast pass) ---
-echo "[pre-commit] Running Ruff format..."
-poetry run ruff format
-
-echo "[pre-commit] Running Ruff lint with --fix..."
-poetry run ruff check --fix || true
-
-# Detect modified tracked files caused by formatting/fixes
-changed_files=$(git ls-files -m)
-if [[ -n "$changed_files" ]]; then
-  echo "[pre-commit] Ruff applied changes to the following files:"
-  echo "$changed_files" | tr ' ' '\n'
-  echo "[pre-commit] Please stage the changes (git add ...) and commit again."
-  echo "[pre-commit] Skipping tests now to avoid running them twice."
-  exit 1
-fi
+# --- 1. Ruff formatting and fixes (fast pass, staged Python content only) ---
+# The staged-only detection lives in _ruff_staged.sh so it is unit-testable
+# (see tests/scripts/test_ruff_staged_hook.py). It exits 1 if ruff would
+# change any staged .py, 0 otherwise. Working tree is not mutated - the user
+# runs `ruff format` explicitly and re-stages when the helper flags files.
+bash "$(dirname "$0")/_ruff_staged.sh"
 
 # --- 2. Full verification (Ruff + license headers + Pytest) ---
 echo "[pre-commit] No formatting changes detected. Running ruff checks, license checks, and tests..."

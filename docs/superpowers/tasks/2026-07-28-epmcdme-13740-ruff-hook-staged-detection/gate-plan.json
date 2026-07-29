@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "runner": "poetry",
+  "gates": [
+    {"id": "lint", "command": "make ruff", "available": true, "source": "guide"},
+    {"id": "build", "command": "make build", "available": true, "source": "guide"},
+    {"id": "license", "command": "make license-check", "available": true, "source": "guide"},
+    {"id": "secrets", "command": "make gitleaks", "available": true, "source": "guide"},
+    {"id": "unit", "command": "poetry run pytest tests/", "available": true, "source": "guide"},
+    {"id": "coverage", "command": "make coverage", "available": true, "source": "guide"},
+    {"id": "sonar", "command": "make sonar-local", "available": true, "source": "guide"},
+    {"id": "verify", "command": "make verify", "available": true, "source": "guide"},
+    {"id": "ui", "command": null, "available": false, "source": "derived"}
+  ],
+  "ui_globs": [],
+  "detected_at": "2026-07-28T00:00:00Z"
+}

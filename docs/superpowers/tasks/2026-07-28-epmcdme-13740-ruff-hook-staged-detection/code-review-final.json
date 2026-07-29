@@ -1,0 +1,32 @@
+{
+  "decision": "approve",
+  "rationale": "All 3 prior findings resolved. CR-001 (critical, trailing-newline false negative): command substitution replaced with `git show :f > tmpdir/orig` + `cmp -s tmpdir/orig tmpdir/fixed` — comparison is now byte-exact and preserves trailing newlines; regression test test_missing_trailing_newline_exits_one asserts exit 1 for a staged file written via write_bytes(b'x = 1') without trailing newline. CR-002 (major, syntax-error UX): explicit `if ! $RUFF_CMD format ...; then echo '[pre-commit] Ruff format failed on staged content of \\'$f\\' (syntax error?):'; cat tmpdir/format.err >&2; exit 1; fi` — helper now surfaces a clear message before exit; regression test test_syntax_error_in_staged_file_reports_clearly asserts the message and file name. CR-003 (major, swallowed ruff failure): ruff check now runs with `rc=0; ... || rc=$?; if [[ $rc -gt 1 ]]; then ... exit 1; fi`; exit 0 (clean) and 1 (fixes/lint remain — the pre_commit.sh read-only `ruff check` step surfaces the latter) are accepted, exit ≥2 is fatal with stderr printed; no regression test added because deliberately breaking RUFF_CMD is trivial by inspection and adding fault-injection scaffolding would exceed scope. Scoped confirmation pass on the fix-up diff refuted the suspicion of new high-risk issues: mktemp+trap are correctly scoped to this subprocess, stderr redirects to tmp files that are cleaned up on EXIT, and the subprocess boundary keeps _ruff_staged.sh's trap from clobbering pre_commit.sh's ERR trap. All 7 tests (5 original + 2 regression) pass locally.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"criterion": "staged_py via git diff --cached --diff-filter=ACMR -- '*.py'", "status": "pass", "notes": "_ruff_staged.sh:33"},
+    {"criterion": "design deviation (git show + stdin vs hash-object) still satisfies staged-only detection immune to git add -p", "status": "pass", "notes": "helper reads staged blob, never mutates working tree; partial-staging test confirms exit 0"},
+    {"criterion": "--force-exclude on every ruff call", "status": "pass", "notes": "_ruff_staged.sh:48,52"},
+    {"criterion": "Skip entirely when no staged .py files", "status": "pass", "notes": "_ruff_staged.sh:35-38"},
+    {"criterion": "Preserve abort message + exit 1 when ruff would change staged files", "status": "pass", "notes": "_ruff_staged.sh:59-65"},
+    {"criterion": "bash 3.2 compatible (no mapfile, readarray, associative arrays)", "status": "pass"},
+    {"criterion": "stages: [commit] -> stages: [pre-commit] in .pre-commit-config.yaml", "status": "pass"},
+    {"criterion": "Apache 2.0 headers on new .sh/.py files", "status": "partial", "notes": "empty tests/scripts/__init__.py has no header — plan Task 1 Step 1 said 'Create empty', global constraint says required; contradiction in plan"},
+    {"criterion": "pytest subprocess test with 4 scenarios (no-staged / clean+garbage / ruff-mutates / partial-staging)", "status": "pass", "notes": "5 tests including fixture smoke; all pass"},
+    {"criterion": "Non-ruff hook sections (license/pytest/sonar) unchanged in pre_commit.sh", "status": "pass"},
+    {"criterion": "Helper invoked as subprocess (not sourced)", "status": "pass"},
+    {"criterion": "No new dependencies, no pyproject.toml changes", "status": "pass"},
+    {"criterion": "RUFF_CMD env override (default 'poetry run ruff')", "status": "pass"}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow: ticket-prefixed commit subjects", "status": "pass", "notes": "fix-up commit is 'EPMCDME-13740: Fix code-review findings CR-001/002/003'"},
+    {"standard": "code-quality: bash + Python conventions", "status": "pass"},
+    {"standard": "security-patterns: input validation, auth, secrets", "status": "na", "notes": "no security surface"}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "evidence": "scripts/git-hooks/_ruff_staged.sh:52 (git show > tmpdir/orig), :83 (cmp -s); tests/scripts/test_ruff_staged_hook.py::test_missing_trailing_newline_exits_one"},
+    {"id": "CR-002", "status": "resolved", "evidence": "scripts/git-hooks/_ruff_staged.sh:58-63 (if ! $RUFF_CMD format ...; then echo 'Ruff format failed'; cat format.err >&2; exit 1); tests/scripts/test_ruff_staged_hook.py::test_syntax_error_in_staged_file_reports_clearly"},
+    {"id": "CR-003", "status": "resolved", "evidence": "scripts/git-hooks/_ruff_staged.sh:72-79 (rc=0; ... || rc=$?; if [[ $rc -gt 1 ]]; then echo 'Ruff check failed'; cat check.err >&2; exit 1)"}
+  ]
+}

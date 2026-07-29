@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-light",
+  "slug": "epmcdme-13740-ruff-hook-staged-detection",
+  "branch": "EPMCDME-13740_ruff-hook-staged-detection",
+  "phase": "maintenance",
+  "started_at": "2026-07-28T00:00:00Z",
+  "completed_at": "2026-07-28T00:00:00Z",
+  "last_sync_commit": "4f35d0f2b"
+}

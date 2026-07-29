@@ -64,3 +64,4 @@ bmad/*
 /run_claude.sh
 .ai-run/runs
 /.codegraph/
+docs/superpowers/tasks/**/*.diff
