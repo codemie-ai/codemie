@@ -16,12 +16,9 @@ version: "1.0"
 # Restricted Python modules
 restricted_modules:
   # System operations - HIGH severity
-  - name: os
-    description: >-
-      Operating system interface - LOW for file operations
-      (walk, path), HIGH for system commands
-    severity: HIGH
-
+  # os is NOT restricted here — dangerous calls (os.system, os.remove, os.environ)
+  # are blocked via the specific patterns below; safe calls like os.urandom,
+  # os.path.*, os.getcwd() must remain allowed.
   - name: subprocess
     description: >-
       Process execution - LOW severity for git operations,
@@ -97,6 +94,13 @@ restricted_modules:
     description: "Process-based parallelism - blocked"
     severity: HIGH
 
+  # Package installation - HIGH severity
+  - name: pip
+    description: >-
+      Package installer - blocked to prevent runtime dependency
+      installation in the sandbox
+    severity: HIGH
+
   # Code inspection - MEDIUM severity
   - name: inspect
     description: "Code introspection - restricted"
@@ -121,9 +125,10 @@ patterns:
       system tools)
     severity: HIGH
 
-  # File system manipulation
-  - pattern: 'os\.(remove|rmdir|unlink|mkdir|makedirs)'
-    description: "File system modification - restricted"
+  # File system manipulation — only deletions are blocked pre-execution;
+  # mkdir/makedirs are allowed (runtime fs guard enforces workspace boundaries).
+  - pattern: 'os\.(remove|rmdir|unlink)'
+    description: "File system deletion - restricted"
     severity: HIGH
 
   # Network access

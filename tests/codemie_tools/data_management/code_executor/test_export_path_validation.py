@@ -81,6 +81,17 @@ def test_execute_sandbox_blocks_bad_export_path_before_io():
             tool._execute_sandbox("print('hi')", export_files=["../../etc/passwd"])
 
 
+def test_execute_sandbox_keeps_export_validation_before_guard_build():
+    tool = CodeExecutorTool(file_repository=MagicMock(), user_id="test_user")
+
+    with patch(
+        "codemie_tools.data_management.code_executor.code_executor_tool.build_guarded_python_script",
+        side_effect=AssertionError("guard should not build for invalid export paths"),
+    ):
+        with pytest.raises(ToolException, match="working directory"):
+            tool._execute_sandbox("print('hi')", export_files=["../../etc/passwd"])
+
+
 def test_execute_sandbox_script_blocks_bad_export_path_before_io():
     tool = WorkspaceScriptRunner(file_repository=MagicMock(), user_id="test_user")
     with (

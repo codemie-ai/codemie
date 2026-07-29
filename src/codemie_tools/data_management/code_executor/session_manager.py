@@ -224,7 +224,7 @@ class SandboxSessionManager:
         """
         with self._pod_management_lock:
             # Try to reuse existing session
-            session = self._try_reuse_session(pod_name)
+            session = self._try_reuse_session(pod_name, workdir)
             if session:
                 return session
 
@@ -232,7 +232,7 @@ class SandboxSessionManager:
             selected_pod_name = pod_name if pod_name else self._select_or_wait_for_pod()
 
             # Try to reuse session for selected pod
-            session = self._try_reuse_session(selected_pod_name)
+            session = self._try_reuse_session(selected_pod_name, workdir)
             if session:
                 return session
 
@@ -256,7 +256,7 @@ class SandboxSessionManager:
                 with self._pod_management_lock:
                     self._pods_being_created.discard(temp_pod_id)
 
-    def _try_reuse_session(self, pod_name: Optional[str]) -> Optional[SandboxSession]:
+    def _try_reuse_session(self, pod_name: Optional[str], workdir: str) -> Optional[SandboxSession]:
         """
         Try to reuse an existing healthy session for the given pod.
 
@@ -272,8 +272,17 @@ class SandboxSessionManager:
         if not self._is_session_healthy(pod_name):
             return None
 
-        logger.debug(f"Reusing existing session for pod: {pod_name}")
         session = self._sessions[pod_name]
+
+        bound_workdir = getattr(session, "_codemie_workdir", None)
+        if bound_workdir != workdir:
+            logger.info(
+                f"session_workdir_mismatch: pod={pod_name}, bound_workdir={bound_workdir}, "
+                f"requested_workdir={workdir}, domain=code_executor"
+            )
+            return None
+
+        logger.debug(f"Reusing existing session for pod: {pod_name}")
 
         # Ensure pod name attribute is set
         if not hasattr(session, "_codemie_pod_name"):
@@ -356,7 +365,7 @@ class SandboxSessionManager:
 
         session, actual_pod_name = self._session_factory.create_new_pod_session(workdir, pod_manifest, security_policy)
 
-        self._store_session(session, actual_pod_name)
+        self._store_session(session, actual_pod_name, workdir)
         logger.info(f"New pod created: {actual_pod_name}")
 
         return session
@@ -393,7 +402,7 @@ class SandboxSessionManager:
 
                 session = self._session_factory.connect_to_existing_pod(pod_name, workdir, security_policy)
 
-                self._store_session(session, pod_name)
+                self._store_session(session, pod_name, workdir)
                 logger.debug(f"Connected to existing pod: {pod_name}")
 
                 return session
@@ -410,7 +419,7 @@ class SandboxSessionManager:
                     security_policy=security_policy,
                 )
 
-    def _store_session(self, session: SandboxSession, pod_name: str) -> None:
+    def _store_session(self, session: SandboxSession, pod_name: str, workdir: str) -> None:
         """
         Store session in the pool with timestamp tracking.
 
@@ -421,6 +430,7 @@ class SandboxSessionManager:
         self._sessions[pod_name] = session
         self._session_timestamps[pod_name] = time.time()
         session._codemie_pod_name = pod_name
+        session._codemie_workdir = workdir
 
     def _is_session_healthy(self, pod_name: str) -> bool:
         """

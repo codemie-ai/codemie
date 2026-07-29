@@ -40,6 +40,7 @@ from codemie_tools.data_management.code_executor.file_export_service import (
 )
 from codemie_tools.data_management.code_executor.llm_sandbox import is_sandbox_system_file_path
 from codemie_tools.data_management.code_executor.models import ExecutionMode, SandboxMode
+from codemie_tools.data_management.code_executor.sandbox_guard import build_guarded_workspace_script
 from codemie_tools.data_management.workspace.tools_vars import (
     EXECUTE_WORKSPACE_SCRIPT_TOOL,
 )
@@ -105,8 +106,8 @@ class WorkspaceScriptRunner(CodeExecutorTool):
         return normalized
 
     @staticmethod
-    def _build_script_wrapper(script_path: str) -> str:
-        return f"import runpy\nrunpy.run_path(r'{script_path}', run_name='__main__')\n"
+    def _build_script_wrapper(script_path: str, workspace_root: str) -> str:
+        return build_guarded_workspace_script(script_path, workspace_root=workspace_root)
 
     @staticmethod
     def _hash_content(content: bytes) -> str:
@@ -193,10 +194,11 @@ class WorkspaceScriptRunner(CodeExecutorTool):
 
             script_code = self._get_script_content(script_path)
             self._validate_code_security(session, script_code)
-            wrapper_code = self._build_script_wrapper(script_path)
+            wrapper_code = self._build_script_wrapper(script_path, user_workdir)
 
             result, exec_time = self._execute_code_sandbox(session, wrapper_code)
             self._log_execution_timing(0.0, exec_time)
+            self._log_guard_denials(result.stdout or "", result.stderr or "", workdir=user_workdir)
 
             result_text = self._format_execution_result(result)
             self.last_execution_files = self._collect_sandbox_changed_files(session, user_workdir, input_file_hashes)
@@ -211,7 +213,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
     ) -> str:
         script_code = self._get_script_content(script_path)
         self._validate_code_security_policy(script_code)
-        wrapper_code = self._build_script_wrapper(script_path)
+        wrapper_code = self._build_script_wrapper(script_path, user_workdir)
 
         input_file_hashes = self._get_input_file_hashes()
         input_bytes = self._read_input_file_bytes(self.input_files)
@@ -225,6 +227,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
             baseline_hashes=input_file_hashes,
         )
         self._log_execution_timing(0.0, _time.time() - start)
+        self._log_guard_denials(result.stdout or "", result.stderr or "", workdir=user_workdir)
 
         self.last_execution_files = [
             FileObject(

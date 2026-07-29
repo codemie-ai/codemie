@@ -14,6 +14,7 @@
 
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -37,6 +38,10 @@ from codemie_tools.data_management.code_executor.models import (
     ExecutionMode,
     SandboxMode,
 )
+from codemie_tools.data_management.code_executor.sandbox_guard import (
+    build_guarded_python_script,
+    extract_denial_events,
+)
 from codemie_tools.data_management.code_executor.security_policies import (
     check_security_policy,
     get_codemie_security_policy,
@@ -51,6 +56,12 @@ from codemie_tools.data_management.code_executor.tools_vars import (
 )
 
 logger = logging.getLogger(__name__)
+
+_DENIAL_EVENT_FIELD_LIMITS: dict[str, int] = {
+    "operation": 128,
+    "path": 4096,
+    "reason": 128,
+}
 
 _BLOCKED_EXPORT_PATH_PREFIXES: frozenset[str] = frozenset(
     {
@@ -257,13 +268,15 @@ class CodeExecutorTool(CodeMieTool):
         Get user-specific working directory to ensure isolation between users.
 
         Uses sanitized user ID to create isolated workdir paths, preventing
-        directory traversal attacks.
+        directory traversal and shell-injection attacks. The workdir is later
+        interpolated unquoted into a bash wrapper script (batch_job_runner.py),
+        so only a safe charset is allowed through.
 
         Returns:
             str: User-specific workdir path
         """
         if self.user_id:
-            safe_user_id = self.user_id.replace("/", "_").replace("\\", "_")
+            safe_user_id = re.sub(r"[^A-Za-z0-9_-]", "_", self.user_id)
             return f"{self.config.workdir_base}/{safe_user_id}"
         return self.config.workdir_base
 
@@ -417,34 +430,42 @@ class CodeExecutorTool(CodeMieTool):
         Raises:
             ToolException: If execution fails
         """
-        self._validate_export_paths(export_files, self._get_user_workdir())
+        user_workdir = self._get_user_workdir()
+        self._validate_export_paths(export_files, user_workdir)
+        guarded_code = build_guarded_python_script(code, workspace_root=user_workdir)
+        logger.info(
+            f"code_execution_started: user_id={self.user_id}, sandbox_mode={self.config.sandbox_mode.value}, "
+            f"workdir={user_workdir}, domain=code_executor"
+        )
         try:
             if self.config.sandbox_mode == SandboxMode.JOBS:
                 self._validate_code_security_policy(code)
                 return run_via_jobs(
                     self.config,
-                    code,
+                    guarded_code,
                     self._read_input_file_bytes(self.input_files),
                     export_files,
-                    self._get_user_workdir(),
+                    user_workdir,
                     self._format_execution_result,
                     self._store_exported_bytes,
                     self._log_execution_timing,
+                    lambda stdout, stderr: self._log_guard_denials(stdout, stderr, workdir=user_workdir),
                 )
 
-            user_workdir = self._get_user_workdir()
             with self._sandbox_session(user_workdir) as session:
                 if self.input_files:
                     self._upload_files_to_sandbox(session, self.input_files, user_workdir)
 
-                self._validate_code_security(session, code)
+                self._validate_code_security(session, code, user_id=self.user_id)
 
-                result, exec_time = self._execute_code_sandbox(session, code)
+                result, exec_time = self._execute_code_sandbox(session, guarded_code)
                 self._log_execution_timing(0.0, exec_time)
+                self._log_guard_denials(result.stdout or "", result.stderr or "", workdir=user_workdir)
 
                 result_text = self._format_execution_result(result)
                 exported_files = self._export_files_from_execution(session, export_files, user_workdir)
                 if exported_files:
+                    logger.info(f"files_exported: user_id={self.user_id}, paths={exported_files}, domain=code_executor")
                     result_text += ", ".join(exported_files)
 
                 return result_text
@@ -537,13 +558,14 @@ class CodeExecutorTool(CodeMieTool):
         return session, elapsed
 
     @staticmethod
-    def _validate_code_security(session, code: str) -> None:
+    def _validate_code_security(session, code: str, *, user_id: Optional[str] = None) -> None:
         """
         Validate code against security policy before execution.
 
         Args:
             session: Active sandbox session
             code: Python code to validate
+            user_id: Caller's user ID for audit logging
 
         Raises:
             ToolException: If code fails security validation
@@ -558,7 +580,9 @@ class CodeExecutorTool(CodeMieTool):
                 + "\n\nPlease review your code and remove any restricted operations."
             )
             logger.warning(
-                f"Security validation failed: {len(violations)} violation(s) - {', '.join([v.description for v in violations[:3]])}"
+                f"code_execution_blocked: user_id={user_id}, reason=security_policy, "
+                f"violations={len(violations)}, details={', '.join([v.description for v in violations[:3]])}, "
+                f"domain=code_executor"
             )
             raise ToolException(error_msg)
 
@@ -575,8 +599,9 @@ class CodeExecutorTool(CodeMieTool):
                 + "\n\nPlease review your code and remove any restricted operations."
             )
             logger.warning(
-                f"Security validation failed: {len(violations)} violation(s) - "
-                f"{', '.join([v.description for v in violations[:3]])}"
+                f"code_execution_blocked: user_id={self.user_id}, reason=security_policy, "
+                f"violations={len(violations)}, details={', '.join([v.description for v in violations[:3]])}, "
+                f"domain=code_executor"
             )
             raise ToolException(error_msg)
 
@@ -584,11 +609,11 @@ class CodeExecutorTool(CodeMieTool):
     def _validate_export_paths(export_files: Optional[List[str]], workdir: str) -> None:
         if not export_files:
             return
-        normalized_workdir = os.path.normpath(workdir)
+        normalized_workdir = os.path.realpath(workdir)
         for path in export_files:
             if os.path.isabs(path):
                 raise ToolException(f"Export path must be relative to the working directory: {path!r}")
-            normalized = os.path.normpath(os.path.join(workdir, path))
+            normalized = os.path.realpath(os.path.join(workdir, path))
             if not normalized.startswith(normalized_workdir + os.sep):
                 raise ToolException(f"Export path must resolve inside the working directory: {path!r}")
             for blocked in _BLOCKED_EXPORT_PATH_PREFIXES:
@@ -689,13 +714,43 @@ class CodeExecutorTool(CodeMieTool):
                 output_parts.append(f"{filtered_stdout}")
 
         if result.stderr:
-            output_parts.append(f"STDERR:\n{result.stderr}")
+            filtered_stderr = self._filter_guard_markers(result.stderr)
+            if filtered_stderr:
+                output_parts.append(f"STDERR:\n{filtered_stderr}")
 
         if result.exit_code != 0:
             logger.warning(f"Code execution failed with exit code {result.exit_code}")
             raise ToolException(f"Code execution failed.\n\n{chr(10).join(output_parts)}")
 
         return chr(10).join(output_parts) if output_parts else "Code executed successfully with no output."
+
+    def _log_guard_denials(self, stdout: str, stderr: str, *, workdir: str) -> None:
+        # Guard markers are always written to stderr by the sandbox wrapper; stdout carries no denial events.
+        del stdout
+        for event in extract_denial_events(stderr):
+            if set(event) != set(_DENIAL_EVENT_FIELD_LIMITS):
+                logger.debug(
+                    "Skipping malformed denial event (unexpected fields %s): %r",
+                    set(event).symmetric_difference(_DENIAL_EVENT_FIELD_LIMITS),
+                    event,
+                )
+                continue
+            if any(
+                not isinstance(event[field], str) or not event[field] or len(event[field]) > max_length
+                for field, max_length in _DENIAL_EVENT_FIELD_LIMITS.items()
+            ):
+                logger.debug("Skipping denial event with invalid field values: %r", event)
+                continue
+            logger.info(
+                "filesystem_access_denied: "
+                "sandbox_mode=%s user_id=%s workdir=%s operation=%s path=%s reason=%s domain=code_executor",
+                self.config.sandbox_mode.value,
+                self.user_id,
+                workdir,
+                event["operation"],
+                event["path"],
+                event["reason"],
+            )
 
     @staticmethod
     def _filter_stdout(stdout: str) -> str:
@@ -712,6 +767,10 @@ class CodeExecutorTool(CodeMieTool):
         lines = stdout.split("\n")
         filtered_lines = [line for line in lines if "Python plot detection setup complete" not in line]
         return "\n".join(filtered_lines).strip()
+
+    @staticmethod
+    def _filter_guard_markers(text: str) -> str:
+        return "\n".join(line for line in text.splitlines() if not line.startswith("__CODEMIE_FS_DENIED__")).strip()
 
     def _export_files_from_execution(self, session, file_paths: Optional[List[str]], workdir: str) -> List[str]:
         """
@@ -756,4 +815,6 @@ class CodeExecutorTool(CodeMieTool):
             url = export_service.store_exported_bytes(rel_path, content)
             if url:
                 urls.append(url)
+        if urls:
+            logger.info(f"files_exported: user_id={self.user_id}, paths={urls}, domain=code_executor")
         return urls

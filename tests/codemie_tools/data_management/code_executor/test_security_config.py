@@ -200,5 +200,98 @@ class TestSecurityThresholdIntegration(unittest.TestCase):
                 assert tool.security_policy.severity_threshold == SecurityIssueSeverity.LOW
 
 
+class TestOsModulePolicy(unittest.TestCase):
+    """Tests that safe os calls are allowed while dangerous ones are blocked."""
+
+    def _check(self, code: str) -> tuple[bool, list]:
+        from codemie_tools.data_management.code_executor.security_policies import check_security_policy
+
+        policy = get_codemie_security_policy(severity_threshold=SecurityIssueSeverity.LOW)
+        return check_security_policy(policy, code)
+
+    def test_os_urandom_is_allowed(self):
+        """os.urandom is a pure in-process call and must not be blocked."""
+        code = "import os\ndata = os.urandom(16)\nprint(data.hex())"
+        is_safe, violations = self._check(code)
+        assert is_safe, f"os.urandom unexpectedly blocked: {[v.description for v in violations]}"
+
+    def test_os_path_is_allowed(self):
+        """os.path.join / os.getcwd() are harmless navigation helpers."""
+        code = "import os\nprint(os.path.join('/tmp', 'test'))\nprint(os.getcwd())"
+        is_safe, violations = self._check(code)
+        assert is_safe, f"os.path unexpectedly blocked: {[v.description for v in violations]}"
+
+    def test_os_makedirs_is_allowed(self):
+        """os.makedirs for output dirs is legitimate; the runtime guard enforces workspace boundaries."""
+        code = "import os\nos.makedirs('output', exist_ok=True)"
+        is_safe, violations = self._check(code)
+        assert is_safe, f"os.makedirs unexpectedly blocked: {[v.description for v in violations]}"
+
+    def test_os_mkdir_is_allowed(self):
+        """os.mkdir for a workspace-relative dir must not be blocked at pre-execution."""
+        code = "import os\nos.mkdir('results')"
+        is_safe, violations = self._check(code)
+        assert is_safe, f"os.mkdir unexpectedly blocked: {[v.description for v in violations]}"
+
+    def test_os_system_is_blocked(self):
+        """os.system() must be blocked — it spawns a shell command."""
+        code = "import os\nos.system('id')"
+        is_safe, violations = self._check(code)
+        assert not is_safe
+
+    def test_os_remove_is_blocked(self):
+        """os.remove() must be blocked — filesystem deletions are not allowed."""
+        code = "import os\nos.remove('/etc/passwd')"
+        is_safe, violations = self._check(code)
+        assert not is_safe
+
+    def test_os_rmdir_is_blocked(self):
+        """os.rmdir() must be blocked — filesystem deletions are not allowed."""
+        code = "import os\nos.rmdir('sensitive_dir')"
+        is_safe, violations = self._check(code)
+        assert not is_safe
+
+    def test_os_unlink_is_blocked(self):
+        """os.unlink() must be blocked — filesystem deletions are not allowed."""
+        code = "import os\nos.unlink('secret.key')"
+        is_safe, violations = self._check(code)
+        assert not is_safe
+
+    def test_os_environ_write_is_blocked(self):
+        """os.environ['KEY'] = ... must be blocked — it can leak secrets."""
+        code = "import os\nos.environ['SECRET'] = 'leaked'"
+        is_safe, violations = self._check(code)
+        assert not is_safe
+
+
+class TestPipModulePolicy(unittest.TestCase):
+    """Tests that pip import is blocked at pre-execution."""
+
+    def _check(self, code: str) -> tuple[bool, list]:
+        from codemie_tools.data_management.code_executor.security_policies import check_security_policy
+
+        policy = get_codemie_security_policy(severity_threshold=SecurityIssueSeverity.LOW)
+        return check_security_policy(policy, code)
+
+    def test_pip_import_is_blocked(self):
+        """import pip must be denied — runtime package install is not allowed."""
+        code = "import pip\npip.main(['install', 'requests'])"
+        is_safe, violations = self._check(code)
+        assert not is_safe, "pip import should be blocked but was allowed"
+
+    def test_pip_from_import_is_blocked(self):
+        """from pip import ... must also be denied."""
+        code = "from pip import main\nmain(['install', 'requests'])"
+        is_safe, violations = self._check(code)
+        assert not is_safe, "from pip import should be blocked but was allowed"
+
+    def test_pip_module_has_high_severity(self):
+        """pip restricted module must be configured as HIGH severity."""
+        policy = get_codemie_security_policy(severity_threshold=SecurityIssueSeverity.LOW)
+        pip_module = next((m for m in policy.restricted_modules if m.name == "pip"), None)
+        assert pip_module is not None, "pip not found in restricted_modules"
+        assert pip_module.severity == SecurityIssueSeverity.HIGH
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

@@ -192,7 +192,7 @@ class TestCodeExecutorToolUserWorkdir(unittest.TestCase):
         workdir = tool._get_user_workdir()
 
         assert "/.." not in workdir
-        assert workdir == f"{tool.config.workdir_base}/user_.._admin"
+        assert workdir == f"{tool.config.workdir_base}/user____admin"
 
     def test_get_user_workdir_sanitizes_backslash(self):
         """Test that workdir sanitizes backslashes."""
@@ -201,6 +201,16 @@ class TestCodeExecutorToolUserWorkdir(unittest.TestCase):
 
         assert "\\" not in workdir
         assert workdir == f"{tool.config.workdir_base}/user_admin"
+
+    def test_get_user_workdir_sanitizes_shell_metacharacters(self):
+        """Test that workdir strips shell metacharacters that could inject commands
+        into the unquoted bash wrapper script built by batch_job_runner.py."""
+        tool = CodeExecutorTool(user_id="user; rm -rf / #", file_repository=self.mock_file_repo)
+        workdir = tool._get_user_workdir()
+
+        for char in (";", " ", "`", "$", "|", "&", "(", ")", "#", "'", '"'):
+            assert char not in workdir
+        assert workdir == f"{tool.config.workdir_base}/user__rm_-rf____"
 
 
 class TestCodeExecutorToolIntegration(unittest.TestCase):

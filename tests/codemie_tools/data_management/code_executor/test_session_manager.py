@@ -227,6 +227,43 @@ class TestSandboxSessionManager(unittest.TestCase):
         assert lock1 is lock2, "Should return same lock for same pod"
         assert lock1 is not lock3, "Should return different lock for different pod"
 
+    def test_try_reuse_session_returns_session_when_workdir_matches(self):
+        manager = SandboxSessionManager(config=self.config)
+        session = MagicMock()
+        session._codemie_pod_name = "pod-1"
+        session._codemie_workdir = "/home/codemie/a"
+        manager._sessions["pod-1"] = session
+
+        with patch.object(manager, "_is_session_healthy", return_value=True):
+            reused = manager._try_reuse_session("pod-1", "/home/codemie/a")
+
+        assert reused is session
+
+    def test_try_reuse_session_rejects_session_when_workdir_differs(self):
+        manager = SandboxSessionManager(config=self.config)
+        session = MagicMock()
+        session._codemie_pod_name = "pod-1"
+        session._codemie_workdir = "/home/codemie/old"
+        manager._sessions["pod-1"] = session
+
+        with patch.object(manager, "_is_session_healthy", return_value=True):
+            reused = manager._try_reuse_session("pod-1", "/home/codemie/new")
+
+        assert reused is None
+
+    def test_try_reuse_session_rejects_session_without_workdir_metadata(self):
+        manager = SandboxSessionManager(config=self.config)
+        session = MagicMock()
+        session._codemie_pod_name = "pod-1"
+        del session._codemie_workdir
+        manager._sessions["pod-1"] = session
+
+        with patch.object(manager, "_is_session_healthy", return_value=True):
+            reused = manager._try_reuse_session("pod-1", "/home/codemie/requested")
+
+        assert reused is None
+        assert not hasattr(session, "_codemie_workdir")
+
     @patch('codemie_tools.data_management.code_executor.session_factory.ArtifactSandboxSession')
     def test_connect_to_existing_pod(self, mock_session_class):
         """Test connecting to an existing pod."""

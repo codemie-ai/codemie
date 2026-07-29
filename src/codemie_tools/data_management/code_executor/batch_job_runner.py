@@ -51,20 +51,35 @@ _READY_SENTINEL = ".ready"
 _DONE_SENTINEL = ".done"
 _PULLED_SENTINEL = ".pulled"
 _EXIT_CODE_FILE = ".exit_code"
+_STDERR_FILE = ".stderr"
 
 # Wrapper bash command:
 #  1. Wait until the upload tarball has placed `.ready` in the workdir.
-#  2. Run the user script.
-#  3. Persist the exit code to a file (logs may be truncated; the file is the
+#  2. Export library cache dirs as relative paths inside the workdir so that
+#     libraries like matplotlib that need a writable config/cache directory
+#     do not attempt to create files outside the workspace (which the fs guard
+#     would deny). All relative paths resolve under {workdir} because we
+#     `cd {workdir}` first.
+#  3. Run the user script, capturing stderr in .stderr so the parent can pull
+#     it separately (denial markers written to stderr must not be mixed with
+#     stdout, otherwise the parent cannot distinguish guard events from
+#     customer-written output).
+#  4. Persist the exit code to a file (logs may be truncated; the file is the
 #     authoritative signal for the parent to read if needed).
-#  4. Touch `.done` so the parent knows it's safe to pull exports.
-#  5. Wait for `.pulled` (parent signals exports are out).
-#  6. Exit with the user script's exit code so K8s sees a clean termination.
+#  5. Touch `.done` so the parent knows it's safe to pull exports.
+#  6. Wait for `.pulled` (parent signals exports are out).
+#  7. Exit with the user script's exit code so K8s sees a clean termination.
 _WRAPPER_SCRIPT = (
     "set -u; "
     "mkdir -p {workdir} && cd {workdir}; "
+    "export MPLCONFIGDIR=.matplotlib "
+    "NUMBA_CACHE_DIR=.numba "
+    "FONTCONFIG_FILE=/dev/null "
+    "XDG_CACHE_HOME=.cache "
+    "XDG_CONFIG_HOME=.config "
+    "PYTHONDONTWRITEBYTECODE=1; "
     "until [ -f {ready} ]; do sleep 0.1; done; "
-    "python {script} 2>&1; "
+    "python {script} 2>{stderr}; "
     "echo $? > {exit_code}; "
     "touch {done}; "
     "until [ -f {pulled} ]; do sleep 0.1; done; "
@@ -148,12 +163,13 @@ class BatchJobRunner:
             changed = (
                 self._download_changed_files(pod_name, workdir, baseline_hashes) if baseline_hashes is not None else {}
             )
+            stderr_bytes = self._exec_tar_out(pod_name, workdir, _STDERR_FILE)
             self._signal_cleanup(pod_name, workdir)
             exit_code = self._wait_for_completion(job_name, deadline)
             logs = self._read_pod_logs(job_name)
             return JobResult(
                 stdout=logs,
-                stderr="",
+                stderr=stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else "",
                 exit_code=exit_code,
                 exported_files=exported,
                 changed_files=changed,
@@ -180,6 +196,7 @@ class BatchJobRunner:
             done=_DONE_SENTINEL,
             pulled=_PULLED_SENTINEL,
             exit_code=_EXIT_CODE_FILE,
+            stderr=_STDERR_FILE,
         )
         return {
             "apiVersion": "batch/v1",
@@ -580,6 +597,7 @@ def run_via_jobs(
     format_result: Callable[[JobResult], str],
     store_exports: Callable[[Dict[str, bytes]], List[str]],
     log_timing: Callable[[float, float], None],
+    log_denials: Callable[[str, str], None] | None = None,
 ) -> str:
     """Run a single execution via BatchJobRunner and format the user-facing result.
 
@@ -594,6 +612,8 @@ def run_via_jobs(
         workdir=workdir,
     )
     log_timing(0.0, time.time() - start)
+    if log_denials is not None:
+        log_denials(result.stdout or "", result.stderr or "")
     text = format_result(result)
     urls = store_exports(result.exported_files)
     if urls:

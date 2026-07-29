@@ -548,6 +548,8 @@ def test_create_or_update_scheduler_none_cron_skips_handle(mock_handle, processo
     processor._create_or_update_scheduler()
 
     mock_handle.assert_not_called()
+
+
 class SourceKeyedProcessor(ConcreteDatasourceProcessor):
     """Uses the production metadata key so document grouping matches real connectors."""
 

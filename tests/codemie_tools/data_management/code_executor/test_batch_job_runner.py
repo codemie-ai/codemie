@@ -73,10 +73,11 @@ def _pod(phase: str = "Running", exit_code: int = 0, name: str = "sbx-pod-xyz"):
     return pod
 
 
-def _patch_runner_internals(runner: BatchJobRunner, pod_name: str = "sbx-pod-xyz"):
+def _patch_runner_internals(runner: BatchJobRunner, pod_name: str = "sbx-pod-xyz", stderr_content: bytes = b""):
     """Stub the exec helpers so high-level tests don't have to mock stream()."""
     runner._wait_for_pod_running = MagicMock(return_value=pod_name)
     runner._wait_for_sentinel = MagicMock(return_value=None)
+    runner._exec_tar_out = MagicMock(return_value=stderr_content or None)
     runner._signal_cleanup = MagicMock(return_value=None)
     return runner
 
@@ -167,6 +168,27 @@ class TestBatchJobRunnerHappyPath(unittest.TestCase):
                 result = runner.run("raise SystemExit(2)")
 
         assert result.exit_code == 2
+
+    def test_run_populates_stderr_from_stderr_file(self):
+        config = _make_config()
+        batch = MagicMock()
+        core = MagicMock()
+        batch.read_namespaced_job_status.return_value = _terminal_status(succeeded=1)
+        core.list_namespaced_pod.return_value = MagicMock(items=[_pod(phase="Running")])
+        core.read_namespaced_pod_log.return_value = "stdout line\n"
+        denial = b"__CODEMIE_FS_DENIED__" + b'{"operation":"open","path":"../x","reason":"outside_workspace"}\n'
+
+        with patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager") as mgr_cls:
+            mgr = mgr_cls.return_value
+            mgr.get_batch_client.return_value = batch
+            mgr.get_client.return_value = core
+            runner = BatchJobRunner(config)
+            _patch_runner_internals(runner, stderr_content=denial)
+            with patch.object(runner, "_upload_payload"), patch.object(runner, "_download_exports", return_value={}):
+                result = runner.run("print('hi')")
+
+        assert result.stdout == "stdout line\n"
+        assert denial.decode() in result.stderr
 
 
 class TestBatchJobRunnerFiles(unittest.TestCase):
