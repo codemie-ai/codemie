@@ -53,7 +53,12 @@ class CallbackResult:
 
 class SharePointPKCEService:
     def __init__(self, redis_client=None, encryption_service: Optional[BaseEncryptionService] = None):
-        self._redis = redis_client or create_redis_client()
+        # `redis` is an optional dependency, so only reach for a client when the PKCE
+        # flow is actually enabled. Callers are gated on the same flag, which keeps
+        # `_redis` from being used while it is None.
+        if redis_client is None and config.SHAREPOINT_PKCE_ENABLED:
+            redis_client = create_redis_client()
+        self._redis = redis_client
         self._enc = encryption_service or EncryptionFactory().get_current_encryption_service()
 
     def _generate_code_verifier(self) -> str:

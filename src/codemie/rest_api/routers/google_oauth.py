@@ -25,7 +25,22 @@ from codemie.service.google_oauth.flow_service import GoogleOAuthFlowService
 from codemie.utils.oauth_html_utils import html_error_page, html_success_page
 
 router = APIRouter(tags=["Google OAuth"], prefix="/v1/google-oauth")
-oauth_service = GoogleOAuthFlowService()
+
+_oauth_service: Optional[GoogleOAuthFlowService] = None
+
+
+def _get_oauth_service() -> GoogleOAuthFlowService:
+    """Build the flow service on first use.
+
+    Constructing it eagerly at import time creates a Redis client, and `redis` is an
+    optional dependency — that made backend startup fail with ModuleNotFoundError in
+    deployments that do not install it.
+    """
+    global _oauth_service
+    if _oauth_service is None:
+        _oauth_service = GoogleOAuthFlowService()
+    return _oauth_service
+
 
 _CALLBACK_SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; script-src 'self'",
@@ -42,7 +57,7 @@ async def initiate_oauth(
     Returns an authorization URL and opaque state token for the frontend to
     redirect the user to Google's consent screen.
     """
-    result = oauth_service.initiate_flow(user.id)
+    result = _get_oauth_service().initiate_flow(user.id)
     return JSONResponse(content=result)
 
 
@@ -59,7 +74,7 @@ async def oauth_callback(
     authorization code for tokens and stores the result in Redis.
     Returns an HTML page the user can close.
     """
-    result = oauth_service.handle_callback(code, state, error, scope)
+    result = _get_oauth_service().handle_callback(code, state, error, scope)
     content = html_success_page(result.message) if result.success else html_error_page(result.message)
     return HTMLResponse(
         content=content,
@@ -80,7 +95,7 @@ async def oauth_status(
     - 200 + { status: "success", … } — authorization completed successfully
     - 400 + { status: "error", … }   — authorization failed or state expired
     """
-    result = oauth_service.get_status(state, user.id)
+    result = _get_oauth_service().get_status(state, user.id)
     if result["status"] == "pending":
         return JSONResponse(status_code=202, content=result)
     if result["status"] == "success":
