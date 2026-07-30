@@ -108,6 +108,16 @@ class CodeExecutorConfig(CodeMieToolConfig):
         description="CPU request for executor pods",
     )
 
+    ephemeral_storage_limit: str = Field(
+        default="1Gi",
+        description="Ephemeral storage limit for executor pods",
+    )
+
+    ephemeral_storage_request: str = Field(
+        default="1Gi",
+        description="Ephemeral storage request for executor pods",
+    )
+
     # Dynamic pod pool configuration
     max_pod_pool_size: int = Field(
         default=5,
@@ -285,6 +295,8 @@ class CodeExecutorConfig(CodeMieToolConfig):
             CODE_EXECUTOR_MEMORY_REQUEST: Memory request
             CODE_EXECUTOR_CPU_LIMIT: CPU limit
             CODE_EXECUTOR_CPU_REQUEST: CPU request
+            CODE_EXECUTOR_EPHEMERAL_STORAGE_LIMIT: Ephemeral storage limit (default: 1Gi)
+            CODE_EXECUTOR_EPHEMERAL_STORAGE_REQUEST: Ephemeral storage request (default: 1Gi)
             CODE_EXECUTOR_MAX_POD_POOL_SIZE: Maximum number of pods to create dynamically
             CODE_EXECUTOR_POD_NAME_PREFIX: Prefix for dynamically created pod names
             CODE_EXECUTOR_RUN_AS_USER: User ID
@@ -319,6 +331,8 @@ class CodeExecutorConfig(CodeMieToolConfig):
             memory_request=os.getenv("CODE_EXECUTOR_MEMORY_REQUEST", "256Mi"),
             cpu_limit=os.getenv("CODE_EXECUTOR_CPU_LIMIT", "1"),
             cpu_request=os.getenv("CODE_EXECUTOR_CPU_REQUEST", "100m"),
+            ephemeral_storage_limit=os.getenv("CODE_EXECUTOR_EPHEMERAL_STORAGE_LIMIT", "1Gi"),
+            ephemeral_storage_request=os.getenv("CODE_EXECUTOR_EPHEMERAL_STORAGE_REQUEST", "1Gi"),
             max_pod_pool_size=int(os.getenv("CODE_EXECUTOR_MAX_POD_POOL_SIZE", "5")),
             pod_name_prefix=os.getenv("CODE_EXECUTOR_POD_NAME_PREFIX", "codemie-executor-"),
             run_as_user=int(os.getenv("CODE_EXECUTOR_RUN_AS_USER", "1001")),

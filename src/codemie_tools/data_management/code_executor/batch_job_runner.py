@@ -218,6 +218,7 @@ class BatchJobRunner:
                         "restartPolicy": "Never",
                         "runtimeClassName": cfg.runtime_class_name,
                         "automountServiceAccountToken": False,
+                        "enableServiceLinks": False,
                         "hostNetwork": False,
                         "hostPID": False,
                         "hostIPC": False,
@@ -249,10 +250,12 @@ class BatchJobRunner:
                                     "requests": {
                                         "cpu": cfg.cpu_request,
                                         "memory": cfg.memory_request,
+                                        "ephemeral-storage": cfg.ephemeral_storage_request,
                                     },
                                     "limits": {
                                         "cpu": cfg.cpu_limit,
                                         "memory": cfg.memory_limit,
+                                        "ephemeral-storage": cfg.ephemeral_storage_limit,
                                     },
                                 },
                             }
