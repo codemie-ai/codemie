@@ -189,10 +189,66 @@ class TestChatModelImageGenerator(unittest.TestCase):
         self.assertIsNone(url)
         self.assertIsNone(b64)
 
-    def test_edit_not_supported(self):
+    def test_edit_returns_b64_from_image_url_part(self):
+        content = [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_B64_DATA}"}}]
+        gen = ChatModelImageGenerator(self._make_model(content))
+        url, b64 = gen.edit("redraw the sky", b"fake-image-bytes")
+        self.assertIsNone(url)
+        self.assertEqual(b64, _B64_DATA)
+
+    def test_edit_returns_b64_from_data_part(self):
+        content = [{"type": "media", "data": _B64_DATA}]
+        gen = ChatModelImageGenerator(self._make_model(content))
+        url, b64 = gen.edit("redraw the sky", b"fake-image-bytes")
+        self.assertIsNone(url)
+        self.assertEqual(b64, _B64_DATA)
+
+    def test_edit_returns_url_when_image_url_is_external(self):
+        content = [{"type": "image_url", "image_url": {"url": _IMAGE_URL}}]
+        gen = ChatModelImageGenerator(self._make_model(content))
+        url, b64 = gen.edit("redraw the sky", b"fake-image-bytes")
+        self.assertEqual(url, _IMAGE_URL)
+        self.assertIsNone(b64)
+
+    def test_edit_returns_none_tuple_when_no_image_parts(self):
         gen = ChatModelImageGenerator(self._make_model([]))
-        with self.assertRaises(NotImplementedError):
-            gen.edit("prompt", b"image-bytes")
+        url, b64 = gen.edit("redraw the sky", b"fake-image-bytes")
+        self.assertIsNone(url)
+        self.assertIsNone(b64)
+
+    def test_edit_sends_multimodal_message_with_image_and_text(self):
+        import base64 as _b64
+
+        image_bytes = b"raw-png-bytes"
+        expected_b64 = _b64.b64encode(image_bytes).decode()
+        model = self._make_model([])
+        gen = ChatModelImageGenerator(model)
+        gen.edit("add clouds", image_bytes)
+        invoke_args = model.invoke.call_args[0][0]
+        content = invoke_args[0].content
+        self.assertEqual(len(content), 2)
+        image_part = content[0]
+        text_part = content[1]
+        self.assertEqual(image_part["type"], "image_url")
+        self.assertEqual(image_part["image_url"]["url"], f"data:image/png;base64,{expected_b64}")
+        self.assertEqual(text_part["type"], "text")
+        self.assertEqual(text_part["text"], "add clouds")
+
+    def test_generate_skips_part_when_image_url_is_plain_string(self):
+        # Regression: plain-string image_url must not raise AttributeError
+        content = [{"type": "image_url", "image_url": "https://example.com/img.png"}]
+        gen = ChatModelImageGenerator(self._make_model(content))
+        url, b64 = gen.generate("A mountain.")
+        self.assertIsNone(url)
+        self.assertIsNone(b64)
+
+    def test_edit_skips_part_when_image_url_is_plain_string(self):
+        # Regression: plain-string image_url must not raise AttributeError
+        content = [{"type": "image_url", "image_url": "https://example.com/img.png"}]
+        gen = ChatModelImageGenerator(self._make_model(content))
+        url, b64 = gen.edit("redraw the sky", b"fake-image-bytes")
+        self.assertIsNone(url)
+        self.assertIsNone(b64)
 
     def test_model_id_defaults_to_model_name(self):
         model = self._make_model([])

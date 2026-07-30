@@ -96,11 +96,19 @@ class ToolkitSettingService:
     @staticmethod
     def _build_workspace_image_generator(assistant: Optional[Assistant] = None, request: Optional[object] = None):
         from codemie_tools.data_management.file_system.image_generator import (
+            ChatModelImageGenerator,
             LiteLLMImageConfig,
             LiteLLMImageGenerator,
+            is_gemini_image_model,
         )
 
         image_generation_model = ToolkitSettingService._resolve_image_generation_model(assistant, request)
+
+        if image_generation_model and is_gemini_image_model(image_generation_model):
+            return ChatModelImageGenerator(
+                model=get_llm_by_credentials(llm_model=image_generation_model),
+                model_id=image_generation_model,
+            )
 
         if config.LLM_PROXY_ENABLED and config.LITE_LLM_URL and image_generation_model:
             return LiteLLMImageGenerator(

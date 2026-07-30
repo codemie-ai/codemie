@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "task": "Fix generate_workspace_image_v2 404 error by routing Gemini image models through ChatModelImageGenerator and implementing its edit() method",
+  "generated": "2026-07-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 16,
+  "size": "M",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "ChatModelImageGenerator.edit() is an unimplemented stub (raises NotImplementedError); implementing multimodal inpainting via LangChain chat completion has no codebase precedent — the existing generate() method shows single-image generation but not dual-part base-image + mask encoding; uncertainty remains around exact LangChain content-part structure for inpainting and how the Gemini response image bytes are extracted"
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Fix spans image_generator.py (generator abstraction — implement edit()), toolkit_settings_service.py (service — add Gemini routing branch), and llm-dial-config.yaml / llm-gcp-config.yaml (config — set supports_image_generation); 3 components across service, abstraction, and config layers"
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Estimated 5-6 files: image_generator.py, toolkit_settings_service.py, llm-dial-config.yaml, llm-gcp-config.yaml, test_toolkit_settings_service.py, test_generate_image_tool.py — spanning 4-5 directories (codemie_tools/data_management/file_system, codemie/service/tools, config/llms, tests for both)"
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
