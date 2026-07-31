@@ -63,7 +63,7 @@ class GooglePlacesAPIWrapper(BaseModel):
         return "\n".join([f"{i + 1}. {place}" for i, place in enumerate(places)])
 
     def find_near(self, current_location_query: str, target: str, radius: Optional[int] = 3000) -> str:
-        logger.info(f"Google Places API query: {current_location_query}, target: {target}, radius: {radius}")
+        logger.info(f"Google Places API query. radius: {radius}")
         if not self.google_map_client:
             return "Google Maps client is not initialized."
 

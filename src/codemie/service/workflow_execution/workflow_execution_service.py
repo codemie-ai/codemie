@@ -324,7 +324,7 @@ class WorkflowExecutionService:
 
             state.save()
             print_output = output or ""
-            print_output = print_output if len(print_output) <= 100 else f"{print_output[0:50]}...{print_output[:-50]}"
+            print_output = print_output if len(print_output) <= 100 else f"{print_output[0:50]}...{print_output[-50:]}"
             logger.debug(f"Successfuly saved state execution {execution_state_id} with output: {print_output}")
 
             # Stream state finish event to client

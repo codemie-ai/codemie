@@ -206,7 +206,7 @@ class SearchWorkItemsTool(BaseAzureDevOpsWorkItemTool):
             # Create a Wiql object with the query
             wiql = Wiql(query=query)
 
-            logger.info(f"Search for work items using {query}")
+            logger.info("Search for work items")
             # Execute the WIQL query
             if not limit:
                 limit = self.config.limit

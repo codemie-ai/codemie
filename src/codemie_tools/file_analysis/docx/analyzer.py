@@ -62,7 +62,7 @@ class DocxAnalyzer:
             AnalysisError: If the analysis fails
             InsufficientContentError: If the document content is insufficient for analysis
         """
-        logger.info(f"Performing comprehensive document analysis with instructions: {instructions}")
+        logger.info(f"Performing comprehensive document analysis. has_instructions={bool(instructions)}")
 
         if not content or not content.text.strip():
             err_msg = "Document is empty or has no text content"
@@ -119,7 +119,7 @@ class DocxAnalyzer:
             logger.error(err_msg)
             raise InsufficientContentError(err_msg)
 
-        logger.info(f"Analyzing document text ({len(text)} characters) with instructions: {instructions}")
+        logger.info(f"Analyzing document text ({len(text)} characters). has_instructions={bool(instructions)}")
 
         try:
             # Determine if we can use LLM or need fallback
@@ -199,7 +199,7 @@ class DocxAnalyzer:
         Raises:
             AnalysisError: If the analysis fails
         """
-        logger.info(f"Analyzing document structure with instructions: {instructions}")
+        logger.info(f"Analyzing document structure. has_instructions={bool(instructions)}")
 
         try:
             # Count sections, headings and tables

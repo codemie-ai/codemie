@@ -146,7 +146,7 @@ class DocxProcessor:
         Raises:
             AnalysisError: If the analysis fails
         """
-        logger.info(f"Analyzing document content with type: {analysis_type}, instructions: {instructions}")
+        logger.info(f"Analyzing document content with type: {analysis_type}. has_instructions={bool(instructions)}")
 
         if analysis_type == AnalysisType.TEXT:
             return self.analyzer.analyze_text(content.text, instructions=instructions)

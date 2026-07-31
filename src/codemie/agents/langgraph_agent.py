@@ -721,9 +721,9 @@ class LangGraphAgent(WorkspaceAwareAgent):
 
             auth_required_error: MCPAuthenticationRequiredException | None = None
             try:
-                logger.info(f"Starting {self.agent_name} agent for task: {self._task}")
+                logger.info(f"Starting {self.agent_name} agent. request_uuid={self.request_uuid}")
                 result = self._agent_streaming(chunks_collector)
-                logger.info(f"Finish {self.agent_name} agent for task: {self._task}")
+                logger.info(f"Finish {self.agent_name} agent. request_uuid={self.request_uuid}")
                 time_elapsed = time() - execution_start
 
                 result = json.dumps(result) if isinstance(result, (dict, BaseModel)) else result

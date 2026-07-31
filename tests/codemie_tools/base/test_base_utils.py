@@ -81,8 +81,7 @@ class TestUtils:
             parse_tool_input(MockBaseModel, invalid_str_input)
 
         # Check logger output
-        mock_logger.info.assert_any_call("Starting parser with input: {'key': 'value'}")
-        mock_logger.info.assert_any_call("Starting parser with input: {\"key\": \"value\"}")
+        mock_logger.info.assert_any_call("Starting parser. Schema=MockBaseModel")
         mock_logger.info.assert_any_call("isinstance(tool_input, str)")
         mock_logger.info.assert_any_call("else isinstance(tool_input, dict)")
 

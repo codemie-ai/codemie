@@ -145,7 +145,7 @@ class ToolExecutionService:
         tool = cls.get_tool_with_direct_creds(request, tool_name)
         try:
             cls.validate_tool_args(tool, request.tool_args)
-            logger.info(f"Tool `{tool_name}` executed with args: {request.tool_args}")
+            logger.info(f"Tool `{tool_name}` executed with arg keys: {sorted(request.tool_args)}")
             if request.tool_attributes:
                 tool = cls.update_tool_attributes(tool, request.tool_attributes)
             return cls.execute_tool(tool, request.tool_args)
@@ -253,7 +253,7 @@ class ToolExecutionService:
 
             tool = cls.get_tool_with_system_integration(request, tool_name, assistant, user)
             cls.validate_tool_args(tool, request.tool_args)
-            logger.info(f"Tool `{tool_name}` executed with args: {request.tool_args}")
+            logger.info(f"Tool `{tool_name}` executed with arg keys: {sorted(request.tool_args)}")
             if request.tool_attributes:
                 tool = cls.update_tool_attributes(tool, request.tool_attributes)
             return cls.execute_tool(tool, request.tool_args)

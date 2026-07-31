@@ -265,7 +265,7 @@ class XrayClient:
         all_tests = []
         total_tests_count = 0
 
-        logger.info(f"Fetching tests with JQL: {jql}, max_results: {max_results}")
+        logger.info(f"Fetching tests. max_results: {max_results}")
 
         while True:
             # Calculate how many records to fetch in this page
@@ -343,7 +343,7 @@ class XrayClient:
             if warnings:
                 response["warnings"] = warnings
 
-            logger.info(f"Successfully created test: {test_data.get('jira', {})}")
+            logger.info(f"Successfully created test: {test_data.get('jira', {}).get('key')}")
 
             return response
 

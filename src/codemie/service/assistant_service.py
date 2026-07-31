@@ -614,15 +614,14 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             f"AssistantId={assistant.id}, "
             f"AssistantName={assistant.name}, "
             f"AssistantContext={assistant.context}, "
-            f"User={user.name}, "
+            f"UserId={user.id}, "
             f"request_uuid: {request_uuid}. "
             f"Result=["
             f"agent_name={agent.agent_name},"
             f"llm_model={agent.llm_model},"
             f"temperature={agent.temperature},"
             f"top_p={agent.top_p},"
-            f"recursion_limit={agent.recursion_limit},"
-            f"agent_request={agent.request.text}]"
+            f"recursion_limit={agent.recursion_limit}]"
         )
         return agent
 
@@ -886,12 +885,11 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
             f"AssistantId={assistant.id}, "
             f"AssistantName={assistant.name}, "
             f"AssistantContext={assistant.context}, "
-            f"User={user.name}, "
+            f"UserId={user.id}, "
             f"request_uuid: {request_uuid}. "
             f"Result=["
             f"agent_name={agent.agent_name},"
-            f"llm_model={agent.llm_model},"
-            f"agent_request={agent.request.text}]"
+            f"llm_model={agent.llm_model}]"
         )
         return agent
 

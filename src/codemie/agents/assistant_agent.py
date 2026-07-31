@@ -596,9 +596,9 @@ class AIToolsAgent(WorkspaceAwareAgent):
 
         auth_required_error: MCPAuthenticationRequiredException | None = None
         try:
-            logger.info(f"Starting {self.agent_name} agent for task: {self._task}")
+            logger.info(f"Starting {self.agent_name} agent. request_uuid={self.request_uuid}")
             self._agent_streaming(chunks_collector)
-            logger.info(f"Finish {self.agent_name} agent for task: {self._task}")
+            logger.info(f"Finish {self.agent_name} agent. request_uuid={self.request_uuid}")
             time_elapsed = time() - execution_start
 
             self.thread_generator.send(
@@ -657,7 +657,7 @@ class AIToolsAgent(WorkspaceAwareAgent):
     def process_chunk(chunk, chunks_collector: List[str]):
         if "actions" in chunk:
             for action in chunk["actions"]:
-                logger.info(f"Calling Tool: {action.tool} with input {action.tool_input}")
+                logger.info(f"Calling Tool: {action.tool}")
         elif "steps" in chunk:
             for step in chunk["steps"]:
                 logger.debug(f"Tool Result: {step.observation}")

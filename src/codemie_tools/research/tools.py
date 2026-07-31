@@ -205,13 +205,11 @@ class GoogleSearchResults(CodeMieTool):
             result = self.api_wrapper.results(query, self.num_results)
             duration = time() - start
             results_count = len(result) if isinstance(result, list) else "N/A"
-            logger.info(
-                f"GoogleSearch: completed query='{query}' duration={duration:.2f}s results_count={results_count}"
-            )
+            logger.info(f"GoogleSearch: completed duration={duration:.2f}s results_count={results_count}")
             return str(result)
         except Exception:
             duration = time() - start
-            logger.warning(f"GoogleSearch: failed query='{query}' duration={duration:.2f}s")
+            logger.warning(f"GoogleSearch: failed duration={duration:.2f}s")
             raise
 
 

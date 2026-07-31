@@ -103,7 +103,7 @@ def test_agent_streaming_processes_different_chunks(mock_langfuse_handler, mock_
     agent.agent_executor.stream.assert_called_once_with({"input": "test input"}, config=config)
 
     # Check that logger was called appropriately for each chunk type
-    mock_logger.info.assert_any_call(f"Calling Tool: {mock_action.tool} with input {mock_action.tool_input}")
+    mock_logger.info.assert_any_call(f"Calling Tool: {mock_action.tool}")
     mock_logger.debug.assert_any_call("Tool Result: Test observation")
     mock_logger.debug.assert_any_call("Final result is: Final test output")
 
@@ -194,7 +194,7 @@ def test_agent_streaming_breaks_when_generator_closed(mock_logger, test_setup):
     assert mock_thread_generator.is_closed.call_count == 2
 
     # First verify the log for the action was called (first chunk processed)
-    mock_logger.info.assert_any_call(f"Calling Tool: {mock_action.tool} with input {mock_action.tool_input}")
+    mock_logger.info.assert_any_call(f"Calling Tool: {mock_action.tool}")
 
     # Then verify the stopping message was logged
     mock_logger.info.assert_any_call("Stopping agent test_agent, user is disconnected")

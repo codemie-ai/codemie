@@ -115,7 +115,7 @@ OPEN_AI_TOOL_NAME_LIMIT = 64
 def parse_tool_input(args_schema: Type[BaseModel], tool_input: Union[str, Dict]):
     try:
         input_args = args_schema
-        logger.info(f"Starting parser with input: {tool_input}")
+        logger.info(f"Starting parser. Schema={getattr(args_schema, '__name__', 'unknown')}")
         if isinstance(tool_input, str):
             logger.info("isinstance(tool_input, str)")
             params = parse_to_dict(tool_input)
