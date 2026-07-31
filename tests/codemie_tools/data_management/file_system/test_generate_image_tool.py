@@ -196,9 +196,9 @@ class TestChatModelImageGenerator(unittest.TestCase):
 
     def test_model_id_defaults_to_model_name(self):
         model = self._make_model([])
-        model.model_name = "gemini-3.1-flash-image-preview"
+        model.model_name = "gemini-3.1-flash-image"
         gen = ChatModelImageGenerator(model)
-        self.assertEqual(gen.model_id, "gemini-3.1-flash-image-preview")
+        self.assertEqual(gen.model_id, "gemini-3.1-flash-image")
 
 
 class TestGenerateImageToolResolveOutput(unittest.TestCase):

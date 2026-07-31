@@ -181,14 +181,14 @@ model_list:
       supports_image_generation: true
 
   # Google Vertex AI Models
-  - model_name: gemini-3.1-flash-image-preview
+  - model_name: gemini-3.1-flash-image
     litellm_params:
-      model: vertex_ai/gemini-3.1-flash-image-preview
+      model: vertex_ai/gemini-3.1-flash-image
       vertex_location: "global"
     model_info:
-      id: gemini-3.1-flash-image-preview-global
-      base_model: gemini-3.1-flash-image-preview
-      label: "Gemini 3.1 Flash Image Preview"
+      id: gemini-3.1-flash-image-global
+      base_model: gemini-3.1-flash-image
+      label: "Gemini 3.1 Flash Image"
       forbidden_for_web: true
       supports_image_generation: true
 

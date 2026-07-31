@@ -109,7 +109,7 @@ class TestGenerateWorkspaceImageToolV2Helpers(unittest.TestCase):
 
     def test_build_image_generation_plan_for_gemini_exact_size(self):
         generator = MagicMock()
-        generator.model_id = "gemini-3.1-flash-image-preview"
+        generator.model_id = "gemini-3.1-flash-image"
 
         plan = build_image_generation_plan(parse_size_request("1920x1080"), generator)
 
@@ -124,7 +124,7 @@ class TestGenerateWorkspaceImageToolV2Helpers(unittest.TestCase):
 
     def test_build_image_generation_plan_for_gemini_ratio_input(self):
         generator = MagicMock()
-        generator.model_id = "gemini-3.1-flash-image-preview"
+        generator.model_id = "gemini-3.1-flash-image"
 
         plan = build_image_generation_plan(parse_size_request("5:12"), generator)
 
@@ -204,7 +204,7 @@ class TestGenerateWorkspaceImageToolV2(unittest.TestCase):
 
     def test_execute_uses_gemini_native_response_format(self):
         generator = MagicMock()
-        generator.model_id = "gemini-3.1-flash-image-preview"
+        generator.model_id = "gemini-3.1-flash-image"
         generator.edit.return_value = (None, base64.b64encode(_make_png_bytes((1376, 768))).decode("ascii"))
         workspace_service = self._build_workspace_service()
 

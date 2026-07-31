@@ -129,6 +129,7 @@ services:
       AWS_DEFAULT_REGION: us-west-2
       AWS_ACCESS_KEY_ID: ""
       AWS_SECRET_ACCESS_KEY: ""
+      VERTEX_PROJECT: ""
       GOOGLE_APPLICATION_CREDENTIALS: "/app/credentials.json"
       # If using Azure OpenAI directly, set these values
       AZURE_TENANT_ID: ""

@@ -27,9 +27,9 @@ llm_models:
       input_cost_per_token_batches: 0.000001
       output_cost_per_token_batches: 0.000006
 
-  - base_name: "gemini-3.1-flash-image-preview"
-    deployment_name: "gemini-3.1-flash-image-preview"
-    label: "Gemini 3.1 Flash Image Preview"
+  - base_name: "gemini-3.1-flash-image"
+    deployment_name: "gemini-3.1-flash-image"
+    label: "Gemini 3.1 Flash Image"
     enabled: true
     provider: "google_vertexai"
     max_output_tokens: 32768

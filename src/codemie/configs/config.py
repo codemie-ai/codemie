@@ -64,7 +64,7 @@ class Config(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     ANTHROPIC_MAX_RETRIES: int = 2
 
-    IMAGE_GENERATION_MODEL: str = "gemini-3.1-flash-image-preview"
+    IMAGE_GENERATION_MODEL: str = "gemini-3.1-flash-image"
 
     STT_API_URL: str = ""
     STT_API_KEY: str = ""
