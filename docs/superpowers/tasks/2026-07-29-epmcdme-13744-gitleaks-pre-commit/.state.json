@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-light",
+  "slug": "epmcdme-13744-gitleaks-pre-commit",
+  "branch": "EPMCDME-13744_gitleaks-pre-commit",
+  "phase": "maintenance",
+  "started_at": "2026-07-29T00:00:00Z",
+  "completed_at": "2026-07-29T11:30:00Z",
+  "last_sync_commit": "dc7dbf2222a15f6b03a804151836d9aad05f6f90"
+}

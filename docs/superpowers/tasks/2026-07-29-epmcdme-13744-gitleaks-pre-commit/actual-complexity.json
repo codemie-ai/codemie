@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "task": "Add gitleaks pre-commit hook to backend by porting codemie-ui validate-secrets.mjs to a cross-platform bash script with container-engine detection (Docker/Podman/Apple Containers).",
+  "generated": "2026-07-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 10,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Ported from an existing UI reference (validate-secrets.mjs), so the pattern was known. Cross-platform container-engine detection (Docker/Podman/Apple Containers with daemon-live checks) adds minor bash complexity, but the script is fully self-contained and trivially reversible by removing the pre-commit hook entry. Bumped from S to M by the security/compliance red flag (the hook is a secrets-scanning gate)."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "One new file (scripts/git-hooks/validate_secrets.sh, 151 lines), one pre-commit config entry (6 lines added to .pre-commit-config.yaml), a 2-line Makefile bug fix, and a documentation update to quality-gates.md. All changes are confined to developer tooling; no application components are touched."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S(2) to M(3): Security/Compliance requirement — the hook enforces a hard-block secrets-scanning gate on every commit."
+  ],
+  "split_recommendation": null
+}

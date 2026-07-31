@@ -8,3 +8,10 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
         always_run: true
+      - id: codemie-gitleaks
+        name: Codemie gitleaks (staged secrets scan, multi-engine)
+        entry: bash -lc 'bash scripts/git-hooks/validate_secrets.sh 2>&1 | tee /dev/tty 2>/dev/null; exit ${PIPESTATUS[0]}'
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+        always_run: true

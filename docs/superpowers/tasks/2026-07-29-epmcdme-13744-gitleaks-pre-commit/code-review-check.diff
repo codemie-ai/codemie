@@ -1,0 +1,85 @@
+diff --git a/.ai-run/sdlc-factory/doctor.json b/.ai-run/sdlc-factory/doctor.json
+index 7d6f48c03..d3c845ec1 100644
+--- a/.ai-run/sdlc-factory/doctor.json
++++ b/.ai-run/sdlc-factory/doctor.json
+@@ -1,5 +1,5 @@
+ {
+-  "checked_at": "2026-07-17T00:00:00Z",
++  "checked_at": "2026-07-29T00:00:00Z",
+   "ttl_days": 7,
+   "fingerprint": "node-v22.21.0-git-2.54.0",
+   "checks": {
+diff --git a/scripts/git-hooks/validate_secrets.sh b/scripts/git-hooks/validate_secrets.sh
+index 57eeb9f1c..d8b8a898d 100755
+--- a/scripts/git-hooks/validate_secrets.sh
++++ b/scripts/git-hooks/validate_secrets.sh
+@@ -16,12 +16,15 @@ set -euo pipefail
+ 
+ GITLEAKS_IMAGE="ghcr.io/gitleaks/gitleaks:v8.30.1"
+ 
++shopt -s nocasematch
+ case "${CODEMIE_PRECOMMIT_ENABLED:-true}" in
+-  false|0|off|OFF|False|FALSE)
++  false|0|off)
+     echo "codemie-gitleaks: skipped (CODEMIE_PRECOMMIT_ENABLED=$CODEMIE_PRECOMMIT_ENABLED)"
++    shopt -u nocasematch
+     exit 0
+     ;;
+ esac
++shopt -u nocasematch
+ 
+ repo_root="$(git rev-parse --show-toplevel)"
+ config_path="$repo_root/.gitleaks.toml"
+@@ -52,7 +55,7 @@ detect_engine() {
+     if daemon_running "$e"; then echo "$e"; return 0; fi
+   done
+   if apple_containers_running; then echo container; return 0; fi
+-  for e in docker podman; do
++  for e in docker podman container; do
+     if have "$e"; then echo "$e"; return 0; fi
+   done
+   echo ""
+@@ -99,7 +102,10 @@ if ! { [[ "$engine" == "container" ]] && apple_containers_running; } \
+   exit 1
+ fi
+ 
+-args=(run --rm -v "$repo_root:/workspace" -w /workspace "$GITLEAKS_IMAGE"
++args=(run --rm
++      -v "$repo_root:/workspace" -w /workspace
++      -e GIT_SAFE_DIRECTORY=/workspace
++      "$GITLEAKS_IMAGE"
+       protect --staged --no-banner --verbose --source=/workspace)
+ 
+ if [[ -f "$config_path" ]]; then
+@@ -107,9 +113,25 @@ if [[ -f "$config_path" ]]; then
+ fi
+ 
+ echo "codemie-gitleaks: scanning staged changes with $engine ($GITLEAKS_IMAGE)"
+-if ! "$engine" "${args[@]}"; then
+-  echo "" >&2
+-  echo "codemie-gitleaks: secrets detected in staged changes. Remove them before committing." >&2
+-  echo "If this is a false positive, extend the allowlist/stopwords in .gitleaks.toml." >&2
+-  exit 1
+-fi
++set +e
++"$engine" "${args[@]}"
++ec=$?
++set -e
++
++case "$ec" in
++  0)
++    ;;
++  1)
++    echo "" >&2
++    echo "codemie-gitleaks: secrets detected in staged changes. Remove them before committing." >&2
++    echo "If this is a false positive, extend the allowlist/stopwords in .gitleaks.toml." >&2
++    exit 1
++    ;;
++  *)
++    echo "" >&2
++    echo "codemie-gitleaks: scan failed to run (exit $ec) - this is NOT a secret finding." >&2
++    echo "Common causes: image pull failed (offline), container OOM, or git 'dubious ownership' inside the container." >&2
++    echo "(Set CODEMIE_PRECOMMIT_ENABLED=false to skip the whole pre-commit hook if you must commit now.)" >&2
++    exit "$ec"
++    ;;
++esac

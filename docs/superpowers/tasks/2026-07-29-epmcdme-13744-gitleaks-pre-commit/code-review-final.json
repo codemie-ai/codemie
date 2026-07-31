@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "gate_id": "code-review.check",
+  "decision": "approve",
+  "rationale": "All 4 prior blocking findings resolved in the fix-up diff. CR-001: `-e GIT_SAFE_DIRECTORY=/workspace` added to docker/podman args. CR-002: `if ! run` replaced with `set +e; run; ec=$?; case $ec` distinguishing exit 1 (secret) from other exits (scan failed). CR-003: `container` added to the second-pass fallback loop. CR-004: `shopt -s/-u nocasematch` wraps the CODEMIE_PRECOMMIT_ENABLED case (aligning with pre_commit.sh). One unrelated-but-harmless line: doctor.json checked_at timestamp bump (part of Stage 0 pre-flight refresh, not a new risk). No new high-risk issues introduced; no confirmation pass needed.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "standard": "git-workflow.md commit format",
+      "status": "pass",
+      "notes": "Fix-up commit uses the documented 'EPMCDME-13744: <subject>' prefix and a multi-line body referencing CR-001..CR-004 IDs."
+    },
+    {
+      "standard": "code-quality.md",
+      "status": "na",
+      "notes": "Bash diff; code-quality.md targets Python/Ruff."
+    },
+    {
+      "standard": "security-patterns.md (secret scan gate)",
+      "status": "pass",
+      "notes": "The container-execution defect (CR-001) is fixed, restoring correct diagnosis on Linux; gate is now credible."
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    { "id": "CR-001", "status": "resolved", "notes": "`-e GIT_SAFE_DIRECTORY=/workspace` added to args at scripts/git-hooks/validate_secrets.sh:107 (per the fix-up diff)." },
+    { "id": "CR-002", "status": "resolved", "notes": "Engine invocation now captures exit code; exit 1 emits the leak message, other non-zero exits emit `scan failed to run (exit $ec) - this is NOT a secret finding`." },
+    { "id": "CR-003", "status": "resolved", "notes": "`container` added to `detect_engine`'s second-pass fallback loop." },
+    { "id": "CR-004", "status": "resolved", "notes": "`shopt -s nocasematch` / `shopt -u nocasematch` wraps the bypass case; `Off`, `False`, arbitrary mixed-case now match." }
+  ]
+}

@@ -49,7 +49,8 @@ license-fix:
 	poetry run python scripts/license_headers/check_license_headers.py --fix $(FILE)
 
 gitleaks:
-	docker run --rm -v $$(pwd):/path zricethezav/gitleaks:v8.30.0 dir --no-banner --verbose /path
+	docker run --rm -v "$$(pwd):/workspace" ghcr.io/gitleaks/gitleaks:v8.30.1 \
+	    dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace
 
 verify: ruff license gitleaks test
 

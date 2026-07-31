@@ -1,0 +1,187 @@
+diff --git a/.ai-run/guides/quality-gates.md b/.ai-run/guides/quality-gates.md
+index bf5a7bc4c..15702a2f5 100644
+--- a/.ai-run/guides/quality-gates.md
++++ b/.ai-run/guides/quality-gates.md
+@@ -34,13 +34,24 @@ Use Makefile targets when available; they are the command source of truth for th
+ 
+ ### Secret Scan
+ 
+-**Run**: `make gitleaks`
++Two gates run gitleaks against the same image (`ghcr.io/gitleaks/gitleaks:v8.30.1`) with the same `.gitleaks.toml` allowlist.
+ 
+-**Pass**: Docker runs gitleaks and no hardcoded secrets are found. See `Makefile:51`.
++**CI / verify gate — `make gitleaks`**
+ 
+-**Fail**: A secret-like value is detected or Docker is unavailable.
++Runs `gitleaks dir` against the full working tree. Docker-only; CI runners always have Docker. See `Makefile:51`.
+ 
+-**Skip if**: Docker is unavailable; report the environment block explicitly.
++- **Pass**: Docker runs gitleaks with `--config=/workspace/.gitleaks.toml` and no hardcoded secrets are found.
++- **Fail**: A secret-like value is detected or Docker is unavailable.
++- **Skip if**: Docker is unavailable; report the environment block explicitly.
++
++**Local pre-commit gate — `codemie-gitleaks`**
++
++Runs `gitleaks protect --staged` via `scripts/git-hooks/validate_secrets.sh`, wired as the `codemie-gitleaks` local hook in `.pre-commit-config.yaml`. Detects Docker → Podman → Apple Containers and uses the first live engine. Hard-blocks the commit (exit 1) with an actionable hint if no engine is running.
++
++- **Pass**: gitleaks reports no leaks in the staged diff.
++- **Fail**: A secret is detected in staged changes, or no container engine is available.
++- **Bypass**: `CODEMIE_PRECOMMIT_ENABLED=false` skips both `codemie-pre-commit` and `codemie-gitleaks`. Use only when Docker/Podman is unavailable and the change is verified to contain no secrets — do NOT weaken to warn-and-continue.
++- **Policy**: HIGH priority. Secrets must not enter a local commit.
+ 
+ ### Tests
+ 
+diff --git a/.pre-commit-config.yaml b/.pre-commit-config.yaml
+index 041355ec4..a871dde27 100644
+--- a/.pre-commit-config.yaml
++++ b/.pre-commit-config.yaml
+@@ -6,5 +6,12 @@ repos:
+         entry: bash -lc 'bash scripts/git-hooks/pre_commit.sh 2>&1 | tee /dev/tty 2>/dev/null; exit ${PIPESTATUS[0]}'
+         language: system
+         pass_filenames: false
+-        stages: [commit]
++        stages: [pre-commit]
+         always_run: true
++      - id: codemie-gitleaks
++        name: Codemie gitleaks (staged secrets scan, multi-engine)
++        entry: bash -lc 'bash scripts/git-hooks/validate_secrets.sh 2>&1 | tee /dev/tty 2>/dev/null; exit ${PIPESTATUS[0]}'
++        language: system
++        pass_filenames: false
++        stages: [pre-commit]
++        always_run: true
+\ No newline at end of file
+diff --git a/Makefile b/Makefile
+index 8fe27b0eb..b2a4bd091 100755
+--- a/Makefile
++++ b/Makefile
+@@ -49,7 +49,8 @@ license-fix:
+ 	poetry run python scripts/license_headers/check_license_headers.py --fix $(FILE)
+ 
+ gitleaks:
+-	docker run --rm -v $$(pwd):/path zricethezav/gitleaks:v8.30.0 dir --no-banner --verbose /path
++	docker run --rm -v $$(pwd):/workspace ghcr.io/gitleaks/gitleaks:v8.30.1 \
++	    dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace
+ 
+ verify: ruff license gitleaks test
+ 
+diff --git a/scripts/git-hooks/validate_secrets.sh b/scripts/git-hooks/validate_secrets.sh
+new file mode 100755
+index 000000000..57eeb9f1c
+--- /dev/null
++++ b/scripts/git-hooks/validate_secrets.sh
+@@ -0,0 +1,115 @@
++#!/usr/bin/env bash
++# Cross-platform secrets scan for the pre-commit hook.
++# Ports codemie-ui/scripts/validate-secrets.mjs to bash so the backend
++# (which has no Node runtime) can run gitleaks at commit time.
++#
++# Behaviour:
++#   * Detects Docker -> Podman -> Apple Containers (macOS) in that order.
++#   * Uses the first engine whose daemon is live.
++#   * Scans staged changes only (`gitleaks protect --staged`).
++#   * Honours .gitleaks.toml if present.
++#   * Exit 1 (hard block) when no engine is available or its daemon is not
++#     running, printing an actionable hint.
++#   * Honours CODEMIE_PRECOMMIT_ENABLED=false/0/off to skip.
++
++set -euo pipefail
++
++GITLEAKS_IMAGE="ghcr.io/gitleaks/gitleaks:v8.30.1"
++
++case "${CODEMIE_PRECOMMIT_ENABLED:-true}" in
++  false|0|off|OFF|False|FALSE)
++    echo "codemie-gitleaks: skipped (CODEMIE_PRECOMMIT_ENABLED=$CODEMIE_PRECOMMIT_ENABLED)"
++    exit 0
++    ;;
++esac
++
++repo_root="$(git rev-parse --show-toplevel)"
++config_path="$repo_root/.gitleaks.toml"
++
++if [[ "${OSTYPE:-}" == darwin* ]]; then
++  for extra in /opt/podman/bin /opt/homebrew/bin /usr/local/bin \
++               /Applications/Docker.app/Contents/Resources/bin; do
++    if [[ -d "$extra" && ":$PATH:" != *":$extra:"* ]]; then
++      PATH="$PATH:$extra"
++    fi
++  done
++  export PATH
++fi
++
++have() { command -v "$1" >/dev/null 2>&1; }
++
++daemon_running() {
++  local engine="$1"
++  have "$engine" && "$engine" info >/dev/null 2>&1
++}
++
++apple_containers_running() {
++  [[ "${OSTYPE:-}" == darwin* ]] && have container && container system status >/dev/null 2>&1
++}
++
++detect_engine() {
++  for e in docker podman; do
++    if daemon_running "$e"; then echo "$e"; return 0; fi
++  done
++  if apple_containers_running; then echo container; return 0; fi
++  for e in docker podman; do
++    if have "$e"; then echo "$e"; return 0; fi
++  done
++  echo ""
++}
++
++hint_for_stopped_daemon() {
++  local engine="$1"
++  case "$engine" in
++    docker)
++      if have colima;   then echo "Run 'colima start' to enable secrets detection locally"; return; fi
++      if have orbstack; then echo "Start OrbStack to enable secrets detection locally";     return; fi
++      echo "Start Docker Desktop to enable secrets detection locally"
++      ;;
++    podman)
++      echo "Run 'podman machine start' to enable secrets detection locally"
++      ;;
++    container)
++      echo "Start Apple Containers to enable secrets detection locally"
++      ;;
++    *)
++      echo "Start your container engine to enable secrets detection locally"
++      ;;
++  esac
++}
++
++engine="$(detect_engine)"
++
++if [[ -z "$engine" ]]; then
++  echo "codemie-gitleaks: no container engine found" >&2
++  echo "Install Docker, Podman, or Apple Containers to enable local secrets scanning." >&2
++  echo "(Set CODEMIE_PRECOMMIT_ENABLED=false to skip the whole pre-commit hook if you must commit now.)" >&2
++  exit 1
++fi
++
++if ! { [[ "$engine" == "container" ]] && apple_containers_running; } \
++   && ! { [[ "$engine" != "container" ]] && daemon_running "$engine"; }; then
++  case "$engine" in
++    container) label="Apple Containers" ;;
++    *)         label="$(tr '[:lower:]' '[:upper:]' <<<"${engine:0:1}")${engine:1}" ;;
++  esac
++  echo "codemie-gitleaks: $label daemon is not running" >&2
++  echo "$(hint_for_stopped_daemon "$engine")" >&2
++  echo "(Set CODEMIE_PRECOMMIT_ENABLED=false to skip the whole pre-commit hook.)" >&2
++  exit 1
++fi
++
++args=(run --rm -v "$repo_root:/workspace" -w /workspace "$GITLEAKS_IMAGE"
++      protect --staged --no-banner --verbose --source=/workspace)
++
++if [[ -f "$config_path" ]]; then
++  args+=(--config=/workspace/.gitleaks.toml)
++fi
++
++echo "codemie-gitleaks: scanning staged changes with $engine ($GITLEAKS_IMAGE)"
++if ! "$engine" "${args[@]}"; then
++  echo "" >&2
++  echo "codemie-gitleaks: secrets detected in staged changes. Remove them before committing." >&2
++  echo "If this is a false positive, extend the allowlist/stopwords in .gitleaks.toml." >&2
++  exit 1
++fi

@@ -6,6 +6,8 @@ Use Makefile targets when available; they are the command source of truth for th
 
 ### Lint And Format
 
+**Policy**: Every language present in a change should be covered by a lint gate before delivery. Python is covered below; gaps for other languages (shell, container manifests, config formats) are tracked under EPMCDME-13739 and its sub-tasks.
+
 **Run**: `make ruff`
 
 **Pass**: Ruff format completes, `ruff check --fix` applies safe fixes, and final `ruff check` exits successfully. See `Makefile:30`.
@@ -34,13 +36,24 @@ Use Makefile targets when available; they are the command source of truth for th
 
 ### Secret Scan
 
-**Run**: `make gitleaks`
+Two gates run gitleaks against the same image (`ghcr.io/gitleaks/gitleaks:v8.30.1`) with the same `.gitleaks.toml` allowlist.
 
-**Pass**: Docker runs gitleaks and no hardcoded secrets are found. See `Makefile:51`.
+**CI / verify gate — `make gitleaks`**
 
-**Fail**: A secret-like value is detected or Docker is unavailable.
+Runs `gitleaks dir` against the full working tree. Docker-only; CI runners always have Docker. See `Makefile:51`.
 
-**Skip if**: Docker is unavailable; report the environment block explicitly.
+- **Pass**: Docker runs gitleaks with `--config=/workspace/.gitleaks.toml` and no hardcoded secrets are found.
+- **Fail**: A secret-like value is detected or Docker is unavailable.
+- **Skip if**: Docker is unavailable; report the environment block explicitly.
+
+**Local pre-commit gate — `codemie-gitleaks`**
+
+Runs `gitleaks protect --staged` via `scripts/git-hooks/validate_secrets.sh`, wired as the `codemie-gitleaks` local hook in `.pre-commit-config.yaml`. Detects Docker → Podman → Apple Containers and uses the first live engine. Hard-blocks the commit (exit 1) with an actionable hint if no engine is running.
+
+- **Pass**: gitleaks reports no leaks in the staged diff.
+- **Fail**: A secret is detected in staged changes, or no container engine is available.
+- **Bypass**: `CODEMIE_PRECOMMIT_ENABLED=false` skips both `codemie-pre-commit` and `codemie-gitleaks`. Use only when Docker/Podman is unavailable and the change is verified to contain no secrets — do NOT weaken to warn-and-continue.
+- **Policy**: HIGH priority. Secrets must not enter a local commit.
 
 ### Tests
 

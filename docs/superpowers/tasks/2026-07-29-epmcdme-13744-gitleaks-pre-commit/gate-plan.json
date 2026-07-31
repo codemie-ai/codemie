@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "runner": "poetry",
+  "gates": [
+    {"id": "lint",          "command": "make ruff",          "available": true,  "source": "guide"},
+    {"id": "build",         "command": "make build",         "available": true,  "source": "guide"},
+    {"id": "license-check", "command": "make license-check", "available": true,  "source": "guide"},
+    {"id": "gitleaks",      "command": "make gitleaks",      "available": true,  "source": "guide"},
+    {"id": "unit",          "command": "make test",          "available": true,  "source": "guide"},
+    {"id": "coverage",      "command": "make coverage",      "available": true,  "source": "guide"},
+    {"id": "sonar",         "command": "make sonar-local",   "available": true,  "source": "guide"},
+    {"id": "verify",        "command": "make verify",        "available": true,  "source": "guide"},
+    {"id": "pre-commit",    "command": "pre-commit run --hook-stage pre-commit --all-files", "available": true, "source": "hook"}
+  ],
+  "ui_globs": [],
+  "detected_at": "2026-07-29T11:20:00Z"
+}
