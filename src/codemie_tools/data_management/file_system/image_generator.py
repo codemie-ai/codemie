@@ -158,8 +158,7 @@ class ChatModelImageGenerator:
         if isinstance(response.content, list):
             for part in response.content:
                 if isinstance(part, dict):
-                    image_url = part.get("image_url")
-                    if isinstance(image_url, dict) and (url := image_url.get("url")):
+                    if url := part.get("image_url", {}).get("url"):
                         return resolve_image_url(url)
                     if b64 := part.get("data"):
                         return None, b64
@@ -174,21 +173,5 @@ class ChatModelImageGenerator:
         output_format: str | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> tuple[str | None, str | None]:
-        import base64
-
-        del mask, size, output_format, extra_body
-        b64 = base64.b64encode(image).decode()
-        content = [
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
-            {"type": "text", "text": prompt},
-        ]
-        response: AIMessage = self._model.invoke([HumanMessage(content=content)])
-        if isinstance(response.content, list):
-            for part in response.content:
-                if isinstance(part, dict):
-                    image_url = part.get("image_url")
-                    if isinstance(image_url, dict) and (url := image_url.get("url")):
-                        return resolve_image_url(url)
-                    if b64_data := part.get("data"):
-                        return None, b64_data
-        return None, None
+        del prompt, image, mask, size, output_format, extra_body
+        raise NotImplementedError("This image generator does not support inpainting or image edits.")

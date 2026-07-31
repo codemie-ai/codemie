@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "flow": "sdlc-standard",
-  "slug": "epmcdme-13718-fix-image-generation-404",
-  "branch": "EPMCDME-13718_fix-image-generation-gemini-model",
-  "phase": "main",
-  "started_at": "2026-07-29T00:00:00Z",
-  "completed_at": "2026-07-29T00:00:00Z"
-}
