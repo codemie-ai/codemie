@@ -134,11 +134,13 @@ class TestBatchJobRunnerHappyPath(unittest.TestCase):
         assert manifest["spec"]["activeDeadlineSeconds"] >= int(config.execution_timeout)
         container = manifest["spec"]["template"]["spec"]["containers"][0]
         assert container["image"] == "img:latest"
-        # Wrapper command, not raw python -c
-        assert container["command"][0] == "bash"
-        assert container["command"][1] == "-c"
-        assert ".ready" in container["command"][2]
-        assert ".pulled" in container["command"][2]
+        # env -i <vars> bash -c <inner> — no outer shell
+        assert container["command"][0] == "env"
+        assert container["command"][1] == "-i"
+        inner = container["command"][-1]
+        assert container["command"][-2] == "-c"
+        assert ".ready" in inner
+        assert ".pulled" in inner
         pod_spec = manifest["spec"]["template"]["spec"]
         assert pod_spec["runtimeClassName"] == "gvisor"
         sec = pod_spec["securityContext"]

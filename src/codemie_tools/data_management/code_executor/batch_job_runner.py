@@ -23,6 +23,7 @@ import base64
 import io
 import json
 import logging
+import shlex
 import tarfile
 import threading
 import time
@@ -53,38 +54,57 @@ _PULLED_SENTINEL = ".pulled"
 _EXIT_CODE_FILE = ".exit_code"
 _STDERR_FILE = ".stderr"
 
-# Wrapper bash command:
-#  1. Wait until the upload tarball has placed `.ready` in the workdir.
-#  2. Export library cache dirs as relative paths inside the workdir so that
-#     libraries like matplotlib that need a writable config/cache directory
-#     do not attempt to create files outside the workspace (which the fs guard
-#     would deny). All relative paths resolve under {workdir} because we
-#     `cd {workdir}` first.
-#  3. Run the user script, capturing stderr in .stderr so the parent can pull
-#     it separately (denial markers written to stderr must not be mixed with
-#     stdout, otherwise the parent cannot distinguish guard events from
-#     customer-written output).
-#  4. Persist the exit code to a file (logs may be truncated; the file is the
-#     authoritative signal for the parent to read if needed).
-#  5. Touch `.done` so the parent knows it's safe to pull exports.
-#  6. Wait for `.pulled` (parent signals exports are out).
-#  7. Exit with the user script's exit code so K8s sees a clean termination.
-_WRAPPER_SCRIPT = (
-    "set -u; "
-    "mkdir -p {workdir} && cd {workdir}; "
-    "export MPLCONFIGDIR=.matplotlib "
-    "NUMBA_CACHE_DIR=.numba "
-    "FONTCONFIG_FILE=/dev/null "
-    "XDG_CACHE_HOME=.cache "
-    "XDG_CONFIG_HOME=.config "
-    "PYTHONDONTWRITEBYTECODE=1; "
-    "until [ -f {ready} ]; do sleep 0.1; done; "
-    "python {script} 2>{stderr}; "
-    "echo $? > {exit_code}; "
-    "touch {done}; "
-    "until [ -f {pulled} ]; do sleep 0.1; done; "
-    "exit $(cat {exit_code})"
-)
+_VENV_PATH = "/opt/venv/bin:/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin"
+
+
+def _build_wrapper_command(workdir: str) -> List[str]:
+    """Build the container command array for a sandbox Job.
+
+    Kubernetes passes the array directly to execve(2) — no shell parses it.
+    env -i starts bash with exactly the listed variables; /proc/1/environ
+    and /proc/self/environ therefore never contain inherited pod secrets.
+    shlex.quote() is applied only inside `inner` where bash parses text.
+    Environment key=value pairs are argv elements and need no quoting.
+
+    Steps executed inside the clean bash:
+      1. mkdir + cd into workdir; exit 1 on failure so nothing runs in the
+         wrong directory.
+      2. Wait for .ready sentinel (upload complete).
+      3. Run the user script, capturing stderr separately.
+      4. Persist exit code, signal .done, wait for .pulled, then exit.
+    """
+    tmp = f"{workdir}/.tmp"
+    safe_env = {
+        "HOME": workdir,
+        "TMPDIR": tmp,
+        "TEMP": tmp,
+        "TMP": tmp,
+        "PATH": _VENV_PATH,
+        "MPLCONFIGDIR": ".matplotlib",
+        "NUMBA_CACHE_DIR": ".numba",
+        "FONTCONFIG_FILE": "/dev/null",
+        "XDG_CACHE_HOME": ".cache",
+        "XDG_CONFIG_HOME": ".config",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    workdir_q = shlex.quote(workdir)
+    ready_q = shlex.quote(_READY_SENTINEL)
+    script_q = shlex.quote(_SCRIPT_NAME)
+    stderr_q = shlex.quote(_STDERR_FILE)
+    exit_code_q = shlex.quote(_EXIT_CODE_FILE)
+    done_q = shlex.quote(_DONE_SENTINEL)
+    pulled_q = shlex.quote(_PULLED_SENTINEL)
+    inner = (
+        "set -u; "
+        f"mkdir -p {workdir_q} && cd {workdir_q} || exit 1; "
+        f"until [ -f {ready_q} ]; do sleep 0.1; done; "
+        f"python {script_q} 2>{stderr_q}; "
+        f"_ec=$?; echo $_ec > {exit_code_q}; "
+        f"touch {done_q}; "
+        f"until [ -f {pulled_q} ]; do sleep 0.1; done; "
+        f"exit $_ec"
+    )
+    return ["env", "-i", *[f"{k}={v}" for k, v in safe_env.items()], "bash", "-c", inner]
 
 
 @dataclass
@@ -189,15 +209,6 @@ class BatchJobRunner:
     def _build_manifest(self, job_name: str, workdir: str) -> dict:
         cfg = self.config
         active_deadline = int(cfg.execution_timeout) + int(_DEADLINE_BUFFER_SECONDS)
-        wrapper = _WRAPPER_SCRIPT.format(
-            workdir=workdir,
-            script=_SCRIPT_NAME,
-            ready=_READY_SENTINEL,
-            done=_DONE_SENTINEL,
-            pulled=_PULLED_SENTINEL,
-            exit_code=_EXIT_CODE_FILE,
-            stderr=_STDERR_FILE,
-        )
         return {
             "apiVersion": "batch/v1",
             "kind": "Job",
@@ -235,7 +246,7 @@ class BatchJobRunner:
                             {
                                 "name": "executor",
                                 "image": cfg.docker_image,
-                                "command": ["bash", "-c", wrapper],
+                                "command": _build_wrapper_command(workdir),
                                 "securityContext": {
                                     "runAsUser": cfg.run_as_user,
                                     "runAsGroup": cfg.run_as_group,

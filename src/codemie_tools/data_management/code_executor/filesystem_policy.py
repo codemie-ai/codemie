@@ -677,16 +677,6 @@ def render_runtime_prelude(workspace_root: str) -> str:
             os.environ.setdefault("XDG_CACHE_HOME", ".cache")
             os.environ.setdefault("XDG_CONFIG_HOME", ".config")
 
-            _SAFE_ENV_KEYS = frozenset({
-                "HOME", "TMPDIR", "TEMP", "TMP", "PATH",
-                "MPLCONFIGDIR", "NUMBA_CACHE_DIR",
-                "XDG_CACHE_HOME", "XDG_CONFIG_HOME",
-                "LC_CTYPE", "LANG", "LANGUAGE",
-            })
-            for _key in list(os.environ.keys()):
-                if _key not in _SAFE_ENV_KEYS:
-                    del os.environ[_key]
-
             _ORIGINALS["builtins.open"] = builtins.open
             builtins.open = _single_path_wrapper("open", builtins.open)
 
