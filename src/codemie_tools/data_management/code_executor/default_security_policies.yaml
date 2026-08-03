@@ -37,10 +37,8 @@ restricted_modules:
       environment
     severity: HIGH
 
-  - name: pathlib
-    description: >-
-      Object-oriented filesystem paths - restricted
-    severity: MEDIUM
+  # pathlib is allowed — runtime fs guard enforces workspace boundaries;
+  # blocking the import breaks legitimate presentation and data scripts.
 
   - name: glob
     description: >-
