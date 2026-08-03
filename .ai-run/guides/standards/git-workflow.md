@@ -42,6 +42,14 @@ Only commit, push, branch, or create MRs when the user explicitly asks for git o
 | Proactive commits after editing files | Report changed files and wait unless git was requested |
 | Committing without a work item | Ask for the `EPMCDME-####` ticket first |
 
+```bash
+glab mr create \
+  --title "EPMCDME-XXXX: Capital sentence" \
+  --target-branch main \
+  --remove-source-branch \
+  --yes
+```
+
 Evidence: the current agent entrypoint requires explicit git operations at `AGENTS.md:82`.
 
 ## Inline MR Comments via glab
