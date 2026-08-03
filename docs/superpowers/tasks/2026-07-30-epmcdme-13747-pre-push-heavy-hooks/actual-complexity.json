@@ -1,0 +1,82 @@
+{
+  "task": "Move heavy CI gates (full pytest + SonarQube) from pre-commit to a new pre-push hook, add commit-msg EPMCDME-prefix enforcement, and refactor pre-commit to fast checks only.",
+  "generated": "2026-07-31T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 3,
+      "label": "M",
+      "affected": "pre_commit.sh (refactored), pre_push.sh (new), commit_msg.sh (new), .pre-commit-config.yaml, Makefile",
+      "layers": "Infrastructure (Developer Tooling)"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 2,
+      "label": "S",
+      "risk_factors": "Developers must re-run `make install-hooks` to register the new pre-push stage; existing installs will not get the hook automatically",
+      "mitigation": "README updated with re-install instructions; CODEMIE_GITHOOKS_ENABLED env-var escape hatch is present on all three hooks; env-override testability pattern (PYTEST_CMD, SONAR_CMD, RUFF_CMD, LICENSE_CMD) makes rollback trivial"
+    },
+    "file_change_estimate": {
+      "score": 4,
+      "label": "L",
+      "modified_files": 4,
+      "modified_file_list": [
+        ".pre-commit-config.yaml",
+        "Makefile",
+        "README.md",
+        "scripts/git-hooks/pre_commit.sh"
+      ],
+      "new_files": 8,
+      "new_file_list": [
+        "scripts/git-hooks/commit_msg.sh",
+        "scripts/git-hooks/pre_push.sh",
+        "tests/scripts/test_commit_msg_hook.py",
+        "tests/scripts/test_pre_commit_fast_hook.py",
+        "tests/scripts/test_pre_push_hook.py",
+        "docs/superpowers/tasks/2026-07-30-epmcdme-13747-pre-push-heavy-hooks/.state.json",
+        "docs/superpowers/tasks/2026-07-30-epmcdme-13747-pre-push-heavy-hooks/plan.md",
+        "docs/superpowers/tasks/2026-07-30-epmcdme-13747-pre-push-heavy-hooks/technical-analysis.md"
+      ],
+      "affected_dirs": [
+        "scripts/git-hooks/",
+        "tests/scripts/",
+        ".",
+        "docs/superpowers/tasks/2026-07-30-epmcdme-13747-pre-push-heavy-hooks/"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 2,
+      "label": "S",
+      "layers_changed": ["Infrastructure (Developer Tooling)", "Testing Infrastructure"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 12,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "file_change_estimate",
+      "reason": "9 functional files changed (4 modified + 5 new) plus 3 SDLC task artifacts, spanning 4 directories (scripts/git-hooks/, tests/scripts/, repo root, docs/superpowers/); the new-file count of 5 (two hook scripts + three test modules) drives this above M territory"
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Three distinct hook scripts with different responsibilities (fast pre-commit checks, heavy pre-push gates, commit-msg prefix enforcement), configuration in .pre-commit-config.yaml, and build tooling in Makefile — 3 coordinated components within a single infrastructure subsystem"
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

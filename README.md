@@ -147,29 +147,47 @@ docker build -t codemie:latest .
 - **Import AI Katas**: `make import-katas` - Clone and import AI katas from GitHub repository
 - **Run sanity tests**: `make test-harness` - Runs sanity checks via `uvx codemie-test-harness --sanity`
 
-### Git Hooks (pre-commit)
+### Git Hooks
+
+Three hooks enforce quality gates at different points in the workflow:
+
+| Hook | Trigger | What runs |
+|---|---|---|
+| `pre-commit` | `git commit` (fast) | `ruff format/check` on staged files + Apache 2.0 license header check |
+| `commit-msg` | after writing commit message | Enforces `EPMCDME-<n>:` subject prefix |
+| `pre-push` | `git push` (heavy) | Full `pytest` (excluding `tests/enterprise/`) + `make sonar-local` |
+
+Install (one-time, after `poetry install`):
+```bash
+make install-hooks
+# equivalent: poetry run pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
+```
+
 Hook toggle:
-- You can enable/disable the Codemie pre-commit hook via env var:
-  - `CODEMIE_PRECOMMIT_ENABLED=false` (default)
-  - `CODEMIE_PRECOMMIT_ENABLED=true`
-  - Add to `.env` or export in shell: `export CODEMIE_PRECOMMIT_ENABLED=false`
+- `pre-commit` and `commit-msg` run on every commit — no toggle, always active.
+- `pre-push` is opt-in (disabled by default to avoid blocking pushes while pre-existing test failures exist on main):
+  - `CODEMIE_PREPUSH_ENABLED=false` (default) — pre-push hook is skipped
+  - `CODEMIE_PREPUSH_ENABLED=true` — enables full pytest + sonar before every push
+  - Add to `.env` or export in shell: `export CODEMIE_PREPUSH_ENABLED=true`
 
-Install:
-- `poetry install`
-- `poetry run pre-commit install`
+Commit flow (fast):
+- `ruff format` + `ruff check --fix` on staged Python
+- If files would change: lists changed files and blocks commit; stage and re-commit
+- If no changes: `ruff check` + license headers; blocks commit on failures
+- commit-msg: subject line must start with `EPMCDME-<n>:`; merge/revert/fixup!/squash! commits are bypassed automatically
 
-Commit flow:
-- `ruff format` + `ruff check --fix`
-- If files changed: lists changed files and blocks commit; stage and commit again (tests run once next attempt)
-- If no changes: `ruff check` + `pytest` + `make sonar-local`; prints concise test summary and blocks commit on failures
+Push flow (heavy):
+- `pytest tests/ --ignore=tests/enterprise/` with coverage → `coverage.xml`
+- `make sonar-local` reusing that coverage (no double test run)
+- Nothing red reaches the remote
 
 Manual:
 - Run all hooks: `poetry run pre-commit run --all-files`
-- Skip hooks for a single commit: `git commit --no-verify` (not recommended)
+- Skip hooks for a single commit/push: `git commit --no-verify` / `git push --no-verify` (not recommended)
 
 Troubleshooting:
-- core.hooksPath set: `git config --unset-all core.hooksPath`; then `poetry run pre-commit install`
-- Permission denied: `chmod +x scripts/git-hooks/pre_commit.sh`; `git update-index --chmod=+x scripts/git-hooks/pre_commit.sh`
+- core.hooksPath set: `git config --unset-all core.hooksPath`; then `make install-hooks`
+- Permission denied: `chmod +x scripts/git-hooks/pre_commit.sh scripts/git-hooks/pre_push.sh scripts/git-hooks/commit_msg.sh`; `git update-index --chmod=+x` each file
 
 ## Development
 
@@ -265,7 +283,7 @@ Behavior:
 - If the configured SonarQube server is unreachable, the command prints a clear skip message and exits successfully
 - Test failures, invalid Sonar credentials, and Sonar quality gate failures still fail the command
 
-This same command is also executed by the repo pre-commit hook after Ruff and pytest pass.
+This same command is also executed by the repo pre-push hook after pytest passes.
 
 ### Tools (`src/codemie_tools/`)
 

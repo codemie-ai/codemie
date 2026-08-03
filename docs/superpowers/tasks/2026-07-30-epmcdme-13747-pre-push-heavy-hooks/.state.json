@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-light",
+  "slug": "epmcdme-13747-pre-push-heavy-hooks",
+  "branch": "EPMCDME-13747_pre-push-heavy-hooks",
+  "phase": "maintenance",
+  "started_at": "2026-07-30T00:00:00Z",
+  "completed_at": "2026-07-31T00:00:00Z",
+  "last_sync_commit": "c1f9f2d554f1a836c39f69200cc66eebcf2f7aaf"
+}

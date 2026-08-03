@@ -1,0 +1,123 @@
+{
+  "schema": 1,
+  "gate": "code-review.final",
+  "ts": "2026-07-30T00:00:00Z",
+  "decision": "request-changes",
+  "confidence": "low",
+  "rationale": "The review diff was materialized from the committed branch state (HEAD = c7ef7f222, backward-compat commit) before the 5 CR findings from the prior standalone review were committed. All 5 issues persist in the committed diff. Inspection of the current working tree confirms all 5 fixes ARE present as uncommitted modifications in scripts/git-hooks/commit_msg.sh, .pre-commit-config.yaml, tests/scripts/test_commit_msg_hook.py, and tests/scripts/test_pre_push_hook.py. The backward-compat block introduced in c7ef7f222 is correctly implemented and tested. Three additional minor issues were identified and deferred (empty-message misleading error, unquoted PYTEST_CMD/SONAR_CMD with spaces, regex permissiveness on colon spacing) — none block merge. Confidence is low: no acceptance spec is available (no-spec mode), and the diff does not reflect the full intended working-tree state of the branch. Action required: commit the working-tree fixes for CR-001 through CR-005, then the branch is clean for merge.",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "standard": "git-workflow",
+      "status": "pass",
+      "notes": "All commits in the branch follow EPMCDME-<n>: format. Branch name matches convention."
+    },
+    {
+      "standard": "code-quality",
+      "status": "pass",
+      "notes": "Apache 2.0 license headers present on all new files. set -euo pipefail used throughout hooks. Cyclomatic complexity well under gate=15 (max ~4 in pre_push.sh opt-in block). TDD approach with subprocess-style tests in tests/scripts/."
+    },
+    {
+      "standard": "security",
+      "status": "pass",
+      "notes": "No user-controlled input injected into shell commands. No credentials or secrets exposed. File existence checked before read in commit_msg.sh. PYTEST_CMD/SONAR_CMD expansion is intentionally unquoted for multi-word commands (documented tradeoff, low risk in standard environments)."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "title": "REBASE_HEAD and CHERRY_PICK_HEAD bypass absent from commit_msg.sh",
+      "file": "scripts/git-hooks/commit_msg.sh",
+      "line": 18,
+      "problem": "The committed script bypasses validation only for MERGE_HEAD. REBASE_HEAD (interactive rebase reword) and CHERRY_PICK_HEAD (cherry-pick --edit) are not checked. Git invokes the commit-msg hook in all three scenarios; the replayed or reworded message does not carry the EPMCDME- prefix.",
+      "impact": "Interactive rebase (reword/fixup mid-rebase) and cherry-pick workflows are hard-blocked. Developers cannot reword a commit mid-rebase or amend a cherry-picked commit without skipping hooks entirely.",
+      "recommendation": "Add `git rev-parse -q --verify REBASE_HEAD >/dev/null 2>&1 && exit 0` and the CHERRY_PICK_HEAD equivalent immediately after the MERGE_HEAD check. Working-tree fix is already present (uncommitted) — commit it.",
+      "working_tree_fix": "present"
+    },
+    {
+      "id": "CR-002",
+      "severity": "minor",
+      "triage": "patch",
+      "title": "pass_filenames: true on codemie-commit-msg hook",
+      "file": ".pre-commit-config.yaml",
+      "line": 15,
+      "problem": "The committed config sets pass_filenames: true on the commit-msg stage hook. Depending on pre-commit version, this can cause staged filenames to be passed alongside the commit-message file path, shifting $1 away from COMMIT_EDITMSG.",
+      "impact": "On affected pre-commit versions the hook reads a source file as the commit subject and produces a confusing rejection on every commit.",
+      "recommendation": "Set pass_filenames: false. Working-tree fix is already present (uncommitted) — commit it.",
+      "working_tree_fix": "present"
+    },
+    {
+      "id": "CR-003",
+      "severity": "minor",
+      "triage": "patch",
+      "title": "Missing bypass tests: squash!, amend!, Revert, REBASE_HEAD, CHERRY_PICK_HEAD",
+      "file": "tests/scripts/test_commit_msg_hook.py",
+      "line": 1,
+      "problem": "The committed test file (7 tests) covers valid prefix, missing prefix, no-colon, Merge bypass, fixup!, MERGE_HEAD, and leading-comment. It does not test squash!, amend!, Revert subject bypasses, nor REBASE_HEAD or CHERRY_PICK_HEAD ref bypasses.",
+      "impact": "Regression in any of these bypass paths goes undetected by the test suite.",
+      "recommendation": "Add test_squash_message_bypassed, test_amend_message_bypassed, test_revert_message_bypassed, test_rebase_head_present_bypasses_validation, and test_cherry_pick_head_present_bypasses_validation. Working-tree fix (12 tests) is already present (uncommitted) — commit it.",
+      "working_tree_fix": "present"
+    },
+    {
+      "id": "CR-004",
+      "severity": "minor",
+      "triage": "patch",
+      "title": "Fragile STUB_TEMPLATE and newline-count assertion",
+      "file": "tests/scripts/test_pre_push_hook.py",
+      "line": 72,
+      "problem": "STUB_TEMPLATE echoes only $@ without the stub's name, making content-based identity assertions impossible. test_pytest_failure_blocks_and_skips_sonar asserts calls.count('\\n') == 1 to infer sonar was skipped — this relies on incidental line count rather than which stub ran.",
+      "impact": "Silent false positives if sonar runs when it should be skipped, or false negatives on innocent template changes. Fragile across any change to stub invocation count.",
+      "recommendation": "Change STUB_TEMPLATE to log `$(basename \"$0\"): $@` so stub identity is captured. Assert `sonar_stub.sh not in calls` directly. Working-tree fix is already present (uncommitted) — commit it.",
+      "working_tree_fix": "present"
+    },
+    {
+      "id": "CR-005",
+      "severity": "minor",
+      "triage": "patch",
+      "title": "CODEMIE_PREPUSH_ENABLED=1 and =on not tested",
+      "file": "tests/scripts/test_pre_push_hook.py",
+      "line": 88,
+      "problem": "pre_push.sh accepts CODEMIE_PREPUSH_ENABLED=1 and =on via nocasematch, but the committed test suite only exercises the value true. Alternate truthy values have no regression guard.",
+      "impact": "A future refactor that removes or misplaces the nocasematch block silently breaks 1/on activation with no failing test.",
+      "recommendation": "Add test_numeric_one_enabled_runs and test_on_enabled_runs. Working-tree fix is already present (uncommitted) — commit it.",
+      "working_tree_fix": "present"
+    }
+  ],
+  "_deferred": [
+    {
+      "id": "CR-006-deferred",
+      "severity": "minor",
+      "title": "Empty commit message produces misleading error",
+      "file": "scripts/git-hooks/commit_msg.sh",
+      "problem": "When the commit message file contains only blank lines and comment lines, subject remains empty and the hook exits 1 with 'Commit message must start with EPMCDME-<number>:' rather than 'message is empty'.",
+      "rationale_for_defer": "git itself rejects empty commit messages independently; the misleading error is cosmetic."
+    },
+    {
+      "id": "CR-007-deferred",
+      "severity": "minor",
+      "title": "Unquoted $PYTEST_CMD/$SONAR_CMD breaks on space-in-path",
+      "file": "scripts/git-hooks/pre_push.sh",
+      "problem": "PYTEST_CMD and SONAR_CMD are expanded unquoted, relying on word-splitting for multi-word commands. Paths with spaces fail.",
+      "rationale_for_defer": "Standard Poetry/venv install paths do not contain spaces in this project's environment. Override vars are developer-controlled."
+    },
+    {
+      "id": "CR-008-deferred",
+      "severity": "minor",
+      "title": "Commit subject regex accepts EPMCDME-123:no-space",
+      "file": "scripts/git-hooks/commit_msg.sh",
+      "problem": "Regex ^EPMCDME-[0-9]+: does not require a space after the colon. The documented convention (shown in the error example) includes a space.",
+      "rationale_for_defer": "Policy/style concern only; does not cause hook failures or incorrect behavior. Team can tighten to ^EPMCDME-[0-9]+: if desired."
+    }
+  ],
+  "_review_context": {
+    "diff_source": "docs/superpowers/reviews/2026-07-31-epmcdme-13747-2/code-review.diff",
+    "diff_committed_head": "c7ef7f222",
+    "merge_base": "f5de037329173dc8a9d696615d7ca05a6e61f659",
+    "working_tree_fixes_present": ["CR-001", "CR-002", "CR-003", "CR-004", "CR-005"],
+    "working_tree_fixes_absent": ["CR-006-deferred", "CR-007-deferred", "CR-008-deferred"],
+    "note": "Diff represents committed state only. CR-001 through CR-005 fixes exist in the working tree as uncommitted modifications. Committing those files will resolve all blocking findings."
+  }
+}

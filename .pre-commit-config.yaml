@@ -2,11 +2,25 @@ repos:
   - repo: local
     hooks:
       - id: codemie-pre-commit
-        name: Codemie pre-commit (ruff fast fix + tests + sonar)
+        name: Codemie pre-commit (ruff fast fix + lint + license)
         entry: bash -lc 'bash scripts/git-hooks/pre_commit.sh 2>&1 | tee /dev/tty 2>/dev/null; exit ${PIPESTATUS[0]}'
         language: system
         pass_filenames: false
         stages: [pre-commit]
+        always_run: true
+      - id: codemie-commit-msg
+        name: "Codemie commit-msg (EPMCDME-<n>: prefix)"
+        entry: bash scripts/git-hooks/commit_msg.sh
+        language: system
+        pass_filenames: false
+        stages: [commit-msg]
+        always_run: true
+      - id: codemie-pre-push
+        name: Codemie pre-push (pytest + sonar-local)
+        entry: bash -lc 'bash scripts/git-hooks/pre_push.sh 2>&1 | tee /dev/tty 2>/dev/null; exit ${PIPESTATUS[0]}'
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
         always_run: true
       - id: codemie-gitleaks
         name: Codemie gitleaks (staged secrets scan, multi-engine)

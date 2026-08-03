@@ -15,23 +15,13 @@
 
 set -euo pipefail
 
-# Pre-commit hook for Codemie:
-# 1) Ruff fast formatting/fixes; if any changes applied -> show files and exit 1
-# 2) If no changes applied -> run ruff check + license check + pytest
-# 3) If tests pass -> run the shared local SonarQube check
+# Pre-commit hook for Codemie (fast path — commit stays snappy):
+# 1) Ruff fast formatting/fixes on staged Python; if changes needed -> exit 1
+# 2) If no changes -> ruff check (full) + Apache 2.0 license headers
+# Heavy steps (full pytest + sonar-local) run on 'git push' via pre-push hook.
 
 # Friendly failure message for any unexpected error
-trap 'echo "[pre-commit] Error: hook failed. See output above for details."; echo "[pre-commit] Tip: you can run '\''make verify'\'' locally to reproduce."' ERR
-
-# --- Hook toggle via env var ---
-# Set CODEMIE_PRECOMMIT_ENABLED=false (or 0/off) to skip this hook
-enabled="${CODEMIE_PRECOMMIT_ENABLED:-true}"
-shopt -s nocasematch
-if [[ "$enabled" == "false" || "$enabled" == "0" || "$enabled" == "off" ]]; then
-  echo "[pre-commit] CODEMIE_PRECOMMIT_ENABLED=$enabled -> skipping hook."
-  exit 0
-fi
-shopt -u nocasematch
+trap 'echo "[pre-commit] Error: hook failed. See output above for details."; echo "[pre-commit] Tip: you can run '\''make ruff'\'' locally to reproduce."' ERR
 
 # Ensure Poetry is available (clear hint if missing)
 if ! command -v poetry >/dev/null 2>&1; then
@@ -47,59 +37,26 @@ fi
 # runs `ruff format` explicitly and re-stages when the helper flags files.
 bash "$(dirname "$0")/_ruff_staged.sh"
 
-# --- 2. Full verification (Ruff + license headers + Pytest) ---
-echo "[pre-commit] No formatting changes detected. Running ruff checks, license checks, and tests..."
+# --- 2. Fast checks only (ruff lint + license headers) ---
+# Heavy steps (full pytest + sonar-local) are in the pre-push hook (EPMCDME-13747).
+echo "[pre-commit] No formatting changes detected. Running ruff checks and license checks..."
+
+RUFF_CMD="${RUFF_CMD:-poetry run ruff}"
+LICENSE_CMD="${LICENSE_CMD:-poetry run python scripts/license_headers/check_license_headers.py}"
 
 # 2.a Ruff check (non-mutating)
-if ! poetry run ruff check; then
+if ! $RUFF_CMD check; then
   echo "[pre-commit] Ruff check failed. Please fix linting issues above."
   exit 1
 fi
 
 # 2.b Apache 2.0 license header check
 echo "[pre-commit] Checking Apache 2.0 license headers..."
-if ! poetry run python scripts/license_headers/check_license_headers.py --check --quiet; then
+if ! $LICENSE_CMD --check --quiet; then
   echo "[pre-commit] License header check failed."
-  echo "[pre-commit] Tip: run 'make verify' to fix or validate license headers locally."
+  echo "[pre-commit] Tip: run 'make license-check' to fix or validate license headers locally."
   exit 1
 fi
 
-# 2.c Pytest with compact summary, print it clearly
-pytest_log=$(mktemp)
-# Ensure temporary pytest log is cleaned up on script exit
-trap 'rm -f "$pytest_log"' EXIT
-set +e
-poetry run pytest -q -r a tests/ 2>&1 | tee "$pytest_log"
-pytest_rc=${PIPESTATUS[0]}
-set -e
-
-# Extract concise summary like: "123 passed, 2 skipped in 45.67s"
-summary_line=$(grep -E "(^[0-9]+ (passed|failed|skipped|xfailed|xpassed|error|warnings)|^no tests ran)" "$pytest_log" | tail -n 1 || true)
-if [[ -z "$summary_line" ]]; then
-  summary_line=$(grep -E "=+ .* in .*s =+" "$pytest_log" | tail -n 1 | sed 's/==* \(.*\) ==*/\1/' || true)
-fi
-
-if [[ $pytest_rc -ne 0 ]]; then
-  echo "[pre-commit] Tests failed. $( [[ -n "$summary_line" ]] && echo "Summary: $summary_line" )"
-  echo "[pre-commit] Tip: run 'make test' to reproduce locally."
-  exit $pytest_rc
-fi
-
-# 2.c Shared local SonarQube check
-echo "[pre-commit] Tests passed. Running shared local SonarQube check..."
-if ! make sonar-local; then
-  echo "[pre-commit] SonarQube check failed."
-  echo "[pre-commit] Tip: run 'make sonar-local' to reproduce locally."
-  exit 1
-fi
-
-# Success path: always print concise summary before committing
-# Note: pre-commit may hide stdout on success; print to stderr to ensure visibility
-if [[ -n "$summary_line" ]]; then
-  >&2 echo "[pre-commit] Tests passed. Summary: $summary_line"
-  >&2 echo "[pre-commit] SonarQube check passed."
-else
-  >&2 echo "[pre-commit] Tests completed. See pytest output above."
-  >&2 echo "[pre-commit] SonarQube check passed."
-fi
-# Proceed with commit
+# Success: heavy checks (full pytest + sonar-local) run on 'git push' via pre-push hook.
+>&2 echo "[pre-commit] Fast checks passed. Full tests + SonarQube run on push (pre-push hook)."

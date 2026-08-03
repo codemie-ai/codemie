@@ -21,6 +21,9 @@ install-enterprise:
 install-oss:
 	poetry install --sync
 
+install-hooks:
+	poetry run pre-commit install --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
+
 build:
 	poetry build
 

@@ -1,0 +1,64 @@
+{
+  "schema": 1,
+  "gate_id": "code-review.final",
+  "decision": "request-changes",
+  "confidence": "low",
+  "rationale": "Three stale comments across all three hook scripts document the old per-hook toggle variable names (CODEMIE_COMMIT_MSG_ENABLED, CODEMIE_PREPUSH_ENABLED, CODEMIE_PRECOMMIT_ENABLED) when the implementation was consolidated to the single CODEMIE_GITHOOKS_ENABLED toggle; a developer following any of these comments will set the wrong variable and the hook will not skip. Confidence is low because no acceptance spec was available (sdlc-light no-spec run). Six minor findings were deferred (unquoted command expansion, missing SONAR_SKIP_TESTS assertion, two missing bypass-pattern tests, whitespace-only subject edge case, CI invocation without --commit-msg-filename). Two false positives dismissed (blind lens misread abbreviated diff — test isolation is correct).",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "standard": "git-workflow",
+      "status": "pass",
+      "notes": "All commits on this branch follow the required EPMCDME-<n>: subject prefix format."
+    },
+    {
+      "standard": "security",
+      "status": "pass",
+      "notes": "No user input processed unsafely; env vars read with safe defaults; no secrets in code; no unsafe file writes; hook scripts run in developer-local context only."
+    },
+    {
+      "standard": "code-quality",
+      "status": "pass",
+      "notes": "New shell scripts use set -euo pipefail, carry Apache 2.0 license headers, follow one-responsibility-per-file convention, and include subprocess-level unit tests. SonarQube Cyclomatic Complexity gate (<=15) not at risk — all shell functions are flat linear flows."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "file": "scripts/git-hooks/commit_msg.sh",
+      "line": 41,
+      "category": "contract",
+      "triage": "patch",
+      "problem": "Header comment documents 'Set CODEMIE_COMMIT_MSG_ENABLED=false to skip' but line 24 checks CODEMIE_GITHOOKS_ENABLED — the documented variable is never read.",
+      "impact": "A developer who sets CODEMIE_COMMIT_MSG_ENABLED=false following the comment will find the hook is not skipped, causing unexpected commit rejections in emergency or CI workflows.",
+      "recommendation": "Change the comment line to 'Set CODEMIE_GITHOOKS_ENABLED=false to skip.'",
+      "sources": ["blind", "edge-case"]
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "file": "scripts/git-hooks/pre_push.sh",
+      "line": 22,
+      "category": "contract",
+      "triage": "patch",
+      "problem": "Header comment documents 'Set CODEMIE_PREPUSH_ENABLED=false to skip' but line 27 checks CODEMIE_GITHOOKS_ENABLED — the documented variable is never read.",
+      "impact": "A developer who sets CODEMIE_PREPUSH_ENABLED=false before a WIP push will find the full pytest+sonar suite still runs and blocks the push.",
+      "recommendation": "Change the comment line to 'Set CODEMIE_GITHOOKS_ENABLED=false to skip.'",
+      "sources": ["blind", "edge-case"]
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "file": "scripts/git-hooks/pre_commit.sh",
+      "line": 27,
+      "category": "contract",
+      "triage": "patch",
+      "problem": "Inline comment '# Set CODEMIE_PRECOMMIT_ENABLED=false (or 0/off) to skip this hook' sits directly above line 28 which reads CODEMIE_GITHOOKS_ENABLED — the commented variable is never read.",
+      "impact": "A developer who sets CODEMIE_PRECOMMIT_ENABLED=false to bypass ruff/license checks will find the skip branch is never entered and the commit is blocked.",
+      "recommendation": "Change the comment to '# Set CODEMIE_GITHOOKS_ENABLED=false (or 0/off) to skip this hook'.",
+      "sources": ["blind", "edge-case"]
+    }
+  ]
+}

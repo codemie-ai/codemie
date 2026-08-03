@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "gate": "code-review.check",
+  "ts": "2026-07-31T00:00:00Z",
+  "decision": "approve",
+  "confidence": "low",
+  "rationale": "All three blocking findings from the final review are superseded. Commit 616396dac (per-hook toggles — pre-push opt-in, pre-commit/commit-msg always on) replaced the CODEMIE_GITHOOKS_ENABLED design entirely: pre_commit.sh and commit_msg.sh now run unconditionally (no toggle), and pre_push.sh opts in via CODEMIE_PREPUSH_ENABLED. No reference to CODEMIE_GITHOOKS_ENABLED, CODEMIE_COMMIT_MSG_ENABLED, or CODEMIE_PRECOMMIT_ENABLED remains in any hook script or config file. The stale comments that caused CR-001, CR-002, and CR-003 no longer exist in the codebase. No new high-risk issues introduced by the fix-up commits. Confidence remains low (no-spec mode, carried from final round).",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "standard": "git-workflow",
+      "status": "pass",
+      "notes": "All fix-up commits follow EPMCDME-<n>: format."
+    },
+    {
+      "standard": "security",
+      "status": "pass",
+      "notes": "No new security concerns introduced by the fix-up commits."
+    },
+    {
+      "standard": "code-quality",
+      "status": "pass",
+      "notes": "No regressions in code quality from the fix-up commits."
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "superseded",
+      "notes": "commit_msg.sh no longer has any toggle variable or associated comment. Hook runs unconditionally. The CODEMIE_COMMIT_MSG_ENABLED stale comment no longer exists."
+    },
+    {
+      "id": "CR-002",
+      "status": "superseded",
+      "notes": "pre_push.sh correctly documents and checks CODEMIE_PREPUSH_ENABLED (opt-in, default false). CODEMIE_GITHOOKS_ENABLED is absent from the file. The documented variable matches what the code reads."
+    },
+    {
+      "id": "CR-003",
+      "status": "superseded",
+      "notes": "pre_commit.sh no longer has any toggle variable or associated comment. Hook runs unconditionally. The CODEMIE_PRECOMMIT_ENABLED stale comment no longer exists."
+    }
+  ]
+}
