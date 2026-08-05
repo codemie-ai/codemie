@@ -17,14 +17,11 @@ import uuid
 import traceback
 import contextlib
 from contextlib import asynccontextmanager
-from urllib.parse import urlsplit
-
 from elasticsearch import ApiError
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
-from starlette.middleware.cors import CORSMiddleware
 from codemie.configs import config
 from codemie.configs.config import ENV_LOCAL
 from codemie.enterprise.observability import get_observability_provider
@@ -101,6 +98,7 @@ from codemie.rest_api.routers import google_oauth
 from codemie.rest_api.routers import local_auth_router
 from codemie.rest_api.routers import user_management_router
 from codemie.rest_api.routers import user_profile_router
+from codemie.rest_api.middleware.dynamic_cors import DynamicCORSMiddleware
 from codemie.rest_api.routers import user_preferences_router
 from codemie.rest_api.routers import activity_events_router
 from codemie.rest_api.utils.state_import import StateImportService
@@ -765,17 +763,6 @@ def custom_openapi():
     return app.openapi_schema
 
 
-def _get_origin(url: str) -> str:
-    parsed = urlsplit(url)
-    return f"{parsed.scheme}://{parsed.netloc}"
-
-
-WEBAPP_CORS = [_get_origin(config.FRONTEND_URL)]
-
-if config.ENV != ENV_LOCAL:
-    WEBAPP_CORS.append("http://localhost:3000")
-
-
 app = FastAPI(lifespan=lifespan)
 app.openapi = custom_openapi
 
@@ -1091,14 +1078,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=WEBAPP_CORS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["Content-Disposition"],
-)
+# CORS: base origins (FRONTEND_URL + localhost in dev) plus runtime additions from
+# dynamic configuration. This lets admins allow external sites without redeploying.
+app.add_middleware(DynamicCORSMiddleware)
 
 # Initialize OTEL at module level so that OTelMiddleware is included in the
 # middleware stack from its first compile (before the first HTTP request).
