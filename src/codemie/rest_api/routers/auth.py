@@ -32,14 +32,6 @@ router = APIRouter(
 )
 
 
-@router.get("/login/{port}")
-async def login(request: Request, port: int = Path(..., ge=1, le=65535)):
-    token = _build_auth_token(request)
-    token_str = base64.b64encode(json.dumps(token).encode("ascii")).decode("ascii")
-    redirect_url = f'http://localhost:{port}/auth?token={token_str}'
-    return RedirectResponse(redirect_url, status_code=status.HTTP_302_FOUND)
-
-
 @router.get("/login/redirect")
 async def login_with_redirect(
     request: Request,
@@ -62,6 +54,14 @@ async def login_with_redirect(
 
     separator = '&' if '?' in callback_url else '?'
     redirect_url = f"{callback_url}{separator}token={encoded_token}"
+    return RedirectResponse(redirect_url, status_code=status.HTTP_302_FOUND)
+
+
+@router.get("/login/{port}")
+async def login(request: Request, port: int = Path(..., ge=1, le=65535)):
+    token = _build_auth_token(request)
+    token_str = base64.b64encode(json.dumps(token).encode("ascii")).decode("ascii")
+    redirect_url = f'http://localhost:{port}/auth?token={token_str}'
     return RedirectResponse(redirect_url, status_code=status.HTTP_302_FOUND)
 
 

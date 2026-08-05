@@ -11,6 +11,7 @@ google_credentials.json
 .env_local
 
 .venv
+.venv-test
 venv
 .__pycache__
 .pytest_cache
