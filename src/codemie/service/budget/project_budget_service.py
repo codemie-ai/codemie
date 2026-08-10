@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from codemie.configs import logger
+from codemie.configs import config, logger
 from codemie.core.exceptions import ExtendedHTTPException, ValidationException
 from codemie.repository.budget_repository import budget_repository
 from codemie.repository.project_budget_repository import (
@@ -829,6 +829,13 @@ class ProjectBudgetService:
             assigned_by=actor_id,
         )
         assignment = await project_budget_assignment_repository.insert(session, assignment)
+
+        # Department-only deployments always enforce the equal member allocation.
+        # Upstream deployments retain their current opt-in behaviour.
+        if not config.PERSONAL_PROJECTS_ENABLED:
+            from codemie.service.settings.settings import SettingsService
+
+            SettingsService.set_enforce_member_spend_limits(data.project_name, True)
 
         self._invalidate_resolution_cache_for_project(data.project_name, data.budget_category.value)
 

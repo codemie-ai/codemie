@@ -236,7 +236,10 @@ class AuthenticationService:
 
         # Ensure Application records exist for user's projects (first login only)
         # This is done here to avoid per-request overhead in the auth hot-path
-        await AuthenticationService._ensure_projects_exist(idp_user.project_names + [db_user.email])
+        project_names = list(idp_user.project_names)
+        if config.PERSONAL_PROJECTS_ENABLED:
+            project_names.append(db_user.email)
+        await AuthenticationService._ensure_projects_exist(project_names)
 
         logger.info(
             f"user_created: target_user_id={db_user.id}, auth_source={config.IDP_PROVIDER}, domain=user_management"

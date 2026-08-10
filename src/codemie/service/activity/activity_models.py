@@ -51,6 +51,7 @@ class UserManagementEvent:
     USER_CREATED = "user.created"
     USER_UPDATED = "user.updated"
     USER_DEACTIVATED = "user.deactivated"
+    USER_REACTIVATED = "user.reactivated"
     USER_LOGIN = "user.login"
     USER_LOGOUT = "user.logout"
     USER_PROJECT_ASSIGNED = "user.project.assigned"

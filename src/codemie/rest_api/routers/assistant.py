@@ -40,11 +40,14 @@ from codemie.core.models import (
     AssistantEvaluationRequest,
     EvaluationResponse,
 )
+from codemie.clients.postgres import get_session
+from codemie.repository.application_repository import application_repository
 from codemie.rest_api.models.guardrail import GuardrailEntity, GuardrailSource
 from codemie.service.assistant_evaluation_service import AssistantEvaluationService
 from codemie.rest_api.handlers.assistant_handlers import get_request_handler, ChatHistoryData
 from codemie.rest_api.models.assistant import (
     Assistant,
+    AssistantCreateRequest,
     AssistantRequest,
     AssistantListResponse,
     AssistantCreateResponse,
@@ -85,7 +88,6 @@ from codemie.rest_api.routers.utils import raise_access_denied
 from codemie.rest_api.security.authentication import project_access_check
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
-from codemie.rest_api.utils.default_applications import ensure_application_exists
 from codemie.service.assistant.assistant_repository import AssistantScope, AssistantRepository
 from codemie.service.assistant.assistant_user_interaction_service import assistant_user_interaction_service
 from codemie.service.assistant.category_service import category_service
@@ -115,6 +117,14 @@ router = APIRouter(
     prefix="/v1",
     dependencies=[],
 )
+
+
+def _require_existing_assistant_project(project_name: str) -> None:
+    """Reject assistant writes to missing or soft-deleted projects."""
+    with get_session() as session:
+        project = application_repository.get_by_name(session, project_name)
+        if project is None or project.deleted_at is not None:
+            raise ExtendedHTTPException(code=status.HTTP_404_NOT_FOUND, message="Project not found")
 
 
 class BuiltinSubagentListItem(BaseModel):
@@ -672,7 +682,7 @@ def get_assistants_context(project_name: str, user: User = Depends(authenticate)
     response_model=AssistantCreateResponse,
     response_model_by_alias=True,
 )
-def create_assistant(request: AssistantRequest, user: User = Depends(authenticate)):
+def create_assistant(request: AssistantCreateRequest, user: User = Depends(authenticate)):
     """
     Save user-specific assistant to DB with project field and create initial version.
     Validates toolkit credentials unless skip_integration_validation is True.
@@ -680,6 +690,9 @@ def create_assistant(request: AssistantRequest, user: User = Depends(authenticat
     from codemie.service.assistant.assistant_version_service import AssistantVersionService
 
     project_access_check(user, request.project)
+    _require_existing_assistant_project(request.project)
+    if request.is_global and not config.GLOBAL_ASSISTANTS_ENABLED and not user.is_admin_or_maintainer:
+        raise ExtendedHTTPException(code=status.HTTP_403_FORBIDDEN, message="Global assistant publishing is disabled")
 
     # Validate integrations if not skipped
     if not request.skip_integration_validation:
@@ -727,10 +740,6 @@ def create_assistant(request: AssistantRequest, user: User = Depends(authenticat
 
     if request.agent_card and request.agent_card.bedrock_agentcore:
         assistant.origin = AssistantOrigin.BEDROCK_AGENT_CORE
-
-    # Ensure Application exists for the project
-    if request.project:
-        ensure_application_exists(request.project)
 
     try:
         assistant.save(refresh=True)
@@ -791,6 +800,9 @@ def update_assistant(
     Validates toolkit credentials unless skip_integration_validation is True.
     """
     project_access_check(user, request.project)
+    _require_existing_assistant_project(request.project)
+    if request.is_global and not config.GLOBAL_ASSISTANTS_ENABLED and not user.is_admin_or_maintainer:
+        raise ExtendedHTTPException(code=status.HTTP_403_FORBIDDEN, message="Global assistant publishing is disabled")
     assistant = _get_assistant_by_id_or_raise(assistant_id)
     _check_user_can_access_assistant(user, assistant, "update", Action.WRITE)
     _validate_remote_entities_and_raise(assistant)

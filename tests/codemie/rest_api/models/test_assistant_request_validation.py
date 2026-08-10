@@ -16,7 +16,17 @@ import pytest
 from pydantic import ValidationError
 
 from codemie.rest_api.a2a.types import AgentCard, AgentCapabilities, AgentSkill
-from codemie.rest_api.models.assistant import AssistantRequest, AssistantType
+from codemie.rest_api.models.assistant import AssistantCreateRequest, AssistantRequest, AssistantType
+
+
+def test_create_request_requires_explicit_project():
+    with pytest.raises(ValidationError, match="project"):
+        AssistantCreateRequest(name="Test Assistant", system_prompt="Prompt", llm_model_type="gpt-4")
+
+    request = AssistantCreateRequest(
+        name="Test Assistant", project="department-a", system_prompt="Prompt", llm_model_type="gpt-4"
+    )
+    assert request.project == "department-a"
 
 
 def test_codemie_type_validation():

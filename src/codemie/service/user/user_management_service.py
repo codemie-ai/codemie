@@ -283,6 +283,9 @@ class UserManagementService:
 
         # Soft delete
         user_repository.soft_delete(session, user_id)
+        from codemie.service.project.project_assignment_service import ProjectAssignmentService
+
+        ProjectAssignmentService.sync_user_deactivation(session, user_id)
 
         activity_event_repository.insert(
             ActivityEventCreate(
@@ -301,6 +304,34 @@ class UserManagementService:
 
         # Refresh user
         return user_repository.get_by_id(session, user_id)
+
+    @staticmethod
+    def reactivate_user(session: Session, user_id: str, actor_user_id: str) -> UserDB:
+        """Restore a previously deactivated user and project budget allocations."""
+        user = user_repository.get_by_id(session, user_id)
+        if not user:
+            raise ExtendedHTTPException(code=404, message=_USER_NOT_FOUND)
+        if user.is_active and user.deleted_at is None:
+            return user
+        user.is_active = True
+        user.deleted_at = None
+        user.update_date = datetime.now(UTC)
+        session.add(user)
+        session.flush()
+        from codemie.service.project.project_assignment_service import ProjectAssignmentService
+
+        ProjectAssignmentService.sync_user_reactivation(session, user_id, actor_user_id)
+        activity_event_repository.insert(
+            ActivityEventCreate(
+                domain=ActivityDomain.USER_MANAGEMENT,
+                event_type=UserManagementEvent.USER_REACTIVATED,
+                entity_type=ActivityEntityType.USER,
+                entity_id=user_id,
+                actor_id=actor_user_id,
+            ),
+            session,
+        )
+        return user
 
     @staticmethod
     def list_users(
@@ -1086,8 +1117,12 @@ class UserManagementService:
             # Handle deactivation as separate flow (early exit reduces complexity)
             if is_active is not None:
                 if is_active:
-                    raise ExtendedHTTPException(
-                        code=400, message="Cannot reactivate user. Reactivation is not supported."
+                    user = UserManagementService.reactivate_user(session, user_id, actor_user_id)
+                    session.commit()
+                    invalidate_user_from_cache(user_id)
+                    actor = user_repository.get_by_id(session, actor_user_id)
+                    return UserManagementService.get_user_with_relationships(
+                        session, user.id, actor_user_id, is_admin_or_maintainer(actor) if actor else False
                     )
                 return UserManagementService._handle_deactivation_flow(session, user_id, actor_user_id)
 

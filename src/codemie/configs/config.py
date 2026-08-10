@@ -193,6 +193,13 @@ class Config(BaseSettings):
     # ===========================================
     ENABLE_USER_MANAGEMENT: bool = False  # Master switch for new user management system
 
+    # Keep upstream behaviour by default. Deployments that use department projects
+    # exclusively can turn this off to prevent automatic email-named projects.
+    PERSONAL_PROJECTS_ENABLED: bool = True
+    # Marketplace publishing remains available upstream; deployments may restrict it
+    # to administrators while retaining project-scoped assistant sharing.
+    GLOBAL_ASSISTANTS_ENABLED: bool = True
+
     USER_PROJECT_LIMIT: int = 3  # Max number of shared projects per user (enforced when ENABLE_USER_MANAGEMENT=True)
     COST_CENTER_NAME_PATTERN: str = r"^[a-z0-9]+-[a-z0-9]+$"
     # ===========================================

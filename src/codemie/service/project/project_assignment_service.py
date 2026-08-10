@@ -22,7 +22,7 @@ from typing import Optional
 
 import asyncio
 from datetime import UTC, datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from uuid import uuid4
 
 from sqlmodel import Session, select
@@ -263,6 +263,61 @@ class ProjectAssignmentService:
                 f"user_id={user_id!r} project_name={project_name!r} budget_id={assignment.budget_id!r} "
                 f"budget_category={assignment.budget_category!r} sync_status=pending_provider_sync"
             )
+        ProjectAssignmentService._rebalance_equal_project_budget_allocations(session, project_name)
+
+    @staticmethod
+    def _rebalance_equal_project_budget_allocations(session: Session, project_name: str) -> None:
+        """Recalculate active equal allocations after a project membership change.
+
+        Fixed member overrides are deliberately retained; the remaining project
+        budget is shared equally between active equal-mode allocations.  The last
+        user ID receives any cent remainder, matching the async budget service.
+        """
+        assignments = session.exec(
+            select(ProjectBudgetAssignment).where(
+                ProjectBudgetAssignment.project_name == project_name,
+                ProjectBudgetAssignment.deleted_at.is_(None),
+            )
+        ).all()
+        for assignment in assignments:
+            budget = session.get(Budget, assignment.budget_id)
+            if budget is None:
+                continue
+            allocations = session.exec(
+                select(ProjectMemberBudgetAssignment).where(
+                    ProjectMemberBudgetAssignment.project_budget_id == assignment.budget_id,
+                    ProjectMemberBudgetAssignment.deleted_at.is_(None),
+                )
+            ).all()
+            equal = sorted(
+                (a for a in allocations if a.allocation_mode == AllocationMode.EQUAL.value),
+                key=lambda a: a.user_id,
+            )
+            if not equal:
+                continue
+            fixed = [a for a in allocations if a.allocation_mode == AllocationMode.FIXED.value]
+            remaining_max = Decimal(str(budget.max_budget)) - sum(Decimal(str(a.allocated_max_budget)) for a in fixed)
+            remaining_soft = Decimal(str(budget.soft_budget)) - sum(
+                Decimal(str(a.allocated_soft_budget)) for a in fixed
+            )
+            if remaining_max < 0 or remaining_soft < 0:
+                logger.warning(
+                    f"budget_event=project_member_rebalance_skipped component=project_assignment_service "
+                    f"project_name={project_name!r} budget_id={assignment.budget_id!r} "
+                    "reason=fixed_overrides_exceed_budget"
+                )
+                continue
+            count = Decimal(len(equal))
+            share_max = (remaining_max / count).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            share_soft = (remaining_soft / count).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            remainder_max = remaining_max - (share_max * len(equal))
+            remainder_soft = remaining_soft - (share_soft * len(equal))
+            for index, allocation in enumerate(equal):
+                is_last = index == len(equal) - 1
+                allocation.allocated_max_budget = float(share_max + (remainder_max if is_last else Decimal("0")))
+                allocation.allocated_soft_budget = float(share_soft + (remainder_soft if is_last else Decimal("0")))
+                session.add(allocation)
+        session.flush()
 
     @staticmethod
     def _sync_project_budget_member_removed(session: Session, project_name: str, user_id: str) -> None:
@@ -305,6 +360,23 @@ class ProjectAssignmentService:
             changed = True
         if changed:
             session.flush()
+            ProjectAssignmentService._rebalance_equal_project_budget_allocations(session, project_name)
+
+    @staticmethod
+    def sync_user_deactivation(session: Session, user_id: str) -> None:
+        """Remove a deactivated user's allocations from every current project."""
+        memberships = session.exec(select(UserProject).where(UserProject.user_id == user_id)).all()
+        for membership in memberships:
+            ProjectAssignmentService._sync_project_budget_member_removed(session, membership.project_name, user_id)
+
+    @staticmethod
+    def sync_user_reactivation(session: Session, user_id: str, actor_id: str) -> None:
+        """Restore allocations and equal shares for every current project membership."""
+        memberships = session.exec(select(UserProject).where(UserProject.user_id == user_id)).all()
+        for membership in memberships:
+            ProjectAssignmentService._sync_project_budget_member_added(
+                session, membership.project_name, user_id, actor_id
+            )
 
     @staticmethod
     def _reject_if_personal_project(project: Application, actor: User, action: str) -> None:

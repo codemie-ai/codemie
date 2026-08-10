@@ -291,7 +291,7 @@ class BedrockAgentcoreRuntimeData(BaseModel):
     configuration_json: Optional[str] = None  # JSON string for invoking the runtime
 
 
-class AssistantRequest(BaseModel):
+class _AssistantRequestFields(BaseModel):
     """
     Model for creating or updating an assistant.
     When updating an assistant, only fields that are explicitly set in the request will be updated.
@@ -352,6 +352,9 @@ class AssistantRequest(BaseModel):
         default=False,
         description="Skip validation of toolkit credentials. Set to True to bypass credential checks.",
     )
+
+
+class AssistantRequest(_AssistantRequestFields):
 
     @model_validator(mode='before')
     @classmethod
@@ -427,6 +430,12 @@ class AssistantRequest(BaseModel):
             if self.llm_model_type is None:
                 raise ValueError("llm_model_type is required when type is Codemie")
         return self
+
+
+class AssistantCreateRequest(AssistantRequest):
+    """Assistant creation contract requiring an explicit project selection."""
+
+    project: str = Field(..., min_length=1)
 
 
 class MCPServerCheckRequest(BaseModel):

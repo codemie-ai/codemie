@@ -56,6 +56,14 @@ class TestPersonalProjectService:
     # ===========================================
 
     @pytest.mark.asyncio
+    async def test_ensure_personal_project_skips_when_feature_disabled(self):
+        """Disabled deployments must not open a session or create a project."""
+        with patch("codemie.configs.config.PERSONAL_PROJECTS_ENABLED", False):
+            result = await PersonalProjectService.ensure_personal_project_async("user-123", "user@example.com")
+
+        assert result is True
+
+    @pytest.mark.asyncio
     @patch("codemie.clients.postgres.get_async_session")
     async def test_ensure_personal_project_creates_when_missing(self, mock_get_async_session):
         """AC-6.1: Personal project auto-created when missing"""

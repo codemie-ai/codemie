@@ -67,7 +67,12 @@ class PersonalProjectService:
             Errors do NOT raise exceptions to ensure authentication flow continues.
             ISOLATED TRANSACTION: Uses separate session to prevent rollback affecting auth.
         """
+        from codemie.configs import config
         from codemie.clients.postgres import get_async_session
+
+        if not config.PERSONAL_PROJECTS_ENABLED:
+            logger.debug("personal_project_creation_skipped: feature_disabled")
+            return True
 
         try:
             async with get_async_session() as isolated_session:
@@ -115,8 +120,13 @@ class PersonalProjectService:
 
         Non-blocking: failures are logged but do not prevent the caller from continuing.
         """
+        from codemie.configs import config
         from codemie.clients.postgres import get_async_session
         from datetime import UTC, datetime
+
+        if not config.PERSONAL_PROJECTS_ENABLED:
+            logger.debug("personal_project_reconciliation_skipped: feature_disabled")
+            return True
 
         try:
             async with get_async_session() as session:
