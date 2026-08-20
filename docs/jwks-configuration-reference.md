@@ -2,7 +2,8 @@
 
 This document is the operator reference for configuring JWT authentication in Codemie. It covers both modes: with and without JWKS cryptographic signature verification.
 
-For hands-on local testing walkthroughs see [`docs/jwks-local-testing.md`](jwks-local-testing.md).
+For end-to-end examples of both modes, see the integration tests under
+`tests/codemie/rest_api/security/jwks/`.
 
 ---
 
@@ -94,6 +95,88 @@ Multiple issuers are supported — add one object per issuer to the list.
 
 ---
 
+## Deploying Behind an Authenticating Reverse Proxy
+
+`JWKS_VALIDATION_ENABLED=true` makes Codemie accept `Authorization: Bearer <jwt>` — but only for
+requests that actually reach Codemie. When an authenticating reverse proxy (OAuth2 Proxy, NGINX
+`auth_request`, Istio) fronts the deployment, that proxy sees the request first and, unless
+configured otherwise, treats a bearer-only request as an unauthenticated browser session and
+redirects it into the IdP login flow.
+
+**Symptom.** The API returns `200` carrying the IdP's HTML login page instead of the expected JSON,
+and no Codemie application log line is emitted for the request — because the request never arrived.
+A `401` from Codemie means the opposite: the request did arrive, and token validation is what to
+debug.
+
+### OAuth2 Proxy
+
+Two settings make OAuth2 Proxy forward bearer tokens instead of intercepting them:
+
+| Setting | Value | Purpose |
+|---|---|---|
+| `OAUTH2_PROXY_SKIP_JWT_BEARER_TOKENS` | `true` | Pass through a request carrying a valid `Authorization: Bearer` JWT instead of redirecting it into the login flow. |
+| `OAUTH2_PROXY_EXTRA_JWT_ISSUERS` | `<issuer_uri>=<audience>` | Additional issuers whose bearer tokens the proxy will accept, beyond its own. Comma-separate for multiple issuers. |
+
+> **These are not part of this chart.** `deploy-templates/` neither deploys nor configures OAuth2
+> Proxy — it only points an NGINX `auth-url` annotation at an OAuth2 Proxy deployed separately
+> (see `dsPool.ingressApp.annotations` in `deploy-templates/values.yaml`). Both variables belong to
+> that proxy's own deployment and have to be set there. No value in this chart substitutes for them.
+
+Whatever issuer you allow on the proxy must also appear in `JWKS_TRUSTED_ISSUERS`, and with the same
+audience. Configuring only one of the two layers produces a token that clears the proxy and is then
+rejected by Codemie, or vice versa.
+
+### Codemie-side configuration in Kubernetes
+
+The chart exposes no dedicated JWKS values block. Use the generic `customEnv` passthrough, which is
+merged into the API deployment's environment after `extraEnv` and therefore overrides it:
+
+```yaml
+customEnv:
+  - name: IDP_PROVIDER
+    value: "oidc"
+  - name: JWKS_VALIDATION_ENABLED
+    value: "true"
+  - name: JWKS_TRUSTED_ISSUERS
+    value: |
+      [{"issuer": "https://idp.example.com/auth/realms/my-realm",
+        "audience": "codemie-platform",
+        "discovery_url": "https://idp.example.com/auth/realms/my-realm/.well-known/openid-configuration",
+        "required_claims": ["iss", "sub", "email", "aud", "exp", "iat"]}]
+```
+
+`extraEnv` ships `IDP_PROVIDER=keycloak` as the chart default; setting it in `customEnv` overrides
+that without editing the chart.
+
+### Tokens obtained by exchange (RFC 8693)
+
+A token minted by an external IdP and swapped for a Codemie-scoped one via RFC 8693 token exchange
+is, from Codemie's perspective, just a bearer JWT from another issuer. Nothing special is required
+beyond the general rules above:
+
+1. Add the issuing realm to `JWKS_TRUSTED_ISSUERS` with the `audience` the exchange actually mints.
+   Existing issuers keep working — the list accepts multiple entries.
+2. Allow the same issuer and audience on the fronting proxy, as described above.
+3. Use `IDP_PROVIDER=oidc`. The `oidc` provider reads the token from the `Authorization` header and
+   maps claims straight out of it. The `keycloak` provider resolves the caller against a Keycloak
+   userinfo endpoint, so it only accepts tokens Keycloak itself issued — a token from a different
+   issuer fails there even when its signature validates correctly.
+
+Verify with a request that has no browser session attached, so nothing but the bearer token can
+authenticate it:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  https://codemie.example.com/code-assistant-api/v1/user
+```
+
+`200 application/json` means the token reached Codemie and validated. `200 text/html` means the
+proxy is still intercepting — revisit `OAUTH2_PROXY_SKIP_JWT_BEARER_TOKENS`. `401` means the request
+reached Codemie and the token was rejected — revisit `JWKS_TRUSTED_ISSUERS`.
+
+---
+
 ## Startup Behaviour
 
 | Condition | Result |
@@ -179,9 +262,8 @@ KEYCLOAK_CLIENT_ID=codemie-platform
 
 ## Cross-references
 
-- **Local testing walkthroughs** (Keycloak + docker-compose, Minikube, OIDC): [`docs/jwks-local-testing.md`](jwks-local-testing.md)
 - **Unit and integration tests**: `tests/codemie/rest_api/security/jwks/`
 - **Backward-compatibility tests** (JWKS disabled path): `tests/codemie/rest_api/security/jwks/test_disabled.py`
 - **Source — IDP factory**: `src/codemie/rest_api/security/idp/factory.py`
 - **Source — JWKS runtime**: `src/codemie/rest_api/security/jwks/runtime.py`
-- **Source — config defaults**: `src/codemie/configs/config.py` (lines 216–228)
+- **Source — config defaults**: `src/codemie/configs/config.py` (lines 226–238)
