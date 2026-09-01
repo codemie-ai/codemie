@@ -1875,3 +1875,133 @@ class TestHandleExecutionException:
         sent_data = json.loads(sent_json)
         workflow_state = sent_data.get("workflow_state", {})
         assert workflow_state.get("status") == WorkflowExecutionStatusEnum.FAILED.value
+
+
+class TestWorkflowTransitionOnNodeStart:
+    """Tests to verify that transitions are recorded when a node starts execution."""
+
+    def _make_node(self, mock_workflow_execution_service, mock_thought_queue, node_name="test_node"):
+        workflow_state = WorkflowState(
+            id=node_name,
+            task="Test Task",
+            assistant_id="assistant_1",
+            next=WorkflowNextState(state_id="next"),
+        )
+        return MockNode(
+            callbacks=[],
+            workflow_execution_service=mock_workflow_execution_service,
+            thought_queue=mock_thought_queue,
+            workflow_state=workflow_state,
+        )
+
+    def test_record_incoming_transition_called_on_node_start(self, mock_workflow_execution_service, mock_thought_queue):
+        """Verify that record_transition is called immediately on node start with correct params."""
+        from codemie.workflows.constants import PREVIOUS_EXECUTION_STATE_ID, PREVIOUS_EXECUTION_STATE_NAMES
+
+        node = self._make_node(mock_workflow_execution_service, mock_thought_queue)
+        node.mock_execute_result = {"result": "success"}
+
+        state_schema = {
+            PREVIOUS_EXECUTION_STATE_ID: "prev_state_456",
+            PREVIOUS_EXECUTION_STATE_NAMES: ["prev_state_name"],
+            "data": "some context",
+        }
+
+        # Run the node
+        node(state_schema)
+
+        # Check that record_transition was called
+        mock_workflow_execution_service.record_transition.assert_called_once_with(
+            from_state_id="prev_state_456",
+            to_state_id="state_123",
+            workflow_context={"data": "some context"},
+        )
+
+    def test_transition_recorded_even_when_node_execution_fails(
+        self, mock_workflow_execution_service, mock_thought_queue
+    ):
+        """Verify transition is recorded successfully even when the execution of execute() raises an Exception."""
+        from codemie.workflows.constants import PREVIOUS_EXECUTION_STATE_ID
+
+        node = self._make_node(mock_workflow_execution_service, mock_thought_queue)
+
+        def failing_execute(state_schema, execution_context):
+            raise ValueError("Intentional execution error")
+
+        node.execute_impl = failing_execute
+
+        state_schema = {
+            PREVIOUS_EXECUTION_STATE_ID: "prev_state_456",
+            "data": "failing context",
+        }
+
+        # Run the node (it will record transition, finish state as FAILED, and re-raise the exception)
+        with pytest.raises(ValueError, match="Intentional execution error"):
+            node(state_schema)
+
+        # Check record_transition was still called before failing
+        mock_workflow_execution_service.record_transition.assert_called_once_with(
+            from_state_id="prev_state_456",
+            to_state_id="state_123",
+            workflow_context={"data": "failing context"},
+        )
+
+    def test_transition_recorded_when_node_aborts(self, mock_workflow_execution_service, mock_thought_queue):
+        """Verify transition is recorded successfully even when the node is aborted during execution."""
+        from codemie.workflows.constants import PREVIOUS_EXECUTION_STATE_ID
+        from codemie.workflows.nodes.base_node import ExecutionAbortedException
+
+        node = self._make_node(mock_workflow_execution_service, mock_thought_queue)
+
+        def aborting_execute(state_schema, execution_context):
+            raise ExecutionAbortedException("Aborted")
+
+        node.execute_impl = aborting_execute
+
+        state_schema = {
+            PREVIOUS_EXECUTION_STATE_ID: "prev_state_456",
+            "data": "aborted context",
+        }
+
+        # Run the node
+        node(state_schema)
+
+        # Check record_transition was still called
+        mock_workflow_execution_service.record_transition.assert_called_once_with(
+            from_state_id="prev_state_456",
+            to_state_id="state_123",
+            workflow_context={"data": "aborted context"},
+        )
+
+    def test_transition_recorded_when_mcp_auth_required(self, mock_workflow_execution_service, mock_thought_queue):
+        """Verify transition is recorded successfully when MCP authentication is required."""
+        from codemie.workflows.constants import PREVIOUS_EXECUTION_STATE_ID
+        from codemie.core.exceptions import MCPAuthenticationRequiredException
+
+        node = self._make_node(mock_workflow_execution_service, mock_thought_queue)
+
+        def auth_execute(state_schema, execution_context):
+            raise MCPAuthenticationRequiredException(
+                payload={
+                    "tool_name": "test_tool",
+                    "mcp_server_name": "test_server",
+                    "consent_url": "http://consent",
+                }
+            )
+
+        node.execute_impl = auth_execute
+
+        state_schema = {
+            PREVIOUS_EXECUTION_STATE_ID: "prev_state_456",
+            "data": "auth context",
+        }
+
+        # Run the node
+        node(state_schema)
+
+        # Check record_transition was still called
+        mock_workflow_execution_service.record_transition.assert_called_once_with(
+            from_state_id="prev_state_456",
+            to_state_id="state_123",
+            workflow_context={"data": "auth context"},
+        )

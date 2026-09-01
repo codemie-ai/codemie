@@ -189,6 +189,7 @@ class BaseNode(ABC, Generic[StateSchemaType]):
             state_id=self.node_name,
             iteration_number=state_schema.get(ITERATION_NODE_NUMBER_KEY),
         )
+        self._record_incoming_transition(state_schema, execution_state_id)
         raw_output = None
 
         try:
@@ -206,6 +207,27 @@ class BaseNode(ABC, Generic[StateSchemaType]):
             return self._handle_execution_exception(e, execution_state_id)
         finally:
             self.after_execution(result=raw_output, state_schema=state_schema, args=self.args, kwargs=self.kwargs)
+
+    def _record_incoming_transition(
+        self,
+        state_schema: Type[StateSchemaType],
+        execution_state_id: str,
+    ) -> None:
+        """Record transition from previous state to current state with incoming context snapshot."""
+        previous_state_id = state_schema.get(PREVIOUS_EXECUTION_STATE_ID)
+        state_for_serialization = {
+            k: v
+            for k, v in state_schema.items()
+            if k not in (PREVIOUS_EXECUTION_STATE_NAMES, PREVIOUS_EXECUTION_STATE_ID)
+        }
+        serialized_state = serialize_state(state_for_serialization)
+        checked_state = check_state_size(serialized_state, self.workflow_execution_service.workflow_execution_id)
+
+        self.workflow_execution_service.record_transition(
+            from_state_id=previous_state_id,
+            to_state_id=execution_state_id,
+            workflow_context=checked_state,
+        )
 
     def _run_success_path(
         self,
@@ -250,21 +272,6 @@ class BaseNode(ABC, Generic[StateSchemaType]):
             processed_output=processed_output,
             success=True,
             state_schema=state_schema,
-        )
-
-        previous_state_id = state_schema.get(PREVIOUS_EXECUTION_STATE_ID)
-        state_for_serialization = {
-            k: v
-            for k, v in state_schema.items()
-            if k not in (PREVIOUS_EXECUTION_STATE_NAMES, PREVIOUS_EXECUTION_STATE_ID)
-        }
-        serialized_state = serialize_state(state_for_serialization)
-        checked_state = check_state_size(serialized_state, self.workflow_execution_service.workflow_execution_id)
-
-        self.workflow_execution_service.record_transition(
-            from_state_id=previous_state_id,
-            to_state_id=execution_state_id,
-            workflow_context=checked_state,
         )
 
         prev_state_names = self._get_prev_state_names(state_schema, raw_output)

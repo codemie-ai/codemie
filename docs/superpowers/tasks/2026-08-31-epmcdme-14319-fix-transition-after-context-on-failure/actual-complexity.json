@@ -1,0 +1,71 @@
+{
+  "task": "Move workflow transition recording from success-path delayed execution to immediate node start execution to preserve and display preceding node contexts on failure states.",
+  "generated": "2026-08-31T16:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 1,
+      "label": "XS",
+      "affected": "BaseNode (modified)",
+      "layers": "Backend Orchestration"
+    },
+    "requirements_clarity": {
+      "score": 1,
+      "label": "XS",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 1,
+      "label": "XS",
+      "risk_factors": null,
+      "mitigation": null
+    },
+    "file_change_estimate": {
+      "score": 1,
+      "label": "XS",
+      "modified_files": 2,
+      "modified_file_list": [
+        "src/codemie/workflows/nodes/base_node.py",
+        "tests/codemie/workflows/test_base_node_lifecycle.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": [
+        "src/codemie/workflows/nodes",
+        "tests/codemie/workflows"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 1,
+      "label": "XS",
+      "layers_changed": [
+        "Backend Orchestration"
+      ],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 6,
+  "size": "XS",
+  "band_range": "1-5",
+  "files_changed": 2,
+  "routing": "straight-to-impl",
+  "key_reasoning": [
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Modified 1 core backend orchestrator and 1 corresponding unit test file."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Completely restricted to backend BaseNode runtime logic with zero side effects."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
