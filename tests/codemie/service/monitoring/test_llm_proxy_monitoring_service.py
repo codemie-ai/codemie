@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codemie.core.constants import CLIENT_TYPE, CODEMIE_CLI
+from codemie.core.constants import CODEMIE_CLI
 from codemie.service.monitoring.llm_proxy_monitoring_service import (
     LLM_PROXY_USAGE,
     LLMProxyMonitoringService,
@@ -38,12 +38,12 @@ def mock_user():
 @pytest.fixture
 def cli_request_info():
     return {
-        CLIENT_TYPE: "codemie-cli",
+        "client_type": "codemie-claude",
         "session_id": "session-123",
         "request_id": "request-456",
         "llm_model": "claude-sonnet-4-5",
         "user_agent": "codemie-code/1.2.0",
-        CODEMIE_CLI: "codemie-cli/1.2.0",
+        CODEMIE_CLI: "codemie-claude/1.2.0",
     }
 
 
@@ -60,64 +60,19 @@ def non_cli_request_info():
 
 
 class TestIsCliRequest:
-    """Tests for LLMProxyMonitoringService._is_cli_request predicate."""
+    """Tests for _is_cli_request helper."""
 
-    def test_codemie_cli_client_type_returns_true(self):
-        assert LLMProxyMonitoringService._is_cli_request({CLIENT_TYPE: "codemie-cli"}) is True
+    def test_cli_header_truthy(self):
+        assert LLMProxyMonitoringService._is_cli_request({CODEMIE_CLI: "codemie-claude/1.0"}) is True
 
-    def test_codemie_cli_underscore_client_type_returns_true(self):
-        assert LLMProxyMonitoringService._is_cli_request({CLIENT_TYPE: "codemie_cli"}) is True
+    def test_cli_header_empty_string(self):
+        assert LLMProxyMonitoringService._is_cli_request({CODEMIE_CLI: ""}) is False
 
-    def test_cli_client_type_case_insensitive(self):
-        assert LLMProxyMonitoringService._is_cli_request({CLIENT_TYPE: "CODEMIE-CLI"}) is True
-
-    @pytest.mark.parametrize(
-        "client_type",
-        [
-            "codemie-code",
-            "codemie-claude",
-            "codemie-claude-acp",
-            "codemie-codex",
-            "codemie-gemini",
-            "codemie-opencode",
-            "codemie-pi",
-            "codemie-kimi",
-            "codemie-kimi-acp",
-            "codemie-copilot",
-            "codemie-daemon",
-        ],
-    )
-    def test_agent_client_types_with_cli_header_classify_as_cli(self, client_type):
-        assert (
-            LLMProxyMonitoringService._is_cli_request({CODEMIE_CLI: "codemie-cli/1.0", CLIENT_TYPE: client_type})
-            is True
-        )
-
-    def test_chrome_extension_client_type_returns_false(self):
-        assert LLMProxyMonitoringService._is_cli_request({CLIENT_TYPE: "codemie-chrome-extension"}) is False
-
-    def test_nonempty_cli_header_with_non_cli_client_type_returns_false(self):
-        assert (
-            LLMProxyMonitoringService._is_cli_request(
-                {CODEMIE_CLI: "codemie-chrome-extension/1.0", CLIENT_TYPE: "codemie-chrome-extension"}
-            )
-            is False
-        )
-
-    def test_unrecognized_client_type_with_cli_header_classifies_as_cli(self):
-        assert (
-            LLMProxyMonitoringService._is_cli_request({CODEMIE_CLI: "codemie-cli/1.0", CLIENT_TYPE: "some-other-tool"})
-            is True
-        )
-
-    def test_missing_client_type_returns_false(self):
+    def test_cli_header_missing(self):
         assert LLMProxyMonitoringService._is_cli_request({}) is False
 
-    def test_none_client_type_returns_false(self):
-        assert LLMProxyMonitoringService._is_cli_request({CLIENT_TYPE: None}) is False
-
-    def test_empty_client_type_returns_false(self):
-        assert LLMProxyMonitoringService._is_cli_request({CLIENT_TYPE: ""}) is False
+    def test_cli_header_none(self):
+        assert LLMProxyMonitoringService._is_cli_request({CODEMIE_CLI: None}) is False
 
 
 class TestTrackUsage:
