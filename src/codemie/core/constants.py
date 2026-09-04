@@ -52,6 +52,9 @@ HEADER_CODEMIE_CLI_PROJECT = "X-CodeMie-Project"
 HEADER_CODEMIE_VERSION = "X-CodeMie-Version"
 HEADER_CODEMIE_TAGGING_PROJECT = "X-CodeMie-Project"
 
+# X-CodeMie-Client values that reuse CLI proxy infra but are not CLI traffic for budget/analytics.
+NON_CLI_CLIENT_TYPES = frozenset({"codemie-chrome-extension"})
+
 DEFAULT_MAX_OUTPUT_TOKENS_4K = 4096
 DEFAULT_MAX_OUTPUT_TOKENS_8K = 8192
 

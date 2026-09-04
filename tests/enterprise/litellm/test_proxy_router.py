@@ -298,6 +298,25 @@ class TestIsCliRequest:
     def test_cli_client_type_case_insensitive_mixed(self):
         assert _is_cli_request({CLIENT_TYPE: "Codemie-Cli"}) is True
 
+    @pytest.mark.parametrize(
+        "client_type",
+        [
+            "codemie-code",
+            "codemie-claude",
+            "codemie-claude-acp",
+            "codemie-codex",
+            "codemie-gemini",
+            "codemie-opencode",
+            "codemie-pi",
+            "codemie-kimi",
+            "codemie-kimi-acp",
+            "codemie-copilot",
+            "codemie-daemon",
+        ],
+    )
+    def test_agent_client_types_with_cli_header_classify_as_cli(self, client_type):
+        assert _is_cli_request({CODEMIE_CLI: "codemie-cli/1.0", CLIENT_TYPE: client_type}) is True
+
     def test_chrome_extension_client_type_returns_false(self):
         assert _is_cli_request({CLIENT_TYPE: "codemie-chrome-extension"}) is False
 
@@ -307,8 +326,8 @@ class TestIsCliRequest:
             is False
         )
 
-    def test_unrecognized_client_type_with_nonempty_cli_header_returns_false(self):
-        assert _is_cli_request({CODEMIE_CLI: "some-tool/1.0", CLIENT_TYPE: "some-other-tool"}) is False
+    def test_unrecognized_client_type_with_cli_header_classifies_as_cli(self):
+        assert _is_cli_request({CODEMIE_CLI: "codemie-cli/1.0", CLIENT_TYPE: "some-other-tool"}) is True
 
     def test_missing_client_type_returns_false(self):
         assert _is_cli_request({}) is False
@@ -491,13 +510,13 @@ class TestResolveNonPremiumTrackingIdentity:
         assert budget_id == "platform-budget"
         assert llm_model == "gpt-4.1-mini"
 
-    def test_cli_header_with_non_cli_client_type_uses_platform_budget(self):
-        """Header alone no longer classifies as CLI; client_type governs."""
+    def test_agent_client_type_with_cli_header_uses_cli_budget(self):
+        """Genuine CLI agents send the X-CodeMie-CLI header and must bill to CLI budget."""
         user = MagicMock()
         user.username = "user@example.com"
         request_info = {
             LLM_MODEL: "gpt-4.1-mini",
-            CLIENT_TYPE: "web",
+            CLIENT_TYPE: "codemie-claude",
             CODEMIE_CLI: "codemie-cli/1.2.3",
         }
         category_budget_ids = {
@@ -505,16 +524,15 @@ class TestResolveNonPremiumTrackingIdentity:
             BudgetCategory.CLI.value: "cli-budget",
         }
 
-        category, username, budget_id, llm_model = _resolve_non_premium_tracking_identity(
+        category, _username, budget_id, llm_model = _resolve_non_premium_tracking_identity(
             user=user,
             request_info=request_info,
             category_budget_ids=category_budget_ids,
             llm_model="gpt-4.1-mini",
         )
 
-        assert category == BudgetCategory.PLATFORM
-        assert username == "user@example.com"
-        assert budget_id == "platform-budget"
+        assert category == BudgetCategory.CLI
+        assert budget_id == "cli-budget"
         assert llm_model == "gpt-4.1-mini"
 
     def test_chrome_extension_client_type_uses_platform_budget(self):

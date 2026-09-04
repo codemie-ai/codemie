@@ -44,6 +44,7 @@ from codemie.core.constants import (
     LLM_MODEL,
     SESSION_ID,
     CLIENT_TYPE,
+    NON_CLI_CLIENT_TYPES,
     USER_AGENT,
     CODEMIE_CLI,
     BRANCH,
@@ -514,7 +515,9 @@ def _resolve_tracking_identity(
 
 def _is_cli_request(request_info: dict) -> bool:
     client_type = (request_info.get(CLIENT_TYPE) or "").lower()
-    return client_type in {"codemie-cli", "codemie_cli"}
+    if client_type in NON_CLI_CLIENT_TYPES:
+        return False
+    return bool(request_info.get(CODEMIE_CLI)) or client_type in {"codemie-cli", "codemie_cli"}
 
 
 def _resolve_cli_tracking_identity(

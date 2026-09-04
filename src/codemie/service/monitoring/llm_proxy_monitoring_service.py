@@ -24,6 +24,8 @@ from codemie.core.constants import (
     LLM_MODEL,
     SESSION_ID,
     CLIENT_TYPE,
+    CODEMIE_CLI,
+    NON_CLI_CLIENT_TYPES,
     USER_AGENT,
     BRANCH,
     REPOSITORY,
@@ -430,9 +432,11 @@ class LLMProxyMonitoringService(BaseMonitoringService):
 
     @staticmethod
     def _is_cli_request(request_info: dict) -> bool:
-        """Return True if the request originated from the codemie-cli client."""
+        """Return True if the request originated from a CodeMie CLI client."""
         client_type = (request_info.get(CLIENT_TYPE) or "").lower()
-        return client_type in {"codemie-cli", "codemie_cli"}
+        if client_type in NON_CLI_CLIENT_TYPES:
+            return False
+        return bool(request_info.get(CODEMIE_CLI)) or client_type in {"codemie-cli", "codemie_cli"}
 
     @classmethod
     def track_usage(
