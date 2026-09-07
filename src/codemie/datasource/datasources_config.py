@@ -90,6 +90,16 @@ class AzureDevOpsWikiConfig(BaseModel):
     loader_batch_size: int
 
 
+class XWikiDatasourceConfig(BaseModel):
+    chunk_size: int
+    chunk_overlap: int
+    loader_batch_size: int
+    loader_max_pages: int
+    request_timeout_seconds: int = 30
+    max_failed_pages_floor: int = 5
+    max_failed_pages_ratio: float = 0.1
+
+
 class AzureDevOpsWorkItemConfig(BaseModel):
     chunk_size: int
     chunk_overlap: int
@@ -132,6 +142,7 @@ class LoadersConfig(BaseModel):
     xray_loader: XrayConfig
     sharepoint_loader: SharePointConfig
     svn_loader: SVNConfig
+    xwiki_loader: XWikiDatasourceConfig
 
 
 class StorageConfig(BaseModel):
@@ -177,6 +188,7 @@ AZURE_DEVOPS_WORK_ITEM_CONFIG = datasources_config.loaders.azure_devops_work_ite
 XRAY_CONFIG = datasources_config.loaders.xray_loader
 SHAREPOINT_CONFIG = datasources_config.loaders.sharepoint_loader
 SVN_CONFIG = datasources_config.loaders.svn_loader
+XWIKI_CONFIG = datasources_config.loaders.xwiki_loader
 STORAGE_CONFIG = datasources_config.storage
 
 logger.info(f"CodeDatasourceConfig instantiated: {CODE_CONFIG}")
@@ -189,4 +201,5 @@ logger.info(f"AzureDevOpsWorkItemDatasourceConfig instantiated: {AZURE_DEVOPS_WO
 logger.info(f"XrayDatasourceConfig instantiated: {XRAY_CONFIG}")
 logger.info(f"SharePointDatasourceConfig instantiated: {SHAREPOINT_CONFIG}")
 logger.info(f"SVNDatasourceConfig instantiated: {SVN_CONFIG}")
+logger.info(f"XWikiDatasourceConfig instantiated: {XWIKI_CONFIG}")
 logger.info(f"DatasourceStorageConfig instantiated: {STORAGE_CONFIG}")

@@ -50,6 +50,7 @@ from codemie.triggers.actors.datasource import (
     reindex_sharepoint,
     reindex_svn,
     reindex_xray,
+    reindex_xwiki,
     resume_stale_datasource,
 )
 from codemie.triggers.actors.workflow import invoke_workflow
@@ -59,6 +60,7 @@ from codemie.triggers.trigger_exceptions import DatasourceNotValidated, NotImple
 from codemie.triggers.trigger_models import (
     AzureDevOpsWikiReindexTask,
     AzureDevOpsWorkItemReindexTask,
+    XWikiReindexTask,
     CodeReindexTask,
     ConfluenceReindexTask,
     GoogleReindexTask,
@@ -716,7 +718,27 @@ class Cron:
                 replace_existing=True,
                 kwargs={"payload": payload},
             )
-        elif index_type_str == "knowledge_base_jira":
+        return self.__schedule_knowledge_base_job(
+            index_type=index_type,
+            index_type_str=index_type_str,
+            cron_trigger=cron_trigger,
+            job_id=job_id,
+            user=user,
+            index_info=index_info,
+            project_name=project_name,
+            resource_name=resource_name,
+            jql=jql,
+        )
+
+    def __schedule_knowledge_base_job(
+        self, index_type, index_type_str, cron_trigger, job_id, user, index_info, project_name, resource_name, jql
+    ):
+        """Schedule the knowledge-base half of the datasource dispatch.
+
+        Split out of __schedule_datasource_job as-is: that chain had grown one branch past the
+        cognitive-complexity gate. Branch bodies are unchanged.
+        """
+        if index_type_str == FullDatasourceTypes.JIRA.value:
             payload = JiraReindexTask(
                 project_name=project_name,
                 resource_id=job_id,
@@ -732,7 +754,7 @@ class Cron:
                 replace_existing=True,
                 kwargs={"payload": payload},
             )
-        elif index_type_str == "knowledge_base_confluence":
+        elif index_type_str == FullDatasourceTypes.CONFLUENCE.value:
             payload = ConfluenceReindexTask(
                 project_name=project_name,
                 resource_id=job_id,
@@ -791,6 +813,22 @@ class Cron:
             )
             return self.scheduler.add_job(
                 reindex_azure_devops_work_item,
+                trigger=cron_trigger,
+                id=job_id,
+                replace_existing=True,
+                kwargs={"payload": payload},
+            )
+        elif index_type_str == FullDatasourceTypes.XWIKI.value:
+            payload = XWikiReindexTask(
+                project_name=project_name,
+                resource_id=job_id,
+                resource_name=resource_name,
+                user=user,
+                index_info=index_info,
+                xwiki_index_info=index_info.xwiki,
+            )
+            return self.scheduler.add_job(
+                reindex_xwiki,
                 trigger=cron_trigger,
                 id=job_id,
                 replace_existing=True,

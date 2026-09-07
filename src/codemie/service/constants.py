@@ -25,6 +25,7 @@ class FullDatasourceTypes(str, Enum):
     GOOGLE = "llm_routing_google"
     AZURE_DEVOPS_WIKI = "knowledge_base_azure_devops_wiki"
     AZURE_DEVOPS_WORK_ITEM = "knowledge_base_azure_devops_work_item"
+    XWIKI = "knowledge_base_xwiki"
     PROVIDER = ProviderIndexType.PROVIDER.value
 
     # Platform/marketplace system datasources (not visible in GET /index)

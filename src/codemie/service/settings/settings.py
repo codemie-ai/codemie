@@ -1342,6 +1342,24 @@ class SettingsService(BaseSettingsService):
         )
 
     @classmethod
+    def get_xwiki_creds(
+        cls,
+        user_id: str,
+        project_name: str,
+        assistant_id: Optional[str] = None,
+        setting_id: Optional[str] = None,
+        tool_config: Optional[ToolConfig] = None,
+    ) -> Optional[XWikiConfig]:
+        return cls.get_config(
+            config_class=XWikiConfig,
+            user_id=user_id,
+            project_name=project_name,
+            assistant_id=assistant_id,
+            integration_id=setting_id,
+            tool_config=tool_config,
+        )
+
+    @classmethod
     def get_git_creds(
         cls,
         user_id: str,

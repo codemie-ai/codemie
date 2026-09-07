@@ -1,0 +1,540 @@
+{
+  "decision": "request-changes",
+  "rationale": "All three lenses ran against a full spec, so coverage is complete; the diff is large (2310 lines) but was reviewed in full. Eleven blocking findings: two of them (CR-001, CR-002) are the same wrong-integration credential defect already fixed once in the health check but left in the create route and the cron actor, and CR-003 is a spec requirement (§2.4 bounded retry) that was never implemented despite the plan claiming a test for it. CR-011 is a decision_needed on whether plain-HTTP xWiki instances may carry Basic credentials, which forces low confidence and a human call. Nine further issues were triaged as defer (per-request httpx client with no pooling, missing Field constraints on the config model, SettingsTester not using the shared error mapper, pydantic 422s lacking field_error, inspect.getsource-based wiring tests, POST returning 200 without a response_model, escaped-dot space names, a 200-login-page rendering risk, and authoring jargon in shipped docstrings). One blind-lens claim was dismissed as refuted: request.timezone is defined by CronExpressionValidatorMixin, so the PUT cron branch does not raise.",
+  "confidence": "low",
+  "risk_flags": [
+    "security"
+  ],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "§1 three new modules (loader, processor, migration)",
+      "status": "pass",
+      "notes": "All three present plus xwiki/__init__.py"
+    },
+    {
+      "kind": "spec",
+      "item": "§1 migration adds xwiki JSONB, down_revision t1u2v3w4x5y6",
+      "status": "pass",
+      "notes": "0f4f8b95eaaa; add_column + drop_column downgrade; head confirmed by alembic heads"
+    },
+    {
+      "kind": "spec",
+      "item": "§2 loader built from XWikiConfig + wiki + space",
+      "status": "pass",
+      "notes": "XWikiLoader.__init__ reuses codemie_tools XWikiConfig"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.1 REST path grammar, per-segment quote(safe='')",
+      "status": "pass",
+      "notes": "_rest_space_path; encoding tests incl. %20 and Cyrillic"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.1 /bin path grammar, plain slashes, encoded",
+      "status": "pass",
+      "notes": "_bin_page_path; tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.1 base URL from config, never hardcode /xwiki",
+      "status": "pass",
+      "notes": "rstrip('/'); no /xwiki literal in builders"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.1/§5 reuse limited to XWikiConfig, _build_auth_headers, build_spaces_path",
+      "status": "partial",
+      "notes": "Only XWikiConfig reused. Path re-impl is justified in a docstring (encoding); the _auth_headers duplication is NOT explained anywhere"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.2 flat /spaces filtered by id == target or prefix target.",
+      "status": "pass",
+      "notes": "_iter_spaces; 'KBase' lookalike rejected in test"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.2 the /spaces listing is itself paginated",
+      "status": "pass",
+      "notes": "_iter_spaces goes through _paginate; test asserts start==2 on 2nd call"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.2 page listing offset pagination, short-page terminator",
+      "status": "pass",
+      "notes": "_paginate; tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.2 per-page REST GET mandatory",
+      "status": "pass",
+      "notes": "_fetch_page called per summary"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.2 rendered via /bin/get?xpage=plain through markdownify",
+      "status": "pass",
+      "notes": "_resolve_content"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.2 empty pages skipped and counted",
+      "status": "pass",
+      "notes": "_skipped; tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.2 KB.Onboarding indexed as both page and space with distinct source",
+      "status": "partial",
+      "notes": "Behaviour follows from the crawl and was confirmed in live e2e, but NO test asserts it: the test feeds the same PAGE fixture for both spaces and only asserts len(docs)==2. Spec §8 named this test explicitly"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.3 rendered-with-fallback sets content_format, never fails a page",
+      "status": "pass",
+      "notes": "_get_text returns None instead of raising; both branches tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.4 explicit per-request timeout",
+      "status": "pass",
+      "notes": "httpx.Client(timeout=...) from XWIKI_CONFIG.request_timeout_seconds"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.4 one bounded retry on timeout, 429 and 5xx; 4xx not retried",
+      "status": "fail",
+      "notes": "NOT IMPLEMENTED. _get converts the first RequestError straight to ConnectionException; _get_json treats every non-200 as terminal. No retry, no backoff, and the §8 test 'a timeout is retried once then counted' does not exist"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.4 per-page failure counter via FAILED_DOCUMENTS_KEY",
+      "status": "pass",
+      "notes": "_failed surfaced by get_load_stats; tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.4 run fails when failed > max(5, 0.1 * total_pages)",
+      "status": "partial",
+      "notes": "_check_failure_budget uses `seen` (pages walked so far), not total. Ratio arm is effectively dead early in a crawl; and a space of <=5 pages where every page fails never trips it"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.4 a single failed page does not kill the run",
+      "status": "pass",
+      "notes": "broad except continues; UnauthorizedException deliberately re-raised and tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.5 fetch_remote_stats enumerates and must not swallow exceptions",
+      "status": "pass",
+      "notes": "No try/except; propagation tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§2.6 loader_max_pages truncation visible, never silent",
+      "status": "partial",
+      "notes": "Surfaced by lazy_load, fetch_remote_stats and the health check, BUT lazy_load resets _truncated=False at entry, discarding truncation the stats phase already detected"
+    },
+    {
+      "kind": "spec",
+      "item": "§3 all nine chunk metadata keys survive _process_chunk",
+      "status": "pass",
+      "notes": "_CHUNK_METADATA_KEYS whitelist; tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§3 source = xwikiAbsoluteUrl, unique and stable",
+      "status": "pass",
+      "notes": "Confirmed in live ES contents"
+    },
+    {
+      "kind": "spec",
+      "item": "§3 modified/version/author carried in v1",
+      "status": "pass",
+      "notes": "Present in _to_document and the whitelist"
+    },
+    {
+      "kind": "spec",
+      "item": "§4 processor abstract members implemented",
+      "status": "pass",
+      "notes": "INDEX_TYPE, _index_name, _processing_batch_size, _init_index, _init_loader"
+    },
+    {
+      "kind": "spec",
+      "item": "§4 _get_splitter uses o200k_base with xWiki chunk settings",
+      "status": "pass",
+      "notes": "Verified"
+    },
+    {
+      "kind": "spec",
+      "item": "§4 _check_docs_health propagates exceptions",
+      "status": "pass",
+      "notes": "Unguarded; tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§5 401/403 raises UnauthorizedException",
+      "status": "pass",
+      "notes": "Parametrized test"
+    },
+    {
+      "kind": "spec",
+      "item": "§5 non-200/non-JSON raises ConnectionException with url field_error",
+      "status": "pass",
+      "notes": "_BASE_URL_HINT; health check maps to field_error='url'"
+    },
+    {
+      "kind": "spec",
+      "item": "§5 empty space -> field_error='space' with where-to-find help",
+      "status": "pass",
+      "notes": "health_check_xwiki early return"
+    },
+    {
+      "kind": "spec",
+      "item": "§5 page cap returns documents_count AND an ErrorMessage",
+      "status": "pass",
+      "notes": "Truncation branch; tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§5 every validation failure carries field_error",
+      "status": "partial",
+      "notes": "True on the health-check path only. The create/update request models use bare StringConstraints, producing a FastAPI 422 with `loc` and no field_error, so the later FE MR needs two mapping paths for the same field"
+    },
+    {
+      "kind": "spec",
+      "item": "§5 do not reuse _XWikiBaseTool._request()",
+      "status": "pass",
+      "notes": "Loader owns its httpx client"
+    },
+    {
+      "kind": "spec",
+      "item": "§5 MissingIntegrationException already handled",
+      "status": "na",
+      "notes": "No change expected or made"
+    },
+    {
+      "kind": "spec",
+      "item": "§5.1 health check probes the target space and returns the real count",
+      "status": "pass",
+      "notes": "Confirmed live: KB->8, KB.Onboarding->2"
+    },
+    {
+      "kind": "spec",
+      "item": "§5.1 SettingsTester gains a CredentialTypes.XWIKI handler",
+      "status": "pass",
+      "notes": "Registered; tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§5.1 success message does not claim the password is valid",
+      "status": "pass",
+      "notes": "Wording asserted in test and confirmed live"
+    },
+    {
+      "kind": "spec",
+      "item": "§5.1 SettingsTester handler reuses the shared mapper",
+      "status": "partial",
+      "notes": "_test_xwiki delegates to ListWikisTool().healthcheck() instead, so tester and datasource can disagree about the same instance"
+    },
+    {
+      "kind": "spec",
+      "item": "§6 core/constants.py DatasourceTypes.XWIKI",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "§6 service/constants.py FullDatasourceTypes.XWIKI",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "§6 datasources_config.py model, field, constant, log line",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "§6 datasources-config.yaml xwiki_loader block",
+      "status": "pass",
+      "notes": "All seven keys present"
+    },
+    {
+      "kind": "spec",
+      "item": "§6 rest_api/models/index.py six edit points",
+      "status": "pass",
+      "notes": "Incl. _update_xwiki_fields with flag_modified"
+    },
+    {
+      "kind": "spec",
+      "item": "§6 routers/index.py POST + PUT",
+      "status": "pass",
+      "notes": "Both registered; minor drift: POST is 200 with no response_model while the neighbouring sharepoint POST is 201 + BaseResponse"
+    },
+    {
+      "kind": "spec",
+      "item": "§6 health check case arm, health_check_xwiki, get_invalid_field",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "§6 settings.py get_xwiki_creds()",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "§6 settings_tester.py handler registration",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "§6 settings_request_validator webhook deny-list, not scheduler",
+      "status": "pass",
+      "notes": "Both asserted by tests"
+    },
+    {
+      "kind": "spec",
+      "item": "§6 trigger_models.py XWikiReindexTask",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "§6 actors/datasource.py reindex_xwiki + _resume_xwiki + _RESUME_DISPATCH",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "§6 bindings/cron.py XWIKI branch",
+      "status": "pass",
+      "notes": ""
+    },
+    {
+      "kind": "spec",
+      "item": "§6 bindings/utils.py left unchanged",
+      "status": "pass",
+      "notes": "Absent from the diff, as required"
+    },
+    {
+      "kind": "spec",
+      "item": "§6.1 XWikiIndexInfo space required, wiki defaults to xwiki",
+      "status": "pass",
+      "notes": "Tested"
+    },
+    {
+      "kind": "spec",
+      "item": "§6.1 credentials come from the integration via setting_id",
+      "status": "fail",
+      "notes": "Honoured in health_check_xwiki and _resume_xwiki, but NOT in the POST create route nor in reindex_xwiki - both resolve whatever integration the project defaults to"
+    },
+    {
+      "kind": "spec",
+      "item": "§7 scheduled reindex is reprocess(), not incremental",
+      "status": "pass",
+      "notes": "Asserted by test; PUT carries no incremental flag"
+    },
+    {
+      "kind": "spec",
+      "item": "§8 loader/processor/registration test coverage",
+      "status": "partial",
+      "notes": "Most cases exist. Missing: the timeout-retry test (feature absent) and a real KB.Onboarding distinct-source assertion"
+    },
+    {
+      "kind": "spec",
+      "item": "§8 guard test over DatasourceTypes with exemption map",
+      "status": "pass",
+      "notes": "Verified to actually fail when the YAML block is removed"
+    },
+    {
+      "kind": "spec",
+      "item": "§8 TDD, RED before GREEN",
+      "status": "pass",
+      "notes": "RED observed before every task in this session"
+    },
+    {
+      "kind": "spec",
+      "item": "§8.1 no new dependencies",
+      "status": "pass",
+      "notes": "No pyproject/poetry.lock in the diff; httpx and markdownify already declared"
+    },
+    {
+      "kind": "spec",
+      "item": "§9 use_bearer: do not build a second auth path",
+      "status": "fail",
+      "notes": "_auth_headers branches on use_bearer to emit a Bearer header, with a test pinning it. XWIKI_FIELDS never persists use_bearer, so it is unreachable in production and directly contradicts the spec"
+    },
+    {
+      "kind": "spec",
+      "item": "§9 two distinct help strings for wrong prefix vs wrong credentials",
+      "status": "partial",
+      "notes": "Only the base-URL one exists. A suspiciously low page count from wrong credentials on a guest-readable wiki returns a green response with no error and no help"
+    },
+    {
+      "kind": "spec",
+      "item": "§10 gates green",
+      "status": "pass",
+      "notes": "ruff, license-check (2011 files), gitleaks, and 1417 scoped tests were run this session"
+    },
+    {
+      "kind": "spec",
+      "item": "§10 manual e2e against the live KB space",
+      "status": "pass",
+      "notes": "Indexed 7/7 with 7 chunks; ES holds all seven docs with nine metadata keys; semantic search returns the nested Checklist page and the %20 Vacation Policy page"
+    },
+    {
+      "kind": "spec",
+      "item": "§10 no .diff artifacts committed",
+      "status": "partial",
+      "notes": "code-review.diff is currently untracked in the task dir and MUST NOT be committed at Stage 8"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 14 commits match EPMCDME-####: Capital sentence per .ai-run/guides/standards/git-workflow.md"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "ruff check and ruff format clean on all 28 changed Python files; license headers present (2011 files, 0 missing)"
+    },
+    {
+      "kind": "security",
+      "status": "partial",
+      "notes": "No secret leakage found: auth header built locally, log lines carry page/space only, exception details carry status code and path, and follow_redirects=False prevents forwarding Authorization to a redirect target. But two concrete issues remain: the create route and the cron actor resolve credentials without setting_id (wrong-integration authentication), and no URL scheme check exists, so a http:// integration sends the Basic token in cleartext on every request - the project already enforces https for SharePoint site_url"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/index.py",
+      "line": 1181,
+      "title": "Create route resolves credentials without setting_id",
+      "problem": "index_knowledge_base_xwiki calls SettingsService.get_xwiki_creds(user_id=..., project_name=...) and omits setting_id, although request.setting_id is accepted and stored on the index row.",
+      "impact": "A project with more than one xWiki integration health-checks integration B and then indexes with integration A - a different base URL and different credentials. This is the same defect already fixed in health_check_xwiki, whose comment explains exactly why the id must be honoured.",
+      "recommendation": "Pass setting_id=request.setting_id, mirroring health_check_xwiki."
+    },
+    {
+      "id": "CR-002",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/triggers/actors/datasource.py",
+      "line": 677,
+      "title": "Scheduled reindex resolves credentials without setting_id",
+      "problem": "reindex_xwiki calls get_xwiki_creds(user_id=..., project_name=...) with no setting_id, while _resume_xwiki in the same file passes setting_id=index_info.setting_id.",
+      "impact": "A cron rebuild can authenticate against a different integration than the datasource was created with, and because the scheduled path is reprocess() the existing index is deleted first - so it is silently rebuilt from the wrong wiki.",
+      "recommendation": "Pass setting_id=payload.index_info.setting_id."
+    },
+    {
+      "id": "CR-003",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/datasource/loader/xwiki_loader.py",
+      "line": 190,
+      "title": "Spec-required bounded retry is not implemented",
+      "problem": "Spec §2.4 requires one bounded retry on timeout, 429 and 5xx, with 4xx not retried. _get converts the first httpx.RequestError straight into ConnectionException and _get_json treats every non-200 as terminal. No retry, no backoff, and the plan's own test 'a timeout is retried once then counted' was never written.",
+      "impact": "The crawl is two requests per page over thousands of pages. A single transient 502 burns failure budget instead of being retried, and a transient failure on a listing call aborts the whole run because listing errors are raised outside the per-page try.",
+      "recommendation": "Add a bounded retry (one attempt) around _get for timeouts, 429 and 5xx only, and add the missing test."
+    },
+    {
+      "id": "CR-004",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/index.py",
+      "line": 1901,
+      "title": "PUT dereferences kb_index.xwiki without a null guard",
+      "problem": "space=request.space or kb_index.xwiki.space runs on the full_reindex path. The index is looked up by project+name only, so a PUT to the xwiki route naming a datasource of another type - or a row whose JSONB column is NULL - hits AttributeError on None.",
+      "impact": "Unhandled 500 instead of a 404. _update_xwiki_fields also silently no-ops on the same NULL, returning EDIT_SUCCESSFUL while changing nothing.",
+      "recommendation": "Guard: if not kb_index.xwiki, raise the 404 ExtendedHTTPException; and make _update_xwiki_fields either populate the column or report that it could not."
+    },
+    {
+      "id": "CR-005",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/triggers/bindings/cron.py",
+      "line": 662,
+      "title": "Cron payload builds a required field from an optional source",
+      "problem": "XWikiReindexTask.xwiki_index_info is declared Field(...) (required) but cron.py builds it from index_info.xwiki, which is Optional and can be None. The actor never reads the field - it re-reads payload.index_info.xwiki.",
+      "impact": "A pydantic ValidationError escapes add_job while registering the cron job. The field carries pure risk with no consumer.",
+      "recommendation": "Make the field Optional, or drop it since reindex_xwiki does not use it."
+    },
+    {
+      "id": "CR-006",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/index.py",
+      "line": 1899,
+      "title": "Project rename plus full reindex rebuilds the old index name",
+      "problem": "update_index is called with project_name=request.new_project_name, moving the row, but the processor is then constructed with project_name=request.project_name (the old value). _index_name is f'{project_name}-{datasource_name}'.",
+      "impact": "A rename combined with full_reindex rebuilds the OLD Elasticsearch index while the DB row points at the new project, leaving the datasource pointing at an index nothing maintains.",
+      "recommendation": "Use request.new_project_name or kb_index.project_name when constructing the processor."
+    },
+    {
+      "id": "CR-007",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/datasource/loader/xwiki_loader.py",
+      "line": 178,
+      "title": "A second auth path was built despite the spec forbidding it",
+      "problem": "_auth_headers branches on config.use_bearer to emit a Bearer header, and test_bearer_is_used_when_configured pins the behaviour. Spec §9 states that use_bearer cannot be persisted (XWIKI_FIELDS stores only url, token, username), that Bearer additionally needs a server-side plugin, and explicitly says do not build a second auth path.",
+      "impact": "Unreachable production code carrying a test that makes Bearer look supported - the exact confusion the spec tried to prevent. It also duplicates the tools layer's _build_auth_headers with no stated reason.",
+      "recommendation": "Either drop the branch and its test, or record the deviation explicitly in the spec and MR description."
+    },
+    {
+      "id": "CR-008",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/datasource/loader/xwiki_loader.py",
+      "line": 210,
+      "title": "lazy_load resets the truncation flag the stats phase set",
+      "problem": "lazy_load sets self._truncated = False at entry. The base processor calls fetch_remote_stats before lazy_load, and fetch_remote_stats sets _truncated when it hits the cap.",
+      "impact": "Truncation detected while counting is discarded, so get_load_stats can persist truncated=False for a run that was in fact capped. Since empty pages are skipped, the emitted count can stay under the cap even when the space is over it.",
+      "recommendation": "Do not clear _truncated in lazy_load, or track the two phases separately."
+    },
+    {
+      "id": "CR-009",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/datasource/xwiki/test_xwiki_loader_load.py",
+      "line": 139,
+      "title": "The page-vs-space collision test asserts nothing about source",
+      "problem": "test_pages_from_descendant_spaces_are_loaded returns the identical PAGE fixture (same xwikiAbsoluteUrl) for both spaces and asserts only len(docs) == 2.",
+      "impact": "Spec §2.2/§8 single out KB.Onboarding existing as both a page and a space and require their source values to differ, because _split_documents keys chunk identity on source - a collision silently overwrites chunks. That guarantee is currently unverified by any test (it held in live e2e, but nothing pins it).",
+      "recommendation": "Give the two spaces distinct page fixtures and assert the two documents have different metadata['source']."
+    },
+    {
+      "id": "CR-010",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/datasource/loader/xwiki_loader.py",
+      "line": 280,
+      "title": "Failure budget cannot trip on small spaces, after the index is already deleted",
+      "problem": "budget = max(floor=5, int(ratio * seen)) with seen = pages walked so far, not total_pages as the spec states. For a space of five pages where every page fails, failed=5 and budget=5, so failed > budget is false and no abort happens.",
+      "impact": "The run proceeds to zero documents. _validate_indexing_result then raises NoChunksImportedException, so the user sees 'all files were skipped or failed' rather than the real connection error - and reprocess() has already deleted the previous index.",
+      "recommendation": "Use the total from fetch_remote_stats as the denominator, and abort when every walked page has failed regardless of the floor."
+    },
+    {
+      "id": "CR-011",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/codemie/datasource/loader/xwiki_loader.py",
+      "line": 184,
+      "title": "Plain-HTTP integrations send the Basic token in cleartext",
+      "problem": "_auth_headers sends base64(username:token) on every request and nothing validates the configured URL scheme. The project already enforces https for another datasource (SharePoint site_url, _HTTPS_SCHEME with 'site_url must start with https://').",
+      "impact": "A http:// integration leaks the credential on every one of up to 5000 page fetches plus the listing calls. Whether that is acceptable depends on whether internal, non-TLS xWiki instances must be supported - the local dev instance is exactly such a case.",
+      "recommendation": "Product decision: enforce https like SharePoint does, warn on http, or explicitly document that plaintext internal instances are supported. Needs a human call before shipping."
+    }
+  ]
+}

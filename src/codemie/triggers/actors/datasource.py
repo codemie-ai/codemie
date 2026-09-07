@@ -26,6 +26,7 @@ from codemie.rest_api.security.user import User
 from codemie.datasource.azure_devops_wiki.azure_devops_wiki_datasource_processor import (
     AzureDevOpsWikiDatasourceProcessor,
 )
+from codemie.datasource.xwiki.xwiki_datasource_processor import XWikiDatasourceProcessor
 from codemie.datasource.azure_devops_work_item.azure_devops_work_item_datasource_processor import (
     AzureDevOpsWorkItemDatasourceProcessor,
 )
@@ -48,6 +49,7 @@ from codemie.triggers.job_lock import with_datasource_job_lock
 from codemie.triggers.trigger_models import (
     AzureDevOpsWikiReindexTask,
     AzureDevOpsWorkItemReindexTask,
+    XWikiReindexTask,
     CodeReindexTask,
     ConfluenceReindexTask,
     GoogleReindexTask,
@@ -650,6 +652,79 @@ def reindex_sharepoint(payload: SharePointReindexTask):
     )
 
 
+@with_datasource_job_lock
+def reindex_xwiki(payload: XWikiReindexTask):
+    """
+    Initiates the reindexing process for an xWiki datasource.
+
+    Scheduled refresh is a full delete-and-rebuild via reprocess(), matching Azure DevOps Wiki,
+    Confluence, SharePoint and Google Doc. True incremental refresh is a separate ticket.
+    """
+    IndexInfo.stamp_reindex_triggered_at(payload.index_info.id)
+
+    logger.info(
+        REINDEX_START_MSG,
+        payload.index_info.index_type,
+        payload.resource_id,
+        payload.project_name,
+        payload.resource_name,
+    )
+
+    xwiki_index_info = payload.index_info.xwiki if payload.index_info and payload.index_info.xwiki else None
+    if not xwiki_index_info:
+        error_msg = f"xWiki index not found for resource '{payload.resource_name}' in project '{payload.project_name}'."
+        logger.error(
+            REINDEX_FAILED_MSG,
+            payload.index_info.index_type,
+            payload.resource_id,
+            payload.project_name,
+            payload.resource_name,
+            error_msg,
+        )
+        return
+
+    xwiki_creds = SettingsService.get_xwiki_creds(
+        user_id=payload.user.id,
+        project_name=payload.project_name,
+        setting_id=payload.index_info.setting_id,
+    )
+    if not xwiki_creds:
+        error_msg = f"xWiki credentials not found for project '{payload.project_name}'."
+        logger.error(
+            REINDEX_FAILED_MSG,
+            payload.index_info.index_type,
+            payload.resource_id,
+            payload.project_name,
+            payload.resource_name,
+            error_msg,
+        )
+        return
+
+    processor = XWikiDatasourceProcessor(
+        datasource_name=payload.resource_name,
+        user=payload.user,
+        project_name=payload.project_name,
+        credentials=xwiki_creds,
+        space=xwiki_index_info.space,
+        wiki=xwiki_index_info.wiki,
+        description=payload.index_info.description or "",
+        project_space_visible=payload.index_info.project_space_visible or False,
+        index_info=payload.index_info,
+        request_uuid=str(uuid4()),
+        embedding_model=payload.index_info.embeddings_model,
+    )
+
+    datasource_concurrency_manager.run(processor.reprocess, processor.index)
+
+    logger.info(
+        REINDEX_SUCCESS_MSG,
+        payload.index_info.index_type,
+        payload.resource_id,
+        payload.project_name,
+        payload.resource_name,
+    )
+
+
 UNSUPPORTED_RESUME_TYPES = {"knowledge_base_file", "provider", "platform_marketplace_assistant"}
 
 
@@ -704,6 +779,41 @@ def _resume_azure_devops(index_info: IndexInfo, user: User, request_uuid: str) -
             embedding_model=index_info.embeddings_model,
         )
     processor.resume()
+
+
+def _resume_xwiki(index_info: IndexInfo, user: User, request_uuid: str) -> None:
+    """Handle resume for xWiki datasources."""
+    xwiki_index_info = index_info.xwiki
+    if not xwiki_index_info:
+        logger.error(f"resume_stale_datasource: xWiki index info missing for index_id={index_info.id}")
+        return
+
+    xwiki_creds = SettingsService.get_xwiki_creds(
+        user_id=user.id,
+        project_name=index_info.project_name,
+        setting_id=index_info.setting_id,
+    )
+    if not xwiki_creds:
+        logger.error(
+            f"resume_stale_datasource: xWiki credentials not found for "
+            f"project='{index_info.project_name}', index_id={index_info.id}"
+        )
+        return
+
+    XWikiDatasourceProcessor(
+        datasource_name=index_info.repo_name,
+        user=user,
+        project_name=index_info.project_name,
+        credentials=xwiki_creds,
+        space=xwiki_index_info.space,
+        wiki=xwiki_index_info.wiki,
+        description=index_info.description or "",
+        project_space_visible=index_info.project_space_visible or False,
+        index_info=index_info,
+        request_uuid=request_uuid,
+        embedding_model=index_info.embeddings_model,
+        setting_id=index_info.setting_id,
+    ).resume()
 
 
 def _resume_xray(index_info: IndexInfo, user: User, request_uuid: str) -> None:
@@ -926,6 +1036,7 @@ _RESUME_DISPATCH: dict = {
     "llm_routing_google": _resume_google_doc,
     "knowledge_base_azure_devops_wiki": _resume_azure_devops,
     "knowledge_base_azure_devops_work_item": _resume_azure_devops,
+    "knowledge_base_xwiki": _resume_xwiki,
     "knowledge_base_xray": _resume_xray,
     "knowledge_base_sharepoint": _resume_sharepoint,
 }

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 from codemie.rest_api.models.index import (
@@ -19,6 +21,7 @@ from codemie.rest_api.models.index import (
     AzureDevOpsWorkItemIndexInfo,
     ConfluenceIndexInfo,
     IndexInfo,
+    XWikiIndexInfo,
 )
 from codemie.rest_api.security.user import User
 
@@ -66,6 +69,13 @@ class AzureDevOpsWorkItemReindexTask(ReindexTaskPayload):
     azure_devops_work_item_index_info: AzureDevOpsWorkItemIndexInfo = Field(
         ..., description="The Azure DevOps Work Items index information."
     )
+
+
+class XWikiReindexTask(ReindexTaskPayload):
+    # Deliberately optional: index_info.xwiki is Optional, so a required field here would raise a
+    # ValidationError while registering the cron job. reindex_xwiki reads payload.index_info.xwiki
+    # and guards it, so this field exists only for parity with the other reindex payloads.
+    xwiki_index_info: Optional[XWikiIndexInfo] = Field(default=None, description="The xWiki index information.")
 
 
 class XrayReindexTask(ReindexTaskPayload):

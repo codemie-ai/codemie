@@ -95,6 +95,7 @@ class IndexTypeByContextTypeMapping(Enum):
         "knowledge_base_xray",
         "knowledge_base_azure_devops_wiki",
         "knowledge_base_azure_devops_work_item",
+        "knowledge_base_xwiki",
         "knowledge_base_sharepoint",
         "knowledge_base_file",
         "llm_routing_google",
@@ -160,6 +161,11 @@ class AzureDevOpsWikiIndexInfo(BaseModel):
 
 class AzureDevOpsWorkItemIndexInfo(BaseModel):
     wiql_query: str = ""
+
+
+class XWikiIndexInfo(BaseModel):
+    space: str  # dotted space id as shown in the URL: "KB", or "KB.Onboarding" for a subtree
+    wiki: str = "xwiki"  # wiki id; part of every REST path, non-default only on subwiki farms
 
 
 _HTTPS_SCHEME = "https://"
@@ -310,6 +316,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
     azure_devops_work_item: Optional[AzureDevOpsWorkItemIndexInfo] = SQLField(
         default=None, sa_column=Column(PydanticType(AzureDevOpsWorkItemIndexInfo))
     )
+    xwiki: Optional[XWikiIndexInfo] = SQLField(default=None, sa_column=Column(PydanticType(XWikiIndexInfo)))
     sharepoint: Optional[SharePointIndexInfo] = SQLField(
         default=None, sa_column=Column(PydanticType(SharePointIndexInfo))
     )
@@ -719,6 +726,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         xray = kwargs.get("xray")
         azure_devops_wiki = kwargs.get("azure_devops_wiki")
         azure_devops_work_item = kwargs.get("azure_devops_work_item")
+        xwiki = kwargs.get("xwiki")
         sharepoint = kwargs.get("sharepoint")
         google_doc_link = kwargs.get("google_doc_link", "")
         uploaded_files = kwargs.get("uploaded_files", [])
@@ -744,6 +752,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
             xray=xray,
             azure_devops_wiki=azure_devops_wiki,
             azure_devops_work_item=azure_devops_work_item,
+            xwiki=xwiki,
             sharepoint=sharepoint,
             google_doc_link=google_doc_link,
             uploaded_files=uploaded_files,
@@ -801,6 +810,21 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         if wiki_query:
             self.azure_devops_wiki.wiki_query = wiki_query
             flag_modified(self, 'azure_devops_wiki')
+
+    def _update_xwiki_fields(self, **kwargs) -> None:
+        """Update xWiki-specific fields."""
+        if not self.xwiki:
+            return
+
+        space = kwargs.get("space")
+        wiki = kwargs.get("wiki")
+
+        if space is not None:
+            self.xwiki.space = space
+        if wiki is not None:
+            self.xwiki.wiki = wiki
+        if space is not None or wiki is not None:
+            flag_modified(self, 'xwiki')
 
     def _update_sharepoint_fields(self, **kwargs) -> None:
         """Update SharePoint-specific fields."""
@@ -895,6 +919,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
             flag_modified(self, 'azure_devops_work_item')
 
         self._update_sharepoint_fields(**kwargs)
+        self._update_xwiki_fields(**kwargs)
 
         if setting_id:
             self.setting_id = setting_id
@@ -1407,6 +1432,8 @@ class DatasourceHealthCheckRequest(BaseModel):
     svn_repo_url: Optional[str] = None
     svn_branch: Optional[str] = "trunk"
     git_url: Optional[str] = None
+    space: Optional[str] = None
+    wiki: Optional[str] = "xwiki"
 
 
 class ErrorMessage(BaseModel):
@@ -1439,6 +1466,14 @@ class IndexKnowledgeBaseXrayRequest(CronExpressionValidatorMixin, IndexKnowledge
 class IndexKnowledgeBaseAzureDevOpsWikiRequest(CronExpressionValidatorMixin, IndexKnowledgeBaseRequest):
     wiki_query: str = ''
     wiki_name: Optional[str] = None
+    setting_id: Optional[str] = None
+    embedding_model: Optional[str] = None
+    cron_expression: Optional[str] = None
+
+
+class IndexKnowledgeBaseXWikiRequest(CronExpressionValidatorMixin, IndexKnowledgeBaseRequest):
+    space: Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)]
+    wiki: Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)] = "xwiki"
     setting_id: Optional[str] = None
     embedding_model: Optional[str] = None
     cron_expression: Optional[str] = None
@@ -1633,6 +1668,20 @@ class UpdateKnowledgeBaseAzureDevOpsWikiRequest(CronExpressionValidatorMixin, Ba
     name: str = Field(min_length=1, max_length=500)
     wiki_query: str = ''
     wiki_name: Optional[str] = None
+    project_name: str
+    setting_id: Optional[str] = None
+    new_project_name: Optional[str] = None  # Field to support project change
+
+    description: str = Field(default="", max_length=500)
+    project_space_visible: Optional[bool] = None
+    guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None
+    cron_expression: Optional[str] = None
+
+
+class UpdateKnowledgeBaseXWikiRequest(CronExpressionValidatorMixin, BaseModel):
+    name: str = Field(min_length=1, max_length=500)
+    space: Optional[Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)]] = None
+    wiki: Optional[Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)]] = None
     project_name: str
     setting_id: Optional[str] = None
     new_project_name: Optional[str] = None  # Field to support project change

@@ -25,6 +25,8 @@ from codemie.datasource.jira.jira_datasource_processor import JiraDatasourceProc
 from codemie.datasource.loader.git_loader import GitBatchLoader
 from codemie.datasource.loader.svn_loader import SVNBatchLoader
 from codemie.datasource.xray.xray_datasource_processor import XrayDatasourceProcessor
+from codemie.datasource.xwiki.xwiki_datasource_processor import XWikiDatasourceProcessor
+from codemie.datasource.loader.xwiki_loader import XWikiLoader
 from codemie.datasource.azure_devops_wiki.azure_devops_wiki_datasource_processor import (
     AzureDevOpsWikiDatasourceProcessor,
 )
@@ -50,6 +52,8 @@ class IndexHealthCheckService:
                     return cls.health_check_azure_devops_wiki(request, user_id)
                 case DatasourceTypes.AZURE_DEVOPS_WORK_ITEM:
                     return cls.health_check_azure_devops_work_item(request, user_id)
+                case DatasourceTypes.XWIKI:
+                    return cls.health_check_xwiki(request, user_id)
                 case DatasourceTypes.SVN:
                     return cls.health_check_svn(request, user_id)
                 case DatasourceTypes.GIT:
@@ -158,6 +162,86 @@ class IndexHealthCheckService:
         return DatasourceHealthCheckResponse(documents_count=documents_count)
 
     @classmethod
+    def health_check_xwiki(cls, request: DatasourceHealthCheckRequest, user_id: str):
+        if not request.space:
+            return DatasourceHealthCheckResponse(
+                error=ErrorMessage(
+                    message="xWiki space is required",
+                    details="Provide the dotted space id shown in the page URL, for example 'KB'.",
+                    help="Open the space in xWiki; the id appears in the URL after /bin/view/.",
+                    field_error="space",
+                )
+            )
+
+        # setting_id must be honoured: the user picks an integration in the form, and without it
+        # the check silently validates whichever xWiki integration the project resolves by default.
+        xwiki_creds = SettingsService.get_xwiki_creds(
+            user_id=user_id,
+            project_name=request.project_name,
+            setting_id=request.setting_id,
+        )
+
+        if xwiki_creds is None:
+            # No xWiki integration resolved for the selected setting. Without this guard the None
+            # flows into the processor and surfaces as an AttributeError -> HTTP 500 instead of the
+            # field error the form expects.
+            return DatasourceHealthCheckResponse(
+                error=ErrorMessage(
+                    message="No xWiki integration is configured",
+                    details=(
+                        "The selected integration could not be resolved for this project. "
+                        "Choose an xWiki integration, or add one first."
+                    ),
+                    help='Open the "Integrations" tab and connect an xWiki integration with a base URL and token.',
+                    field_error="setting_id",
+                )
+            )
+
+        processor = XWikiDatasourceProcessor(
+            datasource_name="health_check",
+            user=None,  # Not needed for health check
+            project_name=request.project_name,
+            credentials=xwiki_creds,
+            space=request.space,
+            wiki=request.wiki or "xwiki",
+        )
+
+        try:
+            stats = processor._fetch_remote_stats()
+        except ConnectionException as e:
+            # Handled here rather than by the generic wrapper so the form can point at the URL
+            # field: on this failure the base URL is the overwhelmingly likely culprit.
+            return DatasourceHealthCheckResponse(
+                error=ErrorMessage(
+                    message=str(e),
+                    details=f"An error occurred while checking the connection: {str(e)}",
+                    help=(
+                        "Check the base URL of the xWiki integration. Some instances serve REST "
+                        "at /rest/..., others under /xwiki/rest/... - the URL must match."
+                    ),
+                    field_error="url",
+                )
+            )
+
+        documents_count = stats.get(XWikiLoader.DOCUMENTS_COUNT_KEY, 0)
+
+        if stats.get("truncated"):
+            return DatasourceHealthCheckResponse(
+                documents_count=documents_count,
+                error=ErrorMessage(
+                    message=(
+                        f"Space contains more than {documents_count} pages; "
+                        f"only the first {documents_count} would be indexed."
+                    ),
+                    details="The loader page cap was reached while counting pages.",
+                    help="Connect a narrower space, or raise loader_max_pages for the xWiki loader.",
+                    field_error="space",
+                ),
+            )
+
+        return DatasourceHealthCheckResponse(documents_count=documents_count)
+
+    @classmethod
     def health_check_azure_devops_work_item(cls, request: DatasourceHealthCheckRequest, user_id: str):
         azure_devops_creds = SettingsService.get_azure_devops_creds(
             user_id=user_id,
@@ -238,5 +322,7 @@ class IndexHealthCheckService:
                 return "wiki_query"
             case DatasourceTypes.AZURE_DEVOPS_WORK_ITEM:
                 return "wiql_query"
+            case DatasourceTypes.XWIKI:
+                return "space"
             case _:
                 return None

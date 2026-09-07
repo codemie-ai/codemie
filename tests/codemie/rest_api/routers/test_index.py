@@ -100,6 +100,31 @@ async def test_index_knowledge_base_jira(mock_worker, mock_creds, mock_unique_ch
     }
 
 
+@patch('codemie.rest_api.routers.index._index_unique_check')
+@patch('codemie.rest_api.routers.index.SettingsService.get_xwiki_creds')
+@pytest.mark.asyncio
+async def test_index_knowledge_base_xwiki_without_integration_returns_400(mock_creds, mock_unique_check, auth_headers):
+    """No integration must fail here, not later. The processor passes the credentials straight to
+    XWikiLoader, which reads config.url - so a None reaches the background task as an AttributeError
+    once the endpoint has already answered 200, and the datasource just never indexes."""
+    mock_unique_check.return_value = True
+    mock_creds.return_value = None
+
+    response = app_client.post(
+        "/v1/index/knowledge_base/xwiki",
+        json={
+            "project_name": "test_project",
+            "name": "test_xwiki_index",
+            "description": "test_description",
+            "space": "KB",
+        },
+        headers=auth_headers,
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert "No xWiki integration is configured" in response.text
+
+
 @patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
 @patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
 @pytest.mark.asyncio

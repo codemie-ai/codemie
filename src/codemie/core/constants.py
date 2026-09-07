@@ -99,6 +99,7 @@ class DatasourceTypes(str, Enum):
     AZURE_DEVOPS_WIKI = "azure_devops_wiki"
     AZURE_DEVOPS_WORK_ITEM = "azure_devops_work_item"
     XRAY = "xray"
+    XWIKI = "xwiki"
 
 
 class ProviderIndexType(str, Enum):

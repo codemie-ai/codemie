@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "task": "Add xWiki as a new CodeMie datasource type (EPMCDME-13142): a new loader and processor modelled on the Azure DevOps Wiki donor, a DB migration, ~13 type-registration edits across backend layers, and ~12 frontend files, so a connected xWiki Space is fetched, chunked, embedded and indexed into Elasticsearch.",
+  "generated": "2026-08-04",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 27,
+  "size": "XL",
+  "routing": "split-required",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Touches 8 backend subsystems plus the frontend: new loader and processor, Alembic migration, DatasourceTypes and FullDatasourceTypes enums, datasources_config plus its YAML block, rest_api models and router, health-check service, settings service (creds accessor, tester handler, webhook deny-list), and three trigger-layer files. Far past 3-4 components across 2-3 layers. Not XXL because every touchpoint is an existing extension point - no new abstraction and no shared contract changes."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Scope boundary is crisp (one Space; attachments and delta reindex out of v1) and the registration inventory is verified, so the base is M. Four decisions remain open with real rework cost: raw xwiki/2.1 markup vs rendered text, whether _process_chunk carries modified/version/author (both force a full reindex if wrong), whether the SettingsTester handler is in scope, and what the health check should actually probe. Bumped to L by the 'similar to X but different' red flag - the ADO Wiki donor is the template but the loader is not a transcription and two donor behaviours must be inverted, a framing that already produced one false claim in the hand-off."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Framework machinery is inherited and the ingest-to-search path was proven end-to-end on this machine, but the loader is genuinely novel: no total-count field forces enumeration in fetch_remote_stats, page summaries omit content and modified so a second GET per page is mandatory, and a space listing excludes descendants so indexing a Space needs recursive descent with a live page-vs-space name collision. Bumped from L to XL by the authorization red flag - /rest/wikis returns 200 anonymously and with a wrong password (verified live), so credential validation is broken by default, and per-space 403s surface mid-load where _request never raises on 4xx."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "16 backend files (3 new: migration, loader ~150-250 lines, processor ~180 lines; 13 edited) across 7 directories, plus a greenfield tests/codemie/datasource/xwiki/ directory, plus 11-12 frontend files in the separate codemie-ui repo including a new IndexTypeXWiki.tsx component. Roughly 24 modified and 6 new across two repositories. Backend-only this would score XL (5); the ticket as described includes the frontend."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "UI + API + Service + DB-Persistence (additive nullable JSONB column on index_info) + Workflow/Triggers (reindex actor, cron binding, resume dispatch) + External (xWiki REST) + Config. The trigger/cron layer pushes it past a plain full-stack change. Not XXL: no infrastructure or deployment changes, a single external API, and the FE/BE repo split is the normal shape of every datasource type in this product."
+    }
+  ],
+  "red_flags_applied": [
+    "Requirements Clarity bumped from M (3) to L (4): 'similar to X but different' - the task is framed as modelled on the Azure DevOps Wiki donor, but the loader is not a transcription and two donor behaviours must be inverted (fetch_remote_stats swallowing all exceptions and reporting 0; reusing _request, which never raises on 4xx). The framing already produced one materially false claim in the briefing - that incremental refresh is free and inherited.",
+    "Technical Risk bumped from L (4) to XL (5): affects authorization - /rest/wikis returns HTTP 200 anonymously and with a wrong password (verified live), so the existing _healthcheck green-lights broken credentials, and per-space 403 handling with correct typed-exception propagation is core new loader work rather than a copy.",
+    "NOT APPLIED - 'Integration with new external service' (would bump Component Scope and Affected Layers): xWiki is already integrated below the datasource layer (CredentialTypes.XWIKI, XWikiConfig, _build_auth_headers, build_spaces_path and 24 tool classes all exist and are reused). Applying it would double-count integration work already done.",
+    "NOT APPLIED - 'Changes database schema significantly' (would bump Affected Layers and Technical Risk): the migration is one additive nullable JSONB column on index_info, byte-for-byte the shape of the ADO Wiki donor migration, with a confirmed single Alembic head (t1u2v3w4x5y6).",
+    "NOT APPLIED - 'Requires data migration' (would bump Technical Risk and File Changes): schema-only, no backfill.",
+    "NOT APPLIED - 'Performance or Scalability as primary concern' (would bump Technical Risk): the N+1 per-page GET and stats enumeration are real and bounded costs, but performance is not this ticket's primary concern."
+  ],
+  "split_recommendation": "27/36 sits one point over the L/XL boundary and the borderline rule leans higher because both Technical Risk and Component Scope are at XL (5). Roughly 30 files across two repositories, 8 layers, a DB migration, cron wiring and a genuinely novel loader with six verified API hazards - under a TDD constraint against greenfield coverage. Three registration points (the xwiki_loader YAML block, get_xwiki_creds, the _RESUME_DISPATCH entry) fail silently or at app boot rather than in tests, so a single large diff is the wrong shape for catching them. Suggested decomposition, ordered by dependency: (1) L - loader + processor + datasources_config/YAML + both enums + Alembic migration + tests/codemie/datasource/xwiki/, owning all novel work (recursive space descent, enumeration-based stats, page-vs-space collision, encoding, empty-page skip, typed exceptions, raw-vs-rendered and metadata decisions), drivable against the live fixture wiki with no REST endpoint; (2) M - REST and settings surface: rest_api/models/index.py (5 edits), router POST+PUT, get_xwiki_creds, _check_docs_health plus the health_check_xwiki arm and get_invalid_field, SettingsTester handler, webhook deny-list, including the fix so the health check cannot green-light a wrong password; (3) S-M - scheduled reindex: trigger_models, reindex_xwiki actor, cron binding branch, _RESUME_DISPATCH entry, shipping with the explicit statement that v1 refresh is a full delete-and-rebuild; (4) M - frontend codemie-ui, ~12 files including the new IndexTypeXWiki.tsx, a separate MR regardless. Carry forward the correction that the hand-off's 'incremental refresh is free and inherited' claim is false - the cron actor for every comparable type calls reprocess(), which deletes the whole ES index and rebuilds it."
+}

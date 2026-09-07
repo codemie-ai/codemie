@@ -28,6 +28,8 @@ from codemie_tools.core.project_management.confluence.models import ConfluenceCo
 from codemie_tools.core.project_management.confluence.tools import GenericConfluenceTool
 from codemie_tools.core.project_management.jira.models import JiraConfig
 from codemie_tools.core.project_management.jira.tools import GenericJiraIssueTool
+from codemie_tools.core.project_management.xwiki.models import XWikiConfig
+from codemie_tools.core.project_management.xwiki.tools import ListWikisTool
 from codemie_tools.sharepoint.models import SharePointConfig
 from codemie_tools.sharepoint.tools import SharePointTool
 from codemie_tools.git.toolkit import GitToolkit
@@ -97,7 +99,20 @@ class SettingsTester(SettingsService):
             CredentialTypes.SONAR: SettingsTester._test_sonar,
             CredentialTypes.REPORT_PORTAL: SettingsTester._test_report_portal,
             CredentialTypes.SHAREPOINT: SettingsTester._test_sharepoint,
+            CredentialTypes.XWIKI: SettingsTester._test_xwiki,
         }
+
+    def _test_xwiki(self) -> Tuple[bool, str]:
+        ok, message = ListWikisTool(config=XWikiConfig(**self.credential_values)).healthcheck()
+        if not ok:
+            return ok, message
+        # xWiki grants guest read by default and its REST API exposes no "current user"
+        # resource, so a 200 here does not prove the password is correct. Say so.
+        return True, (
+            "xWiki instance reachable, credentials accepted. Note: xWiki grants guest read "
+            "access by default, so this check cannot confirm the password is correct - the "
+            "datasource health check reports the real page count for the space you connect."
+        )
 
     def _test_snow(self) -> Tuple[bool, str]:
         return ServiceNowTableTool(config=ServiceNowConfig(**self.credential_values)).healthcheck()

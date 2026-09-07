@@ -173,6 +173,15 @@ loaders:
     checkout_timeout_seconds: 300
     max_file_size_kb: 5000
 
+  xwiki_loader:
+    chunk_size: 1000
+    chunk_overlap: 50
+    loader_batch_size: 50
+    loader_max_pages: 5000
+    request_timeout_seconds: 30
+    max_failed_pages_floor: 5
+    max_failed_pages_ratio: 0.1
+
 storage:
   embeddings_max_docs_count: 20
   indexing_bulk_max_chunk_bytes: 104857600  # 100 MB
