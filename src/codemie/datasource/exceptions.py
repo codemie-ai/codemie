@@ -54,6 +54,25 @@ class ConnectionException(Exception):
         super().__init__(self.ERROR_MSG.format(formatted_type, error_details), *args, **kwargs)
 
 
+class InvalidCustomFieldException(Exception):
+    ERROR_MSG = (
+        "Unknown or inaccessible Jira custom field(s): {fields}. Check field IDs/names and integration permissions."
+    )
+
+    def __init__(self, fields: list[str], *args, **kwargs):
+        self.fields = fields
+        super().__init__(self.ERROR_MSG.format(fields=", ".join(fields)), *args, **kwargs)
+
+
+class AmbiguousCustomFieldException(InvalidCustomFieldException):
+    """Several Jira fields share the configured display name, so only the field ID identifies one."""
+
+    ERROR_MSG = (
+        "Ambiguous Jira custom field name(s): {fields}. Several fields share each name; "
+        "use the field ID (e.g. customfield_10001) instead."
+    )
+
+
 class EmptyResultException(Exception):
     ERROR_MSG = "Based on {} expression empty result returned."
 

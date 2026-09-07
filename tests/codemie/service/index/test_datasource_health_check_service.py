@@ -16,7 +16,11 @@ import pytest
 from unittest.mock import Mock, patch
 
 from codemie.core.constants import DatasourceTypes
-from codemie.datasource.exceptions import ConnectionException
+from codemie.datasource.exceptions import (
+    AmbiguousCustomFieldException,
+    ConnectionException,
+    InvalidCustomFieldException,
+)
 from codemie.rest_api.models.index import DatasourceHealthCheckRequest
 from codemie.service.index.datasource_health_check_service import IndexHealthCheckService
 
@@ -109,3 +113,74 @@ class TestHealthCheckGit:
         assert response.error is None
         assert response.documents_count == 0
         mock_test_public_access.assert_called_once()
+
+
+class TestHealthCheckJira:
+    """Tests for the Jira path of IndexHealthCheckService."""
+
+    def _make_request(self, custom_fields=None, jql="project = TEST"):
+        return DatasourceHealthCheckRequest(
+            project_name="test-project",
+            index_type=DatasourceTypes.JIRA,
+            jql=jql,
+            setting_id="setting-1",
+            custom_fields=custom_fields,
+        )
+
+    @patch("codemie.service.index.datasource_health_check_service.JiraDatasourceProcessor.check_jira_query")
+    @patch("codemie.service.index.datasource_health_check_service.SettingsService.get_jira_creds")
+    def test_health_check_jira_forwards_custom_fields(self, mock_get_creds, mock_check):
+        """Without this the form's Check connection would validate only the JQL."""
+        creds = Mock()
+        mock_get_creds.return_value = creds
+        mock_check.return_value = 7
+        request = self._make_request(custom_fields=["customfield_10001"])
+
+        response = IndexHealthCheckService.health_check_jira(request, user_id="user1")
+
+        mock_check.assert_called_once_with(jql="project = TEST", credentials=creds, custom_fields=["customfield_10001"])
+        assert response.documents_count == 7
+
+    @patch("codemie.service.index.datasource_health_check_service.JiraDatasourceProcessor.check_jira_query")
+    @patch("codemie.service.index.datasource_health_check_service.SettingsService.get_jira_creds")
+    def test_health_check_jira_without_custom_fields(self, mock_get_creds, mock_check):
+        mock_check.return_value = 1
+
+        IndexHealthCheckService.health_check_jira(self._make_request(), user_id="user1")
+
+        assert mock_check.call_args.kwargs["custom_fields"] is None
+
+    @patch("codemie.service.index.datasource_health_check_service.JiraDatasourceProcessor.check_jira_query")
+    @patch("codemie.service.index.datasource_health_check_service.SettingsService.get_jira_creds")
+    def test_invalid_custom_field_becomes_field_error(self, mock_get_creds, mock_check):
+        """Unhandled, this exception would 500 the endpoint instead of highlighting the input."""
+        mock_check.side_effect = InvalidCustomFieldException(["No Such Field"])
+        request = self._make_request(custom_fields=["No Such Field"])
+
+        response = IndexHealthCheckService.health_check_datasource(request, user_id="user1")
+
+        assert response.error is not None
+        assert response.error.field_error == "jiraCustomFields"
+        assert "No Such Field" in response.error.message
+
+    @patch("codemie.service.index.datasource_health_check_service.JiraDatasourceProcessor.check_jira_query")
+    @patch("codemie.service.index.datasource_health_check_service.SettingsService.get_jira_creds")
+    def test_ambiguous_custom_field_becomes_field_error(self, mock_get_creds, mock_check):
+        mock_check.side_effect = AmbiguousCustomFieldException(["Sprint"])
+        request = self._make_request(custom_fields=["Sprint"])
+
+        response = IndexHealthCheckService.health_check_datasource(request, user_id="user1")
+
+        assert response.error is not None
+        assert response.error.field_error == "jiraCustomFields"
+        assert "Sprint" in response.error.message
+
+    @patch("codemie.service.index.datasource_health_check_service.JiraDatasourceProcessor.check_jira_query")
+    @patch("codemie.service.index.datasource_health_check_service.SettingsService.get_jira_creds")
+    def test_health_check_datasource_routes_jira(self, mock_get_creds, mock_check):
+        mock_check.return_value = 3
+
+        response = IndexHealthCheckService.health_check_datasource(self._make_request(), user_id="user1")
+
+        assert response.documents_count == 3
+        mock_check.assert_called_once()

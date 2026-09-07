@@ -1,0 +1,156 @@
+{
+  "decision": "request-changes",
+  "rationale": "No story or spec was available, so the change was never graded against intended behaviour and confidence is low; the acceptance lens was correctly not dispatched and all three applicable lenses plus the standards audit ran clean with no coverage gap and no reachability shortfall (budget not exhausted). Twelve blocking findings remain: five code defects in the new custom-field resolution/rendering and the unvalidated PUT path, four missing-test gaps at the route, model, processor and health-check layers, and three documented standards violations (commit 'Sonar fix' has no EPMCDME prefix; new code uses Optional/List annotations and the new public endpoint has no return type). One pre-existing item was deferred to docs/superpowers/tasks/2026-09-03-epmcdme-14093-jira-custom-fields/code-review-deferred.md (Jira network errors still unhandled outside _validate_creds) and 18 candidates were dismissed as noise, including the reported InvalidCustomFieldException swallow, which the source disproves - validate_creds_and_loader catches only HTTPError.",
+  "confidence": "low",
+  "risk_flags": ["public-api"],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "fail", "notes": "git-workflow.md requires 'EPMCDME-####: Description'; 4 of 7 subjects conform, but 'Sonar fix' carries no ticket prefix and no colon. The two git-generated merge subjects are collapsed by the documented squash-merge strategy and are not counted."},
+    {"kind": "code-quality", "status": "partial", "notes": "Ruff-config rules met (line-length 120; G004/B904 ignored in pyproject). Two code-quality.md 'Types And Imports' rules unmet in new code: typing.Optional/List generics instead of 'X | None' and 'list[...]', and the new endpoint get_jira_datasource_fields has no return annotation. License headers present; no new source files."},
+    {"kind": "security", "status": "pass", "notes": "New GET /v1/index/jira/fields relies on the router-level Depends(authenticate); creds resolved via the central SettingsService lookup, adding no access path. No token/key/header logged. custom_fields matched strictly against the Jira field catalogue, and the outbound 'fields' param is assembled only from server-returned ids."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/datasource/jira/jira_datasource_processor.py",
+      "line": 148,
+      "title": "_init_index custom-field persistence untested",
+      "problem": "_init_index now stores JiraIndexInfo(jql=self.jql, custom_fields=self.custom_fields) for a newly created datasource, but no test exercises the new-index branch: every processor test injects a ready-made index_info via jira_processor_fixture, so _init_index short-circuits and the stored value is never observed.",
+      "impact": "If custom_fields were dropped from that JiraIndexInfo, creation would still look correct because the first run uses the constructor value; every later cron reindex and stale-resume (triggers/actors/datasource.py:206 and :854 pass no custom_fields and rely entirely on _effective_custom_fields reading index.jira.custom_fields) would silently re-index without the configured fields.",
+      "recommendation": "Add a processor test that builds JiraDatasourceProcessor without index_info and with custom_fields=['customfield_10001'], calls _init_index(), and asserts processor.index.jira.custom_fields == ['customfield_10001']."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/datasource/loader/jira_loader.py",
+      "line": 173,
+      "title": "Ambiguous custom field name silently resolved",
+      "problem": "_resolve_custom_fields builds by_name = {field['name'].lower(): field for field in all_fields}, a plain dict comprehension in which a later field overwrites an earlier one with the same display name. Jira routinely exposes several fields sharing a name (multiple 'Sprint' or 'Story Points' fields from different apps), and an entry configured by name matches whichever one happened to be last in the catalogue response.",
+      "impact": "A user who picks a field by display name can silently get a different field's values indexed, with no ambiguity error at create time, no warning at index time, and an ordering that can change between Jira responses. Verified live: name resolution is reachable from both the strict (fetch_remote_stats) and lenient (lazy_load) paths.",
+      "recommendation": "Detect collisions while building by_name and, when an entry matches more than one field, raise InvalidCustomFieldException naming the ambiguity and requiring the customfield_ id instead of the display name."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/datasource/loader/jira_loader.py",
+      "line": 173,
+      "title": "Unguarded field name access aborts resolution",
+      "problem": "by_name = {field['name'].lower(): field for field in all_fields} accesses 'name' directly and calls .lower() on it, while the resolution loop three lines below defends with field.get('name') or field['id'] and get_available_fields uses the same defensive form - the change itself treats 'name' as possibly absent or null everywhere except here.",
+      "impact": "A single catalogue entry with a missing or null name raises KeyError/AttributeError inside _resolve_custom_fields, which runs on both the strict path (fetch_remote_stats, so health check and datasource creation) and the lenient path (lazy_load), aborting every index run and health check for that Jira instance rather than skipping the one bad entry. Reachability of a nameless field in a real catalogue response was not confirmed, so this is graded on the unguarded access itself.",
+      "recommendation": "Build the map defensively, e.g. by_name = {n.lower(): f for f in all_fields if (n := f.get('name'))}, matching the defensive style already used in the same function."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/datasource/loader/jira_loader.py",
+      "line": 190,
+      "title": "Unresolved fields skipped with no user-visible signal",
+      "problem": "In lenient mode _resolve_custom_fields logs a single warning and continues even when every configured entry is unresolved, and configuration is persisted as the user's raw entries (display names included), so a field renamed, deleted or made invisible in Jira after configuration simply stops resolving on the next scheduled reindex. Nothing sets an index error, notifies the owner, or records the skipped entries on the index.",
+      "impact": "The datasource keeps reporting successful reindexes while the documents quietly lose the custom-field content the user configured; the regression is only discoverable by reading server logs or diffing indexed documents. Confirmed reachable: lazy_load calls _resolve_custom_fields(strict=False) unconditionally and the cron path reads the stored raw entries through _effective_custom_fields.",
+      "recommendation": "Surface lenient skips to the user - record the unresolved entries on the index record (e.g. a non-fatal index warning/error field consumed by the datasource UI) - and persist resolved field ids rather than raw display names so a rename cannot silently break resolution."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/datasource/loader/jira_loader.py",
+      "line": 321,
+      "title": "ADF null content raises TypeError mid-load",
+      "problem": "_render_field_value routes a dict into the ADF walker when value.get('type') and 'content' in value, so a node whose 'content' key is present but explicitly null passes the check; _render_adf_value then does node.get('content', []), which returns None (the default applies only to an absent key) and the following comprehension iterates None.",
+      "impact": "TypeError escapes _transform_to_doc and aborts the entire indexing run for that datasource, not just the one field or one issue - a single rich-text custom field value with a null content node fails the whole reindex. Whether Jira emits null content in practice was not confirmed, so the finding is graded on the unguarded path.",
+      "recommendation": "Iterate defensively: for child in (node.get('content') or []) if isinstance(child, dict), and apply the same 'or []' guard wherever ADF children are traversed."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/index.py",
+      "line": 143,
+      "title": "New code uses discouraged typing generics",
+      "problem": "code-quality.md 'Types And Imports' lists typing.Optional[X] in the Avoid column and prefers 'X | None' unions with parameterized builtin generics; the new custom-fields code annotates with Optional[list[str]], Optional[str], Optional[List[str]] and List[dict] at src/codemie/rest_api/models/index.py:143 and :152, src/codemie/rest_api/routers/index.py:2287, src/codemie/datasource/loader/jira_loader.py:79 and :89, and src/codemie/datasource/jira/jira_datasource_processor.py:130, :170 and :193.",
+      "impact": "code-quality.md is the repository's documented blocking standard for new code, and these annotations are exactly the form it names as the one to avoid; leaving them entrenches the deprecated style in the newest public surface of the module.",
+      "recommendation": "Annotate the new members and parameters as 'list[str] | None', 'str | None' and 'list[dict]', adding 'from __future__ import annotations' where a forward reference is needed."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/index.py",
+      "line": 813,
+      "title": "custom_fields persistence on update untested",
+      "problem": "_update_query_fields now assigns self.jira.custom_fields and calls flag_modified(self, 'jira'), and update_index gained the custom_fields pass-through at :873/:908, but no test calls update_index or _update_query_fields with custom_fields - the existing update_index tests assert only description/branch/link/files_filter/embeddings_model/error.",
+      "impact": "SQLAlchemy does not auto-detect in-place JSON column mutations, so losing either the assignment or the flag_modified call would leave the PUT returning 'Edit successful' while the stored JiraIndexInfo keeps the old list; the next cron reindex would then resolve _effective_custom_fields from stale config and index the wrong field set, with no test failing.",
+      "recommendation": "Add update_index tests in tests/codemie/rest_api/models/test_index_info.py covering an edited list, a cleared list (custom_fields=[] must clear) and an omitted value (None must leave the stored list unchanged)."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/index.py",
+      "line": 1575,
+      "title": "Update path skips strict custom-field validation",
+      "problem": "index_knowledge_base_jira validates strictly - it calls check_jira_query(jql, creds, custom_fields=request.custom_fields), which reaches _resolve_custom_fields(strict=True) and raises InvalidCustomFieldException as a 422. update_knowledge_base_jira has no equivalent call: it persists request.custom_fields through kb_index.update_index and forwards them to the reindex processor without any validation.",
+      "impact": "A field name that is unknown, mistyped or no longer present in Jira is accepted on edit with a 200 'Edit successful', stored in the index config, and then only warn-and-skipped by the lenient index-time path, so the datasource re-indexes without the requested data and the user is never told. The asymmetry also means the strict InvalidCustomFieldException branch is unreachable from the edit flow the UI uses most.",
+      "recommendation": "Validate on update as on create: call JiraDatasourceProcessor.check_jira_query(jql=request.jql, credentials=jira_creds, custom_fields=request.custom_fields) before kb_index.update_index and map InvalidCustomFieldException to the same 422 field error the create route returns."
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/index.py",
+      "line": 2284,
+      "title": "New public endpoint lacks return annotation",
+      "problem": "code-quality.md 'Types And Imports' lists 'Untyped public functions in new code' in the Avoid column and requires explicit parameter and return types; the new endpoint get_jira_datasource_fields declares parameter types but no return annotation, even though the decorator already fixes response_model=list[JiraFieldInfo].",
+      "impact": "A new public API handler ships without the explicit return type the repository's documented blocking standard requires for new code, leaving the handler's contract expressed only in the decorator.",
+      "recommendation": "Add '-> list[JiraFieldInfo]' (or the concrete returned type) to the get_jira_datasource_fields signature."
+    },
+    {
+      "id": "CR-010",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/index/datasource_health_check_service.py",
+      "line": 76,
+      "title": "Health-check Jira path has no tests",
+      "problem": "health_check_jira now forwards request.custom_fields into check_jira_query (:120-124) and health_check_datasource gained an InvalidCustomFieldException branch returning field_error='jiraCustomFields' (:76-84), but tests/codemie/service/index/test_datasource_health_check_service.py contains only TestHealthCheckGit with six git cases - the Jira path is executed by no test at all.",
+      "impact": "This is the path that makes strict custom-field validation visible in the datasource form. Dropping the forwarding would make 'check connection' validate only the JQL, and removing the except branch would let InvalidCustomFieldException - which no other handler in health_check_datasource catches - escape and 500 the endpoint instead of returning the structured field error. Nothing in the suite would fail either way.",
+      "recommendation": "Add Jira cases to that file: patch JiraDatasourceProcessor.check_jira_query and assert it is called with custom_fields=[...], plus a case where it raises InvalidCustomFieldException(['No Such Field']) and health_check_datasource returns error.field_error == 'jiraCustomFields' with the field names in the message."
+    },
+    {
+      "id": "CR-011",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/rest_api/routers/test_index.py",
+      "title": "Jira custom-field route layer untested",
+      "problem": "No test executes any route with custom_fields: the create and update Jira route tests patch JiraDatasourceProcessor wholesale and assert only status_code and the background message, and the mock_jira_request fixture sets no custom_fields. The new GET /index/jira/fields endpoint (routers/index.py:2283-2312) is referenced by no test file at all - only the processor-level get_available_fields is covered.",
+      "impact": "Dropping the custom_fields kwarg at either route would ship a datasource created or reindexed without the configured fields (and without create-time strict validation) while the API still answers 200 with the usual message, and every existing route test would still pass. On the new endpoint, wrong creds arguments or the loss of the ConnectionException branch - which turns an unreachable Jira into the VPN-specific 422 rather than the generic fallback - would ship unnoticed; the field picker is the only way the UI offers valid field ids.",
+      "recommendation": "In tests/codemie/rest_api/routers/test_index.py assert the forwarded kwargs on the patched processor mock for both POST and PUT (constructor custom_fields and check_jira_query custom_fields), and add route tests for GET /v1/index/jira/fields covering the 200 serialized field list and the ConnectionException 422 body."
+    },
+    {
+      "id": "CR-012",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "Commit subject missing ticket prefix",
+      "problem": "git-workflow.md 'Commit Message Format' requires 'EPMCDME-####: Description' for repository commits; commit 7d6b8f4d4 in the review range has the subject 'Sonar fix', with no ticket id and no colon separator, matching the guide's explicit Avoid example.",
+      "impact": "The commit cannot be traced to the EPMCDME work item the guide requires for every repository commit.",
+      "recommendation": "Reword the subject to 'EPMCDME-14093: <what the Sonar fix changed>', or squash-merge the branch under a single ticket-prefixed subject as the guide's merge strategy prescribes."
+    }
+  ]
+}

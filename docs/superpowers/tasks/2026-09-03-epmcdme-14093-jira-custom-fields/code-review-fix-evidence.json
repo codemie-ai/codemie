@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "reviewed_head": "85c6f8c602493c25aaa6ec33ae6fd080d18d01ef",
+  "findings": {
+    "CR-004": {
+      "decision": {
+        "outcome": "Deferred to a separate EPMCDME ticket; not addressed in this MR. The lenient warn-and-skip behaviour stays as designed, with one improvement shipped: an ambiguous display name is now reported separately from an unresolved one, so the log distinguishes the two failure modes.",
+        "rationale": "The finding is accurate as an observation but its remedy is a feature, not a fix. Lenient index-time resolution is the change's stated design - a field deleted in Jira after configuration must not fail a scheduled reindex - and the recommended remedy (persist resolved field IDs instead of the user's raw entries, and surface skipped entries on the index record for the datasource UI to consume) changes the persisted shape of JiraIndexInfo and requires matching frontend work in codemie-ui. That is out of scope for this MR. The branch owner reviewed the finding on 2026-09-03 and chose to defer it to its own ticket rather than expand this MR. Strict validation now covers both the create and the update route (CR-008), so a misconfiguration can no longer be introduced silently through the UI; the residual gap is only a field that stops resolving later, which is what the deferred ticket will address."
+      }
+    },
+    "CR-012": {
+      "decision": {
+        "outcome": "Keep commit 7d6b8f4d4 'Sonar fix' as it is; do not reword or rebase. The MR is squash-merged under its ticket-prefixed title.",
+        "rationale": "The finding's stated impact - that the commit cannot be traced to its work item - is mitigated by the merge strategy git-workflow.md itself prescribes: the branch squash-merges into main under the MR title 'EPMCDME-14093: Add configurable custom fields to Jira datasource', so the non-conforming subject never reaches main. The finding also carries no pipeline consequence: see cr-012-pipeline-evidence.md in this run directory, the verbatim KubeRocketCI task table for pipeline review-codemie-main-fc48p, reported after 'Sonar fix' was already on the branch and passing in full including mr-title-validate, with no commit-message validation task in its 12-task list. The commit is already pushed to origin, so rewording would require a force-push rewriting published history. The branch owner decided on 2026-09-03 to keep it.",
+        "artifacts": [
+          {"path": "docs/superpowers/tasks/2026-09-03-epmcdme-14093-jira-custom-fields/cr-012-pipeline-evidence.md"}
+        ]
+      }
+    }
+  }
+}

@@ -19,7 +19,13 @@ import pytest
 from sqlalchemy.orm.exc import StaleDataError
 from unittest.mock import MagicMock, patch
 
-from codemie.rest_api.models.index import IndexInfo, IndexDeletedException, LifecycleState, ProgressUpdate
+from codemie.rest_api.models.index import (
+    IndexInfo,
+    IndexDeletedException,
+    JiraIndexInfo,
+    LifecycleState,
+    ProgressUpdate,
+)
 from codemie.rest_api.security.user import User
 
 NULLABLE_DEFAULT_FIELDS = (
@@ -482,3 +488,68 @@ class TestCompleteProgressReactivation:
         index_info.set_error("some error")
 
         assert index_info.lifecycle_state == LifecycleState.STALE
+
+
+@pytest.fixture
+def jira_index_info():
+    return IndexInfo(
+        project_name="Test Project",
+        description="Test Project Description",
+        repo_name="Test Repo",
+        index_type="knowledge_base_jira",
+        id="1234",
+        jira=JiraIndexInfo(jql="project = TEST", custom_fields=["customfield_10001"]),
+    )
+
+
+def test_update_index_replaces_custom_fields(jira_index_info, mock_update_path):
+    with patch(mock_update_path, return_value=True):
+        jira_index_info.update_index(
+            user=MagicMock(spec=User),
+            jql="project = TEST",
+            custom_fields=["customfield_10002", "customfield_10003"],
+        )
+
+    assert jira_index_info.jira.custom_fields == ["customfield_10002", "customfield_10003"]
+
+
+def test_update_index_empty_list_clears_custom_fields(jira_index_info, mock_update_path):
+    """An empty list is how the form clears the configuration; it must not read as 'unchanged'."""
+    with patch(mock_update_path, return_value=True):
+        jira_index_info.update_index(user=MagicMock(spec=User), jql="project = TEST", custom_fields=[])
+
+    assert jira_index_info.jira.custom_fields == []
+
+
+def test_update_index_omitted_custom_fields_left_unchanged(jira_index_info, mock_update_path):
+    """None means 'not supplied' — a PUT without the key must not wipe the stored configuration."""
+    with patch(mock_update_path, return_value=True):
+        jira_index_info.update_index(user=MagicMock(spec=User), description="New description")
+
+    assert jira_index_info.jira.custom_fields == ["customfield_10001"]
+
+
+def test_update_index_flags_jira_column_as_modified(jira_index_info, mock_update_path):
+    """SQLAlchemy does not detect in-place JSON mutation, so the flag is what persists the write."""
+    with patch(mock_update_path, return_value=True), patch('codemie.rest_api.models.index.flag_modified') as mock_flag:
+        # No jql: that branch flags the same column, and would mask a missing flag here
+        jira_index_info.update_index(user=MagicMock(spec=User), custom_fields=["customfield_10002"])
+
+    mock_flag.assert_called_once_with(jira_index_info, 'jira')
+
+
+def test_update_index_does_not_touch_custom_fields_for_xray(mock_update_path):
+    """Xray shares the update path but stores its JQL elsewhere and has no custom fields."""
+    xray_index = IndexInfo(
+        project_name="Test Project",
+        description="Test Project Description",
+        repo_name="Test Repo",
+        index_type="knowledge_base_xray",
+        id="1234",
+        jira=JiraIndexInfo(jql="project = TEST", custom_fields=["customfield_10001"]),
+    )
+
+    with patch(mock_update_path, return_value=True):
+        xray_index.update_index(user=MagicMock(spec=User), custom_fields=["customfield_99999"])
+
+    assert xray_index.jira.custom_fields == ["customfield_10001"]

@@ -86,6 +86,7 @@ from codemie.rest_api.models.index import (
     CodeIndexInfo,
     IndexKnowledgeBaseConfluenceRequest,
     IndexKnowledgeBaseJIRARequest,
+    JiraFieldInfo,
     IndexKnowledgeBaseXrayRequest,
     IndexKnowledgeBaseAzureDevOpsWikiRequest,
     IndexKnowledgeBaseAzureDevOpsWorkItemRequest,
@@ -1095,9 +1096,12 @@ def index_knowledge_base_jira(
         embedding_model=request.embedding_model,
         guardrail_assignments=request.guardrail_assignments,
         cron_expression=request.cron_expression,
+        custom_fields=request.custom_fields,
     )
     try:
-        datasource_processor.check_jira_query(jql=request.jql, credentials=jira_creds)
+        datasource_processor.check_jira_query(
+            jql=request.jql, credentials=jira_creds, custom_fields=request.custom_fields
+        )
     except Exception as e:
         raise ExtendedHTTPException(
             code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1612,12 +1616,34 @@ def update_knowledge_base_jira(
     # Check if project change is requested
     _validate_project_change(request.new_project_name, request.project_name, request.name, user)
 
+    jira_creds = SettingsService.get_jira_creds(
+        user_id=user.id,
+        project_name=request.project_name,
+        setting_id=request.setting_id or kb_index.setting_id,
+    )
+
+    # Validate as the create route does: an unknown or ambiguous field must not be accepted here
+    # and then silently warn-skipped at index time.
+    if request.custom_fields:
+        try:
+            JiraDatasourceProcessor.check_jira_query(
+                jql=request.jql, credentials=jira_creds, custom_fields=request.custom_fields
+            )
+        except Exception as e:
+            raise ExtendedHTTPException(
+                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message=INCORRECT_DATASOURCE_SETUP_MESSAGE,
+                details=str(e),
+                help=INVALID_INPUT_PARAMETERS_HELP,
+            ) from e
+
     # Update the index
     kb_index.update_index(
         user=user,
         description=request.description,
         project_space_visible=request.project_space_visible,
         jql=request.jql,
+        custom_fields=request.custom_fields,
         reset_error=False,
         setting_id=request.setting_id,
         project_name=request.new_project_name,
@@ -1629,11 +1655,6 @@ def update_knowledge_base_jira(
             _update_datasource_scheduler(user.id, kb_index, request.cron_expression, timezone=request.timezone)
         return BaseResponse(message=EDIT_SUCCESSFUL)
 
-    jira_creds = SettingsService.get_jira_creds(
-        user_id=user.id,
-        project_name=request.project_name,
-        setting_id=request.setting_id or kb_index.setting_id,
-    )
     project_space_visible = (
         request.project_space_visible if request.project_space_visible is not None else kb_index.project_space_visible
     )
@@ -1650,6 +1671,7 @@ def update_knowledge_base_jira(
         index_info=kb_index,
         request_uuid=raw_request.state.uuid,
         cron_expression=request.cron_expression if cron_expression_provided else None,
+        custom_fields=request.custom_fields,
     )
 
     msg = f"of datasource {request.name} has been started in the background"
@@ -2412,6 +2434,39 @@ def health_check_datasource(
             message="Cannot validate provided datasource",
             details=f"An error occurred while trying to check the datasource: {str(e)}",
             help="Please check provided data on form or contact an administrator for assistance.",
+        ) from e
+
+
+@router.get("/index/jira/fields", status_code=status.HTTP_200_OK, response_model=list[JiraFieldInfo])
+def get_jira_datasource_fields(
+    project_name: str,
+    raw_request: Request,
+    setting_id: str | None = None,
+) -> list[JiraFieldInfo]:
+    """
+    List Jira fields available for custom-field indexing (default indexed fields excluded).
+    Used by the datasource form to offer a field picker instead of free-text input.
+    """
+    jira_creds = SettingsService.get_jira_creds(
+        user_id=raw_request.state.user.id,
+        project_name=project_name,
+        setting_id=setting_id,
+    )
+    try:
+        return JiraDatasourceProcessor.get_available_fields(credentials=jira_creds)
+    except ConnectionException as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Cannot fetch Jira fields",
+            details="The Jira instance is unreachable. It may be down, or a VPN connection may be required.",
+            help="Check your network/VPN connection and the Jira URL in the integration, then try again.",
+        ) from e
+    except Exception as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message="Cannot fetch Jira fields",
+            details=f"An error occurred while fetching fields from Jira: {str(e)}",
+            help="Please check the Jira integration credentials and URL, then try again.",
         ) from e
 
 

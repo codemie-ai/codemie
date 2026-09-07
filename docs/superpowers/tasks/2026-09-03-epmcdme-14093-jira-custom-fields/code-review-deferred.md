@@ -1,0 +1,3 @@
+# Deferred from code review — 2026-09-03-epmcdme-14093-jira-custom-fields (2026-09-03)
+
+- **Network errors unhandled outside `_validate_creds`** — `src/codemie/datasource/loader/jira_loader.py:127` — the new `except OSError -> ConnectionException` branch covers only `_validate_creds`; `fetch_remote_stats`, `_load_issues*` and `_get_jira_tz` still let a mid-load `requests` connection error surface as a raw `OSError`, so a network drop during a background reindex fails the datasource with an opaque error instead of the new typed one. Pre-existing: those call sites had no network-error handling before this change and none of their lines were touched by it; the change's connection-test intent covered the creds/health-check path only.

@@ -141,6 +141,16 @@ class ConfluenceIndexInfo(BaseModel):
 
 class JiraIndexInfo(BaseModel):
     jql: str
+    custom_fields: list[str] | None = None
+
+
+class JiraFieldInfo(BaseModel):
+    """A Jira field available for custom-field indexing."""
+
+    id: str
+    name: str
+    custom: bool = False
+    type: str | None = None
 
 
 class XrayIndexInfo(BaseModel):
@@ -793,6 +803,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         cql: Optional[str] = None,
         jql: Optional[str] = None,
         wiki_query: Optional[str] = None,
+        custom_fields: list[str] | None = None,
     ) -> None:
         """Update query fields for different datasource types."""
         if cql:
@@ -806,6 +817,11 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
             else:
                 self.jira.jql = jql
                 flag_modified(self, 'jira')
+
+        # None means "leave unchanged"; an empty list clears configured custom fields
+        if custom_fields is not None and self.index_type != "knowledge_base_xray" and self.jira:
+            self.jira.custom_fields = custom_fields
+            flag_modified(self, 'jira')
 
         if wiki_query:
             self.azure_devops_wiki.wiki_query = wiki_query
@@ -878,6 +894,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         summarization_model: Optional[str] = None,
         cql: Optional[str] = None,
         jql: Optional[str] = None,
+        custom_fields: list[str] | None = None,
         wiki_query: Optional[str] = None,
         wiql_query: Optional[str] = None,
         reset_error: bool = True,
@@ -912,7 +929,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         if reset_error:
             self.error = False
 
-        self._update_query_fields(cql=cql, jql=jql, wiki_query=wiki_query)
+        self._update_query_fields(cql=cql, jql=jql, wiki_query=wiki_query, custom_fields=custom_fields)
 
         if wiql_query and self.azure_devops_work_item:
             self.azure_devops_work_item.wiql_query = wiql_query
@@ -1434,6 +1451,7 @@ class DatasourceHealthCheckRequest(BaseModel):
     git_url: Optional[str] = None
     space: Optional[str] = None
     wiki: Optional[str] = "xwiki"
+    custom_fields: list[str] | None = None
 
 
 class ErrorMessage(BaseModel):
@@ -1454,6 +1472,7 @@ class IndexKnowledgeBaseJIRARequest(CronExpressionValidatorMixin, IndexKnowledge
     setting_id: Optional[str] = None
     embedding_model: Optional[str] = None
     cron_expression: Optional[str] = None
+    custom_fields: list[str] | None = None
 
 
 class IndexKnowledgeBaseXrayRequest(CronExpressionValidatorMixin, IndexKnowledgeBaseRequest):
@@ -1649,6 +1668,7 @@ class UpdateKnowledgeBaseJiraRequest(CronExpressionValidatorMixin, BaseModel):
     project_space_visible: Optional[bool] = None
     guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None
     cron_expression: Optional[str] = None
+    custom_fields: list[str] | None = None
 
 
 class UpdateKnowledgeBaseXrayRequest(CronExpressionValidatorMixin, BaseModel):

@@ -318,7 +318,7 @@ def test_check_jira_query():
         result = JiraDatasourceProcessor.check_jira_query("project = TEST", credentials)
 
     assert result == 10
-    mock_validate.assert_called_once_with(jql="project = TEST", credentials=credentials)
+    mock_validate.assert_called_once_with(jql="project = TEST", credentials=credentials, custom_fields=None)
 
 
 def test_check_jira_query_empty_result():
@@ -375,6 +375,111 @@ def test_check_jira_query_no_jql():
         JiraDatasourceProcessor.check_jira_query("", credentials)
 
 
+def test_check_jira_query_forwards_custom_fields():
+    credentials = JiraConfig(
+        cloud=False,
+        url="http://fake-jira-url",
+        token="fake-token",
+        username="fake-username",
+    )
+
+    with patch(
+        "codemie.datasource.jira.jira_datasource_processor.JiraDatasourceProcessor.validate_creds_and_loader"
+    ) as mock_validate:
+        mock_validate.return_value = {"documents_count_key": 10}
+
+        JiraDatasourceProcessor.check_jira_query(
+            "project = TEST", credentials, custom_fields=["customfield_10001", "Story Points"]
+        )
+
+    mock_validate.assert_called_once_with(
+        jql="project = TEST", credentials=credentials, custom_fields=["customfield_10001", "Story Points"]
+    )
+
+
+def test_validate_creds_and_loader_passes_custom_fields():
+    credentials = JiraConfig(
+        cloud=False,
+        url="http://fake-jira-url",
+        token="fake-token",
+        username="fake-username",
+    )
+
+    with patch("codemie.datasource.jira.jira_datasource_processor.JiraLoader") as mock_loader:
+        mock_loader.return_value.fetch_remote_stats.return_value = {"documents_count": 10}
+
+        JiraDatasourceProcessor.validate_creds_and_loader(
+            "project = TEST", credentials, custom_fields=["customfield_10001"]
+        )
+
+    assert mock_loader.call_args.kwargs["custom_fields"] == ["customfield_10001"]
+
+
+def test_init_loader_custom_fields_from_ctor(jira_processor_fixture):
+    processor = jira_processor_fixture
+    processor.custom_fields = ["customfield_10001"]
+
+    with patch("codemie.datasource.jira.jira_datasource_processor.JiraLoader") as mock_loader:
+        processor._init_loader()
+
+    assert mock_loader.call_args.kwargs["custom_fields"] == ["customfield_10001"]
+
+
+def test_init_loader_custom_fields_fallback_to_index(jira_processor_fixture):
+    """Cron/resume flows construct the processor without custom_fields; the stored index config wins."""
+    processor = jira_processor_fixture
+    processor.index.jira = JiraIndexInfo(jql="project = TEST", custom_fields=["Story Points"])
+
+    with patch("codemie.datasource.jira.jira_datasource_processor.JiraLoader") as mock_loader:
+        processor._init_loader()
+
+    assert mock_loader.call_args.kwargs["custom_fields"] == ["Story Points"]
+
+
+def test_init_loader_no_custom_fields(jira_processor_fixture):
+    processor = jira_processor_fixture
+
+    with patch("codemie.datasource.jira.jira_datasource_processor.JiraLoader") as mock_loader:
+        processor._init_loader()
+
+    assert mock_loader.call_args.kwargs["custom_fields"] is None
+
+
+def test_get_available_fields_filters_defaults_and_sorts():
+    credentials = JiraConfig(
+        cloud=False,
+        url="http://fake-jira-url",
+        token="fake-token",
+        username="fake-username",
+    )
+    raw_fields = [
+        {"id": "summary", "name": "Summary", "custom": False},
+        {"id": "description", "name": "Description", "custom": False},
+        {"id": "labels", "name": "Labels", "custom": False},
+        {"id": "customfield_10002", "name": "Test Steps", "custom": True, "schema": {"type": "string"}},
+        {"id": "customfield_10001", "name": "Story Points", "custom": True, "schema": {"type": "number"}},
+    ]
+
+    with patch("codemie.datasource.jira.jira_datasource_processor.JiraLoader") as mock_loader:
+        mock_loader.FIELDS = "summary,status,assignee,fixVersions,created,creator,updated,issuetype,description"
+        mock_loader.return_value.fetch_available_fields.return_value = raw_fields
+
+        result = JiraDatasourceProcessor.get_available_fields(credentials=credentials)
+
+    # Default indexed fields excluded; custom fields first, then alphabetical
+    assert result == [
+        {"id": "customfield_10001", "name": "Story Points", "custom": True, "type": "number"},
+        {"id": "customfield_10002", "name": "Test Steps", "custom": True, "type": "string"},
+        {"id": "labels", "name": "Labels", "custom": False, "type": None},
+    ]
+
+
+def test_jira_index_info_backward_compat():
+    """Existing DB rows without custom_fields must deserialize with None."""
+    info = JiraIndexInfo.model_validate({"jql": "project = TEST"})
+    assert info.custom_fields is None
+
+
 def test_init_loader_with_last_reindex_date(jira_processor_fixture):
     """Test that _init_loader uses last_reindex_date for incremental reindex"""
     processor = jira_processor_fixture
@@ -411,3 +516,39 @@ def test_init_loader_without_last_reindex_date(jira_processor_fixture):
     mock_loader.assert_called_once()
     args, kwargs = mock_loader.call_args
     assert "updated_gte" not in kwargs
+
+
+def _new_index_processor(custom_fields):
+    """Processor built without an existing index, so _init_index runs its creation branch."""
+    return JiraDatasourceProcessor(
+        datasource_name="test_repo",
+        user=User(id="1", username="testuser"),
+        project_name="test_project",
+        credentials=JiraConfig(cloud=False, url="http://fake-jira-url", token="fake-token", username="fake-username"),
+        jql="project = TEST",
+        custom_fields=custom_fields,
+        setting_id="setting_id",
+    )
+
+
+@patch.object(JiraDatasourceProcessor, "_assign_and_sync_guardrails", MagicMock())
+@patch("codemie.datasource.jira.jira_datasource_processor.IndexInfo.new")
+def test_init_index_persists_custom_fields(index_new):
+    """A newly created datasource must store the configured fields; cron reindex reads them back."""
+    processor = _new_index_processor(["customfield_10001"])
+
+    processor._init_index()
+
+    stored_jira = index_new.call_args.kwargs["jira"]
+    assert stored_jira.jql == "project = TEST"
+    assert stored_jira.custom_fields == ["customfield_10001"]
+
+
+@patch.object(JiraDatasourceProcessor, "_assign_and_sync_guardrails", MagicMock())
+@patch("codemie.datasource.jira.jira_datasource_processor.IndexInfo.new")
+def test_init_index_without_custom_fields(index_new):
+    processor = _new_index_processor(None)
+
+    processor._init_index()
+
+    assert index_new.call_args.kwargs["jira"].custom_fields is None

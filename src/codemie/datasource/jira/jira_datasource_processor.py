@@ -64,6 +64,7 @@ class JiraDatasourceProcessor(BaseDatasourceProcessor):
         self.project_space_visible = project_space_visible
         self.setting_id = kwargs.get('setting_id')
         self.embedding_model = kwargs.get('embedding_model')
+        self.custom_fields = kwargs.get('custom_fields')
 
         super().__init__(
             datasource_name=datasource_name,
@@ -120,9 +121,19 @@ class JiraDatasourceProcessor(BaseDatasourceProcessor):
 
         loader = JiraLoader(
             jql=self.jql,
+            custom_fields=self._effective_custom_fields,
             **self._get_loader_args(self.credentials, self.is_incremental_reindex, update_date),
         )
         return loader
+
+    @property
+    def _effective_custom_fields(self) -> list[str] | None:
+        """Custom fields from the request, falling back to the stored index config (cron/resume flows)."""
+        if self.custom_fields is not None:
+            return self.custom_fields
+        if self.index and self.index.jira:
+            return self.index.jira.custom_fields
+        return None
 
     def _init_index(self):
         if not self.index:
@@ -134,7 +145,7 @@ class JiraDatasourceProcessor(BaseDatasourceProcessor):
                 project_space_visible=self.project_space_visible,
                 index_type=self.INDEX_TYPE,
                 user=self.user,
-                jira=JiraIndexInfo(jql=self.jql),
+                jira=JiraIndexInfo(jql=self.jql, custom_fields=self.custom_fields),
                 embeddings_model=self.embedding_model or llm_service.default_embedding_model,
                 setting_id=self.setting_id,
             )
@@ -156,8 +167,32 @@ class JiraDatasourceProcessor(BaseDatasourceProcessor):
         )
 
     @classmethod
-    def validate_creds_and_loader(cls, jql: str, credentials: JiraConfig) -> dict[str, int]:
-        loader = JiraLoader(jql=jql, **cls._get_loader_args(credentials))
+    def get_available_fields(cls, credentials: JiraConfig) -> list[dict]:
+        """Returns Jira fields available for custom-field indexing, excluding the default indexed set.
+
+        Each entry: {"id", "name", "custom", "type"}, sorted with custom fields first, then by name.
+        """
+        loader = JiraLoader(jql="", **cls._get_loader_args(credentials))
+        all_fields = loader.fetch_available_fields()
+
+        default_field_ids = set(JiraLoader.FIELDS.split(','))
+        fields = [
+            {
+                "id": field["id"],
+                "name": field.get("name") or field["id"],
+                "custom": bool(field.get("custom")),
+                "type": (field.get("schema") or {}).get("type"),
+            }
+            for field in all_fields
+            if field["id"] not in default_field_ids
+        ]
+        return sorted(fields, key=lambda f: (not f["custom"], f["name"].lower()))
+
+    @classmethod
+    def validate_creds_and_loader(
+        cls, jql: str, credentials: JiraConfig, custom_fields: list[str] | None = None
+    ) -> dict[str, int]:
+        loader = JiraLoader(jql=jql, custom_fields=custom_fields, **cls._get_loader_args(credentials))
         try:
             stats = loader.fetch_remote_stats()
             return stats
@@ -166,11 +201,11 @@ class JiraDatasourceProcessor(BaseDatasourceProcessor):
             raise InvalidQueryException("JQL", str(e))
 
     @classmethod
-    def check_jira_query(cls, jql: str, credentials: JiraConfig):
+    def check_jira_query(cls, jql: str, credentials: JiraConfig, custom_fields: list[str] | None = None):
         if not jql or not jql.strip():
             logger.error("JQL was not provided")
             raise InvalidQueryException("JQL", "There is no JQL expression")
-        index_stats = cls.validate_creds_and_loader(jql=jql, credentials=credentials)
+        index_stats = cls.validate_creds_and_loader(jql=jql, credentials=credentials, custom_fields=custom_fields)
         docs_count = index_stats.get(JiraLoader.DOCUMENTS_COUNT_KEY, 0)
 
         if not docs_count:

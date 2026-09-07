@@ -22,6 +22,7 @@ from typing import Callable, Generator
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.main import app
+from codemie.datasource.exceptions import ConnectionException, InvalidCustomFieldException
 from codemie.rest_api.models.index import IndexKnowledgeBaseJIRARequest
 from codemie.core.models import BaseResponse, CreatedByUser
 from codemie.rest_api.routers.index import router
@@ -1361,3 +1362,117 @@ def test_update_datasource_scheduler_no_timezone_passes_none(mock_handle):
     mock_handle.assert_called_once()
     _, kwargs = mock_handle.call_args
     assert kwargs["timezone"] is None
+
+
+@pytest.fixture
+def mock_jira_request_with_custom_fields():
+    return IndexKnowledgeBaseJIRARequest(
+        project_name="test_project",
+        name="test_index",
+        description="test_description",
+        project_space_visible=True,
+        jql="test_jql",
+        custom_fields=["customfield_10001"],
+    )
+
+
+@patch('codemie.rest_api.routers.index._index_unique_check')
+@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor')
+@pytest.mark.asyncio
+async def test_create_jira_forwards_custom_fields(
+    mock_worker, mock_creds, mock_unique_check, mock_jira_request_with_custom_fields, auth_headers
+):
+    """Dropping the kwarg would index a datasource without the configured fields, still returning 200."""
+    mock_worker.return_value = MagicMock(started_message="OK")
+    mock_unique_check.return_value = True
+
+    response = app_client.post(
+        "/v1/index/knowledge_base/jira",
+        json=mock_jira_request_with_custom_fields.dict(),
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    assert mock_worker.call_args.kwargs["custom_fields"] == ["customfield_10001"]
+    mock_worker.return_value.check_jira_query.assert_called_once()
+    assert mock_worker.return_value.check_jira_query.call_args.kwargs["custom_fields"] == ["customfield_10001"]
+
+
+@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@pytest.mark.asyncio
+async def test_update_jira_validates_and_persists_custom_fields(
+    mock_filter, mock_worker, mock_creds, mock_jira_request_with_custom_fields, auth_headers
+):
+    """The edit flow must validate strictly, as the create flow does, before persisting."""
+    kb_index = MagicMock()
+    mock_filter.return_value = [kb_index]
+
+    response = app_client.put(
+        "/v1/index/knowledge_base/jira",
+        json=mock_jira_request_with_custom_fields.dict(),
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+    assert mock_worker.check_jira_query.call_args.kwargs["custom_fields"] == ["customfield_10001"]
+    assert kb_index.update_index.call_args.kwargs["custom_fields"] == ["customfield_10001"]
+
+
+@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor')
+@patch('codemie.rest_api.routers.index.KnowledgeBaseIndexInfo.filter_by_project_and_repo')
+@pytest.mark.asyncio
+async def test_update_jira_rejects_unknown_custom_field(
+    mock_filter, mock_worker, mock_creds, mock_jira_request_with_custom_fields, auth_headers
+):
+    kb_index = MagicMock()
+    mock_filter.return_value = [kb_index]
+    mock_worker.check_jira_query.side_effect = InvalidCustomFieldException(["No Such Field"])
+
+    response = app_client.put(
+        "/v1/index/knowledge_base/jira",
+        json=mock_jira_request_with_custom_fields.dict(),
+        headers=auth_headers,
+    )
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert "No Such Field" in response.text
+    kb_index.update_index.assert_not_called()
+
+
+@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor.get_available_fields')
+@pytest.mark.asyncio
+async def test_get_jira_fields_returns_serialized_list(mock_fields, mock_creds, auth_headers):
+    mock_fields.return_value = [
+        {"id": "customfield_10001", "name": "Story Points", "custom": True, "type": "number"},
+        {"id": "labels", "name": "Labels", "custom": False, "type": None},
+    ]
+
+    response = app_client.get(
+        "/v1/index/jira/fields?project_name=test_project&setting_id=setting-1", headers=auth_headers
+    )
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {"id": "customfield_10001", "name": "Story Points", "custom": True, "type": "number"},
+        {"id": "labels", "name": "Labels", "custom": False, "type": None},
+    ]
+    assert mock_creds.call_args.kwargs["setting_id"] == "setting-1"
+    assert mock_creds.call_args.kwargs["project_name"] == "test_project"
+
+
+@patch('codemie.rest_api.routers.index.SettingsService.get_jira_creds')
+@patch('codemie.rest_api.routers.index.JiraDatasourceProcessor.get_available_fields')
+@pytest.mark.asyncio
+async def test_get_jira_fields_unreachable_instance_returns_422(mock_fields, mock_creds, auth_headers):
+    """The VPN-specific branch must survive; without it the generic fallback hides the cause."""
+    mock_fields.side_effect = ConnectionException(datasource_type="Jira", error_details="timed out")
+
+    response = app_client.get("/v1/index/jira/fields?project_name=test_project", headers=auth_headers)
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert "VPN" in response.text

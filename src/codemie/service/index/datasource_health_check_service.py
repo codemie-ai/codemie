@@ -15,6 +15,7 @@
 from codemie.core.constants import DatasourceTypes
 from codemie.datasource.exceptions import (
     ConnectionException,
+    InvalidCustomFieldException,
     InvalidQueryException,
     MissingIntegrationException,
     UnauthorizedException,
@@ -76,6 +77,15 @@ class IndexHealthCheckService:
                     help="Please check missing URL or token in \"Integrations\" tab  and try again.",
                 )
             )
+        except InvalidCustomFieldException as e:
+            return DatasourceHealthCheckResponse(
+                error=ErrorMessage(
+                    message=str(e),
+                    details=f"An error occurred while validating configured custom fields: {str(e)}",
+                    help="Remove or correct the listed custom fields.",
+                    field_error="jiraCustomFields",
+                )
+            )
         except InvalidQueryException as e:
             return DatasourceHealthCheckResponse(
                 error=ErrorMessage(
@@ -112,7 +122,9 @@ class IndexHealthCheckService:
         )
 
         return DatasourceHealthCheckResponse(
-            documents_count=JiraDatasourceProcessor.check_jira_query(jql=request.jql, credentials=jira_creds)
+            documents_count=JiraDatasourceProcessor.check_jira_query(
+                jql=request.jql, credentials=jira_creds, custom_fields=request.custom_fields
+            )
         )
 
     @classmethod
