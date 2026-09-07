@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "task": "Add platform-enforced conversation finishing (is_finished/finished_at) with user and admin single/bulk finish endpoints, HTTP 409 mutation enforcement, enriched read/list responses, and test coverage.",
+  "generated": "2026-08-11",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 25,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches Conversation model, 2 routers (user + admin finish endpoints), 4+ service files (conversation_service, history_materializer, history_projection_service, history_compaction_service), plus assistant/workflow chat flows (assistant_service.py, workflows/workflow.py) and the permission layer — full-stack change across multiple subsystems; bumped by the 'affects multiple workflows/agents' red flag since AC4 enforcement spans both the assistant chat path and the workflow execution path." },
+    { "dimension": "technical_risk", "reason": "No prior 'finish'/lock concept exists on Conversation (genuinely new behavior), though bulk-endpoint and admin/owner permission patterns are directly reusable from projects.py/guardrail.py and ability.py. Bumped twice: DB schema change (new columns + partial index) and performance/scalability as an explicit primary concern (AC6/AC9 require efficient at-scale queries with no full-table scans for external scheduler use)." },
+    { "dimension": "file_change_estimate", "reason": "Estimated 10+ modified files (Conversation model, 2 routers, 4 service/history-pipeline files, assistant/workflow chat files, ability.py, possibly config.py) plus new files (Alembic migration with partial index, several new/extended test files across router/model/service/permission suites) spanning 4+ directories — matches the XL band (11-15 modified, 4-6 new)." },
+    { "dimension": "affected_layers", "reason": "Touches API (2 routers), Service (conversation_service + history pipeline), DB-Persistence (schema + partial index migration), and Workflow (assistant/workflow chat enforcement) — 4 distinct layers with a required schema migration; bumped from L to XL by the 'changes DB schema significantly' red flag." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL to XXL (capped at 6): enforcement affects multiple workflow/agent chat flows (assistant_service.py, workflows/workflow.py) beyond the two new routers.",
+    "Technical Risk bumped from M to L: DB schema change (new is_finished/finished_at columns + partial index) requires a careful migration.",
+    "Technical Risk bumped from L to XL: performance/scalability is an explicit primary concern (AC6/AC9 — partial index, no full-table scans, efficient scheduler queries at scale).",
+    "Affected Layers bumped from L to XL: significant DB schema change (new columns + partial index migration) per guide calibration tip."
+  ],
+  "split_recommendation": null
+}

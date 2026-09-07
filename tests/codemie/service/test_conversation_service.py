@@ -19,12 +19,21 @@ from unittest.mock import MagicMock, patch
 
 from fastapi import BackgroundTasks
 
+from datetime import datetime
+
+from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import AssistantChatRequest, UpdateConversationRequest, UpdateAiMessageRequest, TokensUsage
 from codemie.rest_api.models.assistant import Assistant
 from codemie.service.chat_naming_service import ChatNamingService
 from codemie.service.conversation_service import ConversationService
 from codemie.service.llm_service.llm_service import LLMService
-from codemie.rest_api.models.conversation import Conversation, ConversationMetrics, GeneratedMessage
+from codemie.rest_api.models.conversation import (
+    Conversation,
+    ConversationListItem,
+    ConversationMetrics,
+    GeneratedMessage,
+    UpsertHistoryRequest,
+)
 
 
 @pytest.fixture
@@ -175,6 +184,258 @@ def test_conversation_service_update_ai_message(
 
     mock_update.assert_called()
     assert conversation.history[3].message == "New Message"
+
+
+def test_update_conversation_ai_message_raises_409_when_finished():
+    conversation = Conversation(
+        id="conv-1",
+        conversation_id="conv-1",
+        user_id="u1",
+        history=[],
+        finished_at=datetime(2026, 8, 11, 12, 0, 0),
+    )
+    request = UpdateAiMessageRequest(message_index=0, message="edited")
+
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        ConversationService.update_conversation_ai_message(conversation, history_index=0, request=request)
+    assert exc_info.value.code == 409
+
+
+@patch("codemie.service.conversation_service.AgentWorkspaceService.sync_uploaded_files")
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+def test_upsert_chat_history_raises_409_when_finished(
+    mock_conv_find, mock_sync_uploaded_files, mock_user, mock_assistant
+):
+    finished_conversation = Conversation(
+        id="conv-1",
+        conversation_id="conv-1",
+        user_id=mock_user.id,
+        history=[],
+        finished_at=datetime(2026, 8, 11, 12, 0, 0),
+    )
+    mock_conv_find.return_value = finished_conversation
+    request = AssistantChatRequest(conversation_id="conv-1", text="hello", history=[], file_names=[])
+
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        ConversationService.upsert_chat_history(
+            assistant_response="hi",
+            time_elapsed=1.0,
+            tokens_usage=TokensUsage(input_tokens=1, output_tokens=1, money_spent=0.0),
+            request=request,
+            assistant=mock_assistant,
+            user=mock_user,
+            thoughts=[],
+        )
+    assert exc_info.value.code == 409
+
+
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+def test_upsert_conversation_with_history_raises_409_when_finished(mock_conv_find, mock_user):
+    finished_conversation = Conversation(
+        id="conv-1",
+        conversation_id="conv-1",
+        user_id=mock_user.id,
+        history=[],
+        finished_at=datetime(2026, 8, 11, 12, 0, 0),
+    )
+    mock_conv_find.return_value = finished_conversation
+    request = UpsertHistoryRequest(assistant_id="asst-1", history=[GeneratedMessage(message="hi", role="User")])
+
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        ConversationService.upsert_conversation_with_history("conv-1", request, mock_user)
+    assert exc_info.value.code == 409
+
+
+def _finish_session_mock(*, rowcount=1, existing=True):
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.__exit__.return_value = False
+    session.execute.return_value.rowcount = rowcount
+    session.get.return_value = MagicMock() if existing else None
+    return session
+
+
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+def test_finish_conversation_marks_finished_and_returns_result(mock_conv_find):
+    conversation = Conversation(
+        id="conv-1",
+        conversation_id="conv-1",
+        user_id="u1",
+        history=[],
+    )
+    mock_conv_find.return_value = conversation
+    session = _finish_session_mock(rowcount=1)
+    with patch("codemie.service.conversation_service.get_session", return_value=session):
+        result = ConversationService.finish_conversation("conv-1")
+    assert result.conversation_id == "conv-1"
+    assert result.finished_at is not None
+    assert not hasattr(result, "already_finished")
+    assert not hasattr(result, "error")
+
+
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+def test_finish_conversation_raises_409_when_already_done(mock_conv_find):
+    finished_at = datetime(2026, 8, 11, 12, 0, 0)
+    conversation = Conversation(
+        id="conv-1",
+        conversation_id="conv-1",
+        user_id="user-1",
+        finished_at=finished_at,
+    )
+    mock_conv_find.return_value = conversation
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        ConversationService.finish_conversation("conv-1")
+    assert exc_info.value.code == 409
+
+
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+def test_finish_conversation_raises_404_when_not_found(mock_conv_find):
+    mock_conv_find.return_value = None
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        ConversationService.finish_conversation("missing-id")
+    assert exc_info.value.code == 404
+
+
+def test_finish_conversations_bulk_mixed_results():
+    """Bulk finish: new → finished_at set; already-finished → already_finished=True, error=None; missing → error=not_found."""
+    already_finished_at = datetime(2026, 8, 11, 12, 0, 0)
+
+    # Simulate DB rows: conv-1 active, conv-2 already finished, conv-3 not in DB
+    mock_rows = [
+        MagicMock(id="conv-1", finished_at=None),
+        MagicMock(id="conv-2", finished_at=already_finished_at),
+    ]
+
+    mock_session = MagicMock()
+    mock_session.__enter__ = MagicMock(return_value=mock_session)
+    mock_session.__exit__ = MagicMock(return_value=False)
+    mock_session.exec.return_value.all.return_value = mock_rows
+    mock_session.execute.return_value.scalars.return_value.all.return_value = ["conv-1"]
+
+    with patch("codemie.service.conversation_service.get_session", return_value=mock_session):
+        results = ConversationService.finish_conversations_bulk(["conv-1", "conv-2", "conv-3"])
+
+    by_id = {r.conversation_id: r for r in results}
+    assert by_id["conv-1"].finished_at is not None and by_id["conv-1"].error is None
+    assert by_id["conv-2"].already_finished is True and by_id["conv-2"].error is None
+    assert by_id["conv-3"].error == "not_found"
+
+
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+def test_finish_conversation_does_not_merge_full_row(mock_conv_find):
+    conversation = Conversation(
+        id="conv-1",
+        conversation_id="conv-1",
+        user_id="u1",
+        history=[],
+    )
+    mock_conv_find.return_value = conversation
+    session = _finish_session_mock(rowcount=1)
+    with (
+        patch("codemie.service.conversation_service.get_session", return_value=session),
+        patch.object(Conversation, "update") as mock_update,
+    ):
+        result = ConversationService.finish_conversation("conv-1")
+    mock_update.assert_not_called()
+    session.execute.assert_called_once()
+    assert result.conversation_id == "conv-1"
+    assert result.finished_at is not None
+    assert not hasattr(result, "already_finished")
+    assert not hasattr(result, "error")
+
+
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+def test_finish_conversation_raises_404_when_deleted_before_persist(mock_conv_find):
+    conversation = Conversation(
+        id="conv-1",
+        conversation_id="conv-1",
+        user_id="u1",
+        history=[],
+    )
+    mock_conv_find.return_value = conversation
+    session = _finish_session_mock(rowcount=0, existing=False)
+    with (
+        patch("codemie.service.conversation_service.get_session", return_value=session),
+        patch.object(Conversation, "update", return_value=None),
+    ):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ConversationService.finish_conversation("conv-1")
+    assert exc_info.value.code == 404
+
+
+def test_finish_conversations_bulk_unmatched_update_is_already_finished():
+    already_finished_at = datetime(2026, 8, 11, 13, 0, 0)
+    select_rows = [MagicMock(id="conv-1", finished_at=None)]
+    followup_rows = [MagicMock(id="conv-1", finished_at=already_finished_at)]
+
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.__exit__.return_value = False
+    select_result = MagicMock()
+    select_result.all.return_value = select_rows
+    followup_result = MagicMock()
+    followup_result.all.return_value = followup_rows
+    session.exec.side_effect = [select_result, followup_result]
+    session.execute.return_value.scalars.return_value.all.return_value = []
+
+    with patch("codemie.service.conversation_service.get_session", return_value=session):
+        results = ConversationService.finish_conversations_bulk(["conv-1"])
+
+    assert results[0].already_finished is True
+    assert results[0].finished_at == already_finished_at
+    assert results[0].error is None
+
+
+def test_finish_conversations_bulk_unmatched_update_deleted_is_not_found():
+    select_rows = [MagicMock(id="conv-1", finished_at=None)]
+
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.__exit__.return_value = False
+    select_result = MagicMock()
+    select_result.all.return_value = select_rows
+    followup_result = MagicMock()
+    followup_result.all.return_value = []
+    session.exec.side_effect = [select_result, followup_result]
+    session.execute.return_value.scalars.return_value.all.return_value = []
+
+    with patch("codemie.service.conversation_service.get_session", return_value=session):
+        results = ConversationService.finish_conversations_bulk(["conv-1"])
+
+    assert results[0].error == "not_found"
+    assert results[0].finished_at is None
+
+
+def test_remove_conversation_history_index_raises_409_when_finished(mock_conversation):
+    mock_conversation.finished_at = datetime(2026, 8, 11, 12, 0, 0)
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        ConversationService.remove_conversation_history_index(mock_conversation, 0)
+    assert exc_info.value.code == 409
+
+
+def test_clear_conversation_history_raises_409_when_finished(mock_conversation):
+    mock_conversation.finished_at = datetime(2026, 8, 11, 12, 0, 0)
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        ConversationService.clear_conversation_history(mock_conversation)
+    assert exc_info.value.code == 409
+
+
+@patch("codemie.service.conversation_service.ConversationFolder.search_by_name_and_user", return_value=[])
+@patch("codemie.service.conversation_service.Conversation.search_by_name_and_user")
+def test_search_conversations_includes_finished_state(mock_search_chats, _mock_search_folders):
+    finished_at = datetime(2026, 8, 11, 12, 0, 0)
+    mock_search_chats.return_value = [
+        ConversationListItem(
+            id="chat-1",
+            name="done chat",
+            date=finished_at,
+            update_date=finished_at,
+            finished_at=finished_at,
+        )
+    ]
+    result = ConversationService.search_conversations("user-1", "done")
+    assert len(result.items) == 1
+    assert result.items[0].finished_at == finished_at
 
 
 @patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")

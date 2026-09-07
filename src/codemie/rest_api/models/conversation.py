@@ -26,9 +26,9 @@ from codemie.clients.postgres import get_session
 from codemie.configs import config, logger
 from codemie.core.ability import Owned, Action
 from codemie.core.db_utils import escape_like_wildcards
-from codemie.core.exceptions import ValidationException
 from codemie.agents.tool_confirmation.models import ToolCallPendingEvent
-from codemie.core.models import CodeIndexType, ChatMessage, ChatRole, ToolCallPolicy
+from codemie.core.exceptions import ValidationException
+from codemie.core.models import CodeIndexType, ChatMessage, ChatRole, ConfiguredModel, ToolCallPolicy
 from codemie.rest_api.models.assistant import Context, AssistantType
 from codemie.rest_api.models.base import (
     BaseModelWithSQLSupport,
@@ -39,7 +39,7 @@ from codemie.rest_api.models.base import (
 from codemie.rest_api.models.feedback import MarkEnum
 from codemie.rest_api.security.user import User
 from sqlmodel import Field as SQLField, Session, delete, select, Column, text
-from sqlalchemy import Boolean, String
+from sqlalchemy import Boolean, func, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.mutable import MutableList
 from enum import StrEnum
@@ -260,6 +260,10 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
         default=False,
         sa_column=Column(Boolean),
         description="True if this conversation is based on a workflow, False for assistant conversations",
+    )
+    finished_at: Optional[datetime] = SQLField(
+        default=None,
+        description="Timestamp the conversation was finished, or None if still active",
     )
 
     # Legacy
@@ -526,7 +530,17 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             "project",
         }
 
+        # is_finished is no longer a DB column; translate to a finished_at IS NULL/NOT NULL clause
+        is_finished_filter = None
+        if filters and "is_finished" in filters:
+            filters = dict(filters)
+            is_finished_filter = filters.pop("is_finished")
+
         filter_clauses, extra_params = cls._build_filter_sql(filters or {}, allowed_filter_columns)
+        if is_finished_filter is True:
+            filter_clauses += " AND c.finished_at IS NOT NULL"
+        elif is_finished_filter is False:
+            filter_clauses += " AND c.finished_at IS NULL"
         params: dict = {"uid": user_id, **extra_params}
 
         stmt = text(f"""
@@ -540,6 +554,7 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
                 c.date,
                 c.update_date,
                 c.is_workflow_conversation,
+                c.finished_at,
                 a.icon_url AS assistant_icon,
                 ARRAY(
                     SELECT linked_assistant.name
@@ -578,9 +593,73 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
                     very_last_msg_at=row.very_last_msg_at,
                     assistant_icon=row.assistant_icon,
                     assistant_names=row.assistant_names,
+                    finished_at=row.finished_at,
                 )
             )
         return result
+
+    @classmethod
+    def get_all_conversations_admin(
+        cls,
+        is_finished: Optional[bool] = None,
+        started_after: Optional[datetime] = None,
+        project: Optional[str] = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> tuple[List["ConversationListItem"], int]:
+        """
+        Admin-scoped conversation list across all users, for scheduler-driven
+        discovery of unfinished conversations (EPMCDME-11067). Filtering by
+        is_finished=False uses the ix_conversations_unfinished partial index
+        (WHERE finished_at IS NULL). Optional project scopes the scan to one
+        application so callers do not paginate the full table.
+        """
+        statement = select(
+            cls.conversation_id,
+            cls.conversation_name,
+            cls.folder,
+            cls.pinned,
+            cls.date,
+            cls.update_date,
+            cls.assistant_ids,
+            cls.initial_assistant_id,
+            cls.is_workflow_conversation,
+            cls.finished_at,
+        )
+        if is_finished is not None:
+            if is_finished:
+                statement = statement.where(cls.finished_at.isnot(None))
+            else:
+                statement = statement.where(cls.finished_at.is_(None))
+        if started_after is not None:
+            statement = statement.where(cls.date >= started_after)
+        if project is not None:
+            statement = statement.where(cls.project == project)
+
+        with get_session() as session:
+            total = session.exec(select(func.count()).select_from(statement.subquery())).one()
+
+            paginated_statement = statement.order_by(cls.date.asc()).offset(page * per_page).limit(per_page)
+            rows = session.exec(paginated_statement).all()
+
+            items = [
+                ConversationListItem(
+                    id=row.conversation_id,
+                    name=row.conversation_name or "",
+                    folder=row.folder,
+                    pinned=row.pinned,
+                    date=row.update_date or row.date,
+                    update_date=row.update_date,
+                    assistant_ids=row.assistant_ids,
+                    initial_assistant_id=row.initial_assistant_id,
+                    is_workflow=bool(row.is_workflow_conversation),
+                    workflow_id=row.initial_assistant_id if row.is_workflow_conversation else None,
+                    conversation_id=row.conversation_id if row.is_workflow_conversation else None,
+                    finished_at=row.finished_at,
+                )
+                for row in rows
+            ]
+            return items, total
 
     def find_messages(self, history_index: int, message_index: int) -> tuple[GeneratedMessage, GeneratedMessage]:
         """Find message pair by history and message index"""
@@ -678,7 +757,8 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
                 pinned,
                 date,
                 update_date,
-                is_workflow_conversation
+                is_workflow_conversation,
+                finished_at
             FROM conversations
             WHERE user_id = :uid
               AND (
@@ -710,6 +790,7 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
                     is_workflow=is_workflow,
                     workflow_id=row.initial_assistant_id if is_workflow else None,
                     conversation_id=row.conversation_id if is_workflow else None,
+                    finished_at=row.finished_at,
                 )
             )
         return result
@@ -779,6 +860,8 @@ class ConversationListItem(BaseModel):
     assistant_icon: Optional[str] = None
     assistant_names: Optional[List[str]] = Field(default_factory=list)
 
+    finished_at: Optional[datetime] = None
+
 
 class ConversationResponse(BaseModel):
     """
@@ -820,6 +903,8 @@ class ConversationResponse(BaseModel):
     update_date: Optional[datetime] = None
     very_first_msg_at: Optional[datetime] = None
     very_last_msg_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
     pagination: Optional[ConversationHistoryPaginationData] = None
 
     @model_serializer(mode="wrap")
@@ -831,6 +916,31 @@ class ConversationResponse(BaseModel):
         if data.get("pagination") is None:
             data.pop("pagination", None)
         return data
+
+
+class ConversationFinishResponse(ConfiguredModel):
+    """Result of finishing a single conversation. Already-finished conversations raise HTTP 409."""
+
+    conversation_id: str
+    finished_at: datetime
+
+
+class ConversationFinishResult(ConfiguredModel):
+    """Result of one finish attempt in a bulk-finish response."""
+
+    conversation_id: str
+    already_finished: bool = False
+    finished_at: Optional[datetime] = None
+    error: Optional[str] = None
+
+
+class ConversationFinishBulkRequest(ConfiguredModel):
+    conversation_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class ConversationFinishBulkResponse(ConfiguredModel):
+    total: int
+    results: list[ConversationFinishResult]
 
 
 class ConversationExportFormat(StrEnum):
@@ -854,6 +964,7 @@ class SearchResultItem(BaseModel):
     updated_at: datetime  # Last update timestamp
     type: Literal['chat', 'folder']  # Discriminator
     folder: Optional[str] = None  # Parent folder (for chats only)
+    finished_at: Optional[datetime] = None  # Chat only; folders leave this unset
 
 
 class ConversationSearchResponse(BaseModel):

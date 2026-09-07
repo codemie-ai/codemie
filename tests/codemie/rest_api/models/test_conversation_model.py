@@ -14,9 +14,49 @@
 
 from unittest.mock import patch, MagicMock
 
+import pytest
+
+from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.conversation import ChatTurnData, Conversation, ConversationListItem, GeneratedMessage
 from datetime import datetime
 from codemie.core.models import ChatRole
+
+
+def test_conversation_finished_at_defaults_none():
+    conversation = Conversation(
+        id="conv-1",
+        conversation_id="conv-1",
+        user_id="user-1",
+        history=[],
+    )
+    assert conversation.finished_at is None
+
+
+def test_guard_finished_raises_409_when_finished_at_set():
+    from codemie.service.conversation_service import _guard_finished
+
+    conversation = Conversation(
+        id="conv-1",
+        conversation_id="conv-1",
+        user_id="user-1",
+        history=[],
+        finished_at=datetime(2026, 8, 11, 12, 0, 0),
+    )
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        _guard_finished(conversation)
+    assert exc_info.value.code == 409
+
+
+def test_guard_finished_noop_when_not_finished():
+    from codemie.service.conversation_service import _guard_finished
+
+    conversation = Conversation(
+        id="conv-1",
+        conversation_id="conv-1",
+        user_id="user-1",
+        history=[],
+    )
+    _guard_finished(conversation)  # must not raise
 
 
 def test_find_messages():
@@ -152,7 +192,7 @@ def test_generated_message_backward_compatibility():
     assert data['file_names'] == ["legacy.txt"]
 
 
-def _make_row(conversation_id, conversation_name, folder, update_date):
+def _make_row(conversation_id, conversation_name, folder, update_date, finished_at=None):
     """Build a mock DB row with named attributes matching the SQL query columns."""
     row = MagicMock()
     row.conversation_id = conversation_id
@@ -164,6 +204,7 @@ def _make_row(conversation_id, conversation_name, folder, update_date):
     row.date = update_date
     row.update_date = update_date
     row.is_workflow_conversation = False
+    row.finished_at = finished_at
     return row
 
 
@@ -190,6 +231,121 @@ def test_conversation_search_by_name_and_user(mock_get_session):
 
     # Verify the session was used
     mock_session.exec.assert_called_once()
+
+
+@patch('codemie.rest_api.models.conversation.get_session')
+def test_conversation_search_by_name_and_user_includes_finished_at(mock_get_session):
+    row = _make_row(
+        'conv-1',
+        'Admin Dashboard',
+        '',
+        datetime(2026, 4, 30, 12, 0, 0),
+        finished_at=datetime(2026, 4, 30, 13, 0, 0),
+    )
+
+    mock_session = MagicMock()
+    mock_get_session.return_value.__enter__.return_value = mock_session
+    mock_session.exec.return_value.all.return_value = [row]
+
+    results = Conversation.search_by_name_and_user(user_id='user-123', query='admin', limit=20)
+
+    assert results[0].finished_at == datetime(2026, 4, 30, 13, 0, 0)
+
+
+@patch('codemie.rest_api.models.conversation.get_session')
+def test_get_user_conversations_includes_finished_at(mock_get_session):
+    row = _make_row(
+        'conv-1',
+        'Admin Dashboard',
+        '',
+        datetime(2026, 4, 30, 12, 0, 0),
+        finished_at=datetime(2026, 4, 30, 13, 0, 0),
+    )
+    row.very_first_msg_at = None
+    row.very_last_msg_at = None
+    row.assistant_icon = None
+    row.assistant_names = []
+
+    mock_session = MagicMock()
+    mock_get_session.return_value.__enter__.return_value = mock_session
+    mock_session.exec.return_value.all.return_value = [row]
+
+    results = Conversation.get_user_conversations(user_id='user-123')
+
+    assert results[0].finished_at == datetime(2026, 4, 30, 13, 0, 0)
+
+
+@patch('codemie.rest_api.models.conversation.get_session')
+def test_get_all_conversations_admin_filters_by_is_finished(mock_get_session):
+    mock_session = MagicMock()
+    row = MagicMock()
+    row.conversation_id = "conv-1"
+    row.conversation_name = "Test"
+    row.folder = None
+    row.pinned = False
+    row.date = datetime(2026, 8, 11, 10, 0, 0)
+    row.update_date = None
+    row.assistant_ids = []
+    row.initial_assistant_id = None
+    row.is_workflow_conversation = False
+    row.finished_at = None
+
+    mock_session.exec.side_effect = [
+        MagicMock(one=MagicMock(return_value=2)),
+        MagicMock(all=MagicMock(return_value=[row])),
+    ]
+    mock_get_session.return_value.__enter__.return_value = mock_session
+
+    items, total = Conversation.get_all_conversations_admin(is_finished=False, started_after=None, page=0, per_page=20)
+    assert total == 2
+    assert len(items) == 1
+    assert items[0].finished_at is None
+
+
+@patch('codemie.rest_api.models.conversation.get_session')
+def test_get_all_conversations_admin_filters_by_project(mock_get_session):
+    mock_session = MagicMock()
+    row = MagicMock()
+    row.conversation_id = "conv-1"
+    row.conversation_name = "Test"
+    row.folder = None
+    row.pinned = False
+    row.date = datetime(2026, 8, 11, 10, 0, 0)
+    row.update_date = None
+    row.assistant_ids = []
+    row.initial_assistant_id = None
+    row.is_workflow_conversation = False
+    row.finished_at = None
+
+    mock_session.exec.side_effect = [
+        MagicMock(one=MagicMock(return_value=1)),
+        MagicMock(all=MagicMock(return_value=[row])),
+    ]
+    mock_get_session.return_value.__enter__.return_value = mock_session
+
+    items, total = Conversation.get_all_conversations_admin(
+        is_finished=None, started_after=None, project="my-app", page=0, per_page=20
+    )
+    assert total == 1
+    assert len(items) == 1
+
+
+@patch('codemie.rest_api.models.conversation.get_session')
+def test_get_all_conversations_admin_does_not_select_history(mock_get_session):
+    mock_session = MagicMock()
+    mock_session.exec.side_effect = [
+        MagicMock(one=MagicMock(return_value=0)),
+        MagicMock(all=MagicMock(return_value=[])),
+    ]
+    mock_get_session.return_value.__enter__.return_value = mock_session
+
+    Conversation.get_all_conversations_admin(page=0, per_page=20)
+
+    paginated_stmt = mock_session.exec.call_args_list[1].args[0]
+    selected = [getattr(col, "key", None) or getattr(col, "name", str(col)) for col in paginated_stmt.selected_columns]
+    assert "history" not in selected
+    assert "conversation_id" in selected
+    assert "finished_at" in selected
 
 
 @patch('codemie.rest_api.models.conversation.get_session')

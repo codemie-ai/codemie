@@ -27,6 +27,7 @@ from sqlmodel.sql.expression import and_, or_
 from codemie.configs import config, logger
 from codemie.core.ability import Ability, Action
 from codemie.core.constants import ChatRole, MermaidMimeType
+from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import UserEntity
 from codemie.core.utils import safe_divide
 from codemie.core.workflow_models import (
@@ -190,14 +191,20 @@ class WorkflowService:
         user: UserEntity,
     ) -> tuple:
         from codemie.rest_api.models.conversation import Conversation
+        from codemie.service.conversation_service import _guard_finished
 
         if not conversation_id:
             conversation_id = str(uuid.uuid4())
 
+        conversation_pre_existing = True
         try:
             conversation = Conversation.get_by_id(conversation_id)
+            _guard_finished(conversation)
             logger.debug(f"Using existing conversation {conversation_id} for workflow execution")
+        except ExtendedHTTPException:
+            raise
         except Exception:
+            conversation_pre_existing = False
             conversation = Conversation(
                 id=conversation_id,
                 conversation_id=conversation_id,
@@ -214,7 +221,7 @@ class WorkflowService:
             logger.debug(f"Created new conversation {conversation_id} for workflow chat")
 
         history_index = WorkflowService._next_history_index(conversation.history or [])
-        return conversation_id, conversation, history_index
+        return conversation_id, conversation, history_index, conversation_pre_existing
 
     @staticmethod
     def create_workflow_execution(
@@ -236,7 +243,7 @@ class WorkflowService:
             )
 
             if is_chat_execution:
-                conversation_id, conversation, history_index = WorkflowService._get_or_create_conversation(
+                conversation_id, conversation, history_index, _ = WorkflowService._get_or_create_conversation(
                     conversation_id, workflow_config, user
                 )
 
@@ -275,13 +282,6 @@ class WorkflowService:
                 conversation_id=conversation_id if is_chat_execution else None,
                 parent_execution_id=parent_execution_id,
             )
-            execution_config.save(refresh=True)
-
-            if parent_execution_id:
-                parent_exec = WorkflowService.find_workflow_execution_by_id(parent_execution_id)
-                if parent_exec:
-                    parent_exec.active_sub_execution_id = execution_id
-                    parent_exec.save()
 
             # Only add conversation history for chat executions (streamable workflows)
             if is_chat_execution:
@@ -307,7 +307,6 @@ class WorkflowService:
                     message=None,  # Will be materialized on retrieval
                 )
 
-                # Append to conversation history
                 conversation.history = [*(conversation.history or []), user_message, assistant_message_ref]
                 conversation.update()
                 AgentWorkspaceService().sync_uploaded_files(
@@ -324,7 +323,16 @@ class WorkflowService:
                         "history_index": history_index,
                     },
                 )
-            else:
+
+            execution_config.save(refresh=True)
+
+            if parent_execution_id:
+                parent_exec = WorkflowService.find_workflow_execution_by_id(parent_execution_id)
+                if parent_exec:
+                    parent_exec.active_sub_execution_id = execution_id
+                    parent_exec.save()
+
+            if not is_chat_execution:
                 logger.info(
                     "Created non-chat workflow execution (no conversation history)",
                     extra={
@@ -535,6 +543,7 @@ class WorkflowService:
             user_input: The user-provided input message to append
         """
         from codemie.rest_api.models.conversation import Conversation
+        from codemie.service.conversation_service import _guard_finished
 
         history_index = self._next_history_index(execution.history or [])
         user_message = GeneratedMessage(
@@ -544,9 +553,6 @@ class WorkflowService:
             message_raw=user_input,
             history_index=history_index,
         )
-        execution.history = [*(execution.history or []), user_message]
-        execution.update(refresh=True)
-        logger.info(f"Appended user message to execution history on resume. ExecutionId={execution.execution_id}")
 
         if execution.conversation_id:
             assistant_message_ref = GeneratedMessage(
@@ -560,12 +566,17 @@ class WorkflowService:
                 message=None,
             )
             conversation = Conversation.get_by_id(execution.conversation_id)
+            _guard_finished(conversation)
             conversation.history = [*(conversation.history or []), user_message, assistant_message_ref]
-            conversation.update(refresh=True)
+            conversation.update()
             logger.info(
                 f"Appended user+assistant messages to conversation history on resume. "
                 f"ConversationId={execution.conversation_id}"
             )
+
+        execution.history = [*(execution.history or []), user_message]
+        execution.update(refresh=True)
+        logger.info(f"Appended user message to execution history on resume. ExecutionId={execution.execution_id}")
 
     def delete_workflow_execution(self, execution_config_id: str):
         try:

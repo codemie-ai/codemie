@@ -33,7 +33,7 @@ from codemie.core.models import (
     UpdateConversationFolderRequest,
 )
 from codemie.rest_api.models.assistant import Assistant
-from codemie.rest_api.models.base import BaseModelWithSQLSupport
+from codemie.rest_api.models.base import BaseModelWithSQLSupport, PaginatedListResponse, PaginationData
 from codemie.core.workflow_models import WorkflowConfig
 from codemie.core.workflow_models.workflow_execution import UpdateWorkflowExecutionOutputRequest
 from codemie.rest_api.models.conversation import (
@@ -42,6 +42,9 @@ from codemie.rest_api.models.conversation import (
     ConversationHistoryPaginationData,
     ConversationListItem,
     ConversationExportFormat,
+    ConversationFinishBulkRequest,
+    ConversationFinishBulkResponse,
+    ConversationFinishResponse,
     ConversationResponse,
     ConversationSearchResponse,
     UpsertHistoryRequest,
@@ -51,9 +54,9 @@ from codemie.rest_api.models.index import SortOrder
 from codemie.rest_api.models.conversation_folder import ConversationFolder
 from codemie.rest_api.models.share.shared_conversation import SharedConversation
 from codemie.rest_api.routers.feedback import CONVERSATION_NOT_FOUND_MESSAGE, CONVERSATION_NOT_FOUND_HELP
-from codemie.rest_api.routers.utils import raise_access_denied, remove_nulls
+from codemie.rest_api.routers.utils import raise_access_denied, raise_forbidden, remove_nulls
 from codemie.utils.datetime_utils import get_timestamp_bounds
-from codemie.rest_api.security.authentication import authenticate
+from codemie.rest_api.security.authentication import admin_access_only, authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.conversation import MessageExporter, ExportFormat
 from codemie.service.conversation_service import ConversationService
@@ -401,6 +404,72 @@ def update_conversation_history_by_index(
     return updated_conversation
 
 
+@router.post(
+    "/conversations/{conversation_id}/finish",
+    response_model=ConversationFinishResponse,
+)
+def finish_conversation(conversation_id: str, user: User = Depends(authenticate)) -> ConversationFinishResponse:
+    """
+    Mark a conversation as finished (owner-only).
+
+    Already-finished conversations return HTTP 409. Further message-append/edit
+    operations on a finished conversation also return HTTP 409.
+    """
+    conversation = Conversation.find_by_id(conversation_id)
+    if not conversation:
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message=CONVERSATION_NOT_FOUND_MESSAGE,
+            details=f"The conversation with ID [{conversation_id}] could not be found in the system.",
+            help=CONVERSATION_NOT_FOUND_HELP,
+        )
+    if not Ability(user).can(Action.WRITE, conversation):
+        raise_forbidden("write")
+    return ConversationService.finish_conversation(conversation_id)
+
+
+@router.post(
+    "/admin/conversations/finish-bulk",
+    response_model=ConversationFinishBulkResponse,
+    dependencies=[Depends(admin_access_only)],
+)
+def admin_finish_conversations_bulk(payload: ConversationFinishBulkRequest) -> ConversationFinishBulkResponse:
+    """Finish multiple conversations in one request, with per-ID success/error reporting."""
+    results = ConversationService.finish_conversations_bulk(payload.conversation_ids)
+    return ConversationFinishBulkResponse(total=len(results), results=results)
+
+
+@router.get(
+    "/admin/conversations",
+    response_model=PaginatedListResponse[ConversationListItem],
+    dependencies=[Depends(admin_access_only)],
+)
+def list_admin_conversations(
+    is_finished: Optional[bool] = Query(None, alias="isFinished"),
+    started_after: Optional[datetime] = Query(None, alias="startedAt"),
+    project: Optional[str] = Query(None),
+    page: int = Query(DEFAULT_PAGE, ge=0),
+    per_page: int = Query(DEFAULT_CONVERSATIONS_PER_PAGE, ge=1, le=MAX_CONVERSATIONS_PER_PAGE, alias="perPage"),
+) -> PaginatedListResponse[ConversationListItem]:
+    """
+    Paginated, cross-user conversation list for admin/scheduler use. Filter by
+    isFinished and optional project so callers do not paginate the full table
+    (EPMCDME-11067).
+    """
+    items, total = Conversation.get_all_conversations_admin(
+        is_finished=is_finished,
+        started_after=started_after,
+        project=project,
+        page=page,
+        per_page=per_page,
+    )
+    pages = (total + per_page - 1) // per_page if per_page > 0 else 0
+    return PaginatedListResponse(
+        data=items,
+        pagination=PaginationData(page=page, per_page=per_page, total=total, pages=pages),
+    )
+
+
 @router.put(
     "/conversations/{conversation_id}/history",
     response_model=UpsertHistoryResponse,
@@ -542,6 +611,7 @@ def get_conversation_list(
     user: User = Depends(authenticate),
     page: Optional[int] = Query(None, ge=DEFAULT_PAGE),
     per_page: Optional[int] = Query(None, ge=1, le=MAX_CONVERSATIONS_PER_PAGE),
+    is_finished: Optional[bool] = Query(None, alias="isFinished"),
 ) -> list[ConversationListItem]:
     """
     Get a list of all user conversations (both assistant chats and workflow conversations).
@@ -549,9 +619,15 @@ def get_conversation_list(
     Optional pagination parameters:
     - page: Page number (0-based). If not provided, returns all conversations.
     - per_page: Number of items per page. Default 20 when page is provided.
+
+    Optional isFinished filter narrows the list to finished (true) or unfinished (false)
+    conversations only.
     """
     if page is None and per_page is None:
-        conversations: list[ConversationListItem] = Conversation.get_user_conversations(user_id=user.id)
+        filters = {"is_finished": is_finished} if is_finished is not None else None
+        conversations: list[ConversationListItem] = Conversation.get_user_conversations(
+            user_id=user.id, filters=filters
+        )
         return conversations
 
     # Use defaults if only one param is provided
@@ -562,6 +638,7 @@ def get_conversation_list(
         user_id=user.id,
         page=page_val,
         per_page=per_page_val,
+        is_finished=is_finished,
     )
 
 

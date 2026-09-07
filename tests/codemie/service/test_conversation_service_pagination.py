@@ -50,6 +50,7 @@ class TestGetUserConversationsPaginated:
         row.very_last_msg_at = kwargs.get("very_last_msg_at")
         row.assistant_icon = kwargs.get("assistant_icon")
         row.assistant_names = kwargs.get("assistant_names", [])
+        row.finished_at = kwargs.get("finished_at")
         return row
 
     @patch("codemie.service.conversation_service.get_session")
@@ -67,6 +68,21 @@ class TestGetUserConversationsPaginated:
         assert len(result) == 1
         assert isinstance(result[0], ConversationListItem)
         assert result[0].id == "conv-1"
+
+    @patch("codemie.service.conversation_service.get_session")
+    def test_returns_finished_at_in_list_items(self, mock_get_session):
+        """List items include finished_at from the SQL row."""
+        finished_at = datetime(2025, 1, 15, 9, 0)
+        mock_row = self._make_mock_row("conv-fin", finished_at=finished_at)
+
+        mock_session = MagicMock()
+        mock_session.exec.return_value.all.return_value = [mock_row]
+        mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = ConversationService.get_user_conversations_paginated(user_id="user-123", page=0, per_page=10)
+
+        assert result[0].finished_at == finished_at
 
     @patch("codemie.service.conversation_service.get_session")
     def test_returns_timestamp_bounds_in_list_items(self, mock_get_session):
@@ -156,6 +172,7 @@ class TestGetConversationHistorySlice:
             "user_abilities": None,
             "date": datetime(2025, 1, 1),
             "update_date": datetime(2025, 1, 2),
+            "finished_at": None,
             "total_count": 1,
             "very_first_msg_at": None,
             "very_last_msg_at": None,
@@ -200,6 +217,35 @@ class TestGetConversationHistorySlice:
         assert total == 1
         assert first_ts is None
         assert last_ts is None
+
+    @patch("codemie.service.conversation_service.materialize_workflow_conversation")
+    @patch("codemie.service.conversation_service.get_session")
+    def test_returns_finished_at_in_conversation(self, mock_get_session, mock_materialize):
+        """Conversation instance includes finished_at from the meta row."""
+        mock_session = MagicMock()
+
+        row = self._get_mock_row()
+        finished_at = datetime(2025, 1, 3)
+        row.finished_at = finished_at
+        row._mapping["finished_at"] = finished_at
+
+        mock_result_meta = MagicMock()
+        mock_result_meta.first.return_value = row
+
+        mock_result_slice = MagicMock()
+        mock_result_slice.all.return_value = []
+
+        mock_session.exec.side_effect = [mock_result_meta, mock_result_slice]
+
+        mock_get_session.return_value.__enter__ = MagicMock(return_value=mock_session)
+        mock_get_session.return_value.__exit__ = MagicMock(return_value=False)
+        mock_materialize.side_effect = lambda msgs, _: MaterializedConversation(history=msgs)
+
+        conversation, _, _, _ = ConversationService.get_conversation_history_slice(
+            conversation_id="conv-123", page=0, per_page=50
+        )
+
+        assert conversation.finished_at == finished_at
 
     @patch("codemie.service.conversation_service.get_session")
     def test_returns_none_if_not_found(self, mock_get_session):

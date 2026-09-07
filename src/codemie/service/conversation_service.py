@@ -19,11 +19,12 @@ import copy
 import html
 import uuid
 from datetime import datetime
-from typing import Any, List, TYPE_CHECKING, Optional
+from typing import Any, List, TYPE_CHECKING, Optional, NoReturn
 
 from codemie_tools.base.utils import get_encoding
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, status
 from pydantic import BaseModel
+from sqlalchemy import update as sa_update
 from sqlmodel import select, and_, func, or_, text, Session
 
 from codemie.chains.base import Thought
@@ -38,6 +39,8 @@ from codemie.rest_api.models.conversation import (
     ChatTurnData,
     Conversation,
     ConversationMetrics,
+    ConversationFinishResponse,
+    ConversationFinishResult,
     GeneratedMessage,
     UserMark,
     UpsertHistoryRequest,
@@ -61,6 +64,29 @@ if TYPE_CHECKING:
     from codemie.rest_api.models.assistant import Assistant
 else:
     Assistant = Any
+
+
+def _guard_finished(conversation: Conversation) -> None:
+    if conversation.finished_at:
+        _raise_conversation_finished(conversation.id)
+
+
+def _raise_conversation_finished(conversation_id: str) -> NoReturn:
+    raise ExtendedHTTPException(
+        code=status.HTTP_409_CONFLICT,
+        message="Conversation is finished",
+        details=f"This conversation was closed and can no longer receive new messages (id={conversation_id}).",
+        help="Start a new conversation to continue.",
+    )
+
+
+def _raise_conversation_not_found(conversation_id: str) -> NoReturn:
+    raise ExtendedHTTPException(
+        code=status.HTTP_404_NOT_FOUND,
+        message="Conversation not found",
+        details=f"The conversation with ID [{conversation_id}] could not be found in the system.",
+        help="Please verify the conversation ID and try again. If you believe this is an error, contact support.",
+    )
 
 
 class SpendingGroupBreakdown(BaseModel):
@@ -224,6 +250,8 @@ class ConversationService:
         conversation, should_create_conversation, schedule_naming = cls._find_or_create_conversation(
             request, assistant, user
         )
+        if not should_create_conversation:
+            _guard_finished(conversation)
 
         request.history_index = cls._resolve_history_index(request, conversation)
         history_index = request.history_index
@@ -253,6 +281,13 @@ class ConversationService:
             project=assistant.project,
             replace_latest_variant=replace_latest_variant,
         )
+        conversation.update_conversation_assistants(assistant.id)
+
+        if should_create_conversation:
+            conversation.save()
+        else:
+            conversation.update()
+
         AgentWorkspaceService().sync_uploaded_files(
             conversation_id=request.conversation_id,
             file_urls=request.file_names or [],
@@ -268,9 +303,6 @@ class ConversationService:
             status,
             request_id=request_id,
         )
-        conversation.update_conversation_assistants(assistant.id)
-
-        # Update metrics using DRY helper
         cls._upsert_conversation_metrics(
             conversation_id=request.conversation_id,
             user=user,
@@ -278,9 +310,6 @@ class ConversationService:
             conversation=conversation,
             project=assistant.project,
         )
-
-        # Save or update conversation
-        conversation.save() if should_create_conversation else conversation.update()
 
         if schedule_naming:
             cls._schedule_naming_background_task(background_tasks, request, assistant_response, request_id)
@@ -320,6 +349,7 @@ class ConversationService:
         conversation = Conversation.find_by_id(conversation_id)
 
         if conversation:
+            _guard_finished(conversation)
             # UPDATE EXISTING - append only new messages
             new_messages = cls._append_new_messages(conversation, request.history, request.assistant_id)
             conversation.update()
@@ -529,6 +559,92 @@ class ConversationService:
         else:
             # Touch folder to update timestamp
             ConversationFolder.touch_folder(folder, user_id)
+
+    @classmethod
+    def _finish_loaded_conversation(cls, conversation: Conversation) -> ConversationFinishResponse:
+        _guard_finished(conversation)
+        now = datetime.now()
+        with get_session() as session:
+            result = session.execute(
+                sa_update(Conversation)
+                .where(Conversation.id == conversation.id, Conversation.finished_at.is_(None))
+                .values(finished_at=now)
+            )
+            if result.rowcount == 0:
+                if session.get(Conversation, conversation.id) is None:
+                    _raise_conversation_not_found(conversation.id)
+                _raise_conversation_finished(conversation.id)
+            session.commit()
+        conversation.finished_at = now
+        return ConversationFinishResponse(
+            conversation_id=conversation.id,
+            finished_at=now,
+        )
+
+    @classmethod
+    def finish_conversation(cls, conversation_id: str) -> ConversationFinishResponse:
+        conversation = Conversation.find_by_id(conversation_id)
+        if not conversation:
+            _raise_conversation_not_found(conversation_id)
+        return cls._finish_loaded_conversation(conversation)
+
+    @classmethod
+    def finish_conversations_bulk(cls, conversation_ids: list[str]) -> list[ConversationFinishResult]:
+        with get_session() as session:
+            rows = session.exec(
+                select(Conversation.id, Conversation.finished_at).where(Conversation.id.in_(conversation_ids))
+            ).all()
+
+        found: dict[str, datetime | None] = {row.id: row.finished_at for row in rows}
+        to_finish = list(dict.fromkeys(cid for cid in conversation_ids if cid in found and found[cid] is None))
+
+        now = datetime.now()
+        finished_ids: set[str] = set()
+        if to_finish:
+            with get_session() as session:
+                result = session.execute(
+                    sa_update(Conversation)
+                    .where(Conversation.id.in_(to_finish), Conversation.finished_at.is_(None))
+                    .values(finished_at=now)
+                    .returning(Conversation.id)
+                )
+                finished_ids = set(result.scalars().all())
+                session.commit()
+
+        unmatched = [cid for cid in to_finish if cid not in finished_ids]
+        raced: dict[str, datetime | None] = {}
+        if unmatched:
+            with get_session() as session:
+                raced_rows = session.exec(
+                    select(Conversation.id, Conversation.finished_at).where(Conversation.id.in_(unmatched))
+                ).all()
+                raced = {row.id: row.finished_at for row in raced_rows}
+
+        results = []
+        for cid in conversation_ids:
+            if cid not in found:
+                results.append(ConversationFinishResult(conversation_id=cid, already_finished=False, error="not_found"))
+            elif found[cid] is not None:
+                results.append(
+                    ConversationFinishResult(
+                        conversation_id=cid,
+                        already_finished=True,
+                        finished_at=found[cid],
+                    )
+                )
+            elif cid in finished_ids:
+                results.append(ConversationFinishResult(conversation_id=cid, already_finished=False, finished_at=now))
+            elif cid not in raced:
+                results.append(ConversationFinishResult(conversation_id=cid, already_finished=False, error="not_found"))
+            else:
+                results.append(
+                    ConversationFinishResult(
+                        conversation_id=cid,
+                        already_finished=True,
+                        finished_at=raced[cid],
+                    )
+                )
+        return results
 
     @classmethod
     def add_feedback(cls, request: FeedbackRequest, user: User):
@@ -823,6 +939,7 @@ class ConversationService:
 
     @classmethod
     def remove_conversation_history_index(cls, conversation: Conversation, history_index: int):
+        _guard_finished(conversation)
         conversation.history = [
             history_message
             for history_message in conversation.history
@@ -833,33 +950,32 @@ class ConversationService:
             history_message.history_index = current_index if current_index < history_index else current_index - 1
 
         conversation.update_conversation_assistants()
-        conversation.update(refresh=True)
+        conversation.update()
         return conversation
 
     @classmethod
     def clear_conversation_history(cls, conversation: Conversation):
         from codemie.core.workflow_models.workflow_execution import WorkflowExecution  # noqa: PLC0415 — deferred to break circular import
 
-        # Two-transaction split is deliberate: WorkflowExecution.delete_by_conversation_ids
-        # uses bulk SQL DELETEs that require their own session, while conversation.update()
-        # (base-model method) opens a separate session internally and has no session-param
-        # override.  In the rare event of a crash between the two commits, executions will
-        # be removed but history will remain — a recoverable state (history can be re-cleared;
-        # no data is permanently lost).
+        _guard_finished(conversation)
+        conversation.history = []
+        conversation.update_conversation_assistants()
+        # Persist the emptied history before deleting workflow executions.
+        # Two-transaction split is deliberate: update() opens its own session, and
+        # WorkflowExecution.delete_by_conversation_ids needs another. A crash
+        # between the two leaves executions behind an empty conversation —
+        # recoverable (executions can be reaped; history is already gone).
+        conversation.update()
         with Session(WorkflowExecution.get_engine()) as session:
             WorkflowExecution.delete_by_conversation_ids(session, [conversation.id])
             session.commit()
-
-        conversation.history = []
-        conversation.pending_checkpoint = None
-        conversation.update_conversation_assistants()
-        conversation.update(refresh=True)
         return conversation
 
     @classmethod
     def update_conversation_ai_message(
         cls, conversation: Conversation, history_index: int, request: UpdateAiMessageRequest
     ):
+        _guard_finished(conversation)
         messages = [
             history_message
             for history_message in conversation.history
@@ -875,7 +991,7 @@ class ConversationService:
             conversation.history.append(new_user_message)
             conversation.history.append(new_ai_message)
 
-        conversation.update(refresh=True)
+        conversation.update()
         return conversation
 
     @classmethod
@@ -1362,6 +1478,7 @@ class ConversationService:
         user_id: str,
         page: int,
         per_page: int,
+        is_finished: Optional[bool] = None,
     ) -> List[ConversationListItem]:
         """DB-level paginated list of user conversations.
 
@@ -1383,6 +1500,13 @@ class ConversationService:
         else:
             timestamp_sql = "NULL AS very_first_msg_at, NULL AS very_last_msg_at"
 
+        if is_finished is None:
+            is_finished_clause = ""
+        elif is_finished:
+            is_finished_clause = " AND c.finished_at IS NOT NULL"
+        else:
+            is_finished_clause = " AND c.finished_at IS NULL"
+
         with get_session() as session:
             stmt = text(f"""
                 SELECT
@@ -1395,6 +1519,7 @@ class ConversationService:
                     c.date,
                     c.update_date,
                     c.is_workflow_conversation,
+                    c.finished_at,
                     a.icon_url AS assistant_icon,
                     ARRAY(
                         SELECT linked_assistant.name
@@ -1406,7 +1531,7 @@ class ConversationService:
                     {timestamp_sql}
                 FROM conversations c
                 LEFT JOIN assistants a ON a.id = c.initial_assistant_id
-                WHERE c.user_id = :uid
+                WHERE c.user_id = :uid{is_finished_clause}
                 ORDER BY COALESCE(c.update_date, c.date) DESC NULLS LAST
                 OFFSET :off LIMIT :lim
             """).bindparams(uid=user_id, off=offset, lim=per_page)
@@ -1432,6 +1557,7 @@ class ConversationService:
                     very_last_msg_at=row.very_last_msg_at,
                     assistant_icon=row.assistant_icon,
                     assistant_names=row.assistant_names,
+                    finished_at=row.finished_at,
                 )
             )
         return result
@@ -1463,7 +1589,7 @@ class ConversationService:
                     user_id, user_name, assistant_ids, assistant_data, initial_assistant_id,
                     final_user_mark, final_operator_mark, project, mcp_server_single_usage,
                     is_workflow_conversation, conversation_details, assistant_details,
-                    user_abilities, date, update_date,
+                    user_abilities, date, update_date, finished_at,
                     jsonb_array_length(COALESCE(history, '[]'::jsonb)) AS total_count,
                     (SELECT MIN((elem->>'date')::timestamptz)
                      FROM jsonb_array_elements(COALESCE(history, '[]'::jsonb)) AS elem
@@ -1557,6 +1683,7 @@ class ConversationService:
                     updated_at=chat.date,
                     type='chat',
                     folder=chat.folder or None,
+                    finished_at=chat.finished_at,
                 )
             )
 

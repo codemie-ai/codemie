@@ -566,6 +566,7 @@ def test_populate_conversation_history_uses_legacy_chat_history_when_feature_fla
     request = AssistantChatRequest(conversation_id="conv-123", history=[], text="hello")
 
     conversation = Mock()
+    conversation.finished_at = None
     legacy_history = [Mock(message="legacy")]
     conversation.to_chat_history.return_value = legacy_history
     conversation.user_id = "user-123"
@@ -608,6 +609,7 @@ def test_populate_conversation_history_passes_active_assistant_context_to_projec
     request = AssistantChatRequest(conversation_id="conv-123", history=[], text="hello")
 
     conversation = Mock()
+    conversation.finished_at = None
     conversation.user_id = "user-123"
     projected_history = [Mock(message="projected")]
 
@@ -633,6 +635,77 @@ def test_populate_conversation_history_passes_active_assistant_context_to_projec
         available_tool_names={"search_tool", "lookup_repo"},
     )
     assert request.history == projected_history
+
+
+def test_populate_conversation_history_returns_403_not_409_for_unauthorized_finished_conversation():
+    """Ability.READ must run before the finished guard so a 409 cannot leak that
+    another user's conversation exists and is finished."""
+    from datetime import datetime
+
+    from fastapi import status
+
+    from codemie.core.exceptions import ExtendedHTTPException
+
+    user = Mock(spec=User)
+    user.id = "user-123"
+    assistant = Mock()
+    assistant.id = "assistant-123"
+    handler = StandardAssistantHandler(assistant=assistant, user=user, request_uuid="test-uuid")
+    request = AssistantChatRequest(conversation_id="conv-123", history=[], text="hello")
+
+    conversation = Mock()
+    conversation.id = "conv-123"
+    conversation.user_id = "other-user"
+    conversation.finished_at = datetime(2026, 1, 1, 12, 0, 0)
+
+    with (
+        patch.object(handler, "_is_conversation_replay_v2_enabled", return_value=True),
+        patch("codemie.rest_api.handlers.assistant_handlers.Conversation.find_by_id", return_value=conversation),
+        patch("codemie.rest_api.handlers.assistant_handlers.Ability.can", return_value=False),
+    ):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            handler._populate_conversation_history(request)
+
+    assert exc_info.value.code == status.HTTP_403_FORBIDDEN
+
+
+def test_legacy_populate_guards_finished_conversation_when_history_already_provided():
+    """Legacy populate used to return immediately when request.history was set,
+    skipping the 409 before inference."""
+    from datetime import datetime
+
+    from fastapi import status
+
+    from codemie.core.exceptions import ExtendedHTTPException
+
+    from codemie.core.models import ChatMessage, ChatRole
+
+    user = Mock(spec=User)
+    user.id = "user-123"
+    assistant = Mock()
+    assistant.id = "assistant-123"
+    handler = StandardAssistantHandler(assistant=assistant, user=user, request_uuid="test-uuid")
+    request = AssistantChatRequest(
+        conversation_id="conv-123",
+        history=[ChatMessage(role=ChatRole.USER, message="prior")],
+        text="hello",
+    )
+
+    conversation = Mock()
+    conversation.id = "conv-123"
+    conversation.user_id = "user-123"
+    conversation.finished_at = datetime(2026, 1, 1, 12, 0, 0)
+
+    with (
+        patch.object(handler, "_is_conversation_replay_v2_enabled", return_value=False),
+        patch("codemie.rest_api.handlers.assistant_handlers.Conversation.find_by_id", return_value=conversation),
+        patch("codemie.rest_api.handlers.assistant_handlers.Ability.can", return_value=True),
+    ):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            handler._populate_conversation_history(request)
+
+    assert exc_info.value.code == status.HTTP_409_CONFLICT
+    conversation.to_chat_history.assert_not_called()
 
 
 def test_filter_thoughts_drops_replay_only_entries_when_feature_flag_disabled():
@@ -696,3 +769,156 @@ def test_filter_thoughts_preserves_parent_id_when_feature_flag_enabled():
     assert filtered[0].id == "child-thought"
     assert filtered[0].parent_id == "handoff-42"
     assert filtered[0].message == "tool result"
+
+
+class TestGuardConversationNotFinished:
+    """Tests for StandardAssistantHandler._guard_conversation_not_finished."""
+
+    @pytest.fixture
+    def handler(self):
+        assistant = Mock()
+        assistant.id = "assistant-123"
+        assistant.project = "test-project"
+        user = Mock(spec=User)
+        user.id = "user-123"
+        return StandardAssistantHandler(assistant=assistant, user=user, request_uuid="req-uuid")
+
+    def test_no_conversation_id_skips_guard(self, handler):
+        request = Mock(spec=AssistantChatRequest)
+        request.conversation_id = None
+
+        with patch("codemie.rest_api.handlers.assistant_handlers.Conversation.find_by_id") as mock_find:
+            handler._guard_conversation_not_finished(request)
+            mock_find.assert_not_called()
+
+    def test_conversation_not_found_skips_guard(self, handler):
+        request = Mock(spec=AssistantChatRequest)
+        request.conversation_id = "conv-abc"
+
+        with patch(
+            "codemie.rest_api.handlers.assistant_handlers.Conversation.find_by_id",
+            return_value=None,
+        ):
+            handler._guard_conversation_not_finished(request)  # must not raise
+
+    def test_active_conversation_skips_guard(self, handler):
+        from codemie.rest_api.models.conversation import Conversation as ConvModel
+
+        request = Mock(spec=AssistantChatRequest)
+        request.conversation_id = "conv-abc"
+
+        conv = Mock(spec=ConvModel)
+        conv.finished_at = None
+
+        with (
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.Conversation.find_by_id",
+                return_value=conv,
+            ),
+            patch("codemie.rest_api.handlers.assistant_handlers.Ability.can", return_value=True),
+        ):
+            handler._guard_conversation_not_finished(request)  # must not raise
+
+    def test_finished_conversation_raises_409(self, handler):
+        from datetime import datetime
+
+        from fastapi import status
+
+        from codemie.core.exceptions import ExtendedHTTPException
+        from codemie.rest_api.models.conversation import Conversation as ConvModel
+
+        request = Mock(spec=AssistantChatRequest)
+        request.conversation_id = "conv-abc"
+
+        conv = Mock(spec=ConvModel)
+        conv.id = "conv-abc"
+        conv.finished_at = datetime(2026, 1, 1, 12, 0, 0)
+
+        with (
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.Conversation.find_by_id",
+                return_value=conv,
+            ),
+            patch("codemie.rest_api.handlers.assistant_handlers.Ability.can", return_value=True),
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                handler._guard_conversation_not_finished(request)
+
+        assert exc_info.value.code == status.HTTP_409_CONFLICT
+
+    def test_process_request_raises_409_before_inference_for_finished_conversation(self, handler):
+        """The guard must fire inside process_request before AssistantService.build_agent is called."""
+        from datetime import datetime
+
+        from fastapi import BackgroundTasks, status
+
+        from codemie.core.exceptions import ExtendedHTTPException
+        from codemie.rest_api.models.conversation import Conversation as ConvModel
+
+        request = Mock(spec=AssistantChatRequest)
+        request.conversation_id = "conv-abc"
+        request.stream = True
+        request.background_task = False
+        request.interactive_response = None
+        request.file_names = []
+
+        conv = Mock(spec=ConvModel)
+        conv.id = "conv-abc"
+        conv.finished_at = datetime(2026, 1, 1, 12, 0, 0)
+
+        raw_request = Mock()
+        raw_request.state.uuid = "req-uuid"
+
+        with (
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.Conversation.find_by_id",
+                return_value=conv,
+            ),
+            patch("codemie.rest_api.handlers.assistant_handlers.Ability.can", return_value=True),
+            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent") as mock_build_agent,
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                handler.process_request(request, BackgroundTasks(), raw_request)
+
+        assert exc_info.value.code == status.HTTP_409_CONFLICT
+        mock_build_agent.assert_not_called()
+
+    def test_process_request_raises_409_when_legacy_history_already_provided(self, handler):
+        """process_request must still 409 a finished conversation when v2 is off and
+        the client already sent history (legacy populate used to skip the guard)."""
+        from datetime import datetime
+
+        from fastapi import BackgroundTasks, status
+
+        from codemie.core.exceptions import ExtendedHTTPException
+        from codemie.rest_api.models.conversation import Conversation as ConvModel
+
+        request = Mock(spec=AssistantChatRequest)
+        request.conversation_id = "conv-abc"
+        request.stream = True
+        request.background_task = False
+        request.interactive_response = None
+        request.file_names = []
+        request.history = [Mock()]
+
+        conv = Mock(spec=ConvModel)
+        conv.id = "conv-abc"
+        conv.finished_at = datetime(2026, 1, 1, 12, 0, 0)
+
+        raw_request = Mock()
+        raw_request.state.uuid = "req-uuid"
+
+        with (
+            patch.object(handler, "_is_conversation_replay_v2_enabled", return_value=False),
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.Conversation.find_by_id",
+                return_value=conv,
+            ),
+            patch("codemie.rest_api.handlers.assistant_handlers.Ability.can", return_value=True),
+            patch("codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent") as mock_build_agent,
+        ):
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                handler.process_request(request, BackgroundTasks(), raw_request)
+
+        assert exc_info.value.code == status.HTTP_409_CONFLICT
+        mock_build_agent.assert_not_called()

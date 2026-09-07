@@ -19,6 +19,8 @@ from httpx import AsyncClient, ASGITransport
 from codemie.rest_api.main import app
 from codemie.rest_api.models.conversation import (
     Conversation,
+    ConversationFinishBulkRequest,
+    ConversationFinishResult,
     ConversationListItem,
     GeneratedMessage,
 )
@@ -26,6 +28,7 @@ from codemie.rest_api.models.conversation_folder import ConversationFolder
 from codemie.rest_api.security.user import User
 import codemie.rest_api.routers.conversation as conversation_router
 from unittest.mock import patch, MagicMock
+from pydantic import ValidationError
 from codemie.rest_api.models.assistant import Assistant
 
 
@@ -123,6 +126,211 @@ async def test_get_new_conversation_within_assistant_chat(user):
         assert data["assistant_data"][0]["conversation_starters"] == ["Hi"]
 
         mock_build.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_by_id_includes_finished_at(user):
+    conversation = Conversation(
+        id="456",
+        conversation_id="456",
+        user_id=user.id,
+        name="Test Conversation",
+        finished_at=datetime(2026, 8, 11, 12, 0, 0),
+    )
+    with (
+        patch(
+            "codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=conversation
+        ) as mock_find_by_id,
+        patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
+        patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", return_value=[]),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.get(
+                f"/v1/conversations/{conversation.id}", headers={"Authorization": "Bearer testtoken"}
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["finished_at"] is not None
+        mock_find_by_id.assert_called_once_with(conversation.id)
+
+
+@pytest.mark.asyncio
+async def test_finish_conversation_success(user):
+    conversation = Conversation(
+        id="456",
+        conversation_id="456",
+        user_id=user.id,
+        history=[],
+    )
+    mock_session = MagicMock()
+    mock_session.__enter__.return_value = mock_session
+    mock_session.__exit__.return_value = False
+    mock_session.execute.return_value.rowcount = 1
+    with (
+        patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=conversation),
+        patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
+        patch("codemie.service.conversation_service.get_session", return_value=mock_session),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/conversations/456/finish", headers={"Authorization": "Bearer testtoken"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["conversationId"] == "456"
+    assert body["finishedAt"] is not None
+    assert "alreadyFinished" not in body
+    assert "error" not in body
+
+
+@pytest.mark.asyncio
+async def test_finish_conversation_raises_409_when_already_finished(user):
+    conversation = Conversation(
+        id="456",
+        conversation_id="456",
+        user_id=user.id,
+        history=[],
+        finished_at=datetime(2026, 8, 11, 12, 0, 0),
+    )
+    with (
+        patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=conversation),
+        patch("codemie.rest_api.routers.conversation.Ability.can", return_value=True),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/conversations/456/finish", headers={"Authorization": "Bearer testtoken"})
+
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_finish_conversation_404_when_missing(user):
+    with patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=None):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                "/v1/conversations/does-not-exist/finish", headers={"Authorization": "Bearer testtoken"}
+            )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_finish_conversation_403_when_not_owner(user):
+    conversation = Conversation(
+        id="456",
+        conversation_id="456",
+        user_id="someone-else",
+        history=[],
+    )
+    with (
+        patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", return_value=conversation),
+        patch("codemie.rest_api.routers.conversation.Ability.can", return_value=False),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/conversations/456/finish", headers={"Authorization": "Bearer testtoken"})
+    assert response.status_code == 403
+
+
+def test_admin_finish_conversations_bulk_mixed_results():
+    expected = [
+        ConversationFinishResult(
+            conversation_id="conv-1",
+            already_finished=False,
+            finished_at=datetime(2026, 8, 11, 12, 0, 0),
+        ),
+        ConversationFinishResult(
+            conversation_id="conv-2",
+            already_finished=False,
+            finished_at=None,
+            error="not_found",
+        ),
+    ]
+    payload = ConversationFinishBulkRequest(conversation_ids=["conv-1", "conv-2"])
+
+    with patch(
+        "codemie.rest_api.routers.conversation.ConversationService.finish_conversations_bulk",
+        return_value=expected,
+    ):
+        response = conversation_router.admin_finish_conversations_bulk(payload)
+
+    assert response.total == 2
+    results_by_id = {r.conversation_id: r for r in response.results}
+    assert results_by_id["conv-1"].finished_at is not None
+    assert results_by_id["conv-2"].error == "not_found"
+
+
+def test_conversation_finish_bulk_request_rejects_empty_list():
+    with pytest.raises(ValidationError):
+        ConversationFinishBulkRequest(conversation_ids=[])
+
+
+def test_list_admin_conversations_filters_by_is_finished():
+    items = [
+        ConversationListItem(id="conv-1", date=datetime(2026, 8, 11, 10, 0, 0), finished_at=None),
+    ]
+    with patch(
+        "codemie.rest_api.routers.conversation.Conversation.get_all_conversations_admin",
+        return_value=(items, 1),
+    ) as mock_query:
+        response = conversation_router.list_admin_conversations(
+            is_finished=False, started_after=None, project=None, page=0, per_page=20
+        )
+
+    assert response.pagination.total == 1
+    assert all(item.finished_at is None for item in response.data)
+    mock_query.assert_called_once_with(is_finished=False, started_after=None, project=None, page=0, per_page=20)
+
+
+def test_list_admin_conversations_filters_by_project():
+    items = [
+        ConversationListItem(id="conv-1", date=datetime(2026, 8, 11, 10, 0, 0)),
+    ]
+    with patch(
+        "codemie.rest_api.routers.conversation.Conversation.get_all_conversations_admin",
+        return_value=(items, 1),
+    ) as mock_query:
+        response = conversation_router.list_admin_conversations(
+            is_finished=None, started_after=None, project="my-app", page=0, per_page=20
+        )
+
+    assert response.pagination.total == 1
+    mock_query.assert_called_once_with(is_finished=None, started_after=None, project="my-app", page=0, per_page=20)
+
+
+def test_list_admin_conversations_paginates():
+    items = [ConversationListItem(id="conv-1", date=datetime(2026, 8, 11, 10, 0, 0))]
+    with patch(
+        "codemie.rest_api.routers.conversation.Conversation.get_all_conversations_admin",
+        return_value=(items, 3),
+    ):
+        response = conversation_router.list_admin_conversations(
+            is_finished=None, started_after=None, project=None, page=0, per_page=1
+        )
+
+    assert response.pagination.total == 3
+    assert len(response.data) == 1
+    assert response.pagination.pages == 3
+
+
+def test_admin_conversation_routes_use_admin_access_only():
+    from codemie.rest_api.security.authentication import admin_access_only
+
+    def _find_route(path: str, method: str):
+        for route in conversation_router.router.routes:
+            if getattr(route, "path", None) == path and method in getattr(route, "methods", set()):
+                return route
+        raise AssertionError(f"{method} {path} route not found")
+
+    for path, method in (
+        ("/v1/admin/conversations/finish-bulk", "POST"),
+        ("/v1/admin/conversations", "GET"),
+    ):
+        route = _find_route(path, method)
+        dependency_functions = [dep.call for dep in route.dependant.dependencies]
+        assert admin_access_only in dependency_functions, f"{method} {path} should use admin_access_only"
 
 
 @pytest.fixture
@@ -392,6 +600,8 @@ class TestSearchConversations:
         assert 'updated_at' in item
         assert 'type' in item
         assert item['type'] in ['chat', 'folder']
+        chat_item = next(i for i in data['items'] if i['type'] == 'chat')
+        assert 'finished_at' in chat_item
 
     def test_search_conversations_requires_auth(self):
         """Test search endpoint requires authentication when override is cleared"""

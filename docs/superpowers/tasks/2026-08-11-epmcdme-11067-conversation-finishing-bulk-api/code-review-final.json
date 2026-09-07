@@ -1,0 +1,87 @@
+{
+  "decision": "request-changes",
+  "rationale": "Blind, edge-case, and acceptance lenses all ran with real (non-empty) output against the full 9-commit diff. Two of the blind lens's claims (missing auth on admin routes; unguarded update_conversation_history_by_index) were verified false positives caused by diff-only isolation (router-level admin_access_only dependency and the delegated assert_mutable() guard were confirmed present by direct source inspection). Five real findings survive triage: a migration correctness bug that defeats the feature's own scheduler-discovery use case (CR-001), two unmodified read paths that silently misreport isFinished (CR-002), a spec-vs-implementation mismatch on response casing that needs a decision (CR-003), dead filter plumbing (CR-004), and a data-durability race in the shared update() path that is more severe than the spec's already-accepted 'minor race' language (CR-005, decision_needed). 6 findings dismissed (2 false positives, 3 deliberate/precedent-matching design choices already reasoned in plan.md, 1 explicitly-accepted-in-spec race). 5 findings deferred as real-but-out-of-approved-scope (pre-persistence agent-dispatch cost check, OFFSET pagination skip risk, bulk sequential round trips, history-deletion endpoints left unguarded consistent with spec's deletion carve-out, and test_ability_conversation.py left untouched since it reuses already-tested Ability primitives). Commit-message capitalization deviates from repo convention (cosmetic, noted in standards_review, not blocking).",
+  "confidence": "low",
+  "risk_flags": ["breaking-change", "public-api"],
+  "business_review": [
+    {"kind": "spec", "item": "Conversation.is_finished column added (Optional[bool], default False, Boolean sa_column)", "status": "pass", "notes": "conversation.py:261-265, matches spec exactly."},
+    {"kind": "spec", "item": "Conversation.finished_at column added as tz-aware DateTime per spec snippet", "status": "partial", "notes": "Implemented as plain (non-tz-aware) datetime, deliberately matching the existing date/update_date columns' convention on this table (documented rationale in plan.md) rather than the spec's literal snippet. Dismissed as a deliberate, reasoned deviation, not a defect."},
+    {"kind": "spec", "item": "Alembic migration adds is_finished/finished_at columns and ix_conversations_unfinished partial index on (date) WHERE is_finished = false", "status": "pass", "notes": "67b7c43d6090_add_is_finished_to_conversations.py — columns and partial index created as specified."},
+    {"kind": "spec", "item": "Partial index safe/correct for scheduler discovery (isFinished=false), mirroring is_workflow_conversation precedent", "status": "fail", "notes": "See CR-001 — no server_default/backfill means pre-migration rows get is_finished=NULL, which the partial index predicate and every equality filter silently exclude."},
+    {"kind": "spec", "item": "ConversationListItem and ConversationResponse gain is_finished/finished_at fields", "status": "pass", "notes": "conversation.py — fields added to both DTOs."},
+    {"kind": "spec", "item": "New fields serialize as isFinished/finishedAt via the existing ConfiguredModel camelCase alias convention", "status": "fail", "notes": "See CR-003 — both DTOs are plain BaseModel with no alias generator; they emit snake_case, unlike the new finish-endpoint DTOs which do use ConfiguredModel."},
+    {"kind": "spec", "item": "AC5: every conversation read/list response surfaces is_finished/finished_at", "status": "partial", "notes": "See CR-002 — get_user_conversations_paginated and get_conversation_history_slice (paginated GET branches) were not updated and always report isFinished=false."},
+    {"kind": "spec", "item": "_build_filter_sql allowed_filter_columns gains is_finished, usable as user list-endpoint query filter isFinished=true|false (AC6)", "status": "fail", "notes": "See CR-004 — the filter column is allowed but no route passes an isFinished query param through to get_user_conversations."},
+    {"kind": "spec", "item": "New GET /admin/conversations endpoint: paginated, filterable, admin-only, returns PaginatedListResponse[ConversationListItem], backed by get_all_conversations_admin", "status": "pass", "notes": "admin.py implements exactly this shape; admin-only enforced via router-level dependencies."},
+    {"kind": "spec", "item": "POST /conversations/{id}/finish (user): owner-only, idempotent, 404/403 handling", "status": "pass", "notes": "Verified end to end in conversation.py + conversation_service.py."},
+    {"kind": "spec", "item": "POST /admin/conversations/{id}/finish (admin): no ownership check, router-level admin gate", "status": "pass", "notes": "admin.py wires require_ownership=False; router dependency covers auth."},
+    {"kind": "spec", "item": "POST /admin/conversations/finish-bulk: request/response shapes and not-all-or-nothing per-ID semantics", "status": "pass", "notes": "ConversationFinishBulkRequest/Response and finish_conversations_bulk match the spec exactly."},
+    {"kind": "spec", "item": "Conversation.assert_mutable() raises 409 with specified message/details/help text", "status": "pass", "notes": "Matches spec's exact snippet."},
+    {"kind": "spec", "item": "All 5 documented content-mutation call sites guarded by assert_mutable() as first check", "status": "pass", "notes": "Verified all 5 call sites individually, including the ExtendedHTTPException re-raise guard in WorkflowService.create_workflow_execution's except chain."},
+    {"kind": "spec", "item": "Enforcement excludes metadata ops (pin/rename/folder/share, add_feedback/remove_feedback) and delete_conversation_by_id", "status": "pass", "notes": "None of these are touched by the diff, consistent with spec's explicit out-of-scope list."},
+    {"kind": "spec", "item": "No locking added for the finish/mutate race (explicitly accepted)", "status": "pass", "notes": "No lock primitives added; consistent with spec. Note CR-005 flags a more severe variant of this accepted risk for a decision."},
+    {"kind": "spec", "item": "Testing: extend the 6 listed test files/suites", "status": "partial", "notes": "5 of 6 extended; test_ability_conversation.py untouched (deferred — reuses already-tested Ability.can(WRITE,...) primitive, and 403/200 paths are directly tested at router/service level)."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "partial", "notes": "All 10 commits use 'EPMCDME-11067: <lowercase verb> ...' while repo convention (git-workflow.md, confirmed against 20 recent main commits) capitalizes the first word after the colon, e.g. 'EPMCDME-13794: Fix ...'. Cosmetic, not blocking."},
+    {"kind": "code-quality", "status": "pass", "notes": "make ruff and make license-check both pass cleanly; full targeted regression suite (159 tests) passes."},
+    {"kind": "security", "status": "pass", "notes": "Router-level admin_access_only dependency confirmed to cover all 3 new admin routes; raw SQL uses bound params via text().bindparams(); no hardcoded secrets or injection vectors introduced."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/external/alembic/versions/67b7c43d6090_add_is_finished_to_conversations.py",
+      "line": 24,
+      "title": "Migration leaves pre-existing rows with is_finished=NULL, breaking scheduler discovery",
+      "problem": "op.add_column(\"conversations\", sa.Column(\"is_finished\", sa.Boolean(), nullable=True, default=False)) uses only a Python-side ORM default, not server_default, and there is no backfill UPDATE. Every conversation that existed before this migration runs keeps is_finished=NULL.",
+      "impact": "SQL equality (is_finished = false) treats NULL as unknown, not true. Both the new partial index predicate and every is_finished=False filter added in this diff (get_all_conversations_admin, _build_filter_sql) silently exclude all pre-migration conversations. GET /admin/conversations?isFinished=false — the scheduler's headline query per AC6/AC9 — will miss the entire pre-migration dataset, defeating the feature's core purpose.",
+      "recommendation": "Add server_default=sa.false() to the column definition, or run an explicit UPDATE conversations SET is_finished = false WHERE is_finished IS NULL after adding the column, in the same migration's upgrade()."
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/conversation_service.py",
+      "line": 1446,
+      "title": "Two paginated read paths never populate is_finished/finished_at",
+      "problem": "ConversationService.get_user_conversations_paginated (backing GET /conversations?page=&per_page=) and get_conversation_history_slice (backing the paginated branch of GET /conversations/{id}) were not updated to select or populate is_finished/finished_at; both leave the fields at their ConversationListItem/ConversationResponse defaults.",
+      "impact": "Any client using pagination on the list or get-by-id endpoints always sees isFinished=false regardless of actual state, violating AC5's 'every read/list path surfaces state' requirement for two commonly-used paginated entry points.",
+      "recommendation": "Add is_finished/finished_at to the SQL SELECT and the ConversationListItem/response construction in both methods, mirroring the pattern already applied to get_user_conversations and search_by_name_and_user."
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/rest_api/models/conversation.py",
+      "line": 803,
+      "title": "ConversationListItem/ConversationResponse emit snake_case, not the camelCase the spec claims",
+      "problem": "spec.md states the new fields are 'serialized as isFinished/finishedAt via the existing ConfiguredModel camelCase alias convention,' but ConversationListItem and ConversationResponse are plain BaseModel subclasses with no alias generator (all their existing sibling fields are already snake_case). Only the new ConversationFinishResult/ConversationFinishBulkRequest/ConversationFinishBulkResponse DTOs use ConfiguredModel.",
+      "impact": "The finish endpoints return isFinished/finishedAt/alreadyFinished (camelCase) while the get/list/search endpoints return is_finished/finished_at (snake_case) for the conceptually identical field — an inconsistent wire contract for any FE consumer building against both endpoint families.",
+      "recommendation": "Needs a decision, not a unilateral fix: migrating ConversationListItem/ConversationResponse to ConfiguredModel would change the wire format of every existing field on those two DTOs (a breaking change for current consumers). Alternatives: accept and document the inconsistency, or add per-field aliases scoped to only the two new fields. Surface to the user/spec owner rather than picking one silently."
+    },
+    {
+      "id": "CR-004",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/conversation.py",
+      "line": 552,
+      "title": "is_finished filter column is allowed but never wired to a route",
+      "problem": "_build_filter_sql's allowed_filter_columns gained \"is_finished\", but GET /conversations has no isFinished query parameter, and both call sites of Conversation.get_user_conversations (routers/conversation.py, routers/ide.py) call it without a filters dict.",
+      "impact": "AC6's claim that is_finished 'can be used as the user list-endpoint query filter (isFinished=true|false)' is unfulfilled — a user-facing client cannot actually filter their own conversation list by finished state.",
+      "recommendation": "Add an isFinished query parameter to the GET /conversations route and thread it into the filters dict passed to get_user_conversations, or remove the allowed_filter_columns entry if this filter was intentionally deferred to a follow-on."
+    },
+    {
+      "id": "CR-005",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/rest_api/models/base.py",
+      "line": 517,
+      "title": "Conversation.update()'s session.merge() can silently un-finish a conversation under concurrent write",
+      "problem": "BaseModelWithSQLSupport.update() calls session.merge(self), which writes the full in-memory attribute state of the Python object, not a diff against the current DB row. If a content-mutation request loads a Conversation before a concurrent finish request commits, and then calls .update() after the finish committed, the mutation request's stale in-memory is_finished=False is merged back over the DB, reverting the just-finished conversation to unfinished.",
+      "impact": "This is more severe than the spec's accepted 'minor race conditions between a concurrent append and finish' (which describes ordering of an append landing near a finish, not the finish's own persisted state being silently erased by an unrelated write). A conversation an admin/scheduler just finished can end up mutable again with no error or log signal.",
+      "recommendation": "Needs a decision given the spec already accepts some raced behavior here: options include a conditional UPDATE ... WHERE is_finished = false at persist time, re-checking assert_mutable() immediately before the merge/commit, or explicitly confirming with the user that this specific failure mode (finish silently reverted) is also within the accepted risk — it reads as a materially different and worse outcome than what was described as accepted."
+    }
+  ]
+}

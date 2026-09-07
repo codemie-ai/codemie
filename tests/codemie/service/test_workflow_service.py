@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime
 from unittest.mock import patch, MagicMock
 from uuid import UUID
-from datetime import datetime, timezone
+from datetime import timezone
 
 import pytest
 from typing import Union
@@ -37,7 +38,8 @@ from codemie.core.workflow_models import (
     YamlConfigHistory,
 )
 
-from codemie.rest_api.models.conversation import GeneratedMessage
+from codemie.core.exceptions import ExtendedHTTPException
+from codemie.rest_api.models.conversation import Conversation, GeneratedMessage
 from codemie.rest_api.security.user import User
 from codemie.service.workflow_service import WorkflowService
 
@@ -929,6 +931,7 @@ def test_append_user_message_on_resume_also_updates_conversation():
     )
     mock_conversation = MagicMock()
     mock_conversation.history = []
+    mock_conversation.finished_at = None
 
     mock_conv_class = MagicMock()
     mock_conv_class.get_by_id.return_value = mock_conversation
@@ -950,7 +953,57 @@ def test_append_user_message_on_resume_also_updates_conversation():
     assert assistant_ref.execution_id == "exec-3"
     assert assistant_ref.assistant_id == "wf-1"
     assert assistant_ref.history_index == user_msg.history_index
-    mock_conversation.update.assert_called_once_with(refresh=True)
+    mock_conversation.update.assert_called_once()
+
+
+def test_append_user_message_on_resume_raises_409_when_conversation_finished(user):
+    execution = WorkflowExecution(
+        workflow_id="wf-1",
+        execution_id="exec-1",
+        conversation_id="conv-1",
+        history=[],
+        overall_status=WorkflowExecutionStatusEnum.INTERRUPTED,
+        project=EXAMPLE_PROJECT,
+        created_by=user.as_user_model(),
+    )
+    finished_conversation = Conversation(
+        id="conv-1",
+        conversation_id="conv-1",
+        user_id=user.id,
+        history=[],
+        finished_at=datetime(2026, 8, 11, 12, 0, 0),
+    )
+    workflow_service = WorkflowService()
+
+    with (
+        patch("codemie.rest_api.models.conversation.Conversation.get_by_id", return_value=finished_conversation),
+        patch.object(WorkflowExecution, "update", return_value=None) as mock_exec_update,
+    ):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            workflow_service.append_user_message_on_resume(execution, "hello")
+    assert exc_info.value.code == 409
+    mock_exec_update.assert_not_called()
+
+
+def test_create_workflow_execution_raises_409_when_existing_conversation_finished(
+    workflow_service: WorkflowService,
+    workflow_config: WorkflowConfig,
+    user_model: UserEntity,
+):
+    finished_conversation = Conversation(
+        id="conv-1",
+        conversation_id="conv-1",
+        user_id=user_model.user_id,
+        history=[],
+        finished_at=datetime(2026, 8, 11, 12, 0, 0),
+    )
+
+    with patch("codemie.rest_api.models.conversation.Conversation.get_by_id", return_value=finished_conversation):
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            workflow_service.create_workflow_execution(
+                workflow_config, user_model, user_input="hi", conversation_id="conv-1"
+            )
+    assert exc_info.value.code == 409
 
 
 def test_append_user_message_on_resume_no_conversation_update_when_no_conversation_id():

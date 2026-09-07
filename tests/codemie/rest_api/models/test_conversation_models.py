@@ -19,13 +19,19 @@ from codemie.rest_api.models.conversation import SearchResultItem, ConversationS
 def test_search_result_item_chat():
     """Test SearchResultItem for chat type"""
     item = SearchResultItem(
-        id='chat-123', name='Admin Dashboard', updated_at=datetime(2026, 4, 30, 12, 0, 0), type='chat', folder='Work'
+        id='chat-123',
+        name='Admin Dashboard',
+        updated_at=datetime(2026, 4, 30, 12, 0, 0),
+        type='chat',
+        folder='Work',
+        finished_at=datetime(2026, 8, 11, 12, 0, 0),
     )
 
     assert item.id == 'chat-123'
     assert item.name == 'Admin Dashboard'
     assert item.type == 'chat'
     assert item.folder == 'Work'
+    assert item.finished_at == datetime(2026, 8, 11, 12, 0, 0)
 
 
 def test_search_result_item_folder():

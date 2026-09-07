@@ -71,7 +71,7 @@ from codemie.service.background_tasks_service import BackgroundTasksService
 from codemie.service.constants import AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY
 from codemie.service.agent_workspace_service import AgentWorkspaceService
 from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
-from codemie.service.conversation_service import ConversationService
+from codemie.service.conversation_service import ConversationService, _guard_finished
 from codemie.service.dynamic_config_service import DynamicConfigService
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.request_summary_manager import request_summary_manager
@@ -173,6 +173,31 @@ class AssistantRequestHandler(ABC):
             f"against {len(surface_envelopes)} stored surface envelopes."
         )
 
+    def _deny_conversation_access(self, conversation: Conversation, conversation_id: str) -> None:
+        logger.warning(
+            f"User {self.user.id} denied access to conversation {conversation_id} owned by {conversation.user_id}"
+        )
+        raise ExtendedHTTPException(
+            code=status.HTTP_403_FORBIDDEN,
+            message=ACCESS_DENIED_MESSAGE,
+            details=f"You don't have permission to access conversation {conversation_id}.",
+            help="Please ensure you have the correct permissions or contact the conversation owner.",
+        )
+
+    def _require_conversation_read(self, conversation: Conversation, conversation_id: str) -> None:
+        if not Ability(self.user).can(Action.READ, conversation):
+            self._deny_conversation_access(conversation, conversation_id)
+
+    def _guard_conversation_not_finished(self, request: AssistantChatRequest) -> None:
+        """Reject requests that target a finished conversation before inference starts."""
+        if not request.conversation_id:
+            return
+        conversation = Conversation.find_by_id(request.conversation_id)
+        if not conversation:
+            return
+        self._require_conversation_read(conversation, request.conversation_id)
+        _guard_finished(conversation)
+
     def _populate_conversation_history(self, request: AssistantChatRequest) -> None:
         """
         Retrieve and populate conversation history from existing conversation if conversation_id is provided.
@@ -198,13 +223,6 @@ class AssistantRequestHandler(ABC):
             logger.debug("Skipping conversation replay history population because conversation_id is missing.")
             return
 
-        if request.history and not self._should_replace_request_history(request.history):
-            logger.debug(
-                f"Keeping request-provided history. ConversationId={request.conversation_id}, "
-                f"HistoryMessages={len(request.history)}"
-            )
-            return
-
         # Retrieve existing conversation using the same pattern as the router
         conversation = Conversation.find_by_id(request.conversation_id)
 
@@ -212,18 +230,15 @@ class AssistantRequestHandler(ABC):
             logger.debug(f"Conversation {request.conversation_id} not found for user {self.user.id}")
             return
 
-        # Verify user has read access to this conversation using Ability pattern
-        if not Ability(self.user).can(Action.READ, conversation):
-            logger.warning(
-                f"User {self.user.id} denied access to conversation {request.conversation_id} "
-                f"owned by {conversation.user_id}"
+        self._require_conversation_read(conversation, request.conversation_id)
+        _guard_finished(conversation)
+
+        if request.history and not self._should_replace_request_history(request.history):
+            logger.debug(
+                f"Keeping request-provided history. ConversationId={request.conversation_id}, "
+                f"HistoryMessages={len(request.history)}"
             )
-            raise ExtendedHTTPException(
-                code=status.HTTP_403_FORBIDDEN,
-                message=ACCESS_DENIED_MESSAGE,
-                details=f"You don't have permission to access conversation {request.conversation_id}.",
-                help="Please ensure you have the correct permissions or contact the conversation owner.",
-            )
+            return
 
         try:
             # Update request with conversation history
@@ -262,12 +277,7 @@ class AssistantRequestHandler(ABC):
         )
 
     def _populate_conversation_history_legacy(self, request: AssistantChatRequest) -> None:
-        if request.history or not request.conversation_id:
-            logger.debug(
-                f"History is already provided or conversation_id is missing. "
-                f"{len(request.history)} history messages, "
-                f"conversation_id: {request.conversation_id or 'None'}, "
-            )
+        if not request.conversation_id:
             return
 
         conversation = Conversation.find_by_id(request.conversation_id)
@@ -276,17 +286,16 @@ class AssistantRequestHandler(ABC):
             logger.debug(f"Conversation {request.conversation_id} not found for user {self.user.id}")
             return
 
-        if not Ability(self.user).can(Action.READ, conversation):
-            logger.warning(
-                f"User {self.user.id} denied access to conversation {request.conversation_id} "
-                f"owned by {conversation.user_id}"
+        self._require_conversation_read(conversation, request.conversation_id)
+        _guard_finished(conversation)
+
+        if request.history:
+            logger.debug(
+                f"History is already provided. "
+                f"{len(request.history)} history messages, "
+                f"conversation_id: {request.conversation_id}, "
             )
-            raise ExtendedHTTPException(
-                code=status.HTTP_403_FORBIDDEN,
-                message=ACCESS_DENIED_MESSAGE,
-                details=f"You don't have permission to access conversation {request.conversation_id}.",
-                help="Please ensure you have the correct permissions or contact the conversation owner.",
-            )
+            return
 
         try:
             request.history = conversation.to_chat_history()
@@ -516,12 +525,13 @@ class StandardAssistantHandler(AssistantRequestHandler):
         Process assistant request with error handling options.
         """
         self.background_tasks = background_tasks
+        self._guard_conversation_not_finished(request)
         self._sync_uploaded_files_to_workspace(request)
 
         # Validate structured A2UI answers against the stored conversation
         self._validate_a2ui_action(request)
 
-        # Populate conversation history if conversation_id is provided
+        # Populate conversation history if conversation_id is provided (also guards finished conversations)
         self._populate_conversation_history(request)
 
         execution_start = time()
@@ -1116,6 +1126,7 @@ class A2AAssistantHandler(AssistantRequestHandler):
         Note: Error handling parameters not yet implemented for A2A.
         """
         self.background_tasks = background_tasks
+        self._guard_conversation_not_finished(request)
         self._sync_uploaded_files_to_workspace(request)
 
         # Validate structured A2UI answers against the stored conversation

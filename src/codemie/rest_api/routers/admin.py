@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from datetime import datetime
-
 from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
 
 from codemie.configs import config
@@ -27,7 +26,11 @@ from codemie.core.models import (
     LLMBulkRetirementRequest,
     LLMRetirementRequest,
 )
-from codemie.rest_api.models.conversation import Conversation, Operator, FinalOperatorFeedback
+from codemie.rest_api.models.conversation import (
+    Conversation,
+    FinalOperatorFeedback,
+    Operator,
+)
 from codemie.rest_api.models.standard import FinalFeedbackRequest
 from codemie.rest_api.security.authentication import (
     authenticate,

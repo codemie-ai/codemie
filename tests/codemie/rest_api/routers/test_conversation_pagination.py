@@ -117,6 +117,28 @@ def test_get_conversations_with_pagination(mock_paginated, client):
     mock_paginated.assert_called_once()
 
 
+@patch("codemie.rest_api.routers.conversation.Conversation.get_user_conversations", new_callable=MagicMock)
+def test_get_conversations_without_pagination_forwards_is_finished_filter(mock_get, client):
+    mock_get.return_value = []
+
+    response = client.get("/v1/conversations?isFinished=false")
+
+    assert response.status_code == 200
+    mock_get.assert_called_once_with(user_id="user-123", filters={"is_finished": False})
+
+
+@patch(
+    "codemie.rest_api.routers.conversation.ConversationService.get_user_conversations_paginated", new_callable=MagicMock
+)
+def test_get_conversations_with_pagination_forwards_is_finished_filter(mock_paginated, client):
+    mock_paginated.return_value = []
+
+    response = client.get("/v1/conversations?page=0&per_page=10&isFinished=true")
+
+    assert response.status_code == 200
+    mock_paginated.assert_called_once_with(user_id="user-123", page=0, per_page=10, is_finished=True)
+
+
 @patch("codemie.rest_api.routers.conversation.Assistant.get_by_ids", new_callable=MagicMock, return_value=[])
 @patch("codemie.rest_api.routers.conversation.Ability.can", new_callable=MagicMock, return_value=True)
 @patch("codemie.rest_api.routers.conversation.Conversation.find_by_id", new_callable=MagicMock)
