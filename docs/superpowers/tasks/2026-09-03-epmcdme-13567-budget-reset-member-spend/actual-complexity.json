@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated": "2026-09-03T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 6,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "4 components modified across 3 layers: BudgetEnforcementProvider protocol (provider.py), _NoopBudgetEnforcementProvider registry (provider_registry.py), LiteLLMBudgetEnforcementProvider adapter (budget_provider_adapter.py), and ProjectBudgetService orchestration (project_budget_service.py). The protocol contract extension (new reset_project_member_spending method) is the widest-impact touch."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "6 files changed (4 source files + 2 test files), 251 insertions and 17 deletions across 3 directories (src/codemie/enterprise/litellm/, src/codemie/service/budget/, tests/codemie/service/budget/). Maps squarely to M (4-6 files)."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

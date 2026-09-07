@@ -1,0 +1,9 @@
+{
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 3 subjects match the documented EPMCDME-####: Description format (EPMCDME-13567 prefix, colon-space separator, sentence case description)"},
+    {"kind": "code-quality", "status": "pass", "notes": "All 4 changed source files carry the Apache 2.0 header, declare `from __future__ import annotations`, use `X | None` union syntax and parameterized generics throughout; new public methods in provider.py, provider_registry.py, and budget_provider_adapter.py are fully typed"},
+    {"kind": "security", "status": "pass", "notes": "No credentials or tokens logged; DEBUG log in budget_provider_adapter.py logs only operational context (provider name, category, budget_id, provider_member_ref); RuntimeError messages expose only internal provider references, not secrets; parameters to reset_project_member_spending originate from internal DB records, not raw external input"}
+  ],
+  "blocking_findings": [],
+  "coverage_gap": false
+}

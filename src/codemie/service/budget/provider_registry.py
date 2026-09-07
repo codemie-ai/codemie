@@ -216,6 +216,9 @@ class _NoopBudgetEnforcementProvider:
         _ = (budget_state, project_name, budget_category, budget_id, changed_by, models)
         return BudgetProviderState(provider=_NOOP_PROVIDER_NAME, sync_status=SyncStatus.NOOP)
 
+    async def reset_project_member_spending(self, user_id: str, budget_id: str) -> None:
+        return self._noop_result(user_id, budget_id)
+
     async def sync_member_allocation(
         self,
         *,

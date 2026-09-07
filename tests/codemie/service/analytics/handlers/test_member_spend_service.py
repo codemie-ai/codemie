@@ -573,6 +573,31 @@ class TestRefreshAllMemberSpend:
         insert_mock.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_records_a_reset_even_though_its_delta_is_zero(self):
+        """A counter that dropped to 0 must be written, or the pre-reset row stays newest.
+
+        The delta is zero for both a quiet member and a member whose spend was just
+        reset. Skipping both leaves the stale pre-reset value as the latest row, so the
+        read path keeps serving it until real spend moves the counter again.
+        """
+        prev = _prev_row(period="100", cumulative="900")
+        insert_mock = AsyncMock()
+        service = MemberSpendService()
+
+        with _patch_refresh_deps(
+            [_snapshot(spend="0")],
+            prev_rows={("atlas-core", "b-1", "u-1"): prev},
+            insert_mock=insert_mock,
+        ):
+            await service._refresh_all_member_spend(MagicMock())
+
+        rows = insert_mock.await_args[0][1]
+        assert len(rows) == 1
+        assert rows[0].budget_period_spend == Decimal("0.000000000")
+        assert rows[0].daily_spend == Decimal("0.000000000")
+        assert rows[0].cumulative_spend == Decimal("900.000000000")
+
+    @pytest.mark.asyncio
     async def test_no_snapshots_writes_nothing(self):
         insert_mock = AsyncMock()
         service = MemberSpendService()

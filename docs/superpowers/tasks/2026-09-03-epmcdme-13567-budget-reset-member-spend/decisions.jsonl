@@ -1,0 +1,4 @@
+{"ts":"2026-09-03T10:36:25Z","gate_id":"spec.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved spec","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-09-03T10:39:32Z","gate_id":"plan.approved","mode":"hitl","verdict":{"decision":"approve","rationale":"User approved plan","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-09-03T11:41:24Z","gate_id":"code-review.check","mode":"hitl","verdict":{"decision":"approve","rationale":"CR-001 resolved, check round approved","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}
+{"ts":"2026-09-03T13:14:57Z","gate_id":"feature.verification","mode":"hitl","verdict":{"decision":"approve","rationale":"All 148 budget tests pass; full suite timed out in subagent only (SIGTERM after 5min), not a test failure. User approved to proceed.","follow_ups":[],"confidence":"high","source":"hitl"},"escalated":false}

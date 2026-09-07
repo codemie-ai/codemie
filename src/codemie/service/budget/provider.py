@@ -324,6 +324,10 @@ class BudgetEnforcementProvider(Protocol):
         models: list[str] | None = None,
     ) -> BudgetProviderState: ...
 
+    async def reset_project_member_spending(self, user_id: str, budget_id: str) -> None:
+        """Zero `budget_period_spend` for one project member in the enforcement provider."""
+        ...
+
     async def get_project_budget_state_by_ref(
         self,
         *,

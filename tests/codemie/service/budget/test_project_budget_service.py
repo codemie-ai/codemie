@@ -385,6 +385,71 @@ async def test_reset_project_budget_persists_provider_budget_id_for_each_member(
     assert update_call["provider_metadata"]["raw"]["provider_budget_id"] == "member-budget-1"
 
 
+@pytest.mark.asyncio
+async def test_reset_project_budget_resets_member_spend_for_each_member():
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    budget = SimpleNamespace(
+        budget_id="proj-budget-1",
+        budget_type="project",
+        budget_category="cli",
+        budget_duration="30d",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        provider_metadata={"provider": "litellm", "provider_budget_ref": "key-alias-1", "sync_status": "ok"},
+        soft_budget=20.0,
+        max_budget=25.0,
+    )
+    assignment = SimpleNamespace(project_name="proj-a", budget_category="cli")
+    allocation1 = SimpleNamespace(id="alloc-1", user_id="user-1")
+    allocation2 = SimpleNamespace(id="alloc-2", user_id="user-2")
+    member_state = BudgetProviderMemberState(
+        provider="litellm",
+        provider_member_ref="member-ref-1",
+        provider_budget_id="member-budget-1",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        sync_status=SyncStatus.OK,
+        metadata={},
+    )
+    provider = SimpleNamespace(
+        reset_project_budget_spend=AsyncMock(
+            return_value=SimpleNamespace(
+                provider="litellm",
+                provider_budget_ref="key-alias-1",
+                budget_reset_at="2026-04-22T10:00:00Z",
+                sync_status=SyncStatus.OK,
+                metadata={},
+            )
+        ),
+        sync_member_allocation=AsyncMock(return_value=member_state),
+        reset_project_member_spending=AsyncMock(),
+    )
+
+    with (
+        patch.object(
+            service,
+            "get_project_budget",
+            new=AsyncMock(return_value=(budget, assignment, [allocation1, allocation2])),
+        ),
+        patch("codemie.service.budget.project_budget_service.get_active_provider", return_value=provider),
+        patch(
+            "codemie.service.budget.project_budget_service.budget_repository.update",
+            new=AsyncMock(return_value=budget),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ),
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
+    ):
+        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
+
+    assert provider.reset_project_member_spending.await_count == 2
+    provider.reset_project_member_spending.assert_any_await(
+        user_id="member-ref-1",
+        budget_id="proj-budget-1:shared",
+    )
+
+
 # ── _legacy_carry_alias ─────────────────────────────────────────────────────
 
 

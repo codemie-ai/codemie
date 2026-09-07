@@ -665,6 +665,16 @@ class LiteLLMBudgetEnforcementProvider:
             f"budget_category={budget_category.value!r} budget_id={budget_id!r}"
         )
 
+    async def reset_project_member_spending(self, user_id: str, budget_id: str) -> None:
+        """Zero `budget_period_spend` for one project member in LiteLLM."""
+        from codemie.enterprise.litellm.budget_helpers import reset_customer_spending_in_litellm
+
+        ok = await asyncio.to_thread(reset_customer_spending_in_litellm, user_id, budget_id)
+        if not ok:
+            raise RuntimeError(
+                f"reset_customer_spending_in_litellm returned False for user={user_id!r} budget={budget_id!r}"
+            )
+
     async def list_global_budget_states(self) -> list[GlobalBudgetState] | None:
         """Return all LiteLLM budgets as GlobalBudgetState objects.
 

@@ -1332,24 +1332,49 @@ class ProjectBudgetService:
         )
         for allocation in allocations:
             member_state = await provider.sync_member_allocation(allocation=allocation, budget=budget)
-            await self._persist_child_budget_provider_state(
-                session,
-                budget_id=self._effective_member_budget_id(budget.budget_id, allocation),
-                member_state=member_state,
-            )
-            await project_member_budget_assignment_repository.update_provider_metadata(
-                session,
-                allocation_id=allocation.id,
-                provider_metadata=self._build_provider_metadata(
-                    provider=member_state.provider,
-                    provider_member_ref=member_state.provider_member_ref,
-                    provider_budget_id=member_state.provider_budget_id,
+            if not member_state.provider_member_ref:
+                logger.warning(
+                    f"budget_event=project_member_spend_reset_skipped_no_ref component=project_budget_service "
+                    f"budget_id={budget_id!r} allocation_id={allocation.id!r} user_id={allocation.user_id!r}"
+                )
+                continue
+            try:
+                await provider.reset_project_member_spending(
+                    user_id=member_state.provider_member_ref,
+                    budget_id=self._effective_member_budget_id(budget.budget_id, allocation),
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"budget_event=project_member_spend_reset_failed component=project_budget_service "
+                    f"budget_id={budget_id!r} allocation_id={allocation.id!r} "
+                    f"user_id={allocation.user_id!r} error={exc!r}"
+                )
+                member_state.sync_status = SyncStatus.FAILED
+            try:
+                await self._persist_child_budget_provider_state(
+                    session,
+                    budget_id=self._effective_member_budget_id(budget.budget_id, allocation),
+                    member_state=member_state,
+                )
+                await project_member_budget_assignment_repository.update_provider_metadata(
+                    session,
+                    allocation_id=allocation.id,
+                    provider_metadata=self._build_provider_metadata(
+                        provider=member_state.provider,
+                        provider_member_ref=member_state.provider_member_ref,
+                        provider_budget_id=member_state.provider_budget_id,
+                        sync_status=member_state.sync_status,
+                        raw=member_state.metadata,
+                    ),
                     sync_status=member_state.sync_status,
-                    raw=member_state.metadata,
-                ),
-                sync_status=member_state.sync_status,
-                budget_reset_at=member_state.budget_reset_at,
-            )
+                    budget_reset_at=member_state.budget_reset_at,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"budget_event=project_member_persist_failed component=project_budget_service "
+                    f"budget_id={budget_id!r} allocation_id={allocation.id!r} "
+                    f"user_id={allocation.user_id!r} error={exc!r}"
+                )
         logger.info(
             f"budget_event=project_budget_reset_completed component=project_budget_service "
             f"project_name={assignment.project_name!r} budget_id={budget_id!r} "

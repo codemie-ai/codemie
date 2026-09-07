@@ -151,7 +151,9 @@ def _snapshot_to_row(
         )
         return None
 
-    if daily_spend == Decimal("0"):
+    if daily_spend == Decimal("0") and not LiteLLMSpendCollectorService.is_reset_transition(
+        prev_row, budget, fresh_spend, now
+    ):
         return None
 
     return ProjectSpendTracking(

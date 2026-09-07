@@ -89,6 +89,185 @@ async def test_reset_project_budget_uses_provider_reset_when_provider_budget_ref
 
 
 @pytest.mark.asyncio
+async def test_reset_project_budget_member_spend_failure_marks_sync_status_failed():
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    budget = SimpleNamespace(
+        budget_id="proj-budget-1",
+        budget_type="project",
+        budget_category="cli",
+        budget_duration="30d",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        provider_metadata={"provider": "litellm", "sync_status": "ok"},
+        soft_budget=20.0,
+        max_budget=25.0,
+    )
+    updated_budget = SimpleNamespace(**budget.__dict__)
+    assignment = SimpleNamespace(project_name="proj-a", budget_category="cli")
+    allocation = SimpleNamespace(id="alloc-1", user_id="user-1")
+    provider = SimpleNamespace(
+        reset_project_budget_spend=AsyncMock(
+            return_value=BudgetProviderState(
+                provider="litellm",
+                provider_budget_ref=None,
+                budget_reset_at="2026-04-22T10:00:00Z",
+                sync_status=SyncStatus.OK,
+            )
+        ),
+        sync_member_allocation=AsyncMock(
+            return_value=BudgetProviderMemberState(
+                provider="litellm",
+                provider_member_ref="member-ref-1",
+                provider_budget_id="member-budget-1",
+                budget_reset_at="2026-04-22T10:00:00Z",
+                sync_status=SyncStatus.OK,
+            )
+        ),
+        reset_project_member_spending=AsyncMock(side_effect=RuntimeError("provider failure")),
+    )
+
+    with (
+        patch.object(service, "get_project_budget", new=AsyncMock(return_value=(budget, assignment, [allocation]))),
+        patch("codemie.service.budget.project_budget_service.get_active_provider", return_value=provider),
+        patch(
+            "codemie.service.budget.project_budget_service.budget_repository.update",
+            new=AsyncMock(return_value=updated_budget),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ) as mock_update_metadata,
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
+    ):
+        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
+
+    update_kwargs = mock_update_metadata.await_args.kwargs
+    assert update_kwargs["sync_status"] == SyncStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_reset_project_budget_skips_spend_reset_when_no_provider_ref():
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    budget = SimpleNamespace(
+        budget_id="proj-budget-1",
+        budget_type="project",
+        budget_category="cli",
+        budget_duration="30d",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        provider_metadata={"provider": "litellm", "sync_status": "ok"},
+        soft_budget=20.0,
+        max_budget=25.0,
+    )
+    updated_budget = SimpleNamespace(**budget.__dict__)
+    assignment = SimpleNamespace(project_name="proj-a", budget_category="cli")
+    allocation = SimpleNamespace(id="alloc-1", user_id="user-1")
+    provider = SimpleNamespace(
+        reset_project_budget_spend=AsyncMock(
+            return_value=BudgetProviderState(
+                provider="litellm",
+                provider_budget_ref=None,
+                budget_reset_at="2026-04-22T10:00:00Z",
+                sync_status=SyncStatus.OK,
+            )
+        ),
+        sync_member_allocation=AsyncMock(
+            return_value=BudgetProviderMemberState(
+                provider="litellm",
+                provider_member_ref=None,
+                provider_budget_id=None,
+                budget_reset_at=None,
+                sync_status=SyncStatus.OK,
+            )
+        ),
+        reset_project_member_spending=AsyncMock(),
+    )
+
+    with (
+        patch.object(service, "get_project_budget", new=AsyncMock(return_value=(budget, assignment, [allocation]))),
+        patch("codemie.service.budget.project_budget_service.get_active_provider", return_value=provider),
+        patch(
+            "codemie.service.budget.project_budget_service.budget_repository.update",
+            new=AsyncMock(return_value=updated_budget),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ),
+        patch.object(service, "_persist_child_budget_provider_state", new=AsyncMock()),
+    ):
+        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
+
+    provider.reset_project_member_spending.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reset_project_budget_persist_failure_continues_remaining_allocations():
+    service = ProjectBudgetService()
+    session = AsyncMock()
+    budget = SimpleNamespace(
+        budget_id="proj-budget-1",
+        budget_type="project",
+        budget_category="cli",
+        budget_duration="30d",
+        budget_reset_at="2026-04-22T10:00:00Z",
+        provider_metadata={"provider": "litellm", "sync_status": "ok"},
+        soft_budget=20.0,
+        max_budget=25.0,
+    )
+    updated_budget = SimpleNamespace(**budget.__dict__)
+    assignment = SimpleNamespace(project_name="proj-a", budget_category="cli")
+    allocation_1 = SimpleNamespace(id="alloc-1", user_id="user-1")
+    allocation_2 = SimpleNamespace(id="alloc-2", user_id="user-2")
+    provider = SimpleNamespace(
+        reset_project_budget_spend=AsyncMock(
+            return_value=BudgetProviderState(
+                provider="litellm",
+                provider_budget_ref=None,
+                budget_reset_at="2026-04-22T10:00:00Z",
+                sync_status=SyncStatus.OK,
+            )
+        ),
+        sync_member_allocation=AsyncMock(
+            return_value=BudgetProviderMemberState(
+                provider="litellm",
+                provider_member_ref="member-ref-1",
+                provider_budget_id="member-budget-1",
+                budget_reset_at="2026-04-22T10:00:00Z",
+                sync_status=SyncStatus.OK,
+            )
+        ),
+        reset_project_member_spending=AsyncMock(),
+    )
+
+    with (
+        patch.object(
+            service,
+            "get_project_budget",
+            new=AsyncMock(return_value=(budget, assignment, [allocation_1, allocation_2])),
+        ),
+        patch("codemie.service.budget.project_budget_service.get_active_provider", return_value=provider),
+        patch(
+            "codemie.service.budget.project_budget_service.budget_repository.update",
+            new=AsyncMock(return_value=updated_budget),
+        ),
+        patch(
+            "codemie.service.budget.project_budget_service.project_member_budget_assignment_repository.update_provider_metadata",
+            new=AsyncMock(),
+        ) as mock_update_metadata,
+        patch.object(
+            service,
+            "_persist_child_budget_provider_state",
+            new=AsyncMock(side_effect=[RuntimeError("db error"), None]),
+        ),
+    ):
+        await service.reset_project_budget(session=session, budget_id="proj-budget-1", actor_id="actor-1")
+
+    assert provider.sync_member_allocation.await_count == 2
+    assert mock_update_metadata.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_delete_project_budget_marks_deleted_and_clears_resolution_cache():
     service = ProjectBudgetService()
     session = AsyncMock()

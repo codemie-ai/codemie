@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "branch": "feature/epmcdme-13567-budget-reset-member-spend",
+  "head": "4cf30a35c31a088a355ac88bdec3ecbddaa6d211",
+  "runner": "custom",
+  "started_at": "2026-09-03T13:05:00Z",
+  "completed_at": "2026-09-03T13:08:00Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 4318,
+      "command": "make ruff",
+      "exit_code": 0
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 15825,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2448,
+      "command": "make license-check",
+      "exit_code": 0
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make gitleaks",
+      "exit_code": null,
+      "notes": "Docker unavailable on this machine; make gitleaks requires Docker. Run `docker desktop start` and retry to enable this gate locally."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 300000,
+      "command": "make test",
+      "exit_code": 143,
+      "notes": "make test exceeded the 5-minute tool timeout (exit 143/SIGTERM). Affected budget tests ran separately: poetry run pytest tests/codemie/service/budget/ — 148 passed in 35s. Full suite result is unknown; re-run `make test` locally to confirm."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 323,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Self-skipped: 'Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN and SONAR_HOST_URL to enable this gate locally."
+    }
+  ],
+  "failures": {
+    "unit": "make test exited with code 143 (SIGTERM) after 5 minutes — full pytest suite did not complete within the tool timeout.\n\nAffected-file subset result (poetry run pytest tests/codemie/service/budget/):\n  148 passed, 2 warnings in 34.96s\n\nAll changed test files passed:\n  tests/codemie/service/budget/test_project_budget_service.py\n  tests/codemie/service/budget/test_project_budget_service_lifecycle.py\n\nAction: run `make test` locally to verify the full suite passes."
+  }
+}
