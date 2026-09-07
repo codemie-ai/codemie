@@ -20,7 +20,7 @@ from httpx import AsyncClient, ASGITransport
 
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.rest_api.models.settings import Settings, CredentialTypes
+from codemie.rest_api.models.settings import Settings, CredentialTypes, SettingType
 from codemie.rest_api.routers.user_settings import router
 from codemie.rest_api.security.authentication import User
 
@@ -218,6 +218,137 @@ async def test_test_setting_exception(mock_authenticate, mock_test_setting):
                 headers={"user-id": "user123"},
                 json={"credential_type": "Jira", "credential_values": [{"key": "test_key", "value": "test_value"}]},
             )
+
+
+def _stored(
+    credential_type=CredentialTypes.JIRA, setting_type=SettingType.USER, user_id="owner-1", project_name="proj-A"
+):
+    s = Settings(
+        user_id=user_id,
+        project_name=project_name,
+        alias="stored_alias",
+        credential_type=credential_type,
+        credential_values=[{"key": "test_key", "value": "test_value"}],
+        setting_type=setting_type,
+    )
+    s.id = "stored-1"
+    return s
+
+
+@pytest.mark.anyio
+@patch("codemie.service.settings.settings_tester.SettingsTester.test")
+@patch("codemie.rest_api.models.settings.Settings.get_by_id")
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_test_setting_foreign_user_setting_denied(mock_auth, mock_get_by_id, mock_test):
+    mock_auth.return_value = User(id="attacker-9", username="attacker")
+    mock_get_by_id.return_value = _stored(setting_type=SettingType.USER, user_id="owner-1")
+    transport = ASGITransport(app=app)
+    with pytest.raises(ExtendedHTTPException) as exc:
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            await ac.post(
+                "/v1/settings/test/",
+                headers={"user-id": "attacker-9"},
+                json={"credential_type": "Jira", "setting_id": "stored-1"},
+            )
+    assert exc.value.code == status.HTTP_403_FORBIDDEN
+    mock_test.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("codemie.service.settings.settings_tester.SettingsTester.test")
+@patch("codemie.rest_api.models.settings.Settings.get_by_id")
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_test_setting_owner_allowed(mock_auth, mock_get_by_id, mock_test):
+    mock_auth.return_value = User(id="owner-1", username="owner")
+    mock_get_by_id.return_value = _stored(setting_type=SettingType.USER, user_id="owner-1")
+    mock_test.return_value = (True, "ok")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        resp = await ac.post(
+            "/v1/settings/test/",
+            headers={"user-id": "owner-1"},
+            json={"credential_type": "Jira", "setting_id": "stored-1"},
+        )
+    assert resp.status_code == 200
+    mock_test.assert_called_once()
+
+
+@pytest.mark.anyio
+@patch("codemie.service.settings.settings_tester.SettingsTester.test")
+@patch("codemie.rest_api.models.settings.Settings.get_by_id")
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_test_setting_project_member_allowed(mock_auth, mock_get_by_id, mock_test):
+    mock_auth.return_value = User(id="member-2", username="member", project_names=["proj-A"])
+    mock_get_by_id.return_value = _stored(setting_type=SettingType.PROJECT, user_id="owner-1", project_name="proj-A")
+    mock_test.return_value = (True, "ok")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        resp = await ac.post(
+            "/v1/settings/test/",
+            headers={"user-id": "member-2"},
+            json={"credential_type": "Jira", "setting_id": "stored-1"},
+        )
+    assert resp.status_code == 200
+    mock_test.assert_called_once()
+
+
+@pytest.mark.anyio
+@patch("codemie.service.settings.settings_tester.SettingsTester.test")
+@patch("codemie.rest_api.models.settings.Settings.get_by_id")
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_test_setting_project_non_member_denied(mock_auth, mock_get_by_id, mock_test):
+    if config.ENV == "local":
+        config.ENV = "dev"
+    mock_auth.return_value = User(id="outsider-3", username="outsider", project_names=["proj-B"])
+    mock_get_by_id.return_value = _stored(setting_type=SettingType.PROJECT, project_name="proj-A")
+    transport = ASGITransport(app=app)
+    with pytest.raises(ExtendedHTTPException) as exc:
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            await ac.post(
+                "/v1/settings/test/",
+                headers={"user-id": "outsider-3"},
+                json={"credential_type": "Jira", "setting_id": "stored-1"},
+            )
+    assert exc.value.code == status.HTTP_403_FORBIDDEN
+    mock_test.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("codemie.service.settings.settings_tester.SettingsTester.test")
+@patch("codemie.rest_api.models.settings.Settings.get_by_id")
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_test_setting_credential_type_mismatch_rejected(mock_auth, mock_get_by_id, mock_test):
+    mock_auth.return_value = User(id="owner-1", username="owner")
+    mock_get_by_id.return_value = _stored(credential_type=CredentialTypes.JIRA, user_id="owner-1")
+    transport = ASGITransport(app=app)
+    with pytest.raises(ExtendedHTTPException) as exc:
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            await ac.post(
+                "/v1/settings/test/",
+                headers={"user-id": "owner-1"},
+                json={"credential_type": "Confluence", "setting_id": "stored-1"},
+            )
+    assert exc.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    mock_test.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch("codemie.service.settings.settings_tester.SettingsTester.test")
+@patch("codemie.rest_api.models.settings.Settings.get_by_id")
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_test_setting_missing_setting_returns_404(mock_auth, mock_get_by_id, mock_test):
+    mock_auth.return_value = User(id="owner-1", username="owner")
+    mock_get_by_id.return_value = None
+    transport = ASGITransport(app=app)
+    with pytest.raises(ExtendedHTTPException) as exc:
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            await ac.post(
+                "/v1/settings/test/",
+                headers={"user-id": "owner-1"},
+                json={"credential_type": "Jira", "setting_id": "does-not-exist"},
+            )
+    assert exc.value.code == status.HTTP_404_NOT_FOUND
+    mock_test.assert_not_called()
 
 
 @pytest.mark.anyio

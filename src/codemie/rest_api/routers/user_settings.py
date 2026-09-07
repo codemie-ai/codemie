@@ -21,14 +21,21 @@ from codemie.configs.customer_config import customer_config
 from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import BaseResponse
-from codemie.rest_api.routers.utils import raise_access_denied
+from codemie.rest_api.routers.utils import raise_access_denied, raise_forbidden
 from codemie.rest_api.security.authentication import project_access_check
 from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrchestratorService
 from codemie.service.settings.settings import SettingsService
 from codemie.service.settings.settings_tester import SettingsTester
 from codemie.service.settings.settings_index_service import SettingsIndexService
 from codemie.rest_api.security.authentication import authenticate, User
-from codemie.rest_api.models.settings import SettingRequest, Settings, SettingType, TestSettingRequest
+from codemie.rest_api.models.settings import (
+    SettingRequest,
+    Settings,
+    SettingType,
+    TestSettingRequest,
+    UserSetting,
+    ProjectSetting,
+)
 from codemie_tools.base.models import CredentialTypes
 from codemie.service.settings.settings_request_validator import (
     validate_credential_type_not_deprecated,
@@ -254,12 +261,43 @@ def delete_user_setting(setting_id: str, user: User = Depends(authenticate)):
     response_model=BaseResponse,
     response_model_by_alias=True,
 )
-def test_setting(request: TestSettingRequest, _: User = Depends(authenticate)):
+def test_setting(request: TestSettingRequest, user: User = Depends(authenticate)):
     """
-    Test if setting credentials are valid
+    Test if setting credentials are valid.
+
+    When a stored ``setting_id`` is supplied the caller must be authorized to
+    read that setting (owner for USER settings; any project member for PROJECT
+    settings), and the requested credential type must match the stored one,
+    before any credentials are decrypted or test-executed. Inline requests
+    (no ``setting_id``) require no ownership check.
     """
+    if request.setting_id:
+        setting = Settings.get_by_id(request.setting_id)
+        if not setting:
+            raise ExtendedHTTPException(
+                code=status.HTTP_404_NOT_FOUND,
+                message="Credential not found",
+                details=f"The credential with ID '{request.setting_id}' could not be found in the system.",
+                help="Please verify the credential ID and ensure it exists.",
+            )
+
+        settings_type = setting.setting_type or SettingType.USER
+        setting_ability = ProjectSetting(setting) if settings_type == SettingType.PROJECT else UserSetting(setting)
+        if not Ability(user).can(Action.READ, setting_ability):
+            raise_forbidden("test")
+
+        if request.credential_type != setting.credential_type:
+            raise ExtendedHTTPException(
+                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message="Cannot test specified setting",
+                details="The requested credential type does not match the stored setting's credential type.",
+                help=INVALID_SETTING_DATA_MSG,
+            )
+
     try:
         success, message = SettingsTester(request).test()
+    except ExtendedHTTPException:
+        raise
     except Exception as e:
         raise ExtendedHTTPException(
             code=status.HTTP_422_UNPROCESSABLE_ENTITY,

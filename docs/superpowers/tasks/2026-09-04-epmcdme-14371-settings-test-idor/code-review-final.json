@@ -1,0 +1,21 @@
+{
+  "gate_id": "code-review.final",
+  "decision": "approve",
+  "confidence": "medium",
+  "risk_flags": ["security"],
+  "business_review": [
+    {"criterion": "USER setting — only owner may test", "status": "pass", "notes": "Foreign USER -> 403 (assert_not_called); owner -> 200. Ability(user).can(Action.READ, UserSetting) enforces OWNED_BY only."},
+    {"criterion": "PROJECT setting — any member (READ) allowed, non-member 403", "status": "pass", "notes": "Member -> 200; non-member -> 403 (assert_not_called). ProjectSetting READ = SHARED_WITH|OWNED_BY|MANAGED_BY|ADMIN, confirmed in core/ability.py."},
+    {"criterion": "Request credential type must match stored", "status": "pass", "notes": "Mismatch -> 422 before test(); checked after authorization so a non-owner never learns the stored type."},
+    {"criterion": "Inline-only requests (no setting_id) unchanged", "status": "pass", "notes": "Guard is under `if request.setting_id:`; existing inline tests remain green."},
+    {"criterion": "Missing/inaccessible -> controlled 4xx, never decrypted/executed", "status": "pass", "notes": "404 missing / 403 unauthorized / 422 mismatch, all before SettingsTester. Every rejection test asserts mock_test.assert_not_called()."},
+    {"criterion": "Regression tests verify all cases", "status": "pass", "notes": "Six new cases + two pre-existing inline regressions."}
+  ],
+  "standards_review": [
+    {"standard": "commit-format (git-workflow.md)", "status": "pass", "notes": "Commit subject uses `EPMCDME-14371: ...` prefix per convention."},
+    {"standard": "security-patterns.md — authorize before use, fail closed, no leak on rejected path", "status": "pass", "notes": "Authorization precedes credential-type check and any decryption/execution; mirrors update_user_setting/delete_user_setting. `except ExtendedHTTPException: raise` preserves 404/403/422 codes."},
+    {"standard": "code-quality.md", "status": "pass", "notes": "Handler consistent with adjacent handlers; ruff clean."}
+  ],
+  "findings": [],
+  "rationale": "All three review lenses (blind, edge-case with repo access, acceptance against plan.md ACs) ran and returned parseable output; all six acceptance criteria pass and the IDOR is closed at the router layer mirroring the established update/delete handlers. Three 'major'-labeled items were reviewed and DEFERRED as defense-in-depth, not live defects: (1) TOCTOU double-load — SettingsTester re-loads by the same setting_id; the only window is delete+reinsert-of-same-UUID, not realistic, and the actual IDOR path is rejected 403 before SettingsTester runs (SettingsTester explicitly out of scope per plan). (2) Falsy setting_id bypass — verified non-exploitable: SettingsTester.__init__ (line 61) uses the IDENTICAL `if request.setting_id:` predicate as the router guard (line 274), so an empty-string id loads credential_values=[] (inline behavior) and never loads a stored credential; there is no input that both skips the guard and loads a victim's setting. (3) `except ExtendedHTTPException: raise` forwarding non-4xx codes — matches the existing codebase pattern; speculative. Also deferred: null setting_type defaulting to USER (fail-closed hardening, acceptance lens low). One test-hygiene nit (config.ENV mutated local->dev without restore) matches the pre-existing pattern in sibling tests and did not affect the passing 47-test run. Dismissed: 0. Deferred: 5 (suitable for a follow-up hardening ticket). No patch or decision_needed findings remain. Confidence medium (not high) because multiple majors were flagged-and-deferred rather than absent; recommend a follow-up ticket to harden SettingsTester (pass the authorized setting object, add None guard, validate setting_id non-empty)."
+}
