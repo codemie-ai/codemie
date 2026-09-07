@@ -583,6 +583,9 @@ hostAliases: []
 # -- Priority class for the AI/Run API pods
 priorityClassName: ""
 
+# -- Whether to inject service links into pod environment variables
+enableServiceLinks: false
+
 # -- Node selector to be added to the AI/Run API pods
 nodeSelector: {}
 

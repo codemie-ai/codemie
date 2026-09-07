@@ -50,6 +50,7 @@ A Helm chart for AI/Run API
 | dsPool.service.annotations | object | `{}` | ds-pool service annotations |
 | dsPool.service.port | int | `8080` | ds-pool service port |
 | dsPool.service.type | string | `"ClusterIP"` | ds-pool service type |
+| enableServiceLinks | bool | `false` | Whether to inject service links into pod environment variables |
 | extraEnv | list | `[]` | List of extra environment variables to be used by the AI/Run API |
 | extraObjects | list | `[]` | Array of extra Kubernetes manifests to deploy |
 | extraVolumeMounts | string | `"- name: google-service-account\n  readOnly: true\n  mountPath: \"/secrets/gcp-service-account.json\"\n  subPath: gcp-service-account.json\n- name: codemie-customer-config\n  mountPath: /app/config/customer\n"` | List of extra mounts to add (normally used with extraVolumes) |
