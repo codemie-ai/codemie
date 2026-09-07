@@ -19,7 +19,7 @@ from fastapi import status
 from httpx import AsyncClient, ASGITransport
 
 from codemie.rest_api.main import app
-from codemie.rest_api.models.assistant import Assistant
+from codemie.rest_api.models.assistant import Assistant, QualityValidationResult
 from codemie.rest_api.security.user import User
 
 
@@ -38,6 +38,66 @@ def assistant():
         toolkits=[],
         is_global=False,
     )
+
+
+@pytest.fixture
+def marketplace_assistant_mock():
+    assistant_mock = MagicMock()
+    assistant_mock.id = "456"
+    assistant_mock.name = "Test Assistant"
+    assistant_mock.description = "Test Description"
+    assistant_mock.system_prompt = "Test Prompt"
+    assistant_mock.conversation_starters = ["Starter 1", "Starter 2"]
+    assistant_mock.toolkits = []
+    assistant_mock.context = []
+    assistant_mock.is_global = False
+    assistant_mock.assistant_ids = []
+
+    return assistant_mock
+
+
+@pytest.fixture
+def marketplace_publish_env(marketplace_assistant_mock):
+    with (
+        patch(
+            "codemie.rest_api.routers.assistant.Assistant.find_by_id",
+            return_value=marketplace_assistant_mock,
+        ),
+        patch(
+            "codemie.core.ability.Ability.can",
+            return_value=True,
+        ),
+        patch(
+            "codemie.rest_api.routers.assistant.config.MARKETPLACE_LLM_VALIDATION_ON_PUBLISH_ENABLED",
+            True,
+        ),
+        patch(
+            "codemie.rest_api.routers.assistant.category_service.validate_category_ids",
+            return_value=None,
+        ),
+        patch(
+            "codemie.service.llm_service.utils.set_llm_context",
+        ),
+        patch(
+            "codemie.rest_api.routers.assistant._track_assistant_management_metric",
+        ),
+        patch(
+            "codemie.rest_api.routers.assistant._index_marketplace_assistant",
+        ),
+        patch.object(
+            marketplace_assistant_mock,
+            "update",
+        ) as mock_update,
+    ):
+        yield marketplace_assistant_mock, mock_update
+
+
+def marketplace_publish_payload(**overrides):
+    payload = {
+        "categories": ["engineering", "productivity"],
+    }
+    payload.update(overrides)
+    return payload
 
 
 @pytest.fixture(autouse=True)
@@ -289,57 +349,86 @@ async def test_validate_assistant_access_denied():
 
 
 @pytest.mark.asyncio
-async def test_publish_assistant_to_marketplace():
-    """Test publishing an assistant to the marketplace."""
-    assistant_id = "456"
-    assistant_mock = MagicMock()
-    assistant_mock.id = assistant_id  # Set proper id attribute
-    assistant_mock.name = "Test Assistant"
-    assistant_mock.description = "Test Description"
-    assistant_mock.system_prompt = "Test Prompt"
-    assistant_mock.conversation_starters = ["Starter 1", "Starter 2"]
-    assistant_mock.toolkits = []
-    assistant_mock.context = []
-    assistant_mock.is_global = False
-    assistant_mock.assistant_ids = []  # No sub-assistants
+async def test_publish_assistant_to_marketplace_when_quality_validation_accepts(
+    marketplace_publish_env,
+):
+    assistant, mock_update = marketplace_publish_env
 
-    # Mock quality validation result (accept decision)
-    from codemie.rest_api.models.assistant import QualityValidationResult
-
-    quality_validation_mock = QualityValidationResult(
+    validation_result = QualityValidationResult(
         decision="accept",
-        reasoning_comment="Assistant is well-configured and ready for publication.",
+        reasoning_comment="Assistant is ready for publication.",
         recommendations=None,
     )
 
-    with (
-        patch("codemie.rest_api.routers.assistant.Assistant.find_by_id", return_value=assistant_mock) as mock_find,
-        patch("codemie.core.ability.Ability.can", return_value=True),
-        patch(
-            "codemie.rest_api.routers.assistant.AssistantGeneratorService.validate_assistant_for_publish",
-            return_value=quality_validation_mock,
-        ),
-        patch("codemie.service.monitoring.base_monitoring_service.send_log_metric"),
-        patch("codemie.service.assistant.category_service.category_service.validate_category_ids", return_value=None),
-        patch.object(
-            assistant_mock, "update", side_effect=lambda *args, **kwargs: setattr(assistant_mock, "is_global", True)
-        ) as mock_update,
-    ):
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+    with patch(
+        "codemie.rest_api.routers.assistant.AssistantGeneratorService.validate_assistant_for_publish",
+        return_value=validation_result,
+    ) as mock_quality_validation:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as ac:
             response = await ac.post(
-                f"/v1/assistants/{assistant_id}/marketplace/publish",
+                f"/v1/assistants/{assistant.id}/marketplace/publish",
                 headers={"Authorization": "Bearer testtoken"},
-                json={"categories": ["engineering", "productivity"]},
+                json=marketplace_publish_payload(),
             )
 
-        # find_by_id is called twice: once in the endpoint and once in the background indexing task
-        assert mock_find.call_count == 2
-        mock_find.assert_any_call(assistant_id)
-        assert assistant_mock.is_global
-        mock_update.assert_called_once_with(refresh=True)
-        assert response.status_code == status.HTTP_200_OK
-        assert f"Assistant {assistant_id} published to marketplace successfully" in response.json()["message"]
+    mock_quality_validation.assert_called_once()
+    mock_update.assert_called_once_with(refresh=True)
+
+    assert assistant.is_global is True
+    assert response.status_code == status.HTTP_200_OK
+    assert f"Assistant {assistant.id} published to marketplace successfully" in response.json()["message"]
+
+
+@pytest.mark.asyncio
+async def test_publish_assistant_after_quality_validation_reject_and_user_bypasses(
+    marketplace_publish_env,
+):
+    assistant, mock_update = marketplace_publish_env
+
+    validation_result = QualityValidationResult(
+        decision="reject",
+        reasoning_comment="Assistant requires improvements before publication.",
+        recommendations=None,
+    )
+
+    with patch(
+        "codemie.rest_api.routers.assistant.AssistantGeneratorService.validate_assistant_for_publish",
+        return_value=validation_result,
+    ) as mock_quality_validation:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as ac:
+            # First attempt: rejected by quality validation
+            rejected_response = await ac.post(
+                f"/v1/assistants/{assistant.id}/marketplace/publish",
+                headers={"Authorization": "Bearer testtoken"},
+                json=marketplace_publish_payload(),
+            )
+
+            assert rejected_response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+            assert assistant.is_global is False
+            mock_update.assert_not_called()
+
+            # Second attempt: user clicks "Publish Anyway"
+            bypass_response = await ac.post(
+                f"/v1/assistants/{assistant.id}/marketplace/publish",
+                headers={"Authorization": "Bearer testtoken"},
+                json=marketplace_publish_payload(
+                    ignore_recommendations=True,
+                ),
+            )
+
+    # Validator must NOT run again for Publish Anyway
+    mock_quality_validation.assert_called_once()
+
+    mock_update.assert_called_once_with(refresh=True)
+    assert assistant.is_global is True
+
+    assert bypass_response.status_code == status.HTTP_200_OK
 
 
 @pytest.mark.asyncio
@@ -374,9 +463,6 @@ async def test_publish_assistant_with_subassistants():
         elif id_val == "sub2":
             return sub2_mock
         return None
-
-    # Mock quality validation result (accept decision)
-    from codemie.rest_api.models.assistant import QualityValidationResult
 
     quality_validation_mock = QualityValidationResult(
         decision="accept",
@@ -444,9 +530,6 @@ async def test_publish_assistant_with_subassistants_and_settings():
         elif id_val == "sub1":
             return sub1_mock
         return None
-
-    # Mock quality validation result (accept decision)
-    from codemie.rest_api.models.assistant import QualityValidationResult
 
     quality_validation_mock = QualityValidationResult(
         decision="accept",
