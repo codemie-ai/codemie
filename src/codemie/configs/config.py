@@ -87,6 +87,12 @@ class Config(BaseSettings):
     POSTGRES_USER: str = "postgres"
     POSTGRES_PASSWORD: str = "password"
 
+    CLICKHOUSE_HOST: str = "localhost"
+    CLICKHOUSE_PORT: int = 8123
+    CLICKHOUSE_USER: str = "default"
+    CLICKHOUSE_PASSWORD: str = ""
+    CLICKHOUSE_QUERY_TIMEOUT_SECONDS: int = 30
+
     PG_URL: str = ""
     PG_POOL_SIZE: int = 10
     DEFAULT_DB_SCHEMA: str = "codemie"
@@ -187,6 +193,13 @@ class Config(BaseSettings):
 
     # Analytics dashboard configuration
     ANALYTICS_DEFAULT_PAGE_SIZE: int = 20  # Default number of rows for analytics endpoints
+
+    # Analytics ingest endpoints — OTel Collector forwarding
+    # Default resolves inside Docker network (otelcol service, internal port 4318).
+    # For local dev outside Docker, override with the host-mapped port from OTLP_HTTP_PORT:
+    #   ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT=http://localhost:14318
+    ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT: str = "http://otelcol:4318"  # NOSONAR — internal Docker service, not public
+    ANALYTICS_INGEST_MAX_BODY_BYTES: int = 5_242_880
 
     INDEXES_PERMITTED_FOR_SEARCH: list[str] = [
         KZ_USERS_INDEX,

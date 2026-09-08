@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import logging
 import yaml
+from functools import reduce
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 from importlib.metadata import version, PackageNotFoundError
@@ -102,7 +104,9 @@ class CustomerConfig(BaseModel):
                 raise ValueError("Invalid YAML structure: 'components' must be a non-empty list")
 
             self.components = [
-                Component(id=comp_data['id'], settings=ComponentSetting(**comp_data['settings']))
+                self._apply_feature_env_override(
+                    Component(id=comp_data['id'], settings=ComponentSetting(**comp_data['settings']))
+                )
                 for comp_data in components_data
             ]
 
@@ -127,6 +131,25 @@ class CustomerConfig(BaseModel):
             raise ValueError(f"Invalid component configuration: {exc}")
         except Exception as exc:
             raise ValueError(f"Error processing configuration: {exc}")
+
+    @staticmethod
+    def _apply_feature_env_override(component: Component) -> Component:
+        """Apply FEATURE_* env override to YAML-backed feature components at load time."""
+        if not component.id.startswith("features:"):
+            return component
+
+        underscore_component_id = reduce(
+            lambda acc, char: acc + ('_' + char if char.isupper() else char.upper()),
+            component.id.replace('features:', ''),
+            '',
+        )
+        feature_env_variable_name = f'FEATURE_{underscore_component_id}'
+        if feature_env_variable_name not in os.environ:
+            return component
+
+        settings = component.settings.model_dump(exclude_none=True)
+        settings["enabled"] = os.getenv(feature_env_variable_name) == 'true'
+        return Component(id=component.id, settings=ComponentSetting(**settings))
 
     def _get_runtime_config(self) -> List[Component]:
         """Generate runtime-computed configuration components.

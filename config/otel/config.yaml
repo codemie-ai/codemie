@@ -1,0 +1,118 @@
+# =============================================================
+# OTel Collector — CodeMie Analytics Pipeline (EPMCDME-13558)
+# =============================================================
+#
+# The OTel Collector is a vendor-neutral proxy that sits between
+# the CodeMie API and ClickHouse. Its only job here:
+#
+#   CodeMie API  →  OTel Collector  →  ClickHouse
+#        (sends OTLP)   (batches & retries)   (stores analytics)
+#
+# Two data paths arrive via OTLP:
+#   Path A — Claude Code native telemetry: api_request logs
+#             (cost_usd, token counts, model), metrics, traces.
+#   Path B — bash hook events (session start/stop, tool calls)
+#             converted to OTel log records by the CodeMie API.
+#
+# The collector does NOT transform or route data — that is handled
+# by materialized views in ClickHouse (deployment/clickhouse/schema.sql).
+# =============================================================
+
+
+# -------------------------------------------------------------
+# RECEIVERS — how the collector accepts incoming telemetry
+# -------------------------------------------------------------
+# OTLP is the standard OpenTelemetry protocol.
+# gRPC (4317) and HTTP (4318) are both enabled.
+# The CodeMie API sends to whichever port is configured via
+# OTEL_EXPORTER_OTLP_ENDPOINT.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+
+# -------------------------------------------------------------
+# PROCESSORS — what happens to data before it is exported
+# -------------------------------------------------------------
+# batch: accumulates records and sends them together.
+# This reduces the number of round-trips to ClickHouse and
+# improves insert throughput.
+#   timeout:         flush after 5 s even if the batch is not full
+#   send_batch_size: flush immediately when 1000 records accumulate
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+
+# -------------------------------------------------------------
+# EXPORTERS — where the collector sends processed data
+# -------------------------------------------------------------
+# clickhouse: writes all three signals (logs, metrics, traces)
+# to the codemie_analytics database.
+# Connection values come from environment variables so the same
+# config works locally and in production — only the .env differs.
+exporters:
+  clickhouse:
+    endpoint: ${env:CLICKHOUSE_ENDPOINT}
+    username: ${env:CLICKHOUSE_USER}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    database: ${env:CLICKHOUSE_DATABASE}
+    # Target tables are defined in deployment/clickhouse/schema.sql.
+    logs_table_name:    coding_agent_logs
+    traces_table_name:  coding_agent_traces
+    metrics_table_name: coding_agent_metrics
+    # schema.sql (via clickhouse-schema-init) owns all table definitions;
+    # disabling auto-creation prevents gauge/histogram/summary/exponential_histogram
+    # stub tables from being created by the collector on startup.
+    create_schema: false
+    # TTL is set in schema.sql per table (90d raw / 365d rollup),
+    # not here, so retention is schema-governed.
+    timeout: 10s
+    # retry_on_failure: automatically retries failed exports so
+    # transient ClickHouse errors do not lose data.
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 120s
+    # sending_queue: buffers unsent records on disk (file_storage/queue).
+    # Data survives a collector restart or a ClickHouse outage.
+    sending_queue:
+      enabled: true
+      storage: file_storage/queue
+
+
+# -------------------------------------------------------------
+# EXTENSIONS — background capabilities used by the service
+# -------------------------------------------------------------
+extensions:
+  # file_storage/queue: backs the sending_queue above.
+  # Records are written to disk until ClickHouse accepts them.
+  file_storage/queue:
+    directory: /var/lib/otelcollector/queue
+    timeout: 10s
+
+
+# -------------------------------------------------------------
+# SERVICE — wires receivers → processors → exporters together
+# -------------------------------------------------------------
+service:
+  extensions: [file_storage/queue]
+  pipelines:
+    logs:
+      receivers:  [otlp]
+      processors: [batch]
+      exporters:  [clickhouse]
+    metrics:
+      receivers:  [otlp]
+      processors: [batch]
+      exporters:  [clickhouse]
+    traces:
+      receivers:  [otlp]
+      processors: [batch]
+      exporters:  [clickhouse]

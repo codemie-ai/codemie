@@ -1,0 +1,92 @@
+{
+  "meta": {
+    "generatedAt": "2026-08-17T13:42:02.261Z",
+    "rangeLabel": "all",
+    "agents": [
+      "claude"
+    ],
+    "projectFilter": "all",
+    "totals": {
+      "sessions": 1,
+      "durationMs": 861635,
+      "turns": 1,
+      "files": 0,
+      "netLines": 0,
+      "toolCallsTotal": 0,
+      "toolSuccessRate": 0,
+      "totalCostUSD": 0.071484,
+      "cacheReadCostUSD": 0.009909,
+      "pricedSessions": 1
+    },
+    "unpricedModels": [],
+    "coverage": [
+      {
+        "agentName": "claude",
+        "total": 1,
+        "priced": 1,
+        "withLog": 1
+      }
+    ],
+    "periodStart": "2026-08-17T13:27:37.069Z",
+    "periodEnd": "2026-08-17T13:41:58.704Z"
+  },
+  "sessions": [
+    {
+      "sessionId": "c95b498b-bc4f-4f47-9720-53937aef4719",
+      "agentName": "claude",
+      "provider": "ai-run-sso",
+      "title": "This is testsession just to check chats exports",
+      "project": "C:\\Users\\OlehPrusak\\codemie-dev\\codemie",
+      "branch": "feature/EPMCDME-13580-code-agent-analytics",
+      "startTime": 1786973257069,
+      "durationMs": 861635,
+      "turns": 1,
+      "fileOps": 0,
+      "linesAdded": 0,
+      "linesRemoved": 0,
+      "linesModified": 0,
+      "netLines": 0,
+      "filesChanged": 0,
+      "filesWritten": 0,
+      "filesEdited": 0,
+      "toolCallsTotal": 0,
+      "toolCallsSuccess": 0,
+      "toolCallsFailure": 0,
+      "models": [
+        "claude-sonnet-4-6"
+      ],
+      "languages": [],
+      "tools": [],
+      "tokens": {
+        "input": 3,
+        "output": 154,
+        "cacheRead": 33030,
+        "cacheCreation": 9876,
+        "cacheCreation1h": 9876,
+        "total": 43063
+      },
+      "costUSD": 0.071484,
+      "cacheReadCostUSD": 0.009909,
+      "perModelCost": [
+        {
+          "model": "claude-sonnet-4-6",
+          "tokens": {
+            "input": 3,
+            "output": 154,
+            "cacheRead": 33030,
+            "cacheCreation": 9876,
+            "cacheCreation1h": 9876,
+            "total": 43063
+          },
+          "costUSD": 0.071484,
+          "unpriced": false
+        }
+      ],
+      "hadLog": true,
+      "skillInvocations": [],
+      "agentInvocations": [],
+      "commandInvocations": [],
+      "sessionSource": "Pure chat"
+    }
+  ]
+}

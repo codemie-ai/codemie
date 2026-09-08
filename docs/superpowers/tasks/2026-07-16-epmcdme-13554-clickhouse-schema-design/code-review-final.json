@@ -1,0 +1,47 @@
+{
+  "decision": "approve",
+  "confidence": "medium",
+  "rationale": "Fresh three-lens review (blind, edge-case, acceptance) against all 16 ACs in spec.md. All 16 ACs pass in the actual schema.sql on disk. No blocking findings survived triage. Six non-blocking deferred concerns noted: (1) smoke.sh SummingMergeTree count() assertion is brittle — should use sum(api_call_count)=1 instead of count()=1 to be reliable across unmerged parts; (2) ALTER TABLE DELETE in smoke.sh cleanup is async — a re-run within seconds may fail falsely; (3) cost_usd Float64 in coding_agent_cost_daily SummingMergeTree — Decimal(18,6) recommended for billing-grade precision; (4) user_email as leading ORDER BY key in coding_agent_logs creates a hotspot for Path B events (empty user_email) — known trade-off, hook queries route via coding_agent_hook_events; (5) api_call_count literal 1 in mv_cost_daily — toUInt64(1) would be more explicit; (6) no ALTER TABLE migration path for schema evolution. Blind lens raised a false concern about MV MATERIALIZED column timing — dismissed: ClickHouse guarantees MATERIALIZED columns are computed before MVs fire. Acceptance lens false-negatives on AC-4 and AC-12 were prompt artifacts (abbreviated schema); actual schema.sql includes both metrics tables and smoke.sh is present. Standards: commit format and branch name pass git-workflow.md; code quality N/A (SQL/bash only); gitleaks PASS.",
+  "risk_flags": [],
+  "business_review": [
+    {"id": "AC-1",  "title": "Session key normalization", "status": "pass", "notes": "session_id MATERIALIZED COALESCE(nullIf(LogAttributes['session.id'],''), nullIf(LogAttributes['session_id'],'')) unifies both Path A dot-notation and Path B underscore formats."},
+    {"id": "AC-2",  "title": "Raw log table matches otelcol-contrib 0.105.0 schema", "status": "pass", "notes": "All required columns present: Timestamp, TraceId, SpanId, TraceFlags, SeverityText, SeverityNumber, ServiceName, Body, ResourceAttributes, LogAttributes as Map, plus Scope/Schema URL fields."},
+    {"id": "AC-3",  "title": "Traces table matches otelcol-contrib schema", "status": "pass", "notes": "All required columns present including Events.* and Links.* flat arrays matching the otelcol-contrib 0.105.0 exporter schema."},
+    {"id": "AC-4",  "title": "Metrics tables match otelcol-contrib schema", "status": "pass", "notes": "coding_agent_metrics_gauge and coding_agent_metrics_sum both present; sum table includes IsMonotonic and AggregationTemporality."},
+    {"id": "AC-5",  "title": "Hook events derived table", "status": "pass", "notes": "coding_agent_hook_events populated automatically by mv_hook_events with no OTel Collector config change required."},
+    {"id": "AC-6",  "title": "MV routes hook events", "status": "pass", "notes": "mv_hook_events filters all 6 event types, uses promoted session_id MATERIALIZED column (not raw LogAttributes map key)."},
+    {"id": "AC-7",  "title": "Daily cost rollup table aggregates per (day, user_email, model_name, query_source, team_name)", "status": "pass", "notes": "SummingMergeTree with ORDER BY (day, user_email, model_name, query_source, team_name); all token/cost columns present."},
+    {"id": "AC-8",  "title": "MV for cost rollup includes team_name", "status": "pass", "notes": "mv_cost_daily filters event.name='api_request', maps all token/cost fields, includes ResourceAttributes['team.name'] as team_name."},
+    {"id": "AC-9",  "title": "All four read endpoints supported with ?team= filter", "status": "pass", "notes": "All four endpoints have required tables; team_name promoted column in logs, hook_events, and cost_daily ORDER BY."},
+    {"id": "AC-10", "title": "TTL and partitioning", "status": "pass", "notes": "90-day TTL on coding_agent_logs, coding_agent_traces, coding_agent_hook_events, and metrics tables; 365-day TTL on coding_agent_cost_daily; all monthly partitioned."},
+    {"id": "AC-11", "title": "Idempotent DDL", "status": "pass", "notes": "All 8 DDL objects use IF NOT EXISTS."},
+    {"id": "AC-12", "title": "Smoke test validates objects and MV pipelines", "status": "pass", "notes": "smoke.sh validates database, 6 tables, 2 MVs, and both MV routing paths via INSERT→SELECT assertions."},
+    {"id": "AC-13", "title": "team_name promoted across coding_agent_logs, hook_events, cost_daily with bloom filters", "status": "pass", "notes": "team_name MATERIALIZED from ResourceAttributes['team.name'] in logs (bloom filter idx_team_name); routed via mv_hook_events into hook_events (bloom filter idx_team_name); in cost_daily ORDER BY."},
+    {"id": "AC-14", "title": "prompt_body stored for claude.prompt.submit events", "status": "pass", "notes": "coding_agent_hook_events has prompt_body String; mv_hook_events populates from LogAttributes['prompt_body']."},
+    {"id": "AC-15", "title": "Identity and sequence fields promoted in coding_agent_logs", "status": "pass", "notes": "user_id (bloom filter), organization_id, agent_name, skill_name, event_sequence (toUInt32OrZero) all MATERIALIZED in coding_agent_logs."},
+    {"id": "AC-16", "title": "Tool/interaction span fields promoted in coding_agent_traces", "status": "pass", "notes": "file_path, subagent_type, span_skill_name (from SpanAttributes['skill_name']), interaction_sequence (toUInt32OrZero) all MATERIALIZED in coding_agent_traces."}
+  ],
+  "standards_review": [
+    {
+      "standard": "git-workflow.md — commit message format",
+      "status": "pass",
+      "notes": "All 3 commits follow EPMCDME-####: Description pattern."
+    },
+    {
+      "standard": "git-workflow.md — branch naming",
+      "status": "pass",
+      "notes": "Branch EPMCDME-13554_analytics-clickhouse-schema follows EPMCDME-####_short-description pattern."
+    },
+    {
+      "standard": "code-quality.md — Python Ruff / license headers",
+      "status": "na",
+      "notes": "No Python source files changed. SQL and bash deployment scripts are not subject to Ruff or the Apache 2.0 header checker."
+    },
+    {
+      "standard": "security-patterns.md — secrets / injection",
+      "status": "pass",
+      "notes": "gitleaks: no leaks found (verified 2026-07-17). No user-controlled SQL concatenation; all ClickHouse queries use parameterized map lookups. smoke.sh uses table-name variable in system.tables query but against an internal list, not user input."
+    }
+  ],
+  "findings": []
+}

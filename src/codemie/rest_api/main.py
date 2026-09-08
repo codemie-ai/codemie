@@ -94,6 +94,7 @@ from codemie.rest_api.routers import (
     auth,
     metrics,
     analytics,
+    cli_analytics,
     callbacks,
     logs,
     mcp_config,
@@ -924,6 +925,7 @@ app.include_router(callbacks.router)
 app.include_router(auth.router)
 app.include_router(metrics.router)
 app.include_router(analytics.router)
+app.include_router(cli_analytics.router)
 app.include_router(logs.router)
 app.include_router(mcp_config.router)
 app.include_router(mcp_managed.router)

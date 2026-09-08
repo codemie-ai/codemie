@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-standard",
+  "slug": "epmcdme-13558-otel-collector-docker",
+  "branch": "EPMCDME-13558_otel-collector-docker-deployment",
+  "phase": "maintenance",
+  "started_at": "2026-07-20T00:00:00Z",
+  "completed_at": "2026-07-20T11:17:00Z",
+  "last_sync_commit": "a54452a1bea8927960ca72ef21fe430a7108b73d"
+}

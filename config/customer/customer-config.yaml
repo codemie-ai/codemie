@@ -122,6 +122,25 @@ components:
   - id: "vendorIntegrationAWS"
     settings:
       enabled: false
+  - id: "features:cliAnalytics"
+    settings:
+      enabled: false
+      name: "CLI Analytics"
+      description: "CLI Analytics tab and OTEL proxy: per-session coding-agent cost, tooling, repository and efficiency analytics"
+      availableForExternal: false
+      deliveryFramework:
+        rules:
+          - regex: "^sdlc-factory:"
+            label: "CodeMie AI Factory"
+          - regex: "^superpowers:"
+            label: "Superpowers"
+          - regex: "^bmad-"
+            label: "BMAD"
+          - regex: "^opsx:"
+            label: "OpenSpec"
+          - regex: "^speckit\\."
+            label: "Spec Kit"
+        fallbackLabel: "Pure chat"
   - id: "features:webSearch"
     settings:
       enabled: true

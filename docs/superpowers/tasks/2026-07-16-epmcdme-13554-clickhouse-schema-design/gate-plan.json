@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "runner": "poetry",
+  "gates": [
+    {"id": "lint",    "command": "poetry run ruff format && poetry run ruff check --fix && poetry run ruff check", "available": false, "note": "Poetry not in shell PATH (known env issue — see AGENTS.md Stop Hook)"},
+    {"id": "build",   "command": "poetry build", "available": false, "note": "Poetry not in shell PATH"},
+    {"id": "license", "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet", "available": false, "note": "Poetry not in shell PATH; additionally deployment/ excluded from .sh check scope"},
+    {"id": "gitleaks","command": "docker run --rm -v $(pwd):/path zricethezav/gitleaks:v8.30.0 dir --no-banner --verbose /path", "available": true},
+    {"id": "unit",    "command": "poetry run pytest tests/", "available": false, "note": "Poetry not in shell PATH; explicit-only policy applies"},
+    {"id": "coverage","command": "poetry run coverage run -m pytest tests/ -W ignore::DeprecationWarning --cov --cov-report=html", "available": false, "note": "Not requested"},
+    {"id": "sonar",   "command": "node scripts/sonar/run-local-sonar.js", "available": false, "note": "Sonar credentials/config not evaluated"},
+    {"id": "ui",      "command": "n/a", "available": false, "note": "No UI surface changed"}
+  ],
+  "ui_globs": ["\\.tsx$", "\\.jsx$", "\\.css$", "\\.html$", "\\.vue$", "\\.svelte$", "src/(ui|frontend|components)/"],
+  "detected_at": "2026-07-16T00:00:00Z"
+}

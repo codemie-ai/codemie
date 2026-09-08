@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-light",
+  "slug": "epmcdme-13554-clickhouse-schema-design",
+  "branch": "EPMCDME-13554_analytics-clickhouse-schema",
+  "phase": "maintenance",
+  "started_at": "2026-07-16T00:00:00Z",
+  "completed_at": "2026-07-17T00:00:00Z",
+  "last_sync_commit": "005255663aa6205f2e3b55b75748c078b8c0b37b"
+}

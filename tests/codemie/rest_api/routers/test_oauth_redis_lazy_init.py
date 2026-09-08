@@ -102,6 +102,7 @@ def test_app_starts_without_redis_package_when_pkce_disabled():
         "GOOGLE_OAUTH_CLIENT_ID": "",
         "PATH": "/usr/bin:/bin:/usr/local/bin",
         "HOME": "/tmp",
+        "PYTHONPATH": str(_REPO_ROOT / "src"),
     }
     result = subprocess.run(
         [sys.executable, "-c", _IMPORT_PROBE],

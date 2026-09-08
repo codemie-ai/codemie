@@ -101,3 +101,10 @@ def test_env_local_overrides_env(tmp_path):
 def test_file_datasource_max_upload_count_defaults_to_ten():
     config = Config()
     assert config.FILE_DATASOURCE_MAX_UPLOAD_COUNT == 10
+
+
+def test_analytics_ingest_config_defaults(monkeypatch):
+    monkeypatch.delenv("ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT", raising=False)
+    cfg = Config(_env_file=())
+    assert cfg.ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT == "http://otelcol:4318"
+    assert cfg.ANALYTICS_INGEST_MAX_BODY_BYTES == 5_242_880

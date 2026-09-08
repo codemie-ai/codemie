@@ -70,3 +70,4 @@ docs/superpowers/tasks/**/*.diff
 docs/superpowers/tasks/**/.state.json
 docs/superpowers/tasks/**/gate-plan.json
 credentials.json
+.code-graph/

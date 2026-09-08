@@ -146,6 +146,8 @@ markdown = "^3.8"
 opencv-python-headless = "^4.11.0.86"
 tabulate = "^0.9.0"
 llm-sandbox = {extras = ["k8s"], version = "^0.3.21"}
+redis = "^5.0.0"
+clickhouse-connect = ">=0.7.0"
 email-validator = "^2.3.0"
 jaraco-context = "^6.1.0"
 wheel = "^0.46.3"
