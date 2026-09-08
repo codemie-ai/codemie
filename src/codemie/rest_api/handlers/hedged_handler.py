@@ -20,6 +20,7 @@ import queue
 import threading
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from time import time
 from types import SimpleNamespace
 from typing import Any
@@ -110,6 +111,18 @@ class FastPathResult:
     outcome: str  # one of _FastPathOutcome
     latency_ms: int
     error_type: str | None = None
+
+
+@dataclass
+class _HedgeRaceState:
+    """Threading primitives shared between _handle_stream and _coordinate_stream."""
+
+    agent_queue: ThreadedGenerator
+    fast_path_attempt: list[FastPathResult | None]
+    first_result_ready: threading.Event
+    winner_lock: threading.Lock
+    winner: list[str | None]
+    fast_path_thread: threading.Thread
 
 
 class HedgedAssistantHandler(StandardAssistantHandler):
@@ -371,6 +384,7 @@ class HedgedAssistantHandler(StandardAssistantHandler):
         request: AssistantChatRequest,
         include_tool_errors: bool,
         error_detail_level: ErrorDetailLevel,
+        user_message_received_at: datetime | None = None,
     ):
         response = StreamedGenerationResult(generated="")
         chunk_count = 0
@@ -398,7 +412,13 @@ class HedgedAssistantHandler(StandardAssistantHandler):
                         agent, execution_start, include_tool_errors, error_detail_level
                     )
                     self.save_chat_history(
-                        ChatHistoryData(execution_start, request, response.generated, agent_queue.thoughts)
+                        ChatHistoryData(
+                            execution_start,
+                            request,
+                            response.generated,
+                            agent_queue.thoughts,
+                            user_message_received_at=user_message_received_at,
+                        )
                     )
                     if final_chunk:
                         yield final_chunk.model_dump_json() + "\n"
@@ -418,6 +438,7 @@ class HedgedAssistantHandler(StandardAssistantHandler):
         request: AssistantChatRequest,
         raw_request: Request,
         execution_start: float,
+        user_message_received_at: datetime | None = None,
         include_tool_errors: bool = False,
         error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
     ) -> StreamingResponse:
@@ -486,11 +507,21 @@ class HedgedAssistantHandler(StandardAssistantHandler):
         agent_thread = threading.Thread(target=_agent_stream_with_winner, daemon=True)
         agent_thread.start()
 
+        race = _HedgeRaceState(
+            agent_queue=agent_queue,
+            fast_path_attempt=fast_path_attempt,
+            first_result_ready=first_result_ready,
+            winner_lock=winner_lock,
+            winner=winner,
+            fast_path_thread=fast_path_thread,
+        )
+
         raw_request.state.on_disconnect(
             lambda: self._handle_client_disconnect(
                 request=request,
                 threaded_generator=agent_queue,
                 execution_start=execution_start,
+                user_message_received_at=user_message_received_at,
             )
         )
 
@@ -498,17 +529,13 @@ class HedgedAssistantHandler(StandardAssistantHandler):
             content=self._coordinate_stream(
                 request=request,
                 agent=agent,
-                agent_queue=agent_queue,
-                fast_path_attempt=fast_path_attempt,
-                first_result_ready=first_result_ready,
-                winner_lock=winner_lock,
-                winner=winner,
+                race=race,
                 timeout_s=timeout_s,
                 tool_name=tool_name,
                 execution_start=execution_start,
                 include_tool_errors=include_tool_errors,
                 error_detail_level=error_detail_level,
-                fast_path_thread=fast_path_thread,
+                user_message_received_at=user_message_received_at,
             ),
             media_type=NDJSON_MEDIA_TYPE,
         )
@@ -521,6 +548,7 @@ class HedgedAssistantHandler(StandardAssistantHandler):
         tool_name: str,
         result_str: str,
         execution_start: float,
+        user_message_received_at: datetime | None = None,
     ):
         # close() sets is_closed()=True on the ThreadedGenerator; both AIToolsAgent
         # and LangGraphAgent check this flag at each chunk boundary and break early.
@@ -571,7 +599,9 @@ class HedgedAssistantHandler(StandardAssistantHandler):
             ).model_dump_json()
             + "\n"
         )
-        self.save_chat_history(ChatHistoryData(execution_start, request, result_str, []))
+        self.save_chat_history(
+            ChatHistoryData(execution_start, request, result_str, [], user_message_received_at=user_message_received_at)
+        )
 
     def _emit_hedging_metric(
         self,
@@ -618,27 +648,23 @@ class HedgedAssistantHandler(StandardAssistantHandler):
         *,
         request: AssistantChatRequest,
         agent,
-        agent_queue: ThreadedGenerator,
-        fast_path_attempt: "list[FastPathResult | None]",
-        first_result_ready: threading.Event,
-        winner_lock: threading.Lock,
-        winner: "list[str | None]",
+        race: _HedgeRaceState,
         timeout_s: float,
         tool_name: str,
         execution_start: float,
         include_tool_errors: bool,
         error_detail_level: ErrorDetailLevel,
-        fast_path_thread: threading.Thread,
+        user_message_received_at: datetime | None = None,
     ):
-        first_result_ready.wait(timeout=timeout_s)
+        race.first_result_ready.wait(timeout=timeout_s)
 
         # Read both the race winner and the fast-path result under the same lock the
         # fast-path thread takes before signalling first_result_ready — this is the
         # happens-before barrier that makes the attempt write visible here.
         attempt: FastPathResult | None = None
-        with winner_lock:
-            current_winner = winner[0]
-            attempt = fast_path_attempt[0]
+        with race.winner_lock:
+            current_winner = race.winner[0]
+            attempt = race.fast_path_attempt[0]
 
         result_str: str | None = None
         if current_winner == "fast_path" and attempt is not None:
@@ -653,10 +679,11 @@ class HedgedAssistantHandler(StandardAssistantHandler):
                 served_by = "fast_path"
                 yield from self._stream_fast_path_win(
                     request=request,
-                    agent_queue=agent_queue,
+                    agent_queue=race.agent_queue,
                     tool_name=tool_name,
                     result_str=result_str,
                     execution_start=execution_start,
+                    user_message_received_at=user_message_received_at,
                 )
             else:
                 served_by = "agent"
@@ -666,7 +693,13 @@ class HedgedAssistantHandler(StandardAssistantHandler):
                     f"assistant_id={self.assistant.id}"
                 )
                 yield from self._stream_agent_path(
-                    agent, agent_queue, execution_start, request, include_tool_errors, error_detail_level
+                    agent=agent,
+                    agent_queue=race.agent_queue,
+                    execution_start=execution_start,
+                    request=request,
+                    include_tool_errors=include_tool_errors,
+                    error_detail_level=error_detail_level,
+                    user_message_received_at=user_message_received_at,
                 )
         except GeneratorExit:
             terminal_reason = "client_disconnect"
@@ -679,9 +712,9 @@ class HedgedAssistantHandler(StandardAssistantHandler):
             # its work (writing fast_path_attempt[0]). Join it briefly here — after all
             # response chunks have been yielded — so the metric reflects the real
             # fast-path outcome rather than the "no data yet" fallback of "timeout".
-            if attempt is None and fast_path_thread.is_alive():
-                fast_path_thread.join(timeout=timeout_s)
-                attempt = fast_path_attempt[0]
+            if attempt is None and race.fast_path_thread.is_alive():
+                race.fast_path_thread.join(timeout=timeout_s)
+                attempt = race.fast_path_attempt[0]
             _bind_request_logging_context(self, request)
             self._emit_hedging_metric(
                 request=request,
@@ -699,6 +732,7 @@ class HedgedAssistantHandler(StandardAssistantHandler):
         request: AssistantChatRequest,
         raw_request: Request,
         execution_start: float,
+        user_message_received_at: datetime | None = None,
         include_tool_errors: bool = False,
         error_detail_level: ErrorDetailLevel = ErrorDetailLevel.STANDARD,
     ) -> BaseModelResponse:
@@ -723,14 +757,20 @@ class HedgedAssistantHandler(StandardAssistantHandler):
                     f"[HEDGE-COMPLETED] Hedged fast-path won race: tool={tool_name} "
                     f"assistant_id={self.assistant.id} hedge_latency_ms={elapsed * 1000:.1f}"
                 )
-                self.save_chat_history(ChatHistoryData(execution_start, request, result_str, []))
+                self.save_chat_history(
+                    ChatHistoryData(
+                        execution_start, request, result_str, [], user_message_received_at=user_message_received_at
+                    )
+                )
                 return BaseModelResponse(generated=result_str, time_elapsed=elapsed, thoughts=[])
             served_by = "agent"
             logger.info(f"[HEDGED] agent path won, tool={tool_name} assistant_id={self.assistant.id}")
             logger.debug(
                 f"[HEDGE-CANCELLED] Primary (agent) completed first: tool={tool_name} assistant_id={self.assistant.id}"
             )
-            return super()._handle_sync(request, raw_request, execution_start, include_tool_errors, error_detail_level)
+            return super()._handle_sync(
+                request, raw_request, execution_start, user_message_received_at, include_tool_errors, error_detail_level
+            )
         except Exception:
             terminal_reason = "exception"
             raise

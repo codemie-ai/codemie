@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from time import time
 from unittest.mock import Mock, patch
 
@@ -1407,3 +1408,142 @@ class TestLoggingContextConversationId:
             assert record.conversation_id == "conv-coordinator-1205"
             assert record.user_id == "user-1"
             assert record.uuid == "req-uuid"
+
+
+# ---------------------------------------------------------------------------
+# TestUserMessageReceivedAtPropagation
+# ---------------------------------------------------------------------------
+
+
+class TestUserMessageReceivedAtPropagation:
+    """user_message_received_at must reach ChatHistoryData on all three save paths."""
+
+    _TS = datetime(2026, 9, 4, 12, 0, 0)
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    def _run_stream_fast_path_win(self, handler, request_, raw_request, ts):
+        from codemie.core.thread import ThreadedGenerator
+
+        real_tg = ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id="")
+        mock_agent = Mock()
+        mock_agent.last_generation_result = None
+        mock_agent.stream = Mock()
+
+        with (
+            patch(
+                "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
+                return_value=_make_fast_tool(_HIT_RESULT),
+            ),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent),
+            patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
+            patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
+            patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
+            patch.object(handler, "save_chat_history") as mock_save,
+        ):
+            response = handler._handle_stream(request_, raw_request, time(), user_message_received_at=ts)
+            asyncio.run(_consume(response.body_iterator))
+
+        return mock_save
+
+    def _run_stream_agent_wins(self, handler, request_, raw_request, ts):
+        from codemie.core.thread import ThreadedGenerator
+
+        real_tg = ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id="")
+
+        def agent_stream():
+            real_tg.queue.put(AGENT_CHUNK)
+            real_tg.queue.put(StopIteration)
+
+        mock_agent = Mock()
+        mock_agent.last_generation_result = None
+        mock_agent.stream = agent_stream
+
+        with (
+            patch(
+                "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
+                return_value=_make_fast_tool(_MISS_RESULT),
+            ),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent),
+            patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
+            patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
+            patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
+            patch.object(handler, "save_chat_history") as mock_save,
+        ):
+            response = handler._handle_stream(request_, raw_request, time(), user_message_received_at=ts)
+            asyncio.run(_consume(response.body_iterator))
+
+        return mock_save
+
+    # ------------------------------------------------------------------
+    # stream: fast-path win
+    # ------------------------------------------------------------------
+
+    def test_stream_fast_path_win_passes_timestamp(self, handler, request_, raw_request):
+        mock_save = self._run_stream_fast_path_win(handler, request_, raw_request, self._TS)
+
+        mock_save.assert_called_once()
+        history_data: ChatHistoryData = mock_save.call_args[0][0]
+        assert history_data.user_message_received_at == self._TS
+
+    def test_stream_fast_path_win_none_timestamp_is_none(self, handler, request_, raw_request):
+        mock_save = self._run_stream_fast_path_win(handler, request_, raw_request, None)
+
+        history_data: ChatHistoryData = mock_save.call_args[0][0]
+        assert history_data.user_message_received_at is None
+
+    # ------------------------------------------------------------------
+    # stream: agent wins
+    # ------------------------------------------------------------------
+
+    def test_stream_agent_wins_passes_timestamp(self, handler, request_, raw_request):
+        mock_save = self._run_stream_agent_wins(handler, request_, raw_request, self._TS)
+
+        mock_save.assert_called_once()
+        history_data: ChatHistoryData = mock_save.call_args[0][0]
+        assert history_data.user_message_received_at == self._TS
+
+    def test_stream_agent_wins_none_timestamp_is_none(self, handler, request_, raw_request):
+        mock_save = self._run_stream_agent_wins(handler, request_, raw_request, None)
+
+        history_data: ChatHistoryData = mock_save.call_args[0][0]
+        assert history_data.user_message_received_at is None
+
+    # ------------------------------------------------------------------
+    # sync: fast-path win
+    # ------------------------------------------------------------------
+
+    def test_sync_fast_path_win_passes_timestamp(self, handler, request_, raw_request):
+        with (
+            patch(
+                "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
+                return_value=_make_fast_tool(_HIT_RESULT),
+            ),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent"),
+            patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
+            patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
+            patch.object(handler, "save_chat_history") as mock_save,
+        ):
+            handler._handle_sync(request_, raw_request, time(), user_message_received_at=self._TS)
+
+        mock_save.assert_called_once()
+        history_data: ChatHistoryData = mock_save.call_args[0][0]
+        assert history_data.user_message_received_at == self._TS
+
+    def test_sync_fast_path_win_none_timestamp_is_none(self, handler, request_, raw_request):
+        with (
+            patch(
+                "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
+                return_value=_make_fast_tool(_HIT_RESULT),
+            ),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent"),
+            patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
+            patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
+            patch.object(handler, "save_chat_history") as mock_save,
+        ):
+            handler._handle_sync(request_, raw_request, time(), user_message_received_at=None)
+
+        history_data: ChatHistoryData = mock_save.call_args[0][0]
+        assert history_data.user_message_received_at is None
