@@ -132,6 +132,7 @@ class GeneratedMessage(ChatMessage):
     ## Workflow execution reference fields
     workflow_execution_ref: Optional[bool] = None  # Marker that this is a reference to workflow execution
     execution_id: Optional[str] = None  # Reference to WorkflowExecution.execution_id
+    execution_status: Optional[str] = None  # WorkflowExecutionStatusEnum value, e.g. "In Progress"
     ## A2UI fields (assistant message carries the raw versioned surface envelopes,
     ## user message the action envelope + resulting data model). Explicit aliases:
     ## pydantic's to_camel would emit "a2Ui..." — the wire name is "a2ui...".

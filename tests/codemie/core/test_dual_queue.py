@@ -20,10 +20,10 @@ Tests that DualQueue correctly sends messages to both streaming and persistence 
 
 import pytest
 
+from codemie.chains.base import StreamedGenerationResult, Thought, ThoughtAuthorType
 from codemie.core.dual_queue import DualQueue
 from codemie.core.thread import ThreadedGenerator
 from codemie.core.thought_queue import ThoughtQueue, ThoughtQueueItem
-from codemie.chains.base import StreamedGenerationResult, Thought, ThoughtAuthorType
 
 
 class TestDualQueue:
@@ -100,12 +100,21 @@ class TestDualQueue:
         persistence_item = persistence_queue.queue.get()
         assert persistence_item is StopIteration
 
-    def test_is_closed_reflects_streaming_queue(self, dual_queue, streaming_queue):
-        """Test that is_closed() reflects streaming queue state"""
+    def test_streaming_close_does_not_close_dual_queue(self, dual_queue, streaming_queue, persistence_queue):
+        """Client disconnect closes streaming only; DualQueue stays open for the agent."""
         assert not dual_queue.is_closed()
 
         streaming_queue.close()
 
+        assert streaming_queue.is_closed()
+        assert not persistence_queue.is_closed()
+        assert not dual_queue.is_closed()
+
+    def test_is_closed_after_dual_queue_close(self, dual_queue, streaming_queue, persistence_queue):
+        dual_queue.close()
+
+        assert streaming_queue.is_closed()
+        assert persistence_queue.is_closed()
         assert dual_queue.is_closed()
 
     def test_iteration_uses_streaming_queue(self, dual_queue, streaming_queue):
@@ -225,19 +234,18 @@ class TestDualQueue:
         # Simulate client disconnect - close streaming queue only
         streaming_queue.close()
 
-        # Dual queue should report as closed
-        assert dual_queue.is_closed()
-
-        # But persistence queue should still be open
+        assert not dual_queue.is_closed()
         assert not persistence_queue.is_closed()
 
-        # And it should have received the thought
         persistence_item = persistence_queue.queue.get()
         assert isinstance(persistence_item, ThoughtQueueItem)
         assert persistence_item.data.id == "thought-before-disconnect"
 
-        # Persistence queue can continue receiving thoughts even after streaming closes
-        # (This would happen from the workflow execution thread)
+        # Drain the pre-disconnect stream item and StopIteration from close
+        streaming_queue.queue.get()
+        streaming_queue.queue.get()  # StopIteration
+        assert streaming_queue.queue.empty()
+
         thought2 = Thought(
             id="thought-after-disconnect",
             message="After disconnect",
@@ -249,9 +257,9 @@ class TestDualQueue:
             thought=thought2,
             context={'execution_state_id': 'state-1'},
         )
-        # Directly send to persistence queue (simulating workflow continuing after disconnect)
-        persistence_queue.send(result2.model_dump_json())
+        dual_queue.send(result2.model_dump_json())
 
         persistence_item2 = persistence_queue.queue.get()
         assert isinstance(persistence_item2, ThoughtQueueItem)
         assert persistence_item2.data.id == "thought-after-disconnect"
+        assert streaming_queue.queue.empty()

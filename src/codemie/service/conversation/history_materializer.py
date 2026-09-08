@@ -23,8 +23,15 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from codemie.configs import logger
-from codemie.core.workflow_models import WorkflowExecutionStatusEnum
+from codemie.core.workflow_models import WorkflowExecution, WorkflowExecutionStatusEnum
 from codemie.rest_api.models.conversation import GeneratedMessage
+
+_VISIBLE_WITHOUT_OUTPUT = {
+    WorkflowExecutionStatusEnum.IN_PROGRESS,
+    WorkflowExecutionStatusEnum.ABORTED,
+    WorkflowExecutionStatusEnum.FAILED,
+    WorkflowExecutionStatusEnum.INTERRUPTED,
+}
 
 
 @dataclass
@@ -93,12 +100,7 @@ def _materialize_execution_reference(message: GeneratedMessage, workflow_id: Opt
         return message
 
     thoughts = _get_execution_thoughts(execution_id, history_index=message.history_index)
-
-    final_output = execution.output or ""
-    if not final_output and thoughts:
-        final_output = thoughts[-1].get("message", "")
-    if not final_output:
-        final_output = _get_last_completed_state_output(execution_id) or ""
+    final_output = _resolve_execution_output(execution, thoughts, execution_id)
 
     return GeneratedMessage(
         role=message.role,
@@ -113,7 +115,24 @@ def _materialize_execution_reference(message: GeneratedMessage, workflow_id: Opt
         money_spent=execution.tokens_usage.money_spent if execution.tokens_usage else None,
         workflow_execution_ref=True,
         execution_id=execution_id,
+        execution_status=execution.overall_status,
     )
+
+
+def _resolve_execution_output(execution: WorkflowExecution, thoughts: List[dict], execution_id: str) -> str:
+    """Return hydrated assistant text, empty while the workflow run is still in progress."""
+    run_in_progress = execution.overall_status == WorkflowExecutionStatusEnum.IN_PROGRESS or any(
+        thought.get("in_progress") for thought in thoughts
+    )
+    if run_in_progress:
+        return ""
+
+    final_output = execution.output or ""
+    if not final_output and thoughts:
+        final_output = thoughts[-1].get("message", "")
+    if not final_output:
+        final_output = _get_last_completed_state_output(execution_id) or ""
+    return final_output
 
 
 def _get_last_completed_state_output(execution_id: str) -> Optional[str]:
@@ -133,13 +152,16 @@ def _get_execution_thoughts(execution_id: str, history_index: Optional[int] = No
     """
     Retrieve thoughts for a workflow execution ordered by creation time.
 
+    Includes completed states with output and states that are still in progress,
+    aborted, failed, or interrupted even when output is empty.
+
     Args:
         execution_id: The workflow execution ID
         history_index: When provided, return only states tagged with this turn index.
             Falls back to all states when no states carry a history_index (legacy data).
 
     Returns:
-        List of thought dicts, one per state that has an output
+        List of thought dicts, one per visible execution state
     """
     from codemie.core.workflow_models import WorkflowExecutionState
 
@@ -159,14 +181,14 @@ def _get_execution_thoughts(execution_id: str, history_index: Optional[int] = No
                 "author_name": state.name,
                 "author_type": "WorkflowState",
                 "message": state.output or "",
-                "input_text": None,
+                "input_text": state.task or None,
                 "children": [],
-                "in_progress": False,
+                "in_progress": state.status == WorkflowExecutionStatusEnum.IN_PROGRESS,
                 "interrupted": state.status == WorkflowExecutionStatusEnum.INTERRUPTED,
                 "aborted": state.status == WorkflowExecutionStatusEnum.ABORTED,
             }
             for state in states
-            if state.output or state.status == WorkflowExecutionStatusEnum.ABORTED
+            if state.output or state.status in _VISIBLE_WITHOUT_OUTPUT
         ]
     except Exception as e:
         logger.error(f"Failed to get thoughts for execution {execution_id}: {e}", exc_info=True)

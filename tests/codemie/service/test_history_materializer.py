@@ -54,6 +54,25 @@ def _mock_execution(
     return execution
 
 
+def _mock_state(
+    *,
+    state_id: str = "state-1",
+    name: str = "Find Items Todo",
+    output: str | None = None,
+    status: WorkflowExecutionStatusEnum = WorkflowExecutionStatusEnum.IN_PROGRESS,
+    task: str | None = "Find changes to do in the document.",
+    history_index: int | None = 1,
+):
+    state = MagicMock()
+    state.id = state_id
+    state.name = name
+    state.output = output
+    state.status = status
+    state.task = task
+    state.history_index = history_index
+    return state
+
+
 @pytest.fixture
 def mock_workflow_service():
     with patch("codemie.service.workflow_service.WorkflowService") as mock_service:
@@ -181,3 +200,232 @@ class TestMaterializeWorkflowConversation:
         assert result.history[0].message == "msg-0"
         assert result.history[1].message == "result"
         assert result.history[2].message == "msg-2"
+
+    def test_in_progress_state_without_output_is_included(self, mock_workflow_service):
+        mock_workflow_service.find_workflow_execution_by_id.return_value = _mock_execution(
+            status=WorkflowExecutionStatusEnum.IN_PROGRESS, output=""
+        )
+        in_progress = _mock_state(output=None, status=WorkflowExecutionStatusEnum.IN_PROGRESS)
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[in_progress],
+        ):
+            result = materialize_workflow_conversation([_execution_ref(index=1)])
+
+        thoughts = result.history[0].thoughts
+        assert len(thoughts) == 1
+        assert thoughts[0].id == "state-1"
+        assert thoughts[0].author_name == "Find Items Todo"
+        assert thoughts[0].author_type == "WorkflowState"
+        assert thoughts[0].message == ""
+        assert thoughts[0].in_progress is True
+        assert thoughts[0].interrupted is False
+        assert thoughts[0].aborted is False
+        assert thoughts[0].input_text == "Find changes to do in the document."
+
+    def test_completed_state_with_output_is_not_in_progress(self, mock_workflow_service):
+        mock_workflow_service.find_workflow_execution_by_id.return_value = _mock_execution(
+            status=WorkflowExecutionStatusEnum.SUCCEEDED, output="done"
+        )
+        completed = _mock_state(
+            output="step result",
+            status=WorkflowExecutionStatusEnum.SUCCEEDED,
+            task="Do the step",
+        )
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[completed],
+        ):
+            result = materialize_workflow_conversation([_execution_ref()])
+
+        thought = result.history[0].thoughts[0]
+        assert thought.message == "step result"
+        assert thought.in_progress is False
+
+    def test_aborted_state_without_output_is_included(self, mock_workflow_service):
+        mock_workflow_service.find_workflow_execution_by_id.return_value = _mock_execution(
+            status=WorkflowExecutionStatusEnum.ABORTED, output=""
+        )
+        aborted = _mock_state(output=None, status=WorkflowExecutionStatusEnum.ABORTED, task=None)
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[aborted],
+        ):
+            result = materialize_workflow_conversation([_execution_ref()])
+
+        thought = result.history[0].thoughts[0]
+        assert thought.aborted is True
+        assert thought.in_progress is False
+        assert thought.message == ""
+
+    def test_failed_state_without_output_is_included(self, mock_workflow_service):
+        mock_workflow_service.find_workflow_execution_by_id.return_value = _mock_execution(
+            status=WorkflowExecutionStatusEnum.FAILED, output=""
+        )
+        failed = _mock_state(output=None, status=WorkflowExecutionStatusEnum.FAILED)
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[failed],
+        ):
+            result = materialize_workflow_conversation([_execution_ref()])
+
+        thought = result.history[0].thoughts[0]
+        assert thought.in_progress is False
+        assert thought.interrupted is False
+        assert thought.aborted is False
+        assert thought.message == ""
+        assert thought.id == "state-1"
+        assert result.history[0].execution_status == WorkflowExecutionStatusEnum.FAILED
+
+    def test_interrupted_state_without_output_is_included(self, mock_workflow_service):
+        mock_workflow_service.find_workflow_execution_by_id.return_value = _mock_execution(
+            status=WorkflowExecutionStatusEnum.INTERRUPTED, output=""
+        )
+        interrupted = _mock_state(output=None, status=WorkflowExecutionStatusEnum.INTERRUPTED)
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[interrupted],
+        ):
+            result = materialize_workflow_conversation([_execution_ref()])
+
+        thought = result.history[0].thoughts[0]
+        assert thought.interrupted is True
+        assert thought.in_progress is False
+        assert thought.aborted is False
+        assert thought.message == ""
+
+    def test_history_index_filters_thoughts_to_current_turn(self, mock_workflow_service):
+        mock_workflow_service.find_workflow_execution_by_id.return_value = _mock_execution(
+            status=WorkflowExecutionStatusEnum.IN_PROGRESS, output=""
+        )
+        prior = _mock_state(
+            state_id="state-old",
+            name="Prior Step",
+            output="old output",
+            status=WorkflowExecutionStatusEnum.SUCCEEDED,
+            history_index=0,
+        )
+        current = _mock_state(
+            state_id="state-new",
+            name="Current Step",
+            output=None,
+            status=WorkflowExecutionStatusEnum.IN_PROGRESS,
+            history_index=1,
+        )
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[prior, current],
+        ):
+            result = materialize_workflow_conversation([_execution_ref(index=1)])
+
+        thoughts = result.history[0].thoughts
+        assert len(thoughts) == 1
+        assert thoughts[0].id == "state-new"
+        assert thoughts[0].in_progress is True
+
+    def test_in_progress_turn_does_not_use_prior_state_output_as_message(self, mock_workflow_service):
+        mock_workflow_service.find_workflow_execution_by_id.return_value = _mock_execution(
+            status=WorkflowExecutionStatusEnum.IN_PROGRESS, output=""
+        )
+        prior = _mock_state(
+            state_id="state-old",
+            name="Prior Step",
+            output="old output",
+            status=WorkflowExecutionStatusEnum.SUCCEEDED,
+            history_index=0,
+        )
+        current = _mock_state(
+            state_id="state-new",
+            name="Current Step",
+            output=None,
+            status=WorkflowExecutionStatusEnum.IN_PROGRESS,
+            history_index=1,
+        )
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[prior, current],
+        ):
+            result = materialize_workflow_conversation([_execution_ref(index=1)])
+
+        msg = result.history[0]
+        assert msg.execution_status == WorkflowExecutionStatusEnum.IN_PROGRESS
+        assert msg.thoughts[0].in_progress is True
+        assert msg.message == ""
+
+    def test_between_steps_in_progress_turn_keeps_message_empty(self, mock_workflow_service):
+        mock_workflow_service.find_workflow_execution_by_id.return_value = _mock_execution(
+            status=WorkflowExecutionStatusEnum.IN_PROGRESS, output=""
+        )
+        completed = _mock_state(
+            state_id="state-done",
+            name="Completed Step",
+            output="step result",
+            status=WorkflowExecutionStatusEnum.SUCCEEDED,
+            history_index=1,
+        )
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[completed],
+        ):
+            result = materialize_workflow_conversation([_execution_ref(index=1)])
+
+        msg = result.history[0]
+        assert msg.execution_status == WorkflowExecutionStatusEnum.IN_PROGRESS
+        assert msg.thoughts[0].in_progress is False
+        assert msg.thoughts[0].message == "step result"
+        assert msg.message == ""
+
+    def test_hydrated_thoughts_serialize_as_snake_case(self, mock_workflow_service):
+        mock_workflow_service.find_workflow_execution_by_id.return_value = _mock_execution(
+            status=WorkflowExecutionStatusEnum.IN_PROGRESS, output=""
+        )
+        in_progress = _mock_state(output=None, status=WorkflowExecutionStatusEnum.IN_PROGRESS)
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[in_progress],
+        ):
+            result = materialize_workflow_conversation([_execution_ref(index=1)])
+
+        dumped = result.history[0].model_dump(by_alias=True)
+        thought = dumped["thoughts"][0]
+        assert "in_progress" in thought
+        assert "author_name" in thought
+        assert "input_text" in thought
+        assert "inProgress" not in thought
+        assert "authorName" not in thought
+        assert thought["in_progress"] is True
+        assert thought["author_name"] == "Find Items Todo"
+
+    def test_materialized_message_carries_in_progress_execution_status(self, mock_workflow_service):
+        mock_workflow_service.find_workflow_execution_by_id.return_value = _mock_execution(
+            status=WorkflowExecutionStatusEnum.IN_PROGRESS, output=""
+        )
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[],
+        ):
+            result = materialize_workflow_conversation([_execution_ref()])
+
+        msg = result.history[0]
+        assert msg.execution_status == WorkflowExecutionStatusEnum.IN_PROGRESS
+        dumped = msg.model_dump(by_alias=True)
+        assert dumped["executionStatus"] == "In Progress"
+
+    def test_materialized_message_carries_succeeded_execution_status(self, mock_workflow_service, mock_get_thoughts):
+        mock_workflow_service.find_workflow_execution_by_id.return_value = _mock_execution(
+            status=WorkflowExecutionStatusEnum.SUCCEEDED, output="done"
+        )
+
+        result = materialize_workflow_conversation([_execution_ref()])
+
+        assert result.history[0].execution_status == WorkflowExecutionStatusEnum.SUCCEEDED

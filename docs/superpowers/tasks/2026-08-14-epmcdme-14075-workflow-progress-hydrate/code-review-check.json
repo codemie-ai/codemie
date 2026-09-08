@@ -1,0 +1,29 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 is resolved: in-progress hydrate skips _get_last_completed_state_output, and a unit test asserts message stays empty while a later step is IN_PROGRESS. No new high-risk issues in the fix-up diff.",
+  "confidence": "high",
+  "risk_flags": ["public-api"],
+  "business_review": [
+    {"kind": "story-ac", "item": "After reload, conversation GET exposes accurate progress (not an empty assistant turn when execution state exists)", "status": "pass", "notes": "IN_PROGRESS states materialize as thoughts; execution_id retained"},
+    {"kind": "story-ac", "item": "In-progress states appear as thoughts with in_progress: true", "status": "pass", "notes": "Derived from state.status == IN_PROGRESS; unit test present"},
+    {"kind": "story-ac", "item": "Hydrated assistant message exposes execution identity and overall status", "status": "pass", "notes": "execution_status copied from overall_status; JSON alias executionStatus"},
+    {"kind": "story-ac", "item": "Client SSE disconnect does not, by itself, stop/abort a workflow execution", "status": "pass", "notes": "DualQueue.is_closed follows persistence_queue; disconnect still closes streaming only"},
+    {"kind": "story-ac", "item": "If state cannot be restored, API must not look like a successful blank turn when an active execution exists", "status": "pass", "notes": "execution_status copied even when thoughts are empty; missing execution keeps the stub"},
+    {"kind": "story-ac", "item": "No regression for completed/aborted/interrupted executions or non-workflow chats", "status": "pass", "notes": "Visible-without-output set includes ABORTED/FAILED/INTERRUPTED; ThreadedGenerator unchanged"},
+    {"kind": "story-ac", "item": "Tests cover in-progress hydrate and DualQueue disconnect-vs-persist", "status": "pass", "notes": "New materializer and DualQueue tests"},
+    {"kind": "spec", "item": "Mid-run GET contract: assistant message is empty while the current step is in progress", "status": "partial", "notes": "Example JSON has message: \"\"; last-completed-output fallback can fill message with a prior step's output"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "Subjects are EPMCDME-14075: ... matching git-workflow.md"},
+    {"kind": "code-quality", "status": "pass", "notes": "Edits stay in existing files; Apache headers preserved; execution_status is Optional[str] to avoid circular import with workflow_models"},
+    {"kind": "security", "status": "pass", "notes": "No auth, secrets, or untrusted-input parsing changes"}
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Skip last-completed-output fallback when overall_status is IN_PROGRESS or any thought is in_progress; covered by test_in_progress_turn_does_not_use_prior_state_output_as_message"
+    }
+  ]
+}

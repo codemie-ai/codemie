@@ -53,11 +53,15 @@ class DualQueue:
         """
         Send message to both queues for parallel processing.
 
+        If the streaming connection is already closed, skip the streaming queue
+        so unread items do not accumulate. Persistence continues.
+
         Args:
             data: Message data (typically JSON string with thought/state info)
         """
-        self.streaming_queue.send(data)  # For client streaming
-        self.persistence_queue.send(data)  # For database saving
+        if not self.streaming_queue.is_closed():
+            self.streaming_queue.send(data)
+        self.persistence_queue.send(data)
 
     def close(self, error: BaseException | None = None, *, reason: str | None = None) -> None:
         """Close both queues, forwarding ``error`` and ``reason`` to both."""
@@ -66,12 +70,12 @@ class DualQueue:
 
     def is_closed(self) -> bool:
         """
-        Check if queues are closed.
+        True only when persistence is closed (DualQueue.close() or equivalent).
 
-        Returns True if streaming queue is closed (indicates client disconnect).
-        The persistence queue may still be processing.
+        Streaming-only close (client disconnect) must not stop workflow agents
+        that poll this method.
         """
-        return self.streaming_queue.is_closed()
+        return self.persistence_queue.is_closed()
 
     def __iter__(self):
         """
