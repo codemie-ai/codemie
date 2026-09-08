@@ -493,6 +493,11 @@ class LLMProxyMonitoringService(BaseMonitoringService):
 
             sanitized_info = cls._sanitize_request_info(request_info)
             attributes.update(sanitized_info)
+            # MetricsAttributes.LLM_MODEL and request_info's LLM_MODEL key are both the
+            # literal string "llm_model", so the update() above can silently overwrite the
+            # explicit llm_model argument (e.g. a LiteLLM-router-routed model) with
+            # request_info's pre-request snapshot. The explicit argument must win.
+            attributes[MetricsAttributes.LLM_MODEL] = llm_model
 
             cls.send_count_metric(
                 name=LLM_PROXY_USAGE,

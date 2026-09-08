@@ -304,7 +304,7 @@ def test_effective_config_overlays_workflow_slots_on_assistant_slots(service, mo
 
 def test_effective_config_falls_back_to_the_assistant_scope(service, mock_repository, sample_mapping):
     # Arrange
-    mock_repository.get_mapping.side_effect = lambda a, u, w: (sample_mapping if w == ASSISTANT_SCOPE else None)
+    mock_repository.get_mapping.side_effect = lambda a, u, w: sample_mapping if w == ASSISTANT_SCOPE else None
 
     # Act
     configs, has_assistant_scope = service.get_effective_tools_config("test-assistant-id", "test-user-id", "workflow-1")

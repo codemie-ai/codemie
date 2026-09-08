@@ -15,6 +15,7 @@
 import pytest
 from uuid import UUID
 from unittest.mock import patch
+import asyncio
 from langchain_core.messages import BaseMessage
 from langchain_core.outputs import LLMResult, Generation, ChatGeneration
 
@@ -72,7 +73,7 @@ def test_on_llm_end_successful(
     )  # Returns tuple (total_cost, cached_cost, cache_creation_cost)
 
     # Execute
-    callback.on_llm_end(response=sample_llm_result, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+    asyncio.run(callback.on_llm_end(response=sample_llm_result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
 
     # Verify
     # Full calculation would be:
@@ -108,7 +109,7 @@ def test_on_llm_end_error_handling(mock_logger_error, callback):
     # Create a malformed LLMResult that will cause an exception
     broken_result = LLMResult(generations=[[Generation(text="test")]])  # Missing usage_metadata
 
-    callback.on_llm_end(response=broken_result, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+    asyncio.run(callback.on_llm_end(response=broken_result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
 
     # Verify that the error was logged
     mock_logger_error.assert_called_once()
@@ -124,7 +125,7 @@ def test_on_llm_end_with_empty_generations(callback):
         patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run') as mock_update_llm_run,
         patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost'),
     ):
-        callback.on_llm_end(response=empty_result, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+        asyncio.run(callback.on_llm_end(response=empty_result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
 
         mock_update_llm_run.assert_not_called()
 
@@ -156,7 +157,7 @@ def test_on_llm_end_with_cached_tokens(mock_calculate_token_cost, mock_update_ll
     # Total: (200 * 0.000003) + (4800 * 0.0000003) + (200 * 0.000015) = 0.0006 + 0.00144 + 0.003 = 0.00504
     mock_calculate_token_cost.return_value = (0.00504, 0.00144, 0.0)  # (total_cost, cached_cost, cache_creation_cost)
 
-    callback.on_llm_end(response=result_with_cache, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+    asyncio.run(callback.on_llm_end(response=result_with_cache, run_id=UUID('12345678-1234-5678-1234-567812345678')))
 
     # Verify calculate_token_cost was called with cached tokens
     mock_calculate_token_cost.assert_called_once_with(
@@ -214,7 +215,9 @@ def test_on_llm_end_with_cache_creation_tokens(
     # = 0.0015 + 0.016875 + 0.003 = 0.021375
     mock_calculate_token_cost.return_value = (0.021375, 0.0, 0.016875)  # (total_cost, cached_cost, cache_creation_cost)
 
-    callback.on_llm_end(response=result_with_cache_creation, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+    asyncio.run(
+        callback.on_llm_end(response=result_with_cache_creation, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+    )
 
     # Verify calculate_token_cost was called with cache_creation_tokens
     mock_calculate_token_cost.assert_called_once_with(
@@ -272,7 +275,7 @@ def test_on_llm_end_with_cache_creation_and_read(
     # = 0.0015 + 0.00375 + 0.00135 + 0.00225 = 0.00885
     mock_calculate_token_cost.return_value = (0.00885, 0.00135, 0.00375)  # (total, cached_cost, cache_creation_cost)
 
-    callback.on_llm_end(response=result_mixed, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+    asyncio.run(callback.on_llm_end(response=result_mixed, run_id=UUID('12345678-1234-5678-1234-567812345678')))
 
     # Verify calculate_token_cost was called with both cache_creation and cached_tokens
     mock_calculate_token_cost.assert_called_once_with(
@@ -316,7 +319,7 @@ def test_on_llm_end_with_no_cache_cost_config(
     mock_get_model_cost.return_value = mock_model_costs
     mock_calculate_token_cost.return_value = (0.0075, 0.0, 0.0)  # No cached cost, no cache creation cost
 
-    callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+    asyncio.run(callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
 
     # Verify cached tokens and cost are 0
     call_args = mock_update_llm_run.call_args[1]
@@ -385,10 +388,13 @@ def test_on_llm_error_skips_update_when_zero_tokens(callback):
         mock_update.assert_not_called()
 
 
+@patch('codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost')
 @patch('codemie.agents.callbacks.tokens_callback.config')
 @patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
 @patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
-def test_on_llm_end_uses_proxy_cost_header(mock_calculate_token_cost, mock_update_llm_run, mock_config, callback):
+def test_on_llm_end_uses_proxy_cost_header(
+    mock_calculate_token_cost, mock_update_llm_run, mock_config, mock_get_model_cost, callback
+):
     """When x-litellm-response-cost header is present and proxy tracking is on, use it directly."""
     mock_config.LLM_PROXY_ENABLED = True
     mock_config.LLM_PROXY_TRACK_USAGE = True
@@ -404,8 +410,12 @@ def test_on_llm_end_uses_proxy_cost_header(mock_calculate_token_cost, mock_updat
     )
     result = LLMResult(generations=[[generation]])
 
-    callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+    mock_get_model_cost.return_value = CostConfig(input=0.001, output=0.002)
+    mock_calculate_token_cost.return_value = (0.012, 0.0, 0.0)
 
+    asyncio.run(callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
+
+    # Proxy cost is authoritative: calculate_token_cost is not consulted at all in this case.
     mock_calculate_token_cost.assert_not_called()
     mock_update_llm_run.assert_called_once()
     call_args = mock_update_llm_run.call_args[1]
@@ -434,18 +444,19 @@ def test_on_llm_end_falls_back_to_calculate_when_header_absent(
     mock_get_model_cost.return_value = CostConfig(input=0.001, output=0.002)
     mock_calculate_token_cost.return_value = (0.05, 0.0, 0.0)
 
-    callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+    asyncio.run(callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
 
     mock_calculate_token_cost.assert_called_once()
     call_args = mock_update_llm_run.call_args[1]
     assert call_args['llm_run'].money_spent == 0.05
 
 
+@patch('codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost')
 @patch('codemie.agents.callbacks.tokens_callback.config')
 @patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
 @patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
 def test_on_llm_end_uses_litellm_cost_from_generation_info(
-    mock_calculate_token_cost, mock_update_llm_run, mock_config, callback
+    mock_calculate_token_cost, mock_update_llm_run, mock_config, mock_get_model_cost, callback
 ):
     """When litellm_cost is in generation_info and proxy tracking is on, use it directly."""
     mock_config.LLM_PROXY_ENABLED = True
@@ -462,8 +473,12 @@ def test_on_llm_end_uses_litellm_cost_from_generation_info(
     )
     result = LLMResult(generations=[[generation]])
 
-    callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+    mock_get_model_cost.return_value = CostConfig(input=0.001, output=0.002)
+    mock_calculate_token_cost.return_value = (0.012, 0.0, 0.0)
 
+    asyncio.run(callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
+
+    # Proxy cost is authoritative: calculate_token_cost is not consulted at all in this case.
     mock_calculate_token_cost.assert_not_called()
     call_args = mock_update_llm_run.call_args[1]
     assert call_args['llm_run'].money_spent == 0.0099
@@ -498,7 +513,7 @@ def test_on_llm_end_falls_back_when_cost_header_invalid(
         mock_get_model_cost.return_value = CostConfig(input=0.001, output=0.002)
         mock_calculate_token_cost.return_value = (0.05, 0.0, 0.0)
 
-        callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+        asyncio.run(callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
 
         mock_calculate_token_cost.assert_called_once()
 
@@ -544,7 +559,7 @@ def test_on_llm_end_ignores_proxy_cost_when_gate_disabled(
     mock_get_model_cost.return_value = CostConfig(input=0.001, output=0.002)
     mock_calculate_token_cost.return_value = (0.01, 0.0, 0.0)
 
-    callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+    asyncio.run(callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
 
     mock_calculate_token_cost.assert_called_once()
     call_args = mock_update_llm_run.call_args[1]
@@ -563,7 +578,7 @@ def test_on_llm_end_skips_litellm_whole_response_cache_hit(mock_update_llm_run, 
     )
     result = LLMResult(generations=[[ChatGeneration(text="Cached response", message=message)]])
 
-    callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+    asyncio.run(callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
 
     mock_update_llm_run.assert_not_called()
     mock_logger_debug.assert_any_call(
@@ -588,10 +603,137 @@ def test_on_llm_end_skips_litellm_proxy_lru_cache_hit(mock_update_llm_run, mock_
     )
     result = LLMResult(generations=[[generation]])
 
-    callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678'))
+    asyncio.run(callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
 
     mock_update_llm_run.assert_not_called()
     mock_logger_debug.assert_any_call(
         "Skipping LangGraph usage tracking for LiteLLM proxy cache hit (x-litellm-cache-key): "
         "request_id=test_request_id model=gpt-4.1-mini"
     )
+
+
+class TestExtractRoutedModelFromResponseMetadata:
+    """Unit tests for _extract_routed_model_from_response_metadata."""
+
+    @staticmethod
+    def _call(metadata: dict) -> str | None:
+        from codemie.agents.callbacks.tokens_callback import TokensCalculationCallback
+
+        return TokensCalculationCallback._extract_routed_model_from_response_metadata(metadata)
+
+    def test_proxy_model_fallback(self):
+        result = self._call({"model": "gpt-4o"})
+        assert result == "gpt-4o"
+
+    def test_returns_none_when_empty(self):
+        assert self._call({}) is None
+
+
+def _make_switchyard_decision(**overrides: object):
+    """Build a minimal RoutingDecision for tests without depending on pick_model()'s internals."""
+    import dataclasses
+
+    from codemie.enterprise.switchyard.decision import RoutingDecision
+
+    base = RoutingDecision(
+        model="claude-haiku-4-5-20251001",
+        tier="efficient",
+        capable_model="claude-sonnet-5",
+        confidence=0.3,
+    )
+    return dataclasses.replace(base, **overrides)
+
+
+@patch('codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost')
+@patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
+@patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
+def test_on_llm_end_registers_switchyard_classifier_as_separate_run(
+    mock_calculate_token_cost, mock_update_llm_run, mock_get_model_cost, callback
+):
+    """Switchyard's classifier sub-call gets its own billable LLMRun, mirroring the LiteLLM-router path.
+
+    The decision travels through on_chat_model_start's config metadata (see
+    switchyard/agent.py::_agenerate), not response_metadata — response_metadata for this
+    call doesn't exist yet at the time on_chat_model_start/on_llm_end fire on this callback.
+    """
+    from codemie.enterprise.switchyard.routing_meta import _SWITCHYARD_DECISION_METADATA_KEY
+
+    run_id = UUID('12345678-1234-5678-1234-567812345678')
+    decision = _make_switchyard_decision(
+        classifier_used=True,
+        classifier_model="gpt-5.6-luna-2026-07-09",
+        classifier_input_tokens=200,
+        classifier_output_tokens=15,
+        classifier_cost_usd=0.0021,
+    )
+    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={_SWITCHYARD_DECISION_METADATA_KEY: decision})
+
+    message = BaseMessage(
+        type="",
+        content="Test response",
+        usage_metadata={"input_tokens": 10, "output_tokens": 20},
+    )
+    generation = ChatGeneration(text="Test response", message=message)
+    result = LLMResult(generations=[[generation]])
+
+    mock_get_model_cost.return_value = CostConfig(input=0.001, output=0.002)
+    mock_calculate_token_cost.return_value = (0.05, 0.0, 0.0)
+
+    asyncio.run(callback.on_llm_end(response=result, run_id=run_id))
+
+    assert mock_update_llm_run.call_count == 2
+    main_run = mock_update_llm_run.call_args_list[0][1]['llm_run']
+    classifier_run = mock_update_llm_run.call_args_list[1][1]['llm_run']
+
+    assert main_run.run_id == str(run_id)
+    assert classifier_run.run_id == f"{run_id}-classifier"
+    assert classifier_run.input_tokens == 200
+    assert classifier_run.output_tokens == 15
+    assert classifier_run.llm_model == "gpt-5.6-luna-2026-07-09"
+    # The pending decision must be consumed exactly once.
+    assert run_id not in callback._pending_decisions
+
+
+@patch('codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost')
+@patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
+@patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
+def test_on_llm_end_skips_switchyard_classifier_run_when_classifier_not_used(
+    mock_calculate_token_cost, mock_update_llm_run, mock_get_model_cost, callback
+):
+    """Signal-mode routing (no classifier call) must not fabricate a classifier LLMRun."""
+    from codemie.enterprise.switchyard.routing_meta import _SWITCHYARD_DECISION_METADATA_KEY
+
+    run_id = UUID('12345678-1234-5678-1234-567812345678')
+    decision = _make_switchyard_decision()  # classifier_used defaults to False
+    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={_SWITCHYARD_DECISION_METADATA_KEY: decision})
+
+    message = BaseMessage(
+        type="",
+        content="Test response",
+        usage_metadata={"input_tokens": 10, "output_tokens": 20},
+    )
+    generation = ChatGeneration(text="Test response", message=message)
+    result = LLMResult(generations=[[generation]])
+
+    mock_get_model_cost.return_value = CostConfig(input=0.001, output=0.002)
+    mock_calculate_token_cost.return_value = (0.05, 0.0, 0.0)
+
+    asyncio.run(callback.on_llm_end(response=result, run_id=run_id))
+
+    mock_update_llm_run.assert_called_once()
+
+
+def test_on_llm_error_clears_pending_decision():
+    """A pending decision must not leak in self._pending_decisions when the call errors."""
+    from codemie.agents.callbacks.tokens_callback import TokensCalculationCallback
+    from codemie.enterprise.switchyard.routing_meta import _SWITCHYARD_DECISION_METADATA_KEY
+
+    callback = TokensCalculationCallback(request_id="test_request_id", llm_model="gpt-4.1-mini")
+    run_id = UUID('12345678-1234-5678-1234-567812345678')
+    decision = _make_switchyard_decision()
+    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={_SWITCHYARD_DECISION_METADATA_KEY: decision})
+    assert run_id in callback._pending_decisions
+
+    callback.on_llm_error(RuntimeError("boom"), run_id=run_id)
+
+    assert run_id not in callback._pending_decisions

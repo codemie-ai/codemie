@@ -20,6 +20,15 @@ from codemie.core.constants import UniqueThoughtParentIds
 from codemie.core.thought_queue import ThoughtContext
 
 
+def _merge_routing(target: dict, source: dict) -> None:
+    """Merge ``source['routing']`` non-None fields into ``target['routing']``, in place."""
+    incoming = source.get('routing')
+    if not incoming:
+        return
+    existing = target.get('routing') or {}
+    target['routing'] = {**existing, **{k: v for k, v in incoming.items() if v is not None}}
+
+
 class MessageQueue(Protocol):
     def __iter__(self): ...
 
@@ -99,6 +108,7 @@ class ThreadedGenerator:
             existing_thought['metadata'] = {**existing_thought.get('metadata', {}), **metadata}
             existing_thought['output_format'] = output_format
             existing_thought['in_progress'] = in_progress
+            _merge_routing(existing_thought, thought)
         else:
             thought_object = {
                 'id': thought_id,
@@ -114,6 +124,7 @@ class ThreadedGenerator:
                 'metadata': metadata,
                 'output_format': output_format,
                 'in_progress': in_progress,
+                'routing': thought.get('routing'),
             }
 
             if is_nested_to_latest:
@@ -160,6 +171,7 @@ class ThreadedGenerator:
                 }
                 existing_child_thought['output_format'] = thought_object.get('output_format')
                 existing_child_thought['in_progress'] = thought_object.get('in_progress', False)
+                _merge_routing(existing_child_thought, thought_object)
             else:
                 existing_thougt['children'].append(thought_object)
 
@@ -181,5 +193,6 @@ class ThreadedGenerator:
                 }
                 existing_child_thought['output_format'] = thought_object.get('output_format')
                 existing_child_thought['in_progress'] = thought_object.get('in_progress', False)
+                _merge_routing(existing_child_thought, thought_object)
             else:
                 latest_thought['children'].append(thought_object)

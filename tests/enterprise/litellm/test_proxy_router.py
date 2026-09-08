@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -42,12 +43,14 @@ from codemie.enterprise.litellm.budget_categories import BudgetCategory
 from codemie.enterprise.litellm.credentials import ResolvedLiteLLMUserCredentials
 from codemie.enterprise.litellm.proxy_router import (
     LITELLM_CUSTOMER_ID_HEADER,
+    _augment_models_list_response,
     _build_premium_budget_error_body,
     _check_cli_version,
     _extract_model,
     _extract_request_info,
     _get_integration_api_key,
     _handle_error_response,
+    _is_models_list_endpoint,
     _prepare_proxy_headers,
     _proxy_to_llm_proxy,
     _resolve_non_premium_tracking_identity,
@@ -2253,6 +2256,107 @@ class TestProxyResponseHeaderFiltering:
         assert "x-custom-header" in response_headers
         assert response_headers["x-custom-header"] == "should-keep"
 
+    def test_router_headers_pass_through_filter(self):
+        from codemie.enterprise.litellm.litellm_router_meta import LITELLM_ROUTER_HEADERS
+        from codemie.enterprise.litellm.proxy_router import (
+            LITELLM_FORWARDED_HEADERS,
+            PROXY_RESPONSE_HOP_BY_HOP_HEADERS,
+        )
+
+        downstream_headers = httpx.Headers(
+            {
+                "content-type": "application/json",
+                "x-litellm-router-tier": "COMPLEX",
+                "x-litellm-router-cause": "llm_classifier",
+                "x-litellm-router-score": "0.75",
+                "x-litellm-router-routed-model": "claude-sonnet-5",
+                "x-litellm-router-classifier-model": "claude-haiku-4-5-20251001",
+                "x-litellm-router-model-name": "claude-only-simple-no-aff",
+                "x-litellm-router-type": "complexity",
+                "x-litellm-router-signals": '["llm-classifier:COMPLEX"]',
+                "x-litellm-model-name": "claude-sonnet-5",
+                "x-litellm-response-cost": "0.0002244",
+            }
+        )
+
+        response_headers = {
+            k: v
+            for k, v in downstream_headers.items()
+            if (
+                k.lower() not in PROXY_RESPONSE_HOP_BY_HOP_HEADERS
+                and (
+                    not k.lower().startswith("x-litellm-")
+                    or k.lower() in LITELLM_ROUTER_HEADERS
+                    or k.lower() in LITELLM_FORWARDED_HEADERS
+                )
+            )
+        }
+
+        assert response_headers["x-litellm-router-tier"] == "COMPLEX"
+        assert response_headers["x-litellm-router-cause"] == "llm_classifier"
+        assert response_headers["x-litellm-router-score"] == "0.75"
+        assert response_headers["x-litellm-router-routed-model"] == "claude-sonnet-5"
+        assert response_headers["x-litellm-router-classifier-model"] == "claude-haiku-4-5-20251001"
+        assert response_headers["x-litellm-router-model-name"] == "claude-only-simple-no-aff"
+        assert response_headers["x-litellm-router-type"] == "complexity"
+        assert response_headers["x-litellm-router-signals"] == '["llm-classifier:COMPLEX"]'
+        assert response_headers["x-litellm-model-name"] == "claude-sonnet-5"
+        assert "x-litellm-response-cost" not in response_headers
+        assert response_headers["content-type"] == "application/json"
+
+    def test_non_router_litellm_headers_still_stripped(self):
+        from codemie.enterprise.litellm.litellm_router_meta import LITELLM_ROUTER_HEADERS
+        from codemie.enterprise.litellm.proxy_router import (
+            LITELLM_FORWARDED_HEADERS,
+            PROXY_RESPONSE_HOP_BY_HOP_HEADERS,
+        )
+
+        downstream_headers = httpx.Headers(
+            {
+                "x-litellm-call-id": "abc123",
+                "x-litellm-version": "1.96.2",
+                "x-litellm-model-id": "some-id",
+                "x-litellm-key-spend": "100.0",
+            }
+        )
+
+        response_headers = {
+            k: v
+            for k, v in downstream_headers.items()
+            if (
+                k.lower() not in PROXY_RESPONSE_HOP_BY_HOP_HEADERS
+                and (
+                    not k.lower().startswith("x-litellm-")
+                    or k.lower() in LITELLM_ROUTER_HEADERS
+                    or k.lower() in LITELLM_FORWARDED_HEADERS
+                )
+            )
+        }
+
+        assert "x-litellm-call-id" not in response_headers
+        assert "x-litellm-version" not in response_headers
+        assert "x-litellm-model-id" not in response_headers
+        assert "x-litellm-key-spend" not in response_headers
+
+    def test_switchyard_headers_injected_into_response_headers(self):
+        from codemie.enterprise.switchyard.routing_meta import SwitchyardMeta
+
+        meta = SwitchyardMeta(
+            routed_model="claude-haiku-4-5-20251001",
+            requested_model="claude-sonnet-5",
+            tier="efficient",
+            confidence=0.82,
+        )
+        response_headers: dict[str, str] = {"content-type": "application/json"}
+        response_headers.update(meta.to_headers())
+
+        assert response_headers["x-codemie-routed-model"] == "claude-haiku-4-5-20251001"
+        assert response_headers["x-codemie-requested-model"] == "claude-sonnet-5"
+        assert response_headers["x-codemie-routing-tier"] == "efficient"
+        assert response_headers["x-codemie-routing-confidence"] == "0.82"
+        assert "x-codemie-routing-decision-source" not in response_headers  # None → omitted
+        assert response_headers["content-type"] == "application/json"  # existing headers preserved
+
 
 class TestLiteLLMCacheHitUsageTracking:
     """Cache hits are returned but excluded from CodeMie token usage tracking."""
@@ -2348,3 +2452,80 @@ class TestLiteLLMCacheHitUsageTracking:
                 ]
 
         mock_background_tasks.add_task.assert_called_once()
+
+
+class TestModelsListEndpoint:
+    """Tests for /v1/models Switchyard-router augmentation helpers."""
+
+    @pytest.mark.parametrize(
+        ("endpoint", "expected"),
+        [
+            ("/v1/models", True),
+            ("v1/models", True),
+            ("/v1/models?include=all", True),
+            ("/models", True),
+            ("/v1/models/gemini-2:generateContent", False),
+            ("/v1/messages", False),
+            ("/v1/chat/completions", False),
+        ],
+    )
+    def test_is_models_list_endpoint(self, endpoint: str, expected: bool) -> None:
+        assert _is_models_list_endpoint(endpoint) is expected
+
+    @staticmethod
+    def _router(base_name: str, label: str | None = None) -> SimpleNamespace:
+        return SimpleNamespace(base_name=base_name, label=label)
+
+    def test_appends_router_mirroring_openai_shape(self) -> None:
+        body = json.dumps(
+            {
+                "object": "list",
+                "data": [{"id": "claude-sonnet-4-6", "object": "model", "created": 1, "owned_by": "codemie"}],
+            }
+        ).encode()
+        router_name = "claude-sonnet-4-6-switchyard-claude-haiku-4-5-20251001-classifier"
+        routers = [self._router(router_name, "SY (Classifier)")]
+        with patch("codemie.service.llm_service.llm_service.llm_service.get_all_routers", return_value=routers):
+            result = json.loads(_augment_models_list_response(body))
+
+        entry = next(e for e in result["data"] if e["id"] == router_name)
+        assert entry["object"] == "model"  # mirrored from the template entry
+
+    def test_appends_router_mirroring_anthropic_shape(self) -> None:
+        body = json.dumps(
+            {
+                "data": [{"type": "model", "id": "claude-sonnet-4-6", "display_name": "Claude Sonnet 4.6"}],
+                "has_more": False,
+            }
+        ).encode()
+        routers = [self._router("cap-switchyard-eff-classifier", "SY (Classifier)")]
+        with patch("codemie.service.llm_service.llm_service.llm_service.get_all_routers", return_value=routers):
+            result = json.loads(_augment_models_list_response(body))
+
+        entry = next(e for e in result["data"] if e["id"] == "cap-switchyard-eff-classifier")
+        assert entry["type"] == "model"
+        assert entry["display_name"] == "SY (Classifier)"
+
+    def test_does_not_duplicate_existing_router(self) -> None:
+        body = json.dumps({"object": "list", "data": [{"id": "r-classifier", "object": "model"}]}).encode()
+        routers = [self._router("r-classifier", "R")]
+        with patch("codemie.service.llm_service.llm_service.llm_service.get_all_routers", return_value=routers):
+            result = json.loads(_augment_models_list_response(body))
+
+        assert [e["id"] for e in result["data"]].count("r-classifier") == 1
+
+    def test_empty_data_uses_openai_fallback_shape(self) -> None:
+        body = json.dumps({"object": "list", "data": []}).encode()
+        routers = [self._router("r-classifier", "R")]
+        with patch("codemie.service.llm_service.llm_service.llm_service.get_all_routers", return_value=routers):
+            result = json.loads(_augment_models_list_response(body))
+
+        assert result["data"] == [{"id": "r-classifier", "object": "model", "created": 0, "owned_by": "codemie"}]
+
+    def test_no_routers_returns_body_unchanged(self) -> None:
+        body = json.dumps({"object": "list", "data": [{"id": "x", "object": "model"}]}).encode()
+        with patch("codemie.service.llm_service.llm_service.llm_service.get_all_routers", return_value=[]):
+            assert _augment_models_list_response(body) == body
+
+    def test_invalid_body_returned_unchanged(self) -> None:
+        assert _augment_models_list_response(b"not json") == b"not json"

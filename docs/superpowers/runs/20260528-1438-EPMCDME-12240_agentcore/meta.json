@@ -21,7 +21,7 @@
     "event_ledger": "docs/superpowers/runs/20260528-1438-EPMCDME-12240_agentcore/work-item-events.jsonl"
   },
   "current_phase": 2,
-  "status": "running",
+  "status": "abandoned",
   "escalate_on": ["security", "breaking-change"],
   "phases": {
     "0": {"status": "completed", "started_at": "2026-05-28T14:38:00Z", "completed_at": "2026-05-28T14:39:00Z"},

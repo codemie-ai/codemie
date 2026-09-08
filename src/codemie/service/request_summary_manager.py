@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from codemie.configs import logger
 from codemie.core.models import UserEntity, TokensUsage
+from codemie.core.routing_info import RoutingInfo
 
 
 class LLMRun(BaseModel):
@@ -32,6 +33,7 @@ class LLMRun(BaseModel):
     cached_tokens_money_spent: float = 0.0
     cached_tokens_creation_cost: float = 0.0
     llm_model: str
+    routing: RoutingInfo | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -50,6 +52,24 @@ class RequestSummary(BaseModel):
         total_cached_tokens_money_spent = sum(run.cached_tokens_money_spent for run in self.llm_runs)
         total_cached_tokens_creation_money_spent = sum(run.cached_tokens_creation_cost for run in self.llm_runs)
 
+        # Use the routed_model from the last run that has one recorded (most recent = final response model)
+        routed_model: str | None = next(
+            (run.routing.routed_model for run in reversed(self.llm_runs) if run.routing and run.routing.routed_model),
+            None,
+        )
+
+        classifier_costs = [
+            run.routing.classifier_cost_usd
+            for run in self.llm_runs
+            if run.routing and run.routing.classifier_cost_usd is not None
+        ]
+        total_classifier_cost: float | None = sum(classifier_costs) if classifier_costs else None
+
+        routing = RoutingInfo(
+            routed_model=routed_model,
+            classifier_cost_usd=total_classifier_cost,
+        )
+
         self.tokens_usage = TokensUsage(
             input_tokens=total_input_tokens,
             output_tokens=total_output_tokens,
@@ -57,6 +77,7 @@ class RequestSummary(BaseModel):
             money_spent=total_money_spent,
             cached_tokens_money_spent=total_cached_tokens_money_spent,
             cached_tokens_creation_money_spent=total_cached_tokens_creation_money_spent,
+            routing=routing if not routing.is_empty() else None,
         )
 
         logger.debug(

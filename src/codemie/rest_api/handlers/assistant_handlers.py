@@ -47,6 +47,7 @@ from codemie.core.models import (
     TokensUsage,
     ToolCallAction,
 )
+from codemie.core.routing_info import RoutingInfo
 from codemie.core.thread import ThreadedGenerator
 from codemie.rest_api.a2a.client.remote_agent_connection import RemoteAgentConnections, TaskCallbackArg
 from codemie.rest_api.a2a.types import Task, SendTaskRequest, SendTaskStreamingRequest, AgentCard, TaskState
@@ -451,6 +452,23 @@ class AssistantRequestHandler(ABC):
         request_summary_manager.clear_summary(self.request_uuid)
 
     @staticmethod
+    def _build_routing(thought: dict) -> RoutingInfo | None:
+        """Build a RoutingInfo from a persisted thought dict's nested 'routing' sub-dict.
+
+        Pre-migration persisted thoughts (flat keys) have no 'routing' sub-dict and
+        yield None here — acceptable, no history migration.
+        """
+        routing = thought.get('routing') or {}
+        if not routing:
+            return None
+        return RoutingInfo(
+            routed_model=routing.get('routed_model'),
+            routed_model_label=routing.get('routed_model_label')
+            or llm_service.get_model_label(routing.get('routed_model')),
+            classifier_cost_usd=routing.get('classifier_cost_usd'),
+        )
+
+    @staticmethod
     def _filter_thoughts(thoughts: List[Thought]):
         if not AssistantRequestHandler._is_conversation_replay_v2_enabled():
             return [
@@ -465,6 +483,7 @@ class AssistantRequestHandler(ABC):
                     error=thought.get('error', False),
                     aborted=thought.get('aborted', False),
                     interrupted=thought.get('interrupted', False),
+                    routing=AssistantRequestHandler._build_routing(thought),
                 )
                 for thought in thoughts
                 if thought.get('message', '') or thought.get('aborted', False) or thought.get('interrupted', False)
@@ -485,6 +504,7 @@ class AssistantRequestHandler(ABC):
                 metadata=thought.get('metadata') or {},
                 output_format=thought.get('output_format'),
                 in_progress=thought.get('in_progress', False),
+                routing=AssistantRequestHandler._build_routing(thought),
             )
             for thought in thoughts
             if (

@@ -10,7 +10,7 @@
     "event_ledger": "docs/superpowers/runs/20260701-1735-main/work-item-events.jsonl"
   },
   "current_phase": 7,
-  "status": "running",
+  "status": "abandoned",
   "branch_guard": {
     "current_branch": "EPMCDME-13222_google-docs-oauth",
     "base_branch": "main",

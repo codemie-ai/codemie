@@ -35,6 +35,8 @@ from codemie.agents.callbacks.callback_utils import (
 from codemie.chains.base import Thought, ThoughtOutputFormat, ThoughtAuthorType
 from codemie.configs import logger
 from codemie.core.constants import OUTPUT_FORMAT
+from codemie.core.routing_info import RoutingInfo, compose_routing_info, default_routing_extractors
+from codemie.service.llm_service.llm_service import llm_service
 
 
 class AgentInvokeCallback(StreamingStdOutCallbackHandler):
@@ -55,6 +57,10 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
         self._current_thoughts: Dict[str | None, Dict[str, Thought]] = {}
         self._latest_run_keys: Dict[str | None, str] = {}
         self.thoughts: List[Dict[str, Any]] = []
+        # Last routing info (routed model / classifier cost) observed from a Switchyard- or
+        # LiteLLM-router-routed LLM call. Stamped onto subsequent tool thoughts so replay
+        # metadata survives reload.
+        self._last_routing: RoutingInfo | None = None
 
     @property
     def parent_id(self) -> Optional[str]:
@@ -71,6 +77,26 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
     @staticmethod
     def _get_run_key(run_id: Any | None) -> str:
         return str(run_id) if run_id is not None else "__default__"
+
+    def _stamp_switchyard_metadata(self, thought: Thought) -> None:
+        """Stamp the last observed routing info (tier/cost) onto a thought and its metadata."""
+        metadata = dict(thought.metadata) if thought.metadata else {}
+        last_routing = self._last_routing
+        routed_model = last_routing.routed_model if last_routing is not None else None
+        classifier_cost_usd = last_routing.classifier_cost_usd if last_routing is not None else None
+        if routed_model is not None:
+            metadata["llm_tier"] = routed_model
+        if classifier_cost_usd is not None:
+            metadata["classifier_cost_usd"] = classifier_cost_usd
+        if last_routing is not None and not last_routing.is_empty():
+            label = llm_service.get_model_label(routed_model) if routed_model is not None else None
+            new_routing = RoutingInfo(
+                routed_model=routed_model,
+                routed_model_label=label,
+                classifier_cost_usd=classifier_cost_usd,
+            )
+            thought.routing = new_routing.merged_over(thought.routing) if thought.routing else new_routing
+        thought.metadata = metadata
 
     def _get_author_thoughts(self, author: str | None = None) -> Dict[str, Thought]:
         return self._current_thoughts.setdefault(author, {})
@@ -92,6 +118,15 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
     def _get_parent_id(self, author: str | None = None) -> Optional[str]:
         return self._parent_tracker.get(author)
 
+    @staticmethod
+    def _merge_routing_into_thought(existing_thought: dict, thought: "Thought") -> None:
+        """Overlay non-None routing fields from *thought* onto *existing_thought* in place."""
+        if not thought.routing:
+            return
+        incoming = {k: v for k, v in thought.routing.model_dump().items() if v is not None}
+        if incoming:
+            existing_thought["routing"] = {**(existing_thought.get("routing") or {}), **incoming}
+
     def thought_processing(self, thought: Optional[Thought]) -> None:
         """
         Process and store a thought, either updating an existing one or adding a new one.
@@ -112,6 +147,7 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
                     existing_thought['metadata'] = {**existing_thought.get('metadata', {}), **thought.metadata}
                 existing_thought['in_progress'] = thought.in_progress
                 existing_thought['output_format'] = thought.output_format
+                self._merge_routing_into_thought(existing_thought, thought)
             else:
                 thought_object = {
                     'id': thought.id,
@@ -125,6 +161,7 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
                     'metadata': thought.metadata,
                     'in_progress': thought.in_progress,
                     'output_format': thought.output_format,
+                    'routing': thought.routing.model_dump() if thought.routing else None,
                 }
                 self.thoughts.append(thought_object)
 
@@ -200,11 +237,18 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
         """Run when LLM ends running."""
         author = kwargs.get("author")
         run_id = kwargs.get("run_id")
+        info = RoutingInfo()
+        if response is not None and getattr(response, "generations", None):
+            info = compose_routing_info(response, default_routing_extractors())
+        if not info.is_empty():
+            self._last_routing = info.merged_over(self._last_routing) if self._last_routing else info
+
         current_thought = self._get_current_thought(author, run_id=run_id)
         if not current_thought:
             return
         current_thought.message = ''
         current_thought.in_progress = False
+        self._stamp_switchyard_metadata(current_thought)
         self.thought_processing(current_thought)
         self.reset_current_thought(author, run_id=run_id)
 
@@ -249,7 +293,9 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
             run_id=run_id,
         )
 
-        self.thought_processing(self._get_current_thought(author, run_id=run_id))
+        current_thought = self._get_current_thought(author, run_id=run_id)
+        self._stamp_switchyard_metadata(current_thought)
+        self.thought_processing(current_thought)
 
     def on_agent_action(self, action: AgentAction, **kwargs: Any) -> Any:
         """Run on agent action."""

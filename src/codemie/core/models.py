@@ -39,6 +39,7 @@ from pydantic.alias_generators import to_camel
 from codemie.configs import config
 from codemie.core.ability import Owned
 from codemie.core.constants import CodeIndexType, ChatRole, BackgroundTaskStatus, DatasourceTypes
+from codemie.core.routing_info import RoutingInfo
 
 if TYPE_CHECKING:
     from codemie.rest_api.security.user import User
@@ -911,6 +912,7 @@ class TokensUsage(BaseModel):
     money_spent: float
     cached_tokens_money_spent: float = 0.0
     cached_tokens_creation_money_spent: float = 0.0
+    routing: RoutingInfo | None = None
 
 
 class IdeToolArgument(ConfiguredModel):

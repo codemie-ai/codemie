@@ -18,6 +18,7 @@ Tests for RequestSummaryManager to ensure cached_tokens_money_spent is properly 
 
 import pytest
 
+from codemie.core.routing_info import RoutingInfo
 from codemie.service.request_summary_manager import (
     LLMRun,
     RequestSummary,
@@ -261,3 +262,32 @@ def test_request_summary_manager_mixed_models():
     assert abs(summary.tokens_usage.cached_tokens_creation_money_spent - 0.0003) < 0.00001
 
     request_summary_manager.clear_summary(request_id=request_id)
+
+
+def test_calculate_aggregates_routing_from_runs():
+    """Test that RequestSummary.calculate() nests aggregated routing metadata on TokensUsage.routing."""
+    summary = RequestSummary(
+        request_id="r1",
+        llm_runs=[
+            LLMRun(
+                run_id="1",
+                input_tokens=10,
+                output_tokens=5,
+                money_spent=0.02,
+                llm_model="sonnet",
+                routing=RoutingInfo(routed_model="sonnet", classifier_cost_usd=0.001),
+            ),
+            LLMRun(
+                run_id="2",
+                input_tokens=8,
+                output_tokens=4,
+                money_spent=0.01,
+                llm_model="haiku",
+                routing=RoutingInfo(routed_model="haiku", classifier_cost_usd=0.002),
+            ),
+        ],
+    )
+    summary.calculate()
+    tu = summary.tokens_usage
+    assert tu.routing.routed_model == "haiku"
+    assert abs(tu.routing.classifier_cost_usd - 0.003) < 1e-9

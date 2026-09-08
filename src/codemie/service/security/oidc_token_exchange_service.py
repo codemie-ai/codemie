@@ -330,8 +330,7 @@ class OIDCTokenExchangeService:
         token, principal_type = token_exchange_service.get_token_with_principal_type_for_current_user()
         if not token:
             logger.debug(
-                f"No bearer token available for OIDC exchange for user_id={user_id} "
-                f"(neither user nor client principal)"
+                f"No bearer token available for OIDC exchange for user_id={user_id} (neither user nor client principal)"
             )
             return None
 

@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, List
+from __future__ import annotations
+
+from typing import Dict, List, Union
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from codemie.configs.llm_config import LLMModel, ModelCategory
+from codemie.configs.llm_config import LLMModel, LlmRouterOption, ModelCategory
 from codemie.enterprise.litellm import proxy_router, register_proxy_endpoints  # noqa: F401 (proxy_router used by main.py)
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
@@ -31,10 +33,12 @@ router = APIRouter(
 
 @router.get(
     "/llm_models",
-    response_model=List[LLMModel],
+    response_model=List[Union[LLMModel, LlmRouterOption]],
     response_model_exclude_none=True,
 )
-def get_llm_models(user: User = Depends(authenticate), include_all: bool = False) -> List[LLMModel]:
+def get_llm_models(
+    user: User = Depends(authenticate), include_all: bool = False
+) -> list[Union[LLMModel, LlmRouterOption]]:
     """
     Return the list of available LLM models for the authenticated user.
 
@@ -50,10 +54,13 @@ def get_llm_models(user: User = Depends(authenticate), include_all: bool = False
         include_all: If True, return all models. If False (default), filter out models forbidden for web
 
     Returns:
-        List of available LLM models
+        List of available LLM models and router options
     """
-    # Get models from service layer (filtered by include_all parameter)
-    return llm_service.get_allowed_chat_models(user, include_all=include_all)
+    models: list[Union[LLMModel, LlmRouterOption]] = list(
+        llm_service.get_allowed_chat_models(user, include_all=include_all)
+    )
+    models.extend(llm_service.get_allowed_router_options(include_all=include_all))
+    return models
 
 
 @router.get(

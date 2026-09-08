@@ -29,6 +29,7 @@ from codemie.core.db_utils import escape_like_wildcards
 from codemie.agents.tool_confirmation.models import ToolCallPendingEvent
 from codemie.core.exceptions import ValidationException
 from codemie.core.models import CodeIndexType, ChatMessage, ChatRole, ConfiguredModel, ToolCallPolicy
+from codemie.core.routing_info import RoutingInfo
 from codemie.rest_api.models.assistant import Context, AssistantType
 from codemie.rest_api.models.base import (
     BaseModelWithSQLSupport,
@@ -129,6 +130,7 @@ class GeneratedMessage(ChatMessage):
     ## Assistant message fields
     assistant_id: Optional[str] = None
     thoughts: Optional[List[Thought]] = None
+    routing: Optional[RoutingInfo] = None
     ## Workflow execution reference fields
     workflow_execution_ref: Optional[bool] = None  # Marker that this is a reference to workflow execution
     execution_id: Optional[str] = None  # Reference to WorkflowExecution.execution_id
@@ -225,6 +227,16 @@ class ConversationMetrics(BaseModelWithSQLSupport, table=True):
         self.total_output_tokens = conversation.get_total_output_tokens()
         self.total_money_spent = conversation.get_total_money_spent()
         self.avg_response_time = conversation.get_average_response_time()
+
+
+class ConversationMetricsOut(BaseModel):
+    """Response model for the metrics endpoint — includes computed savings fields."""
+
+    conversation_id: str
+    total_input_tokens: int | None = None
+    total_output_tokens: int | None = None
+    total_money_spent: float | None = None
+    total_classifier_cost_usd: float | None = None
 
 
 class Conversation(BaseModelWithSQLSupport, Owned, table=True):
@@ -334,6 +346,44 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
                 money_spent.append(message.money_spent)
         return sum(money_spent) if money_spent else 0
 
+    def get_total_classifier_cost_usd(self) -> float:
+        total = 0.0
+        for message in self.history:
+            if not isinstance(message, GeneratedMessage):
+                continue
+            for thought in message.thoughts or []:
+                classifier_cost_usd = thought.routing.classifier_cost_usd if thought.routing else None
+                if classifier_cost_usd is not None:
+                    total += classifier_cost_usd
+        return total
+
+    @staticmethod
+    def _routing_from_thoughts(thoughts: List[Thought]) -> RoutingInfo | None:
+        """Derive message-level RoutingInfo from the turn's thoughts — the single source of
+        truth for "which model actually answered"."""
+        routed_model = next(
+            (t.routing.routed_model for t in reversed(thoughts) if t.routing and t.routing.routed_model),
+            None,
+        )
+        routed_model_label = next(
+            (t.routing.routed_model_label for t in reversed(thoughts) if t.routing and t.routing.routed_model_label),
+            None,
+        )
+        classifier_cost_usd = (
+            sum(
+                t.routing.classifier_cost_usd
+                for t in thoughts
+                if t.routing and t.routing.classifier_cost_usd is not None
+            )
+            or None
+        )
+        info = RoutingInfo(
+            routed_model=routed_model,
+            routed_model_label=routed_model_label,
+            classifier_cost_usd=classifier_cost_usd,
+        )
+        return None if info.is_empty() else info
+
     @staticmethod
     def _build_chat_history_messages(turn: ChatTurnData) -> tuple[GeneratedMessage, GeneratedMessage]:
         assistant_responded_at = datetime.now()
@@ -347,6 +397,17 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             a2ui_action=turn.a2ui_action,
             a2ui_data_model=turn.a2ui_data_model,
         )
+        # Resolve friendly model labels for any thoughts that carry a routed model —
+        # must run before deriving message-level routing below, so the derived label
+        # reflects the backfilled value.
+        from codemie.service.llm_service.llm_service import llm_service
+
+        for thought in turn.thoughts:
+            if thought.routing and thought.routing.routed_model and not thought.routing.routed_model_label:
+                label = llm_service.get_model_label(thought.routing.routed_model)
+                if label:
+                    thought.routing.routed_model_label = label
+
         assistant_message = GeneratedMessage(
             date=assistant_responded_at,
             role=ChatRole.ASSISTANT,
@@ -359,6 +420,7 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             thoughts=turn.thoughts,
             assistant_id=turn.assistant_id,
             a2ui_envelopes=turn.a2ui_envelopes,
+            routing=Conversation._routing_from_thoughts(turn.thoughts),
         )
         return user_message, assistant_message
 

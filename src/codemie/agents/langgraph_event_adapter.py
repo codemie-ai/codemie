@@ -137,31 +137,70 @@ class LangGraphCallbackBridge:
 
 
 class LangGraphEventAdapter:
+    # Cap the per-response header cache so an interrupted stream cannot grow it without bound.
+    _MAX_CACHED_RESPONSE_HEADERS = 64
+
     def __init__(self, agent: Any) -> None:
         self.agent = agent
+        # Response headers per streamed message id. Only the first chunk of a response carries
+        # them, so they are stashed here and re-attached to the chunk that finalizes the call.
+        self._response_headers: dict[str, dict[str, Any]] = {}
+
+    def _remember_response_headers(self, message: Any) -> None:
+        """Stash HTTP response headers seen on a streamed chunk (first chunk only carries them)."""
+        message_id = getattr(message, "id", None)
+        rm = getattr(message, "response_metadata", None)
+        if not message_id or not isinstance(rm, dict):
+            return
+        headers = rm.get("headers")
+        if isinstance(headers, dict) and headers and message_id not in self._response_headers:
+            if len(self._response_headers) >= self._MAX_CACHED_RESPONSE_HEADERS:
+                self._response_headers.clear()
+            self._response_headers[message_id] = headers
+
+    def _restore_response_headers(self, message: Any) -> None:
+        """Re-attach the stashed headers so LLM-end callbacks can read router/classifier signals."""
+        headers = self._response_headers.pop(getattr(message, "id", None), None)
+        rm = getattr(message, "response_metadata", None)
+        if headers and isinstance(rm, dict) and not rm.get("headers"):
+            rm["headers"] = headers
 
     def parse_message_type(self, value: Any, chunks_collector: list[str]) -> None:
         message, metadata = value
+        self._remember_response_headers(message)
 
         if self.agent.is_valid_ai_message(message):
             token = extract_text_from_llm_output(message.content)
             self.agent._process_agent_streaming(token, chunks_collector, message.id)
-        elif self.agent.is_finish_reason_stop(message):
-            if metadata.get("langgraph_node") == "agent":
-                self.agent._on_llm_end(response=message, run_id=message.id)
+
+        # Use a separate `if` (not `elif`) so that a chunk carrying both content
+        # and a stop reason also triggers LLM-end finalization.
+        if self.agent.is_finish_reason_stop(message) and metadata.get("langgraph_node") == "agent":
+            self._restore_response_headers(message)
+            self.agent._on_llm_end(response=message, run_id=message.id)
 
     def parse_update_type(self, value: dict[str, Any]) -> None:
-        if "agent" in value and self.agent.is_finish_reason_tool_calls(value["agent"]["messages"][-1]):
-            message = value["agent"]["messages"][-1]
-            self.agent._safe_check_for_truncation(message)
-            if content := extract_text_from_llm_output(message.content):
-                self.agent._on_llm_end(content, run_id=message.id)
-            for tool_call in message.tool_calls:
-                tool_name = tool_call["name"]
-                tool_args = json.dumps(unpack_json_strings(tool_call["args"]), ensure_ascii=False)
-                run_id = self.agent._tool_call_id_to_uuid(tool_call.get("id", ""))
-                logger.debug(f"Calling Tool: {tool_name} with input {tool_args}")
-                self.agent._on_tool_start(tool_name, tool_args, run_id=run_id)
+        if "agent" in value:
+            last_message = value["agent"]["messages"][-1]
+            if self.agent.is_finish_reason_tool_calls(last_message):
+                self.agent._safe_check_for_truncation(last_message)
+                # Always restore headers and call _on_llm_end for tool-calling turns so
+                # _last_routing is set before _on_tool_start fires. When the LLM
+                # makes a direct tool call with no text content the streaming callback still
+                # needs routing metadata to stamp routed_model onto the tool thought.
+                self._restore_response_headers(last_message)
+                self.agent._on_llm_end(response=last_message, run_id=last_message.id)
+                for tool_call in last_message.tool_calls:
+                    tool_name = tool_call["name"]
+                    tool_args = json.dumps(unpack_json_strings(tool_call["args"]), ensure_ascii=False)
+                    run_id = self.agent._tool_call_id_to_uuid(tool_call.get("id", ""))
+                    logger.debug(f"Calling Tool: {tool_name} with input {tool_args}")
+                    self.agent._on_tool_start(tool_name, tool_args, run_id=run_id)
+            elif self.agent.is_finish_reason_stop(last_message):
+                # Simple chat completion (no tools): finalize the LLM thought.
+                # The "messages" stream may not emit a dedicated stop chunk, so
+                # the "updates" stream is the reliable trigger for this path.
+                self.agent._on_llm_end(response=last_message, run_id=last_message.id)
         elif "tools" in value:
             for action in value["tools"]["messages"]:
                 if isinstance(action, ToolMessage):
@@ -176,10 +215,14 @@ class LangGraphEventAdapter:
         author: str | None = None,
     ) -> None:
         message, _ = value
+        self._remember_response_headers(message)
         if self.agent.is_valid_ai_message(message) and not message.response_metadata.get(METADATA_KEY_HANDOFF_BACK):
             token = extract_text_from_llm_output(message.content)
             self.agent._process_agent_streaming(token, chunks_collector, message.id, author=author)
-        elif self.agent.is_finish_reason_stop(message):
+
+        # Separate `if` so a chunk with both content and stop reason still finalizes.
+        if self.agent.is_finish_reason_stop(message):
+            self._restore_response_headers(message)
             self.agent._on_llm_end(response=message, run_id=message.id, author=author)
 
     def parse_supervisor_update_type(self, value: dict[str, Any], author: str | None = None) -> None:
@@ -216,8 +259,10 @@ class LangGraphEventAdapter:
 
     def handle_supervisor_tool_calls(self, last_message: AIMessage, author: str | None = None) -> None:
         self.agent._safe_check_for_truncation(last_message)
-        if content := extract_text_from_llm_output(last_message.content):
-            self.agent._on_llm_end(content, run_id=last_message.id, author=author)
+        if extract_text_from_llm_output(last_message.content):
+            # Same as the agent path: restore the headers so routing signals survive.
+            self._restore_response_headers(last_message)
+            self.agent._on_llm_end(response=last_message, run_id=last_message.id, author=author)
 
         handoff_calls = [tc for tc in last_message.tool_calls if self.agent._check_is_handoff_tool(tc["name"])]
         regular_calls = [tc for tc in last_message.tool_calls if not self.agent._check_is_handoff_tool(tc["name"])]

@@ -22,6 +22,7 @@ from codemie.agents.tool_confirmation.models import ToolCallPendingEvent
 from codemie.configs import logger
 from codemie.core.models import ChatMessage
 from codemie.core.errors import AgentErrorDetails, ToolErrorDetails
+from codemie.core.routing_info import RoutingInfo
 
 
 class ThoughtAuthorType(str, Enum):
@@ -51,6 +52,7 @@ class Thought(BaseModel):
     interrupted: Optional[bool] = False
     aborted: Optional[bool] = False
     children: List['Thought'] = Field(default_factory=list)
+    routing: Optional[RoutingInfo] = None
 
 
 Thought.model_rebuild()
@@ -144,6 +146,8 @@ class StreamedGenerationResult(BaseModel):
     tool_call_pending: Optional[ToolCallPendingEvent] = Field(
         default=None, description="Emitted when agent is interrupted awaiting tool call confirmation"
     )
+    money_spent: Optional[float] = Field(default=None, description="Actual cost for this response")
+    routing: Optional[RoutingInfo] = Field(default=None, description="Routing metadata for this response")
 
 
 class BaseChain:

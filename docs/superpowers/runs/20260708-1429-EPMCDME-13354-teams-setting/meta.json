@@ -21,7 +21,7 @@
     "event_ledger": "docs/superpowers/runs/20260708-1429-EPMCDME-13354-teams-setting/work-item-events.jsonl"
   },
   "current_phase": 5,
-  "status": "running",
+  "status": "abandoned",
   "escalate_on": ["security", "breaking-change"],
   "memory_brief": "",
   "phases": {

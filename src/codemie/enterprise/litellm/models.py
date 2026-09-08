@@ -63,6 +63,7 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
         LLMModel,
         LLMProvider,
         ModelCategory,
+        ModelSwitchyard,
     )
 
     model_name = litellm_model.get("model_name", "")
@@ -126,6 +127,17 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
 
             logger.warning(f"Unknown category '{category}' for model {model_name}")
 
+    # Extract switchyard config, when the live proxy declares one for this model
+    switchyard_raw = model_info.get("switchyard")
+    switchyard: ModelSwitchyard | None = None
+    if switchyard_raw:
+        try:
+            switchyard = ModelSwitchyard(**switchyard_raw)
+        except Exception as exc:  # malformed data from the live proxy must not break the whole catalog fetch
+            from codemie.configs import logger
+
+            logger.warning(f"Invalid switchyard config for model {model_name}: {exc}")
+
     # Extract model properties
     multimodal = model_info.get("supports_vision", False)
     enabled = model_info.get("enabled", True) is True
@@ -151,6 +163,7 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
         default=ModelCategory.GLOBAL in default_for_categories if default_for_categories else False,
         forbidden_for_web=forbidden_for_web,
         api_version=api_version,
+        switchyard=switchyard,
     )
 
 

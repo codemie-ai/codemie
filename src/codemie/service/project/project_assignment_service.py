@@ -505,8 +505,7 @@ class ProjectAssignmentService:
             session,
         )
         logger.info(
-            f"User role updated: user_id={user_id}, project={project_name}, "
-            f"is_admin={is_project_admin}, by={actor.id}"
+            f"User role updated: user_id={user_id}, project={project_name}, is_admin={is_project_admin}, by={actor.id}"
         )
 
         return {

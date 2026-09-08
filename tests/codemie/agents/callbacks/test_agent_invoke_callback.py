@@ -165,3 +165,41 @@ def test_overlapping_llm_activity_for_same_author_keeps_distinct_parents(callbac
     assert thoughts_by_parent["handoff-1"]["in_progress"] is False
     assert thoughts_by_parent["handoff-2"]["message"] == "task two reasoning"
     assert thoughts_by_parent["handoff-2"]["in_progress"] is False
+
+
+def test_on_llm_end_and_tool_start_preserve_switchyard_fields() -> None:
+    """routed_model/classifier_cost_usd are captured for LLM and tool thoughts."""
+    import dataclasses
+
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    from codemie.enterprise.switchyard.routing_meta import SwitchyardMeta, _SWITCHYARD_RESPONSE_META_KEY
+
+    callback = AgentInvokeCallback()
+    run_id = uuid.uuid4()
+
+    callback.on_llm_start({}, [], run_id=run_id)
+    callback.on_llm_new_token(" reasoning", run_id=run_id)
+    meta = SwitchyardMeta(routed_model="claude-haiku-4", classifier_cost_usd=0.0003)
+    message = AIMessage(
+        content="",
+        response_metadata={_SWITCHYARD_RESPONSE_META_KEY: dataclasses.asdict(meta)},
+    )
+    callback.on_llm_end(
+        LLMResult(generations=[[ChatGeneration(message=message)]]),
+        run_id=run_id,
+    )
+
+    tool_run_id = uuid.uuid4()
+    callback.on_tool_start({"name": "lookup"}, "query", run_id=tool_run_id)
+    callback.on_tool_end("result", run_id=tool_run_id)
+
+    llm_thought = callback.thoughts[0]
+    tool_thought = callback.thoughts[1]
+
+    assert llm_thought["routing"]["routed_model"] == "claude-haiku-4"
+    assert llm_thought["routing"]["classifier_cost_usd"] == 0.0003
+    assert llm_thought["metadata"]["llm_tier"] == "claude-haiku-4"
+    assert tool_thought["routing"]["routed_model"] == "claude-haiku-4"
+    assert tool_thought["metadata"]["llm_tier"] == "claude-haiku-4"

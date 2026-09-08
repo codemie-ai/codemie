@@ -16,7 +16,17 @@ from enum import Enum
 from typing import TYPE_CHECKING, List, Optional
 
 from codemie.configs import config, logger
-from codemie.configs.llm_config import LLMConfig, llm_config, LLMModel, CostConfig, ModelCategory, LiteLLMModels
+from codemie.configs.llm_config import (
+    CostConfig,
+    LiteLLMModels,
+    LLMConfig,
+    LLMModel,
+    LLMRouter,
+    LlmRouterOption,
+    ModelCategory,
+    build_switchyard_routers,
+    llm_config,
+)
 
 if TYPE_CHECKING:
     from codemie.rest_api.security.user import User
@@ -62,6 +72,91 @@ class LLMService:
 
         # Otherwise, use traditional YAML-based embedding models
         return self.get_model_info(self.llm_config.embeddings_models)
+
+    def get_llm_routers(self) -> list[LLMRouter]:
+        """Return the effective Switchyard router catalog.
+
+        Prefers each model's `switchyard` declaration from the live LiteLLM/DIAL catalog
+        (get_all_llm_model_info) when present, falling back to the static YAML declaration
+        for that base_name otherwise. The candidate set is the UNION of live and static
+        base_names (not just static) — a model that exists only on the live proxy (new
+        deployment, not yet added to the YAML) must still be resolvable both as a router's
+        own capable model and as another router's `efficient` target.
+        """
+        live_by_name = {m.base_name: m for m in self.get_all_llm_model_info()}
+        merged_by_name: dict[str, LLMModel] = {m.base_name: m for m in self.llm_config.llm_models}
+        for base_name, live_model in live_by_name.items():
+            if base_name not in merged_by_name or live_model.switchyard:
+                merged_by_name[base_name] = live_model
+        return build_switchyard_routers(list(merged_by_name.values()))
+
+    def _find_router(self, name: str) -> LLMRouter | None:
+        return next((r for r in self.get_llm_routers() if r.base_name == name and r.enabled), None)
+
+    def get_all_routers(self) -> list[LLMRouter]:
+        return [r for r in self.get_llm_routers() if r.enabled]
+
+    @staticmethod
+    def _compute_router_capabilities(
+        capable: LLMModel,
+        efficient: LLMModel,
+        premium_enabled: bool,
+    ) -> tuple[bool, bool, bool | None]:
+        """Return (multimodal, supports_tools, is_premium) for a capable/efficient model pair."""
+        from codemie.enterprise.litellm.dependencies import is_premium_model
+
+        cap_multi = capable.multimodal if capable.multimodal is not None else False
+        eff_multi = efficient.multimodal if efficient.multimodal is not None else False
+        multimodal = bool(cap_multi and eff_multi)
+
+        cap_tools = capable.features.tools if capable.features is not None else True
+        eff_tools = efficient.features.tools if efficient.features is not None else True
+        supports_tools = bool((cap_tools is not False) and (eff_tools is not False))
+
+        is_premium: bool | None = None
+        if premium_enabled:
+            is_premium = is_premium_model(capable.base_name) or is_premium_model(efficient.base_name)
+        return multimodal, supports_tools, is_premium
+
+    def get_allowed_router_options(self, include_all: bool = False) -> list[LlmRouterOption]:
+        from codemie.enterprise.litellm.dependencies import is_premium_models_enabled
+
+        by_name: dict[str, LLMModel] = {m.base_name: m for m in self.get_all_llm_model_info()}
+        premium_enabled = is_premium_models_enabled()
+        options: list[LlmRouterOption] = []
+
+        for router in self.get_llm_routers():
+            if not router.enabled:
+                continue
+            if not include_all and router.forbidden_for_web:
+                continue
+
+            capable = by_name.get(router.switchyard.capable_model)
+            efficient = by_name.get(router.switchyard.efficient_model)
+
+            multimodal: bool | None = None
+            supports_tools: bool | None = None
+            is_premium: bool | None = None
+
+            if capable is not None and efficient is not None:
+                multimodal, supports_tools, is_premium = self._compute_router_capabilities(
+                    capable, efficient, premium_enabled
+                )
+
+            options.append(
+                LlmRouterOption(
+                    base_name=router.base_name,
+                    label=router.label,
+                    multimodal=multimodal,
+                    supports_tools=supports_tools,
+                    is_premium=is_premium,
+                )
+            )
+        return options
+
+    def is_router_model(self, model_name: str) -> bool:
+        """Return True if *model_name* is a configured and enabled Switchyard router."""
+        return any(router.base_name == model_name and router.enabled for router in self.get_llm_routers())
 
     def get_deployment_name(self, model_name: str, models: List[LLMModel], default_name: str) -> str:
         """Retrieve the deployment name for a model based on its base name."""
@@ -115,7 +210,9 @@ class LLMService:
     def get_model_details(self, model_name: str) -> LLMModel:
         """Retrieve the model details for a model based on its name.
 
-        Searches both LLM models and embedding models collections.
+        Searches both LLM models and embedding models collections. If the name
+        matches a Switchyard router, the capable underlying model is returned so
+        callers that do not implement routing still get a usable LLM.
         """
         # Get the active model sources (LiteLLM or YAML)
         active_llm_models = self.get_all_llm_model_info()
@@ -127,12 +224,52 @@ class LLMService:
             (model for model in all_models if model_name == model.base_name or model_name == model.deployment_name),
             None,
         )
+        if not found_model:
+            # If the name is a router, resolve to its capable model.
+            router = next(
+                (r for r in self.get_llm_routers() if r.base_name == model_name and r.enabled),
+                None,
+            )
+            if router:
+                found_model = next(
+                    (model for model in active_llm_models if model.base_name == router.switchyard.capable_model),
+                    None,
+                )
         # If not found, get the default model
         if not found_model:
             found_model = next((model for model in all_models if model.default), None)
             logger.error(f"Model {model_name} not found. Getting default model {found_model} details.")
 
         return found_model
+
+    def get_model_label(self, model_name: str) -> Optional[str]:
+        """Return the configured label for a model identified by base_name or deployment_name."""
+        active_llm_models = self.get_all_llm_model_info()
+        active_embedding_models = self.get_all_embedding_model_info()
+        found_model = next(
+            (
+                model
+                for model in [*active_llm_models, *active_embedding_models]
+                if model_name == model.base_name or model_name == model.deployment_name
+            ),
+            None,
+        )
+        if found_model is not None:
+            return found_model.label
+        router = self._find_router(model_name)
+        return router.label if router is not None else None
+
+    def get_model_deployment_name(self, base_name: str) -> Optional[str]:
+        """Return the deployment_name for a model base_name.
+
+        Prefers the live LiteLLM/DIAL catalog when available (see get_all_llm_model_info),
+        falling back to the static YAML catalog otherwise. Returns None if not found in
+        either — unlike get_model_details, this deliberately does not fall back to the
+        default model, so callers can apply their own fallback semantics.
+        """
+        active_llm_models = self.get_all_llm_model_info()
+        found_model = next((model for model in active_llm_models if model.base_name == base_name), None)
+        return found_model.deployment_name if found_model else None
 
     def get_multimodal_llms(self) -> List[str]:
         # Get the active model source (LiteLLM or YAML)
@@ -159,6 +296,16 @@ class LLMService:
             enum_dict[enum_key] = embedding.deployment_name
         return Enum('ModelTypes', enum_dict)
 
+    def _get_router_model_cost(self, base_name: str, active_models: list[LLMModel]) -> Optional[CostConfig]:
+        """If *base_name* is an enabled router, return the capable model's cost config."""
+        router = next((r for r in self.get_llm_routers() if r.base_name == base_name and r.enabled), None)
+        if not router:
+            return None
+        for model in active_models:
+            if model.base_name == router.switchyard.capable_model and model.cost:
+                return model.cost
+        return None
+
     def get_model_cost(self, base_name: Optional[str] = None) -> Optional[CostConfig]:
         """Retrieve the cost configuration for a given model base name."""
         if not base_name:
@@ -170,6 +317,11 @@ class LLMService:
         for model in active_models:
             if (model.base_name == base_name or model.deployment_name == base_name) and model.cost:
                 return model.cost
+
+        # If the name is a router, resolve to its capable model cost.
+        router_cost = self._get_router_model_cost(base_name, active_models)
+        if router_cost is not None:
+            return router_cost
 
         # If the base_name is provided but not found, return the cost of the default model
         for model in active_models:

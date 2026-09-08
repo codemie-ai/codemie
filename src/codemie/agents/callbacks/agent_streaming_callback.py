@@ -18,6 +18,7 @@ from typing import Dict, Any, List
 
 from langchain_core.agents import AgentAction, AgentFinish
 from langchain_core.callbacks import StreamingStdOutCallbackHandler
+from langchain_core.messages import AIMessage
 from langchain_core.outputs import LLMResult
 
 from codemie.agents.callbacks.utils.name_resolver import (
@@ -38,8 +39,10 @@ from codemie.chains.base import StreamedGenerationResult, Thought, ThoughtOutput
 from codemie.core.constants import OUTPUT_FORMAT, ToolNamePrefix
 from codemie.configs import logger
 from codemie.configs.logger import current_user_email, set_logging_info
+from codemie.core.routing_info import RoutingInfo, compose_routing_info, default_routing_extractors
 from codemie.core.thread import ThreadedGenerator
 from codemie.core.thought_queue import ThoughtQueue
+from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.mcp.models import MCPToolInvocationResponse
 
 
@@ -109,6 +112,9 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         self._storages: dict[str | None, ThoughtInMemoryStorage] = {
             None: ThoughtInMemoryStorage(parent_id=self._parent_tracker.get())
         }
+        # Routing info (routed model / classifier cost) from the most recent Switchyard- or
+        # LiteLLM-router-routed call. Updated in on_llm_end, stamped onto thoughts in on_tool_start.
+        self._last_routing: RoutingInfo | None = None
 
     @property
     def parent_id(self) -> str | None:
@@ -146,6 +152,41 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         thought = storage.create_thought(run_id=run_id, tool_name=self.GENERIC_TOOL_NAME)
         self._send_thought(thought)
 
+    def _update_last_routing(self, info: RoutingInfo) -> None:
+        """Merge *info* into ``_last_routing`` when it carries at least one field."""
+        if not info.is_empty():
+            self._last_routing = info.merged_over(self._last_routing) if self._last_routing else info
+
+    def _extract_response_routing(self, response: "LLMResult | AIMessage | str") -> tuple[str | None, float | None]:
+        """Extract routed-model and classifier-cost from *response*, updating ``_last_routing``."""
+        info = RoutingInfo()
+        if isinstance(response, AIMessage) or (not isinstance(response, str) and hasattr(response, "generations")):
+            info = compose_routing_info(response, default_routing_extractors())
+        self._update_last_routing(info)
+        return info.routed_model, info.classifier_cost_usd
+
+    def _build_routing_update_fields(
+        self,
+        response_tier: str | None,
+        response_cost: float | None,
+        existing_thought: "Thought | None",
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Return (routing_fields, metadata_updates) to be merged into the thought update."""
+        metadata: dict[str, Any] = (
+            dict(existing_thought.metadata) if existing_thought and existing_thought.metadata else {}
+        )
+        routing_fields: dict[str, Any] = {}
+        if response_tier is not None:
+            routing_fields["routed_model"] = response_tier
+            metadata["llm_tier"] = response_tier
+            label = llm_service.get_model_label(response_tier)
+            if label:
+                routing_fields["routed_model_label"] = label
+        if response_cost is not None:
+            routing_fields["classifier_cost_usd"] = response_cost
+            metadata["classifier_cost_usd"] = response_cost
+        return routing_fields, metadata
+
     def on_llm_new_token(self, token: str, *, run_id: UUID, author: str | None = None, **kwargs: Any) -> None:
         storage = self._get_storage(author)
         if not storage.get(str(run_id)):
@@ -155,13 +196,56 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
             return
         self._send_thought(thought)
 
-    def on_llm_end(self, response: LLMResult, *, run_id: UUID, author: str | None = None, **kwargs: Any) -> None:
+    def on_llm_end(
+        self,
+        response: LLMResult | AIMessage | str,
+        *,
+        run_id: UUID,
+        author: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        # Extract the routed model and classifier cost from the response itself. We
+        # intentionally keep this separate from ``_last_routing`` so that we do not
+        # stamp a stale base name onto the thought before the real routed model is known.
+        response_tier, response_cost = self._extract_response_routing(response)
+
         storage = self._get_storage(author)
-        thought = storage.update_thought(run_id, message='', in_progress=False)
+        existing_thought = storage.get(str(run_id))
+        update_kwargs: dict[str, Any] = {"in_progress": False}
+
+        # Avoid duplicating streamed text: if tokens were already emitted, the
+        # thought message already contains them. Only use the final AIMessage
+        # content when the thought is still empty (e.g. no tokens streamed).
+        existing_message = getattr(existing_thought, "message", "") or ""
+        if existing_message:
+            update_kwargs["message"] = ""
+        elif isinstance(response, AIMessage):
+            content = response.content
+            if isinstance(content, list):
+                content = " ".join(str(block) for block in content)
+            update_kwargs["message"] = self._escape_message(str(content))
+        else:
+            update_kwargs["message"] = ""
+
+        # Only stamp the routed model when it was actually present in the
+        # response. This avoids briefly showing a stale base name when the
+        # LangGraph "messages" final chunk arrives before the "updates" chunk
+        # that carries the model metadata.
+        model_resolved = response_tier is not None
+        routing_fields, metadata = self._build_routing_update_fields(response_tier, response_cost, existing_thought)
+        if routing_fields:
+            update_kwargs["routing"] = RoutingInfo(**routing_fields)
+        if metadata:
+            update_kwargs["metadata"] = metadata
+
+        thought = storage.update_thought(run_id, **update_kwargs)
         if thought is None:
             return
         self._send_thought(thought)
-        storage.delete_thought(run_id)
+        # Keep the thought around if we haven't resolved the model yet; a
+        # later LangGraph update with metadata will finish it.
+        if model_resolved or isinstance(response, str):
+            storage.delete_thought(run_id)
 
     def on_llm_error(self, error: BaseException, *, run_id: UUID, author: str | None = None, **kwargs: Any) -> None:
         self._debug(f"Error in LLM response generation: {error}")
@@ -216,6 +300,21 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
             output_format=output_format,
             by_run_id=True,
         )
+        last_routing = self._last_routing
+        if last_routing is not None and last_routing.routed_model is not None and thought.metadata is not None:
+            thought.metadata["llm_tier"] = last_routing.routed_model
+        if last_routing is not None and not last_routing.is_empty():
+            label = (
+                llm_service.get_model_label(last_routing.routed_model)
+                if last_routing.routed_model is not None
+                else None
+            )
+            new_routing = RoutingInfo(
+                routed_model=last_routing.routed_model,
+                routed_model_label=label,
+                classifier_cost_usd=last_routing.classifier_cost_usd,
+            )
+            thought.routing = new_routing.merged_over(thought.routing) if thought.routing else new_routing
         logger.debug(
             f"Streaming callback tool start. Tool={thought.author_name or serialized['name']}, "
             f"Input={_truncate_for_log(input_str)}, ReplayMetadata={thought.metadata}"

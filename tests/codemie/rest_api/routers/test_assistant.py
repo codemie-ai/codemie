@@ -650,10 +650,8 @@ class TestCreateAssistantCloneTracking:
         return [
             patch("codemie.rest_api.routers.assistant.project_access_check"),
             patch("codemie.rest_api.routers.assistant.ensure_application_exists"),
-            patch(
-                "codemie.service.assistant.assistant_version_service.AssistantVersionService" ".create_initial_version"
-            ),
-            patch("codemie.rest_api.routers.assistant.GuardrailService" ".sync_guardrail_assignments_for_entity"),
+            patch("codemie.service.assistant.assistant_version_service.AssistantVersionService.create_initial_version"),
+            patch("codemie.rest_api.routers.assistant.GuardrailService.sync_guardrail_assignments_for_entity"),
             patch("codemie.rest_api.routers.assistant._track_mcp_usage_on_create"),
             patch("codemie.rest_api.routers.assistant._track_assistant_management_metric"),
         ]

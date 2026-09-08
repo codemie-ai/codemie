@@ -115,7 +115,7 @@ class TestCreateLiteLLMChatModel:
                 with patch.object(config, "OPENAI_API_VERSION", "2025-04-01-preview"):
                     with patch.object(config, "OPENAI_API_TYPE", "azure"):
                         with patch.object(config, "AZURE_OPENAI_MAX_RETRIES", 3):
-                            with patch("langchain_openai.AzureChatOpenAI"):
+                            with patch("codemie.enterprise.litellm.llm_factory.LiteLLMChatOpenAI"):
                                 with patch(
                                     "codemie.enterprise.litellm.dependencies.check_user_budget"
                                 ) as mock_check_budget:
@@ -156,7 +156,7 @@ class TestCreateLiteLLMChatModel:
                     with patch.object(config, "AZURE_OPENAI_MAX_RETRIES", 3):
                         with patch.object(config, "LITE_LLM_TAGS_HEADER_VALUE", "default"):
                             with patch.object(config, "LITE_LLM_PROJECTS_TO_TAGS_LIST", ""):
-                                with patch("langchain_openai.AzureChatOpenAI"):
+                                with patch("codemie.enterprise.litellm.llm_factory.LiteLLMChatOpenAI"):
                                     with patch(
                                         "codemie.enterprise.litellm.dependencies.check_user_budget"
                                     ) as mock_check_budget:

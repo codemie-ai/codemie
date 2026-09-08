@@ -52,6 +52,7 @@ from codemie.core.errors import ErrorResponse
 from codemie.enterprise.litellm.proxy_router import handle_agent_exception
 from codemie_tools.base.file_object import FileObject
 from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import BaseTool, InjectedToolCallId, tool as langchain_tool
 from langgraph.prebuilt import InjectedState
@@ -100,6 +101,7 @@ from codemie.core.utils import extract_text_from_llm_output, calculate_tokens, u
 from codemie.rest_api.models.assistant import AssistantBase
 from codemie.rest_api.security.user import User
 from codemie.service.background_tasks_service import BackgroundTasksService
+from codemie.service.request_summary_manager import request_summary_manager
 from codemie.service.conversation.history_compaction_service import ConversationHistoryCompactionService
 from codemie.service.constants import AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY
 from codemie.service.dynamic_config_service import DynamicConfigService
@@ -580,13 +582,27 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
             name_resolver=self,
         )
 
-    def _initialize_llm(self):
-        return get_llm_by_credentials(
-            llm_model=self.llm_model,
-            temperature=self.temperature,
-            top_p=self.top_p,
+    def _initialize_llm(self) -> BaseChatModel:
+        from codemie.enterprise.switchyard.agent import LLMParams, build_switchyard_routing_model
+
+        # Per-call routing: each _agenerate call lets the algorithm pick capable or efficient.
+        # Returns None when self.llm_model has no Switchyard configuration.
+        llm = build_switchyard_routing_model(
+            router_name=self.llm_model,
             request_id=self.request_uuid,
+            llm_params=LLMParams(temperature=self.temperature, top_p=self.top_p),
         )
+        if llm is not None:
+            logger.info(f"[SWITCHYARD-AGENT] Per-call routing active for {self.llm_model!r}")
+        else:
+            llm = get_llm_by_credentials(
+                llm_model=self.llm_model,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                request_id=self.request_uuid,
+            )
+
+        return llm
 
     ###### Called by external entities ######
 
@@ -747,6 +763,12 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 if self._pending_tool_confirmation:
                     return
                 result = json.dumps(result) if isinstance(result, (dict, BaseModel)) else result
+
+                _summary = request_summary_manager.get_summary(self.request_uuid)
+                if _summary is not None:
+                    _summary.calculate()
+                _tokens = _summary.tokens_usage if _summary is not None else None
+
                 self.thread_generator.send(
                     StreamedGenerationResult(
                         generated=result,
@@ -755,6 +777,8 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                         time_elapsed=time_elapsed,
                         debug={},
                         context=self.thread_context,
+                        money_spent=_tokens.money_spent if _tokens else None,
+                        routing=_tokens.routing if _tokens else None,
                     ).model_dump_json()
                 )
             except MCPAuthenticationRequiredException as e:

@@ -185,6 +185,9 @@ llm_models:
     enabled: true
     provider: "aws_bedrock"
     max_output_tokens: 64000
+    switchyard:
+      efficient: "claude-4-5-haiku"
+      modes: [signal, classifier]
     cost:
       input: 0.0000033
       output: 0.0000165
@@ -199,6 +202,9 @@ llm_models:
     default_for_categories: [code]
     provider: "aws_bedrock"
     max_output_tokens: 64000
+    switchyard:
+      efficient: "claude-4-5-haiku"
+      modes: [signal, classifier]
     cost:
       input: 0.0000033
       output: 0.0000165
@@ -212,6 +218,9 @@ llm_models:
     enabled: true
     provider: "aws_bedrock"
     max_output_tokens: 64000
+    switchyard:
+      efficient: "claude-4-5-sonnet"
+      modes: [signal, classifier]
     cost:
       input: 0.0000055
       output: 0.0000275
@@ -225,6 +234,9 @@ llm_models:
     enabled: true
     provider: "aws_bedrock"
     max_output_tokens: 128000
+    switchyard:
+      efficient: "claude-sonnet-4-6"
+      modes: [signal, classifier]
     cost:
       input: 0.0000055
       output: 0.0000275

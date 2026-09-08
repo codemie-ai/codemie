@@ -59,9 +59,9 @@ def test_clean_staged_plus_unstaged_garbage_exits_zero(staged_repo, run_helper):
 
     result = run_helper(staged_repo)
 
-    assert result.returncode == 0, (
-        f"Helper aborted despite staged file being clean.\n" f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
+    assert (
+        result.returncode == 0
+    ), f"Helper aborted despite staged file being clean.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     assert (staged_repo / "garbage.py").read_text() == UNFORMATTED
 
 
@@ -114,9 +114,9 @@ def test_syntax_error_in_staged_file_reports_clearly(staged_repo, run_helper):
     assert result.returncode == 1
     combined = result.stdout + result.stderr
     assert "broken.py" in combined
-    assert "Ruff format failed" in combined, (
-        f"Expected explicit 'Ruff format failed' message.\n" f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
+    assert (
+        "Ruff format failed" in combined
+    ), f"Expected explicit 'Ruff format failed' message.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
 
 
 def test_partial_staging_clean_hunk_dirty_unstaged_exits_zero(staged_repo, run_helper):

@@ -769,9 +769,9 @@ def test_tc_imr_013_nested_inner_branches_get_independent_counters(
 
     assert len(send_actions) == 4
     for i, action in enumerate(send_actions):
-        assert action.arg[ITERATION_NODE_NUMBER_KEY] == i + 1, (
-            f"Branch {i}: expected inner counter {i + 1}, " f"got {action.arg[ITERATION_NODE_NUMBER_KEY]}"
-        )
+        assert (
+            action.arg[ITERATION_NODE_NUMBER_KEY] == i + 1
+        ), f"Branch {i}: expected inner counter {i + 1}, got {action.arg[ITERATION_NODE_NUMBER_KEY]}"
 
 
 @patch('codemie.workflows.workflow.WorkflowExecutionService')

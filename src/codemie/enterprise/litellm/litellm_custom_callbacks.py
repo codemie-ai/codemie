@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,17 +14,90 @@
 
 """Custom LiteLLM proxy callbacks.
 
+BedrockCostModelFixLogger: fix streaming cost model name.
+
 ``async_pre_call_deployment_hook`` fires AFTER deployment selection and the
 ``{**litellm_params, **kwargs}`` merge in the router, so ``store=False`` from a model
 entry's ``litellm_params`` is visible here.  ``async_pre_call_hook`` fires earlier — before
 that merge — and would only see ``store=False`` when the client sends it explicitly.
+
+The proxy's SSE streaming cost injection computes cost from the client-facing alias
+(``request_data["model"]``, e.g. ``claude-sonnet-5``) instead of the router-resolved
+deployment (e.g. ``bedrock/us.anthropic.claude-sonnet-5``). For Bedrock models this hits the
+Anthropic-direct price table and diverges from the dashboard cost (which is computed from the
+resolved model via ``logging_obj``).
+
+This callback runs ``async_post_call_streaming_iterator_hook`` *before* the proxy's cost
+injection and rewrites ``request_data["model"]`` to the resolved deployment so both paths use
+the same (correct) pricing. Spend/dashboard logging keys off ``logging_obj``, not
+``request_data["model"]``, so the change is scoped to the streaming cost calculation.
+
+AutorouterCallback: propagate routing-decision fields and classifier usage as response headers.
+
+The complexity router issues 2 LLM calls per request:
+  1. Classifier call  — ``internal_call_origin: "autorouter_classifier"`` in
+     ``kwargs["litellm_params"]["metadata"]``; small token count, no routing_decision.
+  2. Routed model call — full usage, routing_decision populated.
+
+Routing decision headers: reads ``routing_decision`` from the main-call response metadata
+and emits ``x-litellm-router-*`` headers so clients can inspect tier, cause, routed model, etc.
+
+Classifier usage correlation flow:
+  • ``async_pre_call_hook`` fires for the outer request and injects the proxy-level
+    ``litellm_call_id`` (UUID-X, always set by the proxy) into ``data["metadata"]`` under
+    ``_PROXY_CALL_ID_METADATA_KEY``.  The complexity router's ``_classifier_call_metadata``
+    copies all metadata keys (except budget-reservation ones) into the classifier sub-call,
+    so UUID-X flows into the classifier's ``litellm_params.metadata``.
+  • Classifier fires ``async_log_success_event`` (via GLOBAL_LOGGING_WORKER, concurrent with
+    the main-model LLM call) → reads UUID-X from its own metadata → stores usage in
+    ``_pending_classifier_usage[UUID-X]``.
+  • ``async_post_call_response_headers_hook`` fires (before HTTP 200) → looks up UUID-X via
+    ``data["litellm_call_id"]`` → emits ``x-litellm-classifier-*`` headers alongside the
+    routing-decision headers so the backend can include classifier tokens in usage totals.
+
+Why this works for timing: the classifier completes before the main model, so its logging task
+is enqueued to GLOBAL_LOGGING_WORKER first.  The worker runs those tasks concurrently during
+the main model's long HTTP await, ensuring ``_pending_classifier_usage`` is populated before
+the headers hook fires.
+
+``_pending_classifier_usage`` is a process-local ``cachetools.TTLCache`` (bounded size AND
+time-based expiry), not a plain dict. A plain dict with only a size cap silently stops
+recording ANY new classifier usage forever once it fills up with entries that are never popped
+(e.g. requests that error out before ``async_post_call_response_headers_hook`` runs) — those
+orphaned entries would occupy a slot indefinitely. The TTL means an orphaned entry self-expires
+instead of permanently consuming one of the bounded slots.
+
+Process locality is a non-issue for THIS correlation, not a limitation to work around: the
+classifier sub-call is dispatched by the router as a plain in-process ``await`` inside the same
+coroutine that is already handling the outer request (it calls the model provider directly, it
+does not loop back over HTTP through this proxy's own external endpoint) — so
+``async_log_success_event`` (classifier) and ``async_post_call_response_headers_hook`` (outer
+call) are *structurally guaranteed* to run in the same OS process for a given request,
+regardless of how many replicas/pods sit behind the load balancer. Replica count is irrelevant
+here. The one config that WOULD break this is running this LiteLLM proxy with more than one
+worker process per container (e.g. ``--num_workers`` / ``general_settings.workers`` > 1) — that
+splits incoming requests across sibling processes that do not share this module's memory, and
+*that* is genuinely a "would need Redis" scenario. Keep this proxy at a single worker per
+process, or move to a shared store, if that ever needs to change.
 """
 
+import contextlib
+import datetime
+import json
 from typing import Any, AsyncGenerator, Dict, Optional
 
+from cachetools import TTLCache
+from litellm.caching.dual_cache import DualCache
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.utils import CallTypes
+
+from codemie.enterprise.litellm.litellm_router_meta import LiteLLMRouterMeta
+
+# Key injected into the outer request's metadata by async_pre_call_hook so that
+# the complexity router's _classifier_call_metadata() copies it into the classifier
+# sub-call.  Used to correlate classifier usage with the outer request in callbacks.
+_PROXY_CALL_ID_METADATA_KEY = "codemie_proxy_call_id"
 
 
 class BedrockCostModelFixLogger(CustomLogger):
@@ -90,3 +163,149 @@ class BedrockCostModelFixLogger(CustomLogger):
             request_data["model"] = deployment
         async for chunk in response:
             yield chunk
+
+
+def _extract_usage(response_obj: object) -> Optional[dict]:
+    usage = getattr(response_obj, "usage", None) if response_obj else None
+    if usage is None:
+        return None
+    return {
+        "prompt_tokens": getattr(usage, "prompt_tokens", None),
+        "completion_tokens": getattr(usage, "completion_tokens", None),
+        "total_tokens": getattr(usage, "total_tokens", None),
+    }
+
+
+# Classifier usage pending header injection, keyed by the proxy-level litellm_call_id
+# (UUID-X, injected into request metadata by async_pre_call_hook).
+# Entries are normally popped by async_post_call_response_headers_hook; the TTL cleans up
+# orphans (e.g. requests that errored before that hook ran) so they don't permanently occupy
+# a slot in the bounded cache. See the module docstring for the correlation flow and the
+# known limitation (process-local, does not survive multi-replica LiteLLM deployments).
+_CLASSIFIER_USAGE_MAX_SIZE = 200
+_CLASSIFIER_USAGE_TTL_SECONDS = 120
+_pending_classifier_usage: TTLCache[str, dict] = TTLCache(
+    maxsize=_CLASSIFIER_USAGE_MAX_SIZE, ttl=_CLASSIFIER_USAGE_TTL_SECONDS
+)
+
+
+def _build_pending_classifier_headers(call_id: str) -> dict[str, str]:
+    """Pop pending classifier usage for *call_id* and convert it to response headers."""
+    headers: dict[str, str] = {}
+    classifier = _pending_classifier_usage.pop(call_id, None)
+    if not classifier:
+        return headers
+    usage = classifier.get("usage") or {}
+    for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        val = usage.get(field)
+        if val is not None:
+            headers[f"x-litellm-classifier-{field.replace('_', '-')}"] = str(val)
+    cost = classifier.get("cost")
+    if cost is not None:
+        headers["x-litellm-classifier-cost"] = str(cost)
+    return headers
+
+
+class AutorouterCallback(CustomLogger):
+    """Propagate complexity-router routing decision and classifier usage as response headers."""
+
+    @staticmethod
+    def _extract_routing_decision(data: dict) -> Optional[dict]:
+        for key in ("litellm_metadata", "metadata"):
+            md = data.get(key)
+            if isinstance(md, str):
+                try:
+                    md = json.loads(md)
+                except ValueError:
+                    return None
+            if isinstance(md, dict):
+                decision = md.get("routing_decision")
+                if decision:
+                    return decision
+        return None
+
+    @staticmethod
+    def _read_kwargs_metadata(kwargs: dict, key: str) -> Optional[object]:
+        # In async_log_success_event, kwargs is model_call_details.
+        # Metadata lives at kwargs["litellm_params"]["metadata"], NOT kwargs["metadata"].
+        for md in (
+            (kwargs.get("litellm_params") or {}).get("metadata"),
+            kwargs.get("metadata"),
+            kwargs.get("litellm_metadata"),
+        ):
+            if isinstance(md, str):
+                with contextlib.suppress(json.JSONDecodeError, ValueError):
+                    md = json.loads(md)
+            if isinstance(md, dict):
+                val = md.get(key)
+                if val is not None:
+                    return val
+        return None
+
+    async def async_pre_call_hook(
+        self,
+        user_api_key_dict: UserAPIKeyAuth,
+        cache: DualCache,
+        data: dict,
+        call_type: str,
+    ) -> None:
+        # Inject the proxy-level litellm_call_id (UUID-X, always set by the proxy) into
+        # the request metadata under _PROXY_CALL_ID_METADATA_KEY.  The complexity router's
+        # _classifier_call_metadata() copies all non-budget metadata keys into the classifier
+        # sub-call, so UUID-X flows into the classifier's litellm_params.metadata.  We then
+        # read it in async_log_success_event to store classifier usage under UUID-X, which
+        # matches data["litellm_call_id"] in async_post_call_response_headers_hook.
+        with contextlib.suppress(Exception):
+            call_id = data.get("litellm_call_id")
+            if not call_id:
+                return
+            for md_key in ("metadata", "litellm_metadata"):
+                md = data.get(md_key)
+                if isinstance(md, dict):
+                    md[_PROXY_CALL_ID_METADATA_KEY] = call_id
+                    return
+            data["metadata"] = {_PROXY_CALL_ID_METADATA_KEY: call_id}
+
+    async def async_log_success_event(
+        self,
+        kwargs: dict,
+        response_obj: object,
+        start_time: datetime.datetime,
+        end_time: datetime.datetime,
+    ) -> None:
+        with contextlib.suppress(Exception):
+            if AutorouterCallback._read_kwargs_metadata(kwargs, "internal_call_origin") != "autorouter_classifier":
+                return
+            proxy_call_id = AutorouterCallback._read_kwargs_metadata(kwargs, _PROXY_CALL_ID_METADATA_KEY)
+            if isinstance(proxy_call_id, str):
+                # TTLCache enforces maxsize itself (LRU-evicts the oldest entry rather than
+                # dropping the new one), so no manual capacity check is needed here.
+                _pending_classifier_usage[proxy_call_id] = {
+                    "usage": _extract_usage(response_obj),
+                    "cost": kwargs.get("response_cost"),
+                }
+
+    async def async_post_call_response_headers_hook(
+        self,
+        data: dict,
+        user_api_key_dict,
+        response: Any,
+        request_headers=None,
+        litellm_call_info=None,
+    ) -> Optional[Dict[str, str]]:
+        headers: Dict[str, str] = {}
+
+        decision = self._extract_routing_decision(data)
+        if decision:
+            meta = LiteLLMRouterMeta.from_routing_decision(decision)
+            headers.update(meta.to_headers())
+
+        with contextlib.suppress(Exception):
+            call_id = data.get("litellm_call_id")
+            if call_id:
+                headers.update(_build_pending_classifier_headers(call_id))
+
+        return headers or None
+
+
+autorouter_callback_instance = AutorouterCallback()

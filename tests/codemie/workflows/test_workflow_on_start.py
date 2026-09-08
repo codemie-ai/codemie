@@ -74,7 +74,7 @@ def test_on_workflow_start_redacts_sensitive_headers(mock_ws):
 
 @patch("codemie.workflows.workflow.WorkflowService")
 def test_on_workflow_start_omits_key_when_all_headers_sensitive(mock_ws):
-    headers = {name: "value" for name in _SENSITIVE_HEADER_NAMES}
+    headers = dict.fromkeys(_SENSITIVE_HEADER_NAMES, "value")
     executor = _make_on_start_executor(request_headers=headers)
 
     inputs = WorkflowExecutor.on_workflow_start(executor)

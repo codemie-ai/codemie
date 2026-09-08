@@ -10,7 +10,7 @@
     "event_ledger": "docs/superpowers/runs/20260625-1428-EPMCDME-13171/work-item-events.jsonl"
   },
   "current_phase": 3,
-  "status": "running",
+  "status": "abandoned",
   "escalate_on": ["security", "breaking-change"],
   "branch_guard": {
     "current_branch": "EPMCDME-13171",

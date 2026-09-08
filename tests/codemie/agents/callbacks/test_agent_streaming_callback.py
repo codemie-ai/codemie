@@ -411,3 +411,36 @@ def test_set_context_with_author_updates_existing_storage() -> None:
 
     assert callback._storages["agent_x"].parent_id == new_parent_id
     assert str(run_id) in callback._storages["agent_x"]
+
+
+def test_on_llm_end_stamps_routed_model_and_cost_on_thought_and_metadata() -> None:
+    """The LLM thought carries routed_model/classifier_cost_usd and mirrors them into metadata."""
+    import dataclasses
+
+    from langchain_core.messages import AIMessage
+
+    from codemie.enterprise.switchyard.routing_meta import SwitchyardMeta, _SWITCHYARD_RESPONSE_META_KEY
+
+    generator = ThreadedGenerator()
+    callback = AgentStreamingCallback(gen=generator)
+    run_id = uuid.uuid4()
+
+    meta = SwitchyardMeta(routed_model="claude-sonnet-4", classifier_cost_usd=0.0012)
+    callback.on_llm_start(None, [], run_id=run_id)
+    callback.on_llm_new_token("Hello ", run_id=run_id)
+    callback.on_llm_end(
+        AIMessage(
+            content="Hello world",
+            response_metadata={_SWITCHYARD_RESPONSE_META_KEY: dataclasses.asdict(meta)},
+        ),
+        run_id=run_id,
+    )
+
+    assert len(generator.thoughts) == 1
+    thought = generator.thoughts[0]
+    assert thought["routing"]["routed_model"] == "claude-sonnet-4"
+    assert thought["routing"]["classifier_cost_usd"] == 0.0012
+    assert thought["metadata"]["llm_tier"] == "claude-sonnet-4"
+    assert thought["metadata"]["classifier_cost_usd"] == 0.0012
+    # Final AIMessage content must not be appended to already-streamed tokens.
+    assert thought["message"] == "Hello "

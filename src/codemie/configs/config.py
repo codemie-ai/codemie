@@ -846,6 +846,12 @@ class Config(BaseSettings):
     STALE_DATASOURCE_DELETION_ENABLED: bool = False  # Enables ES index deletion phase
     STALE_DATASOURCE_MAX_DELETIONS_PER_RUN: int = 100  # Circuit-breaker cap
 
+    # Switchyard Routing Configuration
+    SWITCHYARD_CLASSIFIER_MODEL: str | None = (
+        "gpt-5.6-luna-2026-07-09"  # Global default classifier model; overridable per-router in YAML
+    )
+    SWITCHYARD_ENABLED: bool = False  # Master switch for Switchyard routing; False disables all routers
+
     # Derived from PROJECT_ROOT (src/codemie) rather than a fresh parents[N]
     # literal, so there's a single named anchor instead of a second magic index.
     _REPO_ROOT_FOR_ENV_FILES: ClassVar[Path] = PROJECT_ROOT.parent.parent

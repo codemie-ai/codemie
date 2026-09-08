@@ -81,6 +81,65 @@ class ModelConfigurationSection(BaseModel):
     client_headers: Optional[dict[str, list[str] | str]] = None
 
 
+class RoutingMode(str, Enum):
+    """Switchyard routing strategy."""
+
+    SIGNAL = "signal"
+    CLASSIFIER = "classifier"
+
+
+class SwitchyardTuning(BaseModel):
+    """Tunable Switchyard routing parameters. Defaults reproduce the previous hardcoded constants."""
+
+    recent_window: int = 3
+    classifier_base_threshold: float = 0.65
+    classifier_threshold_step: float = 0.15
+    signal_threshold: float = 0.0  # confidence_threshold for signal mode (was the 0.0 literal)
+    classifier_threshold: float = 0.5  # confidence_threshold for classifier mode (was the 0.5 literal)
+    classifier_model: str | None = None
+
+
+class ModelSwitchyard(BaseModel):
+    """Per-model declaration that a capable model can route down to an efficient one."""
+
+    efficient: str  # base_name of the cheaper same-family model
+    modes: list[RoutingMode]  # one router is generated per mode
+    tuning: SwitchyardTuning | None = None  # optional partial override of the resolved tuning
+
+
+class SwitchyardConfig(BaseModel):
+    """Resolved routing configuration for a single generated router."""
+
+    capable_model: str  # base_name of the capable model
+    efficient_model: str  # base_name of the efficient model
+    mode: RoutingMode
+    tuning: SwitchyardTuning = Field(default_factory=SwitchyardTuning)
+
+
+class LLMRouter(BaseModel):
+    """A virtual model that routes requests to actual capable/efficient models."""
+
+    base_name: str
+    label: str | None = None
+    enabled: bool = True
+    forbidden_for_web: bool | None = False
+    switchyard: SwitchyardConfig
+
+
+class LlmRouterOption(BaseModel):
+    """REST-boundary projection of an LLMRouter. Not a domain model."""
+
+    base_name: str
+    label: str | None = None
+    is_router: bool = True
+    # Always True for enabled routers (get_allowed_router_options only returns enabled ones).
+    # Clients (e.g. codemie-code) gate on this field to decide whether to show the model.
+    enabled: bool = True
+    multimodal: bool | None = None
+    supports_tools: bool | None = None
+    is_premium: bool | None = None
+
+
 class LLMModel(BaseModel):
     base_name: str
     deployment_name: str
@@ -96,6 +155,7 @@ class LLMModel(BaseModel):
     max_output_tokens: Optional[int] = None
     features: Optional[LLMFeatures] = LLMFeatures()
     configuration: Optional[ModelConfigurationSection] = None
+    switchyard: Optional[ModelSwitchyard] = None
     forbidden_for_web: Optional[bool] = (
         False  # Controls whether model should be hidden from web/UI (defaults to False - visible)
     )
@@ -139,9 +199,77 @@ class LLMYamlSettings(BaseSettings):
         return init_settings, env_settings, YamlConfigSettingsSource(cls, init_settings.init_kwargs["yaml_file"])
 
 
+def build_switchyard_routers(models: list["LLMModel"]) -> list["LLMRouter"]:
+    """Expand each model's `switchyard` declaration into first-class LLMRouter entries.
+
+    Pure function of the given model list — takes the static YAML models (see
+    LLMConfig.generate_switchyard_routers) or a live-catalog-merged list (see
+    LLMService.get_llm_routers), so the same generation algorithm can run against
+    whichever model source has the switchyard declaration for a given base_name.
+
+    SWITCHYARD_ENABLED is the master switch. When off, generate no routers so the
+    /llm_models catalog, llm_service.is_router_model, and the proxy engine all agree
+    that no routers exist — otherwise the catalog would advertise routers the engine
+    refuses to route, and clients would select a model that 404s downstream.
+    (engine._get_switchyard_model_config also gates at request time as defense in depth.)
+    """
+    if not config.SWITCHYARD_ENABLED:
+        return []
+    by_name = {model.base_name: model for model in models}
+    global_tuning = SwitchyardTuning(
+        **({"classifier_model": config.SWITCHYARD_CLASSIFIER_MODEL} if config.SWITCHYARD_CLASSIFIER_MODEL else {})
+    )
+    generated: list[LLMRouter] = []
+    for model in models:
+        if model.switchyard is None:
+            continue
+        efficient = by_name.get(model.switchyard.efficient)
+        if efficient is None:
+            logger.warning(
+                f"Switchyard on {model.base_name!r} references unknown efficient model "
+                f"{model.switchyard.efficient!r}; skipping router generation."
+            )
+            continue
+        per_router = model.switchyard.tuning
+        resolved_tuning = (
+            global_tuning.model_copy(update={f: getattr(per_router, f) for f in per_router.model_fields_set})
+            if per_router is not None
+            else global_tuning
+        )
+        for mode in model.switchyard.modes:
+            if mode == RoutingMode.CLASSIFIER and not resolved_tuning.classifier_model:
+                logger.warning(
+                    f"Switchyard router on {model.base_name!r} declares classifier mode but no "
+                    f"classifier_model is configured (SWITCHYARD_CLASSIFIER_MODEL or per-router tuning); "
+                    f"it will fall back to signal-only routing."
+                )
+            generated.append(
+                LLMRouter(
+                    base_name=f"{model.base_name}-switchyard-{efficient.base_name}-{mode.value}",
+                    label=f"SY ({mode.value.capitalize()}) {model.label}",
+                    enabled=model.enabled,
+                    forbidden_for_web=model.forbidden_for_web,
+                    switchyard=SwitchyardConfig(
+                        capable_model=model.base_name,
+                        efficient_model=efficient.base_name,
+                        mode=mode,
+                        tuning=resolved_tuning,
+                    ),
+                )
+            )
+    return generated
+
+
 class LLMConfig(LLMYamlSettings):
     llm_models: list[LLMModel]
     embeddings_models: list[LLMModel]
+    llm_routers: list[LLMRouter] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def generate_switchyard_routers(self) -> "LLMConfig":
+        """Expand each model's `switchyard` declaration into first-class LLMRouter entries."""
+        self.llm_routers = [*self.llm_routers, *build_switchyard_routers(self.llm_models)]
+        return self
 
 
 llm_config = LLMConfig(yaml_file=config.LLM_TEMPLATES_ROOT / f"llm-{config.MODELS_ENV}-config.yaml")

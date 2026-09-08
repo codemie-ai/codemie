@@ -224,7 +224,7 @@ def test_guard_lstat_reports_symlink_without_resolving_target(tmp_path: Path) ->
 
     result = _run_guarded_in_workspace(
         workspace_root,
-        "import os\n" "print(os.path.islink('in-workspace-link'))\n" "print(os.lstat('in-workspace-link').st_size)\n",
+        "import os\nprint(os.path.islink('in-workspace-link'))\nprint(os.lstat('in-workspace-link').st_size)\n",
     )
 
     assert result.returncode == 0, result.stderr
@@ -297,7 +297,7 @@ def test_guard_resolves_relative_file_operations_against_fixed_workspace(tmp_pat
 
     result = _run_guarded_in_workspace(
         workspace_root,
-        "import os\n" "os.mkdir('nested')\n" "os.chdir('nested')\n" "open('root.txt', 'w').write('root')",
+        "import os\nos.mkdir('nested')\nos.chdir('nested')\nopen('root.txt', 'w').write('root')",
     )
 
     assert result.returncode == 0, result.stderr
@@ -410,7 +410,7 @@ def test_guard_allows_workspace_module_imports(tmp_path: Path) -> None:
 def test_guard_allows_normal_import_but_denies_direct_open_of_import_file(tmp_path: Path) -> None:
     result = _run_guarded(
         tmp_path,
-        "import fractions\n" "print(fractions.Fraction(1, 2))\n" "open(fractions.__file__).read()",
+        "import fractions\nprint(fractions.Fraction(1, 2))\nopen(fractions.__file__).read()",
     )
 
     assert result.returncode == 1
@@ -430,7 +430,7 @@ def test_guard_allows_stdlib_imports_when_script_runs_from_file_in_workspace(tmp
 
     result = _run_guarded_as_file_in_workspace(
         workspace_root,
-        "import csv\n" "import fractions\n" "print(fractions.Fraction(1, 2))\n" "open(fractions.__file__).read()",
+        "import csv\nimport fractions\nprint(fractions.Fraction(1, 2))\nopen(fractions.__file__).read()",
     )
 
     assert result.returncode == 1
@@ -487,7 +487,7 @@ def test_guard_denies_customer_open_from_imported_module_body(tmp_path: Path) ->
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     (workspace_root / "probe.py").write_text(
-        "import fractions\n" "open(fractions.__file__).read()\n",
+        "import fractions\nopen(fractions.__file__).read()\n",
     )
 
     result = _run_guarded_in_workspace(workspace_root, "import probe")
@@ -669,7 +669,7 @@ def test_guard_neutralizes_billion_laughs_entity_expansion(tmp_path: Path) -> No
 def test_caught_denial_still_emits_single_marker(tmp_path: Path) -> None:
     result = _run_guarded(
         tmp_path,
-        "try:\n" "    open('/etc/passwd')\n" "except PermissionError:\n" "    print('caught')\n",
+        "try:\n    open('/etc/passwd')\nexcept PermissionError:\n    print('caught')\n",
     )
 
     assert result.returncode == 0
@@ -690,7 +690,7 @@ def test_guard_allows_relative_makedirs_for_output_directories(tmp_path: Path) -
     customer code to create output subdirectories within the workspace."""
     result = _run_guarded(
         tmp_path,
-        "import os\n" "os.makedirs('output/charts', exist_ok=True)\n" "print('ok')\n",
+        "import os\nos.makedirs('output/charts', exist_ok=True)\nprint('ok')\n",
     )
     assert result.returncode == 0
     assert result.stdout.strip() == "ok"

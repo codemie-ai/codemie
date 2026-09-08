@@ -79,6 +79,7 @@ from codemie.service.assistant_generator_service import AssistantGeneratorServic
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.conversation import (
     ConversationMetrics,
+    ConversationMetricsOut,
 )
 from codemie.rest_api.models.index import IndexInfo, SortOrder
 from codemie.rest_api.models.settings import SettingType
@@ -1278,7 +1279,7 @@ def _validate_assistant_integrations(request: AssistantRequest, user: User):
     return AssistantIntegrationValidator.validate_integrations(request, user, request.project)
 
 
-def _calculate_workflow_metrics(conversation_id: str, conversation) -> ConversationMetrics:
+def _calculate_workflow_metrics(conversation_id: str, conversation) -> ConversationMetricsOut:
     """
     Calculate metrics for workflow conversations by aggregating tokens_usage from all workflow executions.
     """
@@ -1295,6 +1296,7 @@ def _calculate_workflow_metrics(conversation_id: str, conversation) -> Conversat
     total_input_tokens = 0
     total_output_tokens = 0
     total_money_spent = 0
+    total_classifier_cost_usd = 0
 
     for execution_id in execution_ids:
         executions = WorkflowExecution.get_by_execution_id(execution_id)
@@ -1303,6 +1305,9 @@ def _calculate_workflow_metrics(conversation_id: str, conversation) -> Conversat
                 total_input_tokens += execution.tokens_usage.input_tokens or 0
                 total_output_tokens += execution.tokens_usage.output_tokens or 0
                 total_money_spent += execution.tokens_usage.money_spent or 0
+                total_classifier_cost_usd += (
+                    execution.tokens_usage.routing.classifier_cost_usd if execution.tokens_usage.routing else None
+                ) or 0
 
     logger.debug(
         f"Calculated workflow metrics for conversation {conversation_id}: "
@@ -1311,20 +1316,21 @@ def _calculate_workflow_metrics(conversation_id: str, conversation) -> Conversat
         f"money_spent={total_money_spent}"
     )
 
-    return ConversationMetrics(
+    return ConversationMetricsOut(
         conversation_id=conversation_id,
         total_input_tokens=total_input_tokens,
         total_output_tokens=total_output_tokens,
         total_money_spent=total_money_spent,
+        total_classifier_cost_usd=total_classifier_cost_usd,
     )
 
 
 @router.get(
     "/assistants/metrics/{conversation_id}",
-    response_model=ConversationMetrics,
+    response_model=ConversationMetricsOut,
     response_model_exclude_none=True,
 )
-def conversation_metrics(conversation_id: str) -> ConversationMetrics:
+def conversation_metrics(conversation_id: str) -> ConversationMetricsOut:
     """
     Get metrics of the conversation with Assistant or Workflow
     """
@@ -1340,11 +1346,19 @@ def conversation_metrics(conversation_id: str) -> ConversationMetrics:
 
     if not metrics:
         logger.info(f"Conversation metrics with given id {conversation_id} are not found")
-        return ConversationMetrics(
+        metrics = ConversationMetrics(
             conversation_id=conversation_id, total_money_spent=0, total_output_tokens=0, total_input_tokens=0
         )
 
-    return metrics
+    total_classifier_cost_usd = conversation.get_total_classifier_cost_usd() if conversation else 0
+
+    return ConversationMetricsOut(
+        conversation_id=conversation_id,
+        total_input_tokens=metrics.total_input_tokens,
+        total_output_tokens=metrics.total_output_tokens,
+        total_money_spent=metrics.total_money_spent,
+        total_classifier_cost_usd=total_classifier_cost_usd,
+    )
 
 
 @router.post(

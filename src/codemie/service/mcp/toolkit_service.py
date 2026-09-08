@@ -412,7 +412,7 @@ class MCPToolkitService:
                 )
             )
         except Exception as exc:
-            logger.warning("MCP auth discovery bridge call failed; " f"returning warning results: {exc}")
+            logger.warning(f"MCP auth discovery bridge call failed; returning warning results: {exc}")
             probe_results = cls._build_discovery_bridge_unavailable_results(discovery_candidates)
         discovery_results = list(probe_results or [])
         auth_failures = cls._run_coroutine_sync(
@@ -503,7 +503,7 @@ class MCPToolkitService:
         return {
             "count": len(headers),
             "sensitive_count": len(headers) - len(non_sensitive_headers),
-            "non_sensitive_headers": {header_name: PRESENT_LOG_VALUE for header_name in non_sensitive_headers},
+            "non_sensitive_headers": dict.fromkeys(non_sensitive_headers, PRESENT_LOG_VALUE),
         }
 
     @classmethod
@@ -714,8 +714,7 @@ class MCPToolkitService:
     def _sanitize_exception_for_log(cls, exc: Exception) -> str:
         if isinstance(exc, httpx.HTTPStatusError):
             return (
-                f"{exc}: status_code={exc.response.status_code}, "
-                f"url={cls._sanitize_url_for_log(str(exc.request.url))}"
+                f"{exc}: status_code={exc.response.status_code}, url={cls._sanitize_url_for_log(str(exc.request.url))}"
             )
         if isinstance(exc, httpx.RequestError):
             return f"{exc}: url={cls._sanitize_url_for_log(str(exc.request.url))}"

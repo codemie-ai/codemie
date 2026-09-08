@@ -393,7 +393,7 @@ def get_llm_by_credentials_raw(
         'openai_api_key': creds.api_key if creds else config.AZURE_OPENAI_API_KEY,
         'openai_api_type': config.OPENAI_API_TYPE,
         'deployment_name': llm_model_details.deployment_name,
-        'model_name': llm_model_details.base_name,
+        'model_name': llm_model_details.deployment_name,
         'streaming': streaming,
         'max_retries': config.AZURE_OPENAI_MAX_RETRIES,
         'max_tokens': llm_model_details.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS_4K,
