@@ -24,7 +24,6 @@ from codemie.agents.utils import (
     LangfuseLiteLLMErrorOutputCallback,
     OPEN_AI_TOOL_NAME_LIMIT,
     adapt_tool_name,
-    error_output_callback,
     generate_tool_hash,
     get_repo_files_by_search_phrase_path,
     get_repo_tree,
@@ -627,6 +626,26 @@ class TestLangfuseLiteLLMErrorOutputCallback:
         trace_io.assert_called_once_with(output=expected)
 
     @patch("codemie.agents.utils.get_langfuse_client_or_none")
+    def test_on_llm_error_sets_trace_input_when_user_input_known(
+        self, mock_get_client, classified_lite_llm_rate_limit_exception
+    ):
+        gen = MagicMock()
+        trace_io = MagicMock()
+
+        class _Client:
+            update_current_generation = gen
+            set_current_trace_io = trace_io
+
+        mock_get_client.return_value = _Client()
+        handler = LangfuseLiteLLMErrorOutputCallback(user_input="SSN 123-45-6789")
+        exc = classified_lite_llm_rate_limit_exception
+        expected = self._expected_classified_message(exc)
+
+        handler.on_llm_error(exc)
+
+        trace_io.assert_called_once_with(output=expected, input="SSN 123-45-6789")
+
+    @patch("codemie.agents.utils.get_langfuse_client_or_none")
     def test_on_llm_error_skips_client_when_classify_returns_none(self, mock_get_client):
         handler = LangfuseLiteLLMErrorOutputCallback()
         handler.on_llm_error(Exception("Connection refused"))
@@ -698,6 +717,8 @@ class TestGetRunConfigLangfuseCallbacks:
             agent_name="TestAgent",
             conversation_id="conv-1",
         )
-        assert cfg["callbacks"] == [handler, error_output_callback]
+        assert cfg["callbacks"][0] is handler
+        assert isinstance(cfg["callbacks"][1], LangfuseLiteLLMErrorOutputCallback)
+        assert len(cfg["callbacks"]) == 2
         assert cfg["run_name"] == "TestAgent"
         assert cfg["metadata"] == {"k": "v"}

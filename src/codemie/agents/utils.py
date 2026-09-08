@@ -48,8 +48,15 @@ class ExecutionErrorEnum(Enum):
 
 
 class LangfuseLiteLLMErrorOutputCallback(BaseCallbackHandler):
-    """Backfills Langfuse Output on failed LiteLLM calls:
-    classifies the exception with and updates Output"""
+    """Backfills Langfuse Input/Output on failed LiteLLM calls.
+
+    A rejected call (e.g. proxy guardrail 400) ends the root chain via
+    ``on_chain_error``, so Langfuse derives no trace input/output and the trace
+    renders blank. Write the user query and the classified message instead.
+    """
+
+    def __init__(self, user_input: Any = None) -> None:
+        self.user_input = user_input
 
     def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
         error_response = LiteLLMErrorClassifier().classify(error)
@@ -71,18 +78,19 @@ class LangfuseLiteLLMErrorOutputCallback(BaseCallbackHandler):
             if callable(update_generation):
                 update_generation(output=text)
 
+            trace_io: Dict[str, Any] = {"output": text}
+            if self.user_input is not None:
+                trace_io["input"] = self.user_input
+
             set_trace_io = getattr(client, "set_current_trace_io", None)
             if callable(set_trace_io):
-                set_trace_io(output=text)
+                set_trace_io(**trace_io)
             else:
                 update_trace = getattr(client, "update_current_trace", None)
                 if callable(update_trace):
-                    update_trace(output=text)
+                    update_trace(**trace_io)
         except Exception as e:
             logger.warning(f"Failed to set Langfuse output for LiteLLM error: {e}")
-
-
-error_output_callback = LangfuseLiteLLMErrorOutputCallback()
 
 
 _HEDGING_CANCELLED_OUTPUT = "[Request Hedging]: FAST_PATH_WON"
@@ -415,7 +423,8 @@ def get_run_config(
         callbacks.append(handler)
 
     if callbacks:
-        callbacks.append(error_output_callback)  # LiteLLM error tracking (supplements callbacks)
+        # LiteLLM error tracking; per-request so a rejected call carries its query onto the trace.
+        callbacks.append(LangfuseLiteLLMErrorOutputCallback(user_input=request.text if request else None))
     elif not provider.is_enabled():
         # No callbacks and provider disabled — nothing to trace
         return {}
