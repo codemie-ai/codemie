@@ -469,8 +469,8 @@ class ApplicationRepository:
         user_id: str,
         is_admin: bool,
     ) -> Optional[Application]:
-        """Get a visible project by exact name for a user."""
-        statement = select(Application).where(Application.name == project_name)
+        """Get a visible project by name for a user (case-insensitive match)."""
+        statement = select(Application).where(func.lower(Application.name) == project_name.lower())
 
         if is_admin:
             statement = statement.where(Application.deleted_at.is_(None))
