@@ -1,0 +1,100 @@
+{
+  "task": "Extract a single shared customer-config component resolution (YAML + runtime + dynamic override) used by both the backend flag reads and GET /v1/config, with a TTL-bounded override snapshot warmed and refreshed at API startup.",
+  "generated": "2026-09-04",
+  "dimensions": {
+    "component_scope": {
+      "score": 4,
+      "label": "L",
+      "affected": "configs.component_resolution (new shared module), configs.customer_config (CustomerConfig singleton + Component/ComponentSetting re-export), service.customer_config_service (OverrideCache, refresh_overrides, resolve_components, list_settings), service.customer_config_declarations, rest_api.main (startup warm-up + background refresh task)",
+      "layers": "Config/Infra, Service, API (startup lifespan), Agent-Tool (toolkit flag reads consume the snapshot)"
+    },
+    "requirements_clarity": {
+      "score": 3,
+      "label": "M",
+      "status": "Partially Clear",
+      "gaps": "The ticket asserted is_feature_enabled defaults to True for unknown keys while the code and an existing test both say False; settled with the user before implementation and resolved by correcting a wrong docstring only. One planned item (surfacing CUSTOMER_CONFIG_CACHE_TTL_SECONDS in .env.example) was attempted and reverted because a test pins that file to an exact key list."
+    },
+    "technical_risk": {
+      "score": 4,
+      "label": "L",
+      "risk_factors": "No exact precedent for per-field override merge semantics; module-level mutable snapshot published from the async side and read synchronously by request-path flag reads; TTL cache with degradation fallbacks (last-good snapshot, then YAML); markup sanitisation path (bleach + dangerous-scheme rejection) in the write path; a real regression was introduced and caught in review — folding the declaration's neutral defaults into every stored override overwrote YAML values and disabled releaseNotesRecentCount outright, because its declaration carries no `enabled` field while YAML sets enabled: true",
+      "mitigation": "One code-review round fixed 1 critical and 5 major findings; apply_override now lays only the override's own fields over YAML; no schema change and no call-site changes, so rollback is a plain revert"
+    },
+    "file_change_estimate": {
+      "score": 5,
+      "label": "XL",
+      "modified_files": 7,
+      "modified_file_list": [
+        "src/codemie/configs/customer_config.py",
+        "src/codemie/service/customer_config_service.py",
+        "src/codemie/service/customer_config_declarations.py",
+        "src/codemie/rest_api/main.py",
+        "tests/codemie/service/test_customer_config_service.py",
+        "tests/codemie/service/test_customer_config_audit.py",
+        "tests/codemie/service/test_customer_config_declarations.py"
+      ],
+      "new_files": 6,
+      "new_file_list": [
+        "src/codemie/configs/component_resolution.py",
+        "tests/codemie/configs/test_component_resolution.py",
+        "tests/codemie/configs/test_customer_config_override.py",
+        "tests/codemie/rest_api/test_customer_config_warmup.py",
+        "tests/codemie/service/test_customer_config_refresh.py",
+        "tests/codemie/service/tools/test_toolkit_web_search_flag.py"
+      ],
+      "affected_dirs": [
+        "src/codemie/configs",
+        "src/codemie/service",
+        "src/codemie/rest_api",
+        "tests/codemie/configs",
+        "tests/codemie/service",
+        "tests/codemie/rest_api"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 3,
+      "label": "M",
+      "layers_changed": ["Config/Infra", "Service", "API"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 20,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 13,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "file_change_estimate",
+      "reason": "13 files changed across 6 directories, 6 of them new — 715 insertions / 112 deletions. The new module plus five new test files dominate; only 4 production files were edited."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "A core shared utility was restructured: Component/ComponentSetting moved into the new component_resolution module and had to be re-exported from configs.customer_config because five modules import them from there (three of them tests that had to keep passing unchanged). This relocation was not in the initial plan."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "The predicted risk materialised — code review found 1 critical and 5 major issues, all fixed in one round. The critical one was a self-inflicted regression in the override merge that silently disabled a live feature, exactly the blast radius a shared resolver carries."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "The ticket contradicted the code on the unknown-key default; settled with the user up front, so the contradiction cost a docstring rather than rework."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Three layers only — config, service and API startup. No schema migration (the existing dynamic_config table was reused), no external calls, and none of the 21 flag read sites changed, which held the layer count down."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M (3) to L (4): touches a core shared utility — the customer_config singleton read from 21 flag call sites, whose model classes had to move and be re-exported",
+    "Requirements Clarity bumped from S (2) to M (3): conflicting requirement — the ticket's stated default for unknown feature keys contradicted both the code and an existing test"
+  ],
+  "split_recommendation": null
+}

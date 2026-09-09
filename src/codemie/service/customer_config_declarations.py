@@ -142,7 +142,20 @@ RELEASE_NOTES_RECENT_COUNT = SettingDeclaration(
     ],
 )
 
-DECLARATIONS: tuple[SettingDeclaration, ...] = (CHAT_DISCLAIMER, RELEASE_NOTES_RECENT_COUNT)
+WEB_SEARCH = SettingDeclaration(
+    component_id="features:webSearch",
+    label="Web search",
+    description="Google Search, Tavily Search and Web Scraper tools in chat.",
+    fields=[
+        FieldDeclaration(
+            name="enabled",
+            type=FieldType.SWITCH,
+            label="Enable web search",
+        ),
+    ],
+)
+
+DECLARATIONS: tuple[SettingDeclaration, ...] = (CHAT_DISCLAIMER, RELEASE_NOTES_RECENT_COUNT, WEB_SEARCH)
 
 _BY_COMPONENT_ID = {declaration.component_id: declaration for declaration in DECLARATIONS}
 _BY_KEY = {declaration.key: declaration for declaration in DECLARATIONS}

@@ -31,6 +31,8 @@ import bleach
 
 from codemie.clients.postgres import get_async_session
 from codemie.configs.config import config
+from codemie.configs import component_resolution
+from codemie.configs.component_resolution import Overrides
 from codemie.configs.customer_config import CONFIG_IDS, Component, ComponentSetting, customer_config
 from codemie.configs.logger import logger
 from codemie.rest_api.models.dynamic_config import ConfigValueType
@@ -55,8 +57,6 @@ from codemie.service.customer_config_declarations import (
 )
 from codemie.service.dynamic_config_service import DynamicConfigService
 
-Overrides = dict[str, dict]
-
 
 class OverrideCache:
     """Process-local cache of customer-config overrides with a bounded staleness window.
@@ -68,36 +68,54 @@ class OverrideCache:
 
     def __init__(self, ttl_seconds: int):
         self.ttl_seconds = ttl_seconds
-        self._overrides: Overrides | None = None
+        self._loaded = False
         self._expires_at: float = 0.0
 
     def invalidate(self) -> None:
-        self._overrides = None
+        """Drop the snapshot entirely, leaving readers on YAML until the next load.
+
+        The write path uses ``refresh_overrides`` instead: synchronous readers have no
+        reload path of their own, so discarding their only source would revert every
+        override to YAML for up to a TTL on the very pod that served the write.
+        """
+        self._loaded = False
         self._expires_at = 0.0
+        component_resolution.clear_snapshot()
 
     def expire_now(self) -> None:
         """Mark the snapshot stale while keeping it as the degradation fallback."""
         self._expires_at = 0.0
 
     async def get(self) -> Overrides:
-        if self._overrides is not None and time.monotonic() < self._expires_at:
-            return self._overrides
+        if self._loaded and time.monotonic() < self._expires_at:
+            return component_resolution.current_snapshot()
 
         try:
             overrides = await _load_overrides()
         except Exception as error:
-            if self._overrides is not None:
+            if self._loaded:
                 logger.warning(f"Failed to load customer config overrides, serving last snapshot. {error=}")
-                return self._overrides
+                return component_resolution.current_snapshot()
             logger.warning(f"Failed to load customer config overrides, falling back to YAML. {error=}")
             return {}
 
-        self._overrides = overrides
+        component_resolution.publish_snapshot(overrides)
+        self._loaded = True
         self._expires_at = time.monotonic() + self.ttl_seconds
         return overrides
 
 
 override_cache = OverrideCache(ttl_seconds=config.CUSTOMER_CONFIG_CACHE_TTL_SECONDS)
+
+
+async def refresh_overrides() -> None:
+    """Reload the override snapshot, keeping the last good one if the source is unreachable.
+
+    ``expire_now`` marks the snapshot stale without dropping it, so a failed reload degrades
+    to the last known good values rather than to YAML.
+    """
+    override_cache.expire_now()
+    await override_cache.get()
 
 
 async def _load_overrides() -> Overrides:
@@ -131,50 +149,16 @@ def _parse_override(key: str, raw_value: str, declaration: SettingDeclaration) -
     return {name: value[name] for name in declaration.field_names if name in value}
 
 
-def apply_override(component: Component, override: dict | None) -> Component:
-    """Lay declared override fields over the YAML settings of a component.
-
-    Fields the declaration does not expose stay on their YAML value, so they keep
-    following deployments instead of freezing at the moment of the first override.
-    """
-    if not override:
-        return component
-
-    settings = component.settings.model_dump(exclude_none=True) | override
-    return Component(id=component.id, settings=ComponentSetting(**settings))
-
-
 async def resolve_components() -> list[Component]:
     """Return the enabled components with overrides applied before the enabled filter."""
-    overrides = await override_cache.get()
+    await override_cache.get()
 
-    runtime_ids = set(CONFIG_IDS.values())
-
-    merged = [apply_override(component, overrides.get(component.id)) for component in _declared_components(overrides)]
-
-    enabled_yaml = [c for c in merged if c.settings.enabled and c.id not in runtime_ids]
-    enabled_runtime = [c for c in customer_config.get_runtime_components() if c.settings.enabled]
-
-    return enabled_yaml + enabled_runtime
-
-
-def _declared_components(overrides: Overrides) -> list[Component]:
-    """YAML components, plus a neutral placeholder for a declared component YAML omits.
-
-    A customer's YAML is its own file and may predate a declaration, so an override must
-    still resolve rather than be dropped for want of a default to lay it over.
-    """
-    yaml_ids = {component.id for component in customer_config.components}
-    missing = [
-        Component(id=declaration.component_id, settings=ComponentSetting(**_switchless_defaults(declaration)))
-        for declaration in DECLARATIONS
-        if declaration.component_id not in yaml_ids and declaration.component_id in overrides
-    ]
-    return [*customer_config.components, *missing]
-
-
-def _switchless_defaults(declaration: SettingDeclaration) -> dict:
-    return {"enabled": False, **declaration.empty_value()}
+    resolved = component_resolution.resolve_all(
+        customer_config.components,
+        customer_config.get_runtime_components(),
+        set(CONFIG_IDS.values()),
+    )
+    return [component for component in resolved if component.settings.enabled]
 
 
 _INVALID_VALUE_MESSAGE = "Invalid configuration value"
@@ -300,7 +284,7 @@ async def save_setting(component_id: str, payload: dict, actor: User) -> dict:
         description=declaration.label,
         updated_by=actor.id,
     )
-    override_cache.invalidate()
+    await refresh_overrides()
 
     await _audit(CustomerConfigEvent.SETTING_UPDATED, declaration, actor, previous, settings)
     logger.info(f"Customer config setting updated: {component_id=}, actor={actor.id}")
@@ -317,11 +301,12 @@ async def reset_setting(component_id: str, actor: User) -> None:
 
     previous = await _read_stored_settings(declaration)
     deleted = await DynamicConfigService.adelete(declaration.key)
-    override_cache.invalidate()
 
     if not deleted:
         logger.debug(f"Customer config setting had no override to reset: {component_id=}")
         return
+
+    await refresh_overrides()
 
     await _audit(CustomerConfigEvent.SETTING_RESET, declaration, actor, previous, None)
     logger.info(f"Customer config setting reset: {component_id=}, actor={actor.id}")

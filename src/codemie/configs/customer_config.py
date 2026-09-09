@@ -21,6 +21,12 @@ from typing import Dict, List, Optional, Union
 from importlib.metadata import version, PackageNotFoundError
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from codemie.configs.config import config
+from codemie.configs.component_resolution import (  # re-exported: five modules import these from here
+    Component,
+    ComponentSetting,
+    resolve as _resolve_component,
+    resolve_all as _resolve_all_components,
+)
 
 CONFIG_IDS = {
     "enterpriseEdition": "features:enterpriseEdition",
@@ -30,17 +36,6 @@ CONFIG_IDS = {
     "chatContextualNaming": "features:chatContextualNaming",
     "budgetSoftLimitNotification": "features:budgetSoftLimitNotification",
 }
-
-
-class ComponentSetting(BaseModel):
-    enabled: bool = Field()
-    availableForExternal: bool = Field(default=True)
-    name: Optional[str] = Field(default=None)
-    url: Optional[str] = Field(default=None)
-    created_by: Optional[str] = Field(default=None)
-    icon_url: Optional[str] = Field(default=None)
-
-    model_config = ConfigDict(extra="allow")
 
 
 class AssistantSetting(BaseModel):
@@ -59,18 +54,6 @@ class PreconfiguredAssistant(BaseModel):
     def validate_id(cls, v: str) -> str:
         if not v or not isinstance(v, str):
             raise ValueError("Assistant ID must be a non-empty string")
-        return v
-
-
-class Component(BaseModel):
-    id: str = Field()
-    settings: ComponentSetting
-
-    @staticmethod
-    @field_validator('id')
-    def validate_id(cls, v: str) -> str:
-        if not v or not isinstance(v, str):
-            raise ValueError("Component ID must be a non-empty string")
         return v
 
 
@@ -269,28 +252,37 @@ class CustomerConfig(BaseModel):
             None,
         )
 
+    def resolve_component(self, component_id: str) -> Component | None:
+        """One component, resolved through the shared rule.
+
+        The runtime list is built only for a runtime-computed id: assembling it scans
+        distribution metadata and validates six models, which is far too much for the
+        flag reads that sit on request paths.
+        """
+        runtime_ids = set(CONFIG_IDS.values())
+        runtime = self._get_runtime_config() if component_id in runtime_ids else []
+        return _resolve_component(component_id, self.components, runtime, runtime_ids)
+
+    def resolve_all(self) -> List[Component]:
+        """Every known component, resolved through the shared rule."""
+        return _resolve_all_components(
+            self.components,
+            self._get_runtime_config(),
+            set(CONFIG_IDS.values()),
+        )
+
     def is_component_enabled(self, component_id: str) -> bool:
         """
-        Check if a component is enabled (includes runtime-computed config).
+        Check if a component is enabled (includes runtime-computed config and dynamic overrides).
         If the component is not in the configuration, it defaults to False (disabled).
         """
-        # Check runtime config first
-        runtime_config_ids = set(CONFIG_IDS.values())
-        if component_id in runtime_config_ids:
-            runtime_components = {c.id: c for c in self._get_runtime_config()}
-            if component_id in runtime_components:
-                return runtime_components[component_id].settings.enabled
-
-        # Fall back to YAML components
-        return next(
-            (component.settings.enabled for component in self.components if component.id == component_id),
-            False,
-        )
+        component = self.resolve_component(component_id)
+        return component is not None and component.settings.enabled
 
     def is_feature_enabled(self, feature_key: str) -> bool:
         """
         Check if a feature is enabled.
-        If the feature is not in the configuration, it defaults to True (enabled).
+        If the feature is not in the configuration, it defaults to False (disabled).
 
         Args:
             feature_key: The feature key (e.g., 'webSearch', 'dynamicCodeInterpreter')
@@ -310,8 +302,7 @@ class CustomerConfig(BaseModel):
         ``ComponentSetting`` allows extra fields, so features can carry structured config
         (e.g. an interactive-elements ``catalog``). Returns ``default`` when absent.
         """
-        component_id = f"features:{feature_key}"
-        component = next((c for c in self.components if c.id == component_id), None)
+        component = self.resolve_component(f"features:{feature_key}")
         if component is None:
             return default
         return getattr(component.settings, setting_name, default)

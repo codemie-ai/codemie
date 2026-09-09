@@ -1,0 +1,36 @@
+{
+  "decision": "approve",
+  "rationale": "All six findings from code-review-final.json are resolved and independently verified against the current source, not just against the fix-up diff. The critical one (CR-001) is confirmed gone with two non-tautological tests that fail against the pre-fix code, and the CR-004 path it interacted with — a declared component absent from YAML — still resolves, because _from_override_alone supplies enabled=False on its own. No new critical or major issue was introduced by the fix-up. Two sub-major observations were raised and handled: reset_setting reloaded the snapshot even on a no-op reset (a regression introduced by the CR-002 fix; now skipped when nothing was deleted), and OverrideCache.invalidate() is production-dead, called only by test fixtures — kept deliberately as the cache's full-reset API, with a docstring saying why the write path does not use it. Verification: make ruff clean, make license-check clean, and the non-enterprise suite is at full parity with main (an empty diff of FAILED lists). The remaining local failures — 38 modules that cannot be collected and the enterprise MCP auth set — are environmental and identical on main.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"id": 1, "status": "pass", "note": "Single resolver used by both paths."},
+    {"id": 2, "status": "pass", "note": "Fixed by CR-001: neutral defaults no longer ride inside the override; tests at test_customer_config_service.py:326 and :351."},
+    {"id": 3, "status": "pass", "note": "component_resolution.py:74-84."},
+    {"id": 4, "status": "pass", "note": "Missing key resolves to False; test_customer_config.py:186 unchanged."},
+    {"id": 5, "status": "pass", "note": "Now covered end to end by test_customer_config_refresh.py:105, which drives the real reset_setting path."},
+    {"id": 6, "status": "pass", "note": "Runtime precedence preserved; the lazy runtime list only skips construction for ids that can never be runtime-computed."},
+    {"id": 7, "status": "pass", "note": "No call site touched."},
+    {"id": 8, "status": "pass", "note": "Refresh loop independent of /v1/config, interval clamped to at least one second."},
+    {"id": 9, "status": "pass", "note": "Warm-up awaited before _initialize_optional_features(); failure leaves the service on YAML."},
+    {"id": 10, "status": "pass", "note": "Degradation ladder intact; the write path now reloads instead of discarding the snapshot."},
+    {"id": 11, "status": "pass", "note": "Pilot declared, both branches covered at the call site."},
+    {"id": 12, "status": "pass", "note": "Both previously missing tests added."}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow.md commit format", "status": "pass", "notes": "All commits match EPMCDME-14705: Description."},
+    {"standard": "code-quality.md typing", "status": "pass", "notes": "CR-006 fixed; no Optional[...] remains in the changed signatures."},
+    {"standard": "code-quality.md licence headers", "status": "pass", "notes": "make license-check clean."},
+    {"standard": "security-patterns.md", "status": "pass", "notes": "No security surface in the fix-up diff."},
+    {"standard": "testing-patterns.md seam tests", "status": "pass", "notes": "Call-site test for the pilot flag retained."}
+  ],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "note": "customer_config_service.py:133 stores `parsed` alone; _switchless_defaults deleted with no references left. Both reproductions covered by tests that fail against the pre-fix code."},
+    {"id": "CR-002", "status": "resolved", "note": "save_setting and reset_setting await refresh_overrides(); the degradation ladder still serves the last good snapshot on a failed load."},
+    {"id": "CR-003", "status": "resolved", "note": "customer_config.py builds the runtime list only for a runtime id; behaviour-preserving because resolve consults runtime_components only inside that branch."},
+    {"id": "CR-004", "status": "resolved", "note": "Both tests added and behavioural; the audit test now asserts the refresh rather than a mocked-out call."},
+    {"id": "CR-005", "status": "resolved", "note": "main.py sleeps max(ttl_seconds, 1)."},
+    {"id": "CR-006", "status": "resolved", "note": "Signature is Component | None."}
+  ],
+  "findings": []
+}

@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "task": "Introduce a single shared component resolver used by both the synchronous customer_config feature-flag path and the async GET /v1/config path, add lifespan warm-up plus periodic background refresh of the override snapshot, and migrate features:webSearch as the pilot flag.",
+  "generated": "2026-09-03",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 22,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Five coordinated pieces: a new shared resolver module below configs/, customer_config.py reading through it, customer_config_service.py demoted to populator, the relocatable customer_config_declarations registry (with an import fix in rest_api/models/customer_config.py), and the rest_api/main.py lifespan. It restructures the owner of the precedence rule rather than adding to it, and consciously revises a layering decision recorded in EPMCDME-13983's design.md."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "No exact precedent for the core mechanism: a snapshot read synchronously with zero I/O while populated asynchronously (the existing sync->async bridge is documented as deadlock-prone, and DynamicConfigService has no sync list_by_key_prefix). Secondary traps: codemie_tools/base/models.py:22 binds customer_config.get_tool_default at import, so a design that swaps the singleton silently misses it; override_cache is patched by name in existing tests; a flag is already read inside the lifespan at main.py:394. Blast radius is 21 verified call sites across service/, rest_api/, workflows/ and codemie_tools/, none of which may change (AC7). Mitigated by heavy reuse of apply_override, _parse_override and OverrideCache's degradation ladder, plus lifespan precedents (jwks_warmup, _schedule_budget_reconciliation, _setup_litellm_cache_cleanup_scheduler)."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Roughly 5-7 production files modified (customer_config.py, customer_config_service.py, customer_config_declarations.py, rest_api/main.py, rest_api/models/customer_config.py, customer-config.yaml/declaration registry) plus 1 new shared module, across configs/, service/ and rest_api/. Test surface is larger than the source surface: at least 4 existing test files touched (2 with assertions that fail by design) plus new coverage for eight AC12 scenarios, including a periodic-loop test pattern that has zero precedent across 1058 test files."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Four distinct layers: configs (import-time sync singleton), service (override cache and declarations), API/lifespan (warm-up before _initialize_optional_features plus a background refresh task), and DB-persistence as a read source via alist_by_key_prefix. No schema change or migration, and no external system, which keeps it at L rather than XL - but a cross-cutting feature-flag concern is being threaded through startup and every layer at once."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L (4) to XL (5): touches core shared utilities - the customer_config singleton and the declaration registry are read from configs/, service/, rest_api/, workflows/ and codemie_tools/, and the change relocates ownership of the precedence rule below configs/."
+  ],
+  "split_recommendation": null
+}

@@ -101,19 +101,20 @@ async def test_save_reports_no_old_value_when_there_was_no_override(audit, actor
 
 
 @pytest.mark.asyncio
-async def test_save_invalidates_the_local_cache(audit, actor):
+async def test_save_refreshes_the_local_snapshot(audit, actor):
+    """The writing pod reloads rather than discarding: synchronous readers have no reload path."""
     with patch.object(customer_config_service.DynamicConfigService, "aget_by_key", AsyncMock(return_value=None)):
         with patch.object(customer_config_service.DynamicConfigService, "aset", AsyncMock()):
-            with patch.object(customer_config_service.override_cache, "invalidate") as invalidate:
+            with patch.object(customer_config_service, "refresh_overrides", AsyncMock()) as refresh:
                 await save_setting("chatDisclaimer", {"enabled": True, "text": "new"}, actor)
 
-    invalidate.assert_called_once()
+    refresh.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_save_rejects_an_undeclared_component(audit, actor):
     with pytest.raises(customer_config_service.ExtendedHTTPException) as error:
-        await save_setting("features:webSearch", {"enabled": True}, actor)
+        await save_setting("features:dynamicCodeInterpreter", {"enabled": True}, actor)
 
     assert error.value.code == 404
 

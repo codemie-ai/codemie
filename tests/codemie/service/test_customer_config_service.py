@@ -117,11 +117,12 @@ async def test_undeclared_yaml_fields_keep_following_deployments(patched_yaml, y
 
 @pytest.mark.asyncio
 async def test_override_for_an_undeclared_component_is_ignored(patched_yaml):
-    rows = [_row("CUSTOMER_CONFIG__FEATURES__WEB_SEARCH", {"enabled": False})]
+    rows = [_row("CUSTOMER_CONFIG__FEATURES__DYNAMIC_CODE_INTERPRETER", {"enabled": True})]
 
     with _patch_rows(rows):
         components = await resolve_components()
 
+    assert _find(components, "features:dynamicCodeInterpreter") is None
     assert _find(components, "features:webSearch") is not None
 
 
@@ -307,3 +308,56 @@ def test_release_notes_recent_count_default_is_declared_enabled_with_a_value():
     assert component is not None
     assert component.settings.enabled is True
     assert getattr(component.settings, "recentReleaseCount", None) == "10"
+
+
+@pytest.fixture
+def yaml_with_release_notes(yaml_components):
+    extended = [
+        *yaml_components,
+        Component(
+            id="releaseNotesRecentCount",
+            settings=ComponentSetting(enabled=True, recentReleaseCount="10"),
+        ),
+    ]
+    with patch.object(customer_config_service, "customer_config") as mock_config:
+        mock_config.components = extended
+        mock_config.get_runtime_components.return_value = []
+        yield mock_config
+
+
+@pytest.mark.asyncio
+async def test_a_switchless_declaration_does_not_disable_its_yaml_component(yaml_with_release_notes):
+    """releaseNotesRecentCount declares no `enabled` field, so saving it must not turn it off."""
+    rows = [_row("CUSTOMER_CONFIG__RELEASE_NOTES_RECENT_COUNT", {"recentReleaseCount": "25"})]
+
+    with _patch_rows(rows):
+        components = await resolve_components()
+
+    component = _find(components, "releaseNotesRecentCount")
+    assert component is not None, "the component must not vanish from /v1/config after a save"
+    assert component.settings.enabled is True
+    assert component.settings.recentReleaseCount == "25"
+
+
+@pytest.fixture
+def yaml_with_disclaimer_text():
+    components = [
+        Component(id="chatDisclaimer", settings=ComponentSetting(enabled=True, text="From YAML")),
+    ]
+    with patch.object(customer_config_service, "customer_config") as mock_config:
+        mock_config.components = components
+        mock_config.get_runtime_components.return_value = []
+        yield mock_config
+
+
+@pytest.mark.asyncio
+async def test_a_row_missing_a_declared_field_keeps_the_yaml_value(yaml_with_disclaimer_text):
+    """A row written before a declaration gained a field must not blank that field."""
+    rows = [_row("CUSTOMER_CONFIG__CHAT_DISCLAIMER", {"enabled": True})]
+
+    with _patch_rows(rows):
+        components = await resolve_components()
+
+    disclaimer = _find(components, "chatDisclaimer")
+    assert disclaimer is not None
+    assert disclaimer.settings.text == "From YAML"

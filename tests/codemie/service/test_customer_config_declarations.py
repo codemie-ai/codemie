@@ -82,8 +82,8 @@ def test_lookup_by_key_matches_lookup_by_component_id():
 
 
 def test_undeclared_component_is_not_resolvable():
-    assert by_component_id("features:webSearch") is None
-    assert by_key("CUSTOMER_CONFIG__FEATURES__WEB_SEARCH") is None
+    assert by_component_id("features:dynamicCodeInterpreter") is None
+    assert by_key("CUSTOMER_CONFIG__FEATURES__DYNAMIC_CODE_INTERPRETER") is None
 
 
 def test_every_declaration_has_a_unique_key():

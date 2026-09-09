@@ -132,6 +132,7 @@ from external.deployment_scripts.preconfigured_workflows import create_preconfig
 from external.deployment_scripts.preconfigured_katas import import_preconfigured_katas
 from codemie.clients.postgres import alembic_upgrade_enterprise_postgres, alembic_upgrade_postgres
 from codemie.service.budget.startup_reconciliation_service import budget_startup_reconciliation_service
+from codemie.service.customer_config_service import override_cache, refresh_overrides
 
 # Rate limiting imports (EPMCDME-10160)
 from slowapi.middleware import SlowAPIMiddleware
@@ -335,6 +336,31 @@ def _schedule_startup_recovery(tasks: list[asyncio.Task]) -> None:
         name="startup_recovery",
     )
     tasks.append(recovery_task)
+
+
+async def _warm_customer_config() -> None:
+    """Load the dynamic-configuration snapshot before the app serves traffic.
+
+    Ordered before ``_initialize_optional_features``, which reads a feature flag itself.
+    A failure here leaves the service on YAML; it never blocks start-up.
+    """
+    try:
+        await refresh_overrides()
+    except Exception as error:
+        logger.warning(f"Customer config warm-up failed, serving YAML until the next refresh. {error=}")
+
+
+def _schedule_customer_config_refresh(tasks: list[asyncio.Task]) -> None:
+    """Keep the override snapshot fresh for synchronous readers that never touch /v1/config."""
+
+    async def _loop() -> None:
+        # Sleep first: the lifespan already warmed the snapshot moments ago. The interval is
+        # clamped so a TTL of 0 cannot turn this into a hot loop against the database.
+        while True:
+            await asyncio.sleep(max(override_cache.ttl_seconds, 1))
+            await _warm_customer_config()
+
+    tasks.append(asyncio.create_task(_loop(), name="customer_config_refresh"))
 
 
 def _schedule_budget_reconciliation(app: FastAPI, tasks: list[asyncio.Task]) -> None:
@@ -783,6 +809,9 @@ async def lifespan(app: FastAPI):
     _bootstrap_superadmin()
     await _run_keycloak_migration()
 
+    # Load dynamic configuration before anything reads a feature flag
+    await _warm_customer_config()
+
     # Initialize optional features
     _initialize_optional_features()
     _check_sharepoint_pkce_redis()
@@ -793,6 +822,7 @@ async def lifespan(app: FastAPI):
 
     # Start background tasks
     tasks = []
+    _schedule_customer_config_refresh(tasks)
     if config.TRIGGER_ENGINE_ENABLED:
         tasks.append(asyncio.create_task(NodeController().start()))
 
