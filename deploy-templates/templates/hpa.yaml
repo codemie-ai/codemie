@@ -37,6 +37,10 @@ spec:
   behavior:
     scaleUp:
       stabilizationWindowSeconds: {{ $pool.hpa.scaleUpStabilizationWindowSeconds }}
+      policies:
+      - type: Pods
+        value: {{ $pool.hpa.scaleUpPolicyPods }}
+        periodSeconds: {{ $pool.hpa.scaleUpPolicyPeriodSeconds }}
     scaleDown:
       stabilizationWindowSeconds: {{ $pool.hpa.scaleDownStabilizationWindowSeconds }}
 {{- end }}

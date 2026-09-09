@@ -32,6 +32,8 @@ A Helm chart for AI/Run API
 | dsPool.hpa.maxReplicas | int | `2` | Maximum number of ds-pool pods |
 | dsPool.hpa.minReplicas | int | `1` | Minimum number of ds-pool pods |
 | dsPool.hpa.scaleDownStabilizationWindowSeconds | int | `900` | Time window CPU must stay below target before pods are removed |
+| dsPool.hpa.scaleUpPolicyPeriodSeconds | int | `15` | Time window for the scaleUpPolicyPods limit |
+| dsPool.hpa.scaleUpPolicyPods | int | `1` | Maximum number of pods the HPA can add per scaleUpPolicyPeriodSeconds window |
 | dsPool.hpa.scaleUpStabilizationWindowSeconds | int | `60` | Time window the CPU target must be exceeded before pods are added |
 | dsPool.hpa.targetCPUUtilizationPercentage | int | `70` | Target CPU utilization of the codemie container, as a percentage of its CPU request |
 | dsPool.ingress.annotations | object | `{"nginx.ingress.kubernetes.io/proxy-body-size":"900m","nginx.ingress.kubernetes.io/proxy-read-timeout":"600","nginx.ingress.kubernetes.io/rewrite-target":"/v1/index/$1"}` | Additional ingress annotations |
@@ -63,6 +65,8 @@ A Helm chart for AI/Run API
 | hpa.maxReplicas | int | `2` | Maximum number of codemie-api pods |
 | hpa.minReplicas | int | `1` | Minimum number of codemie-api pods |
 | hpa.scaleDownStabilizationWindowSeconds | int | `900` | Time window CPU must stay below target before pods are removed |
+| hpa.scaleUpPolicyPeriodSeconds | int | `15` | Time window for the scaleUpPolicyPods limit |
+| hpa.scaleUpPolicyPods | int | `1` | Maximum number of pods the HPA can add per scaleUpPolicyPeriodSeconds window |
 | hpa.scaleUpStabilizationWindowSeconds | int | `60` | Time window the CPU target must be exceeded before pods are added |
 | hpa.targetCPUUtilizationPercentage | int | `70` | Target CPU utilization of the codemie container, as a percentage of its CPU request |
 | image.pullPolicy | string | `"IfNotPresent"` | Image pull policy for the AI/Run API |
@@ -111,6 +115,8 @@ A Helm chart for AI/Run API
 | proxyPool.hpa.maxReplicas | int | `2` | Maximum number of proxy-pool pods |
 | proxyPool.hpa.minReplicas | int | `1` | Minimum number of proxy-pool pods |
 | proxyPool.hpa.scaleDownStabilizationWindowSeconds | int | `900` | Time window CPU must stay below target before pods are removed |
+| proxyPool.hpa.scaleUpPolicyPeriodSeconds | int | `15` | Time window for the scaleUpPolicyPods limit |
+| proxyPool.hpa.scaleUpPolicyPods | int | `1` | Maximum number of pods the HPA can add per scaleUpPolicyPeriodSeconds window |
 | proxyPool.hpa.scaleUpStabilizationWindowSeconds | int | `60` | Time window the CPU target must be exceeded before pods are added |
 | proxyPool.hpa.targetCPUUtilizationPercentage | int | `70` | Target CPU utilization of the codemie container, as a percentage of its CPU request |
 | proxyPool.ingress.annotations | object | `{"nginx.ingress.kubernetes.io/proxy-body-size":"900m","nginx.ingress.kubernetes.io/proxy-read-timeout":"600"}` | Additional ingress annotations |
