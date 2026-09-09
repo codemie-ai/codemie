@@ -22,6 +22,7 @@ from codemie.configs.customer_config import customer_config
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.settings import CredentialValues, Settings, SettingRequest, SettingType
 from codemie.service.assistant.assistant_service import AssistantService
+from codemie.service.oauth.folded_credentials import OAUTH_AUTH_TYPE
 from codemie.service.settings.scheduler_settings_service import (
     _validate_minimum_hourly_frequency,
     INVALID_CRON_EXPRESSION_MESSAGE,
@@ -41,8 +42,13 @@ CRON_EXPRESSION_HELP_MESSAGE = (
 LITELLM_API_KEY_HELP_MESSAGE = "Please provide a valid, non-empty API key for LiteLLM integration."
 GIT_AUTH_HELP_MESSAGE = (
     "Please specify authentication method using 'auth_type' field: "
-    "'pat' for Personal Access Token or 'github_app' for GitHub App authentication."
+    "'pat' for Personal Access Token, 'github_app' for GitHub App, or 'oauth' for GitLab OAuth 2.0."
 )
+GITLAB_OAUTH_HELP_MESSAGE = (
+    "Configure your GitLab OAuth application and provide its Application ID (client_id), "
+    "Application Secret (client_secret), and the CodeMie callback base URL (callback_base_url)."
+)
+MIXED_AUTH_METHODS_MESSAGE = "Cannot mix authentication methods"
 
 # SharePoint is intentionally absent: the trigger engine dispatches it (see
 # Cron.__schedule_datasource_job and triggers.bindings.utils.validate_datasource), and the
@@ -130,7 +136,7 @@ def _validate_pat_authentication(values: dict):
     if "app_id" in values or "private_key" in values:
         raise ExtendedHTTPException(
             code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            message="Cannot mix authentication methods",
+            message=MIXED_AUTH_METHODS_MESSAGE,
             details="Cannot provide GitHub App fields (app_id, private_key) when using PAT authentication",
             help="Please choose either PAT or GitHub App authentication, not both.",
         )
@@ -193,13 +199,48 @@ def _validate_github_app_field_formats(values: dict):
             )
 
 
+def _validate_oauth_authentication(values: dict):
+    """Validate a folded GitLab OAuth Git integration (auth_type=oauth).
+
+    EPMCDME-14586/14587: GitLab OAuth folds into the base Git type carrying an auth_type=oauth
+    marker (only GitLab has OAuth on Git). The stored OAuth app credentials — Application ID
+    (client_id), Application Secret (client_secret), and the CodeMie callback base URL
+    (callback_base_url) — must be present for the later OAuth initiate/connect flow to build the
+    authorize URL. instance_url is optional here: it has a server-side default (gitlab.com).
+    PAT / GitHub App fields must not be mixed in.
+    """
+    if "token" in values and values["token"]:
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message=MIXED_AUTH_METHODS_MESSAGE,
+            details="Cannot provide a PAT token when using OAuth authentication.",
+            help="Please choose either PAT, GitHub App, or OAuth authentication, not a combination.",
+        )
+    if "app_id" in values or "private_key" in values:
+        raise ExtendedHTTPException(
+            code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            message=MIXED_AUTH_METHODS_MESSAGE,
+            details="Cannot provide GitHub App fields (app_id, private_key) when using OAuth authentication.",
+            help="Please choose either PAT, GitHub App, or OAuth authentication, not a combination.",
+        )
+
+    for field in ("client_id", "client_secret", "callback_base_url"):
+        if not values.get(field):
+            raise ExtendedHTTPException(
+                code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                message=f"OAuth authentication requires '{field}'",
+                details=f"GitLab OAuth authentication requires a non-empty '{field}'.",
+                help=GITLAB_OAUTH_HELP_MESSAGE,
+            )
+
+
 def _validate_github_app_authentication(values: dict):
     """Validate GitHub App authentication fields."""
     # Ensure PAT token is not provided
     if "token" in values and values["token"]:
         raise ExtendedHTTPException(
             code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            message="Cannot mix authentication methods",
+            message=MIXED_AUTH_METHODS_MESSAGE,
             details="Cannot provide PAT token when using GitHub App authentication",
             help="Please choose either PAT or GitHub App authentication, not both.",
         )
@@ -210,7 +251,7 @@ def _validate_github_app_authentication(values: dict):
 
 def validate_git_request(request: SettingRequest):
     """
-    Validate Git credentials (PAT or GitHub App) using auth_type field.
+    Validate Git credentials (PAT, GitHub App, or GitLab OAuth) using the auth_type field.
 
     Raises:
         ExtendedHTTPException: If validation fails
@@ -224,11 +265,13 @@ def validate_git_request(request: SettingRequest):
         _validate_pat_authentication(values)
     elif auth_type == "github_app":
         _validate_github_app_authentication(values)
+    elif auth_type == OAUTH_AUTH_TYPE:
+        _validate_oauth_authentication(values)
     else:
         raise ExtendedHTTPException(
             code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             message=f"Invalid auth_type: '{auth_type}'",
-            details="auth_type must be either 'pat' or 'github_app'.",
+            details="auth_type must be 'pat', 'github_app', or 'oauth'.",
             help=GIT_AUTH_HELP_MESSAGE,
         )
 

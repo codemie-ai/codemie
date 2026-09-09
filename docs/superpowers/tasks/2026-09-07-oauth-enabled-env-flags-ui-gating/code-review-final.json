@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "gate_id": "code-review.final",
+  "decision": "approve",
+  "rationale": "All three lenses ran successfully over the two-repo diff. Acceptance audited all 6 criteria against the real code — every one passes (env->/v1/config bridge reused, no SettingDeclaration path, per-provider git->GitLab gating, presence=enabled, tests both repos, id contract matches). Blind lens: no blocking findings (verified the features:gitlabOauth/jiraOauth/confluenceOauth ids match byte-for-byte across repos, the flag read is null-safe, useFeatureFlag is called unconditionally, and the hide-gate is not inverted). Edge-case lens: 1 finding, minor and dismissed — the base type 'git' folds GitHub+GitLab so a GitHub git integration could be offered GitLab OAuth; explicitly pre-existing, not introduced by this change, and matching the documented 'only GitLab has OAuth on Git' assumption. Standards: commit subjects conform to single-ticket EPMCDME-14587: format; ruff check/format and tsc clean; no secret/token handling. Dismissed findings: 1 (minor).",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    { "criterion": "1. OAuth env booleans surfaced via /v1/config reusing the env->config runtime bridge", "status": "pass", "notes": "_get_runtime_config() appends 3 Components from config.*_OAUTH_ENABLED, same pattern as userManagement/chatContextualNaming." },
+    { "criterion": "2. Must NOT use admin-editable SettingDeclaration path (stays env-driven)", "status": "pass", "notes": "Values live in get_runtime_components(); never YAML/DB overridable." },
+    { "criterion": "3. Frontend hides toggle per-provider; git base type maps to GitLab flag", "status": "pass", "notes": "showOAuthToggle gates on useFeatureFlag(OAUTH_VARIANT_FEATURE_FLAG[oauthVariantType]); git->gitlaboauth->GITLAB_OAUTH." },
+    { "criterion": "4. Presence = enabled (disabled provider omitted from /v1/config)", "status": "pass", "notes": "resolve_components() returns only enabled runtime components; FE defaults enabled ?? false." },
+    { "criterion": "5. Tests: backend runtime components + frontend hidden/shown toggle", "status": "pass", "notes": "test_runtime_features_oauth_flags; SettingsForm.oauth hidden-when-disabled + shown-when-enabled; integration.test.ts map." },
+    { "criterion": "6. Two-repo id contract must match", "status": "pass", "notes": "CONFIG_IDS strings equal FEATURE_FLAGS strings exactly; asserted by tests on both sides." }
+  ],
+  "standards_review": [
+    { "check": "git-workflow (commit format)", "status": "pass", "notes": "Subjects are single-ticket 'EPMCDME-14587: Capital sentence' on both repos." },
+    { "check": "code-quality", "status": "pass", "notes": "ruff check + ruff format --check clean (BE); tsc --noEmit clean (FE)." },
+    { "check": "security-patterns", "status": "pass", "notes": "Boolean capability flag only; auth_type/enabled are non-sensitive; no secret/token handling introduced." }
+  ],
+  "findings": []
+}

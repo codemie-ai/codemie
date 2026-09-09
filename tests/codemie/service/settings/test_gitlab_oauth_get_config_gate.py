@@ -19,10 +19,7 @@ rather than inside get_config, so get_config resolves a config regardless of whe
 acting user has connected yet.
 """
 
-import sys
 from types import SimpleNamespace
-
-sys.modules.setdefault("langgraph.pregel._retry", SimpleNamespace(RetryPolicy=object))
 
 from codemie.service.settings.settings import SettingsService  # noqa: E402
 from codemie_tools.base.models import CredentialTypes  # noqa: E402
@@ -33,8 +30,13 @@ def _gitlab_setting():
     return SimpleNamespace(
         id="s1",
         alias="Team GitLab",
-        credential_type=CredentialTypes.GITLAB_OAUTH,
-        normalize_values=lambda: {"instance_url": "https://gitlab.com", "url": "https://gitlab.com"},
+        credential_type=CredentialTypes.GIT,
+        credential_values=[SimpleNamespace(key="auth_type", value="oauth")],
+        normalize_values=lambda: {
+            "instance_url": "https://gitlab.com",
+            "url": "https://gitlab.com",
+            "auth_type": "oauth",
+        },
     )
 
 

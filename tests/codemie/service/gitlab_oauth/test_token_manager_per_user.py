@@ -26,8 +26,11 @@ from codemie_tools.base.models import CredentialTypes
 def _gitlab_setting():
     return SimpleNamespace(
         id="s1",
-        credential_type=CredentialTypes.GITLAB_OAUTH,
-        credential_values=[SimpleNamespace(key="instance_url", value="https://gitlab.com")],
+        credential_type=CredentialTypes.GIT,
+        credential_values=[
+            SimpleNamespace(key="auth_type", value="oauth"),
+            SimpleNamespace(key="instance_url", value="https://gitlab.com"),
+        ],
     )
 
 

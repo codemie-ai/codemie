@@ -76,7 +76,9 @@ class OAuthRouterConfig:
     tag: str
     provider_label: str
     enabled: Callable[[], bool]
-    credential_type_attr: str
+    # EPMCDME-14586/14587: the folded OAuth provider key ('jira' | 'confluence' | 'gitlab') this
+    # router serves, resolved from a setting's base type + auth_type=oauth marker.
+    provider: str
     flow_service_factory: Callable[[], object]
     missing_app_credentials_message: str
     initiate_model: type[BaseModel] = InitiateOAuthRequest
@@ -88,15 +90,9 @@ class OAuthRouterConfig:
     callback_disabled_html_message: Optional[str] = None
 
 
-def _credential_type(cfg: OAuthRouterConfig):
-    from codemie_tools.base.models import CredentialTypes
-
-    return getattr(CredentialTypes, cfg.credential_type_attr)
-
-
 def _authorize_setting(cfg: OAuthRouterConfig, setting_id: str, user: User) -> None:
     """Confirm the caller may act on this integration before touching its token state."""
-    load_authorized_setting(setting_id, user, _credential_type(cfg), cfg.provider_label)
+    load_authorized_setting(setting_id, user, cfg.provider, cfg.provider_label)
 
 
 def _app_credentials_from_setting(cfg: OAuthRouterConfig, setting_id: str, user: User) -> dict:
@@ -105,7 +101,7 @@ def _app_credentials_from_setting(cfg: OAuthRouterConfig, setting_id: str, user:
     The caller must be authorized for the integration before its app configuration is read —
     the generated authorize URL embeds ``client_id`` (and, for GitLab, ``instance_url``).
     """
-    setting = load_authorized_setting(setting_id, user, _credential_type(cfg), cfg.provider_label)
+    setting = load_authorized_setting(setting_id, user, cfg.provider, cfg.provider_label)
     creds = {c.key: c.value for c in setting.credential_values}
     encrypted_secret = creds.get("client_secret", "")
     client_secret = None

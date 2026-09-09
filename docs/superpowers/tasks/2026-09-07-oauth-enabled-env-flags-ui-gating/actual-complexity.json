@@ -1,0 +1,84 @@
+{
+  "task": "Expose backend GITLAB/JIRA/CONFLUENCE_OAUTH_ENABLED env booleans to the frontend via the existing customer-config GET /v1/config runtime bridge and hide each provider's 'Use OAuth 2.0 sign-in' toggle when its flag is off.",
+  "generated": "2026-09-07",
+  "dimensions": {
+    "component_scope": {
+      "score": 4,
+      "label": "L",
+      "affected": "customer_config runtime config (BE), featureFlags constants, integration constants (OAUTH_VARIANT_FEATURE_FLAG), useFeatureFlags hooks, featureFlags utils, SettingsForm integration form",
+      "layers": "Backend runtime-config service, API config bridge (GET /v1/config), frontend shared feature-flag infra (constants/hooks/utils), frontend UI"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": "Fully specified — three named env flags mapped 1:1 to three UI providers; the only design choice (fold the OAuth gate into the existing variant-flag lookup) is already resolved by the established OAUTH_VARIANT pattern"
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M",
+      "risk_factors": "Gates visibility of OAuth 2.0 sign-in in the UI (authorization-adjacent surface); no authz enforcement logic changed — backend routers already 503 on the same flags",
+      "mitigation": "Purely additive, env-flag driven, trivially reversible; enforcement stays server-side; covered by new SettingsForm.oauth and customer_config tests"
+    },
+    "file_change_estimate": {
+      "score": 4,
+      "label": "L",
+      "modified_files": 9,
+      "modified_file_list": [
+        "codemie/src/codemie/configs/customer_config.py",
+        "codemie/tests/codemie/configs/test_customer_config.py",
+        "codemie-ui/src/constants/__tests__/integration.test.ts",
+        "codemie-ui/src/constants/featureFlags.ts",
+        "codemie-ui/src/constants/integration.ts",
+        "codemie-ui/src/hooks/useFeatureFlags.ts",
+        "codemie-ui/src/pages/integrations/components/NewIntegrationPopup/__tests__/NewIntegrationPopup.test.tsx",
+        "codemie-ui/src/pages/integrations/components/SettingsForm/SettingsForm.tsx",
+        "codemie-ui/src/utils/featureFlags.ts"
+      ],
+      "new_files": 1,
+      "new_file_list": [
+        "codemie-ui/src/pages/integrations/components/SettingsForm/__tests__/SettingsForm.oauth.test.tsx"
+      ],
+      "affected_dirs": [
+        "codemie/src/codemie/configs",
+        "codemie/tests/codemie/configs",
+        "codemie-ui/src/constants",
+        "codemie-ui/src/hooks",
+        "codemie-ui/src/utils",
+        "codemie-ui/src/pages/integrations"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 3,
+      "label": "M",
+      "layers_changed": [
+        "Service (backend customer-config runtime components)",
+        "API (GET /v1/config delivery bridge, reused)",
+        "Frontend feature-flag infra (constants/hooks/utils)",
+        "UI (integrations SettingsForm toggle)"
+      ],
+      "schema_migration": false,
+      "cross_system": true
+    }
+  },
+  "total": 17,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 10,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Six components across two codebases — backend runtime config plus shared frontend feature-flag constants/hooks/utils and the SettingsForm UI; touches shared frontend feature-flag utilities (additively)" },
+    { "dimension": "file_change_estimate", "reason": "10 files changed (9 modified, 1 new) spanning both the backend and UI repos; +177/-3, dominated by additive flag wiring and tests" },
+    { "dimension": "technical_risk", "reason": "Base risk low (reuses the env->/v1/config runtime-config pattern and the existing useFeatureFlag path), bumped one tier for OAuth sign-in exposure touching the authorization surface; enforcement remains server-side and the change is env-flag reversible" }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S to M: gates OAuth 2.0 sign-in exposure (authorization-adjacent surface)"
+  ],
+  "split_recommendation": null
+}

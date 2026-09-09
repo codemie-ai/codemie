@@ -29,6 +29,7 @@ from codemie.rest_api.routers.oauth_router_factory import (
     build_oauth_router,
 )
 from codemie.service.gitlab_oauth.flow_service import GitLabOAuthFlowService
+from codemie.service.oauth.folded_credentials import OAUTH_PROVIDER_GITLAB
 
 
 class InitiateGitLabOAuthRequest(InitiateOAuthRequest):
@@ -47,7 +48,7 @@ router = build_oauth_router(
         tag="GitLab OAuth",
         provider_label="GitLab",
         enabled=lambda: config.GITLAB_OAUTH_ENABLED,
-        credential_type_attr="GITLAB_OAUTH",
+        provider=OAUTH_PROVIDER_GITLAB,
         # Indirect so tests can monkeypatch this module's _get_oauth_service.
         flow_service_factory=lambda: _get_oauth_service(),
         initiate_model=InitiateGitLabOAuthRequest,

@@ -24,6 +24,7 @@ flows alike via the shared Atlassian OAuth state store. Only one Callback URL is
 
 from codemie.configs import config
 from codemie.rest_api.routers.oauth_router_factory import OAuthRouterConfig, build_oauth_router
+from codemie.service.oauth.folded_credentials import OAUTH_PROVIDER_CONFLUENCE
 from codemie.service.confluence_oauth.flow_service import ConfluenceOAuthFlowService
 
 
@@ -37,7 +38,7 @@ router = build_oauth_router(
         tag="Confluence OAuth",
         provider_label="Confluence",
         enabled=lambda: config.CONFLUENCE_OAUTH_ENABLED,
-        credential_type_attr="CONFLUENCE_OAUTH",
+        provider=OAUTH_PROVIDER_CONFLUENCE,
         # Indirect so tests can monkeypatch this module's _get_oauth_service.
         flow_service_factory=lambda: _get_oauth_service(),
         missing_app_credentials_message=(

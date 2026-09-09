@@ -30,7 +30,7 @@ from codemie.core.ability import Ability, Action
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.settings import ProjectSetting, Settings, SettingType, UserSetting
 from codemie.rest_api.security.user import User
-from codemie_tools.base.models import CredentialTypes
+from codemie.service.oauth.folded_credentials import oauth_provider
 
 
 def _as_ability_setting(setting: Settings):
@@ -56,11 +56,13 @@ def authorize_setting_access(setting: Settings, user: User) -> None:
     )
 
 
-def load_authorized_setting(setting_id: str, user: User, credential_type: CredentialTypes, provider: str) -> Settings:
+def load_authorized_setting(setting_id: str, user: User, expected_provider: str, provider: str) -> Settings:
     """Load an OAuth integration the caller is allowed to use, or raise.
 
     Returns 404 when the integration does not exist, 403 when the caller has no access to it,
-    and 400 when it is not an integration of the expected OAuth provider.
+    and 400 when it is not an integration of the expected OAuth provider. EPMCDME-14586/14587: the
+    provider is resolved from the folded credential type (base type + auth_type=oauth marker), not a
+    standalone *OAuth credential type.
     """
     setting = Settings.find_by_id(setting_id)
     if setting is None:
@@ -71,7 +73,7 @@ def load_authorized_setting(setting_id: str, user: User, credential_type: Creden
             help="Verify the integration id and that it has not been removed.",
         )
     authorize_setting_access(setting, user)
-    if setting.credential_type != credential_type:
+    if oauth_provider(setting) != expected_provider:
         raise ExtendedHTTPException(
             code=status.HTTP_400_BAD_REQUEST,
             message="Unsupported integration type",

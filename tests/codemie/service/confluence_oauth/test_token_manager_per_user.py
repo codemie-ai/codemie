@@ -24,7 +24,11 @@ from codemie_tools.base.models import CredentialTypes
 
 
 def _cf_setting():
-    return SimpleNamespace(id="s1", credential_type=CredentialTypes.CONFLUENCE_OAUTH, credential_values=[])
+    return SimpleNamespace(
+        id="s1",
+        credential_type=CredentialTypes.CONFLUENCE,
+        credential_values=[SimpleNamespace(key="auth_type", value="oauth")],
+    )
 
 
 def test_returns_valid_token(monkeypatch):

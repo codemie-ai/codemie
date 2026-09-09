@@ -37,9 +37,9 @@ class GitlabConfig(CodeMieToolConfig):
         },
     )
 
-    # OAuth 2.0 (Authorization Code + PKCE) — populated when this config is loaded from a
-    # GITLAB_OAUTH Settings row. The tool consults the GitLab OAuth token manager on every
-    # request; fields here are used only to identify the setting.
+    # OAuth 2.0 (Authorization Code + PKCE) — populated when this config is loaded from a Git
+    # Settings row marked auth_type=oauth (GitLab). The tool consults the GitLab OAuth token manager
+    # on every request; fields here are used only to identify the setting.
     auth_type: str = Field(default="pat", description="'pat' (default) or 'oauth' for GitLab 3LO")
     access_token: str = Field(default="", description="OAuth access token (managed by Codemie)", exclude=True)
     refresh_token: str = Field(default="", description="OAuth refresh token (managed by Codemie)", exclude=True)

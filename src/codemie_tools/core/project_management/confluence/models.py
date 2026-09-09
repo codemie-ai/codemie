@@ -52,8 +52,8 @@ class ConfluenceConfig(CodeMieToolConfig, FileConfigMixin):
         description="Is this a Confluence Cloud instance? Toggle on if using Atlassian Cloud",
     )
 
-    # OAuth 2.0 (Atlassian 3LO) — populated when this config is loaded from a CONFLUENCE_OAUTH
-    # Settings row. The tool consults the Confluence OAuth token manager per request.
+    # OAuth 2.0 (Atlassian 3LO) — populated when this config is loaded from a Confluence Settings
+    # row marked auth_type=oauth. The tool consults the Confluence OAuth token manager per request.
     auth_type: str = Field(default="pat", description="'pat' (default) or 'oauth' for Atlassian 3LO")
     integration_id: str = Field(default="", description="Setting row id — used to resolve OAuth tokens")
     acting_user_id: str = Field(

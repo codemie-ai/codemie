@@ -52,8 +52,8 @@ class JiraConfig(CodeMieToolConfig, FileConfigMixin):
         description="Is this a Jira Cloud instance? Toggle on if using Atlassian Cloud",
     )
 
-    # OAuth 2.0 (Atlassian 3LO) — populated when this config is loaded from a JIRA_OAUTH Settings
-    # row. The tool consults the Jira OAuth token manager per request; fields here identify the
+    # OAuth 2.0 (Atlassian 3LO) — populated when this config is loaded from a Jira Settings row
+    # marked auth_type=oauth. The tool consults the Jira OAuth token manager per request; fields here identify the
     # setting and the acting user, and carry the Atlassian cloud_id used to build the API base URL.
     auth_type: str = Field(default="pat", description="'pat' (default) or 'oauth' for Atlassian 3LO")
     integration_id: str = Field(default="", description="Setting row id — used to resolve OAuth tokens")

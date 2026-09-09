@@ -105,9 +105,10 @@ class CredentialTypes(str, Enum):
     SHAREPOINT = "SharePoint"
     XWIKI = "XWiki"
     GOOGLE_OAUTH = "GoogleOAuth"
-    GITLAB_OAUTH = "GitLabOAuth"
-    JIRA_OAUTH = "JiraOAuth"
-    CONFLUENCE_OAUTH = "ConfluenceOAuth"
+    # EPMCDME-14586/14587: Jira/Confluence/GitLab OAuth are no longer standalone credential types.
+    # They are folded into the existing Jira/Confluence/Git types, marked by auth_type=oauth in
+    # credential_values. Existing rows are rewritten by the data migration; see
+    # codemie.service.oauth.folded_credentials.
 
     # Project settings
     DIAL = "DIAL"

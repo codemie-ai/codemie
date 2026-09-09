@@ -18,13 +18,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from codemie.core.exceptions import JiraAuthRequiredException
+from codemie.core.exceptions import ExtendedHTTPException, JiraAuthRequiredException
 from codemie.service.jira_oauth.token_manager import JiraOAuthTokenManager
 from codemie_tools.base.models import CredentialTypes
 
 
 def _jira_setting():
-    return SimpleNamespace(id="s1", credential_type=CredentialTypes.JIRA_OAUTH, credential_values=[])
+    return SimpleNamespace(
+        id="s1",
+        credential_type=CredentialTypes.JIRA,
+        credential_values=[SimpleNamespace(key="auth_type", value="oauth")],
+    )
 
 
 def test_returns_valid_token_for_acting_user(monkeypatch):
@@ -74,3 +78,40 @@ def test_get_cloud_id_reads_provider_metadata(monkeypatch):
     mgr = JiraOAuthTokenManager()
     assert mgr.get_cloud_id("s1", "u1") == "CID-123"
     assert mgr.get_cloud_id("s1", "absent") == ""
+
+
+def _folded_jira_oauth_setting():
+    # EPMCDME-14587: OAuth persisted under the base Jira type with an auth_type=oauth marker.
+    return SimpleNamespace(
+        id="s1",
+        credential_type=CredentialTypes.JIRA,
+        credential_values=[SimpleNamespace(key="auth_type", value="oauth")],
+    )
+
+
+def test_accepts_folded_jira_oauth_setting(monkeypatch):
+    monkeypatch.setattr(
+        "codemie.service.jira_oauth.token_manager.Settings.find_by_id",
+        staticmethod(lambda sid: _folded_jira_oauth_setting()),
+    )
+    monkeypatch.setattr(
+        "codemie.service.jira_oauth.token_manager.ToolOAuthTokenPort.get_oauth2_token_or_none",
+        staticmethod(
+            lambda *, user_id, integration_id: (
+                SimpleNamespace(access_token="A1") if (integration_id, user_id) == ("s1", "u1") else None
+            )
+        ),
+    )
+    mgr = JiraOAuthTokenManager()
+    assert mgr.get_valid_access_token("s1", "u1") == "A1"
+
+
+def test_rejects_non_oauth_jira_setting(monkeypatch):
+    pat = SimpleNamespace(id="s1", credential_type=CredentialTypes.JIRA, credential_values=[])
+    monkeypatch.setattr(
+        "codemie.service.jira_oauth.token_manager.Settings.find_by_id",
+        staticmethod(lambda sid: pat),
+    )
+    mgr = JiraOAuthTokenManager()
+    with pytest.raises(ExtendedHTTPException):
+        mgr.get_valid_access_token("s1", "u1")

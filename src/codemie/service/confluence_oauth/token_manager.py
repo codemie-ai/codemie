@@ -17,7 +17,7 @@
 from codemie.core.exceptions import ConfluenceAuthRequiredException, ExtendedHTTPException
 from codemie.rest_api.models.settings import Settings
 from codemie.service.oauth.token_port import ToolOAuthTokenPort, map_tms_error_to_http
-from codemie_tools.base.models import CredentialTypes
+from codemie.service.oauth.folded_credentials import OAUTH_PROVIDER_CONFLUENCE, oauth_provider
 
 
 class ConfluenceOAuthTokenManager:
@@ -30,7 +30,7 @@ class ConfluenceOAuthTokenManager:
         setting = Settings.find_by_id(setting_id)
         if setting is None:
             raise ExtendedHTTPException(404, f"Setting '{setting_id}' not found")
-        if setting.credential_type != CredentialTypes.CONFLUENCE_OAUTH:
+        if oauth_provider(setting) != OAUTH_PROVIDER_CONFLUENCE:
             raise ExtendedHTTPException(
                 400, f"Setting '{setting_id}' is not a Confluence OAuth credential (type: {setting.credential_type})"
             )

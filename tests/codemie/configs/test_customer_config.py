@@ -117,6 +117,9 @@ class TestCustomerConfig(unittest.TestCase):
             mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
             mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
             mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+            mock_config.GITLAB_OAUTH_ENABLED = False
+            mock_config.JIRA_OAUTH_ENABLED = False
+            mock_config.CONFLUENCE_OAUTH_ENABLED = False
 
             config = CustomerConfig()
             enabled_components = config.get_enabled_components()
@@ -255,6 +258,9 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
         mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.GITLAB_OAUTH_ENABLED = False
+        mock_config.JIRA_OAUTH_ENABLED = False
+        mock_config.CONFLUENCE_OAUTH_ENABLED = False
 
         config = CustomerConfig()
         components = config.get_enabled_components()
@@ -284,6 +290,9 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
         mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.GITLAB_OAUTH_ENABLED = False
+        mock_config.JIRA_OAUTH_ENABLED = False
+        mock_config.CONFLUENCE_OAUTH_ENABLED = False
 
         config = CustomerConfig()
         components = config.get_enabled_components()
@@ -337,6 +346,9 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
         mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.GITLAB_OAUTH_ENABLED = False
+        mock_config.JIRA_OAUTH_ENABLED = False
+        mock_config.CONFLUENCE_OAUTH_ENABLED = False
 
         config = CustomerConfig()
         components = config.get_enabled_components()
@@ -385,6 +397,9 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
         mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.GITLAB_OAUTH_ENABLED = False
+        mock_config.JIRA_OAUTH_ENABLED = False
+        mock_config.CONFLUENCE_OAUTH_ENABLED = False
 
         config = CustomerConfig()
         components = config.get_enabled_components()
@@ -402,6 +417,34 @@ class TestRuntimeFeatures(unittest.TestCase):
         # Verify disabled runtime features NOT in response (same behavior as YAML)
         self.assertFalse(any(c.id == "features:enterpriseEdition" for c in components))
         self.assertFalse(any(c.id == "features:userManagement" for c in components))
+
+    @patch("codemie.configs.customer_config.Path.read_text")
+    @patch("codemie.configs.customer_config.version")
+    @patch("codemie.configs.customer_config.config")
+    def test_runtime_features_oauth_flags(self, mock_config, mock_version, mock_read_text):
+        """OAuth env flags surface as enabled-only runtime components."""
+        mock_read_text.return_value = yaml.dump(self.valid_yaml)
+        mock_version.side_effect = PackageNotFoundError("codemie-enterprise")
+        mock_config.ENABLE_USER_MANAGEMENT = False
+        mock_config.IDP_PROVIDER = "local"
+        mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
+        mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.GITLAB_OAUTH_ENABLED = True
+        mock_config.JIRA_OAUTH_ENABLED = False
+        mock_config.CONFLUENCE_OAUTH_ENABLED = True
+
+        config = CustomerConfig()
+
+        # presence == enabled: the disabled provider is omitted entirely
+        self.assertTrue(config.is_component_enabled("features:gitlabOauth"))
+        self.assertTrue(config.is_component_enabled("features:confluenceOauth"))
+        self.assertFalse(config.is_component_enabled("features:jiraOauth"))
+
+        ids = {c.id for c in config.get_enabled_components()}
+        self.assertIn("features:gitlabOauth", ids)
+        self.assertIn("features:confluenceOauth", ids)
+        self.assertNotIn("features:jiraOauth", ids)
 
     @patch("codemie.configs.customer_config.Path.read_text")
     @patch("codemie.configs.customer_config.version")

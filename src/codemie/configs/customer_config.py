@@ -35,6 +35,9 @@ CONFIG_IDS = {
     "mcpAuthOrigin": "mcpAuthOrigin",
     "chatContextualNaming": "features:chatContextualNaming",
     "budgetSoftLimitNotification": "features:budgetSoftLimitNotification",
+    "gitlabOauth": "features:gitlabOauth",
+    "jiraOauth": "features:jiraOauth",
+    "confluenceOauth": "features:confluenceOauth",
 }
 
 
@@ -188,6 +191,30 @@ class CustomerConfig(BaseModel):
             Component(
                 id=CONFIG_IDS["budgetSoftLimitNotification"],
                 settings=ComponentSetting(enabled=config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED),
+            )
+        )
+
+        # OAuth provider availability. Each flag is env-driven and, like the other runtime features,
+        # never overridable from YAML or the database; the UI hides the OAuth sign-in toggle for a
+        # provider whose flag is off (the OAuth routers already 503 on the same flags).
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["gitlabOauth"],
+                settings=ComponentSetting(enabled=config.GITLAB_OAUTH_ENABLED),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["jiraOauth"],
+                settings=ComponentSetting(enabled=config.JIRA_OAUTH_ENABLED),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["confluenceOauth"],
+                settings=ComponentSetting(enabled=config.CONFLUENCE_OAUTH_ENABLED),
             )
         )
 

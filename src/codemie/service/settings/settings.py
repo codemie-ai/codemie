@@ -71,6 +71,12 @@ from codemie.rest_api.models.settings import (
     PROJECT_NAME_TERM,
 )
 from codemie.rest_api.utils.default_applications import ensure_application_exists
+from codemie.service.oauth.folded_credentials import (
+    OAUTH_PROVIDER_CONFLUENCE,
+    OAUTH_PROVIDER_GITLAB,
+    OAUTH_PROVIDER_JIRA,
+    oauth_provider,
+)
 from codemie.service.settings.base_settings import BaseSettingsService, SearchFields
 from codemie.service.settings.settings_handler import build_settings_handlers
 
@@ -576,13 +582,16 @@ class SettingsService(BaseSettingsService):
             except Exception as exc:
                 logger.warning(f"Failed to revoke Google OAuth token for setting {credential_id}: {exc}")
 
-        if setting.credential_type == CredentialTypes.GITLAB_OAUTH:
+        # EPMCDME-14586/14587: resolve the OAuth provider so folded OAuth settings (persisted under the
+        # base Jira/Confluence/Git type with auth_type=oauth) clean up their per-user tokens too.
+        oauth_provider = cls._oauth_provider(setting)
+        if oauth_provider == OAUTH_PROVIDER_GITLAB:
             cls._cleanup_gitlab_oauth_tokens(credential_id)
 
-        if setting.credential_type == CredentialTypes.JIRA_OAUTH:
+        if oauth_provider == OAUTH_PROVIDER_JIRA:
             cls._cleanup_jira_oauth_tokens(credential_id)
 
-        if setting.credential_type == CredentialTypes.CONFLUENCE_OAUTH:
+        if oauth_provider == OAUTH_PROVIDER_CONFLUENCE:
             cls._cleanup_confluence_oauth_tokens(credential_id)
 
         Settings.delete_setting(credential_id)
@@ -765,38 +774,45 @@ class SettingsService(BaseSettingsService):
     # --- Per-user OAuth (GitLab / Jira / Confluence) shared helpers ---------------------------
 
     @classmethod
-    def _oauth_app_keys(cls, credential_type) -> Optional[list]:
-        """Allowed shared-app credential keys for a per-user OAuth credential type, else None."""
+    def _oauth_app_keys(cls, provider) -> Optional[list]:
+        """Allowed shared-app credential keys for a per-user OAuth provider, else None."""
         return {
-            CredentialTypes.GITLAB_OAUTH: cls.GITLAB_OAUTH_APP_KEYS,
-            CredentialTypes.JIRA_OAUTH: cls.JIRA_OAUTH_APP_KEYS,
-            CredentialTypes.CONFLUENCE_OAUTH: cls.CONFLUENCE_OAUTH_APP_KEYS,
-        }.get(credential_type)
+            OAUTH_PROVIDER_GITLAB: cls.GITLAB_OAUTH_APP_KEYS,
+            OAUTH_PROVIDER_JIRA: cls.JIRA_OAUTH_APP_KEYS,
+            OAUTH_PROVIDER_CONFLUENCE: cls.CONFLUENCE_OAUTH_APP_KEYS,
+        }.get(provider)
 
     @classmethod
     def _keep_only_oauth_app_credentials(cls, request) -> None:
-        """For a per-user OAuth integration, keep only the shared app credentials on the Settings
-        row; each member's tokens are written to enterprise TMS, not stored on the setting."""
-        app_keys = cls._oauth_app_keys(request.credential_type)
+        """For a per-user OAuth integration, keep only the shared app credentials (plus the
+        auth_type=oauth marker that folds it into the base type) on the Settings row; each member's
+        tokens are written to enterprise TMS, not stored on the setting."""
+        app_keys = cls._oauth_app_keys(cls._oauth_provider(request))
         if app_keys is not None:
-            request.credential_values = [cred for cred in request.credential_values if cred.key in app_keys]
+            allowed = set(app_keys) | {cls.AUTH_TYPE}
+            request.credential_values = [cred for cred in request.credential_values if cred.key in allowed]
 
-    @staticmethod
-    def _oauth_settings_service(credential_type):
-        """Return the per-provider OAuth SettingsService class for a credential type, or None."""
-        if credential_type == CredentialTypes.GOOGLE_OAUTH:
+    @classmethod
+    def _oauth_settings_service(cls, obj):
+        """Return the per-provider OAuth SettingsService class for a Setting/SettingRequest, or None.
+
+        Google OAuth keeps its own standalone credential type; Jira/Confluence/GitLab OAuth are
+        resolved from the folded base type + auth_type=oauth marker.
+        """
+        if obj.credential_type == CredentialTypes.GOOGLE_OAUTH:
             from codemie.service.google_oauth.settings_service import GoogleOAuthSettingsService
 
             return GoogleOAuthSettingsService
-        if credential_type == CredentialTypes.GITLAB_OAUTH:
+        provider = cls._oauth_provider(obj)
+        if provider == OAUTH_PROVIDER_GITLAB:
             from codemie.service.gitlab_oauth.settings_service import GitLabOAuthSettingsService
 
             return GitLabOAuthSettingsService
-        if credential_type == CredentialTypes.JIRA_OAUTH:
+        if provider == OAUTH_PROVIDER_JIRA:
             from codemie.service.jira_oauth.settings_service import JiraOAuthSettingsService
 
             return JiraOAuthSettingsService
-        if credential_type == CredentialTypes.CONFLUENCE_OAUTH:
+        if provider == OAUTH_PROVIDER_CONFLUENCE:
             from codemie.service.confluence_oauth.settings_service import ConfluenceOAuthSettingsService
 
             return ConfluenceOAuthSettingsService
@@ -806,15 +822,27 @@ class SettingsService(BaseSettingsService):
     def _preserve_existing_credentials(cls, request, user_setting, prepared_cred_keys) -> None:
         """On update, keep existing OAuth app creds absent from the request; for non-OAuth
         types keep only the keys present in the prepared credentials."""
-        service = cls._oauth_settings_service(request.credential_type)
+        service = cls._oauth_settings_service(request)
         if service is not None:
             preserved_keys = service.get_preserved_credential_keys(user_setting.credential_values, prepared_cred_keys)
         else:
             preserved_keys = prepared_cred_keys
         user_setting.credential_values = [cred for cred in user_setting.credential_values if cred.key in preserved_keys]
 
-    @staticmethod
-    def _inject_oauth_config_values(setting, user_id: str = None) -> dict:
+    # EPMCDME-14586/14587: OAuth is an authentication method within an existing integration type,
+    # marked by auth_type=oauth in credential_values — Jira/Confluence OAuth persist under the base
+    # Jira/Confluence type, GitLab OAuth under the shared Git type (only GitLab has OAuth on Git).
+    # The fold logic and the OAUTH_PROVIDER_* constants are owned by
+    # codemie.service.oauth.folded_credentials; reference them directly (imported at module scope).
+
+    @classmethod
+    def _oauth_provider(cls, obj) -> Optional[str]:
+        """Resolve the per-user OAuth provider for a persisted Setting or a SettingRequest, or None
+        for non-OAuth (PAT). Delegates to the shared folded-credentials resolver."""
+        return oauth_provider(obj)
+
+    @classmethod
+    def _inject_oauth_config_values(cls, setting, user_id: str = None) -> dict:
         """Normalise a Setting into config-constructor kwargs, injecting OAuth-specific fields.
 
         All per-user OAuth settings are marked auth_type=oauth and carry integration_id (so the tool
@@ -823,16 +851,13 @@ class SettingsService(BaseSettingsService):
         overrides the URL to https://api.atlassian.com/ex/{jira|confluence}/{cloud_id} per request).
         """
         values = setting.normalize_values()
-        if setting.credential_type not in (
-            CredentialTypes.GITLAB_OAUTH,
-            CredentialTypes.JIRA_OAUTH,
-            CredentialTypes.CONFLUENCE_OAUTH,
-        ):
+        provider = cls._oauth_provider(setting)
+        if provider is None:
             return values
         values.setdefault("auth_type", "oauth")
         values["integration_id"] = setting.id
         values["acting_user_id"] = user_id or ""
-        if setting.credential_type == CredentialTypes.GITLAB_OAUTH:
+        if provider == OAUTH_PROVIDER_GITLAB:
             if not values.get("url") and values.get("instance_url"):
                 values["url"] = values["instance_url"]
         else:
@@ -859,25 +884,65 @@ class SettingsService(BaseSettingsService):
         return cls.retrieve_setting(search_fields_dict, assistant_id, integration_id)
 
     @classmethod
+    def _find_oauth_setting(cls, base_type, project_name, user_id, assistant_id, integration_id):
+        """Retrieve a folded per-user OAuth setting: the base credential type (Jira/Confluence/Git)
+        carrying an auth_type=oauth credential value. OAuth settings are not repo-scoped, so no
+        repo_link is applied."""
+        search_fields_dict = {
+            SearchFields.CREDENTIAL_TYPE: base_type,
+            SearchFields.PROJECT_NAME: project_name,
+            SearchFields.CREDENTIAL_VALUES_KEY: cls.AUTH_TYPE,
+            SearchFields.CREDENTIAL_VALUES_VALUE: "oauth",
+        }
+        if user_id:
+            search_fields_dict[SearchFields.USER_ID] = user_id
+        else:  # No user_id => resolve the project-scoped setting.
+            search_fields_dict[SearchFields.SETTING_TYPE] = SettingType.PROJECT.value
+        return cls.retrieve_setting(search_fields_dict, assistant_id, integration_id)
+
+    # EPMCDME-14586/14587: base credential type an OAuth-capable tool config folds into. GitLab OAuth
+    # reuses the shared Git type; only GitLab has OAuth on Git (GitHub has none).
+    _OAUTH_BASE_TYPE_BY_CONFIG = {
+        GitlabConfig: CredentialTypes.GIT,
+        JiraConfig: CredentialTypes.JIRA,
+        ConfluenceConfig: CredentialTypes.CONFLUENCE,
+    }
+
+    # EPMCDME-14587: OAuth provider a tool config is allowed to resolve. A config absent here expects no
+    # OAuth (e.g. GithubConfig shares the Git type with GitLab but has no OAuth of its own). The
+    # _lookup_setting guard rejects any OAuth-marked row whose provider is not the one the config
+    # expects, so a future GitHub OAuth is a one-line map entry rather than another special case.
+    _EXPECTED_OAUTH_PROVIDER_BY_CONFIG = {
+        GitlabConfig: OAUTH_PROVIDER_GITLAB,
+        JiraConfig: OAUTH_PROVIDER_JIRA,
+        ConfluenceConfig: OAUTH_PROVIDER_CONFLUENCE,
+    }
+
+    @classmethod
     def _lookup_setting(
         cls, config_class, credential_type, user_id, project_name, assistant_id, integration_id, repo_link
     ):
         """Prefer an OAuth-backed setting over a (possibly empty/stale) PAT one for the same provider.
 
-        The OAuth fallback is keyed by config_class (not credential_type) because GIT is shared across
-        GitHub/GitLab — falling back on the type alone would misroute GitHub calls to a GitLab setting.
+        OAuth is folded into the base credential type (Jira/Confluence, or the shared Git type for
+        GitLab) and marked auth_type=oauth. Preference order: folded OAuth setting, then the base-type
+        PAT setting. Because GIT is shared across GitHub/GitLab, a GitHub lookup must never resolve an
+        OAuth-marked (GitLab) Git setting — that would misroute GitHub calls to GitLab credentials.
         """
-        oauth_fallback_by_config = {
-            GitlabConfig: CredentialTypes.GITLAB_OAUTH,
-            JiraConfig: CredentialTypes.JIRA_OAUTH,
-            ConfluenceConfig: CredentialTypes.CONFLUENCE_OAUTH,
-        }
-        fallback_type = oauth_fallback_by_config.get(config_class)
         setting = None
-        if fallback_type is not None:
-            setting = cls._find_setting(fallback_type, project_name, user_id, assistant_id, integration_id, repo_link)
+        # 1. Prefer a folded OAuth setting (base type + auth_type=oauth).
+        oauth_base_type = cls._OAUTH_BASE_TYPE_BY_CONFIG.get(config_class)
+        if oauth_base_type is not None:
+            setting = cls._find_oauth_setting(oauth_base_type, project_name, user_id, assistant_id, integration_id)
+        # 2. Base type (PAT). Only accept an OAuth-marked row whose provider is the one this config
+        #    expects; e.g. a GitHub config (no expected provider) never resolves a GitLab-OAuth Git row.
         if not setting:
             setting = cls._find_setting(credential_type, project_name, user_id, assistant_id, integration_id, repo_link)
+            if setting is not None:
+                found_provider = cls._oauth_provider(setting)
+                expected_provider = cls._EXPECTED_OAUTH_PROVIDER_BY_CONFIG.get(config_class)
+                if found_provider is not None and found_provider != expected_provider:
+                    setting = None
         return setting
 
     @classmethod
@@ -1418,12 +1483,14 @@ class SettingsService(BaseSettingsService):
             return None
 
         search_fields = {
-            SearchFields.CREDENTIAL_TYPE: CredentialTypes.GITLAB_OAUTH,
+            SearchFields.CREDENTIAL_TYPE: CredentialTypes.GIT,
             SearchFields.PROJECT_NAME: project_name,
             SearchFields.USER_ID: user_id,
+            SearchFields.CREDENTIAL_VALUES_KEY: cls.AUTH_TYPE,
+            SearchFields.CREDENTIAL_VALUES_VALUE: "oauth",
         }
         setting = cls.retrieve_setting(search_fields, assistant_id, setting_id)
-        if not setting or setting.credential_type != CredentialTypes.GITLAB_OAUTH:
+        if not setting or cls._oauth_provider(setting) != OAUTH_PROVIDER_GITLAB:
             return None
 
         from codemie.service.gitlab_oauth.token_manager import GitLabOAuthTokenManager

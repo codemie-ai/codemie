@@ -26,6 +26,7 @@ from codemie.service.settings.settings_request_validator import (
     UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES,
     validate_credential_type_not_deprecated,
     validate_datasource_type_for_scheduler,
+    validate_git_request,
     validate_ms_teams_request,
     validate_timezone_value,
 )
@@ -383,3 +384,100 @@ def test_validate_credential_type_not_deprecated_rejects_registered_types(creden
 def test_validate_credential_type_not_deprecated_allows_active_types(credential_type):
     """Types absent from the registry must pass through untouched."""
     validate_credential_type_not_deprecated(_make_request_with_credential_type(credential_type))
+
+
+def _git_request(credential_values):
+    return SettingRequest(
+        project_name="proj1",
+        alias="git-integration",
+        credential_type=CredentialTypes.GIT,
+        credential_values=credential_values,
+    )
+
+
+def test_validate_git_request_accepts_folded_gitlab_oauth():
+    """EPMCDME-14586/14587: GitLab OAuth folds into the base Git type carrying an
+    auth_type=oauth marker; the Git validator must accept it (the OAuth app credentials
+    are validated by the OAuth initiate/connect flow, mirroring Jira/Confluence OAuth)."""
+    request = _git_request(
+        [
+            CredentialValues(key="auth_type", value="oauth"),
+            CredentialValues(key="client_id", value="cid"),
+            CredentialValues(key="client_secret", value="sec"),
+            CredentialValues(key="callback_base_url", value="https://codemie.example"),
+            CredentialValues(key="instance_url", value="https://gitlab.com"),
+        ]
+    )
+
+    # Act / Assert — no exception (previously raised "Invalid auth_type: 'oauth'")
+    validate_git_request(request)
+
+
+@pytest.mark.parametrize("missing_key", ["client_id", "client_secret", "callback_base_url"])
+def test_validate_git_request_rejects_folded_gitlab_oauth_missing_app_credential(missing_key):
+    """EPMCDME-14586/14587: a folded GitLab OAuth Git integration must carry its OAuth app
+    credentials (client_id, client_secret, callback_base_url). Missing any required field is a
+    save-time 422, mirroring the PAT / GitHub App validators."""
+    credential_values = [
+        CredentialValues(key="auth_type", value="oauth"),
+        CredentialValues(key="client_id", value="cid"),
+        CredentialValues(key="client_secret", value="sec"),
+        CredentialValues(key="callback_base_url", value="https://codemie.example"),
+        CredentialValues(key="instance_url", value="https://gitlab.com"),
+    ]
+    credential_values = [cv for cv in credential_values if cv.key != missing_key]
+    request = _git_request(credential_values)
+
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        validate_git_request(request)
+    assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.parametrize("blank_key", ["client_id", "client_secret", "callback_base_url"])
+def test_validate_git_request_rejects_folded_gitlab_oauth_blank_app_credential(blank_key):
+    """An empty-string OAuth app credential is treated as missing (same as PAT/GitHub App)."""
+    request = _git_request(
+        [
+            CredentialValues(key="auth_type", value="oauth"),
+            CredentialValues(key="client_id", value="" if blank_key == "client_id" else "cid"),
+            CredentialValues(key="client_secret", value="" if blank_key == "client_secret" else "sec"),
+            CredentialValues(
+                key="callback_base_url",
+                value="" if blank_key == "callback_base_url" else "https://codemie.example",
+            ),
+        ]
+    )
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        validate_git_request(request)
+    assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
+def test_validate_git_request_accepts_folded_gitlab_oauth_without_instance_url():
+    """instance_url has a server-side default (gitlab.com), so it is optional at save time."""
+    request = _git_request(
+        [
+            CredentialValues(key="auth_type", value="oauth"),
+            CredentialValues(key="client_id", value="cid"),
+            CredentialValues(key="client_secret", value="sec"),
+            CredentialValues(key="callback_base_url", value="https://codemie.example"),
+        ]
+    )
+    validate_git_request(request)
+
+
+def test_validate_git_request_still_accepts_pat():
+    request = _git_request(
+        [
+            CredentialValues(key="auth_type", value="pat"),
+            CredentialValues(key="token", value="glpat-xxx"),
+        ]
+    )
+    validate_git_request(request)
+
+
+def test_validate_git_request_rejects_unknown_auth_type():
+    request = _git_request([CredentialValues(key="auth_type", value="bogus")])
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        validate_git_request(request)
+    assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert "Invalid auth_type" in exc_info.value.message

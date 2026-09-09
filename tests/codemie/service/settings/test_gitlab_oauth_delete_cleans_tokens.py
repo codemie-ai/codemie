@@ -14,12 +14,7 @@
 
 """Deleting a GitLab OAuth integration invalidates all user tokens in TMS."""
 
-import sys
-from types import SimpleNamespace
-
 import pytest
-
-sys.modules.setdefault("langgraph.pregel._retry", SimpleNamespace(RetryPolicy=object))
 
 from codemie.core.exceptions import ExtendedHTTPException  # noqa: E402
 from codemie.service.settings.settings import SettingsService  # noqa: E402

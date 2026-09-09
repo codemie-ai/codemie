@@ -25,6 +25,7 @@ valid Confluence callback whenever Jira OAuth is disabled.
 
 from codemie.configs import config
 from codemie.rest_api.routers.oauth_router_factory import OAuthRouterConfig, build_oauth_router
+from codemie.service.oauth.folded_credentials import OAUTH_PROVIDER_JIRA
 from codemie.service.jira_oauth.flow_service import JiraOAuthFlowService
 
 
@@ -38,7 +39,7 @@ router = build_oauth_router(
         tag="Jira OAuth",
         provider_label="Jira",
         enabled=lambda: config.JIRA_OAUTH_ENABLED,
-        credential_type_attr="JIRA_OAUTH",
+        provider=OAUTH_PROVIDER_JIRA,
         # Indirect so tests can monkeypatch this module's _get_oauth_service.
         flow_service_factory=lambda: _get_oauth_service(),
         missing_app_credentials_message=(
