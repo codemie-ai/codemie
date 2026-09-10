@@ -136,6 +136,7 @@ loaders:
     loader_pages_per_request: 20   # Number of pages returned by a single Confluence API HTTP request (the ?limit= param)
     loader_batch_size: 50          # Number of Documents passed to one _process_batch call (splitting + embedding + ES write)
     loader_timeout: 180
+    retry_transient_status_codes: [502, 503, 504]  # HTTP status codes treated as transient and eligible for retry
 
   file_loader:
     chunk_size: 1500
@@ -185,9 +186,10 @@ loaders:
 storage:
   embeddings_max_docs_count: 20
   indexing_bulk_max_chunk_bytes: 104857600  # 100 MB
-  indexing_max_retries: 2  # Reduced from 10: worst-case retry duration = max_retries × max_wait = 2 × 120 = 240s < stale_indexing_threshold_seconds (300s)
+  indexing_max_retries: 2  # Total attempts passed to stop_after_attempt (not retry count). 2 attempts = 1 retry = 1 backoff period; worst-case backoff = 1 × 120s = 120s. Note: loader_timeout (180s) is per-attempt — if both attempts timeout, total wall time can exceed stale_indexing_threshold_seconds (300s).
   indexing_error_retry_wait_min_seconds: 10
   indexing_error_retry_wait_max_seconds: 120  # Reduced from 600 to keep per-retry wait bounded
+  indexing_error_retry_wait_multiplier: 2  # Exponential backoff base multiplier (applies to all indexing retries)
   indexing_threads_count: 20
   processed_documents_threshold: 1000  # Max amount of processed documents to store in elastic
   stale_indexing_threshold_seconds: 300

@@ -1,0 +1,33 @@
+{
+  "decision": "request-changes",
+  "rationale": "One major test gap found (CR-001): test_exhausted_retries_raises does not assert call_count, so it cannot detect regressions in retry count (a change to 0 retries would still pass). All other acceptance criteria pass. Two deferred observations: stop_after_attempt semantic matches the spec's 'total attempt count' definition and mirrors base_datasource_processor.py; connection-level errors are out of spec scope. Dismissed: import-time decorator evaluation (tests handle it correctly). Three lenses ran successfully; all standards checks pass.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    { "criterion": "_search_content_by_cql retries on HTTP 502, 503, 504", "status": "pass", "notes": "_TRANSIENT_HTTP_STATUS_CODES = frozenset({502, 503, 504}); retry_if_exception(_is_transient_http_error) covers all three." },
+    { "criterion": "Retry uses exponential backoff with STORAGE_CONFIG knobs", "status": "pass", "notes": "stop_after_attempt, wait_exponential min/max all read from STORAGE_CONFIG; matches base_datasource_processor.py pattern." },
+    { "criterion": "Non-retryable errors (4xx) fail immediately on first attempt", "status": "pass", "notes": "_is_transient_http_error returns False for any status not in {502, 503, 504}." },
+    { "criterion": "After retries exhausted, original HTTPError is reraised", "status": "pass", "notes": "reraise=True present in decorator." },
+    { "criterion": "Successful retry after initial 504 allows indexing to continue", "status": "pass", "notes": "test_retries_on_504_then_succeeds verifies call_count == 2 and correct return values." },
+    { "criterion": "Three mock-based tests: successful retry, exhausted retries, non-retryable error", "status": "partial", "notes": "All three tests exist but test_exhausted_retries_raises does not assert call_count — cannot distinguish 'retried then raised' from 'raised immediately'." },
+    { "criterion": "Existing tests remain green", "status": "pass", "notes": "No existing test injects 502/503/504; TestLazyLoad patches _search_content_by_cql at method level, bypassing the decorator." }
+  ],
+  "standards_review": [
+    { "standard": "commit-format", "status": "pass", "notes": "Both commits use EPMCDME-14732: prefix matching the EPMCDME-####: Description convention." },
+    { "standard": "branch-naming", "status": "pass", "notes": "EPMCDME-14732_confluence-retry-backoff matches EPMCDME-####_short-description." },
+    { "standard": "ruff-lint", "status": "pass", "notes": "make ruff passed with all checks passed." },
+    { "standard": "import-ordering", "status": "pass", "notes": "stdlib (logging, typing) → third-party (requests, langchain, tenacity) → first-party (codemie) order maintained." },
+    { "standard": "security", "status": "pass", "notes": "No credentials, no unsafe handling; before_sleep_log logs timing only." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "location": "tests/codemie/datasource/loader/test_confluence_loader.py:450",
+      "problem": "test_exhausted_retries_raises does not assert mock_confluence_client.get.call_count. With indexing_max_retries=2, the method should be called exactly 2 times before raising. Without this assertion the test passes even if a regression causes the decorator to skip retrying and raise on attempt 1.",
+      "impact": "The retry-count contract is untested. Any future change that collapses retries to zero would pass the test suite silently.",
+      "recommendation": "Add 'assert mock_confluence_client.get.call_count == STORAGE_CONFIG.indexing_max_retries' (or the concrete value 2) after the pytest.raises block — mirroring how test_non_retryable_error_fails_immediately already guards call_count == 1."
+    }
+  ]
+}

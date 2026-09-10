@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "task": "Add retry/backoff to ConfluenceDatasourceLoader._search_content_by_cql for transient 504 Gateway Timeout errors using the existing tenacity pattern from base_datasource_processor.py.",
+  "generated": "2026-09-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 1, "label": "XS" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 1, "label": "XS" },
+    "file_change_estimate": { "score": 1, "label": "XS" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 6,
+  "size": "XS",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Single method _search_content_by_cql touched plus one module-level predicate helper _is_transient_http_error, both in confluence_loader.py; no layer boundaries crossed and no shared utilities involved."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Exact @retry + wait_exponential + STORAGE_CONFIG pattern already in base_datasource_processor.py; purely additive decorator wrap on one method; removable in one line with no downstream impact."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -12,13 +12,40 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 from typing import Any, List, Dict, Optional, Iterator
 
+import requests
 from langchain_community.document_loaders import ConfluenceLoader
 from langchain_core.documents import Document
+from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from codemie.datasource.loader.base_datasource_loader import BaseDatasourceLoader
 from codemie.configs import logger
+from codemie.datasource.datasources_config import CONFLUENCE_CONFIG, STORAGE_CONFIG
+
+# Captured at import time; changing CONFLUENCE_CONFIG.retry_transient_status_codes at runtime has no effect
+# until the application restarts (the @retry decorator and this set are both evaluated once at module load).
+_TRANSIENT_HTTP_STATUS_CODES: frozenset[int] = frozenset(CONFLUENCE_CONFIG.retry_transient_status_codes)
+
+
+def _is_transient_http_error(exc: BaseException) -> bool:
+    return (
+        isinstance(exc, requests.exceptions.HTTPError)
+        and getattr(exc.response, "status_code", None) in _TRANSIENT_HTTP_STATUS_CODES
+    )
+
+
+def _log_and_reraise_exhausted(retry_state: Any) -> None:
+    exc = retry_state.outcome.exception()
+    status_code = getattr(getattr(exc, "response", None), "status_code", "unknown")
+    logger.error(
+        "Retries exhausted for %s after %d attempts — last HTTP status: %s",
+        retry_state.fn.__qualname__,
+        retry_state.attempt_number,
+        status_code,
+    )
+    raise exc
 
 
 class ConfluenceDatasourceLoader(ConfluenceLoader, BaseDatasourceLoader):
@@ -34,6 +61,17 @@ class ConfluenceDatasourceLoader(ConfluenceLoader, BaseDatasourceLoader):
             self.SKIPPED_DOCUMENTS_KEY: total_documents - pages_count,
         }
 
+    @retry(
+        stop=stop_after_attempt(STORAGE_CONFIG.indexing_max_retries),
+        wait=wait_exponential(
+            multiplier=STORAGE_CONFIG.indexing_error_retry_wait_multiplier,
+            min=STORAGE_CONFIG.indexing_error_retry_wait_min_seconds,
+            max=STORAGE_CONFIG.indexing_error_retry_wait_max_seconds,
+        ),
+        retry=retry_if_exception(_is_transient_http_error),
+        retry_error_callback=_log_and_reraise_exhausted,
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+    )
     def _search_content_by_cql(
         self,
         cql: str,

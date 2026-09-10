@@ -1,0 +1,71 @@
+{
+  "task": "Add tenacity retry/backoff to ConfluenceDatasourceLoader._search_content_by_cql for transient HTTP 502/503/504 errors with config from STORAGE_CONFIG and 3 new mock-based tests.",
+  "generated": "2026-09-09T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 2,
+      "label": "S",
+      "affected": "ConfluenceDatasourceLoader._search_content_by_cql, _is_transient_http_error, _TRANSIENT_HTTP_STATUS_CODES",
+      "layers": "External/Datasource"
+    },
+    "requirements_clarity": {
+      "score": 1,
+      "label": "XS",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 2,
+      "label": "S",
+      "risk_factors": "tenacity retry decorator applied at class-method level; before_sleep_log hooks into module logger; config values tuned to stay under stale_indexing_threshold_seconds",
+      "mitigation": "tenacity is transitive dep already available via langchain; retry only on frozenset of safe status codes; reraise=True preserves original error; config-driven limits prevent unbounded waits"
+    },
+    "file_change_estimate": {
+      "score": 2,
+      "label": "S",
+      "modified_files": 3,
+      "modified_file_list": [
+        "src/codemie/datasource/loader/confluence_loader.py",
+        "tests/codemie/datasource/loader/test_confluence_loader.py",
+        "config/datasources/datasources-config.yaml"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": [
+        "src/codemie/datasource/loader",
+        "tests/codemie/datasource/loader",
+        "config/datasources"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 1,
+      "label": "XS",
+      "layers_changed": ["External/Datasource"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 9,
+  "size": "XS",
+  "band_range": "6-9",
+  "files_changed": 3,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Change is contained within one class in one file: @retry decorator on _search_content_by_cql plus two module-level helpers in the same module. Tests and YAML config are support files, not separate components."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Three files modified: confluence_loader.py (retry logic), test_confluence_loader.py (TestSearchContentByCqlRetry class appended), datasources-config.yaml (indexing_max_retries reduced 10→2, indexing_error_retry_wait_max_seconds reduced 600→120 with explanatory comments). No files created."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

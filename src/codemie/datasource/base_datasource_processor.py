@@ -931,10 +931,12 @@ class BaseDatasourceProcessor(ABC):
 
             document.page_content = str(guardrailed_text)
 
+    # All @retry parameters are bound at class-definition (import) time from STORAGE_CONFIG.
+    # Changing STORAGE_CONFIG values at runtime has no effect until the application restarts.
     @retry(
         stop=stop_after_attempt(STORAGE_CONFIG.indexing_max_retries),
         wait=wait_exponential(
-            multiplier=2,
+            multiplier=STORAGE_CONFIG.indexing_error_retry_wait_multiplier,
             min=STORAGE_CONFIG.indexing_error_retry_wait_min_seconds,
             max=STORAGE_CONFIG.indexing_error_retry_wait_max_seconds,
         ),

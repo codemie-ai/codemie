@@ -15,7 +15,9 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
+from codemie.datasource.datasources_config import STORAGE_CONFIG
 from codemie.datasource.loader.confluence_loader import ConfluenceDatasourceLoader
 
 
@@ -419,3 +421,295 @@ class TestLazyLoadIntegration:
         calls = mock_confluence_client.get.call_args_list
         assert calls[1].args == ("/rest/api/content/search?limit=3&start=3&cql=type%3Dpage",)
         assert calls[2].args == ("/rest/api/content/search?limit=3&start=6&cql=type%3Dpage",)
+
+
+class TestSearchContentByCqlRetry:
+    """Retry behaviour of _search_content_by_cql for transient gateway errors."""
+
+    @staticmethod
+    def _http_error(status_code: int) -> requests.exceptions.HTTPError:
+        response = MagicMock()
+        response.status_code = status_code
+        err = requests.exceptions.HTTPError(response=response)
+        return err
+
+    def test_retries_on_504_then_succeeds(self, confluence_loader, mock_confluence_client):
+        """A single 504 followed by a 200 resolves successfully after one retry."""
+        success_response = {"results": [{"id": "1"}], "_links": {}}
+        mock_confluence_client.get.side_effect = [
+            self._http_error(504),
+            success_response,
+        ]
+
+        with patch("tenacity.nap.time.sleep"):
+            results, next_url = confluence_loader._search_content_by_cql(cql="type=page")
+
+        assert results == [{"id": "1"}]
+        assert next_url == ""
+        assert mock_confluence_client.get.call_count == 2
+
+    def test_exhausted_retries_raises(self, confluence_loader, mock_confluence_client):
+        """Continuous 504 responses exhaust the retry limit and raise HTTPError."""
+        mock_confluence_client.get.side_effect = self._http_error(504)
+
+        with patch("tenacity.nap.time.sleep"):
+            with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+                confluence_loader._search_content_by_cql(cql="type=page")
+
+        assert exc_info.value.response.status_code == 504
+        assert mock_confluence_client.get.call_count == STORAGE_CONFIG.indexing_max_retries
+
+    def test_non_retryable_error_fails_immediately(self, confluence_loader, mock_confluence_client):
+        """A 401 Unauthorized fails on the first attempt without retrying."""
+        mock_confluence_client.get.side_effect = self._http_error(401)
+
+        with patch("tenacity.nap.time.sleep"):
+            with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+                confluence_loader._search_content_by_cql(cql="type=page")
+
+        assert exc_info.value.response.status_code == 401
+        assert mock_confluence_client.get.call_count == 1
+
+    # --- pagination branch (next_url path) ---
+
+    def test_retries_on_504_with_next_url(self, confluence_loader, mock_confluence_client):
+        """A 504 on a paginated next_url call retries and resolves successfully."""
+        success_response = {"results": [{"id": "2"}], "_links": {}}
+        mock_confluence_client.get.side_effect = [
+            self._http_error(504),
+            success_response,
+        ]
+
+        with patch("tenacity.nap.time.sleep"):
+            results, next_url = confluence_loader._search_content_by_cql(
+                cql="type=page", next_url="/rest/api/content/search?cursor=abc"
+            )
+
+        assert results == [{"id": "2"}]
+        assert next_url == ""
+        assert mock_confluence_client.get.call_count == 2
+
+    def test_exhausted_retries_with_next_url_raises(self, confluence_loader, mock_confluence_client):
+        """Continuous 504 on a next_url call exhausts retries and raises HTTPError."""
+        mock_confluence_client.get.side_effect = self._http_error(504)
+
+        with patch("tenacity.nap.time.sleep"):
+            with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+                confluence_loader._search_content_by_cql(
+                    cql="type=page", next_url="/rest/api/content/search?cursor=abc"
+                )
+
+        assert exc_info.value.response.status_code == 504
+        assert mock_confluence_client.get.call_count == STORAGE_CONFIG.indexing_max_retries
+
+    def test_non_retryable_error_with_next_url_fails_immediately(self, confluence_loader, mock_confluence_client):
+        """A 403 on a next_url call fails on the first attempt without retrying."""
+        mock_confluence_client.get.side_effect = self._http_error(403)
+
+        with patch("tenacity.nap.time.sleep") as mock_sleep:
+            with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+                confluence_loader._search_content_by_cql(
+                    cql="type=page", next_url="/rest/api/content/search?cursor=abc"
+                )
+
+        assert exc_info.value.response.status_code == 403
+        assert mock_confluence_client.get.call_count == 1
+        mock_sleep.assert_not_called()
+
+    # --- backoff / sleep behaviour ---
+
+    def test_backoff_sleep_invoked_on_retry(self, confluence_loader, mock_confluence_client):
+        """Tenacity sleeps exactly once between the failed attempt and the retry."""
+        mock_confluence_client.get.side_effect = [
+            self._http_error(502),
+            {"results": [], "_links": {}},
+        ]
+
+        with patch("tenacity.nap.time.sleep") as mock_sleep:
+            confluence_loader._search_content_by_cql(cql="type=page")
+
+        mock_sleep.assert_called_once()
+
+    def test_no_sleep_on_non_retryable_error(self, confluence_loader, mock_confluence_client):
+        """No backoff sleep occurs when the error is non-retryable."""
+        mock_confluence_client.get.side_effect = self._http_error(401)
+
+        with patch("tenacity.nap.time.sleep") as mock_sleep:
+            with pytest.raises(requests.exceptions.HTTPError):
+                confluence_loader._search_content_by_cql(cql="type=page")
+
+        mock_sleep.assert_not_called()
+
+    def test_no_sleep_on_happy_path(self, confluence_loader, mock_confluence_client):
+        """A successful first call incurs no retry overhead (call_count == 1, no sleep)."""
+        mock_confluence_client.get.return_value = {"results": [{"id": "1"}], "_links": {}}
+
+        with patch("tenacity.nap.time.sleep") as mock_sleep:
+            results, _ = confluence_loader._search_content_by_cql(cql="type=page")
+
+        assert mock_confluence_client.get.call_count == 1
+        assert results == [{"id": "1"}]
+        mock_sleep.assert_not_called()
+
+    # --- logging ---
+
+    def test_warning_logged_before_retry(self, confluence_loader, mock_confluence_client):
+        """A WARNING is emitted by before_sleep_log; message names the retried function."""
+        import logging
+        from codemie.datasource.loader.confluence_loader import logger as confluence_logger
+
+        mock_confluence_client.get.side_effect = [
+            self._http_error(503),
+            {"results": [], "_links": {}},
+        ]
+
+        with patch.object(confluence_logger, "log") as mock_log, patch("tenacity.nap.time.sleep"):
+            confluence_loader._search_content_by_cql(cql="type=page")
+
+        warning_calls = [c for c in mock_log.call_args_list if c.args[0] == logging.WARNING]
+        assert warning_calls, "Expected at least one WARNING log before retry"
+        msg = warning_calls[0].args[1]
+        assert "Retrying" in msg
+        assert "_search_content_by_cql" in msg
+
+    def test_final_error_logged_on_exhaustion(self, confluence_loader, mock_confluence_client):
+        """ERROR logged on exhaustion includes HTTP status, function name, and attempt count (AC5)."""
+        from codemie.datasource.loader.confluence_loader import logger as confluence_logger
+
+        mock_confluence_client.get.side_effect = self._http_error(504)
+
+        with patch.object(confluence_logger, "error") as mock_error, patch("tenacity.nap.time.sleep"):
+            with pytest.raises(requests.exceptions.HTTPError):
+                confluence_loader._search_content_by_cql(cql="type=page")
+
+        assert mock_error.call_count == 1
+        call_repr = str(mock_error.call_args)
+        assert "504" in call_repr
+        assert "_search_content_by_cql" in call_repr
+        assert str(STORAGE_CONFIG.indexing_max_retries) in call_repr
+
+    def test_retry_predicate_transient_and_non_transient(self):
+        """_is_transient_http_error returns True for gateway errors and False for auth/not-found/non-HTTP."""
+        from codemie.datasource.loader.confluence_loader import _is_transient_http_error
+
+        def http_error(status_code: int) -> requests.exceptions.HTTPError:
+            resp = MagicMock()
+            resp.status_code = status_code
+            return requests.exceptions.HTTPError(response=resp)
+
+        assert _is_transient_http_error(http_error(502))
+        assert _is_transient_http_error(http_error(503))
+        assert _is_transient_http_error(http_error(504))
+        assert not _is_transient_http_error(http_error(401))
+        assert not _is_transient_http_error(http_error(403))
+        assert not _is_transient_http_error(http_error(404))
+        assert not _is_transient_http_error(ValueError("not http"))
+
+    def test_retry_count_wired_to_storage_config(self):
+        """The @retry decorator's stop_after_attempt is wired to STORAGE_CONFIG.indexing_max_retries."""
+        stop = ConfluenceDatasourceLoader._search_content_by_cql.retry.stop
+        assert stop.max_attempt_number == STORAGE_CONFIG.indexing_max_retries
+
+    def test_transient_codes_wired_to_confluence_config(self):
+        """_TRANSIENT_HTTP_STATUS_CODES contains expected transient codes and rejects non-transient ones."""
+        from codemie.datasource.loader.confluence_loader import _TRANSIENT_HTTP_STATUS_CODES
+
+        assert {502, 503, 504}.issubset(_TRANSIENT_HTTP_STATUS_CODES)
+        assert not {401, 403, 404}.intersection(_TRANSIENT_HTTP_STATUS_CODES)
+
+
+class TestLazyLoadRetryIntegration:
+    """Integration tests: retry fires through the full lazy_load → _search_content_by_cql → HTTP chain."""
+
+    @staticmethod
+    def _http_error(status_code: int) -> requests.exceptions.HTTPError:
+        response = MagicMock()
+        response.status_code = status_code
+        return requests.exceptions.HTTPError(response=response)
+
+    @staticmethod
+    def _make_page(page_id: str) -> dict:
+        return {
+            "id": page_id,
+            "title": f"Page {page_id}",
+            "body": {"view": {"value": f"<p>Content of page {page_id}</p>"}},
+            "version": {"when": "2024-01-01"},
+            "_links": {"webui": f"/pages/{page_id}"},
+            "status": "current",
+        }
+
+    @pytest.fixture
+    def loader(self, mock_confluence_client):
+        from langchain_community.document_loaders.confluence import ContentFormat
+
+        with patch("langchain_community.document_loaders.ConfluenceLoader.__init__", return_value=None):
+            loader = ConfluenceDatasourceLoader(
+                url="https://confluence.example.com",
+                username="test_user",
+                api_key="test_api_key",
+            )
+        loader.confluence = mock_confluence_client
+        loader.base_url = "https://confluence.example.com"
+        loader.cql = "type=page AND space=TEST"
+        loader.number_of_retries = 3
+        loader.min_retry_seconds = 1
+        loader.max_retry_seconds = 5
+        loader.content_format = ContentFormat.VIEW
+        loader.max_pages = 1000
+        loader.limit = 3
+        loader.include_archived_content = False
+        loader.include_restricted_content = True
+        loader.include_attachments = False
+        loader.include_comments = False
+        loader.include_labels = False
+        loader.ocr_languages = None
+        loader.keep_markdown_format = False
+        loader.keep_newlines = False
+        return loader
+
+    def test_recovers_from_504_on_first_page(self, loader, mock_confluence_client):
+        """A transient 504 on the first HTTP call retries and lazy_load yields all pages."""
+        mock_confluence_client.get.side_effect = [
+            self._http_error(504),
+            {"results": [self._make_page("1"), self._make_page("2")], "_links": {}},
+        ]
+
+        with patch("tenacity.nap.time.sleep"):
+            result = list(loader.lazy_load())
+
+        assert [d.metadata["title"] for d in result] == ["Page 1", "Page 2"]
+        assert mock_confluence_client.get.call_count == 2
+
+    def test_exhausted_retries_mid_pagination_raises(self, loader, mock_confluence_client):
+        """Page 1 succeeds; page 2 always 504 — HTTPError raised after retries exhausted."""
+        mock_confluence_client.get.side_effect = [
+            {
+                "results": [self._make_page("1")],
+                "_links": {"next": "/rest/api/content/search?cursor=abc"},
+            },
+        ] + [self._http_error(504)] * STORAGE_CONFIG.indexing_max_retries
+
+        with patch("tenacity.nap.time.sleep"):
+            with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+                list(loader.lazy_load())
+
+        assert exc_info.value.response.status_code == 504
+        assert mock_confluence_client.get.call_count == 1 + STORAGE_CONFIG.indexing_max_retries
+
+    def test_non_retryable_mid_pagination_fails_immediately(self, loader, mock_confluence_client):
+        """Page 1 succeeds; page 2 returns 403 — fails on first attempt, no retry."""
+        mock_confluence_client.get.side_effect = [
+            {
+                "results": [self._make_page("1")],
+                "_links": {"next": "/rest/api/content/search?cursor=abc"},
+            },
+            self._http_error(403),
+        ]
+
+        with patch("tenacity.nap.time.sleep") as mock_sleep:
+            with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+                list(loader.lazy_load())
+
+        assert exc_info.value.response.status_code == 403
+        assert mock_confluence_client.get.call_count == 2  # 1 page-1 success + 1 immediate 403
+        mock_sleep.assert_not_called()

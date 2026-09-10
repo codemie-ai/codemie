@@ -16,7 +16,7 @@ import os
 from typing import List, Dict
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from codemie.configs import config, logger
 
@@ -70,10 +70,13 @@ class JSONConfig(BaseModel):
 
 
 class ConfluenceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     loader_max_pages: int
     loader_pages_per_request: int
     loader_batch_size: int
     loader_timeout: int
+    retry_transient_status_codes: List[int] = Field(default_factory=lambda: [502, 503, 504])
 
 
 class FileConfig(BaseModel):
@@ -146,11 +149,14 @@ class LoadersConfig(BaseModel):
 
 
 class StorageConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     embeddings_max_docs_count: int
     indexing_bulk_max_chunk_bytes: int
     indexing_max_retries: int
     indexing_error_retry_wait_min_seconds: int
     indexing_error_retry_wait_max_seconds: int
+    indexing_error_retry_wait_multiplier: int = 2
     indexing_threads_count: int
     processed_documents_threshold: int  # Max amount of processed documents to store in db
     stale_indexing_threshold_seconds: int

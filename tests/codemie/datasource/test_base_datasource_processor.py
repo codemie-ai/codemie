@@ -750,3 +750,25 @@ def test_schedule_is_persisted_before_fetching_starts(processor):
 
     assert order.index("schedule") < order.index("start_fetching")
     assert order.index("schedule") < order.index("process")
+
+
+def test_retry_multiplier_wired_to_storage_config():
+    """_process_document's wait_exponential multiplier is wired to STORAGE_CONFIG.indexing_error_retry_wait_multiplier."""
+    from codemie.datasource.datasources_config import STORAGE_CONFIG
+
+    wait = BaseDatasourceProcessor._process_document.retry.wait
+    # .multiplier is specific to tenacity's wait_exponential — this will break if the wait strategy changes
+    assert wait.multiplier == STORAGE_CONFIG.indexing_error_retry_wait_multiplier
+
+
+def test_base_retry_uses_exception_type_not_status_predicate():
+    """_process_document retries on any Exception type, not a status-code predicate.
+
+    This verifies architectural separation: the base processor's broad exception retry
+    is independent of the Confluence loader's transient-HTTP-only filter.
+    Changing CONFLUENCE_CONFIG.retry_transient_status_codes must not affect this.
+    """
+    from tenacity import retry_if_exception_type
+
+    retry_pred = BaseDatasourceProcessor._process_document.retry.retry
+    assert isinstance(retry_pred, retry_if_exception_type)
