@@ -218,9 +218,10 @@ class TestCreateLiteLLMChatModel:
                                         call_kwargs = mock_model_cls.call_args.kwargs
                                         assert call_kwargs.get("model_kwargs", {}).get("user") is None
 
-    def test_sets_user_injection_when_no_personal_credentials(self):
-        """Member-tracking path must still inject model_kwargs['user'] = project runtime user."""
+    def test_sets_customer_header_without_user_when_no_personal_credentials(self):
+        """Member tracking must use the customer header without setting the provider JSON user."""
         from codemie.configs.config import config
+        from codemie.enterprise.litellm.constants import LITELLM_CUSTOMER_ID_HEADER
         from codemie.rest_api.models.settings import LiteLLMContext
 
         # No personal key (credentials=None) but project context present so member-tracking runs
@@ -235,6 +236,10 @@ class TestCreateLiteLLMChatModel:
         mock_model_details.features.max_tokens = True
         mock_model_details.features.top_p = True
         mock_model_details.api_version = None
+        provider_member_ref = (
+            "codemie:project:a-project-name-that-makes-the-id-too-long:category:platform:user:"
+            "12345678-1234-1234-1234-123456789012"
+        )
 
         with patch.object(config, "LITE_LLM_URL", "http://test:4000"):
             with patch.object(config, "LITE_LLM_APP_KEY", "test-key"):
@@ -245,7 +250,13 @@ class TestCreateLiteLLMChatModel:
                                 with patch.object(config, "LITE_LLM_PROJECTS_TO_TAGS_LIST", ""):
                                     with patch(
                                         "codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime",
-                                        return_value=("member-user-123", {}, None, None, True),
+                                        return_value=(
+                                            None,
+                                            {LITELLM_CUSTOMER_ID_HEADER: provider_member_ref},
+                                            None,
+                                            None,
+                                            True,
+                                        ),
                                     ):
                                         with patch(
                                             "codemie.enterprise.litellm.llm_factory.LiteLLMChatOpenAI"
@@ -260,7 +271,11 @@ class TestCreateLiteLLMChatModel:
                                             )
 
                                             call_kwargs = mock_model_cls.call_args.kwargs
-                                            assert call_kwargs.get("model_kwargs", {}).get("user") == "member-user-123"
+                                            assert len(provider_member_ref) > 64
+                                            assert call_kwargs.get("model_kwargs", {}).get("user") is None
+                                            assert call_kwargs["default_headers"][LITELLM_CUSTOMER_ID_HEADER] == (
+                                                provider_member_ref
+                                            )
 
 
 class TestGetLiteLLMChatModel:
@@ -342,6 +357,55 @@ class TestCreateLiteLLMEmbeddingModel:
                                         mock_check_budget.assert_called_once_with(
                                             user_email="test@example.com", user_id=None, budget_id="default"
                                         )
+
+    def test_project_member_uses_customer_header_without_user(self):
+        """Embedding project attribution must not set the provider JSON user."""
+        from codemie.configs.config import config
+        from codemie.enterprise.litellm.constants import LITELLM_CUSTOMER_ID_HEADER
+        from codemie.rest_api.models.settings import LiteLLMContext
+
+        litellm_context = LiteLLMContext(credentials=None, current_project="test-project")
+        mock_model_details = MagicMock()
+        mock_model_details.base_name = "text-embedding-ada-002"
+        mock_model_details.configuration = None
+        provider_member_ref = (
+            "codemie:project:a-project-name-that-makes-the-id-too-long:category:platform:user:"
+            "12345678-1234-1234-1234-123456789012"
+        )
+
+        with (
+            patch.object(config, "LITE_LLM_URL", "http://test:4000"),
+            patch.object(config, "LITE_LLM_APP_KEY", "test-key"),
+            patch.object(config, "OPENAI_API_TYPE", "azure"),
+            patch.object(config, "OPENAI_API_VERSION", "2025-04-01-preview"),
+            patch.object(config, "LITE_LLM_TAGS_HEADER_VALUE", "default"),
+            patch.object(config, "LITE_LLM_PROJECTS_TO_TAGS_LIST", ""),
+            patch(
+                "codemie.enterprise.litellm.llm_factory._resolve_direct_project_budget_runtime",
+                return_value=(
+                    None,
+                    {LITELLM_CUSTOMER_ID_HEADER: provider_member_ref},
+                    None,
+                    None,
+                    True,
+                ),
+            ),
+            patch("codemie.enterprise.litellm.llm_factory.LiteLLMAzureOpenAIEmbeddings") as mock_model_cls,
+        ):
+            from codemie.enterprise.litellm.llm_factory import create_litellm_embedding_model
+
+            create_litellm_embedding_model(
+                embedding_model="text-embedding-ada-002",
+                llm_model_details=mock_model_details,
+                litellm_context=litellm_context,
+                user_email="test@example.com",
+                user_id="12345678-1234-1234-1234-123456789012",
+            )
+
+        call_kwargs = mock_model_cls.call_args.kwargs
+        assert len(provider_member_ref) > 64
+        assert call_kwargs.get("model_kwargs", {}).get("user") is None
+        assert call_kwargs["default_headers"][LITELLM_CUSTOMER_ID_HEADER] == provider_member_ref
 
 
 class TestResolveDirectProjectBudgetRuntime:
@@ -441,8 +505,11 @@ class TestResolveDirectProjectBudgetRuntime:
 
         resolved = MagicMock()
         provider_result = MagicMock()
-        provider_result.body_overrides = {"user": "runtime-user"}
-        provider_result.headers = {"x-budget-runtime": "true"}
+        provider_result.body_overrides = {}
+        provider_result.headers = {
+            "x-budget-runtime": "true",
+            "x-litellm-customer-id": "runtime-user",
+        }
         provider_result.api_key = "runtime-api-key"
         provider_result.base_url = "https://runtime.example"
 
@@ -488,8 +555,8 @@ class TestResolveDirectProjectBudgetRuntime:
 
         assert execution_order == ["sync", "resolve", "dispatch"]
         assert result == (
-            "runtime-user",
-            {"x-budget-runtime": "true"},
+            None,
+            {"x-budget-runtime": "true", "x-litellm-customer-id": "runtime-user"},
             "runtime-api-key",
             "https://runtime.example",
             True,
@@ -610,8 +677,11 @@ class TestResolveDirectProjectBudgetRuntime:
 
         resolved = MagicMock()
         provider_result = MagicMock()
-        provider_result.body_overrides = {"user": "premium-runtime-user"}
-        provider_result.headers = {"x-budget-runtime": "true"}
+        provider_result.body_overrides = {}
+        provider_result.headers = {
+            "x-budget-runtime": "true",
+            "x-litellm-customer-id": "premium-runtime-user",
+        }
         provider_result.api_key = "runtime-api-key"
         provider_result.base_url = "https://runtime.example"
 
@@ -639,8 +709,8 @@ class TestResolveDirectProjectBudgetRuntime:
                         )
 
         assert result == (
-            "premium-runtime-user",
-            {"x-budget-runtime": "true"},
+            None,
+            {"x-budget-runtime": "true", "x-litellm-customer-id": "premium-runtime-user"},
             "runtime-api-key",
             "https://runtime.example",
             True,

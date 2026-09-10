@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from codemie.configs import logger
 
+from .constants import LITELLM_CUSTOMER_ID_HEADER
 from .project_member_runtime_sync import ensure_project_member_runtime_ready_sync
 from .runtime_budget_selection import RuntimeBudgetMode, select_runtime_budget_mode
 
@@ -556,7 +557,7 @@ def _configure_direct_runtime_overrides(
             f"headers_applied={bool(project_runtime_headers)} "
             f"provider_header_names={sorted(project_runtime_headers.keys())!r} "
             f"body_user_present={project_runtime_user is not None} "
-            f"litellm_customer_key={project_runtime_user!r}"
+            f"litellm_customer_key={project_runtime_headers.get(LITELLM_CUSTOMER_ID_HEADER)!r}"
         )
         return
 
@@ -846,7 +847,7 @@ def _resolve_direct_project_budget_runtime(
         project_member_tracking_enabled=True,
         resolved_project_budget=True,
     )
-    runtime_user = provider_result.body_overrides.get("user")
+    runtime_customer_id = provider_result.headers.get(LITELLM_CUSTOMER_ID_HEADER)
     logger.info(
         f"budget_event=runtime_mode_selected component=litellm_llm_factory "
         f"user_id={user_id!r} username={user_email!r} project_name={project_name!r} "
@@ -856,14 +857,14 @@ def _resolve_direct_project_budget_runtime(
         f"api_key_fingerprint={_anonymized_key_fingerprint(provider_result.api_key)!r} "
         f"headers_applied={bool(provider_result.headers)} "
         f"provider_header_names={sorted(provider_result.headers.keys())!r} "
-        f"litellm_customer_key={runtime_user!r}"
+        f"litellm_customer_key={runtime_customer_id!r}"
     )
     if selection.mode == RuntimeBudgetMode.PROJECT_BUDGET_WITH_MEMBER_TRACKING:
-        if not isinstance(runtime_user, str) or not runtime_user:
+        if not isinstance(runtime_customer_id, str) or not runtime_customer_id:
             raise RuntimeError(
-                f"Project member runtime selected but provider returned no runtime user for {project_name!r}"
+                f"Project member runtime selected but provider returned no customer header for {project_name!r}"
             )
-        return runtime_user, provider_result.headers, provider_result.api_key, provider_result.base_url, True
+        return None, provider_result.headers, provider_result.api_key, provider_result.base_url, True
 
     return None, provider_result.headers, provider_result.api_key, provider_result.base_url, True
 

@@ -25,12 +25,39 @@ from codemie.enterprise.litellm.budget_provider_adapter import (
     _normalize_budget_reset_at,
     _normalize_personal_budget_identifier,
 )
-from codemie.service.budget.budget_enums import BudgetCategory, SyncStatus
+from codemie.enterprise.litellm.constants import LITELLM_CUSTOMER_ID_HEADER
+from codemie.service.budget.budget_enums import BudgetCategory, BudgetScope, SyncStatus
 from codemie.service.budget.provider import (
     BudgetProviderState,
     BudgetResetReconciliationTarget,
+    BudgetRuntimeContext,
     MemberBudgetSpendSnapshot,
 )
+
+
+def test_project_runtime_uses_customer_header_without_body_user():
+    provider_member_ref = (
+        "codemie:project:a-project-name-that-makes-the-id-too-long:category:cli:user:"
+        "12345678-1234-1234-1234-123456789012"
+    )
+    context = BudgetRuntimeContext(
+        scope=BudgetScope.PROJECT,
+        project_name="a-project-name-that-makes-the-id-too-long",
+        budget_category=BudgetCategory.CLI,
+        budget_id="project-cli-budget",
+        user_id="12345678-1234-1234-1234-123456789012",
+        user_email="user@example.com",
+        model="gpt-5.6-luna-2026-07-09",
+        member_provider_metadata={"provider_member_ref": provider_member_ref},
+    )
+
+    settings_module = SimpleNamespace(SettingsService=MagicMock())
+    with patch.dict("sys.modules", {"codemie.service.settings.settings": settings_module}):
+        result = LiteLLMBudgetEnforcementProvider(service=MagicMock()).resolve_runtime_sync(context=context)
+
+    assert len(provider_member_ref) > 64
+    assert result.headers == {LITELLM_CUSTOMER_ID_HEADER: provider_member_ref}
+    assert result.body_overrides == {}
 
 
 @pytest.mark.asyncio

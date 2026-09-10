@@ -334,10 +334,13 @@ class TestResolveProjectBudgetRuntime:
         session_context = self._build_session_context(session)
         resolved_context = MagicMock()
         provider_result = MagicMock()
-        provider_result.headers = {"x-budget-header": "budget-value"}
+        provider_result.headers = {
+            "x-budget-header": "budget-value",
+            LITELLM_CUSTOMER_ID_HEADER: "runtime-subject",
+        }
         provider_result.api_key = "provider-api-key"
         provider_result.base_url = "https://runtime.provider"
-        provider_result.body_overrides = {"user": "runtime-subject"}
+        provider_result.body_overrides = {}
 
         call_order: list[str] = []
 
@@ -383,7 +386,10 @@ class TestResolveProjectBudgetRuntime:
 
         assert result is provider_result
         assert call_order == ["ensure", "resolve", "dispatch"]
-        assert request_info["budget_provider_headers"] == {"x-budget-header": "budget-value"}
+        assert request_info["budget_provider_headers"] == {
+            "x-budget-header": "budget-value",
+            LITELLM_CUSTOMER_ID_HEADER: "runtime-subject",
+        }
         assert request_info["budget_provider_api_key"] == "provider-api-key"
         assert request_info["budget_provider_base_url"] == "https://runtime.provider"
 
@@ -952,6 +958,54 @@ class TestInjectUserIntoRequestBody:
 
 class TestCreateBodyStreamWithOptionalInjection:
     """Test _create_body_stream_with_optional_injection function."""
+
+    @pytest.mark.asyncio
+    async def test_project_member_uses_customer_header_without_injecting_json_user(self):
+        """Project attribution must not expose the long customer id as the provider JSON user."""
+        from codemie.enterprise.litellm.proxy_router import _create_body_stream_with_optional_injection
+
+        user = MagicMock()
+        user.id = "12345678-1234-1234-1234-123456789012"
+        user.username = "user@example.com"
+        request_info = {
+            LLM_MODEL: "gpt-5.6-luna-2026-07-09",
+            PROJECT: "a-project-name-that-makes-the-id-too-long",
+        }
+        body_bytes = b'{"model":"gpt-5.6-luna-2026-07-09","input":"hello"}'
+        provider_member_ref = (
+            "codemie:project:a-project-name-that-makes-the-id-too-long:category:cli:user:"
+            "12345678-1234-1234-1234-123456789012"
+        )
+        provider_result = MagicMock()
+        provider_result.headers = {LITELLM_CUSTOMER_ID_HEADER: provider_member_ref}
+        provider_result.body_overrides = {}
+
+        with (
+            patch(
+                "codemie.enterprise.litellm.proxy_router._resolve_budget_availability",
+                new=AsyncMock(return_value=MagicMock()),
+            ),
+            patch(
+                "codemie.enterprise.litellm.proxy_router._resolve_tracking_identity",
+                return_value=(BudgetCategory.CLI, user.username, "cli-budget", request_info[LLM_MODEL]),
+            ),
+            patch(
+                "codemie.enterprise.litellm.proxy_router._resolve_project_budget_runtime",
+                new=AsyncMock(return_value=provider_result),
+            ),
+            patch("codemie.enterprise.litellm.proxy_router._inject_user_into_request_body_from_bytes") as mock_inject,
+        ):
+            body_stream = await _create_body_stream_with_optional_injection(
+                body_bytes=body_bytes,
+                user=user,
+                request_info=request_info,
+            )
+            forwarded_body = b"".join([chunk async for chunk in body_stream])
+
+        assert len(provider_member_ref) > 64
+        assert forwarded_body == body_bytes
+        assert request_info["litellm_customer_id"] == provider_member_ref
+        mock_inject.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_premium_model_uses_premium_budget_id(self):
