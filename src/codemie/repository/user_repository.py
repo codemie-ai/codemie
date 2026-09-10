@@ -230,15 +230,14 @@ class UserRepository:
         latest_spend_dates_subq = (
             select(
                 func.lower(ProjectSpendTracking.project_name).label("user_identifier"),
-                ProjectSpendTracking.budget_id.label("budget_id"),
                 ProjectSpendTracking.budget_category.label("budget_category"),
                 func.max(ProjectSpendTracking.spend_date).label("max_spend_date"),
+                func.max(ProjectSpendTracking.created_at).label("max_created_at"),
             )
             .where(func.lower(ProjectSpendTracking.project_name).in_(user_emails))
             .where(ProjectSpendTracking.spend_subject_type == "budget")
             .group_by(
                 func.lower(ProjectSpendTracking.project_name),
-                ProjectSpendTracking.budget_id,
                 ProjectSpendTracking.budget_category,
             )
             .subquery()
@@ -247,7 +246,6 @@ class UserRepository:
         latest_budget_spend_subq = (
             select(
                 func.lower(ProjectSpendTracking.project_name).label("user_identifier"),
-                ProjectSpendTracking.budget_id.label("budget_id"),
                 ProjectSpendTracking.budget_category.label("budget_category"),
                 ProjectSpendTracking.budget_period_spend.label("current_spending"),
             )
@@ -255,9 +253,9 @@ class UserRepository:
                 latest_spend_dates_subq,
                 and_(
                     func.lower(ProjectSpendTracking.project_name) == latest_spend_dates_subq.c.user_identifier,
-                    ProjectSpendTracking.budget_id == latest_spend_dates_subq.c.budget_id,
                     ProjectSpendTracking.budget_category == latest_spend_dates_subq.c.budget_category,
                     ProjectSpendTracking.spend_date == latest_spend_dates_subq.c.max_spend_date,
+                    ProjectSpendTracking.created_at == latest_spend_dates_subq.c.max_created_at,
                 ),
             )
             .where(ProjectSpendTracking.spend_subject_type == "budget")
@@ -272,7 +270,6 @@ class UserRepository:
                 latest_budget_spend_subq,
                 and_(
                     latest_budget_spend_subq.c.user_identifier == func.lower(UserDB.email),
-                    latest_budget_spend_subq.c.budget_id == UserBudgetAssignment.budget_id,
                     latest_budget_spend_subq.c.budget_category == UserBudgetAssignment.category,
                 ),
             )

@@ -1,0 +1,38 @@
+[
+  {
+    "location": "src/codemie/service/budget/budget_service.py:1111-1168",
+    "trigger_condition": "carry-over insert_budget_entries raises; session holds uncommitted upsert+activity writes",
+    "guard_snippet": "use db savepoint: async with session.begin_nested(): ... instead of bare session.rollback()",
+    "potential_consequence": "budget assignment (upsert + activity event) silently rolled back; caller sees success"
+  },
+  {
+    "location": "src/codemie/service/budget/budget_service.py:1108-1168",
+    "trigger_condition": "multi-category assignments; carry-over fails for category A; loop continues to B",
+    "guard_snippet": "wrap each category's assignment+carry-over in a nested savepoint so rollback is scoped per category",
+    "potential_consequence": "category A assignment permanently lost; remaining categories proceed; inconsistent state undetected"
+  },
+  {
+    "location": "src/codemie/service/budget/budget_service.py:1223 (bulk call site)",
+    "trigger_condition": "_persist_bulk_budget_assignments writes uncommitted; any carry-over insert fails → rollback",
+    "guard_snippet": "run _record_bulk_assignment_carry_over inside a nested savepoint scope after bulk assignments commit",
+    "potential_consequence": "entire bulk assignment batch for all users rolled back silently on first carry-over failure"
+  },
+  {
+    "location": "src/codemie/service/budget/budget_service.py:1162 and bulk equivalent ~1350",
+    "trigger_condition": "prev_row is None or quantized spend is zero; marker list is empty",
+    "guard_snippet": "if marker: await project_spend_tracking_repository.insert_budget_entries(session, marker)",
+    "potential_consequence": "unnecessary DB round-trip issued for every no-op category or user"
+  },
+  {
+    "location": "src/codemie/service/budget/budget_service.py:1145-1147 and bulk equivalent ~1333",
+    "trigger_condition": "prev_row.budget_period_spend is NULL in DB; Decimal constructor raises TypeError",
+    "guard_snippet": "add guard: prev_row.budget_period_spend is not None before calling _quantize_spend",
+    "potential_consequence": "TypeError caught by except handler triggers session.rollback(), silently losing the assignment"
+  },
+  {
+    "location": "src/codemie/service/budget/budget_service.py:1305-1356 (_record_bulk_assignment_carry_over)",
+    "trigger_condition": "N users with M assigned categories; each (user, budget_id) pair issues a separate DB query",
+    "guard_snippet": "collect all non-None budget_ids for a user, call get_latest_by_budget_ids(session, all_ids, username) once per user",
+    "potential_consequence": "O(N*M) queries instead of O(N); degrades under large bulk assignment batches"
+  }
+]

@@ -1,0 +1,74 @@
+{
+  "decision": "request-changes",
+  "confidence": "low",
+  "rationale": "Genuine no-spec (no story/spec ArtifactRef); edge-case lens ran, 1/4 lenses applicable. Two critical defects: session.rollback() in carry-over except blocks silently discards assignment writes on both single-user and bulk paths — directly violates the fail-open contract from the task. Three major defects: NULL budget_period_spend TypeError (uncertain reachability; DB column nullable=True per migration), unconditional empty-marker insert_budget_entries call, and O(N×M) queries per (user, category) in bulk carry-over. 0 deferred, 0 dismissed.",
+  "risk_flags": ["breaking-change"],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards review omitted; compact profile, no project guide configured." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards review omitted; compact profile, no project guide configured." },
+    { "kind": "security", "status": "na", "notes": "Standards review omitted; compact profile, no project guide configured." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/budget_service.py",
+      "line": 1111,
+      "title": "Carry-over except rolls back assignment writes",
+      "problem": "When insert_budget_entries raises inside the carry-over try block (lines 1134–1168), session.rollback() at line 1164 undoes upsert_user_category_assignment (line 1111) and activity_event_repository.async_insert (line 1115) written earlier in the same iteration. The except handler swallows the exception so the caller sees success. In a multi-category loop, the rollback discards category A's writes while the loop continues to category B, leaving assignments inconsistent.",
+      "impact": "Budget assignment for the affected user-category pair is permanently lost with no error surfaced; the user appears assigned but has no effective budget record. Multi-category assignments may be partially applied, producing inconsistent state undetectable without manual DB inspection.",
+      "recommendation": "Replace session.rollback() at line 1164 with a nested savepoint scoped to the carry-over block: async with session.begin_nested(): await project_spend_tracking_repository.insert_budget_entries(session, marker). This rolls back only the carry-over write on failure, leaving the preceding assignment upsert and activity event intact."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/budget_service.py",
+      "line": 1145,
+      "title": "NULL budget_period_spend triggers TypeError then rollback",
+      "problem": "LiteLLMSpendCollectorService._quantize_spend(prev_row.budget_period_spend) is called without a None guard at lines 1145–1147 (single-user) and 1329–1331 (bulk). The DB column budget_period_spend is declared nullable=True in migration a7c9e1d2f4b6 (nullable=False only in the Python model, which does not retroactively constrain existing rows). _quantize_spend(None) raises TypeError, caught by the except handler which calls session.rollback(). Reachability is uncertain: new ORM inserts carry the default Decimal('0'), but legacy rows or direct SQL writes can hold NULL.",
+      "impact": "When triggered, identical consequence to CR-001: the assignment upsert and activity event are silently rolled back. Capped at major due to uncertain reachability.",
+      "recommendation": "Add a None guard before the _quantize_spend call in both paths: if prev_row is not None and prev_row.budget_period_spend is not None and LiteLLMSpendCollectorService._quantize_spend(prev_row.budget_period_spend) > Decimal('0'):"
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/budget_service.py",
+      "line": 1162,
+      "title": "Empty marker list passed unconditionally to insert_budget_entries",
+      "problem": "insert_budget_entries(session, marker) is called at line 1162 (single-user) and line 1346 (bulk) regardless of whether marker is empty. When prev_row is None or quantized spend is zero, marker stays [], but the DB call still executes.",
+      "impact": "Spurious DB round-trip on every no-op carry-over (user with no spend history or zero spend). If insert_budget_entries raises on an empty list, the error propagates to the session.rollback() handler in CR-001/CR-004.",
+      "recommendation": "Guard both call sites: if marker: await project_spend_tracking_repository.insert_budget_entries(session, marker). Apply at line 1162 (single-user) and line 1346 (bulk)."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/budget_service.py",
+      "line": 1226,
+      "title": "Bulk carry-over rollback erases all users' assignment writes",
+      "problem": "_persist_bulk_budget_assignments (line 1225) writes upserts and activity events for all N users to the session without committing. _record_bulk_assignment_carry_over (line 1226) then iterates (user, category) pairs; if any insert_budget_entries call fails, session.rollback() at line 1348 rolls back all writes from line 1225 for all users. The exception is swallowed and bulk_set_user_budgets returns successfully.",
+      "impact": "The entire bulk assignment batch is silently lost on the first carry-over failure for any single (user, category) pair. All N users remain on their previous budgets with no indication of failure.",
+      "recommendation": "Apply the same nested-savepoint fix as CR-001 inside _record_bulk_assignment_carry_over at line 1348: scope session.rollback to only the per-category carry-over write using async with session.begin_nested():. Alternatively, flush and commit _persist_bulk_budget_assignments before calling _record_bulk_assignment_carry_over so that a carry-over rollback cannot undo the committed assignments."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/budget/budget_service.py",
+      "line": 1324,
+      "title": "O(N×M) DB queries per user per category in bulk carry-over",
+      "problem": "_record_bulk_assignment_carry_over (line 1308) calls get_latest_by_budget_ids(session, [budget_id], db_user.username) once per (user, category) pair inside a nested loop, issuing N×M separate DB queries for N users and M assignment categories.",
+      "impact": "Significant latency growth under large bulk assignment batches. A 100-user bulk with 3 categories issues 300 sequential queries instead of 100; the effect compounds on high-latency database connections.",
+      "recommendation": "In the outer (user) loop, collect all non-None budget_ids across categories into a list, then call get_latest_by_budget_ids(session, all_budget_ids_for_user, db_user.username) once per user and index results by budget_id. This reduces the query count from O(N×M) to O(N)."
+    }
+  ]
+}
