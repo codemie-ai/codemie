@@ -259,3 +259,18 @@ def test_serve_workflow_stream_zero_thoughts_final_chunk_generated_empty(generat
     last_chunk = json.loads(lines[0])
     assert last_chunk["last"] is True
     assert last_chunk["generated"] == ""
+
+
+def test_run_consumer_in_thread_pool_logs_unhandled_exception():
+    """An exception raised inside the submitted consumer function is logged via the
+    Future's done-callback instead of vanishing silently (EPMCDME-14850)."""
+    from codemie.rest_api.routers.utils import run_consumer_in_thread_pool
+
+    def _boom():
+        raise ValueError("consumer failed")
+
+    with patch("codemie.rest_api.routers.utils.logger") as mock_logger:
+        future = run_consumer_in_thread_pool(_boom)
+        future.exception(timeout=5)  # block until the thread finishes
+
+    mock_logger.error.assert_called_once()

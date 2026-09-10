@@ -66,8 +66,16 @@ bmad/*
 /run_claude.sh
 .ai-run/runs
 /.codegraph/
-docs/superpowers/tasks/**/*.diff
-docs/superpowers/tasks/**/.state.json
-docs/superpowers/tasks/**/gate-plan.json
+# SDLC Factory: keep only the key planning artifacts, ignore working files
+docs/superpowers/tasks/**
+!docs/superpowers/tasks/*/
+!docs/superpowers/tasks/*/technical-analysis.md
+!docs/superpowers/tasks/*/complexity-assessment.json
+!docs/superpowers/tasks/*/actual-complexity.json
+!docs/superpowers/tasks/*/spec.md
+!docs/superpowers/tasks/*/plan.md
+!docs/superpowers/tasks/*/code-review-final.json
+!docs/superpowers/tasks/*/code-review-check.json
+!docs/superpowers/tasks/*/events.jsonl
 credentials.json
 .code-graph/

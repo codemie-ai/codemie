@@ -213,19 +213,10 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         existing_thought = storage.get(str(run_id))
         update_kwargs: dict[str, Any] = {"in_progress": False}
 
-        # Avoid duplicating streamed text: if tokens were already emitted, the
-        # thought message already contains them. Only use the final AIMessage
-        # content when the thought is still empty (e.g. no tokens streamed).
-        existing_message = getattr(existing_thought, "message", "") or ""
-        if existing_message:
-            update_kwargs["message"] = ""
-        elif isinstance(response, AIMessage):
-            content = response.content
-            if isinstance(content, list):
-                content = " ".join(str(block) for block in content)
-            update_kwargs["message"] = self._escape_message(str(content))
-        else:
-            update_kwargs["message"] = ""
+        # A redundant finalize is a second on_llm_end for a run_id that was already
+        # finalized (in_progress False) by a previous call. Without new routing
+        # metadata to add, there is nothing left to send.
+        already_finalized = existing_thought is not None and existing_thought.in_progress is False
 
         # Only stamp the routed model when it was actually present in the
         # response. This avoids briefly showing a stale base name when the
@@ -233,6 +224,18 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         # that carries the model metadata.
         model_resolved = response_tier is not None
         routing_fields, metadata = self._build_routing_update_fields(response_tier, response_cost, existing_thought)
+        # Derived from the raw inputs, not from `metadata`: _build_routing_update_fields
+        # seeds `metadata` from existing_thought's already-stored metadata, so using the
+        # metadata dict here would treat carried-over prior routing info as "new".
+        has_new_routing = response_tier is not None or response_cost is not None
+
+        if already_finalized and not has_new_routing:
+            storage.delete_thought(run_id)
+            return
+
+        existing_message = getattr(existing_thought, "message", "") or ""
+        update_kwargs["message"] = self._resolve_llm_end_message(already_finalized, existing_message, response)
+
         if routing_fields:
             update_kwargs["routing"] = RoutingInfo(**routing_fields)
         if metadata:
@@ -243,9 +246,30 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
             return
         self._send_thought(thought)
         # Keep the thought around if we haven't resolved the model yet; a
-        # later LangGraph update with metadata will finish it.
-        if model_resolved or isinstance(response, str):
+        # later LangGraph update with metadata will finish it. A redundant
+        # call always leaves the thought removed afterward.
+        if model_resolved or isinstance(response, str) or already_finalized:
             storage.delete_thought(run_id)
+
+    def _resolve_llm_end_message(
+        self,
+        already_finalized: bool,
+        existing_message: str,
+        response: LLMResult | AIMessage | str,
+    ) -> str:
+        """Resolve the thought text for on_llm_end.
+
+        Avoids duplicating streamed text: if tokens were already emitted, or this is a
+        redundant finalize carrying only new routing metadata, there is no new text to add.
+        """
+        if already_finalized or existing_message:
+            return ""
+        if not isinstance(response, AIMessage):
+            return ""
+        content = response.content
+        if isinstance(content, list):
+            content = " ".join(str(block) for block in content)
+        return self._escape_message(str(content))
 
     def on_llm_error(self, error: BaseException, *, run_id: UUID, author: str | None = None, **kwargs: Any) -> None:
         self._debug(f"Error in LLM response generation: {error}")

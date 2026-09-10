@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Fix a regression in commit 91a7f49fa that broke workflow thought persistence via a callback retention bug and a duplicate event-adapter finalize causing ThoughtConsumer IntegrityError.",
+  "generated": "2026-09-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 19,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Three distinct components — AgentStreamingCallback (callback layer), LangGraphEventAdapter (agent/event-adapter layer), ThoughtConsumer (persistence layer) — across 3 architectural areas, with the base model's existing merge-based update() as a candidate shared utility the fix may need to adopt." },
+    { "dimension": "requirements_clarity", "reason": "Root cause is precisely diagnosed down to file:line by prior investigation, but the technical analysis explicitly defers the fix-layer decision to spec stage ('candidate fix layers... to be evaluated/decided'), and the existing test test_error_handling_during_save asserts the opposite of what a consumer-side fix would need — an unresolved design decision with rework risk." },
+    { "dimension": "technical_risk", "reason": "No exact precedent for the combined fix; the retain bug is on the default/common code path (SWITCHYARD_ENABLED=False) affecting essentially all non-Switchyard workflow executions; the consumer thread pool silently swallows exceptions (unobserved Future); and the supervisor vs non-supervisor event-adapter paths are asymmetric, risking an incomplete fix." },
+    { "dimension": "file_change_estimate", "reason": "~3 source files (agent_streaming_callback.py, langgraph_event_adapter.py, thought_consumer.py) plus 3 companion test files needing updates/new cases, spanning 3+ directories (agents/callbacks, agents, service/workflow_execution and their mirrored test dirs); a new integration-level regression test may also be needed since no end-to-end ThoughtQueue→ThoughtConsumer→get_root() test exists." }
+  ],
+  "red_flags_applied": [
+    "Requirements Clarity bumped from M to L: the technical analysis frames the fix-layer choice as explicitly undecided ('to be evaluated/decided at spec stage'), matching the TBD/deferred-decision red flag."
+  ],
+  "split_recommendation": null
+}

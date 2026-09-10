@@ -35,6 +35,7 @@ class ThoughtConsumer:
         self.workflow_execution_id = workflow_execution_id
         self.message_queue = message_queue
         self.cache = {}
+        self._persisted_ids: set[str] = set()
         # Capture the active OTel context from the calling thread so that consume(),
         # which runs in a bare threading.Thread with no inherited contextvars, can
         # attach it and make DB write spans children of the workflow.execute span.
@@ -54,29 +55,43 @@ class ThoughtConsumer:
                     break
 
                 if isinstance(value, ThoughtQueueItem):
-                    if not value.context.execution_state_id:
-                        logger.debug("ThoughtConsumer: Skipping thought, no execution state id found in context")
-                        continue
+                    self._process_item(value)
 
-                    thought_data: Thought = value.data
-                    context: ThoughtContext = value.context
+    def _process_item(self, value: ThoughtQueueItem) -> None:
+        if not value.context.execution_state_id:
+            logger.debug("ThoughtConsumer: Skipping thought, no execution state id found in context")
+            return
 
-                    self._update_thought_cache(thought_data)
+        thought_data: Thought = value.data
+        context: ThoughtContext = value.context
 
-                    if thought_data.in_progress:
-                        continue
+        self._update_thought_cache(thought_data)
 
-                    thought = WorkflowExecutionStateThought(
-                        id=thought_data.id,
-                        execution_state_id=context.execution_state_id,
-                        parent_id=thought_data.parent_id,
-                        content=self.cache[thought_data.id],
-                        author_name=thought_data.author_name,
-                        author_type=thought_data.author_type,
-                        input_text=thought_data.input_text,
-                    )
-                    thought.save(refresh=True)
-                    self.cache.pop(thought_data.id)
+        if thought_data.in_progress:
+            return
+
+        if thought_data.id in self._persisted_ids:
+            logger.info(
+                "ThoughtConsumer: skipping duplicate finalize for already-persisted thought "
+                "id=%s execution_state_id=%s",
+                thought_data.id,
+                context.execution_state_id,
+            )
+            self.cache.pop(thought_data.id, None)
+            return
+
+        thought = WorkflowExecutionStateThought(
+            id=thought_data.id,
+            execution_state_id=context.execution_state_id,
+            parent_id=thought_data.parent_id,
+            content=self.cache[thought_data.id],
+            author_name=thought_data.author_name,
+            author_type=thought_data.author_type,
+            input_text=thought_data.input_text,
+        )
+        thought.save(refresh=True)
+        self._persisted_ids.add(thought_data.id)
+        self.cache.pop(thought_data.id)
 
     def _update_thought_cache(self, thought_data: Thought):
         """Update the cache with the thought data"""

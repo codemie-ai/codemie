@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING, NoReturn
 
 from fastapi import Request, status
@@ -103,8 +103,15 @@ def run_assistant_in_thread_pool(func, *args):
     return future
 
 
+def _log_consumer_exception(future: Future) -> None:
+    exc = future.exception()
+    if exc is not None:
+        logger.error("ThoughtConsumer: consumer thread failed with an unhandled exception", exc_info=exc)
+
+
 def run_consumer_in_thread_pool(func, *args):
     future = consumer_executor.submit(func, *args)
+    future.add_done_callback(_log_consumer_exception)
     return future
 
 

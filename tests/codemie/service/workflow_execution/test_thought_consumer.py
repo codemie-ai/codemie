@@ -535,6 +535,75 @@ class TestThoughtConsumerIntegration:
         mock_thought_instance.save.side_effect = Exception("Database error")
         mock_thought_model.return_value = mock_thought_instance
 
-        # Act & Assert - should raise the exception since there's no try/except in the code
+        # Act & Assert - this covers a genuinely unexpected save() failure for a
+        # non-duplicate id; the duplicate-id guard added for EPMCDME-14850 is
+        # narrower than a blanket try/except and does not change this path.
         with pytest.raises(Exception, match="Database error"):
             consumer.consume()
+
+    @patch('codemie.service.workflow_execution.thought_consumer.WorkflowExecutionStateThought')
+    def test_consume_skips_duplicate_finalize_for_already_persisted_id(
+        self, mock_thought_model, mock_message_queue, sample_thought_context
+    ):
+        """A second in_progress=False item for an id already persisted is skipped, logged,
+        and does not stop the consumer loop; later items still process."""
+        thought = Thought(
+            id="thought-dup",
+            message="hello",
+            in_progress=False,
+            author_type=ThoughtAuthorType.Agent,
+            author_name="Agent",
+        )
+        later_thought = Thought(
+            id="thought-later",
+            message="world",
+            in_progress=False,
+            author_type=ThoughtAuthorType.Agent,
+            author_name="Agent",
+        )
+        for item_data in [thought, thought, later_thought]:
+            mock_message_queue.queue.put(ThoughtQueueItem(data=item_data, context=sample_thought_context))
+        mock_message_queue.queue.put(StopIteration)
+
+        mock_thought_instance = MagicMock()
+        mock_thought_model.return_value = mock_thought_instance
+        consumer = ThoughtConsumer(workflow_execution_id="exec-123", message_queue=mock_message_queue)
+
+        consumer.consume()
+
+        assert mock_thought_instance.save.call_count == 2  # thought-dup once, thought-later once
+
+    @patch('codemie.service.workflow_execution.thought_consumer.WorkflowExecutionStateThought')
+    def test_real_thought_queue_duplicate_finalize_persists_once_and_loop_survives(self, mock_thought_model):
+        """A real ThoughtQueue delivering the same finalized thought id twice (simulating
+        the double on_llm_end scenario) results in exactly one persisted row, and the
+        consumer loop keeps processing subsequent items."""
+        from codemie.chains.base import StreamedGenerationResult
+        from codemie.core.thought_queue import ThoughtQueue
+
+        real_queue = ThoughtQueue()
+        consumer = ThoughtConsumer(workflow_execution_id="exec-dup", message_queue=real_queue)
+
+        def _send(thought_id: str, message: str, in_progress: bool) -> None:
+            thought = Thought(
+                id=thought_id,
+                message=message,
+                in_progress=in_progress,
+                author_type=ThoughtAuthorType.Agent,
+                author_name="Agent",
+            )
+            result = StreamedGenerationResult(thought=thought, context={"execution_state_id": "exec-state-dup"})
+            real_queue.send(result.model_dump_json())
+
+        _send("dup-1", "hello", True)
+        _send("dup-1", "hello", False)  # first finalize
+        _send("dup-1", "hello", False)  # redundant finalize — must not raise
+        _send("dup-2", "later", False)  # loop must still process this
+        real_queue.close()
+
+        mock_thought_instance = MagicMock()
+        mock_thought_model.return_value = mock_thought_instance
+
+        consumer.consume()  # must return normally, not raise
+
+        assert mock_thought_instance.save.call_count == 2

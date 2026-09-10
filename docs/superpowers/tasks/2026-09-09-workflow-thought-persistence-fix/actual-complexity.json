@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "generated": "2026-09-10T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 17,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 6,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches three components — AgentStreamingCallback (agent/callback layer), rest_api/routers/utils.py thread-pool infrastructure (API layer), and ThoughtConsumer (service/persistence layer) — with the utils.py change adding a new dedicated consumer_executor alongside the existing shared executor, producer_executor, assistant_executor pool, i.e. it extends a core shared utility used across the app." },
+    { "dimension": "technical_risk", "reason": "Fix addresses duplicate-persistence and redundant-finalize races in the real-time thought-streaming path (on_llm_end redundant-finalize handling, ThoughtConsumer _persisted_ids dedup guard, separate consumer thread pool to prevent cross-role starvation). The exact ThreadPoolExecutor pattern is copy-adapted from existing pools, but the concurrency/streaming correctness reasoning has no single prior precedent to copy verbatim." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 6 files changed (193 insertions, 11 deletions); all 6 are modifications to pre-existing source and test files (agent_streaming_callback.py, rest_api/routers/utils.py, thought_consumer.py and their three matching test files) — no new files added, mapping to the M band (4-6 files)." },
+    { "dimension": "affected_layers", "reason": "Three layers touched: Agent/callback layer (AgentStreamingCallback), API/infrastructure layer (routers/utils.py thread pools and streaming response), and Service/DB-Persistence layer (ThoughtConsumer.consume -> WorkflowExecutionStateThought.save). No schema migration and no new external/cross-system integration." }
+  ],
+  "red_flags_applied": [
+    "Real-time/streaming requirements (on_llm_new_token token streaming, ThoughtQueue/ThreadedGenerator live consumption) bumped Technical Risk from M to L",
+    "Touches core shared utilities (new consumer_executor added to the shared ThreadPoolExecutor set in rest_api/routers/utils.py) bumped Component Scope from M to L"
+  ],
+  "split_recommendation": null
+}

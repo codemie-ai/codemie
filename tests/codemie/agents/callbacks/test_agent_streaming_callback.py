@@ -444,3 +444,64 @@ def test_on_llm_end_stamps_routed_model_and_cost_on_thought_and_metadata() -> No
     assert thought["metadata"]["classifier_cost_usd"] == 0.0012
     # Final AIMessage content must not be appended to already-streamed tokens.
     assert thought["message"] == "Hello "
+
+
+def test_on_llm_end_redundant_finalize_does_not_resend_or_leak_thought() -> None:
+    """A second on_llm_end call for an already-finalized run_id, with no new routing
+    metadata, is a no-op send and clears the thought from storage instead of
+    duplicating it (regression for EPMCDME-14850)."""
+    from langchain_core.messages import AIMessage
+
+    generator = ThreadedGenerator()
+    callback = AgentStreamingCallback(gen=generator)
+    run_id = uuid.uuid4()
+
+    callback.on_llm_start(None, [], run_id=run_id)
+    callback.on_llm_new_token("Hi ", run_id=run_id)
+    callback.on_llm_end(AIMessage(content="Hi there"), run_id=run_id)
+    callback.on_llm_end(AIMessage(content="Hi there"), run_id=run_id)
+
+    assert len(generator.thoughts) == 1
+    assert callback._get_storage(None).get(str(run_id)) is None
+
+
+def test_on_llm_end_redundant_finalize_after_partial_routing_does_not_resend() -> None:
+    """A second on_llm_end call for an already-finalized run_id, where an earlier
+    call already stamped partial routing metadata (e.g. classifier cost only, no
+    tier), must still be treated as redundant when this call carries no new
+    routing info of its own — the carried-over metadata from the first call must
+    not be mistaken for new routing data (regression for EPMCDME-14850).
+
+    Uses a send-count spy rather than the merge-by-id ``generator.thoughts`` list,
+    since that list collapses repeated sends for the same thought id and would not
+    reveal a duplicate resend."""
+    import dataclasses
+
+    from langchain_core.messages import AIMessage
+
+    from codemie.enterprise.switchyard.routing_meta import SwitchyardMeta, _SWITCHYARD_RESPONSE_META_KEY
+
+    generator = ThreadedGenerator()
+    callback = AgentStreamingCallback(gen=generator)
+    run_id = uuid.uuid4()
+
+    # First call: only classifier cost resolved, no routed model tier yet, so the
+    # thought is finalized (in_progress False) but kept in storage (model_resolved
+    # is False) awaiting a later call that might carry the tier.
+    partial_meta = SwitchyardMeta(routed_model=None, classifier_cost_usd=0.0007)
+    callback.on_llm_start(None, [], run_id=run_id)
+    callback.on_llm_new_token("Hi ", run_id=run_id)
+    callback.on_llm_end(
+        AIMessage(
+            content="Hi there",
+            response_metadata={_SWITCHYARD_RESPONSE_META_KEY: dataclasses.asdict(partial_meta)},
+        ),
+        run_id=run_id,
+    )
+
+    with patch.object(callback, "_send_thought") as send_spy:
+        # Second call: genuinely redundant, no routing info of its own at all.
+        callback.on_llm_end(AIMessage(content="Hi there"), run_id=run_id)
+
+    send_spy.assert_not_called()
+    assert callback._get_storage(None).get(str(run_id)) is None
