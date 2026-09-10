@@ -27,9 +27,11 @@ from starlette.datastructures import Headers
 
 from codemie.core.constants import (
     CODEMIE_CLI,
+    CHROME_EXTENSION,
     LLM_MODEL,
     PROJECT,
     HEADER_CODEMIE_CLI,
+    HEADER_CODEMIE_CHROME_EXTENSION,
     HEADER_CODEMIE_CLI_BRANCH,
     HEADER_CODEMIE_CLI_MODEL,
     HEADER_CODEMIE_CLI_REPOSITORY,
@@ -255,6 +257,22 @@ class TestExtractRequestInfo:
 
         assert result[CODEMIE_CLI] == ""
 
+    def test_extract_chrome_extension_header_present(self):
+        """X-CodeMie-Chrome-Extension header is extracted into the CHROME_EXTENSION key."""
+        headers = Headers({HEADER_CODEMIE_CHROME_EXTENSION: "0.3.2"})
+
+        result = _extract_request_info(headers)
+
+        assert result[CHROME_EXTENSION] == "0.3.2"
+
+    def test_extract_chrome_extension_header_absent(self):
+        """Missing X-CodeMie-Chrome-Extension header produces empty string (not extension)."""
+        headers = Headers({})
+
+        result = _extract_request_info(headers)
+
+        assert result[CHROME_EXTENSION] == ""
+
     def test_project_taken_from_header_when_present(self):
         """Project header takes precedence over user fallback."""
         headers = Headers({HEADER_CODEMIE_CLI_PROJECT: "my-project"})
@@ -425,6 +443,38 @@ class TestResolveProjectBudgetRuntime:
 
 class TestResolveNonPremiumTrackingIdentity:
     """Tests for non-premium proxy budget category selection."""
+
+    def test_chrome_extension_request_uses_platform_even_when_cli_budget_configured(self):
+        """Extension traffic (client_type=codemie-chrome-extension, no CLI marker) must
+        bill to PLATFORM, never CLI — this is the core guarantee behind EPMCDME-14260."""
+        user = MagicMock()
+        user.username = "user@example.com"
+        request_info = {
+            LLM_MODEL: "gpt-4.1-mini",
+            "client_type": "codemie-chrome-extension",
+            CODEMIE_CLI: "",
+            CHROME_EXTENSION: "0.3.2",
+        }
+        category_budget_ids = {
+            BudgetCategory.PLATFORM.value: "platform-budget",
+            BudgetCategory.CLI.value: "cli-budget",
+        }
+
+        with patch(
+            "codemie.enterprise.litellm.proxy_router.get_category_budget_id",
+            return_value="cli-budget",
+        ):
+            category, username, budget_id, llm_model = _resolve_non_premium_tracking_identity(
+                user=user,
+                request_info=request_info,
+                category_budget_ids=category_budget_ids,
+                llm_model="gpt-4.1-mini",
+            )
+
+        assert category == BudgetCategory.PLATFORM
+        assert username == "user@example.com"
+        assert budget_id == "platform-budget"
+        assert llm_model == "gpt-4.1-mini"
 
     def test_web_request_uses_platform_even_when_cli_budget_configured(self):
         user = MagicMock()
@@ -635,6 +685,7 @@ class TestPrepareProxyHeaders:
                 "host": "example.com",
                 "transfer-encoding": "chunked",
                 HEADER_CODEMIE_CLIENT: "cli",
+                HEADER_CODEMIE_CHROME_EXTENSION: "0.3.2",
                 "authorization": "Bearer old-token",
             }
         )
@@ -656,6 +707,7 @@ class TestPrepareProxyHeaders:
         assert "host" not in result
         assert "transfer-encoding" not in result
         assert HEADER_CODEMIE_CLIENT.lower() not in result
+        assert HEADER_CODEMIE_CHROME_EXTENSION.lower() not in result
 
         # Should fall back to app key when proxy key is not set
         assert result["Authorization"] == "Bearer test-app-key"

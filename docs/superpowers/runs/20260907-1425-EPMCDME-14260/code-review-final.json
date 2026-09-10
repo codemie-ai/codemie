@@ -1,0 +1,37 @@
+{
+  "decision": "request-changes",
+  "rationale": "No story/spec artifact exists for this change (no-spec mode) — confidence forced low per policy. Blind and edge-case lenses ran; acceptance was correctly skipped (no-spec, not a failure). One real, unambiguous defect (CR-001): the new X-CodeMie-Chrome-Extension header is missing from proxy_router.py's PROXY_HOP_BY_HOP_HEADERS set, so unlike every other CodeMie-specific identity header (X-CodeMie-CLI, X-CodeMie-Client, etc.) it is forwarded verbatim to the upstream LLM provider. 6 other raised concerns were triaged to defer/dismiss and are not emitted: (1) chrome_extension_request has no cross-check against cli_request/client_type — deliberately rejected; this exact ticket's review history explicitly removed prior mismatch-detection/cross-validation logic between these two independent headers as unwanted complexity, and the real client (extension) never sends both headers together, so re-adding a cross-check would contradict the established design decision (dismiss); (2) header-recognition logic implemented in 3 files (metrics.py, proxy_router.py, llm_proxy_monitoring_service.py) — mirrors the pre-existing pattern for X-CodeMie-CLI/X-CodeMie-Client, not a new anti-pattern (defer); (3) no length cap on the chrome_extension string — false positive, both write paths already truncate generically (BaseMonitoringService.send_count_metric applies limit_string to every string attribute; llm_proxy_monitoring_service's _sanitize_request_info caps at 500 chars) (dismiss); (4) test for the PLATFORM-billing outcome doesn't assert_called_with on the mocked get_category_budget_id — mirrors the exact pattern of the pre-existing sibling test test_web_request_uses_platform_even_when_cli_budget_configured in the same file (defer); (5) metric-name-prefix logic in metrics.py doesn't consult the new header — the documented contract ties that behavior to X-CodeMie-Client specifically, which the real client always sends alongside the new header, so this is unreachable in practice (dismiss); (6) large narrative doc with cross-repo deployment claims / historical data left uncorrected — explicitly stated non-goals in the doc, not code defects (dismiss).",
+  "confidence": "low",
+  "risk_flags": ["public-api"],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "Both commits on this branch use the EPMCDME-14260: <Description> format per .ai-run/guides/standards/git-workflow.md."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "poetry run ruff check and ruff format --check both pass clean on every touched file (verified this session)."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No secrets, no auth bypass introduced. Identity headers remain client-reported metadata, not an auth boundary, consistent with .ai-run/guides/development/security-patterns.md. CR-001 is an outbound data-hygiene gap (leaking a version string upstream), not a security vulnerability — tagged public-api, not security."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/enterprise/litellm/proxy_router.py",
+      "line": 134,
+      "title": "New header missing from hop-by-hop strip set",
+      "problem": "PROXY_HOP_BY_HOP_HEADERS explicitly lists every CodeMie-specific identity header (HEADER_CODEMIE_CLI, HEADER_CODEMIE_CLIENT, HEADER_CODEMIE_SESSION_ID, etc., lines 130-138) so they are stripped before the request is forwarded to the upstream LLM provider. HEADER_CODEMIE_CHROME_EXTENSION, added by this diff, was not added to that set.",
+      "impact": "Every Chrome-extension request forwards X-CodeMie-Chrome-Extension verbatim to the upstream LLM provider (Azure/OpenAI/etc.), unlike every sibling CodeMie header. Low-sensitivity (a version string), but it is an internal implementation detail leaking to a third party and breaks the established convention this same file enforces for every other custom header.",
+      "recommendation": "Add HEADER_CODEMIE_CHROME_EXTENSION.lower() to PROXY_HOP_BY_HOP_HEADERS alongside the other HEADER_CODEMIE_* entries."
+    }
+  ]
+}

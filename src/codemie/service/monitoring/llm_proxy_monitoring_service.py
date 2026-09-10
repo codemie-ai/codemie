@@ -26,6 +26,7 @@ from codemie.core.constants import (
     CLIENT_TYPE,
     USER_AGENT,
     CODEMIE_CLI,
+    CHROME_EXTENSION,
     BRANCH,
     REPOSITORY,
     PROJECT,
@@ -453,7 +454,13 @@ class LLMProxyMonitoringService(BaseMonitoringService):
         Track token usage and cost for LiteLLM proxy requests.
 
         Emits ``codemie_litellm_proxy_usage`` with a ``cli_request`` attribute
-        derived from the X-CodeMie-CLI header to differentiate CLI from non-CLI traffic.
+        derived from the X-CodeMie-CLI header to differentiate CLI from non-CLI traffic,
+        and a ``chrome_extension_request`` attribute derived from the
+        X-CodeMie-Chrome-Extension header so extension traffic (billed as PLATFORM,
+        same as any other non-CLI client) is still distinguishable in analytics. The
+        raw ``chrome_extension`` header value also passes through via
+        ``_sanitize_request_info`` alongside the derived boolean, same as ``codemie_cli``
+        does for ``cli_request``.
 
         Args:
             user: Authenticated user
@@ -489,6 +496,7 @@ class LLMProxyMonitoringService(BaseMonitoringService):
                 MetricsAttributes.PROJECT: get_current_project(fallback=request_info.get(PROJECT)),
                 MetricsAttributes.CODEMIE_CLIENT: request_info.get(CLIENT_TYPE, ""),
                 "cli_request": cli_request,
+                "chrome_extension_request": bool(request_info.get(CHROME_EXTENSION)),
             }
 
             sanitized_info = cls._sanitize_request_info(request_info)

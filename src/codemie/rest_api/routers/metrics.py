@@ -16,7 +16,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, status
 from codemie.configs import logger
-from codemie.core.constants import HEADER_CODEMIE_CLI, HEADER_CODEMIE_CLIENT
+from codemie.core.constants import HEADER_CODEMIE_CHROME_EXTENSION, HEADER_CODEMIE_CLI, HEADER_CODEMIE_CLIENT
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.metrics import MetricsRequest, MetricsResponse
 from codemie.rest_api.security.authentication import authenticate
@@ -38,6 +38,7 @@ def send_metric(
     user: User = Depends(authenticate),
     x_codemie_cli: Annotated[str | None, Header(alias=HEADER_CODEMIE_CLI)] = None,
     x_codemie_client: Annotated[str | None, Header(alias=HEADER_CODEMIE_CLIENT)] = None,
+    x_codemie_chrome_extension: Annotated[str | None, Header(alias=HEADER_CODEMIE_CHROME_EXTENSION)] = None,
 ):
     """
     Send a custom count metric using the base monitoring service.
@@ -53,6 +54,7 @@ def send_metric(
     Headers:
     - X-CodeMie-CLI: CodeMie CLI version information
     - X-CodeMie-Client: CodeMie client type (when present, disables metric name transformation)
+    - X-CodeMie-Chrome-Extension: Chrome extension version information
     """
     try:
         # Handle metric name - add frontend_ prefix only if X-CodeMie-Client header is not present
@@ -79,6 +81,8 @@ def send_metric(
             attributes[MetricsAttributes.CODEMIE_CLI] = x_codemie_cli
         if x_codemie_client:
             attributes[MetricsAttributes.CODEMIE_CLIENT] = x_codemie_client
+        if x_codemie_chrome_extension:
+            attributes[MetricsAttributes.CHROME_EXTENSION] = x_codemie_chrome_extension
 
         BaseMonitoringService.send_count_metric(name=metric_name, attributes=attributes)
 

@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codemie.core.constants import CODEMIE_CLI
+from codemie.core.constants import CODEMIE_CLI, CHROME_EXTENSION
 from codemie.service.monitoring.llm_proxy_monitoring_service import (
     LLM_PROXY_USAGE,
     LLMProxyMonitoringService,
@@ -56,6 +56,19 @@ def non_cli_request_info():
         "llm_model": "gpt-4",
         "user_agent": "Mozilla/5.0",
         CODEMIE_CLI: "",
+    }
+
+
+@pytest.fixture
+def chrome_extension_request_info():
+    return {
+        "client_type": "codemie-chrome-extension",
+        "session_id": "session-345",
+        "request_id": "request-678",
+        "llm_model": "gpt-4",
+        "user_agent": "Mozilla/5.0",
+        CODEMIE_CLI: "",
+        CHROME_EXTENSION: "0.3.2",
     }
 
 
@@ -192,6 +205,48 @@ class TestTrackUsage:
 
         attributes = mock_send.call_args.kwargs["attributes"]
         assert attributes["cli_request"] is False
+
+    @patch.object(LLMProxyMonitoringService, "send_count_metric")
+    def test_chrome_extension_request_tags_attribute_and_is_not_cli(
+        self, mock_send, mock_user, chrome_extension_request_info
+    ):
+        """Extension traffic is tagged chrome_extension=true, cli_request=false — billed as
+        PLATFORM (see TestResolveNonPremiumTrackingIdentity) but still distinguishable in ES."""
+        LLMProxyMonitoringService.track_usage(
+            user=mock_user,
+            endpoint="/v1/chat/completions",
+            request_info=chrome_extension_request_info,
+            llm_model="gpt-4",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=0,
+            money_spent=0.02,
+            cached_tokens_money_spent=0.0,
+            status_code=200,
+        )
+
+        attributes = mock_send.call_args.kwargs["attributes"]
+        assert attributes["chrome_extension_request"] is True
+        assert attributes[CHROME_EXTENSION] == "0.3.2"
+        assert attributes["cli_request"] is False
+
+    @patch.object(LLMProxyMonitoringService, "send_count_metric")
+    def test_non_extension_request_tags_attribute_false(self, mock_send, mock_user, non_cli_request_info):
+        LLMProxyMonitoringService.track_usage(
+            user=mock_user,
+            endpoint="/v1/chat/completions",
+            request_info=non_cli_request_info,
+            llm_model="gpt-4",
+            input_tokens=100,
+            output_tokens=50,
+            cached_tokens=0,
+            money_spent=0.02,
+            cached_tokens_money_spent=0.0,
+            status_code=200,
+        )
+
+        attributes = mock_send.call_args.kwargs["attributes"]
+        assert attributes["chrome_extension_request"] is False
 
     @patch.object(LLMProxyMonitoringService, "send_count_metric", side_effect=RuntimeError("ES down"))
     def test_swallows_exceptions(self, mock_send, mock_user, non_cli_request_info):

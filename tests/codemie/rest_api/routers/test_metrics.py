@@ -73,6 +73,39 @@ async def test_send_metric_success(mock_authenticate, mock_send_count_metric):
 @pytest.mark.anyio
 @patch.object(BaseMonitoringService, 'send_count_metric')
 @patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_send_metric_includes_chrome_extension_header(mock_authenticate, mock_send_count_metric):
+    # Arrange
+    mock_authenticate.return_value = User(id="user123", name="testuser", username="testuser@example.com")
+    mock_send_count_metric.return_value = None
+
+    # Act
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            "/v1/metrics",
+            headers={"X-CodeMie-Client": "codemie-chrome-extension", "X-CodeMie-Chrome-Extension": "0.3.2"},
+            json=sample_metrics_request,
+        )
+
+    # Assert
+    assert response.status_code == 200
+    expected_attributes = {
+        "test_attribute": "test_value",
+        "user_id": "user123",
+        "user_name": "testuser",
+        "user_email": "testuser@example.com",
+        "codemie_client": "codemie-chrome-extension",
+        "chrome_extension": "0.3.2",
+    }
+    mock_send_count_metric.assert_called_once_with(
+        name=sample_metrics_request["name"],
+        attributes=expected_attributes,
+    )
+
+
+@pytest.mark.anyio
+@patch.object(BaseMonitoringService, 'send_count_metric')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
 async def test_send_metric_minimal(mock_authenticate, mock_send_count_metric):
     # Arrange
     mock_authenticate.return_value = User(id="user123", name="testuser", username="testuser@example.com")
