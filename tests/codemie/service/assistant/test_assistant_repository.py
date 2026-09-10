@@ -769,3 +769,54 @@ def test_query_project_with_marketplace_sorts_by_clone_count_after_unique_users_
     unique_users_pos = order_by_str.index("unique_users_count")
     clone_count_pos = order_by_str.index("clone_count")
     assert unique_users_pos < clone_count_pos, "clone_count must sort after unique_users_count"
+
+
+class TestUpdatePrunesMsTeamsOnProjectMove:
+    """AssistantRepository.update must prune a moved assistant from ms_teams settings rows
+    outside its new project — unless it's a marketplace assistant (is_global=True), since
+    marketplace assistants are allowed in assistant_ids regardless of project."""
+
+    @patch("codemie.rest_api.models.settings.Settings.prune_ms_teams_assistant_id")
+    def test_prunes_on_project_move(self, mock_prune):
+        assistant = MagicMock()
+        assistant.id = "assistant-1"
+        assistant.project = "old-proj"
+        assistant.is_global = False
+
+        def _update_assistant(request, user):
+            assistant.project = "new-proj"
+
+        assistant.update_assistant.side_effect = _update_assistant
+        mock_prune.return_value = 1
+
+        AssistantRepository.update(assistant, MagicMock(), MagicMock())
+
+        mock_prune.assert_called_once_with("assistant-1", keep_project_name="new-proj")
+
+    @patch("codemie.rest_api.models.settings.Settings.prune_ms_teams_assistant_id")
+    def test_does_not_prune_marketplace_assistant_on_project_move(self, mock_prune):
+        assistant = MagicMock()
+        assistant.id = "assistant-1"
+        assistant.project = "old-proj"
+        assistant.is_global = True
+
+        def _update_assistant(request, user):
+            assistant.project = "new-proj"
+
+        assistant.update_assistant.side_effect = _update_assistant
+
+        AssistantRepository.update(assistant, MagicMock(), MagicMock())
+
+        mock_prune.assert_not_called()
+
+    @patch("codemie.rest_api.models.settings.Settings.prune_ms_teams_assistant_id")
+    def test_no_prune_when_project_unchanged(self, mock_prune):
+        assistant = MagicMock()
+        assistant.id = "assistant-1"
+        assistant.project = "proj1"
+        assistant.is_global = False
+        assistant.update_assistant.side_effect = lambda request, user: None
+
+        AssistantRepository.update(assistant, MagicMock(), MagicMock())
+
+        mock_prune.assert_not_called()

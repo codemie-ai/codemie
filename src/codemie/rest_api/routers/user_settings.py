@@ -16,6 +16,7 @@ import json
 from typing import List, Optional
 from fastapi import APIRouter, status, Request, Depends
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 
 from codemie.configs.customer_config import customer_config
 from codemie.core.ability import Ability, Action
@@ -60,6 +61,29 @@ SETTINGS_SCOPE_MARKETPLACE = "marketplace"
 PERSONAL_LITELLM_FEATURE = "personalLiteLLMIntegrations"
 PERSONAL_LITELLM_DISABLED_DETAILS = "Personal LiteLLM integrations are not enabled for this customer."
 PERSONAL_LITELLM_DISABLED_HELP = "Please contact your system administrator to enable personal LiteLLM integrations."
+
+
+def _map_integrity_error(request: SettingRequest) -> ExtendedHTTPException:
+    """Map a persistence-layer IntegrityError to an API error, scoped by credential_type.
+
+    The ms_teams singleton-per-user constraint is the only known cause of an
+    IntegrityError on this path today; every other credential type falls back to
+    the generic 422 handling used for unexpected persistence failures elsewhere in
+    this router.
+    """
+    if request.credential_type == CredentialTypes.MS_TEAMS:
+        return ExtendedHTTPException(
+            code=status.HTTP_409_CONFLICT,
+            message="ms_teams integration already exists",
+            details="A concurrent request already created an ms_teams integration for your account.",
+            help="Update or delete your existing ms_teams integration instead of creating a new one.",
+        )
+    return ExtendedHTTPException(
+        code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        message="Cannot save specified setting",
+        details="A concurrent or conflicting persistence error occurred while trying to save the setting.",
+        help=INVALID_SETTING_DATA_MSG,
+    )
 
 
 def _validate_litellm_user_setting_access(user: User) -> None:
@@ -153,7 +177,7 @@ def create_user_setting(request: SettingRequest, user: User = Depends(authentica
     elif request.credential_type == CredentialTypes.WEBHOOK:
         validate_webhook_request(request)
     elif request.credential_type == CredentialTypes.MS_TEAMS:
-        validate_ms_teams_request(request, SettingType.USER)
+        validate_ms_teams_request(request, SettingType.USER, user_id=user.id)
 
     if request.project_name:
         project_access_check(user, request.project_name)
@@ -161,6 +185,8 @@ def create_user_setting(request: SettingRequest, user: User = Depends(authentica
         SettingsService.create_setting(user_id=user.id, request=request, user=user)
 
         return BaseResponse(message="Specified credentials saved")
+    except IntegrityError as e:
+        raise _map_integrity_error(request) from e
     except Exception as e:
         raise ExtendedHTTPException(
             code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -196,7 +222,7 @@ def update_user_setting(request: SettingRequest, setting_id: str, user: User = D
     elif request.credential_type == CredentialTypes.WEBHOOK:
         validate_webhook_request(request)
     elif request.credential_type == CredentialTypes.MS_TEAMS:
-        validate_ms_teams_request(request, SettingType.USER)
+        validate_ms_teams_request(request, SettingType.USER, setting_id=setting_id, user_id=user.id)
 
     if request.project_name:
         project_access_check(user, request.project_name)
@@ -212,6 +238,8 @@ def update_user_setting(request: SettingRequest, setting_id: str, user: User = D
         SettingsService.update_settings(credential_id=setting_id, request=request, user_id=user.id)
     except ExtendedHTTPException:
         raise
+    except IntegrityError as e:
+        raise _map_integrity_error(request) from e
     except Exception as e:
         raise ExtendedHTTPException(
             code=status.HTTP_422_UNPROCESSABLE_ENTITY,

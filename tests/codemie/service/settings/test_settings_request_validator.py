@@ -14,6 +14,8 @@
 
 """Tests for validate_datasource_type_for_scheduler in settings_request_validator."""
 
+from types import SimpleNamespace
+
 import pytest
 from unittest.mock import MagicMock, Mock, patch
 
@@ -242,14 +244,121 @@ def test_rejects_when_teams_bot_feature_disabled(mock_customer_config):
     mock_customer_config.is_feature_enabled.assert_called_once_with("teamsBotIntegration")
 
 
-def test_rejects_user_scope():
-    # Arrange
+@patch("codemie.rest_api.models.settings.Settings.check_ms_teams_exist_for_user")
+@patch("codemie.service.assistant.assistant_service.AssistantService.belongs_to_project")
+def test_accepts_user_scope_with_project_name(mock_belongs_to_project, mock_singleton):
+    mock_belongs_to_project.return_value = True
+    mock_singleton.return_value = True
     request = _ms_teams_request([CredentialValues(key="assistant_ids", value=["a1"])])
 
-    # Act / Assert
+    validate_ms_teams_request(request, setting_type=SettingType.USER, user_id="user-1")
+
+    mock_belongs_to_project.assert_called_once_with("a1", "proj1")
+    mock_singleton.assert_called_once_with("user-1", setting_id=None)
+
+
+def test_rejects_user_scope_without_project_name():
+    """USER-scope ms_teams requires project_name identically to PROJECT-scope."""
+    request = _ms_teams_request([CredentialValues(key="assistant_ids", value=["a1"])], project_name=None)
+
     with pytest.raises(ExtendedHTTPException) as exc_info:
-        validate_ms_teams_request(request, setting_type=SettingType.USER)
+        validate_ms_teams_request(request, setting_type=SettingType.USER, user_id="user-1")
     assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+    assert "project_name" in exc_info.value.message
+
+
+@patch("codemie.service.assistant.assistant_service.AssistantService.belongs_to_project")
+def test_rejects_assistant_not_in_project_user_scope(mock_belongs_to_project):
+    mock_belongs_to_project.return_value = False
+    request = _ms_teams_request([CredentialValues(key="assistant_ids", value=["not-mine"])])
+
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        validate_ms_teams_request(request, setting_type=SettingType.USER, user_id="user-1")
+    assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+    assert "not-mine" in exc_info.value.details
+
+
+@patch("codemie.rest_api.models.settings.Settings.check_ms_teams_exist_for_user")
+@patch("codemie.service.assistant.assistant_service.AssistantService.is_marketplace_assistant")
+@patch("codemie.service.assistant.assistant_service.AssistantService.belongs_to_project")
+def test_accepts_marketplace_assistant_outside_project_user_scope(
+    mock_belongs_to_project, mock_is_marketplace, mock_singleton
+):
+    """Marketplace assistants (is_global=True) are allowed in assistant_ids regardless of
+    their own project, mirroring how sub-assistant validation already treats them."""
+    mock_belongs_to_project.return_value = False
+    mock_is_marketplace.return_value = True
+    mock_singleton.return_value = True
+    request = _ms_teams_request([CredentialValues(key="assistant_ids", value=["marketplace-a1"])])
+
+    validate_ms_teams_request(request, setting_type=SettingType.USER, user_id="user-1")
+
+    mock_is_marketplace.assert_called_once_with("marketplace-a1")
+
+
+@patch("codemie.rest_api.models.settings.Settings.check_ms_teams_exist_for_user")
+@patch("codemie.service.assistant.assistant_service.AssistantService.is_marketplace_assistant")
+@patch("codemie.service.assistant.assistant_service.AssistantService.belongs_to_project")
+def test_rejects_assistant_not_in_project_and_not_marketplace(
+    mock_belongs_to_project, mock_is_marketplace, mock_singleton
+):
+    mock_belongs_to_project.return_value = False
+    mock_is_marketplace.return_value = False
+    mock_singleton.return_value = True
+    request = _ms_teams_request([CredentialValues(key="assistant_ids", value=["not-mine"])])
+
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        validate_ms_teams_request(request, setting_type=SettingType.USER, user_id="user-1")
+    assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+    assert "not-mine" in exc_info.value.details
+
+
+@patch("codemie.rest_api.models.settings.Settings.check_ms_teams_exist_for_user")
+@patch("codemie.service.assistant.assistant_service.AssistantService.belongs_to_project")
+def test_rejects_duplicate_ms_teams_row_user_scope(mock_belongs_to_project, mock_singleton):
+    mock_belongs_to_project.return_value = True
+    mock_singleton.side_effect = ValueError("duplicate")
+    request = _ms_teams_request([CredentialValues(key="assistant_ids", value=["a1"])])
+
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        validate_ms_teams_request(request, setting_type=SettingType.USER, user_id="user-1")
+    assert exc_info.value.code == status.HTTP_409_CONFLICT
+
+
+@patch("codemie.rest_api.models.settings.Settings.find_by_id")
+def test_rejects_user_mismatch_on_update(mock_find_by_id):
+    mock_find_by_id.return_value = SimpleNamespace(user_id="other-user", project_name="proj1")
+    request = _ms_teams_request([CredentialValues(key="assistant_ids", value=["a1"])])
+
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        validate_ms_teams_request(request, setting_type=SettingType.USER, setting_id="setting-1", user_id="user-1")
+    assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+
+
+@patch("codemie.rest_api.models.settings.Settings.find_by_id")
+def test_rejects_project_mismatch_on_update_user_scope(mock_find_by_id):
+    """USER-scope update must reject a project_name that doesn't match the existing setting's."""
+    mock_find_by_id.return_value = SimpleNamespace(user_id="user-1", project_name="other-proj")
+    request = _ms_teams_request([CredentialValues(key="assistant_ids", value=["a1"])], project_name="proj1")
+
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        validate_ms_teams_request(request, setting_type=SettingType.USER, setting_id="setting-1", user_id="user-1")
+    assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+    assert "Project mismatch" in exc_info.value.message
+
+
+@patch("codemie.rest_api.models.settings.Settings.find_by_id")
+def test_rejects_missing_setting_on_user_scope_update_with_404(mock_find_by_id):
+    """A nonexistent USER-scope setting_id must raise a clean 404, not an unhandled KeyError."""
+    mock_find_by_id.return_value = None
+    request = _ms_teams_request([CredentialValues(key="assistant_ids", value=["a1"])])
+
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        validate_ms_teams_request(
+            request, setting_type=SettingType.USER, setting_id="missing-setting", user_id="user-1"
+        )
+    assert exc_info.value.code == status.HTTP_404_NOT_FOUND
+    assert "missing-setting" in exc_info.value.details
 
 
 def test_rejects_missing_project_name():

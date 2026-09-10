@@ -432,6 +432,35 @@ async def test_create_user_setting_database_error(mock_authenticate, mock_create
     assert "Cannot create specified setting" in exc_info.value.message
 
 
+@pytest.mark.anyio
+@patch('codemie.service.settings.settings.SettingsService.create_setting')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_create_user_setting_integrity_error_non_ms_teams_not_mislabeled(
+    mock_authenticate, mock_create_setting, mock_user
+):
+    """A GIT-credential IntegrityError must not be reported as an ms_teams conflict."""
+    from sqlalchemy.exc import IntegrityError
+
+    # Arrange
+    mock_authenticate.return_value = mock_user
+    mock_create_setting.side_effect = IntegrityError("stmt", {}, Exception("unique constraint"))
+
+    request_data = {
+        "alias": "duplicate_git_alias",
+        "credential_type": "Git",
+        "credential_values": [{"key": "token", "value": "ghp_test_token"}],
+    }
+
+    # Act & Assert
+    transport = ASGITransport(app=app)
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            await ac.post("/v1/settings/user", headers={"user-id": "user123"}, json=request_data)
+
+    assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert "ms_teams" not in exc_info.value.message.lower()
+
+
 # ----------------------------
 # Test: PUT /v1/settings/user/{setting_id} (update_user_setting)
 # ----------------------------
@@ -540,6 +569,41 @@ async def test_update_user_setting_database_error(
 
     assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
     assert "Cannot update specified setting" in exc_info.value.message
+
+
+@pytest.mark.anyio
+@patch('codemie.core.ability.Ability.can')
+@patch('codemie.service.settings.settings.SettingsService.update_settings')
+@patch('codemie.service.settings.settings.SettingsService.get_setting_ability')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_update_user_setting_integrity_error_non_ms_teams_not_mislabeled(
+    mock_authenticate, mock_get_setting_ability, mock_update_settings, mock_can, mock_user
+):
+    """A GIT-credential IntegrityError must not be reported as an ms_teams conflict."""
+    from sqlalchemy.exc import IntegrityError
+
+    # Arrange
+    mock_authenticate.return_value = mock_user
+    mock_ability = MagicMock()
+    mock_ability.user_id = "user123"
+    mock_get_setting_ability.return_value = mock_ability
+    mock_can.return_value = True
+    mock_update_settings.side_effect = IntegrityError("stmt", {}, Exception("unique constraint"))
+
+    request_data = {
+        "alias": "duplicate_git_alias",
+        "credential_type": "Git",
+        "credential_values": [{"key": "token", "value": "ghp_test_token"}],
+    }
+
+    # Act & Assert
+    transport = ASGITransport(app=app)
+    with pytest.raises(ExtendedHTTPException) as exc_info:
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            await ac.put("/v1/settings/user/setting123", headers={"user-id": "user123"}, json=request_data)
+
+    assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+    assert "ms_teams" not in exc_info.value.message.lower()
 
 
 # ----------------------------

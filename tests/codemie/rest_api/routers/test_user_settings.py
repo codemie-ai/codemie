@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -633,12 +634,45 @@ ZEPHYR_SQUAD_DEPRECATION_MESSAGE = "ZephyrSquad integration is deprecated"
     "codemie.configs.customer_config.CustomerConfig.is_feature_enabled",
     return_value=True,
 )
+@patch("codemie.rest_api.models.settings.Settings.check_ms_teams_exist_for_user", return_value=True)
+@patch("codemie.service.assistant.assistant_service.AssistantService.belongs_to_project", return_value=True)
 @patch('codemie.service.settings.settings.SettingsService.create_setting')
 @patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
-async def test_create_user_setting_rejects_ms_teams(mock_authenticate, mock_create_setting, mock_is_feature_enabled):
-    # ms_teams integrations are project-scope only and must be rejected at USER scope.
-    # is_feature_enabled is forced True here so this exercises the USER-scope rejection
-    # itself, decoupled from the shared customer-config.yaml teamsBotIntegration value.
+async def test_create_user_setting_accepts_ms_teams(
+    mock_authenticate, mock_create_setting, mock_belongs_to_project, mock_singleton, mock_is_feature_enabled
+):
+    mock_authenticate.return_value = User(id="user123", username="testuser", project_names=["test_project"])
+
+    request_data = {
+        "project_name": "test_project",
+        "alias": "ms-teams-alias",
+        "credential_type": "MSTeams",
+        "credential_values": [{"key": "assistant_ids", "value": ["assistant-1"]}],
+    }
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post("/v1/settings/user", headers={"user-id": "user123"}, json=request_data)
+
+    assert response.status_code == status.HTTP_200_OK
+    mock_create_setting.assert_called_once()
+
+
+@pytest.mark.anyio
+@patch(
+    "codemie.configs.customer_config.CustomerConfig.is_feature_enabled",
+    return_value=True,
+)
+@patch(
+    "codemie.rest_api.models.settings.Settings.check_ms_teams_exist_for_user",
+    side_effect=ValueError("duplicate"),
+)
+@patch("codemie.service.assistant.assistant_service.AssistantService.belongs_to_project", return_value=True)
+@patch('codemie.service.settings.settings.SettingsService.create_setting')
+@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+async def test_create_user_setting_ms_teams_singleton_conflict(
+    mock_authenticate, mock_create_setting, mock_belongs_to_project, mock_singleton, mock_is_feature_enabled
+):
     mock_authenticate.return_value = User(id="user123", username="testuser", project_names=["test_project"])
 
     request_data = {
@@ -653,25 +687,38 @@ async def test_create_user_setting_rejects_ms_teams(mock_authenticate, mock_crea
         async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
             await ac.post("/v1/settings/user", headers={"user-id": "user123"}, json=request_data)
 
-    assert excinfo.value.code == status.HTTP_400_BAD_REQUEST
+    assert excinfo.value.code == status.HTTP_409_CONFLICT
     mock_create_setting.assert_not_called()
 
 
 @pytest.mark.anyio
+@patch("codemie.rest_api.routers.user_settings.Ability")
 @patch(
     "codemie.configs.customer_config.CustomerConfig.is_feature_enabled",
     return_value=True,
 )
+@patch("codemie.rest_api.models.settings.Settings.check_ms_teams_exist_for_user", return_value=True)
+@patch("codemie.service.assistant.assistant_service.AssistantService.belongs_to_project", return_value=True)
+@patch(
+    "codemie.rest_api.models.settings.Settings.find_by_id",
+    return_value=SimpleNamespace(user_id="user123", project_name="test_project"),
+)
 @patch('codemie.service.settings.settings.SettingsService.update_settings')
 @patch('codemie.service.settings.settings.SettingsService.get_setting_ability')
 @patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
-async def test_update_user_setting_rejects_ms_teams(
-    mock_authenticate, mock_get_setting_ability, mock_update_settings, mock_is_feature_enabled
+async def test_update_user_setting_accepts_ms_teams(
+    mock_authenticate,
+    mock_get_setting_ability,
+    mock_update_settings,
+    mock_find_by_id,
+    mock_belongs_to_project,
+    mock_singleton,
+    mock_is_feature_enabled,
+    mock_ability,
 ):
-    # ms_teams integrations are project-scope only and must be rejected at USER scope.
-    # is_feature_enabled is forced True here so this exercises the USER-scope rejection
-    # itself, decoupled from the shared customer-config.yaml teamsBotIntegration value.
     mock_authenticate.return_value = User(id="user123", username="testuser", project_names=["test_project"])
+    mock_get_setting_ability.return_value = object()
+    mock_ability.return_value.can.return_value = True
 
     request_data = {
         "project_name": "test_project",
@@ -681,13 +728,11 @@ async def test_update_user_setting_rejects_ms_teams(
     }
     transport = ASGITransport(app=app)
 
-    with pytest.raises(ExtendedHTTPException) as excinfo:
-        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
-            await ac.put("/v1/settings/user/setting_123", headers={"user-id": "user123"}, json=request_data)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.put("/v1/settings/user/setting_123", headers={"user-id": "user123"}, json=request_data)
 
-    assert excinfo.value.code == status.HTTP_400_BAD_REQUEST
-    mock_get_setting_ability.assert_not_called()
-    mock_update_settings.assert_not_called()
+    assert response.status_code == status.HTTP_200_OK
+    mock_update_settings.assert_called_once()
 
 
 @pytest.mark.anyio

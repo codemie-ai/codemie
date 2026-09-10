@@ -67,7 +67,9 @@ def test_settings_check_alias_ok(mock_get_by_fields):
 def test_check_ms_teams_exist_no_existing_row(mock_get_by_fields):
     result = Settings.check_ms_teams_exist(project_name="proj1")
     assert result is True
-    mock_get_by_fields.assert_called_once_with({"project_name.keyword": "proj1", "credential_type.keyword": "MSTeams"})
+    mock_get_by_fields.assert_called_once_with(
+        {"project_name.keyword": "proj1", "credential_type.keyword": "MSTeams", "setting_type": "project"}
+    )
 
 
 @patch.object(Settings, "get_by_fields")
@@ -76,7 +78,9 @@ def test_check_ms_teams_exist_rejects_second_row(mock_get_by_fields):
 
     with pytest.raises(ValueError, match="An ms_teams integration already exists for project 'proj1'"):
         Settings.check_ms_teams_exist(project_name="proj1")
-    mock_get_by_fields.assert_called_once_with({"project_name.keyword": "proj1", "credential_type.keyword": "MSTeams"})
+    mock_get_by_fields.assert_called_once_with(
+        {"project_name.keyword": "proj1", "credential_type.keyword": "MSTeams", "setting_type": "project"}
+    )
 
 
 @patch.object(Settings, "get_by_fields")
@@ -97,12 +101,17 @@ def _ms_teams_setting(project_name, assistant_ids):
 @patch.object(Settings, "get_all_by_fields")
 def test_prune_ms_teams_assistant_id_removes_stale_id(mock_get_all_by_fields):
     setting = _ms_teams_setting("proj1", ["a1", "a2"])
+    original_credential_values = setting.credential_values
     mock_get_all_by_fields.return_value = [setting]
 
     updated = Settings.prune_ms_teams_assistant_id("a1")
 
     assert updated == 1
     assert setting.credential_values[0].value == ["a2"]
+    # credential_values must be reassigned (a new list object), not mutated in place: an
+    # in-place edit of a nested CredentialValues attribute is invisible to SQLAlchemy's
+    # MutableList change tracking and silently fails to persist on save().
+    assert setting.credential_values is not original_credential_values
     setting.save.assert_called_once()
     mock_get_all_by_fields.assert_called_once_with({"credential_type.keyword": "MSTeams"})
 
@@ -122,6 +131,7 @@ def test_prune_ms_teams_assistant_id_noop_when_absent(mock_get_all_by_fields):
 @patch.object(Settings, "get_all_by_fields")
 def test_prune_ms_teams_assistant_id_keeps_new_project_row(mock_get_all_by_fields):
     old_row = _ms_teams_setting("old-proj", ["a1"])
+    original_old_row_credential_values = old_row.credential_values
     new_row = _ms_teams_setting("new-proj", ["a1"])
     mock_get_all_by_fields.return_value = [old_row, new_row]
 
@@ -129,6 +139,7 @@ def test_prune_ms_teams_assistant_id_keeps_new_project_row(mock_get_all_by_field
 
     assert updated == 1
     assert old_row.credential_values[0].value == []
+    assert old_row.credential_values is not original_old_row_credential_values
     old_row.save.assert_called_once()
     assert new_row.credential_values[0].value == ["a1"]
     new_row.save.assert_not_called()
@@ -349,3 +360,21 @@ def test_credentials_github_app_installation_id(installation_id, expected_instal
     # Assert - installation_id should match expected value
     assert credentials.installation_id == expected_installation_id
     assert credentials.is_github_app is True
+
+
+def test_check_ms_teams_exist_for_user_no_existing(mocker):
+    mocker.patch.object(Settings, "get_by_fields", return_value=None)
+    assert Settings.check_ms_teams_exist_for_user("user-1") is True
+
+
+def test_check_ms_teams_exist_for_user_conflict(mocker):
+    existing = mocker.MagicMock(id="other-setting")
+    mocker.patch.object(Settings, "get_by_fields", return_value=existing)
+    with pytest.raises(ValueError, match="user-1"):
+        Settings.check_ms_teams_exist_for_user("user-1")
+
+
+def test_check_ms_teams_exist_for_user_allows_own_setting_on_update(mocker):
+    existing = mocker.MagicMock(id="setting-1")
+    mocker.patch.object(Settings, "get_by_fields", return_value=existing)
+    assert Settings.check_ms_teams_exist_for_user("user-1", setting_id="setting-1") is True

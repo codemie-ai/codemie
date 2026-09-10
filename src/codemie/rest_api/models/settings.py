@@ -35,6 +35,7 @@ PROJECT_NAME_TERM = "project_name.keyword"
 USER_ID_TERM = "user_id.keyword"
 ALIAS_TERM = "alias.keyword"
 CREDENTIAL_TYPE_TERM = "credential_type.keyword"
+ASSISTANT_IDS_KEY = "assistant_ids"
 
 
 class CredentialValues(BaseModel):
@@ -322,10 +323,27 @@ class SettingsBase(CommonBaseModel):
     @classmethod
     def check_ms_teams_exist(cls, project_name: str, setting_id: str | None = None) -> bool:
         existing = cls.get_by_fields(
-            {PROJECT_NAME_TERM: project_name, CREDENTIAL_TYPE_TERM: CredentialTypes.MS_TEAMS.value}
+            {
+                PROJECT_NAME_TERM: project_name,
+                CREDENTIAL_TYPE_TERM: CredentialTypes.MS_TEAMS.value,
+                "setting_type": SettingType.PROJECT.value,
+            }
         )
         if existing and (not setting_id or setting_id != existing.id):
             raise ValueError(f"An ms_teams integration already exists for project {project_name!r}")
+        return True
+
+    @classmethod
+    def check_ms_teams_exist_for_user(cls, user_id: str, setting_id: str | None = None) -> bool:
+        existing = cls.get_by_fields(
+            {
+                USER_ID_TERM: user_id,
+                "setting_type": SettingType.USER.value,
+                CREDENTIAL_TYPE_TERM: CredentialTypes.MS_TEAMS.value,
+            }
+        )
+        if existing and (not setting_id or setting_id != existing.id):
+            raise ValueError(f"An ms_teams integration already exists for user {user_id!r}")
         return True
 
     @classmethod
@@ -342,15 +360,22 @@ class SettingsBase(CommonBaseModel):
         """
         settings = cls.get_all_by_fields({CREDENTIAL_TYPE_TERM: CredentialTypes.MS_TEAMS.value})
         updated = 0
+
         for setting in settings:
             if keep_project_name and setting.project_name == keep_project_name:
                 continue
             changed = False
+            new_values = []
+
             for cred in setting.credential_values:
-                if cred.key == "assistant_ids" and isinstance(cred.value, list) and assistant_id in cred.value:
-                    cred.value = [aid for aid in cred.value if aid != assistant_id]
+                if cred.key == ASSISTANT_IDS_KEY and isinstance(cred.value, list) and assistant_id in cred.value:
+                    cred = CredentialValues(key=cred.key, value=[aid for aid in cred.value if aid != assistant_id])
                     changed = True
+
+                new_values.append(cred)
+
             if changed:
+                setting.credential_values = new_values
                 setting.save()
                 updated += 1
         return updated

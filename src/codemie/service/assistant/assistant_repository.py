@@ -239,7 +239,7 @@ class AssistantRepository:
         old_project_name = assistant.project
         assistant.update_assistant(assistant_request, user)
 
-        if assistant.project != old_project_name:
+        if assistant.project != old_project_name and not assistant.is_global:
             AssistantRepository._prune_ms_teams_assistant_id_on_project_move(str(assistant.id), assistant.project)
 
         return assistant

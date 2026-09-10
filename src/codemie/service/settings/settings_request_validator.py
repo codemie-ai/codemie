@@ -20,7 +20,7 @@ from fastapi import status
 
 from codemie.configs.customer_config import customer_config
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.rest_api.models.settings import CredentialValues, Settings, SettingRequest, SettingType
+from codemie.rest_api.models.settings import ASSISTANT_IDS_KEY, CredentialValues, Settings, SettingRequest, SettingType
 from codemie.service.assistant.assistant_service import AssistantService
 from codemie.service.oauth.folded_credentials import OAUTH_AUTH_TYPE
 from codemie.service.settings.scheduler_settings_service import (
@@ -351,30 +351,7 @@ def validate_webhook_request(request: SettingRequest) -> None:
 TEAMS_BOT_INTEGRATION_FEATURE = "teamsBotIntegration"
 
 
-def validate_ms_teams_request(
-    request: SettingRequest, setting_type: SettingType, setting_id: str | None = None
-) -> None:
-    """
-    Validate an ms_teams project-integration request: PROJECT-scope only, every
-    assistant_ids entry must belong to the target project, and at most one
-    ms_teams row may exist per project.
-    """
-    if not customer_config.is_feature_enabled(TEAMS_BOT_INTEGRATION_FEATURE):
-        raise ExtendedHTTPException(
-            code=status.HTTP_403_FORBIDDEN,
-            message="Feature not available",
-            details="Teams Bot Integration is not enabled for this customer.",
-            help="Contact your system administrator to enable the 'features:teamsBotIntegration' component.",
-        )
-
-    if setting_type != SettingType.PROJECT:
-        raise ExtendedHTTPException(
-            code=status.HTTP_400_BAD_REQUEST,
-            message="ms_teams integrations are project-scoped only",
-            details="ms_teams integrations cannot be created or updated at USER scope.",
-            help="Submit this request with setting_type=PROJECT.",
-        )
-
+def _validate_ms_teams_project_scope(request: SettingRequest, setting_id: str | None) -> None:
     if not request.project_name:
         raise ExtendedHTTPException(
             code=status.HTTP_400_BAD_REQUEST,
@@ -394,7 +371,85 @@ def validate_ms_teams_request(
                 help="The project_name in the request body must match the setting being updated.",
             )
 
-    assistant_ids_creds = [cv for cv in request.credential_values if cv.key == "assistant_ids"]
+
+def _validate_ms_teams_user_scope(request: SettingRequest, setting_id: str | None, user_id: str | None) -> None:
+    if not request.project_name:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message="project_name is required",
+            details="ms_teams integrations require a non-empty project_name.",
+            help="Provide the target project_name in the request.",
+        )
+
+    if setting_id is not None:
+        existing_setting = Settings.find_by_id(setting_id)
+        if existing_setting is None:
+            raise ExtendedHTTPException(
+                code=status.HTTP_404_NOT_FOUND,
+                message="Credential not found",
+                details=f"The credential with ID {setting_id!r} could not be found in the system.",
+                help="Please verify the credential ID and ensure it exists.",
+            )
+        if existing_setting.user_id != user_id:
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST,
+                message="User mismatch",
+                details=f"Setting {setting_id!r} does not belong to user {user_id!r}.",
+                help="The setting being updated must belong to the requesting user.",
+            )
+        if existing_setting.project_name != request.project_name:
+            raise ExtendedHTTPException(
+                code=status.HTTP_400_BAD_REQUEST,
+                message="Project mismatch",
+                details=f"Setting {setting_id!r} belongs to project {existing_setting.project_name!r}, "
+                f"not {request.project_name!r}.",
+                help="The project_name in the request body must match the setting being updated.",
+            )
+
+
+def _validate_ms_teams_assistant_ownership(assistant_ids: list[str], project_name: str | None) -> None:
+    invalid_ids = [
+        assistant_id
+        for assistant_id in assistant_ids
+        if not AssistantService.belongs_to_project(assistant_id, project_name)
+        and not AssistantService.is_marketplace_assistant(assistant_id)
+    ]
+    if invalid_ids:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message="Invalid assistant_ids",
+            details=f"The following assistant id(s) do not exist, do not belong to "
+            f"project {project_name!r}, and are not published to the marketplace: {', '.join(invalid_ids)}.",
+            help="Only assistants belonging to the target project, or published to the marketplace, "
+            "may be listed in assistant_ids.",
+        )
+
+
+def validate_ms_teams_request(
+    request: SettingRequest,
+    setting_type: SettingType,
+    setting_id: str | None = None,
+    user_id: str | None = None,
+) -> None:
+    """
+    Validate an ms_teams integration request: both PROJECT- and USER-scope require
+    project_name and project-owned assistant_ids. At most one ms_teams row may exist
+    per scope (per project, or per user).
+    """
+    if not customer_config.is_feature_enabled(TEAMS_BOT_INTEGRATION_FEATURE):
+        raise ExtendedHTTPException(
+            code=status.HTTP_403_FORBIDDEN,
+            message="Feature not available",
+            details="Teams Bot Integration is not enabled for this customer.",
+            help="Contact your system administrator to enable the 'features:teamsBotIntegration' component.",
+        )
+
+    if setting_type == SettingType.PROJECT:
+        _validate_ms_teams_project_scope(request, setting_id)
+    elif setting_type == SettingType.USER:
+        _validate_ms_teams_user_scope(request, setting_id, user_id)
+
+    assistant_ids_creds = [cv for cv in request.credential_values if cv.key == ASSISTANT_IDS_KEY]
     if (
         len(assistant_ids_creds) != 1
         or not isinstance(assistant_ids_creds[0].value, list)
@@ -425,28 +480,19 @@ def validate_ms_teams_request(
             help="Remove duplicate entries from assistant_ids.",
         )
 
-    invalid_ids = [
-        assistant_id
-        for assistant_id in assistant_ids
-        if not AssistantService.belongs_to_project(assistant_id, request.project_name)
-    ]
-    if invalid_ids:
-        raise ExtendedHTTPException(
-            code=status.HTTP_400_BAD_REQUEST,
-            message="Invalid assistant_ids",
-            details=f"The following assistant id(s) do not exist or do not belong to "
-            f"project {request.project_name!r}: {', '.join(invalid_ids)}.",
-            help="Only assistants belonging to the target project may be listed in assistant_ids.",
-        )
+    _validate_ms_teams_assistant_ownership(assistant_ids, request.project_name)
 
     try:
-        Settings.check_ms_teams_exist(request.project_name, setting_id=setting_id)
+        if setting_type == SettingType.PROJECT:
+            Settings.check_ms_teams_exist(request.project_name, setting_id=setting_id)
+        else:
+            Settings.check_ms_teams_exist_for_user(user_id, setting_id=setting_id)
     except ValueError as e:
         raise ExtendedHTTPException(
             code=status.HTTP_409_CONFLICT,
             message="ms_teams integration already exists",
             details=str(e),
-            help="Update or delete the existing ms_teams integration for this project instead of creating a new one.",
+            help="Update or delete the existing ms_teams integration instead of creating a new one.",
         ) from e
 
 

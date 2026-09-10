@@ -127,5 +127,21 @@ class AssistantService:
         except Exception:
             return False
 
+    @classmethod
+    def is_marketplace_assistant(cls, assistant_id: str) -> bool:
+        """
+        Check if an assistant is published to the marketplace (is_global=True).
+
+        Marketplace assistants are usable across projects, so callers that otherwise
+        require project ownership (e.g. ms_teams assistant_ids) should accept them
+        regardless of their own project.
+        """
+        try:
+            assistant = Assistant.find_by_id(assistant_id)
+
+            return bool(assistant and assistant.is_global)
+        except Exception:
+            return False
+
 
 assistant_service = AssistantService()
