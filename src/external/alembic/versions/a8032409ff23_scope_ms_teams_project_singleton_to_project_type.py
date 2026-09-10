@@ -40,30 +40,29 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Recreate the ms_teams project singleton index scoped to setting_type='PROJECT'."""
-    op.drop_index(
-        "uix_settings_project_ms_teams_singleton",
-        table_name="settings",
-    )
-    op.create_index(
-        "uix_settings_project_ms_teams_singleton",
-        "settings",
-        ["project_name"],
-        unique=True,
-        postgresql_where=sa.text("credential_type = 'MS_TEAMS' AND setting_type = 'PROJECT'"),
+    """Recreate the ms_teams project singleton index scoped to setting_type='PROJECT'.
+
+    Uses IF EXISTS/IF NOT EXISTS because f1a2b3c4d5e6, which originally created this
+    index, sits on a separate alembic branch that some deployments reach without ever
+    running it — leaving nothing here for a plain DROP INDEX to find.
+    """
+    op.execute(sa.text("DROP INDEX IF EXISTS uix_settings_project_ms_teams_singleton"))
+    op.execute(
+        sa.text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uix_settings_project_ms_teams_singleton "
+            "ON settings (project_name) "
+            "WHERE (credential_type = 'MS_TEAMS' AND setting_type = 'PROJECT')"
+        )
     )
 
 
 def downgrade() -> None:
     """Restore the original, unscoped ms_teams project singleton index."""
-    op.drop_index(
-        "uix_settings_project_ms_teams_singleton",
-        table_name="settings",
-    )
-    op.create_index(
-        "uix_settings_project_ms_teams_singleton",
-        "settings",
-        ["project_name"],
-        unique=True,
-        postgresql_where=sa.text("credential_type = 'MS_TEAMS'"),
+    op.execute(sa.text("DROP INDEX IF EXISTS uix_settings_project_ms_teams_singleton"))
+    op.execute(
+        sa.text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uix_settings_project_ms_teams_singleton "
+            "ON settings (project_name) "
+            "WHERE (credential_type = 'MS_TEAMS')"
+        )
     )
