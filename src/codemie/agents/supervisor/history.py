@@ -141,6 +141,33 @@ def _is_handoff_back_message(message: BaseMessage) -> bool:
     return bool(getattr(message, "response_metadata", {}).get(METADATA_KEY_HANDOFF_BACK))
 
 
+def _is_parallel_supervisor_handoff_message(
+    message: BaseMessage,
+    pending_parallel_handoffs: dict[str, deque[AIMessage]],
+) -> bool:
+    """Return True for supervisor AIMessages that initiate multiple parallel handoffs AND are
+    actively superseded by the current parallel-handoff reconstruction in pending_parallel_handoffs.
+
+    Such messages are superseded by the reconstructed single-tool-call pairs produced by
+    _consume_pending_handoff_message and must not be kept in filtered_messages — keeping them
+    causes sanitize_rich_history_for_llm to emit spurious warnings when it encounters the
+    original multi-call block immediately followed by the reconstructed blocks.
+
+    Single-handoff supervisor messages (exactly one tool_call) are excluded: the single-handoff
+    path creates only a ToolMessage response, so the AIMessage is needed for a valid call/response
+    pair.
+
+    Historical multi-call messages whose tool calls are NOT represented in pending_parallel_handoffs
+    are kept so that their existing ToolMessage responses are not left as orphans.
+    """
+    if not (isinstance(message, AIMessage) and len(getattr(message, "tool_calls", [])) > 1):
+        return False
+    if not all(tc.get("name", "").startswith(f"{SUPERVISOR_HANDOFF_TOOL_PREFIX}_") for tc in message.tool_calls):
+        return False
+    queued_ids = {queued.tool_calls[0]["id"] for pending in pending_parallel_handoffs.values() for queued in pending}
+    return any(tc.get("id") in queued_ids for tc in message.tool_calls)
+
+
 def _process_handoff_message(
     message: BaseMessage,
     filtered_messages: list[BaseMessage],
@@ -148,6 +175,8 @@ def _process_handoff_message(
     pending_single_handoffs: dict[str, deque[tuple[str, str | None]]],
 ) -> None:
     if _queue_pending_handoff_message(message, pending_parallel_handoffs, pending_single_handoffs):
+        return
+    if _is_parallel_supervisor_handoff_message(message, pending_parallel_handoffs):
         return
     if _consume_pending_handoff_message(
         message,
@@ -205,6 +234,8 @@ def _strip_handoff_back_messages_pre_model_hook(state: dict[str, Any]) -> dict[s
         )
 
     _append_pending_handoffs(filtered_messages, pending_parallel_handoffs, pending_single_handoffs)
+
+    filtered_messages = sanitize_rich_history_for_llm(filtered_messages)
 
     if filtered_messages == messages:
         return {}

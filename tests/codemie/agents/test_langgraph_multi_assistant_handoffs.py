@@ -29,6 +29,7 @@ from codemie.agents.langgraph_agent import (
     _strip_subagent_task_messages_pre_model_hook,
     _subagent_task_pre_model_hook,
 )
+from codemie.agents.supervisor.history import PARALLEL_SUBAGENT_HANDOFF_ACK_KEY
 
 
 class TestLangGraphMultiAssistantHandoffs:
@@ -307,6 +308,19 @@ class TestLangGraphMultiAssistantHandoffs:
         ]
 
     def test_strip_handoff_back_messages_pre_model_hook_hides_single_parent_handoff(self):
+        # The supervisor's AIMessage with the handoff tool_call is always present in LangGraph state —
+        # the single-handoff Command.update re-includes it via messages[:-1] + [ai_message, task_msg].
+        supervisor_handoff_call = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "transfer_to_analyst",
+                    "args": {"task": "Analyze this repository"},
+                    "id": "call-123",
+                    "type": "tool_call",
+                }
+            ],
+        )
         single_parent_handoff = ToolMessage(
             content="Analyze this repository",
             name="transfer_to_analyst",
@@ -320,6 +334,7 @@ class TestLangGraphMultiAssistantHandoffs:
             {
                 "messages": [
                     HumanMessage(content="User request"),
+                    supervisor_handoff_call,
                     single_parent_handoff,
                     analyst_response,
                 ]
@@ -328,6 +343,7 @@ class TestLangGraphMultiAssistantHandoffs:
 
         assert result["llm_input_messages"] == [
             HumanMessage(content="User request"),
+            supervisor_handoff_call,
             ToolMessage(content="Final analyst answer", name="transfer_to_analyst", tool_call_id="call-123"),
         ]
 
@@ -458,3 +474,130 @@ class TestLangGraphMultiAssistantHandoffs:
         assert parent_visible_messages[len(original_messages)].content == "Analyze this repository"
         assert parent_visible_messages[-1].content == "Final analyst answer"
         assert all(message.content != "Intermediate analyst thought" for message in parent_visible_messages)
+
+    def test_strip_handoff_back_messages_pre_model_hook_produces_valid_sequence_after_parallel_subagents_complete(self):
+        # Reproduce the state that LangGraph accumulates after two parallel subagents run to completion.
+        #
+        # Sequence mirrors what _build_parallel_handoff_result writes into state:
+        #   1. supervisor AIMessage with both tool_calls (stays in state, never removed by the Command update)
+        #   2. PARALLEL_PARENT_HANDOFF ToolMessages added by Command.update (one per subagent)
+        #   3. PARALLEL_HANDOFF_ACK ToolMessage returned for the non-first tool invocation
+        #   4. AIMessages from each subagent after they finish
+        supervisor_ai_message = AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "transfer_to_analyst",
+                    "args": {"task": "Analyze repo"},
+                    "id": "call-123",
+                    "type": "tool_call",
+                },
+                {
+                    "name": "transfer_to_researcher",
+                    "args": {"task": "Research deps"},
+                    "id": "call-456",
+                    "type": "tool_call",
+                },
+            ],
+        )
+        parallel_handoff_analyst = ToolMessage(
+            content="Analyze repo",
+            name="transfer_to_analyst",
+            tool_call_id="call-123",
+            id="parallel-handoff-parent-call-123",
+            additional_kwargs={METADATA_KEY_PARALLEL_SUBAGENT_PARENT_HANDOFF: True},
+            response_metadata={METADATA_KEY_HANDOFF_DESTINATION: "analyst"},
+        )
+        parallel_handoff_researcher = ToolMessage(
+            content="Research deps",
+            name="transfer_to_researcher",
+            tool_call_id="call-456",
+            id="parallel-handoff-parent-call-456",
+            additional_kwargs={METADATA_KEY_PARALLEL_SUBAGENT_PARENT_HANDOFF: True},
+            response_metadata={METADATA_KEY_HANDOFF_DESTINATION: "researcher"},
+        )
+        parallel_handoff_ack = ToolMessage(
+            content="",
+            name="transfer_to_researcher",
+            tool_call_id="call-456",
+            id="parallel-handoff-ack-call-456",
+            additional_kwargs={PARALLEL_SUBAGENT_HANDOFF_ACK_KEY: True},
+        )
+        analyst_response = AIMessage(content="Analyst findings", name="analyst")
+        researcher_response = AIMessage(content="Researcher findings", name="researcher")
+
+        result = _strip_handoff_back_messages_pre_model_hook(
+            {
+                "messages": [
+                    HumanMessage(content="User request"),
+                    supervisor_ai_message,
+                    parallel_handoff_analyst,
+                    parallel_handoff_researcher,
+                    parallel_handoff_ack,
+                    analyst_response,
+                    researcher_response,
+                ]
+            }
+        )
+
+        llm_input = result["llm_input_messages"]
+
+        # The two subagent results must appear as valid call+response pairs.
+        # Before the fix, the output also contains the original supervisor AIMessage with both
+        # tool_call_ids (call-123 and call-456) that are never directly answered by a ToolMessage,
+        # causing Azure/OpenAI to reject the request with a 400 error.
+        assert llm_input == [
+            HumanMessage(content="User request"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "transfer_to_analyst",
+                        "args": {"task": "Analyze repo"},
+                        "id": "call-123",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(content="Analyst findings", name="transfer_to_analyst", tool_call_id="call-123"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "transfer_to_researcher",
+                        "args": {"task": "Research deps"},
+                        "id": "call-456",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            ToolMessage(content="Researcher findings", name="transfer_to_researcher", tool_call_id="call-456"),
+        ]
+
+    def test_strip_handoff_back_messages_pre_model_hook_sanitizes_orphan_tool_calls_when_filter_is_noop(self):
+        # Reproduces the primary bug-fix path: the handoff filter makes no structural changes
+        # (no handoff markers), but the input contains an AIMessage with a tool_call that has
+        # no matching ToolMessage response (an orphan call). sanitize_rich_history_for_llm is
+        # the actor that removes the orphan block; the function must return the sanitized messages
+        # rather than {}.
+        orphan_call = AIMessage(
+            content="",
+            tool_calls=[{"name": "some_tool", "args": {}, "id": "orphan-call-1", "type": "tool_call"}],
+        )
+
+        result = _strip_handoff_back_messages_pre_model_hook(
+            {
+                "messages": [
+                    HumanMessage(content="User request"),
+                    orphan_call,
+                    HumanMessage(content="Follow-up"),
+                ]
+            }
+        )
+
+        assert result == {
+            "llm_input_messages": [
+                HumanMessage(content="User request"),
+                HumanMessage(content="Follow-up"),
+            ]
+        }
