@@ -23,6 +23,7 @@ class FullDatasourceTypes(str, Enum):
     JIRA = "knowledge_base_jira"
     FILE = "knowledge_base_file"
     GOOGLE = "llm_routing_google"
+    GIT_FAQ = "knowledge_base_git_faq"
     AZURE_DEVOPS_WIKI = "knowledge_base_azure_devops_wiki"
     AZURE_DEVOPS_WORK_ITEM = "knowledge_base_azure_devops_work_item"
     XWIKI = "knowledge_base_xwiki"

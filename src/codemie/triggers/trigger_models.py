@@ -59,6 +59,10 @@ class GoogleReindexTask(ReindexTaskPayload):
     google_doc_link: str = Field(..., description="The link to the Google document to be reindexed.")
 
 
+class GitFaqReindexTask(ReindexTaskPayload):
+    """FAQ datasources carry their source config (link/branch/files_filter) on IndexInfo."""
+
+
 class AzureDevOpsWikiReindexTask(ReindexTaskPayload):
     azure_devops_wiki_index_info: AzureDevOpsWikiIndexInfo = Field(
         ..., description="The Azure DevOps Wiki index information."

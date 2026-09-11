@@ -207,10 +207,13 @@ class GitBatchLoader(GitLoader, BaseDatasourceLoader):
         self.repo = None
 
     @staticmethod
-    def test_public_access(url: str, timeout: int = 3) -> None:
+    def test_public_access(url: str, timeout: int = 15) -> None:
         """Probe whether a git URL is publicly accessible without credentials.
 
         Raises ConnectionException if the URL requires authentication or is unreachable.
+        The default timeout must stay generous: a plain `git ls-remote` to a public
+        GitHub repo routinely takes ~2s, and slower hostings exceed 3s — killing the
+        probe then would misreport a reachable public repo as inaccessible.
         """
         g = git_cmd.Git()
         try:
@@ -222,7 +225,7 @@ class GitBatchLoader(GitLoader, BaseDatasourceLoader):
             raise ConnectionException("git", "Repository not publicly accessible") from e
 
     @staticmethod
-    def test_connection(url: str, creds: Credentials, timeout: int = 3) -> None:
+    def test_connection(url: str, creds: Credentials, timeout: int = 15) -> None:
         """Probe whether a git URL is accessible using the provided credentials.
 
         Mirrors the authentication strategy of create_loader: credentials are embedded in the

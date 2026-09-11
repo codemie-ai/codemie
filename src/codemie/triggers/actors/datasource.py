@@ -31,6 +31,7 @@ from codemie.datasource.azure_devops_work_item.azure_devops_work_item_datasource
     AzureDevOpsWorkItemDatasourceProcessor,
 )
 from codemie.datasource.code.code_datasource_processor import CodeDatasourceProcessor
+from codemie.datasource.git_faq.git_faq_datasource_processor import GitFaqConfig, GitFaqDatasourceProcessor
 from codemie.datasource.svn.svn_datasource_processor import SVNDatasourceProcessor
 from codemie.datasource.confluence_datasource_processor import (
     ConfluenceDatasourceProcessor,
@@ -53,6 +54,7 @@ from codemie.triggers.trigger_models import (
     CodeReindexTask,
     ConfluenceReindexTask,
     GoogleReindexTask,
+    GitFaqReindexTask,
     JiraReindexTask,
     SVNReindexTask,
     XrayReindexTask,
@@ -352,6 +354,69 @@ def reindex_google(payload: GoogleReindexTask):
         index_info=payload.index_info,
         embedding_model=payload.index_info.embeddings_model,
         setting_id=payload.index_info.setting_id,
+    )
+
+    datasource_concurrency_manager.run(datasource_processor.reprocess, datasource_processor.index)
+
+    logger.info(
+        REINDEX_SUCCESS_MSG,
+        payload.index_info.index_type,
+        payload.resource_id,
+        payload.project_name,
+        payload.resource_name,
+    )
+
+
+@with_datasource_job_lock
+def reindex_git_faq(payload: GitFaqReindexTask):
+    """
+    Initiates the reindexing process for a Git FAQ datasource.
+
+    Args:
+        payload (GitFaqReindexTask): The task payload; the FAQ source config lives on payload.index_info.
+
+    Raises:
+        HTTPException: If the FAQ source configuration is missing.
+    """
+    IndexInfo.stamp_reindex_triggered_at(payload.index_info.id)
+
+    logger.info(
+        REINDEX_START_MSG,
+        payload.index_info.index_type,
+        payload.resource_id,
+        payload.project_name,
+        payload.resource_name,
+    )
+
+    if not payload.index_info.link:
+        error_msg = (
+            f"Repository link is missing for FAQ resource '{payload.resource_name}' "
+            f"in project '{payload.project_name}'."
+        )
+        logger.error(
+            REINDEX_FAILED_MSG,
+            payload.index_info.index_type,
+            payload.resource_id,
+            payload.project_name,
+            payload.resource_name,
+            error_msg,
+        )
+        return
+
+    datasource_processor = GitFaqDatasourceProcessor(
+        datasource_name=payload.index_info.repo_name,
+        user=payload.user,
+        project_name=payload.index_info.project_name,
+        git_config=GitFaqConfig(
+            repo_link=payload.index_info.link,
+            branch=payload.index_info.branch or "main",
+            files_filter=payload.index_info.files_filter,
+            setting_id=payload.index_info.setting_id,
+        ),
+        description=payload.index_info.description or "",
+        request_uuid=str(uuid4()),
+        index_info=payload.index_info,
+        embedding_model=payload.index_info.embeddings_model,
     )
 
     datasource_concurrency_manager.run(datasource_processor.reprocess, datasource_processor.index)
@@ -725,7 +790,12 @@ def reindex_xwiki(payload: XWikiReindexTask):
     )
 
 
-UNSUPPORTED_RESUME_TYPES = {"knowledge_base_file", "provider", "platform_marketplace_assistant"}
+UNSUPPORTED_RESUME_TYPES = {
+    "knowledge_base_file",
+    "provider",
+    "platform_marketplace_assistant",
+    "knowledge_base_git_faq",
+}
 
 
 def _resume_azure_devops(index_info: IndexInfo, user: User, request_uuid: str) -> None:
@@ -1064,6 +1134,12 @@ def resume_stale_datasource(index_info: IndexInfo) -> None:
         logger.warning(
             f"Skipping stale resume for unsupported index type '{index_type}' "
             f"(index_id={index_info.id}, repo='{index_info.repo_name}')"
+        )
+        # Terminal state: without this the watchdog re-claims and re-skips the row
+        # forever (update_date was already bumped by try_claim_for_resume).
+        index_info.set_error(
+            f"Indexing was interrupted and resume is not supported for '{index_type}'. "
+            "Trigger a full reindex to recover."
         )
         return
 

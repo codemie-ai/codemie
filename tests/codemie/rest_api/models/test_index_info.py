@@ -553,3 +553,16 @@ def test_update_index_does_not_touch_custom_fields_for_xray(mock_update_path):
         xray_index.update_index(user=MagicMock(spec=User), custom_fields=["customfield_99999"])
 
     assert xray_index.jira.custom_fields == ["customfield_10001"]
+
+
+class TestFaqIndexInfoFixes:
+    def test_get_index_identifier_llm_routing_faq_uses_kb_name(self):
+        from codemie.rest_api.models.index import IndexInfo
+
+        info = IndexInfo(
+            project_name="proj",
+            repo_name="ds",
+            index_type="llm_routing_faq",
+        )
+
+        assert info.get_index_identifier() == "proj-ds"

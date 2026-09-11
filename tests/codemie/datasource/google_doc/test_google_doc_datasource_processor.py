@@ -134,7 +134,7 @@ def processor(mock_elastic, mock_loader):
 class TestGoogleDocDatasourceProcessor:
     def test_parse_google_doc_id(self):
         """Test parsing of Google Doc ID from URL."""
-        with patch("codemie.datasource.google_doc.google_doc_datasource_processor.ElasticSearchClient"):
+        with patch("codemie.datasource.base_llm_routing_processor.ElasticSearchClient"):
             processor = GoogleDocDatasourceProcessor(
                 datasource_name="test",
                 project_name="test",
@@ -180,7 +180,7 @@ class TestGoogleDocDatasourceProcessor:
 
         with (
             patch("codemie.datasource.google_doc.google_doc_datasource_processor.IndexInfo") as mock_kb_info,
-            patch("codemie.datasource.google_doc.google_doc_datasource_processor.bulk") as mock_bulk_func,
+            patch("codemie.datasource.base_llm_routing_processor.bulk") as mock_bulk_func,
         ):
             mock_bulk_func.return_value = (2, 0)
             mock_index = MagicMock()
@@ -295,6 +295,60 @@ class TestGoogleDocDatasourceProcessor:
             assert result[checksum2]["title"] == "Title 2"
             assert result[checksum2]["content"] == "Content 2"
 
+    def test_get_documents_by_checksum_matches_echoed_toc_line(self, processor):
+        """Routing LLM echoing the full '<reference> — <title>' TOC line still resolves."""
+        with patch.object(
+            processor,
+            "_read_chapters",
+            return_value=[
+                {"reference": "troubleshooting/es-oom", "title": "ES OOM", "content": "C1"},
+                {"reference": "getting-started/install", "title": "Install", "content": "C2"},
+            ],
+        ):
+            result = processor.get_documents_by_checksum(
+                ["troubleshooting/es-oom — Elasticsearch keeps restarting after upgrade"]
+            )
+
+            checksum = hashlib.sha512("C1".encode("utf-8")).hexdigest()
+            assert list(result) == [checksum]
+            assert result[checksum]["reference"] == "troubleshooting/es-oom"
+
+    def test_get_documents_by_checksum_does_not_overfetch_parent_section(self, processor):
+        """Routing to a child section ('1.1') must not drag in the parent ('1') — CR-001.
+
+        The stored parent reference '1' is a string-prefix of the routing selection
+        '1.1', but the boundary after '1' is '.', not whitespace, so it must not match.
+        """
+        with patch.object(
+            processor,
+            "_read_chapters",
+            return_value=[
+                {"reference": "1", "title": "Overview", "content": "PARENT"},
+                {"reference": "1.1", "title": "Details", "content": "CHILD"},
+            ],
+        ):
+            result = processor.get_documents_by_checksum(["1.1"])
+
+            child_checksum = hashlib.sha512("CHILD".encode("utf-8")).hexdigest()
+            parent_checksum = hashlib.sha512("PARENT".encode("utf-8")).hexdigest()
+            assert child_checksum in result
+            assert parent_checksum not in result
+            assert len(result) == 1
+
+    def test_get_documents_by_checksum_parent_selection_includes_subsections(self, processor):
+        """Routing to a section still includes its sub-sections (original behavior preserved)."""
+        with patch.object(
+            processor,
+            "_read_chapters",
+            return_value=[
+                {"reference": "guide", "title": "Guide", "content": "A"},
+                {"reference": "guide/setup", "title": "Setup", "content": "B"},
+            ],
+        ):
+            result = processor.get_documents_by_checksum(["guide"])
+
+            assert len(result) == 2
+
     def test_get_table_of_contents(self, processor):
         """Test getting table of contents."""
         with patch.object(
@@ -310,7 +364,7 @@ class TestGoogleDocDatasourceProcessor:
             result = processor.get_table_of_contents()
             assert result == []
 
-    @patch("codemie.datasource.google_doc.google_doc_datasource_processor.datetime")
+    @patch("codemie.datasource.base_llm_routing_processor.datetime")
     def test_update_kb_info(self, mock_datetime, processor):
         """Test updating KB info."""
         mock_now = datetime(2023, 1, 1, 12, 0, 0)
@@ -348,7 +402,7 @@ class TestGoogleDocDatasourceProcessor:
 
     def test_init_loader_without_setting_id_raises_error(self):
         """Test that _init_loader raises ValueError when setting_id is None."""
-        with patch("codemie.datasource.google_doc.google_doc_datasource_processor.ElasticSearchClient"):
+        with patch("codemie.datasource.base_llm_routing_processor.ElasticSearchClient"):
             processor = GoogleDocDatasourceProcessor(
                 datasource_name="test",
                 project_name="test",
@@ -367,7 +421,7 @@ class TestGoogleDocDatasourceProcessor:
     def test_init_loader_with_setting_id(self):
         """Test that _init_loader works correctly when setting_id is provided."""
         with (
-            patch("codemie.datasource.google_doc.google_doc_datasource_processor.ElasticSearchClient"),
+            patch("codemie.datasource.base_llm_routing_processor.ElasticSearchClient"),
             patch(
                 "codemie.datasource.google_doc.google_doc_datasource_processor.GoogleOAuthTokenManager"
             ) as mock_token_manager,
@@ -389,3 +443,27 @@ class TestGoogleDocDatasourceProcessor:
             mock_token_manager_instance.get_valid_access_token.assert_called_once_with("test_setting_id")
             mock_loader.assert_called_once_with(product_id=DOC_ID, access_token="mock_access_token")
             assert processor._access_token == "mock_access_token"
+
+
+class TestParseGoogleDocIdTolerant:
+    """Share-dialog links and address-bar variants must all resolve (live-test find)."""
+
+    def test_url_without_edit_suffix(self):
+        # the exact URL shape that produced Google HTTP 400 in live testing
+        url = "https://docs.google.com/document/d/1Tqkn9I4_qDIjgHjMyV5ktgVwjAmU_O-ymrli5wjifcQ"
+        assert GoogleDocDatasourceProcessor._parse_google_doc_id(url) == "1Tqkn9I4_qDIjgHjMyV5ktgVwjAmU_O-ymrli5wjifcQ"
+
+    def test_url_with_edit_and_heading(self):
+        url = "https://docs.google.com/document/d/abc-123_-XYZ/edit#heading=h.abc"
+        assert GoogleDocDatasourceProcessor._parse_google_doc_id(url) == "abc-123_-XYZ"
+
+    def test_share_link_with_query_params(self):
+        url = "https://docs.google.com/document/d/abc123/edit?usp=sharing"
+        assert GoogleDocDatasourceProcessor._parse_google_doc_id(url) == "abc123"
+
+    def test_mobilebasic_variant(self):
+        url = "https://docs.google.com/document/d/abc123/mobilebasic"
+        assert GoogleDocDatasourceProcessor._parse_google_doc_id(url) == "abc123"
+
+    def test_invalid_url_returns_empty(self):
+        assert GoogleDocDatasourceProcessor._parse_google_doc_id("https://example.com/nope") == ""

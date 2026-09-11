@@ -38,6 +38,7 @@ from codemie.service.index.datasource_health_check_service import IndexHealthChe
 NO_LOADER_CONFIG = {
     DatasourceTypes.GIT,  # indexed through code_loader
     DatasourceTypes.GOOGLE,  # Google Docs loader is not configured per-type
+    DatasourceTypes.GIT_FAQ,  # GitFaqLoader extends GitBatchLoader, reuses code_loader's config
 }
 
 NO_FULL_TYPE = {

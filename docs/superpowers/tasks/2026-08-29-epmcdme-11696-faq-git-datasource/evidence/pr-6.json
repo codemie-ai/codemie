@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "architecture_status": "historical_b1_prototype_superseded",
+  "superseded_by": "docs/2026-09-01-faq-retrieval-strategy-comparison.md (Option A)",
+  "task_id": "pr-6",
+  "ticket": "EPMCDME-11696",
+  "description": "Trigger wiring: webhook FAQ branch, cron FAQ job, UNSUPPORTED_RESUME_TYPES, validate_datasource whitelist + public-repo setting-id exemption; is_code_index generalized to the llm_routing family",
+  "tdd": {
+    "failing_test": {
+      "command": ".venv/Scripts/python.exe -m pytest tests/codemie/triggers/test_faq_trigger_wiring.py",
+      "excerpt": "ValueError: 'llm_routing_faq' is not a valid CodeIndexType — webhook handle_datasource took the code branch because is_code_index() only excluded llm_routing_google literally",
+      "note": "REAL BUG caught by the test (the analysis's C1 trap family). Fixed at the root: is_code_index() now excludes the whole 'llm_routing' prefix family."
+    },
+    "passing_test": {
+      "command": ".venv/Scripts/python.exe -m pytest tests/codemie/triggers/test_faq_trigger_wiring.py",
+      "excerpt": "8 passed",
+      "note": "Covers: validate_datasource accepts FAQ with/without setting_id; webhook dispatches reindex_faq with FaqReindexTask (not 500/code branch); cron schedules the reindex_faq job (no silent no-op); FAQ in UNSUPPORTED_RESUME_TYPES (no stuck-forever); actor builds processor from IndexInfo and runs reprocess; missing-link logs and returns."
+    },
+    "regression": {
+      "command": ".venv/Scripts/python.exe -m pytest tests/codemie/rest_api/models/test_index_info.py tests/codemie/rest_api/routers/test_index.py tests/codemie/service/tools/test_toolkit_service.py tests/codemie/triggers/bindings/test_webhook.py",
+      "excerpt": "191 passed"
+    }
+  },
+  "additional_gates": { "ruff": "All checks passed!" },
+  "artifacts": [
+    "src/codemie/triggers/trigger_models.py (FaqReindexTask)",
+    "src/codemie/triggers/actors/datasource.py (reindex_faq actor + UNSUPPORTED_RESUME_TYPES)",
+    "src/codemie/triggers/bindings/webhook.py (FAQ branch + imports)",
+    "src/codemie/triggers/bindings/cron.py (FAQ job branch + imports)",
+    "src/codemie/triggers/bindings/utils.py (whitelist + DATASOURCE_WITHOUT_SETTING_ID)",
+    "src/codemie/rest_api/models/index.py (is_code_index -> llm_routing family)",
+    "tests/codemie/triggers/test_faq_trigger_wiring.py"
+  ],
+  "completed_at": "2026-08-29T00:00:00Z"
+}

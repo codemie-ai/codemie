@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "architecture_status": "historical_b1_prototype_superseded",
+  "superseded_by": "docs/2026-09-01-faq-retrieval-strategy-comparison.md (Option A)",
+  "task": "Implement a Git-based FAQ datasource as a new top-level llm_routing_faq type: FaqGitLoader (GitBatchLoader subclass restricted to faq_path/*.md with a frontmatter/basic-markdown parser), FaqDatasourceProcessor (whole-article unembedded bulk indexing, TOC in ES _meta, shared LLMRoutingProcessorMixin extracted from GoogleDocDatasourceProcessor with a search_kb registry), KB-style REST endpoints with source-edit/full-reindex gating, index_info.faq_path migration, webhook/cron/resume wiring, a new FE datasource type + form, SDK (python/node/MCP/harness) mirrors, and documentation.",
+  "generated": "2026-08-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 5, "label": "L" },
+    "dependencies":         { "score": 4, "label": "L" },
+    "affected_layers":      { "score": 5, "label": "L" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Four delivery components: backend (codemie), frontend (codemie-ui), SDK monorepo (python + node + MCP datasources server + test harness), and documentation (internal .ai-run guide + post-release public docs PR). The backend alone spans loader, processor, mixin refactor, REST routes, migration, and trigger wiring. The spec/architecture phase is already complete (analysis doc, corpus validation, amended story, B1 decision), which is why requirements_clarity is S despite the breadth."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Base risk M: PR-2 refactors the live GoogleDocDatasourceProcessor into a shared mixin consumed by search_kb routing — production behavior of an existing feature, mitigated by an isolated PR whose review bar is 'Google tests unchanged and green'. Retrieval correctness for the new type rests on type-string conventions (llm_routing prefix) plus a registry replacing a hardcoded constructor; both are testable. The DB migration is a single nullable column on index_info, auto-applied at startup with an up/down/up DoD cycle. Stale-classification misuse could theoretically cause destructive deletion of active datasources, but the plan explicitly keeps faq out of _CODE_INDEX_TYPES and adds no code there."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "~10 new backend files (parser, loader, processor, mixin, models, migration, 4 test modules), ~12 modified backend files (constants, routers, triggers, search_kb, tool_execution_service, IndexInfo), ~12 FE files, ~8 SDK files. Net-new logic is small (parser + processor glue); the bulk is registration wiring — mechanical but wide, which is what keeps this L rather than XL."
+    },
+    {
+      "dimension": "dependencies",
+      "reason": "Cross-repo delivery with a strict PR dependency chain (parser → loader → processor+DB → REST → triggers → FE/SDK), plus a startup-auto-applied migration and MRs that must request /sanity per repo rules. The SDK is hand-written — enum/field changes do not propagate and need parallel mirrors in python, node, MCP, and the test harness."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Touches every layer: REST API, DB schema (index_info.faq_path), Elasticsearch (document shape + _meta TOC), trigger system (webhook/cron/resume), monitoring adjacency (free by convention), frontend (new type, form, details), and SDK/public API surface. No auth-layer change (credential stack inherited verbatim from Git)."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk held at M (3) rather than raised: the riskiest change (live Google mixin refactor) is scheduled first as an isolated PR with an explicit zero-behavior-change review bar and existing regression suite; remaining risk is additive wiring with dedicated silent-failure tests."
+  ],
+  "split_recommendation": "Already split: execute as PR-1..PR-9 per docs/superpowers/tasks/2026-08-29-epmcdme-11696-faq-git-datasource/plan.md (parser → mixin → loader → processor+DB → REST+health → triggers → FE → SDK → docs). Backend PRs 1-2 have no user-visible impact and can land independently."
+}

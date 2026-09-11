@@ -27,7 +27,13 @@ from codemie.service.provider.datasource.provider_datasource_reindex_service imp
 from codemie.service.settings.settings import SettingsService
 from codemie.service.workflow_service import WorkflowService
 from codemie.triggers.actors.assistant import invoke_assistant
-from codemie.triggers.actors.datasource import reindex_code, reindex_confluence, reindex_google, reindex_jira
+from codemie.triggers.actors.datasource import (
+    reindex_code,
+    reindex_confluence,
+    reindex_git_faq,
+    reindex_google,
+    reindex_jira,
+)
 from codemie.triggers.actors.workflow import invoke_workflow
 from codemie.triggers.bindings.github_webhook_security import GitHubWebhookSecurity
 from codemie.triggers.bindings.gitlab_webhook_security import GitLabWebhookSecurity
@@ -37,6 +43,7 @@ from codemie.triggers.trigger_models import (
     CodeReindexTask,
     ConfluenceReindexTask,
     GoogleReindexTask,
+    GitFaqReindexTask,
     JiraReindexTask,
 )
 
@@ -587,6 +594,15 @@ class WebhookService:
                 index_info=datasource,
             )
             background_tasks.add_task(reindex_confluence, payload)
+        elif index_type == FullDatasourceTypes.GIT_FAQ:
+            payload = GitFaqReindexTask(
+                resource_id=resource_id,
+                project_name=project_name,
+                resource_name=resource_name,
+                user=user,
+                index_info=datasource,
+            )
+            background_tasks.add_task(reindex_git_faq, payload)
         elif index_type == FullDatasourceTypes.GOOGLE:
             link = datasource.google_doc_link
             payload = GoogleReindexTask(

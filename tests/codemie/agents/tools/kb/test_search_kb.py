@@ -687,3 +687,46 @@ def test_unverified_coverage_carries_the_guardrail():
     head = result.split("**Source:**")[0]
     assert "do not" in head.lower()
     assert "narrower" in head.lower()
+
+
+# ---------------------------------------------------------------------------
+# LLM-routing processor registry
+# ---------------------------------------------------------------------------
+
+
+class TestLLMRoutingProcessorFactories(unittest.TestCase):
+    """The registry keyed by index_type decides which processor serves LLM routing."""
+
+    def test_google_factory_builds_google_processor_from_index_info(self):
+        from types import SimpleNamespace
+
+        from codemie.agents.tools.kb.search_kb import _LLM_ROUTING_PROCESSOR_FACTORIES
+        from codemie.datasource.google_doc.google_doc_datasource_processor import GoogleDocDatasourceProcessor
+
+        kb_index = SimpleNamespace(
+            repo_name="demo-kb",
+            project_name="demo-project",
+            google_doc_link="https://docs.google.com/document/d/abc/edit",
+        )
+
+        factory = _LLM_ROUTING_PROCESSOR_FACTORIES.get(FullDatasourceTypes.GOOGLE.value)
+
+        self.assertIsNotNone(factory)
+        processor = factory(kb_index)
+        self.assertIsInstance(processor, GoogleDocDatasourceProcessor)
+        self.assertEqual(processor.datasource_name, "demo-kb")
+        self.assertEqual(processor.project_name, "demo-project")
+        self.assertEqual(processor.google_doc, kb_index.google_doc_link)
+
+    def test_unknown_index_type_has_no_factory(self):
+        from codemie.agents.tools.kb.search_kb import _LLM_ROUTING_PROCESSOR_FACTORIES
+
+        self.assertNotIn("knowledge_base_confluence", _LLM_ROUTING_PROCESSOR_FACTORIES)
+        self.assertNotIn("code", _LLM_ROUTING_PROCESSOR_FACTORIES)
+
+    def test_git_faq_is_not_an_llm_routing_type(self):
+        """FAQ uses the chunked hybrid KB flow (SearchAndRerankKB), not TOC routing."""
+        from codemie.agents.tools.kb.search_kb import _LLM_ROUTING_PROCESSOR_FACTORIES
+
+        self.assertNotIn(FullDatasourceTypes.GIT_FAQ.value, _LLM_ROUTING_PROCESSOR_FACTORIES)
+        self.assertNotIn("llm_routing", FullDatasourceTypes.GIT_FAQ.value)

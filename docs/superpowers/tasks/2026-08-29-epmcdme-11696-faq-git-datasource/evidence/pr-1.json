@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "architecture_status": "historical_b1_prototype_superseded",
+  "superseded_by": "docs/2026-09-01-faq-retrieval-strategy-comparison.md (Option A)",
+  "task_id": "pr-1",
+  "ticket": "EPMCDME-11696",
+  "description": "FAQ markdown parser (pure functions) + corpus-derived fixtures + parametrized tests",
+  "tdd": {
+    "failing_test": {
+      "command": ".venv/Scripts/python.exe -m pytest tests/codemie/datasource/loader/test_faq_markdown_parser.py -x",
+      "excerpt": "from codemie.datasource.loader.faq_markdown_parser import ( E   ModuleNotFoundError: No module named 'codemie.datasource.loader.faq_markdown_parser'",
+      "note": "Tests written first; module did not exist (red)."
+    },
+    "passing_test": {
+      "command": ".venv/Scripts/python.exe -m pytest tests/codemie/datasource/loader/test_faq_markdown_parser.py",
+      "excerpt": "22 passed in 1.50s",
+      "note": "Covers: full precedence chains (title/instructions/reference), line-0-only frontmatter vs mid-file ---, first-H1-wins, filename fallback, deep paths, invalid-YAML -> FaqParseError, CRLF, toc_entry formatting, faq_path normalization."
+    }
+  },
+  "additional_gates": {
+    "ruff": "All checks passed!",
+    "license_headers": "Checked 2 files, 0 missing license headers"
+  },
+  "artifacts": [
+    "src/codemie/datasource/loader/faq_markdown_parser.py",
+    "tests/codemie/datasource/loader/test_faq_markdown_parser.py",
+    "tests/codemie/datasource/loader/fixtures/faq/ (11 files)"
+  ],
+  "completed_at": "2026-08-29T00:00:00Z"
+}

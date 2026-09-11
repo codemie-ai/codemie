@@ -38,6 +38,17 @@ from codemie.templates.knowledge_base_prompt import LLM_ROUTING_KB_PROMPT
 
 _SUPPRESSED_CALLBACK_TYPES = AgentStreamingCallback | AgentInvokeCallback
 
+# Construction recipes for LLM-routing datasources, keyed by IndexInfo.index_type.
+# Dispatch in execute() gates on the "llm_routing" substring; this registry decides
+# which processor serves each concrete type.
+_LLM_ROUTING_PROCESSOR_FACTORIES = {
+    FullDatasourceTypes.GOOGLE.value: lambda kb: GoogleDocDatasourceProcessor(
+        datasource_name=kb.repo_name,
+        project_name=kb.project_name,
+        google_doc=kb.google_doc_link,
+    ),
+}
+
 COVERAGE_KEY = "**Coverage:** "
 INCOMPLETE_NOTICE = (
     "###NOTICE###\n"
@@ -295,11 +306,10 @@ class SearchKBTool(CodeMieTool, DatasourceHealthMixin):
     def process_llm_routing_index(self, query: str, kb_index):
         request_id = self.metadata.get(REQUEST_ID)
         llm = get_llm_by_credentials(llm_model=self.llm_model, request_id=request_id, streaming=False)
-        processor = GoogleDocDatasourceProcessor(
-            datasource_name=kb_index.repo_name,
-            project_name=kb_index.project_name,
-            google_doc=kb_index.google_doc_link,
-        )
+        factory = _LLM_ROUTING_PROCESSOR_FACTORIES.get(kb_index.index_type)
+        if factory is None:
+            raise ToolException(f"LLM routing is not supported for index type '{kb_index.index_type}'")
+        processor = factory(kb_index)
         sections = "\n".join(processor.get_table_of_contents())
         search_chain = LLM_ROUTING_KB_PROMPT | llm.with_structured_output(LLMRouting)
 

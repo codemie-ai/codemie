@@ -39,6 +39,7 @@ Detailed project guidance lives under `.ai-run/guides/`, which is the source of 
 | X-ray | `.ai-run/guides/integration/xray-integration.md` | X-ray integration |
 | Google Docs | `.ai-run/guides/integration/google-docs-integration.md` | Google Docs integration |
 | MCP | `.ai-run/guides/integration/mcp-integration.md` | MCP configuration and tools |
+| FAQ Git | `.ai-run/guides/integration/faq-git-integration.md` | Git FAQ (llm_routing_faq) datasource: parser, routing, contracts |
 | Code Quality | `.ai-run/guides/standards/code-quality.md` | Python and Ruff standards |
 | Git Workflow | `.ai-run/guides/standards/git-workflow.md` | Branch, commit, and review conventions |
 | Testing | `.ai-run/guides/testing/testing-patterns.md` | pytest policy and patterns |

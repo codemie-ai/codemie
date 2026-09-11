@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "architecture_status": "historical_b1_prototype_superseded",
+  "superseded_by": "docs/2026-09-01-faq-retrieval-strategy-comparison.md (Option A)",
+  "task_id": "pr-8",
+  "ticket": "EPMCDME-11696",
+  "repo": "codemie-sdk",
+  "branch": "EPMCDME-11696_git-faq-datasource",
+  "commit": "2529e024",
+  "description": "SDK FAQ support: python (DataSourceType.FAQ, Faq model + FaqDataSourceRequest + response extraction into DataSource.faq), node (enum, Faq/BaseFaqParams/FaqDataSource{Create,Update}Params/FaqDataSourceResponse, mapper emit/extract, service path param), MCP create_faq_datasource tool + README, test-harness create_faq_datasource passthrough",
+  "verification": {
+    "python": "round-trip verified: FaqDataSourceRequest -> body keys link/branch/faq_path (snake_case fix applied: faqPath alias would have been silently dropped by the BE model) ; DataSource.model_validate(llm_routing_faq response) -> .faq populated",
+    "node": "tsc clean; jest unit suite 272 passed incl. 3 new FAQ mapper tests (default faq_path, explicit path, response extraction)",
+    "note": "Endpoint routing is automatic: type.name.lower() == 'faq' -> /v1/index/knowledge_base/faq (both SDKs)"
+  },
+  "completed_at": "2026-08-29T00:00:00Z"
+}

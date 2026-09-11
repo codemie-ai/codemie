@@ -45,6 +45,7 @@ from codemie.triggers.actors.datasource import (
     reindex_azure_devops_work_item,
     reindex_code,
     reindex_confluence,
+    reindex_git_faq,
     reindex_google,
     reindex_jira,
     reindex_sharepoint,
@@ -63,6 +64,7 @@ from codemie.triggers.trigger_models import (
     XWikiReindexTask,
     CodeReindexTask,
     ConfluenceReindexTask,
+    GitFaqReindexTask,
     GoogleReindexTask,
     JiraReindexTask,
     SharePointReindexTask,
@@ -81,6 +83,10 @@ CRONTAB_WEEKDAY_TERM = re.compile(
     r"(?P<start>\*|\d+|[a-z]+)(?:-(?P<end>\d+|[a-z]+))?(?:/(?P<step>\d+))?",
     re.IGNORECASE,
 )
+
+
+def _to_index_type_str(index_type) -> str:
+    return index_type.value if isinstance(index_type, CodeIndexType) else index_type
 
 
 class Job:
@@ -675,7 +681,7 @@ class Cron:
             return None
 
         # Build payload based on index type
-        index_type_str = index_type.value if isinstance(index_type, CodeIndexType) else index_type
+        index_type_str = _to_index_type_str(index_type)
 
         if index_info.repo_type == "svn":
             svn_repos = SVNRepo.get_by_app_id(app_id=project_name)
@@ -765,6 +771,21 @@ class Cron:
             )
             return self.scheduler.add_job(
                 reindex_confluence,
+                trigger=cron_trigger,
+                id=job_id,
+                replace_existing=True,
+                kwargs={"payload": payload},
+            )
+        elif index_type_str == FullDatasourceTypes.GIT_FAQ.value:
+            payload = GitFaqReindexTask(
+                project_name=project_name,
+                resource_id=job_id,
+                resource_name=resource_name,
+                user=user,
+                index_info=index_info,
+            )
+            return self.scheduler.add_job(
+                reindex_git_faq,
                 trigger=cron_trigger,
                 id=job_id,
                 replace_existing=True,

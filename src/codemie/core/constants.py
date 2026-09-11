@@ -98,6 +98,7 @@ class DatasourceTypes(str, Enum):
     FILE = "file"
     JSON = "json"
     GOOGLE = "google"
+    GIT_FAQ = "git_faq"
     AZURE_DEVOPS_WIKI = "azure_devops_wiki"
     AZURE_DEVOPS_WORK_ITEM = "azure_devops_work_item"
     XRAY = "xray"

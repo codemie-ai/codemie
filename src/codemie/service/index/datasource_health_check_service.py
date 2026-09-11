@@ -59,6 +59,8 @@ class IndexHealthCheckService:
                     return cls.health_check_svn(request, user_id)
                 case DatasourceTypes.GIT:
                     return cls.health_check_git(request, user_id)
+                case DatasourceTypes.GIT_FAQ:
+                    return cls.health_check_git(request, user_id)
                 case _:
                     return DatasourceHealthCheckResponse(implemented=False)
         except ConnectionException as e:

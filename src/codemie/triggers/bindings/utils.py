@@ -52,6 +52,7 @@ def validate_assistant(assistant_id):
 
 DATASOURCE_WITHOUT_SETTING_ID = [
     FullDatasourceTypes.GOOGLE,
+    FullDatasourceTypes.GIT_FAQ,  # public FAQ repos reindex anonymously; private ones fail at clone time
     FullDatasourceTypes.PROVIDER,
 ]
 
@@ -67,6 +68,7 @@ def validate_datasource(datasource_id) -> IndexInfo | None:
         FullDatasourceTypes.CONFLUENCE,
         FullDatasourceTypes.JIRA,
         FullDatasourceTypes.GOOGLE,
+        FullDatasourceTypes.GIT_FAQ,
         FullDatasourceTypes.AZURE_DEVOPS_WIKI,
         FullDatasourceTypes.AZURE_DEVOPS_WORK_ITEM,
         FullDatasourceTypes.PROVIDER,

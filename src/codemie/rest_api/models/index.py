@@ -99,6 +99,7 @@ class IndexTypeByContextTypeMapping(Enum):
         "knowledge_base_sharepoint",
         "knowledge_base_file",
         "llm_routing_google",
+        "knowledge_base_git_faq",
         "platform_marketplace_assistant",
     )
     PROVIDER = ("provider",)
@@ -943,7 +944,7 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
 
         # Handle project_name change if provided
         if project_name and project_name != self.project_name:
-            if self.index_type.startswith("knowledge_base"):
+            if self.index_type.startswith("knowledge_base") or self.index_type.startswith("llm_routing"):
                 self._reindex_to_new_project(project_name)
             self.project_name = project_name
         self._apply_if_not_none(updated_by=updated_by)
@@ -1233,9 +1234,9 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
 
     def is_code_index(self) -> bool:
         kb_index = self.index_type.startswith("knowledge_base")
-        google_doc_index = self.is_google_doc_index()
+        llm_routing_index = self.index_type.startswith("llm_routing")
         platform_index = self.is_platform_index()
-        return not (kb_index or google_doc_index or platform_index)
+        return not (kb_index or llm_routing_index or platform_index)
 
     def is_google_doc_index(self) -> bool:
         return self.index_type.startswith(FullDatasourceTypes.GOOGLE)
@@ -1244,7 +1245,11 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
         return self.index_type.startswith("platform")
 
     def get_index_identifier(self) -> str:
-        if self.index_type.startswith("knowledge_base") or self.is_google_doc_index() or self.is_platform_index():
+        if (
+            self.index_type.startswith("knowledge_base")
+            or self.index_type.startswith("llm_routing")
+            or self.is_platform_index()
+        ):
             # Check legacy naming flag for backward compatibility
             if self.uses_legacy_es_naming:
                 # OLD naming: repo_name only (pre-naming-update datasources)
@@ -1297,6 +1302,11 @@ class IndexInfo(BaseModelWithSQLSupport, Owned, table=True):
             git_repo = GitRepo.find_by_id(index_name)
             if git_repo:
                 git_repo.delete()
+
+        if self.index_type.startswith("knowledge_base_git_faq"):
+            from codemie.datasource.loader.git_faq_loader import cleanup_local_repo
+
+            cleanup_local_repo(self.project_name, self.repo_name)
 
         elastic_client = ElasticSearchClient.get_client()
         if elastic_client.indices.exists(index=index_name):
@@ -1533,6 +1543,30 @@ class IndexKnowledgeBaseGoogleRequest(CronExpressionValidatorMixin, IndexKnowled
     setting_id: Optional[str] = None
     embedding_model: Optional[str] = None
     cron_expression: Optional[str] = None
+
+
+class IndexKnowledgeBaseGitFaqRequest(CronExpressionValidatorMixin, IndexKnowledgeBaseRequest):
+    link: str
+    branch: str
+    files_filter: Optional[str] = None
+    setting_id: Optional[str] = None
+    embedding_model: Optional[str] = None
+    cron_expression: Optional[str] = None
+
+
+class UpdateKnowledgeBaseGitFaqRequest(CronExpressionValidatorMixin, BaseModel):
+    name: str = Field(min_length=1, max_length=500)
+    project_name: str
+    description: Optional[str] = None
+    project_space_visible: Optional[bool] = None
+    new_project_name: Optional[str] = None  # Field to support project change
+    guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None
+    cron_expression: Optional[str] = None
+    # Source fields: editable only together with full_reindex=true
+    link: Optional[str] = None
+    branch: Optional[str] = None
+    files_filter: Optional[str] = None
+    setting_id: Optional[str] = None
 
 
 class UpdateIndexRequest(CronExpressionValidatorMixin, BaseModel):
