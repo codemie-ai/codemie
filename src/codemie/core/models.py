@@ -53,6 +53,8 @@ from codemie.rest_api.models.base import (
     PydanticListType,
 )
 from codemie.rest_api.models.standard import PostResponse
+from sqlalchemy import Boolean, text
+from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlmodel import (
     SQLModel,
     Field as SQLField,
@@ -454,11 +456,59 @@ class Application(BaseModelWithSQLSupport, Owned, table=True):
         return self.name in user.project_names
 
 
+class ProjectEnrichment(SQLModel, table=True):
+    """Enrichment record for either a project or a cost center.
+
+    Exactly one of application_id or cost_center_id must be set (XOR).
+    """
+
+    __tablename__ = "project_enrichment"
+
+    id: uuid.UUID = SQLField(default_factory=uuid.uuid4, primary_key=True)
+    application_id: Optional[str] = SQLField(
+        default=None,
+        nullable=True,
+        max_length=100,
+        foreign_key="applications.id",
+    )
+    cost_center_id: Optional[uuid.UUID] = SQLField(
+        default=None,
+        nullable=True,
+        foreign_key="cost_centers.id",
+    )
+    is_active: bool = SQLField(
+        sa_column=Column(Boolean, nullable=False, server_default=text("true")),
+        default=True,
+    )
+    synced_at: Optional[datetime] = SQLField(
+        sa_column=Column(TIMESTAMP(timezone=True), nullable=True),
+        default=None,
+    )
+    created_at: Optional[datetime] = SQLField(
+        sa_column=Column(TIMESTAMP(timezone=True), nullable=False, server_default=func.now()),
+        default=None,
+    )
+    updated_at: Optional[datetime] = SQLField(
+        sa_column=Column(TIMESTAMP(timezone=True), nullable=True, onupdate=func.now()),
+        default=None,
+    )
+    __table_args__ = (
+        Index("ix_project_enrichment_is_active", "is_active"),
+        Index("ix_project_enrichment_application_id", "application_id"),
+        Index("ix_project_enrichment_cost_center_id", "cost_center_id"),
+        CheckConstraint(
+            "(application_id IS NOT NULL AND cost_center_id IS NULL) OR "
+            "(application_id IS NULL AND cost_center_id IS NOT NULL)",
+            name="ck_project_enrichment_xor_application_cost_center",
+        ),
+    )
+
+
 class CostCenter(SQLModel, table=True):
     __tablename__ = "cost_centers"
 
     id: uuid.UUID = SQLField(default_factory=uuid.uuid4, primary_key=True)
-    name: str = SQLField(nullable=False, max_length=255)
+    name: str = SQLField(nullable=False, max_length=255, unique=True)
     description: Optional[str] = SQLField(default=None, max_length=500)
     created_by: str = SQLField(nullable=False, max_length=255)
     date: datetime = SQLField(nullable=False)

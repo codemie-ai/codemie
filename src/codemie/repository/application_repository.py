@@ -850,6 +850,19 @@ class ApplicationRepository:
             logger.error(f"Failed to create or retrieve application: name={name}, error={e}", exc_info=True)
             raise
 
+    async def aget_project_names_by_cost_center_name(self, session: AsyncSession, cost_center_name: str) -> list[str]:
+        """Return names of non-deleted projects linked to the given cost center name."""
+        from codemie.core.models import CostCenter
+
+        statement = (
+            select(Application.name)
+            .join(CostCenter, CostCenter.id == Application.cost_center_id)
+            .where(CostCenter.name == cost_center_name)
+            .where(Application.deleted_at.is_(None))
+        )
+        result = await session.execute(statement)
+        return list(result.scalars().all())
+
 
 # Singleton instance
 application_repository = ApplicationRepository()

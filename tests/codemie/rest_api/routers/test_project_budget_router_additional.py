@@ -122,6 +122,7 @@ async def test_clear_member_override_returns_reloaded_budget_response():
         max_budget=25.0,
         budget_duration="30d",
         budget_reset_at=None,
+        is_active=True,
         provider_metadata={"provider": "litellm", "sync_status": "ok"},
         created_by="admin-1",
         created_at=datetime(2026, 4, 23, tzinfo=UTC),

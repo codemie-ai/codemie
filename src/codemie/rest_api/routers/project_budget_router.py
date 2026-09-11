@@ -108,6 +108,7 @@ class ProjectBudgetResponse(BaseModel):
     max_budget: float
     budget_duration: str
     allocation_mode: str
+    is_active: bool
     budget_reset_at: Optional[str]
     member_count: int
     allocated_member_budget_total: float
@@ -168,6 +169,7 @@ def _build_project_budget_response(
         max_budget=budget.max_budget,
         budget_duration=budget.budget_duration,
         allocation_mode=assignment.allocation_mode if assignment else AllocationMode.EQUAL.value,
+        is_active=budget.is_active,
         budget_reset_at=budget.budget_reset_at,
         member_count=len(allocations),
         allocated_member_budget_total=allocated_total,

@@ -39,6 +39,7 @@ class PredefinedBudgetConfig(BaseModel):
 
 
 ENV_LOCAL = "local"
+_CRON_DAILY_MIDNIGHT = "0 0 * * *"
 
 
 class Config(BaseSettings):
@@ -791,7 +792,7 @@ class Config(BaseSettings):
     # Conversation Analysis Configuration
     CONVERSATION_HISTORY_STATS_ENABLED: bool = False  # Compute very_first/last_msg_at via history scan on list requests
     CONVERSATION_ANALYSIS_ENABLED: bool = False
-    CONVERSATION_ANALYSIS_SCHEDULE: str = "0 0 * * *"  # Midnight daily (cron format)
+    CONVERSATION_ANALYSIS_SCHEDULE: str = _CRON_DAILY_MIDNIGHT  # Midnight daily (cron format)
     CONVERSATION_ANALYSIS_START_DATE: str = "2025-12-01"  # Only analyze conversations from this date onwards
     CONVERSATION_ANALYSIS_LOOKBACK_DAYS: int = 1  # Analyze conversations older than N days
     CONVERSATION_ANALYSIS_BATCH_SIZE: int = 20  # Conversations per batch per pod
@@ -831,6 +832,10 @@ class Config(BaseSettings):
         "10 0 * * *"  # Cron schedule (UTC) for reset reconciliation — daily at 12:10 AM
     )
     LITELLM_BUDGET_RESET_RECONCILIATION_WINDOW_MINUTES: int = 10  # Allowed midnight UTC execution window
+    BUDGET_STOP_ENABLED: bool = False  # Master flag — enables all inactive budget stop and restore jobs
+    INACTIVE_PROJECT_BUDGET_STOP_SCHEDULE: str = _CRON_DAILY_MIDNIGHT  # Cron schedule (UTC) — daily midnight
+    INACTIVE_COST_CENTER_BUDGET_STOP_SCHEDULE: str = _CRON_DAILY_MIDNIGHT  # Cron schedule (UTC) — daily midnight
+    ACTIVE_PROJECT_BUDGET_RESTORE_SCHEDULE: str = "0 1 * * *"  # Cron schedule (UTC) — daily 1 AM
     BUDGET_USAGE_STALENESS_THRESHOLD_MS: int = 600000  # 10 minutes — lazy-refresh threshold for /budget_usage
     BUDGET_MEMBER_SPEND_STALENESS_THRESHOLD_MS: int = (
         600000  # 10 minutes — lazy-refresh threshold for member spend analytics

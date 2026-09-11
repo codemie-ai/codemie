@@ -196,6 +196,7 @@ class BudgetResolutionService:
                     WHERE  pba.project_name    = :project_name
                       AND  pba.budget_category = :budget_category
                       AND  pba.deleted_at IS NULL
+                      AND  b.is_active = TRUE
                     LIMIT 1
                     """
                 ),

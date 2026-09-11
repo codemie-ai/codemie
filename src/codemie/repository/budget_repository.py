@@ -207,6 +207,28 @@ class BudgetRepository:
         result = await session.execute(select(Budget))
         return {b.budget_id: b for b in result.scalars().all()}
 
+    async def list_active_project_budgets(self, session: AsyncSession, project_name: str) -> list[Budget]:
+        """Return all active (is_active=True, deleted_at IS NULL) budgets for a project."""
+        stmt = (
+            select(Budget)
+            .where(Budget.project_name == project_name)
+            .where(Budget.is_active.is_(True))
+            .where(Budget.deleted_at.is_(None))
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_stopped_project_budgets(self, session: AsyncSession, project_name: str) -> list[Budget]:
+        """Return all stopped (is_active=False, deleted_at IS NULL) budgets for a project."""
+        stmt = (
+            select(Budget)
+            .where(Budget.project_name == project_name)
+            .where(Budget.is_active.is_(False))
+            .where(Budget.deleted_at.is_(None))
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
     async def list_overdue_reset_budgets(self, session: AsyncSession, now: datetime) -> list[Budget]:
         """Return active budgets whose stored reset timestamp is overdue."""
         stmt = (

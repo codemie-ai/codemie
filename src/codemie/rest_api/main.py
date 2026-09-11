@@ -517,6 +517,51 @@ def _setup_leaderboard_scheduler(app: FastAPI):
     logger.info("Leaderboard scheduler started successfully")
 
 
+def _setup_inactive_project_budget_scheduler(app: FastAPI):
+    """Setup inactive project budget stop scheduler if enabled."""
+    if not config.BUDGET_STOP_ENABLED:
+        return
+
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from codemie.service.budget.inactive_project_budget_scheduler import InactiveProjectBudgetScheduler
+
+    scheduler_instance = AsyncIOScheduler()
+    scheduler = InactiveProjectBudgetScheduler(scheduler=scheduler_instance)
+    scheduler.start()
+    app.state.inactive_project_budget_scheduler = scheduler
+    logger.info("Inactive project budget stop scheduler started successfully")
+
+
+def _setup_inactive_cost_center_budget_scheduler(app: FastAPI):
+    """Setup inactive cost center budget stop scheduler if enabled."""
+    if not config.BUDGET_STOP_ENABLED:
+        return
+
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from codemie.service.budget.inactive_cost_center_budget_scheduler import InactiveCostCenterBudgetScheduler
+
+    scheduler_instance = AsyncIOScheduler()
+    scheduler = InactiveCostCenterBudgetScheduler(scheduler=scheduler_instance)
+    scheduler.start()
+    app.state.inactive_cost_center_budget_scheduler = scheduler
+    logger.info("Inactive cost center budget stop scheduler started successfully")
+
+
+def _setup_active_project_budget_scheduler(app: FastAPI):
+    """Setup active project budget restore scheduler if enabled."""
+    if not config.BUDGET_STOP_ENABLED:
+        return
+
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from codemie.service.budget.active_project_budget_scheduler import ActiveProjectBudgetScheduler
+
+    scheduler_instance = AsyncIOScheduler()
+    scheduler = ActiveProjectBudgetScheduler(scheduler=scheduler_instance)
+    scheduler.start()
+    app.state.active_project_budget_scheduler = scheduler
+    logger.info("Active project budget restore scheduler started successfully")
+
+
 def _setup_stale_datasource_scheduler(app: FastAPI):
     """Setup stale datasource detection scheduler if enabled."""
     if not config.STALE_DATASOURCE_ENABLED:
@@ -650,6 +695,13 @@ async def _run_keycloak_migration() -> None:
         # Non-fatal: log and continue. App starts regardless.
 
 
+def _stop_scheduler(app: FastAPI, attr_name: str, display_name: str, method: str = "stop"):
+    scheduler = getattr(app.state, attr_name, None)
+    if scheduler is not None:
+        getattr(scheduler, method)()
+        logger.info(f"{display_name} shutdown complete")
+
+
 async def _shutdown_services(app: FastAPI, tasks: list):
     """Shutdown all services and background tasks."""
     from codemie.service.llm_proxy.provider_registry import get_active_llm_proxy_provider
@@ -673,35 +725,17 @@ async def _shutdown_services(app: FastAPI, tasks: list):
         except Exception as e:
             logger.error(f"Error shutting down plugin service: {e}", exc_info=True)
 
-    conversation_analysis_scheduler = getattr(app.state, 'conversation_analysis_scheduler', None)
-    if conversation_analysis_scheduler is not None:
-        conversation_analysis_scheduler.stop()
-        logger.info("Conversation analysis scheduler shutdown complete")
-
-    spend_tracking_scheduler = getattr(app.state, 'spend_tracking_scheduler', None)
-    if spend_tracking_scheduler is not None:
-        spend_tracking_scheduler.stop()
-        logger.info("Spend tracking scheduler shutdown complete")
-
-    leaderboard_scheduler = getattr(app.state, 'leaderboard_scheduler', None)
-    if leaderboard_scheduler is not None:
-        leaderboard_scheduler.stop()
-        logger.info("Leaderboard scheduler shutdown complete")
-
-    stale_datasource_scheduler = getattr(app.state, 'stale_datasource_scheduler', None)
-    if stale_datasource_scheduler is not None:
-        stale_datasource_scheduler.stop()
-        logger.info("Stale datasource scheduler shutdown complete")
-
-    activity_events_retention_scheduler = getattr(app.state, 'activity_events_retention_scheduler', None)
-    if activity_events_retention_scheduler is not None:
-        activity_events_retention_scheduler.shutdown()
-        logger.info("Activity events retention scheduler shutdown complete")
-
-    metrics_rotation_scheduler = getattr(app.state, 'metrics_rotation_scheduler', None)
-    if metrics_rotation_scheduler is not None:
-        metrics_rotation_scheduler.stop()
-        logger.info("Metrics rotation scheduler shutdown complete")
+    _stop_scheduler(app, 'conversation_analysis_scheduler', 'Conversation analysis scheduler')
+    _stop_scheduler(app, 'spend_tracking_scheduler', 'Spend tracking scheduler')
+    _stop_scheduler(app, 'leaderboard_scheduler', 'Leaderboard scheduler')
+    _stop_scheduler(app, 'stale_datasource_scheduler', 'Stale datasource scheduler')
+    _stop_scheduler(
+        app, 'activity_events_retention_scheduler', 'Activity events retention scheduler', method='shutdown'
+    )
+    _stop_scheduler(app, 'metrics_rotation_scheduler', 'Metrics rotation scheduler')
+    _stop_scheduler(app, 'inactive_project_budget_scheduler', 'Inactive project budget stop scheduler')
+    _stop_scheduler(app, 'inactive_cost_center_budget_scheduler', 'Inactive cost center budget stop scheduler')
+    _stop_scheduler(app, 'active_project_budget_scheduler', 'Active project budget restore scheduler')
 
     await close_llm_proxy_client()
     logger.info("LLM Proxy HTTP client closed")
@@ -838,6 +872,9 @@ async def lifespan(app: FastAPI):
 
     _setup_conversation_analysis_scheduler(app)
     _setup_spend_tracking_scheduler(app)
+    _setup_inactive_project_budget_scheduler(app)
+    _setup_inactive_cost_center_budget_scheduler(app)
+    _setup_active_project_budget_scheduler(app)
     _setup_leaderboard_scheduler(app)
     _setup_stale_datasource_scheduler(app)
     _setup_activity_events_retention_scheduler(app)

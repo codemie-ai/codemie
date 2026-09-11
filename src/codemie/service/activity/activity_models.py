@@ -84,6 +84,8 @@ class BudgetManagementEvent:
     PROJECT_BUDGET_RESET = "budget.project_budget.reset"
     PROJECT_BUDGET_GROUP_REBALANCED = "budget.project_budget_group.rebalanced"
     PROJECT_BUDGET_GROUP_RESET = "budget.project_budget_group.reset"
+    PROJECT_BUDGET_STOPPED = "budget.project_budget.stopped"
+    PROJECT_BUDGET_RESTORED = "budget.project_budget.restored"
 
 
 class ActivityEvent(SQLModel, table=True):

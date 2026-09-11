@@ -27,10 +27,11 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from codemie.configs import logger
+from codemie.configs import config, logger
 from codemie.core.exceptions import ExtendedHTTPException, ValidationException
 from codemie.enterprise.litellm.budget_provider_adapter import PROJECT_KEY_ALIAS_PREFIX
 from codemie.repository.budget_repository import budget_repository
+from codemie.repository.project_enrichment_repository import project_enrichment_repository
 from codemie.repository.project_budget_repository import (
     project_budget_assignment_repository,
     project_budget_group_repository,
@@ -289,6 +290,26 @@ class ProjectBudgetService:
         app_result = await session.execute(app_stmt)
         if app_result.scalars().first() is None:
             raise ExtendedHTTPException(code=404, message=f"Project '{project_name}' not found or has been deleted")
+
+    @staticmethod
+    async def _ensure_project_is_active(session: AsyncSession, project_name: str) -> None:
+        is_active = await project_enrichment_repository.get_is_active_for_project(session, project_name)
+        if is_active is None:
+            raise ExtendedHTTPException(
+                code=422,
+                message=(
+                    f"Cannot create budget for project '{project_name}': "
+                    "no enrichment record found for this project or its cost center"
+                ),
+            )
+        if not is_active:
+            raise ExtendedHTTPException(
+                code=422,
+                message=(
+                    f"Cannot create budget for project '{project_name}': "
+                    "the project or its cost center is marked inactive"
+                ),
+            )
 
     @staticmethod
     def _validate_allocation_mode(allocation_mode: str) -> None:
@@ -826,6 +847,8 @@ class ProjectBudgetService:
 
         self._validate_allocation_mode(data.allocation_mode)
         await self._ensure_project_exists(session, data.project_name)
+        if config.BUDGET_STOP_ENABLED:
+            await self._ensure_project_is_active(session, data.project_name)
 
         # Append a UUID suffix so the stored budget_id is always unique,
         # allowing the same human-readable prefix to be reused after deletion.

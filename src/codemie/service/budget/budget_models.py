@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from pydantic import BaseModel
-from sqlalchemy import Column, Index, text
+from sqlalchemy import Boolean, Column, Index, text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 from sqlalchemy.sql import func
 from sqlmodel import Field, SQLModel
@@ -129,6 +129,10 @@ class Budget(SQLModel, table=True):
         sa_column=Column(TIMESTAMP(timezone=True), nullable=True),
         default=None,
     )
+    is_active: bool = Field(
+        sa_column=Column(Boolean, nullable=False, server_default=text("true")),
+        default=True,
+    )
 
     __table_args__ = (
         # Partial unique index: only active (non-deleted) budgets must have unique names.
@@ -140,6 +144,7 @@ class Budget(SQLModel, table=True):
         Index("ix_budgets_origin_type", "budget_origin_type"),
         Index("ix_budgets_project_origin", "project_name", "budget_category", "budget_origin_type"),
         Index("ix_budgets_created_by", "created_by"),
+        Index("ix_budgets_is_active", "is_active"),
     )
 
 
