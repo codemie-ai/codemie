@@ -17,6 +17,7 @@
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+from sqlalchemy.dialects import postgresql
 
 from codemie.core.models import Application
 from codemie.repository.application_repository import application_repository
@@ -31,6 +32,16 @@ def _make_app(name: str, description: str = "Test") -> Application:
         date=datetime.now(),
         update_date=datetime.now(),
     )
+
+
+def _compile_sql(statement) -> str:
+    """Helper to compile SQLModel statement to SQL string for inspection."""
+    return str(
+        statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    ).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +76,8 @@ class TestGetProjectEntityCountsBulk:
                 "integrations_count": 0,
                 "datasources_count": 0,
                 "skills_count": 0,
+                "budgets_count": 0,
+                "budget_groups_count": 0,
             }
         }
 
@@ -115,6 +128,45 @@ class TestGetProjectEntityCountsBulk:
         result = application_repository.get_project_entity_counts_bulk(mock_session, ["my-proj"])
 
         assert result["my-proj"]["integrations_count"] == 2
+
+    def test_budgets_counted_correctly(self):
+        """Budgets count is populated from the UNION ALL query."""
+        mock_session = MagicMock()
+        mock_session.exec.return_value.all.return_value = [("my-proj", "budgets", 2)]
+
+        result = application_repository.get_project_entity_counts_bulk(mock_session, ["my-proj"])
+
+        assert result["my-proj"]["budgets_count"] == 2
+
+    def test_query_includes_active_budgets(self):
+        """The UNION ALL query counts only active (non-soft-deleted) budgets."""
+        mock_session = MagicMock()
+        mock_session.exec.return_value.all.return_value = []
+
+        application_repository.get_project_entity_counts_bulk(mock_session, ["my-proj"])
+
+        query_text = _compile_sql(mock_session.exec.call_args[0][0])
+        assert "budgets" in query_text
+        assert "deleted_at is null" in query_text
+
+    def test_budget_groups_counted_correctly(self):
+        """Budget groups count is populated from the UNION ALL query."""
+        mock_session = MagicMock()
+        mock_session.exec.return_value.all.return_value = [("my-proj", "budget_groups", 1)]
+
+        result = application_repository.get_project_entity_counts_bulk(mock_session, ["my-proj"])
+
+        assert result["my-proj"]["budget_groups_count"] == 1
+
+    def test_query_includes_active_budget_groups(self):
+        """The UNION ALL query counts only active (non-soft-deleted) budget groups."""
+        mock_session = MagicMock()
+        mock_session.exec.return_value.all.return_value = []
+
+        application_repository.get_project_entity_counts_bulk(mock_session, ["my-proj"])
+
+        query_text = _compile_sql(mock_session.exec.call_args[0][0])
+        assert "project_budget_groups" in query_text
 
     def test_multiple_projects_returned_correctly(self):
         """Multiple projects each get their own counters in the result dict."""

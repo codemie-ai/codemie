@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "task": "Fix FK violation when deleting projects by nullifying budgets.project_name and tracking via activity events",
+  "generated": "2026-09-10T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 4,
+      "label": "L"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S"
+    },
+    "technical_risk": {
+      "score": 4,
+      "label": "L"
+    },
+    "file_change_estimate": {
+      "score": 3,
+      "label": "M"
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS"
+    },
+    "affected_layers": {
+      "score": 3,
+      "label": "M"
+    }
+  },
+  "total": 17,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Touches 3-4 components: ProjectService, BudgetRepository (async), ApplicationRepository (sync), plus activity event emission. Requires cross-repository coordination with async/sync mismatch handling."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "No exact precedent for sync/async coordination in project deletion flow. FK constraint alteration carries rollback risk. Production data may contain soft-deleted budgets requiring backfill decision."
+    }
+  ],
+  "red_flags_applied": [
+    "Database schema change (FK constraint modification) bumped Technical Risk from M to L",
+    "Component Scope at L due to async/sync repository mismatch requiring careful coordination"
+  ],
+  "split_recommendation": null
+}

@@ -599,7 +599,8 @@ class ApplicationRepository:
 
         Returns:
             Dict mapping project_name -> {"assistants_count": N, "workflows_count": N,
-            "integrations_count": N, "datasources_count": N, "skills_count": N}
+            "integrations_count": N, "datasources_count": N, "skills_count": N,
+            "budgets_count": N, "budget_groups_count": N}
         """
         if not project_names:
             return {}
@@ -609,6 +610,7 @@ class ApplicationRepository:
         from codemie.rest_api.models.index import IndexInfo
         from codemie.rest_api.models.settings import Settings
         from codemie.rest_api.models.skill import Skill
+        from codemie.service.budget.budget_models import Budget, ProjectBudgetGroup
 
         result: dict[str, dict] = {
             name: {
@@ -617,6 +619,8 @@ class ApplicationRepository:
                 "integrations_count": 0,
                 "datasources_count": 0,
                 "skills_count": 0,
+                "budgets_count": 0,
+                "budget_groups_count": 0,
             }
             for name in project_names
         }
@@ -666,8 +670,31 @@ class ApplicationRepository:
             .where(Settings.project_name.in_(project_names))
             .group_by(Settings.project_name)
         )
+        budgets_q = (
+            select(
+                Budget.project_name.label("proj"),
+                literal("budgets").label("entity_type"),
+                func.count(Budget.budget_id).label("cnt"),
+            )
+            .where(Budget.project_name.in_(project_names), Budget.deleted_at.is_(None))
+            .group_by(Budget.project_name)
+        )
+        budget_groups_q = (
+            select(
+                ProjectBudgetGroup.project_name.label("proj"),
+                literal("budget_groups").label("entity_type"),
+                func.count(ProjectBudgetGroup.id).label("cnt"),
+            )
+            .where(
+                ProjectBudgetGroup.project_name.in_(project_names),
+                ProjectBudgetGroup.deleted_at.is_(None),
+            )
+            .group_by(ProjectBudgetGroup.project_name)
+        )
 
-        combined = union_all(assistants_q, workflows_q, skills_q, datasources_q, integrations_q)
+        combined = union_all(
+            assistants_q, workflows_q, skills_q, datasources_q, integrations_q, budgets_q, budget_groups_q
+        )
         for proj, entity_type, cnt in session.exec(combined).all():  # type: ignore[call-overload]
             if proj in result:
                 result[proj][f"{entity_type}_count"] = int(cnt)

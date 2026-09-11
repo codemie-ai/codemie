@@ -28,7 +28,9 @@ from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import Application
 from codemie.repository.application_repository import application_repository
+from codemie.repository.budget_repository import budget_repository
 from codemie.repository.cost_center_repository import cost_center_repository
+from codemie.repository.project_budget_repository import project_budget_group_repository
 from codemie.repository.user_project_repository import user_project_repository
 from codemie.service.activity.activity_models import (
     ActivityDomain,
@@ -97,7 +99,7 @@ class ProjectService:
         # Project operations
         HAS_RESOURCES=(
             "Project '{name}' cannot be {action} because it has assigned resources. "
-            "Remove all assistants, workflows, skills, datasources, and integrations first."
+            "Remove all assistants, workflows, skills, datasources, integrations, and budgets first."
         ),
         HAS_ASSIGNED_USERS=(
             "Project '{name}' cannot be deleted because it has assigned users. Remove all users first."
@@ -458,6 +460,8 @@ class ProjectService:
     ) -> None:
         """Hard-delete a project after validating it has no assigned resources.
 
+        Budgets and budget groups are detached first, since both hold a foreign key to the project.
+
         Args:
             session: Database session (caller commits/rolls back)
             project_name: Name of the project to delete
@@ -491,6 +495,10 @@ class ProjectService:
             )
 
         cls._check_has_no_resources(session, project_name, "deleted")
+
+        affected_budget_ids = budget_repository.clear_project_on_deleted_budgets(session, project_name)
+        affected_group_ids = project_budget_group_repository.clear_project_on_deleted_groups(session, project_name)
+
         application_repository.delete_by_name(session, project_name)
         activity_event_repository.insert(
             ActivityEventCreate(
@@ -499,6 +507,10 @@ class ProjectService:
                 entity_type=ActivityEntityType.PROJECT,
                 entity_id=project_name,
                 actor_id=actor_id,
+                attributes={
+                    "affected_budgets": affected_budget_ids,
+                    "affected_budget_groups": affected_group_ids,
+                },
             ),
             session,
         )

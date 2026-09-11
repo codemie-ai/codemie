@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "generated": "2026-09-10T16:45:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 3,
+      "label": "M"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S"
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M"
+    },
+    "file_change_estimate": {
+      "score": 4,
+      "label": "L"
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS"
+    },
+    "affected_layers": {
+      "score": 3,
+      "label": "M"
+    }
+  },
+  "total": 16,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 10,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Three components touched across two layers: project_service (orchestration), application_repository (entity counting), budget_repository and project_budget_repository (FK detachment). All changes tightly scoped to project deletion path."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Schema migration changing FK constraint plus detachment logic in deletion path. Reversibility covered by migration downgrade. Pattern follows established soft-delete and FK nullification conventions already present in both repositories (detached_at, clear_project_on_deleted_* naming)."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "10 files changed: 1 migration, 2 models, 3 repositories, 1 service, 4 test files. All changes localized to budget/project domain. Total +398/-9 lines reflects comprehensive test coverage (4 new test methods, 2 existing test classes extended)."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

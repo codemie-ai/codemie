@@ -25,6 +25,7 @@ import pytest
 from codemie.repository.project_budget_repository import (
     ProjectBudgetAssignmentRepository,
     ProjectAssignedBudgetSummaryRow,
+    ProjectBudgetGroupRepository,
     ProjectMemberBudgetAssignmentRepository,
     ResetWindowMemberAllocationRow,
 )
@@ -591,3 +592,63 @@ class TestProjectMemberBudgetAssignmentRepositoryGetActiveByUser:
         result = await repo.get_active_by_user(session, "user-with-many-projects")
 
         assert len(result) == 3
+
+
+def _group_sync_session(selected_ids: list[str]) -> MagicMock:
+    session = MagicMock()
+    session.exec.return_value.all.return_value = selected_ids
+    return session
+
+
+def test_clear_project_on_deleted_groups_returns_detached_group_ids():
+    repository = ProjectBudgetGroupRepository()
+    session = _group_sync_session(["group-1", "group-2"])
+
+    result = repository.clear_project_on_deleted_groups(session, "my-project")
+
+    assert result == ["group-1", "group-2"]
+
+
+def test_clear_project_on_deleted_groups_skips_update_when_nothing_matches():
+    repository = ProjectBudgetGroupRepository()
+    session = _group_sync_session([])
+
+    result = repository.clear_project_on_deleted_groups(session, "my-project")
+
+    assert result == []
+    session.execute.assert_not_called()
+    session.flush.assert_not_called()
+
+
+def test_clear_project_on_deleted_groups_only_selects_soft_deleted_rows():
+    repository = ProjectBudgetGroupRepository()
+    session = _group_sync_session(["group-1"])
+
+    repository.clear_project_on_deleted_groups(session, "my-project")
+
+    stmt = session.exec.call_args[0][0]
+    sql_text = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+    assert "project_budget_groups" in sql_text
+    assert "deleted_at is not null" in sql_text
+
+
+def test_clear_project_on_deleted_groups_nulls_project_name():
+    repository = ProjectBudgetGroupRepository()
+    session = _group_sync_session(["group-1"])
+
+    repository.clear_project_on_deleted_groups(session, "my-project")
+
+    stmt = session.execute.call_args[0][0]
+    sql_text = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+    assert "update project_budget_groups" in sql_text
+    assert "project_name=null" in sql_text.replace(" ", "")
+
+
+def test_clear_project_on_deleted_groups_flushes_without_commit():
+    repository = ProjectBudgetGroupRepository()
+    session = _group_sync_session(["group-1"])
+
+    repository.clear_project_on_deleted_groups(session, "my-project")
+
+    session.flush.assert_called_once()
+    session.commit.assert_not_called()

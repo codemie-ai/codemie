@@ -190,6 +190,8 @@ class ProjectBudgetGroup(SQLModel, table=True):
 
     At most one active group per project (deleted_at IS NULL), enforced by a
     partial unique index.  Historical groups are preserved for audit purposes.
+
+    project_name is cleared when the project is deleted, so the group outlives it.
     """
 
     __tablename__ = "project_budget_groups"
@@ -199,7 +201,9 @@ class ProjectBudgetGroup(SQLModel, table=True):
         primary_key=True,
         max_length=36,
     )
-    project_name: str = Field(nullable=False, max_length=100, foreign_key=APPLICATION_ID_FOREIGN_KEY)
+    project_name: Optional[str] = Field(
+        default=None, nullable=True, max_length=100, foreign_key=APPLICATION_ID_FOREIGN_KEY
+    )
     name: str = Field(default="", nullable=False, max_length=100)
     budget_duration: str = Field(nullable=False, max_length=16)
     description: Optional[str] = Field(default=None, max_length=500)

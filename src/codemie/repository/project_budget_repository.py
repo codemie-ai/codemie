@@ -17,9 +17,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import text
+from sqlalchemy import text, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from codemie.service.budget.budget_models import (
     ProjectBudgetAssignment,
@@ -908,6 +908,23 @@ class ProjectBudgetGroupRepository:
             group.deleted_at = datetime.now(tz=timezone.utc)
             session.add(group)
             await session.flush()
+
+    def clear_project_on_deleted_groups(self, session: Session, project_name: str) -> list[str]:
+        """Detach the project's soft-deleted groups from it, returning their ids."""
+        group_ids = list(
+            session.exec(
+                select(ProjectBudgetGroup.id).where(
+                    ProjectBudgetGroup.project_name == project_name,
+                    ProjectBudgetGroup.deleted_at.is_not(None),
+                )
+            ).all()
+        )
+        if group_ids:
+            session.execute(
+                sa_update(ProjectBudgetGroup).where(ProjectBudgetGroup.id.in_(group_ids)).values(project_name=None)
+            )
+            session.flush()
+        return group_ids
 
 
 project_budget_group_repository = ProjectBudgetGroupRepository()

@@ -21,7 +21,7 @@ from datetime import timedelta
 from sqlalchemy import func, or_, text, update as sa_update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlmodel import Session, select
 
 from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.budget.budget_models import Budget, UserBudgetAssignment
@@ -166,6 +166,18 @@ class BudgetRepository:
         await session.flush()
         await session.refresh(budget)
         return budget
+
+    def clear_project_on_deleted_budgets(self, session: Session, project_name: str) -> list[str]:
+        """Detach the project's soft-deleted budgets from it, returning their ids."""
+        budget_ids = list(
+            session.exec(
+                select(Budget.budget_id).where(Budget.project_name == project_name, Budget.deleted_at.is_not(None))
+            ).all()
+        )
+        if budget_ids:
+            session.execute(sa_update(Budget).where(Budget.budget_id.in_(budget_ids)).values(project_name=None))
+            session.flush()
+        return budget_ids
 
     async def delete(self, session: AsyncSession, budget_id: str) -> None:
         """Hard delete row by primary key."""

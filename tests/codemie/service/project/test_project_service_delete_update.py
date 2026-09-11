@@ -48,6 +48,8 @@ def _zero_counts(project_name: str) -> dict[str, dict]:
             "integrations_count": 0,
             "datasources_count": 0,
             "skills_count": 0,
+            "budgets_count": 0,
+            "budget_groups_count": 0,
         }
     }
 
@@ -59,6 +61,8 @@ def _counts_with(project_name: str, **overrides) -> dict[str, dict]:
         "integrations_count": 0,
         "datasources_count": 0,
         "skills_count": 0,
+        "budgets_count": 0,
+        "budget_groups_count": 0,
     }
     base.update(overrides)
     return {project_name: base}
@@ -240,6 +244,48 @@ class TestProjectServiceDeleteProject:
 
     @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
+    def test_project_with_budgets_raises_409(self, mock_app_repo, mock_upr):
+        """delete_project raises 409 when project has active budgets."""
+        mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
+        mock_app_repo.get_project_entity_counts_bulk.return_value = _counts_with("my-project", budgets_count=2)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.delete_project(
+                session=mock_session,
+                project_name="my-project",
+                project_type=Application.ProjectType.SHARED,
+                actor_id="user-1",
+                action="DELETE /v1/projects/my-project",
+            )
+
+        assert exc_info.value.code == 409
+        assert "budgets" in exc_info.value.details
+        mock_app_repo.delete_by_name.assert_not_called()
+
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_project_with_active_budget_group_raises_409(self, mock_app_repo, mock_upr):
+        """An active budget group blocks deletion even once all its budgets are gone."""
+        mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
+        mock_app_repo.get_project_entity_counts_bulk.return_value = _counts_with("my-project", budget_groups_count=1)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            ProjectService.delete_project(
+                session=mock_session,
+                project_name="my-project",
+                project_type=Application.ProjectType.SHARED,
+                actor_id="user-1",
+                action="DELETE /v1/projects/my-project",
+            )
+
+        assert exc_info.value.code == 409
+        assert "budget_groups" in exc_info.value.details
+        mock_app_repo.delete_by_name.assert_not_called()
+
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
     def test_project_with_resources_details_include_non_zero_counts(self, mock_app_repo, mock_upr):
         """delete_project 409 details include non-zero resource counts."""
         mock_session = MagicMock()
@@ -366,6 +412,59 @@ class TestProjectServiceDeleteProject:
         )
 
         mock_app_repo.delete_by_name.assert_called_once_with(mock_session, "ghost-project")
+
+    @patch("codemie.service.project.project_service.project_budget_group_repository")
+    @patch("codemie.service.project.project_service.budget_repository")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_budgets_and_groups_are_detached_before_delete(self, mock_app_repo, mock_upr, mock_budgets, mock_groups):
+        """delete_project detaches budgets and budget groups, then removes the project row."""
+        mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
+        mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
+        mock_budgets.clear_project_on_deleted_budgets.return_value = []
+        mock_groups.clear_project_on_deleted_groups.return_value = []
+
+        ProjectService.delete_project(
+            session=mock_session,
+            project_name="my-project",
+            project_type=Application.ProjectType.SHARED,
+            actor_id="user-1",
+            action="DELETE /v1/projects/my-project",
+        )
+
+        mock_budgets.clear_project_on_deleted_budgets.assert_called_once_with(mock_session, "my-project")
+        mock_groups.clear_project_on_deleted_groups.assert_called_once_with(mock_session, "my-project")
+        mock_app_repo.delete_by_name.assert_called_once_with(mock_session, "my-project")
+
+    @patch("codemie.service.project.project_service.project_budget_group_repository")
+    @patch("codemie.service.project.project_service.budget_repository")
+    @patch("codemie.service.project.project_service.activity_event_repository")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_project_delete_emits_affected_budgets_in_event(
+        self, mock_app_repo, mock_upr, mock_activity, mock_budgets, mock_groups
+    ):
+        """delete_project's activity event records the detached budget and group ids."""
+        mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
+        mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
+        mock_budgets.clear_project_on_deleted_budgets.return_value = ["budget-1", "budget-2"]
+        mock_groups.clear_project_on_deleted_groups.return_value = ["group-1"]
+
+        ProjectService.delete_project(
+            session=mock_session,
+            project_name="my-project",
+            project_type=Application.ProjectType.SHARED,
+            actor_id="user-1",
+            action="DELETE /v1/projects/my-project",
+        )
+
+        event = mock_activity.insert.call_args[0][0]
+        assert event.attributes == {
+            "affected_budgets": ["budget-1", "budget-2"],
+            "affected_budget_groups": ["group-1"],
+        }
 
     @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")

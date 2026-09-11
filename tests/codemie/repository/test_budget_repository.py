@@ -145,3 +145,58 @@ async def test_get_assignments_for_users_groups_rows_by_user(repository: BudgetR
         "user-1": [rows[0], rows[1]],
         "user-2": [rows[2]],
     }
+
+
+def _sync_session(selected_ids: list[str]) -> MagicMock:
+    session = MagicMock()
+    session.exec.return_value.all.return_value = selected_ids
+    return session
+
+
+def test_clear_project_on_deleted_budgets_returns_detached_ids(repository: BudgetRepository):
+    session = _sync_session(["budget-1", "budget-2"])
+
+    result = repository.clear_project_on_deleted_budgets(session, "my-project")
+
+    assert result == ["budget-1", "budget-2"]
+
+
+def test_clear_project_on_deleted_budgets_skips_update_when_nothing_matches(repository: BudgetRepository):
+    session = _sync_session([])
+
+    result = repository.clear_project_on_deleted_budgets(session, "my-project")
+
+    assert result == []
+    session.execute.assert_not_called()
+    session.flush.assert_not_called()
+
+
+def test_clear_project_on_deleted_budgets_only_selects_soft_deleted_rows(repository: BudgetRepository):
+    session = _sync_session(["budget-1"])
+
+    repository.clear_project_on_deleted_budgets(session, "my-project")
+
+    stmt = session.exec.call_args[0][0]
+    sql_text = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+    assert "budgets" in sql_text
+    assert "deleted_at is not null" in sql_text
+
+
+def test_clear_project_on_deleted_budgets_nulls_project_name(repository: BudgetRepository):
+    session = _sync_session(["budget-1"])
+
+    repository.clear_project_on_deleted_budgets(session, "my-project")
+
+    stmt = session.execute.call_args[0][0]
+    sql_text = str(stmt.compile(compile_kwargs={"literal_binds": True})).lower()
+    assert "update budgets" in sql_text
+    assert "project_name=null" in sql_text.replace(" ", "")
+
+
+def test_clear_project_on_deleted_budgets_flushes_without_commit(repository: BudgetRepository):
+    session = _sync_session(["budget-1"])
+
+    repository.clear_project_on_deleted_budgets(session, "my-project")
+
+    session.flush.assert_called_once()
+    session.commit.assert_not_called()
