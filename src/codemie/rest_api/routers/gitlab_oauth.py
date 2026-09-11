@@ -55,7 +55,7 @@ router = build_oauth_router(
         extra_app_keys=("instance_url",),
         missing_app_credentials_message=(
             "GitLab OAuth integration is missing required app credentials. "
-            "Please configure client_id, client_secret, callback_base_url, and instance_url."
+            "Please configure client_id, client_secret, and instance_url."
         ),
         mount_callback=True,
         callback_enabled=lambda: config.GITLAB_OAUTH_ENABLED,

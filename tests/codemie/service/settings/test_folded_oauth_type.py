@@ -163,14 +163,30 @@ def test_keep_only_oauth_app_credentials_keeps_marker_and_gitlab_app_keys():
             ("auth_type", "oauth"),
             ("client_id", "cid"),
             ("client_secret", "sec"),
-            ("callback_base_url", "https://host"),
             ("instance_url", "https://gitlab.com"),
             ("token", "should-be-dropped"),
         ],
     )
     SettingsService._keep_only_oauth_app_credentials(req)
     keys = {c.key for c in req.credential_values}
-    assert keys == {"auth_type", "client_id", "client_secret", "callback_base_url", "instance_url"}
+    assert keys == {"auth_type", "client_id", "client_secret", "instance_url"}
+
+
+def test_keep_only_oauth_app_credentials_drops_callback_base_url():
+    """EPMCDME-14587: callback_base_url is no longer a stored app credential; it is derived
+    server-side from CALLBACK_API_BASE_URL, so a submitted value must be dropped."""
+    req = _request(
+        CredentialTypes.GIT,
+        [
+            ("auth_type", "oauth"),
+            ("client_id", "cid"),
+            ("client_secret", "sec"),
+            ("callback_base_url", "https://host"),
+        ],
+    )
+    SettingsService._keep_only_oauth_app_credentials(req)
+    keys = {c.key for c in req.credential_values}
+    assert keys == {"auth_type", "client_id", "client_secret"}
 
 
 def test_keep_only_oauth_app_credentials_noop_for_pat():

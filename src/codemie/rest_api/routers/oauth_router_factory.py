@@ -54,11 +54,14 @@ _CALLBACK_SECURITY_HEADERS = {
 
 
 class InitiateOAuthRequest(BaseModel):
-    """App-credential overrides accepted by ``/initiate`` (all optional — the form supplies them)."""
+    """App-credential overrides accepted by ``/initiate`` (all optional — the form supplies them).
+
+    The OAuth callback base URL is derived server-side from ``CALLBACK_API_BASE_URL`` and is not
+    accepted as an override.
+    """
 
     client_id: Optional[str] = None
     client_secret: Optional[str] = None
-    callback_base_url: Optional[str] = None
 
 
 class ConnectOAuthRequest(BaseModel):
@@ -82,7 +85,7 @@ class OAuthRouterConfig:
     flow_service_factory: Callable[[], object]
     missing_app_credentials_message: str
     initiate_model: type[BaseModel] = InitiateOAuthRequest
-    # App-credential keys beyond client_id/client_secret/callback_base_url (e.g. GitLab instance_url).
+    # App-credential keys beyond client_id/client_secret (e.g. GitLab instance_url).
     extra_app_keys: tuple[str, ...] = ()
     # GitLab and Jira serve their own /callback; Confluence reuses the shared Atlassian callback.
     mount_callback: bool = False
@@ -114,11 +117,10 @@ def _app_credentials_from_setting(cfg: OAuthRouterConfig, setting_id: str, user:
     app = {
         "client_id": creds.get("client_id") or "",
         "client_secret": client_secret,
-        "callback_base_url": creds.get("callback_base_url") or "",
     }
     for key in cfg.extra_app_keys:
         app[key] = creds.get(key) or ""
-    if not all(app[key] for key in ("client_id", "client_secret", "callback_base_url", *cfg.extra_app_keys)):
+    if not all(app[key] for key in ("client_id", "client_secret", *cfg.extra_app_keys)):
         raise ExtendedHTTPException(400, cfg.missing_app_credentials_message)
     return app
 

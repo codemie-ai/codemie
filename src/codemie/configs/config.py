@@ -450,8 +450,9 @@ class Config(BaseSettings):
     # grants no access the user does not already have. Requires admin consent once per tenant.
     SHAREPOINT_OAUTH_SCOPES: str = "Sites.ReadWrite.All Files.ReadWrite.All offline_access User.Read"
 
-    # GitLab OAuth (Authorization Code + PKCE). App credentials (client_id/client_secret) and the
-    # callback base URL are supplied per integration through the UI.
+    # GitLab OAuth (Authorization Code + PKCE). App credentials (client_id/client_secret) are
+    # supplied per integration through the UI; the callback base URL is derived server-side from
+    # CALLBACK_API_BASE_URL.
     GITLAB_OAUTH_ENABLED: bool = False
     GITLAB_OAUTH_SCOPES: str = "api read_user"
     GITLAB_OAUTH_DEFAULT_INSTANCE_URL: str = "https://gitlab.com"
@@ -464,9 +465,10 @@ class Config(BaseSettings):
     )
 
     # --- Atlassian (Jira) OAuth 2.0 (3LO) ---
-    # Like GitLab OAuth, the application id / secret / callback base URL are supplied per integration
-    # through the UI. Atlassian Cloud always authorizes at auth.atlassian.com and products are
-    # reached via https://api.atlassian.com/ex/jira/{cloudId}.
+    # Like GitLab OAuth, the application id / secret are supplied per integration through the UI;
+    # the callback base URL is derived server-side from CALLBACK_API_BASE_URL. Atlassian Cloud always
+    # authorizes at auth.atlassian.com and products are reached via
+    # https://api.atlassian.com/ex/jira/{cloudId}.
     JIRA_OAUTH_ENABLED: bool = False
     # offline_access is required to receive a refresh token.
     JIRA_OAUTH_SCOPES: str = "offline_access read:jira-work read:jira-user write:jira-work manage:jira-project"
@@ -1001,10 +1003,10 @@ class Config(BaseSettings):
     @computed_field
     @property
     def gitlab_oauth_redirect_uri(self) -> str:
-        """Fallback redirect URI for GitLab OAuth, built from CALLBACK_API_BASE_URL.
+        """Redirect URI for GitLab OAuth, built from CALLBACK_API_BASE_URL.
 
-        The effective redirect URI is normally derived from the per-integration callback base URL;
-        this env-based value is used only when the integration omits one.
+        The effective redirect URI is derived server-side from CALLBACK_API_BASE_URL (optionally
+        one of OAUTH_CALLBACK_ALLOWED_BASE_URLS); integrations no longer supply their own.
         """
         from codemie.core.utils import get_api_root_path
 
@@ -1013,10 +1015,10 @@ class Config(BaseSettings):
     @computed_field
     @property
     def jira_oauth_redirect_uri(self) -> str:
-        """Fallback redirect URI for Jira (Atlassian) OAuth, built from CALLBACK_API_BASE_URL.
+        """Redirect URI for Jira (Atlassian) OAuth, built from CALLBACK_API_BASE_URL.
 
-        The effective redirect URI is normally derived from the per-integration callback base URL;
-        this env-based value is used only when the integration omits one.
+        The effective redirect URI is derived server-side from CALLBACK_API_BASE_URL (optionally
+        one of OAUTH_CALLBACK_ALLOWED_BASE_URLS); integrations no longer supply their own.
         """
         from codemie.core.utils import get_api_root_path
 

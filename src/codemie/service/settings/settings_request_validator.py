@@ -45,8 +45,8 @@ GIT_AUTH_HELP_MESSAGE = (
     "'pat' for Personal Access Token, 'github_app' for GitHub App, or 'oauth' for GitLab OAuth 2.0."
 )
 GITLAB_OAUTH_HELP_MESSAGE = (
-    "Configure your GitLab OAuth application and provide its Application ID (client_id), "
-    "Application Secret (client_secret), and the CodeMie callback base URL (callback_base_url)."
+    "Configure your GitLab OAuth application and provide its Application ID (client_id) "
+    "and Application Secret (client_secret)."
 )
 MIXED_AUTH_METHODS_MESSAGE = "Cannot mix authentication methods"
 
@@ -204,10 +204,10 @@ def _validate_oauth_authentication(values: dict):
 
     EPMCDME-14586/14587: GitLab OAuth folds into the base Git type carrying an auth_type=oauth
     marker (only GitLab has OAuth on Git). The stored OAuth app credentials — Application ID
-    (client_id), Application Secret (client_secret), and the CodeMie callback base URL
-    (callback_base_url) — must be present for the later OAuth initiate/connect flow to build the
-    authorize URL. instance_url is optional here: it has a server-side default (gitlab.com).
-    PAT / GitHub App fields must not be mixed in.
+    (client_id) and Application Secret (client_secret) — must be present for the later OAuth
+    initiate/connect flow to build the authorize URL. instance_url is optional here: it has a
+    server-side default (gitlab.com). The CodeMie callback base URL is derived server-side from
+    CALLBACK_API_BASE_URL and is no longer collected. PAT / GitHub App fields must not be mixed in.
     """
     if "token" in values and values["token"]:
         raise ExtendedHTTPException(
@@ -224,7 +224,7 @@ def _validate_oauth_authentication(values: dict):
             help="Please choose either PAT, GitHub App, or OAuth authentication, not a combination.",
         )
 
-    for field in ("client_id", "client_secret", "callback_base_url"):
+    for field in ("client_id", "client_secret"):
         if not values.get(field):
             raise ExtendedHTTPException(
                 code=status.HTTP_422_UNPROCESSABLE_ENTITY,

@@ -160,7 +160,6 @@ def _gitlab_app_setting():
     return _setting(
         client_id="c",
         client_secret="enc-secret",
-        callback_base_url="https://cb",
         instance_url="https://gitlab.com",
     )
 
@@ -175,6 +174,8 @@ def test_connect_defaults_to_persisting(monkeypatch, _decrypt_ok):
 
     assert svc.calls[0]["persist_token"] is True
     assert svc.calls[0]["integration_id"] == "s1"
+    # EPMCDME-14587: the callback base URL is derived server-side, never forwarded from the setting.
+    assert "callback_base_url" not in svc.calls[0]
 
 
 def test_connect_with_test_flag_does_not_persist(monkeypatch, _decrypt_ok):

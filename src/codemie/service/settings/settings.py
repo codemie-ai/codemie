@@ -641,11 +641,11 @@ class SettingsService(BaseSettingsService):
 
     # App-credential keys the admin enters in the GitLab OAuth integration form. They live on the
     # setting alongside the delegated tokens so the token manager can refresh without env config.
-    GITLAB_OAUTH_APP_KEYS = ("client_id", "client_secret", "callback_base_url", "instance_url")
+    GITLAB_OAUTH_APP_KEYS = ("client_id", "client_secret", "instance_url")
     # Jira (Atlassian Cloud) OAuth app-credential keys. No instance URL — Atlassian always
     # authorizes at auth.atlassian.com and the site is resolved per user via cloud_id.
-    JIRA_OAUTH_APP_KEYS = ("client_id", "client_secret", "callback_base_url")
-    CONFLUENCE_OAUTH_APP_KEYS = ("client_id", "client_secret", "callback_base_url")
+    JIRA_OAUTH_APP_KEYS = ("client_id", "client_secret")
+    CONFLUENCE_OAUTH_APP_KEYS = ("client_id", "client_secret")
 
     @classmethod
     def _prepare_cred_values(cls, cred_type: CredentialTypes, cred_values: List[CredentialValues]):

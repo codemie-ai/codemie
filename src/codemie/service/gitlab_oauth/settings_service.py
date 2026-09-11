@@ -35,7 +35,7 @@ class GitLabOAuthSettingsService(ToolOAuthSettingsService):
     """Extract credentials from a completed GitLab OAuth flow and manage lifecycle in Settings."""
 
     provider_label = "GitLab"
-    _APP_KEYS = frozenset({"instance_url", "client_id", "client_secret", "callback_base_url"})
+    _APP_KEYS = frozenset({"instance_url", "client_id", "client_secret"})
 
     @staticmethod
     def _get_credential_value(credentials: list[CredentialValues], key: str) -> str | None:

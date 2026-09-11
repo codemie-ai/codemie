@@ -43,7 +43,7 @@ router = build_oauth_router(
         flow_service_factory=lambda: _get_oauth_service(),
         missing_app_credentials_message=(
             "Confluence OAuth integration is missing required app credentials. "
-            "Please configure client_id, client_secret, and callback_base_url."
+            "Please configure client_id and client_secret."
         ),
         mount_callback=False,
     )

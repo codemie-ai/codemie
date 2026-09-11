@@ -513,7 +513,6 @@ def test_validate_git_request_accepts_folded_gitlab_oauth():
             CredentialValues(key="auth_type", value="oauth"),
             CredentialValues(key="client_id", value="cid"),
             CredentialValues(key="client_secret", value="sec"),
-            CredentialValues(key="callback_base_url", value="https://codemie.example"),
             CredentialValues(key="instance_url", value="https://gitlab.com"),
         ]
     )
@@ -522,16 +521,29 @@ def test_validate_git_request_accepts_folded_gitlab_oauth():
     validate_git_request(request)
 
 
-@pytest.mark.parametrize("missing_key", ["client_id", "client_secret", "callback_base_url"])
+def test_validate_git_request_accepts_folded_gitlab_oauth_without_callback_base_url():
+    """EPMCDME-14587: the CodeMie callback base URL is derived server-side from
+    CALLBACK_API_BASE_URL and is no longer collected, so it must not be required at save time."""
+    request = _git_request(
+        [
+            CredentialValues(key="auth_type", value="oauth"),
+            CredentialValues(key="client_id", value="cid"),
+            CredentialValues(key="client_secret", value="sec"),
+        ]
+    )
+
+    validate_git_request(request)
+
+
+@pytest.mark.parametrize("missing_key", ["client_id", "client_secret"])
 def test_validate_git_request_rejects_folded_gitlab_oauth_missing_app_credential(missing_key):
     """EPMCDME-14586/14587: a folded GitLab OAuth Git integration must carry its OAuth app
-    credentials (client_id, client_secret, callback_base_url). Missing any required field is a
-    save-time 422, mirroring the PAT / GitHub App validators."""
+    credentials (client_id, client_secret). Missing any required field is a save-time 422,
+    mirroring the PAT / GitHub App validators."""
     credential_values = [
         CredentialValues(key="auth_type", value="oauth"),
         CredentialValues(key="client_id", value="cid"),
         CredentialValues(key="client_secret", value="sec"),
-        CredentialValues(key="callback_base_url", value="https://codemie.example"),
         CredentialValues(key="instance_url", value="https://gitlab.com"),
     ]
     credential_values = [cv for cv in credential_values if cv.key != missing_key]
@@ -542,7 +554,7 @@ def test_validate_git_request_rejects_folded_gitlab_oauth_missing_app_credential
     assert exc_info.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
 
-@pytest.mark.parametrize("blank_key", ["client_id", "client_secret", "callback_base_url"])
+@pytest.mark.parametrize("blank_key", ["client_id", "client_secret"])
 def test_validate_git_request_rejects_folded_gitlab_oauth_blank_app_credential(blank_key):
     """An empty-string OAuth app credential is treated as missing (same as PAT/GitHub App)."""
     request = _git_request(
@@ -550,10 +562,6 @@ def test_validate_git_request_rejects_folded_gitlab_oauth_blank_app_credential(b
             CredentialValues(key="auth_type", value="oauth"),
             CredentialValues(key="client_id", value="" if blank_key == "client_id" else "cid"),
             CredentialValues(key="client_secret", value="" if blank_key == "client_secret" else "sec"),
-            CredentialValues(
-                key="callback_base_url",
-                value="" if blank_key == "callback_base_url" else "https://codemie.example",
-            ),
         ]
     )
     with pytest.raises(ExtendedHTTPException) as exc_info:
@@ -568,7 +576,6 @@ def test_validate_git_request_accepts_folded_gitlab_oauth_without_instance_url()
             CredentialValues(key="auth_type", value="oauth"),
             CredentialValues(key="client_id", value="cid"),
             CredentialValues(key="client_secret", value="sec"),
-            CredentialValues(key="callback_base_url", value="https://codemie.example"),
         ]
     )
     validate_git_request(request)

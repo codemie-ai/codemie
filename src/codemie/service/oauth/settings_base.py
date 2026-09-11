@@ -61,7 +61,7 @@ class AtlassianOAuthSettingsService(ToolOAuthSettingsService):
     logic is identical apart from the ``provider_label`` in member-facing messages.
     """
 
-    _APP_KEYS = frozenset({"client_id", "client_secret", "callback_base_url"})
+    _APP_KEYS = frozenset({"client_id", "client_secret"})
 
     def persist_user_token(self, *, token_data: dict, user_id: str, setting_id: str) -> None:
         """Write the acting user's tokens (and Atlassian cloud_id) from a completed flow into TMS.
