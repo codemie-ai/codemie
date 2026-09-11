@@ -17,6 +17,9 @@ import uuid
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
+from fastapi import APIRouter, Depends
+from fastapi.testclient import TestClient
+
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.security.authentication import (
     authenticate,
@@ -561,3 +564,157 @@ async def test_user_detail_access_project_admin_user_not_exists(
     # Assert - should return None to let service layer handle 404
     assert result is None
     mock_user_repo.get_by_id.assert_called_once_with(mock_session, "nonexistent-user")
+
+
+class TestAuthenticateTeamsSenderBranch:
+    async def _authenticate_as(self, mocker, caller: User, headers: dict):
+        request = mocker.MagicMock()
+        request.headers = headers
+        provider = MagicMock()
+        provider.authenticate_and_load_user = AsyncMock(return_value=caller)
+        with (
+            patch("codemie.rest_api.security.authentication.get_user_provider", return_value=provider),
+            patch("codemie.rest_api.security.authentication.IdpFactory"),
+        ):
+            return await authenticate(request, internal_user_id=None, bind_key=None)
+
+    @pytest.mark.anyio
+    @patch("codemie.rest_api.security.teams_authentication_resolver.impersonate_teams_bot_request")
+    @patch("codemie.rest_api.security.teams_authentication_resolver.is_teams_bot_request", return_value=True)
+    async def test_teams_header_swaps_resolved_user(self, mock_is_teams_bot, mock_impersonate, mocker):
+        caller = User(id="codemie-teams-bot", username="bot", user_type="service_account", project_names=[])
+        resolved = User(id="end-user-1", username="enduser", project_names=[])
+        mock_impersonate.return_value = resolved
+
+        result = await self._authenticate_as(mocker, caller, {"X-Teams-Sender-Email": "enduser@example.com"})
+
+        assert result is resolved
+        mock_impersonate.assert_awaited_once()
+
+    @pytest.mark.anyio
+    @patch("codemie.rest_api.security.teams_authentication_resolver.impersonate_teams_bot_request")
+    @patch("codemie.rest_api.security.teams_authentication_resolver.is_teams_bot_request", return_value=False)
+    async def test_no_header_returns_caller_unchanged(self, mock_is_teams_bot, mock_impersonate, mocker):
+        caller = User(id="u1", username="regular_user", project_names=[])
+
+        result = await self._authenticate_as(mocker, caller, {})
+
+        assert result is caller
+        mock_impersonate.assert_not_called()
+
+    @pytest.mark.anyio
+    @patch("codemie.rest_api.security.teams_authentication_resolver.impersonate_teams_bot_request")
+    @patch("codemie.rest_api.security.teams_authentication_resolver.is_teams_bot_request", return_value=True)
+    async def test_impersonate_teams_bot_request_401_propagates(self, mock_is_teams_bot, mock_impersonate, mocker):
+        caller = User(id="codemie-teams-bot", username="bot", user_type="service_account", project_names=[])
+        mock_impersonate.side_effect = ExtendedHTTPException(code=401, message="Authentication failed")
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await self._authenticate_as(mocker, caller, {"X-Teams-Sender-Email": "unknown@example.com"})
+
+        assert exc_info.value.code == 401
+
+    @pytest.mark.anyio
+    @patch.object(config, 'ENV', 'local')
+    @patch("codemie.rest_api.security.teams_authentication_resolver.impersonate_teams_bot_request")
+    @patch("codemie.rest_api.security.teams_authentication_resolver.is_teams_bot_request")
+    async def test_internal_bind_key_branch_never_calls_teams_sender_swap(
+        self, mock_is_teams_bot, mock_impersonate, mocker
+    ):
+        """CR-001: the HMAC-signed internal bind-key branch must never fall through into
+        the unsigned Teams-header swap, even when internal_user_id happens to match the
+        allow-listed Teams service account id and the header is present on the request.
+        """
+        user_id = "codemie-teams-bot"
+        headers = sign_internal_request(user_id)
+
+        header_map = {
+            "X-Bind-Key": headers["X-Bind-Key"],
+            "X-Bind-Nonce": headers["X-Bind-Nonce"],
+            "X-Bind-Timestamp": headers["X-Bind-Timestamp"],
+            "user-id": user_id,
+            "X-Teams-Sender-Email": "enduser@example.com",
+        }
+        mock_request = MagicMock()
+        mock_request.headers.get = lambda key, default="": header_map.get(key, default)
+        mock_request.state = MagicMock()
+
+        mock_user = User(id=user_id, username=user_id, name=user_id, user_type="service_account")
+        with patch.object(LocalIdp, 'authenticate', new_callable=AsyncMock, return_value=mock_user):
+            user = await authenticate(mock_request, internal_user_id=user_id, bind_key=headers["X-Bind-Key"])
+
+        assert user.id == user_id
+        mock_is_teams_bot.assert_not_called()
+        mock_impersonate.assert_not_called()
+
+
+class TestTeamsSenderSwapReachesNonChatRouter:
+    """CR-002: the Teams-header swap moved from a dependency wired into 3
+    assistant-chat routes into the shared authenticate(), so it now runs for
+    every one of the ~50 routers depending on authenticate(). These tests wire
+    authenticate() into a router that is not one of those 3 chat routes and
+    drive it end-to-end through FastAPI's real dependency injection (not a
+    direct function call), to confirm the swap reaches that wider surface too.
+    """
+
+    @staticmethod
+    def _build_app():
+        from fastapi import FastAPI
+
+        app = FastAPI()
+
+        @app.middleware("http")
+        async def _set_request_uuid(request, call_next):
+            request.state.uuid = "test-request-uuid"
+            return await call_next(request)
+
+        non_chat_router = APIRouter(prefix="/v1/reports")
+
+        @non_chat_router.get("/whoami")
+        async def whoami(user: User = Depends(authenticate)):
+            return {"id": user.id, "email": user.email}
+
+        app.include_router(non_chat_router)
+        return app
+
+    @patch("codemie.rest_api.security.teams_authentication_resolver.authentication_service")
+    @patch("codemie.rest_api.security.teams_authentication_resolver.config")
+    @patch("codemie.rest_api.security.teams_authentication_resolver.customer_config")
+    def test_service_account_caller_is_swapped_on_non_chat_router(
+        self, mock_customer_config, mock_config, mock_auth_service
+    ):
+        mock_customer_config.is_feature_enabled.return_value = True
+        mock_config.TEAMS_SERVICE_ACCOUNT_ID = "codemie-teams-bot"
+        caller = User(id="codemie-teams-bot", username="bot", user_type="service_account", project_names=[])
+        resolved = User(id="end-user-1", username="enduser", email="enduser@example.com", project_names=[])
+        mock_auth_service.authenticate_teams_sender = AsyncMock(return_value=resolved)
+
+        provider = MagicMock()
+        provider.authenticate_and_load_user = AsyncMock(return_value=caller)
+        with (
+            patch("codemie.rest_api.security.authentication.get_user_provider", return_value=provider),
+            patch("codemie.rest_api.security.authentication.IdpFactory"),
+        ):
+            client = TestClient(self._build_app())
+            response = client.get("/v1/reports/whoami", headers={"X-Teams-Sender-Email": "enduser@example.com"})
+
+        assert response.status_code == 200
+        assert response.json()["id"] == "end-user-1"
+        mock_auth_service.authenticate_teams_sender.assert_awaited_once_with("enduser@example.com")
+
+    @patch("codemie.rest_api.security.teams_authentication_resolver.customer_config")
+    def test_non_service_account_caller_is_unaffected_on_non_chat_router(self, mock_customer_config):
+        mock_customer_config.is_feature_enabled.return_value = True
+        caller = User(id="regular-user-1", username="someone", email="someone@example.com", project_names=[])
+
+        provider = MagicMock()
+        provider.authenticate_and_load_user = AsyncMock(return_value=caller)
+        with (
+            patch("codemie.rest_api.security.authentication.get_user_provider", return_value=provider),
+            patch("codemie.rest_api.security.authentication.IdpFactory"),
+        ):
+            client = TestClient(self._build_app())
+            response = client.get("/v1/reports/whoami", headers={"X-Teams-Sender-Email": "enduser@example.com"})
+
+        assert response.status_code == 200
+        assert response.json()["id"] == "regular-user-1"

@@ -26,9 +26,11 @@ from codemie.configs.logger import logger
 from codemie.core.exceptions import ExtendedHTTPException
 
 
-VALID_USER_TYPES = {'regular', 'external', 'service_account'}
+SERVICE_ACCOUNT_USER_TYPE = "service_account"
 
-PERSONAL_PROJECT_EXCLUDED_USER_TYPES = {"external", "service_account"}
+VALID_USER_TYPES = {'regular', 'external', SERVICE_ACCOUNT_USER_TYPE}
+
+PERSONAL_PROJECT_EXCLUDED_USER_TYPES = {"external", SERVICE_ACCOUNT_USER_TYPE}
 
 
 def is_personal_project_excluded(user_type: str) -> bool:

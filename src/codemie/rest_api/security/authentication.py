@@ -119,7 +119,9 @@ async def authenticate(
     """
     try:
         if bind_key is not None:
-            # Internal service-to-service call (e.g. trigger actors calling loopback API)
+            # Internal service-to-service call (e.g. trigger actors calling loopback API).
+            # Trusted via HMAC signature alone: never subject to the unsigned Teams-header
+            # swap below, which is scoped exclusively to the external auth branch.
             nonce = request.headers.get("X-Bind-Nonce", "")
             timestamp = request.headers.get("X-Bind-Timestamp", "")
             if not internal_user_id or not nonce or not timestamp:
@@ -138,6 +140,14 @@ async def authenticate(
             # Note: Personal workspace creation is handled by provider
             # (LegacyJwtUserProvider for flag OFF, PersistentUserProvider for flag ON)
             user = await provider.authenticate_and_load_user(request, idp)
+
+            from codemie.rest_api.security.teams_authentication_resolver import (
+                is_teams_bot_request,
+                impersonate_teams_bot_request,
+            )
+
+            if is_teams_bot_request(user, request):
+                user = await impersonate_teams_bot_request(user, request)
 
         # 4. Store in context (unchanged from current behavior)
         request.state.user = user

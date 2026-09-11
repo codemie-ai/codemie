@@ -41,6 +41,7 @@ from codemie.repository.user_kb_repository import user_kb_repository
 from codemie.repository.application_repository import application_repository
 from codemie.rest_api.models.user_management import UserDB, CodeMieUserDetail, ProjectInfo
 from codemie.rest_api.security import user as security_user
+from codemie.rest_api.security.user_type_validator import SERVICE_ACCOUNT_USER_TYPE
 from codemie.service.activity.activity_models import (
     ActivityDomain,
     ActivityEntityType,
@@ -588,6 +589,45 @@ class AuthenticationService:
             _auth_token_cache[auth_token] = result.model_copy(deep=True)
 
         return result
+
+    @staticmethod
+    async def authenticate_teams_sender(sender_email: str) -> security_user.User:
+        """Load the Teams end-user identified by sender_email as a full security.User.
+
+        Reuses the same build/finalize path as authenticate_persistent_user instead of
+        duplicating a DB-to-User rebuild. Raises 401 (not 404) on failure so the error
+        surfaces uniformly through authenticate()'s own exception handling.
+
+        Args:
+            sender_email: Email from the X-Teams-Sender-Email header
+
+        Returns:
+            security.User loaded from database
+
+        Raises:
+            ExtendedHTTPException: 401 if sender_email doesn't resolve to an active,
+                non-deleted, non-service-account user
+        """
+        from codemie.clients.postgres import get_async_session
+
+        async with get_async_session() as session:
+            db_user = await user_repository.aget_by_email(session, sender_email.lower())
+
+            if (
+                db_user is None
+                or not db_user.is_active
+                or db_user.deleted_at is not None
+                or db_user.user_type == SERVICE_ACCOUNT_USER_TYPE
+            ):
+                raise ExtendedHTTPException(
+                    code=401,
+                    message="Authentication failed",
+                    details=f"sender_email={sender_email!r} does not resolve to a billable CodeMie user.",
+                )
+
+            security_user_ins = AuthenticationService._build_security_user(db_user)
+
+        return await AuthenticationService._finalize_authentication(security_user_ins, "teams_sender")
 
     @staticmethod
     async def authenticate_dev_header(user_id: str) -> security_user.User:

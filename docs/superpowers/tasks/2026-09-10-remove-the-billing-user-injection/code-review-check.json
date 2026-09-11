@@ -1,0 +1,47 @@
+{
+  "decision": "approve",
+  "rationale": "Check round re-verified all 4 blocking findings from the prior code-review.final (request-changes) verdict against the fix-up diff and current source: CR-001 the internal HMAC-signed bind-key branch is now a separate if/else, so resolve_teams_sender is only reachable from the external auth branch (authentication.py:120-155); CR-002 a new end-to-end test (TestTeamsSenderSwapReachesNonChatRouter, test_authentication.py:644) exercises the swap through a real non-chat router via FastAPI DI; CR-003 the sender-email header is now .strip()'d before the DB lookup; CR-004 sender_email_ignored/teams_sender_impersonated logging was restored. All 4 resolved with kind-appropriate proof; no new findings were discovered in this check round. business_review and standards_review are carried forward unchanged from the prior round. 1 deferred item (uncached Teams-sender DB lookup) remains accepted as pre-existing/non-blocking per code-review-deferred.md.",
+  "confidence": "low",
+  "risk_flags": ["security", "breaking-change"],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "all 9 commit subjects in the review range follow the documented 'EPMCDME-####: Description' format (git-workflow.md)"
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "changed/new modules (teams_sender_resolver.py, authentication_service.py additions, authentication.py, handlers/routers edits, alembic migration) use modern union type hints (str | None, User | None), explicit param/return types, and the new teams_sender_resolver.py module carries the Apache 2.0 header per code-quality.md; billing_user_resolver.py and its test were deleted cleanly with no dangling references left in src or tests"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "authenticate() remains the single funnel per security-patterns.md; the resolve_teams_sender/authenticate_teams_sender path is scoped only to the external-auth branch and explicitly excluded from the HMAC-signed internal bind-key branch; authenticate_teams_sender rejects inactive/deleted/service-account senders and raises via the existing ExtendedHTTPException path; no tokens/API keys/passwords are logged, only email and internal ids; the X-Teams-Sender-Email header is trusted verbatim (no HMAC binding) once the caller matches the allow-listed service account, but this is documented in the code's own docstring as a known, pre-existing, out-of-scope gap, not a standard newly violated by this change"
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Bind-key branch is now a separate if/else in authenticate(); resolve_teams_sender is only reachable from the external auth branch (authentication.py:120-155)"
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "New TestTeamsSenderSwapReachesNonChatRouter (test_authentication.py:644) exercises the swap through a real non-chat router via FastAPI DI"
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "sender_email is now .strip()'d before the DB lookup (teams_sender_resolver.py:79, carried into teams_authentication_resolver.py's _sender_email helper)"
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "sender_email_ignored / teams_sender_impersonated log lines restored in teams_sender_resolver.py (carried into teams_authentication_resolver.py)"
+    }
+  ]
+}

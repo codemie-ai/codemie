@@ -471,6 +471,17 @@ class TestFormatErrors:
         assert formatted_agent_error is None
 
 
+class TestInitHasNoBillingUser:
+    def test_init_has_no_billing_user_attribute_and_user_drives_build_agent(self):
+        assistant = Mock(id="assistant-123", project="test-project")
+        user = Mock(spec=User, id="user-123")
+
+        handler = StandardAssistantHandler(assistant, user, "req-1")
+
+        assert not hasattr(handler, "billing_user")
+        assert handler.user is user
+
+
 class TestSaveChatHistory:
     """Tests for save_chat_history guard logic"""
 

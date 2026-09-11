@@ -1706,6 +1706,137 @@ class TestAuthenticateAndLogin:
             mock_personal.ensure_personal_project_async.assert_not_called()
 
 
+class TestAuthenticateTeamsSender:
+    """Tests for authenticate_teams_sender() method"""
+
+    @pytest.mark.asyncio
+    async def test_raises_401_when_email_unmatched(self):
+        mock_session = AsyncMock()
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(mock_session)
+            mock_user_repo.aget_by_email = AsyncMock(return_value=None)
+
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                await AuthenticationService.authenticate_teams_sender("unknown@example.com")
+
+            assert exc_info.value.code == 401
+
+    @pytest.mark.asyncio
+    async def test_raises_401_when_resolved_user_is_inactive(self):
+        mock_session = AsyncMock()
+        db_user = MagicMock(
+            id="end-user-1",
+            email="enduser@example.com",
+            user_type="human",
+            is_active=False,
+            deleted_at=None,
+        )
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(mock_session)
+            mock_user_repo.aget_by_email = AsyncMock(return_value=db_user)
+
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                await AuthenticationService.authenticate_teams_sender("enduser@example.com")
+
+            assert exc_info.value.code == 401
+
+    @pytest.mark.asyncio
+    async def test_raises_401_when_resolved_user_is_deleted(self):
+        mock_session = AsyncMock()
+        db_user = MagicMock(
+            id="end-user-1",
+            email="enduser@example.com",
+            user_type="human",
+            is_active=True,
+            deleted_at="2026-01-01T00:00:00Z",
+        )
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(mock_session)
+            mock_user_repo.aget_by_email = AsyncMock(return_value=db_user)
+
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                await AuthenticationService.authenticate_teams_sender("enduser@example.com")
+
+            assert exc_info.value.code == 401
+
+    @pytest.mark.asyncio
+    async def test_raises_401_when_resolved_user_is_service_account(self):
+        mock_session = AsyncMock()
+        db_user = MagicMock(
+            id="other-svc",
+            email="other-svc@example.com",
+            user_type="service_account",
+            is_active=True,
+            deleted_at=None,
+        )
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(mock_session)
+            mock_user_repo.aget_by_email = AsyncMock(return_value=db_user)
+
+            with pytest.raises(ExtendedHTTPException) as exc_info:
+                await AuthenticationService.authenticate_teams_sender("other-svc@example.com")
+
+            assert exc_info.value.code == 401
+
+    @pytest.mark.asyncio
+    async def test_successful_resolution_returns_user_with_relationships(self):
+        mock_session = AsyncMock()
+        db_user = UserDB(
+            id="end-user-1",
+            email="enduser@example.com",
+            username="enduser",
+            name="End User",
+            user_type="human",
+            is_active=True,
+            deleted_at=None,
+        )
+
+        expected_user = security_user.User(
+            id="end-user-1",
+            username="enduser",
+            name="End User",
+            email="enduser@example.com",
+            user_type="human",
+            project_names=["proj-a"],
+            admin_project_names=["proj-a"],
+            knowledge_bases=[],
+            is_admin=False,
+        )
+
+        with (
+            patch("codemie.clients.postgres.get_async_session") as mock_get_session,
+            patch("codemie.service.user.authentication_service.user_repository") as mock_user_repo,
+            patch(
+                "codemie.service.user.authentication_service.AuthenticationService._finalize_authentication",
+                new_callable=AsyncMock,
+            ) as mock_finalize,
+        ):
+            mock_get_session.return_value = _make_async_session_cm(mock_session)
+            mock_user_repo.aget_by_email = AsyncMock(return_value=db_user)
+            mock_finalize.return_value = expected_user
+
+            result = await AuthenticationService.authenticate_teams_sender("enduser@example.com")
+
+            assert result == expected_user
+            mock_finalize.assert_awaited_once()
+
+
 class TestLoginActivityEvent:
     """Tests that authenticate_and_login emits a user.login activity event."""
 

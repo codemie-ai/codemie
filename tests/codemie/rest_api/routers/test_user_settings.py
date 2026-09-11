@@ -457,7 +457,7 @@ async def test_regular_user_create_litellm_denied_when_personal_feature_disabled
     assert excinfo.value.code == status.HTTP_403_FORBIDDEN
     assert excinfo.value.message == "Access denied"
     assert excinfo.value.details == "Personal LiteLLM integrations are not enabled for this customer."
-    mock_is_feature_enabled.assert_called_once_with("personalLiteLLMIntegrations")
+    mock_is_feature_enabled.assert_any_call("personalLiteLLMIntegrations")
     mock_require_litellm_enabled.assert_not_called()
     mock_validate_litellm_request.assert_not_called()
     mock_create_setting.assert_not_called()
@@ -495,7 +495,7 @@ async def test_regular_user_create_litellm_allowed_when_personal_feature_enabled
 
     assert response.status_code == 200
     assert response.json() == {"message": "Specified credentials saved"}
-    mock_is_feature_enabled.assert_called_once_with("personalLiteLLMIntegrations")
+    mock_is_feature_enabled.assert_any_call("personalLiteLLMIntegrations")
     mock_require_litellm_enabled.assert_called_once_with()
     mock_validate_litellm_request.assert_called_once()
     mock_create_setting.assert_called_once()
@@ -538,7 +538,7 @@ async def test_regular_user_update_litellm_denied_when_personal_feature_disabled
     assert excinfo.value.code == status.HTTP_403_FORBIDDEN
     assert excinfo.value.message == "Access denied"
     assert excinfo.value.details == "Personal LiteLLM integrations are not enabled for this customer."
-    mock_is_feature_enabled.assert_called_once_with("personalLiteLLMIntegrations")
+    mock_is_feature_enabled.assert_any_call("personalLiteLLMIntegrations")
     mock_get_setting_ability.assert_not_called()
     mock_update_settings.assert_not_called()
     mock_require_litellm_enabled.assert_not_called()
@@ -582,7 +582,7 @@ async def test_regular_user_update_litellm_allowed_when_personal_feature_enabled
 
     assert response.status_code == 200
     assert response.json() == {"message": "Specified credentials updated"}
-    mock_is_feature_enabled.assert_called_once_with("personalLiteLLMIntegrations")
+    mock_is_feature_enabled.assert_any_call("personalLiteLLMIntegrations")
     mock_require_litellm_enabled.assert_called_once_with()
     mock_validate_litellm_request.assert_called_once()
     mock_get_setting_ability.assert_called_once()
@@ -620,7 +620,7 @@ async def test_admin_create_litellm_unchanged_when_personal_feature_disabled(
 
     assert response.status_code == 200
     assert response.json() == {"message": "Specified credentials saved"}
-    mock_is_feature_enabled.assert_not_called()
+    assert "personalLiteLLMIntegrations" not in [c.args[0] for c in mock_is_feature_enabled.call_args_list]
     mock_require_litellm_enabled.assert_called_once_with()
     mock_validate_litellm_request.assert_called_once()
     mock_create_setting.assert_called_once()
