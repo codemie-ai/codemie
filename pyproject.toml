@@ -102,7 +102,7 @@ boto3 = "^1.43.12"
 chardet = "^5.2.0"
 elastic-transport = "8.17.1"
 elasticsearch = "8.19.3"
-gitpython = "^3.1.58"  # Security (EPMCDME-14024): pin >=3.1.58 to fix GitPython advisories GHSA-4gmw-gg2m-w46p, GHSA-9rj7-rf2p-w77r, GHSA-hmq2-w58f-27jc, GHSA-jm78-9fvv-mhgr, GHSA-wvpp-8hx9-p66j
+gitpython = "^3.1.59"  # Security (EPMCDME-14024): pin >=3.1.58 to fix GitPython advisories GHSA-4gmw-gg2m-w46p, GHSA-9rj7-rf2p-w77r, GHSA-hmq2-w58f-27jc, GHSA-jm78-9fvv-mhgr, GHSA-wvpp-8hx9-p66j
 google-api-python-client = "^2.137.0"
 googlemaps = "^4.10.0"
 httpx = "^0.28.1"
