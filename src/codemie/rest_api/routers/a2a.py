@@ -54,7 +54,7 @@ router = APIRouter(
     response_model=AgentCard,
     response_model_by_alias=True,
 )
-def get_assistant_agent_card(assistant_id: str, request: Request):
+async def get_assistant_agent_card(assistant_id: str, request: Request):
     """
     Returns A2A agent card for a specific assistant.
     Follows the A2A specification for agent discovery.
@@ -66,6 +66,17 @@ def get_assistant_agent_card(assistant_id: str, request: Request):
         raise ExtendedHTTPException(
             code=status.HTTP_404_NOT_FOUND, message=f"Assistant with id {assistant_id} wasn't found"
         )
+
+    # Enforce security for private/project assistants; intentionally public (global) assistants are exempted
+    if not assistant.is_global:
+        user = await authenticate(request, internal_user_id=None, bind_key=None)
+        if not Ability(user).can(Action.READ, assistant):
+            raise ExtendedHTTPException(
+                code=status.HTTP_403_FORBIDDEN,
+                message="Access Denied",
+                details="You don't have permission to access this assistant.",
+                help="Please ensure you have the correct permissions to use this assistant.",
+            )
 
     return assistant_to_agent_card(assistant, request)
 

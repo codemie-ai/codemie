@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "task": "A2A agent-card endpoint exposes private assistant metadata without authentication",
+  "generated": "2026-09-14T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 1,
+      "label": "XS"
+    },
+    "requirements_clarity": {
+      "score": 1,
+      "label": "XS"
+    },
+    "technical_risk": {
+      "score": 2,
+      "label": "S"
+    },
+    "file_change_estimate": {
+      "score": 1,
+      "label": "XS"
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS"
+    },
+    "affected_layers": {
+      "score": 2,
+      "label": "S"
+    }
+  },
+  "total": 8,
+  "size": "XS",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Only affects a single FastAPI router endpoint (get_assistant_agent_card) in a2a.py and its corresponding tests."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Uses existing authenticate and Ability check conventions already validated elsewhere in the codebase. Low risk of side effects."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
