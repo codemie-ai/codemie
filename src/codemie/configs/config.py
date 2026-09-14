@@ -301,7 +301,7 @@ class Config(BaseSettings):
     EMAIL_FROM_ADDRESS: str = ""
     EMAIL_FROM_NAME: str = "CodeMie"
     EMAIL_USE_TLS: bool = True
-    FRONTEND_URL: str = "http://localhost:3000"  # For email links
+    FRONTEND_URL: str = "http://localhost:5173"  # For email links
 
     # ===========================================
     # Password Policy

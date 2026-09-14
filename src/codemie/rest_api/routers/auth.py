@@ -20,6 +20,7 @@ from fastapi.responses import RedirectResponse
 
 from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.utils import get_api_root_path
 from codemie.rest_api.security import jwt_local
 from codemie.rest_api.security.user import AUTHORIZATION_HEADER
 
@@ -52,7 +53,7 @@ async def login(request: Request, port: int = Path(..., ge=1, le=65535)):
     if token["provider"] == "local" and config.ENABLE_USER_MANAGEMENT:
         token["cookies"] = _get_local_login_cookies(request)
         if not token["cookies"]:
-            login_url = f"{config.FRONTEND_URL}/auth/sign-in?next=/v1/auth/login/{port}"
+            login_url = f"{config.FRONTEND_URL}/auth/sign-in?next={get_api_root_path()}/v1/auth/login/{port}"
             return RedirectResponse(login_url, status_code=status.HTTP_302_FOUND)
     elif token["provider"] != "local":
         token["cookies"] = {

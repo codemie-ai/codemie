@@ -66,6 +66,7 @@ def test_login_local_provider_redirects_to_sign_in_when_cookie_invalid(monkeypat
     monkeypatch.setattr(auth_router.config, "ENABLE_USER_MANAGEMENT", True)
     monkeypatch.setattr(auth_router.config, "AUTH_COOKIE_NAME", "codemie_access_token")
     monkeypatch.setattr(auth_router.config, "FRONTEND_URL", "http://frontend.local")
+    monkeypatch.setattr(auth_router.config, "API_ROOT_PATH", "")
 
     validator = MagicMock(side_effect=ExtendedHTTPException(code=401, message="invalid token"))
     monkeypatch.setattr(auth_router.jwt_local, "validate_local_jwt", validator)
