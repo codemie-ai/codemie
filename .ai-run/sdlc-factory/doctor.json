@@ -1,10 +1,10 @@
 {
-  "checked_at": "2026-08-05T14:02:18Z",
+  "checked_at": "2026-09-08T00:00:00Z",
   "ttl_days": 7,
-  "fingerprint": "node-v25.9.0-git-2.50.1",
+  "fingerprint": "node-v24.15.0-git-2.50.1",
   "checks": {
     "superpowers": "ok",
-    "node": "v25.9.0",
+    "node": "v24.15.0",
     "git": "2.50.1"
   }
 }

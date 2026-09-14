@@ -12,8 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 import json
 import os
+import re
 import traceback
 from typing import Type, Optional, List, Dict, Any, Tuple
 from urllib.parse import parse_qs, urlparse
@@ -156,7 +158,7 @@ class BaseAzureDevOpsFileWorkItemTool(BaseAzureDevOpsWorkItemTool, FileToolMixin
 
     def _process_attachments(self, work_item_id: int) -> list[str]:
         """
-        Process and attach all files to the work item.
+        Process and attach files to the work item, skipping files already attached.
 
         Args:
             work_item_id: ID of the work item to attach files to
@@ -169,10 +171,35 @@ class BaseAzureDevOpsFileWorkItemTool(BaseAzureDevOpsWorkItemTool, FileToolMixin
         if not files:
             return []
 
+        sha256_re = re.compile(r"\[sha256:([a-f0-9]{64})\]")
+
+        try:
+            existing_wi = self._client.get_work_item(id=work_item_id, project=self.config.project, expand="Relations")
+            # Key on (lowercase-name, sha256-hash) so a revised file with the same name is not skipped.
+            # Attachments uploaded without a hash (legacy) are not added to this set, meaning they will
+            # be re-attached on the next run rather than silently skipped.
+            existing_attachment_hashes: set[tuple[str, str]] = set()
+            for rel in self._get_attachment_relations(existing_wi.relations):
+                name = rel.get("attributes", {}).get("name", "").lower()
+                comment = rel.get("attributes", {}).get("comment", "")
+                if name and comment:
+                    m = sha256_re.search(comment)
+                    if m:
+                        existing_attachment_hashes.add((name, m.group(1)))
+        except Exception as e:
+            logger.warning(
+                f"Could not fetch existing relations for work item {work_item_id}: {e}; will attach all files"
+            )
+            existing_attachment_hashes = set()
+
         attached_files = []
         logger.info(f"Processing {len(files)} attachments for work item {work_item_id}...")
 
         for filename, (content, _) in files.items():
+            content_hash = hashlib.sha256(content).hexdigest()
+            if (filename.lower(), content_hash) in existing_attachment_hashes:
+                logger.info(f"Skipping '{filename}': identical content already attached to work item {work_item_id}")
+                continue
             try:
                 attachment_url = self._upload_attachment(filename, content)
 
@@ -183,7 +210,10 @@ class BaseAzureDevOpsFileWorkItemTool(BaseAzureDevOpsWorkItemTool, FileToolMixin
                         "value": {
                             "rel": "AttachedFile",
                             "url": attachment_url,
-                            "attributes": {"comment": f"Attached file: {filename}"},
+                            "attributes": {
+                                "comment": f"Attached file: {filename} [sha256:{content_hash}]",
+                                "name": filename,
+                            },
                         },
                     }
                 ]

@@ -12,11 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
+import hashlib
 from unittest.mock import Mock, MagicMock, patch
 
 import pytest
-
-import base64
 
 from codemie_tools.azure_devops.work_item.models import AzureDevOpsWorkItemConfig
 from codemie_tools.azure_devops.work_item.tools import (
@@ -31,6 +31,12 @@ from codemie_tools.azure_devops.work_item.tools import (
     GetWorkItemAttachmentContentTool,
     _HIERARCHY_REVERSE,
 )
+
+_WI_JSON_STUB = '{"fields": {"System.Title": "T"}}'
+_NEW_PDF = "new.pdf"
+_UPLOAD_ATTACHMENT = "_upload_attachment"
+_DEFAULT_CONTENT = b"file content"
+_DEFAULT_CONTENT_HASH = hashlib.sha256(_DEFAULT_CONTENT).hexdigest()
 
 
 @pytest.fixture
@@ -124,6 +130,27 @@ class TestCreateWorkItemTool:
         assert "1" in result
         mock_client.create_work_item.assert_called_once()
 
+    def test_create_attaches_file_when_work_item_has_no_prior_relations(self, create_tool, mock_client):
+        """Newly created work item has no existing relations — file must be uploaded normally."""
+        mock_response = Mock()
+        mock_response.id = 99
+        mock_response.url = "http://test-url"
+        mock_client.create_work_item.return_value = mock_response
+
+        existing_wi = Mock()
+        existing_wi.relations = None
+        mock_client.get_work_item.return_value = existing_wi
+
+        upload_url = "https://dev.azure.com/org/_apis/wit/attachments/eee"
+        create_tool.config.input_files = [_make_file_object("spec.pdf", b"spec content")]
+
+        with patch.object(create_tool, _UPLOAD_ATTACHMENT, return_value=upload_url) as mock_upload:
+            result = create_tool.execute(work_item_json='{"fields": {"System.Title": "New"}}')
+
+        mock_upload.assert_called_once_with("spec.pdf", b"spec content")
+        assert "created successfully" in result
+        assert "spec.pdf" in result
+
 
 class TestUpdateWorkItemTool:
     def test_update_work_item_success(self, update_tool, mock_client):
@@ -139,6 +166,166 @@ class TestUpdateWorkItemTool:
         # Assert
         assert "was updated" in result
         mock_client.update_work_item.assert_called_once()
+
+    def test_update_does_not_reattach_file_already_in_relations(self, update_tool, mock_client):
+        """Same file present in existing AttachedFile relations must not be re-uploaded."""
+        work_item_id = 42
+        mock_response = Mock()
+        mock_response.id = work_item_id
+        mock_client.update_work_item.return_value = mock_response
+
+        existing_rel = _make_relation(
+            "AttachedFile",
+            "doc.pdf",
+            "https://dev.azure.com/org/_apis/wit/attachments/aaa",
+            comment=f"Attached file: doc.pdf [sha256:{_DEFAULT_CONTENT_HASH}]",
+        )
+        existing_wi = Mock()
+        existing_wi.relations = [existing_rel]
+        mock_client.get_work_item.return_value = existing_wi
+
+        update_tool.config.input_files = [_make_file_object("doc.pdf")]
+
+        with patch.object(update_tool, _UPLOAD_ATTACHMENT) as mock_upload:
+            result = update_tool.execute(id=work_item_id, work_item_json=_WI_JSON_STUB)
+
+        mock_upload.assert_not_called()
+        assert "was updated" in result
+
+    def test_update_attaches_new_file_not_yet_in_relations(self, update_tool, mock_client):
+        """File with a name not in existing relations must still be uploaded and attached."""
+        work_item_id = 42
+        mock_response = Mock()
+        mock_response.id = work_item_id
+        mock_client.update_work_item.return_value = mock_response
+
+        existing_rel = _make_relation("AttachedFile", "old.pdf", "https://dev.azure.com/org/_apis/wit/attachments/bbb")
+        existing_wi = Mock()
+        existing_wi.relations = [existing_rel]
+        mock_client.get_work_item.return_value = existing_wi
+
+        upload_url = "https://dev.azure.com/org/_apis/wit/attachments/ccc"
+        update_tool.config.input_files = [_make_file_object(_NEW_PDF, b"new content")]
+
+        with patch.object(update_tool, _UPLOAD_ATTACHMENT, return_value=upload_url) as mock_upload:
+            result = update_tool.execute(id=work_item_id, work_item_json=_WI_JSON_STUB)
+
+        mock_upload.assert_called_once_with(_NEW_PDF, b"new content")
+        assert _NEW_PDF in result
+
+    def test_update_with_no_files_does_not_call_get_work_item(self, update_tool, mock_client):
+        """When config.input_files is empty, get_work_item must not be called."""
+        mock_response = Mock()
+        mock_response.id = 1
+        mock_client.update_work_item.return_value = mock_response
+        update_tool.config.input_files = []
+
+        update_tool.execute(id=1, work_item_json='{"fields": {"System.Title": "No files"}}')
+
+        mock_client.get_work_item.assert_not_called()
+
+    def test_update_dedup_is_case_insensitive(self, update_tool, mock_client):
+        """Filename comparison must be case-insensitive."""
+        work_item_id = 5
+        mock_response = Mock()
+        mock_response.id = work_item_id
+        mock_client.update_work_item.return_value = mock_response
+
+        existing_rel = _make_relation(
+            "AttachedFile",
+            "REPORT.PDF",
+            "https://dev.azure.com/org/_apis/wit/attachments/ddd",
+            comment=f"Attached file: REPORT.PDF [sha256:{_DEFAULT_CONTENT_HASH}]",
+        )
+        existing_wi = Mock()
+        existing_wi.relations = [existing_rel]
+        mock_client.get_work_item.return_value = existing_wi
+
+        update_tool.config.input_files = [_make_file_object("report.pdf")]
+
+        with patch.object(update_tool, _UPLOAD_ATTACHMENT) as mock_upload:
+            update_tool.execute(id=work_item_id, work_item_json=_WI_JSON_STUB)
+
+        mock_upload.assert_not_called()
+
+    def test_update_skips_file_on_second_call(self, update_tool, mock_client):
+        """Consecutive-update round-trip: relation written by _process_attachments (name + comment) must be recognised and skipped."""
+        work_item_id = 7
+        mock_response = Mock()
+        mock_response.id = work_item_id
+        mock_client.update_work_item.return_value = mock_response
+
+        existing_rel = _make_relation(
+            "AttachedFile",
+            "spec.pdf",
+            "https://dev.azure.com/org/_apis/wit/attachments/fff",
+            comment=f"Attached file: spec.pdf [sha256:{_DEFAULT_CONTENT_HASH}]",
+        )
+        existing_wi = Mock()
+        existing_wi.relations = [existing_rel]
+        mock_client.get_work_item.return_value = existing_wi
+
+        update_tool.config.input_files = [_make_file_object("spec.pdf")]
+
+        with patch.object(update_tool, _UPLOAD_ATTACHMENT) as mock_upload:
+            update_tool.execute(id=work_item_id, work_item_json=_WI_JSON_STUB)
+
+        mock_upload.assert_not_called()
+
+    def test_update_with_mixed_files_attaches_only_new(self, update_tool, mock_client):
+        """When one file is already attached and one is new, only the new file must be uploaded."""
+        work_item_id = 8
+        mock_response = Mock()
+        mock_response.id = work_item_id
+        mock_client.update_work_item.return_value = mock_response
+
+        existing_rel = _make_relation(
+            "AttachedFile",
+            "existing.pdf",
+            "https://dev.azure.com/org/_apis/wit/attachments/ggg",
+            comment=f"Attached file: existing.pdf [sha256:{_DEFAULT_CONTENT_HASH}]",
+        )
+        existing_wi = Mock()
+        existing_wi.relations = [existing_rel]
+        mock_client.get_work_item.return_value = existing_wi
+
+        upload_url = "https://dev.azure.com/org/_apis/wit/attachments/hhh"
+        update_tool.config.input_files = [
+            _make_file_object("existing.pdf"),
+            _make_file_object(_NEW_PDF, b"new bytes"),
+        ]
+
+        with patch.object(update_tool, _UPLOAD_ATTACHMENT, return_value=upload_url) as mock_upload:
+            result = update_tool.execute(id=work_item_id, work_item_json=_WI_JSON_STUB)
+
+        mock_upload.assert_called_once_with(_NEW_PDF, b"new bytes")
+        assert _NEW_PDF in result
+
+    def test_update_reattaches_revised_file_with_same_name(self, update_tool, mock_client):
+        """A file whose content changed (different hash) must be re-attached even if its name is already present."""
+        work_item_id = 9
+        mock_response = Mock()
+        mock_response.id = work_item_id
+        mock_client.update_work_item.return_value = mock_response
+
+        old_hash = hashlib.sha256(b"old content").hexdigest()
+        existing_rel = _make_relation(
+            "AttachedFile",
+            "report.pdf",
+            "https://dev.azure.com/org/_apis/wit/attachments/iii",
+            comment=f"Attached file: report.pdf [sha256:{old_hash}]",
+        )
+        existing_wi = Mock()
+        existing_wi.relations = [existing_rel]
+        mock_client.get_work_item.return_value = existing_wi
+
+        upload_url = "https://dev.azure.com/org/_apis/wit/attachments/jjj"
+        update_tool.config.input_files = [_make_file_object("report.pdf", b"revised content")]
+
+        with patch.object(update_tool, _UPLOAD_ATTACHMENT, return_value=upload_url) as mock_upload:
+            update_tool.execute(id=work_item_id, work_item_json=_WI_JSON_STUB)
+
+        mock_upload.assert_called_once_with("report.pdf", b"revised content")
 
 
 class TestGetWorkItemTool:
@@ -442,6 +629,15 @@ class TestGetWorkItemAttachmentContentTool:
             "note",
         }
         assert result["attachment_note"] is None
+
+
+def _make_file_object(name: str, content: bytes = b"file content", mime_type: str = "application/octet-stream"):
+    """Build a mock FileObject for injection into config.input_files."""
+    fo = Mock()
+    fo.name = name
+    fo.mime_type = mime_type
+    fo.bytes_content.return_value = content
+    return fo
 
 
 def _make_hierarchy_relation(rel_type: str, url: str):

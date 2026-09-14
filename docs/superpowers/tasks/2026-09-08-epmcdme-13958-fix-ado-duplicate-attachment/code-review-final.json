@@ -1,0 +1,69 @@
+{
+  "decision": "request-changes",
+  "rationale": "CR-001 is a critical silent defect: the patch document written by _process_attachments sets only {\"comment\": ...} in relation attributes and never sets \"name\". ADO does not auto-populate attributes.name from the fileName query parameter, so existing_names is always an empty set and the dedup guard never fires — the bug is not fixed. CR-002 and CR-003 are major: the get_work_item call sits outside any try/except, and the test suite lacks coverage for the consecutive-update and multi-file scenarios that the acceptance criteria require.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "criterion": "AC1: Duplicate attachment upload is prevented across repeated ADO work item updates in the same chat",
+      "status": "fail",
+      "notes": "The guard is permanently inert. existing_names is always empty because _process_attachments writes {\"comment\": ...} to relation attributes but never {\"name\": filename}. ADO does not copy the fileName upload query parameter into attributes.name. Every call uploads every file regardless of history."
+    },
+    {
+      "criterion": "AC2: New files provided later in the chat are still attached correctly",
+      "status": "pass",
+      "notes": "The upload path is unchanged; new files are still uploaded (ironically because the guard never fires)."
+    },
+    {
+      "criterion": "AC3: Attachment deduplication uses reliable identifiers (filename, file ID, URL, hash, or equivalent)",
+      "status": "partial",
+      "notes": "Filename is used as the identifier (acceptable per AC) and .lower() comparison is correct, but the identifier is never written into the relation attributes on attach, so lookup always returns an empty set."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "commit-format",
+      "status": "pass",
+      "notes": "EPMCDME-13958: Prevent duplicate ADO work item attachment on repeated updates — matches EPMCDME-####: Description format."
+    },
+    {
+      "standard": "code-quality",
+      "status": "pass",
+      "notes": "Ruff ran clean post-commit; return type list[str] annotated; no new files requiring license headers."
+    },
+    {
+      "standard": "security",
+      "status": "pass",
+      "notes": "No credentials logged, no new auth changes, no injection vectors introduced."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "critical",
+      "triage": "patch",
+      "problem": "The patch document in _process_attachments sets `\"attributes\": {\"comment\": f\"Attached file: {filename}\"}` but never sets `\"name\": filename`. ADO does not auto-populate attributes.name from the fileName upload query parameter. When _get_attachment_relations processes existing relations, rel.get(\"attributes\", {}).get(\"name\", \"\") returns \"\" for every relation this code ever wrote. The resulting existing_names set is always empty, so the `if filename.lower() in existing_names` guard never fires.",
+      "impact": "The dedup guard is permanently inert. Every call to _process_attachments uploads and re-attaches every file unconditionally — the bug described in EPMCDME-13958 is not fixed.",
+      "recommendation": "Add `\"name\": filename` to the attributes dict in the patch_doc: `\"attributes\": {\"comment\": f\"Attached file: {filename}\", \"name\": filename}`. This ensures the relation's attributes.name is populated and future calls to _get_attachment_relations will correctly find the existing attachment by name.",
+      "sources": ["edge-case lens", "blind lens"]
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "patch",
+      "problem": "The `existing_wi = self._client.get_work_item(id=work_item_id, ...)` call at the top of _process_attachments sits outside any try/except block. If the ADO API returns an error (network failure, permission issue, work item not found), the exception propagates uncaught through the caller — which may have already created or updated the work item — leaving the caller without a return value.",
+      "impact": "Any transient ADO error on the preflight fetch turns a successful create/update into an unhandled exception. The work item exists but the tool returns no ID to the user.",
+      "recommendation": "Wrap the get_work_item call in a try/except. On failure, log a warning and proceed with an empty existing_names set (fail-open: upload may be duplicated, but the create/update is not broken). Example: `try: existing_wi = ...; existing_names = {...} except Exception as e: logger.warning(f\"Could not fetch existing relations for {work_item_id}: {e}\"); existing_names = set()`",
+      "sources": ["edge-case lens", "blind lens"]
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "triage": "patch",
+      "problem": "The test suite has no test covering (a) the consecutive-update scenario: attach file on first call, verify it is skipped on a second call where the work item relations reflect what _process_attachments wrote on the first call; and (b) the multi-file scenario: two different files simultaneously, one already attached and one new — only the new one should be uploaded.",
+      "impact": "The critical regression path — the exact scenario from the bug report — has no automated coverage. A future refactor that breaks the dedup logic would not be caught by the test suite.",
+      "recommendation": "Add two tests: (1) `test_update_skips_file_on_second_call`: mock get_work_item to return a relation whose attributes include both `comment` and `name` (the fixed relation shape), confirm _upload_attachment not called. (2) `test_update_with_mixed_files_attaches_only_new`: one file in existing relations (with name set), one new file; confirm only the new file is uploaded.",
+      "sources": ["acceptance lens"]
+    }
+  ]
+}
