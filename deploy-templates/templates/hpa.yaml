@@ -43,5 +43,9 @@ spec:
         periodSeconds: {{ $pool.hpa.scaleUpPolicyPeriodSeconds }}
     scaleDown:
       stabilizationWindowSeconds: {{ $pool.hpa.scaleDownStabilizationWindowSeconds }}
+      policies:
+      - type: Pods
+        value: {{ $pool.hpa.scaleDownPolicyPods }}
+        periodSeconds: {{ $pool.hpa.scaleDownPolicyPeriodSeconds }}
 {{- end }}
 {{- end }}

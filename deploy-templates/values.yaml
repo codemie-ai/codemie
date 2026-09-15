@@ -380,7 +380,11 @@ dsPool:
     # -- Time window for the scaleUpPolicyPods limit
     scaleUpPolicyPeriodSeconds: 15
     # -- Time window CPU must stay below target before pods are removed
-    scaleDownStabilizationWindowSeconds: 900
+    scaleDownStabilizationWindowSeconds: 1800
+    # -- Maximum number of pods the HPA can remove per scaleDownPolicyPeriodSeconds window
+    scaleDownPolicyPods: 1
+    # -- Time window for the scaleDownPolicyPods limit
+    scaleDownPolicyPeriodSeconds: 600
 
   ## PodDisruptionBudget for the ds-pool workload
   pdb:
@@ -490,7 +494,11 @@ proxyPool:
     # -- Time window for the scaleUpPolicyPods limit
     scaleUpPolicyPeriodSeconds: 15
     # -- Time window CPU must stay below target before pods are removed
-    scaleDownStabilizationWindowSeconds: 900
+    scaleDownStabilizationWindowSeconds: 1800
+    # -- Maximum number of pods the HPA can remove per scaleDownPolicyPeriodSeconds window
+    scaleDownPolicyPods: 1
+    # -- Time window for the scaleDownPolicyPods limit
+    scaleDownPolicyPeriodSeconds: 600
 
   ## PodDisruptionBudget for the proxy-pool workload
   pdb:
@@ -567,7 +575,11 @@ hpa:
   # -- Time window for the scaleUpPolicyPods limit
   scaleUpPolicyPeriodSeconds: 15
   # -- Time window CPU must stay below target before pods are removed
-  scaleDownStabilizationWindowSeconds: 900
+  scaleDownStabilizationWindowSeconds: 1800
+  # -- Maximum number of pods the HPA can remove per scaleDownPolicyPeriodSeconds window
+  scaleDownPolicyPods: 1
+  # -- Time window for the scaleDownPolicyPods limit
+  scaleDownPolicyPeriodSeconds: 600
 
 ## PodDisruptionBudget for the main codemie-api workload
 pdb:

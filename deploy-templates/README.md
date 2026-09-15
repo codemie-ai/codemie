@@ -31,7 +31,9 @@ A Helm chart for AI/Run API
 | dsPool.hpa.enabled | bool | `false` | Enable the HorizontalPodAutoscaler for the ds-pool rollout/deployment |
 | dsPool.hpa.maxReplicas | int | `2` | Maximum number of ds-pool pods |
 | dsPool.hpa.minReplicas | int | `1` | Minimum number of ds-pool pods |
-| dsPool.hpa.scaleDownStabilizationWindowSeconds | int | `900` | Time window CPU must stay below target before pods are removed |
+| dsPool.hpa.scaleDownPolicyPeriodSeconds | int | `600` | Time window for the scaleDownPolicyPods limit |
+| dsPool.hpa.scaleDownPolicyPods | int | `1` | Maximum number of pods the HPA can remove per scaleDownPolicyPeriodSeconds window |
+| dsPool.hpa.scaleDownStabilizationWindowSeconds | int | `1800` | Time window CPU must stay below target before pods are removed |
 | dsPool.hpa.scaleUpPolicyPeriodSeconds | int | `15` | Time window for the scaleUpPolicyPods limit |
 | dsPool.hpa.scaleUpPolicyPods | int | `1` | Maximum number of pods the HPA can add per scaleUpPolicyPeriodSeconds window |
 | dsPool.hpa.scaleUpStabilizationWindowSeconds | int | `60` | Time window the CPU target must be exceeded before pods are added |
@@ -64,7 +66,9 @@ A Helm chart for AI/Run API
 | hpa.enabled | bool | `false` | Enable the HorizontalPodAutoscaler for the codemie-api rollout/deployment |
 | hpa.maxReplicas | int | `2` | Maximum number of codemie-api pods |
 | hpa.minReplicas | int | `1` | Minimum number of codemie-api pods |
-| hpa.scaleDownStabilizationWindowSeconds | int | `900` | Time window CPU must stay below target before pods are removed |
+| hpa.scaleDownPolicyPeriodSeconds | int | `600` | Time window for the scaleDownPolicyPods limit |
+| hpa.scaleDownPolicyPods | int | `1` | Maximum number of pods the HPA can remove per scaleDownPolicyPeriodSeconds window |
+| hpa.scaleDownStabilizationWindowSeconds | int | `1800` | Time window CPU must stay below target before pods are removed |
 | hpa.scaleUpPolicyPeriodSeconds | int | `15` | Time window for the scaleUpPolicyPods limit |
 | hpa.scaleUpPolicyPods | int | `1` | Maximum number of pods the HPA can add per scaleUpPolicyPeriodSeconds window |
 | hpa.scaleUpStabilizationWindowSeconds | int | `60` | Time window the CPU target must be exceeded before pods are added |
@@ -114,7 +118,9 @@ A Helm chart for AI/Run API
 | proxyPool.hpa.enabled | bool | `false` | Enable the HorizontalPodAutoscaler for the proxy-pool rollout/deployment |
 | proxyPool.hpa.maxReplicas | int | `2` | Maximum number of proxy-pool pods |
 | proxyPool.hpa.minReplicas | int | `1` | Minimum number of proxy-pool pods |
-| proxyPool.hpa.scaleDownStabilizationWindowSeconds | int | `900` | Time window CPU must stay below target before pods are removed |
+| proxyPool.hpa.scaleDownPolicyPeriodSeconds | int | `600` | Time window for the scaleDownPolicyPods limit |
+| proxyPool.hpa.scaleDownPolicyPods | int | `1` | Maximum number of pods the HPA can remove per scaleDownPolicyPeriodSeconds window |
+| proxyPool.hpa.scaleDownStabilizationWindowSeconds | int | `1800` | Time window CPU must stay below target before pods are removed |
 | proxyPool.hpa.scaleUpPolicyPeriodSeconds | int | `15` | Time window for the scaleUpPolicyPods limit |
 | proxyPool.hpa.scaleUpPolicyPods | int | `1` | Maximum number of pods the HPA can add per scaleUpPolicyPeriodSeconds window |
 | proxyPool.hpa.scaleUpStabilizationWindowSeconds | int | `60` | Time window the CPU target must be exceeded before pods are added |
