@@ -28,6 +28,7 @@ from codemie.service.settings.settings_request_validator import (
     UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES,
     validate_credential_type_not_deprecated,
     validate_datasource_type_for_scheduler,
+    validate_datasource_type_for_webhook,
     validate_git_request,
     validate_ms_teams_request,
     validate_timezone_value,
@@ -101,6 +102,11 @@ def test_unsupported_scheduler_datasource_types_contains(index_type):
 def test_sharepoint_is_schedulable():
     """SharePoint must stay schedulable: the engine supports it and users depend on it."""
     assert "knowledge_base_sharepoint" not in UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES
+
+
+def test_validate_datasource_type_for_webhook_accepts_xwiki():
+    """xWiki datasources must support webhook triggering (EPMCDME-14794)."""
+    validate_datasource_type_for_webhook(_make_datasource("knowledge_base_xwiki"))  # should not raise
 
 
 def _make_request_with_timezone(tz_value):

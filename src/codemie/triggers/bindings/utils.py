@@ -72,6 +72,7 @@ def validate_datasource(datasource_id) -> IndexInfo | None:
         FullDatasourceTypes.AZURE_DEVOPS_WIKI,
         FullDatasourceTypes.AZURE_DEVOPS_WORK_ITEM,
         FullDatasourceTypes.PROVIDER,
+        FullDatasourceTypes.XWIKI,
         "knowledge_base_xray",
         "knowledge_base_sharepoint",
     ]:

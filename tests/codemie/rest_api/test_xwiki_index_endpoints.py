@@ -50,8 +50,8 @@ def test_update_request_allows_omitting_the_space():
     assert request.space is None
 
 
-def test_xwiki_has_no_webhook_support():
-    assert "knowledge_base_xwiki" in UNSUPPORTED_WEBHOOK_DATASOURCE_TYPES
+def test_xwiki_supports_webhook():
+    assert "knowledge_base_xwiki" not in UNSUPPORTED_WEBHOOK_DATASOURCE_TYPES
 
 
 def test_xwiki_does_support_the_scheduler():

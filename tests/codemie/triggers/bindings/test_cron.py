@@ -531,6 +531,33 @@ def test_validate_datasource_sharepoint_type_is_supported():
     assert result is mock_ds
 
 
+def test_validate_datasource_xwiki_type_is_supported():
+    """xWiki datasource with a setting_id must be returned by validate_datasource (EPMCDME-14794)."""
+    mock_ds = MagicMock()
+    mock_ds.is_code_index.return_value = False
+    mock_ds.index_type = "knowledge_base_xwiki"
+    mock_ds.setting_id = "some-setting-id"
+
+    with patch("codemie.triggers.bindings.utils.IndexInfo.find_by_id", return_value=mock_ds):
+        result = validate_datasource("some-ds-id")
+
+    assert result is mock_ds
+
+
+def test_validate_datasource_xwiki_without_setting_id_raises():
+    """xWiki datasource without setting_id must raise DatasourceNotValidated (EPMCDME-14794)."""
+    from codemie.triggers.trigger_exceptions import DatasourceNotValidated
+
+    mock_ds = MagicMock()
+    mock_ds.is_code_index.return_value = False
+    mock_ds.index_type = "knowledge_base_xwiki"
+    mock_ds.setting_id = None
+
+    with patch("codemie.triggers.bindings.utils.IndexInfo.find_by_id", return_value=mock_ds):
+        with pytest.raises(DatasourceNotValidated):
+            validate_datasource("some-ds-id")
+
+
 # ---------------------------------------------------------------------------
 # Tests for __schedule_datasource_job dispatch — Xray and SharePoint (EPMCDME-13171)
 # ---------------------------------------------------------------------------

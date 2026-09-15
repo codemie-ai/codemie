@@ -72,13 +72,12 @@ UNSUPPORTED_WEBHOOK_DATASOURCE_TYPES: frozenset[str] = frozenset(
         "knowledge_base_xray",  # user-visible name: "xray"
         "knowledge_base_azure_devops_wiki",  # user-visible name: "azure devops wiki"
         "knowledge_base_azure_devops_work_item",  # user-visible name: "azure devops work item"
-        "knowledge_base_xwiki",  # user-visible name: "xwiki"
         "platform_marketplace_assistant",  # internal platform type
     ]
 )
 UNSUPPORTED_WEBHOOK_DATASOURCE_TYPES_HELP_MESSAGE = (
     "The following datasource types do not support triggering by webhook: "
-    "file, sharepoint, xray, azure devops wiki, azure devops work item, xwiki. "
+    "file, sharepoint, xray, azure devops wiki, azure devops work item. "
     "Please select a datasource of a supported type (e.g., git/code, summary, chunk-summary, confluence, jira, google)."
 )
 

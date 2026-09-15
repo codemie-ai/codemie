@@ -1,0 +1,43 @@
+{
+  "decision": "request-changes",
+  "rationale": "One actionable finding (CR-001): the xWiki dispatch branch lacks the null guard on datasource.xwiki that the Confluence branch provides at webhook.py lines 582–586. A malformed xWiki datasource with xwiki=None returns HTTP 200 while the background actor logs an error and silently skips the reindex. One deferred finding (CR-002) is pre-existing and out of scope.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "standard": "commit-format",
+      "status": "pass",
+      "notes": "All 4 commits follow 'EPMCDME-14794: ...' format"
+    },
+    {
+      "standard": "code-quality (ruff)",
+      "status": "pass",
+      "notes": "ruff check and ruff format both pass"
+    },
+    {
+      "standard": "sonar",
+      "status": "na",
+      "notes": "SONAR_TOKEN not set; explicitly skipped per session rules"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "triage": "patch",
+      "severity": "major",
+      "problem": "The xWiki dispatch branch in handle_datasource passes datasource.xwiki directly to XWikiReindexTask.xwiki_index_info without a null guard. IndexInfo.xwiki is Optional[XWikiIndexInfo] = None (index.py line 329). When datasource.xwiki is None the task constructs successfully (field is Optional), the webhook responds 200 OK, and the background actor at datasource.py lines 673–684 logs an ERROR and returns — the reindex does not run, but the caller receives no synchronous indication of failure.",
+      "impact": "HTTP 200 response for a misconfigured xWiki datasource is misleading: the caller cannot distinguish 'reindex scheduled' from 'reindex will be skipped'. The Confluence branch at webhook.py lines 582–586 shows the established guard pattern (raises HTTPException 400 immediately). xWiki is inconsistent with it.",
+      "recommendation": "Add the Confluence-style guard immediately before constructing XWikiReindexTask:\n\n    if not datasource.xwiki:\n        raise HTTPException(\n            status_code=status.HTTP_400_BAD_REQUEST,\n            detail=f\"xWiki datasource '{resource_id}' is missing xWiki configuration.\",\n        )\n\nAlso add a test asserting that a datasource with xwiki=None raises an HTTPException 400 (RED before the fix).",
+      "sources": ["edge-case", "blind"]
+    }
+  ],
+  "dismissed": {
+    "count": 2,
+    "notes": "Blind-F1 dismissed: mislabeled the XWIKI addition as going into a 'rejection list' — it was added to the allow-list. Blind-F3 dismissed: alleged enum-vs-string mismatch — FullDatasourceTypes extends str (constants.py line 20), so comparison works."
+  },
+  "deferred": {
+    "count": 1,
+    "notes": "EC-002 (pre-existing): AzureDevOps wiki/work-item, Xray, SharePoint pass validate_datasource's allow-list but have no dispatch branch in handle_datasource. Pre-existing and blocked at creation time by UNSUPPORTED_WEBHOOK_DATASOURCE_TYPES. Out of scope for this ticket."
+  }
+}

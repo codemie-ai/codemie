@@ -200,3 +200,121 @@ async def test_invoke_webhook_logic_unsupported_resource_type(mock_request, mock
             WebhookService.invoke_webhook_logic(mock_request, webhook_id, mock_background_tasks, b'{}')
         assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
         assert exc_info.value.detail == WebhookService.UNSUPPORTED_RESOURCE_TYPE.format("unsupported_type")
+
+
+# ---------------------------------------------------------------------------
+# Guard tests for datasource config presence
+# ---------------------------------------------------------------------------
+
+
+def test_handle_datasource_confluence_raises_400_when_confluence_config_missing(mock_background_tasks, setting_fixture):
+    """handle_datasource raises 400 when a Confluence datasource has no confluence config."""
+    from codemie.rest_api.models.index import IndexInfo
+    from codemie.rest_api.security.user import User
+    from codemie.service.constants import FullDatasourceTypes
+
+    mock_user = User(id="test-user", username="testuser")
+    confluence_ds = MagicMock(spec=IndexInfo)
+    confluence_ds.project_name = "test_project"
+    confluence_ds.repo_name = "confluence-repo"
+    confluence_ds.index_type = FullDatasourceTypes.CONFLUENCE.value
+    confluence_ds.is_code_index.return_value = False
+    creator = MagicMock()
+    creator.id = "real_user_id"
+    confluence_ds.created_by = creator
+    confluence_ds.confluence = None
+
+    with (
+        patch("codemie.triggers.bindings.webhook.validate_datasource", return_value=confluence_ds),
+        patch("codemie.triggers.bindings.webhook.resolve_trigger_user", return_value=mock_user),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            WebhookService.handle_datasource(
+                resource_id="datasource_id",
+                background_tasks=mock_background_tasks,
+                setting=setting_fixture,
+            )
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert "missing space keys" in exc_info.value.detail
+
+
+# ---------------------------------------------------------------------------
+# Tests for xWiki webhook dispatch (EPMCDME-14794)
+# ---------------------------------------------------------------------------
+
+
+def test_handle_datasource_xwiki_raises_400_when_xwiki_config_missing(mock_background_tasks, setting_fixture):
+    """handle_datasource must raise 400 when xWiki datasource has no xwiki config (EPMCDME-14794)."""
+    from codemie.rest_api.models.index import IndexInfo
+    from codemie.rest_api.security.user import User
+    from codemie.service.constants import FullDatasourceTypes
+
+    mock_user = User(id="test-user", username="testuser")
+    xwiki_ds = MagicMock(spec=IndexInfo)
+    xwiki_ds.project_name = "test_project"
+    xwiki_ds.repo_name = "xwiki-repo"
+    xwiki_ds.index_type = FullDatasourceTypes.XWIKI.value
+    xwiki_ds.is_code_index.return_value = False
+    creator = MagicMock()
+    creator.id = "real_user_id"
+    xwiki_ds.created_by = creator
+    xwiki_ds.xwiki = None
+
+    with (
+        patch("codemie.triggers.bindings.webhook.validate_datasource", return_value=xwiki_ds),
+        patch("codemie.triggers.bindings.webhook.resolve_trigger_user", return_value=mock_user),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            WebhookService.handle_datasource(
+                resource_id="datasource_id",
+                background_tasks=mock_background_tasks,
+                setting=setting_fixture,
+            )
+        assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+        assert "missing xWiki configuration" in exc_info.value.detail
+
+
+def test_handle_datasource_xwiki_schedules_reindex_xwiki(mock_background_tasks, setting_fixture):
+    """handle_datasource must schedule reindex_xwiki with an XWikiReindexTask (EPMCDME-14794)."""
+    from codemie.rest_api.models.index import IndexInfo, XWikiIndexInfo
+    from codemie.rest_api.security.user import User
+    from codemie.service.constants import FullDatasourceTypes
+    from codemie.triggers.trigger_models import XWikiReindexTask
+
+    xwiki_info = XWikiIndexInfo(space="KB")
+    mock_user = User(id="test-user", username="testuser")
+
+    xwiki_ds = MagicMock(spec=IndexInfo)
+    xwiki_ds.project_name = "test_project"
+    xwiki_ds.repo_name = "xwiki-repo"
+    xwiki_ds.index_type = FullDatasourceTypes.XWIKI.value
+    xwiki_ds.is_code_index.return_value = False
+    creator = MagicMock()
+    creator.id = "real_user_id"
+    xwiki_ds.created_by = creator
+    xwiki_ds.xwiki = xwiki_info
+
+    with (
+        patch("codemie.triggers.bindings.webhook.validate_datasource", return_value=xwiki_ds),
+        patch("codemie.triggers.bindings.webhook.resolve_trigger_user", return_value=mock_user),
+        patch("codemie.triggers.bindings.webhook.reindex_xwiki") as mock_reindex_xwiki,
+        patch("codemie.triggers.bindings.webhook.XWikiReindexTask", wraps=XWikiReindexTask) as mock_task_cls,
+    ):
+        WebhookService.handle_datasource(
+            resource_id="datasource_id",
+            background_tasks=mock_background_tasks,
+            setting=setting_fixture,
+        )
+
+    mock_task_cls.assert_called_once_with(
+        resource_id="datasource_id",
+        project_name="test_project",
+        resource_name="xwiki-repo",
+        user=mock_user,
+        index_info=xwiki_ds,
+        xwiki_index_info=xwiki_info,
+    )
+    mock_background_tasks.add_task.assert_called_once()
+    call_args = mock_background_tasks.add_task.call_args
+    assert call_args[0][0] is mock_reindex_xwiki
+    assert isinstance(call_args[0][1], XWikiReindexTask)

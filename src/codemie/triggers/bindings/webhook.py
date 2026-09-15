@@ -33,6 +33,7 @@ from codemie.triggers.actors.datasource import (
     reindex_git_faq,
     reindex_google,
     reindex_jira,
+    reindex_xwiki,
 )
 from codemie.triggers.actors.workflow import invoke_workflow
 from codemie.triggers.bindings.github_webhook_security import GitHubWebhookSecurity
@@ -45,6 +46,7 @@ from codemie.triggers.trigger_models import (
     GoogleReindexTask,
     GitFaqReindexTask,
     JiraReindexTask,
+    XWikiReindexTask,
 )
 
 
@@ -528,6 +530,11 @@ class WebhookService:
         return BaseResponse(message=cls.WEBHOOK_INVOKED_SUCCESSFULLY, data="")
 
     @classmethod
+    def _require_datasource_config(cls, config, detail: str) -> None:
+        if not config:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+    @classmethod
     def handle_datasource(cls, resource_id, background_tasks: BackgroundTasks, setting: Settings):
         datasource = validate_datasource(resource_id)
         if not datasource:
@@ -579,12 +586,9 @@ class WebhookService:
             )
             background_tasks.add_task(reindex_jira, payload)
         elif index_type == FullDatasourceTypes.CONFLUENCE:
-            if not datasource.confluence:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Confluence datasource '{resource_id}' is missing space keys.",
-                )
-
+            cls._require_datasource_config(
+                datasource.confluence, f"Confluence datasource '{resource_id}' is missing space keys."
+            )
             payload = ConfluenceReindexTask(
                 resource_id=resource_id,
                 project_name=project_name,
@@ -614,6 +618,19 @@ class WebhookService:
                 index_info=datasource,
             )
             background_tasks.add_task(reindex_google, payload)
+        elif index_type == FullDatasourceTypes.XWIKI:
+            cls._require_datasource_config(
+                datasource.xwiki, f"xWiki datasource '{resource_id}' is missing xWiki configuration."
+            )
+            payload = XWikiReindexTask(
+                resource_id=resource_id,
+                project_name=project_name,
+                resource_name=resource_name,
+                user=user,
+                index_info=datasource,
+                xwiki_index_info=datasource.xwiki,
+            )
+            background_tasks.add_task(reindex_xwiki, payload)
 
         else:
             raise NotImplementedDatasource(f"Datasource type '{index_type}' is not supported via webhook.")
