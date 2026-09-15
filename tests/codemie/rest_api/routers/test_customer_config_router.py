@@ -203,6 +203,49 @@ def test_get_config_with_mcp_auth_origin(mock_resolved_components):
     assert mcp_component["settings"]["value"] == "https://codemie.example.com"
 
 
+def test_get_config_with_allowed_image_domains(mock_resolved_components):
+    """Configured image allow-list is exposed verbatim to every user, external included."""
+    enabled_components = [
+        Component(id="component1", settings=ComponentSetting(enabled=True, name="Test Component 1")),
+        Component(
+            id="allowedImageDomains",
+            settings=ComponentSetting(enabled=True, value="raw.githubusercontent.com,.example.com,cdn.customer.io"),
+        ),
+    ]
+
+    mock_resolved_components.return_value = enabled_components
+
+    response = client.get("/v1/config")
+
+    assert response.status_code == 200
+    data = response.json()
+
+    domains_component = next((c for c in data if c["id"] == "allowedImageDomains"), None)
+    assert domains_component is not None
+    assert domains_component["settings"]["enabled"] is True
+    assert domains_component["settings"]["value"] == "raw.githubusercontent.com,.example.com,cdn.customer.io"
+    # Not filtered out for external users
+    assert domains_component["settings"]["availableForExternal"] is True
+
+
+def test_get_config_with_unset_allowed_image_domains(mock_resolved_components):
+    """Unconfigured allow-list returns an empty value instead of a default domain list."""
+    enabled_components = [
+        Component(id="allowedImageDomains", settings=ComponentSetting(enabled=True, value="")),
+    ]
+
+    mock_resolved_components.return_value = enabled_components
+
+    response = client.get("/v1/config")
+
+    assert response.status_code == 200
+    data = response.json()
+
+    domains_component = next((c for c in data if c["id"] == "allowedImageDomains"), None)
+    assert domains_component is not None
+    assert domains_component["settings"]["value"] == ""
+
+
 # --- Dynamic customer configuration ---
 
 

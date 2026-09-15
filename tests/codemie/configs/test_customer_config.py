@@ -13,6 +13,8 @@
 # limitations under the License.
 
 import unittest
+from collections import Counter
+from pathlib import Path
 from unittest.mock import patch
 from importlib.metadata import PackageNotFoundError
 
@@ -20,6 +22,8 @@ import yaml
 from pydantic import ValidationError
 
 from codemie.configs.customer_config import CustomerConfig, Component, ComponentSetting
+
+SHIPPED_CUSTOMER_CONFIG = Path(__file__).resolve().parents[3] / "config/customer/customer-config.yaml"
 
 
 class TestComponentSetting(unittest.TestCase):
@@ -131,6 +135,56 @@ class TestCustomerConfig(unittest.TestCase):
             yaml_components = [c for c in enabled_components if c.id == "component1"]
             self.assertEqual(len(yaml_components), 1)
             self.assertTrue(yaml_components[0].settings.enabled)
+
+    @patch("codemie.configs.customer_config.version")
+    @patch("codemie.configs.customer_config.config")
+    def test_allowed_image_domains_configured(self, mock_config, mock_version):
+        """A configured image allow-list is exposed as a raw comma-separated string."""
+        yaml_with_domains = {
+            'components': [
+                {'id': 'component1', 'settings': {'enabled': True}},
+                {
+                    'id': 'allowedImageDomains',
+                    'settings': {'enabled': True, 'value': 'raw.githubusercontent.com,.example.com'},
+                },
+            ]
+        }
+
+        with patch("codemie.configs.customer_config.Path.read_text") as mock_read_text:
+            mock_read_text.return_value = yaml.dump(yaml_with_domains)
+            mock_version.return_value = "2.3.23"
+            mock_config.ENABLE_USER_MANAGEMENT = False
+            mock_config.IDP_PROVIDER = "local"
+            mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
+            mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
+
+            config = CustomerConfig()
+            component = next(c for c in config.get_enabled_components() if c.id == "allowedImageDomains")
+
+            self.assertEqual(component.settings.value, "raw.githubusercontent.com,.example.com")
+            # Visible to external users — the allow-list is not a secret
+            self.assertTrue(component.settings.availableForExternal)
+
+    def test_allowed_image_domains_default_is_empty(self):
+        """The shipped default must reach the endpoint empty (UI default-deny), never a domain list."""
+        # Pinned to the repo's shipped file: CUSTOMER_CONFIG_DIR is a BaseSettings field and so is
+        # env-overridable. Asserted through get_enabled_components() — the list /v1/config serves.
+        config = CustomerConfig(config_path=SHIPPED_CUSTOMER_CONFIG)
+        component = next((c for c in config.get_enabled_components() if c.id == "allowedImageDomains"), None)
+
+        self.assertIsNotNone(component)
+        self.assertEqual(component.settings.value, "")
+
+    def test_shipped_config_component_ids_are_unique(self):
+        """A component declared twice is a silent merge artifact: /v1/config would serve both
+        entries, an operator would edit only one, and which value wins is left to the UI."""
+        config = CustomerConfig(config_path=SHIPPED_CUSTOMER_CONFIG)
+
+        # Raw list catches duplicates among disabled components too; the served list also
+        # catches a YAML id colliding with a runtime-computed one.
+        for label, components in (("YAML", config.components), ("served", config.get_enabled_components())):
+            duplicates = sorted(cid for cid, count in Counter(c.id for c in components).items() if count > 1)
+            self.assertEqual(duplicates, [], f"duplicate {label} component ids: {duplicates}")
 
     def test_preconfigured_assistants_default_behavior(self):
         """Test that assistants default to enabled when not configured"""

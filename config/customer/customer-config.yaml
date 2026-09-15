@@ -310,6 +310,16 @@ components:
     settings:
       enabled: false
 
+  # Domains the UI is allowed to load <img> sources from in assistant/LLM output.
+  # Comma-separated hostnames, e.g. "raw.githubusercontent.com,.example.com,cdn.customer.io".
+  # A plain entry matches that hostname only; a leading dot matches the apex and all
+  # subdomains. Matching is performed by the UI — the backend only stores the raw string.
+  # Empty by default: the UI treats an empty list as default-deny.
+  - id: "allowedImageDomains"
+    settings:
+      enabled: true
+      value: ""
+
 preconfigured_assistants:
   - id: "codemie-onboarding"
     settings:
