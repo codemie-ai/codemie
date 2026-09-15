@@ -18,6 +18,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, status, Depends, Query, BackgroundTasks, Request
+from pydantic import BaseModel
 from codemie.rest_api.models.workflow_generator import WorkflowGeneratorRequest, WorkflowGeneratorResponse
 from codemie.service.llm_service.utils import set_llm_context
 from codemie.service.workflow_generator_service import WorkflowGeneratorService
@@ -30,6 +31,7 @@ from codemie.service.mcp.access_control import MCPAccessControlService
 from codemie.core.constants import MermaidMimeType
 from codemie.core.exceptions import (
     ExtendedHTTPException,
+    MissingPlaceholderVariablesException,
     NotFoundException,
     ValidationException,
     WorkflowGenerationError,
@@ -278,6 +280,61 @@ def get_prebuilt_workflow_by_slug(slug: str, user: User = Depends(authenticate))
             details=f"No workflow template found with the slug '{slug}'.",
             help="Please check the workflow slug and ensure it is correct. ",
         )
+
+
+class MaterializeRequest(BaseModel):
+    variables: dict[str, str]
+
+
+class MaterializeSeedResponse(BaseModel):
+    yaml_config: str
+    description: str | None = None
+    start_hint: str | None = None
+
+
+@router.post(
+    "/workflows/prebuilt/{slug}/materialize",
+    status_code=status.HTTP_200_OK,
+    response_model=MaterializeSeedResponse,
+    response_model_exclude_none=True,
+    summary="Materialize a prebuilt workflow template",
+    description=(
+        "Substitutes caller-supplied variables into a prebuilt template and "
+        + "returns the materialized workflow seed."
+    ),
+)
+def materialize_prebuilt_workflow(
+    slug: str,
+    request: MaterializeRequest,
+    user: User = Depends(authenticate),
+) -> MaterializeSeedResponse:
+    try:
+        result = workflow_service.materialize_template(slug, request.variables)
+    except MissingPlaceholderVariablesException as exc:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message="Required placeholder variables are missing or blank.",
+            details={
+                "error_type": "missing_placeholder_variables",
+                "errors": [{"placeholder": name} for name in exc.missing_variables],
+            },
+            help="Provide a non-empty value for every required placeholder variable.",
+        )
+    except ValueError:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message="The workflow template could not be materialized.",
+            details={"error_type": "materialization_failed"},
+            help="Check the supplied values and the template configuration.",
+        )
+    if result is None:
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message="Workflow template not found",
+            details=f"No workflow template found with the slug '{slug}'.",
+            help="Please check the workflow slug and ensure it is correct.",
+        )
+    return MaterializeSeedResponse(**result)
 
 
 @router.get(

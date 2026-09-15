@@ -83,7 +83,7 @@ execution_config:
           - name: search_code_repo_v2
           - name: read_files_content
           - name: read_files_content_summary
-        datasource_ids: [ <GIT_DATASOURCE_ID> ] # Code source
+        datasource_ids: [ ${input:git_datasource_id} ] # Code source
 
       - id: dev
         system_prompt: |
@@ -133,7 +133,7 @@ execution_config:
           - name: search_code_repo_v2
           - name: read_files_content
           - name: read_files_content_summary
-        datasource_ids: [ <GIT_DATASOURCE_ID> ] # Code source
+        datasource_ids: [ ${input:git_datasource_id} ] # Code source
 
     states:
       - id: initializer

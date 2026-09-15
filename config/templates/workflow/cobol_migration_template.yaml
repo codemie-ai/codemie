@@ -18,7 +18,7 @@ description: |
   Automatically analyses the current COBOL project, generates Jira tickets for COBOL to Java migration, and migrates the application.
 
   IMPORTANT:
-  Make sure to update all encounters of "EPMCDMETST" Jira project in the "business_analyst" assistant below with an actual Jira project.
+  Make sure to update all encounters of "${input:jira_project}" Jira project in the "business_analyst" assistant below with an actual Jira project.
 
   Workflow requires filesystem, filesystem_ext and cli-mcp-server Plugin integrations, Jira integration,
     nhrun and nhcheck scripts to be available in PATH.
@@ -123,7 +123,7 @@ execution_config:
         6. You MUST use current_user as a "Reporter" in Jira, do not set "Auto EPMD-EDP AIAssistant" instead.
 
         JIRA Context
-        1. {}IMPORTANT{}: You MUST always use "EPMCDMETST" Jira project
+        1. {}IMPORTANT{}: You MUST always use "${input:jira_project}" Jira project
         2. If you need to link issue to epic, use this custom field 'customfield_14500'. If you need to create an epic, use custom field "customfield_14501" as  Epic Name.
         3. You MUST ALWAYS identify current_user and use it for all tickets as a "Reporter" in Jira and in the Chat.
         4. Available types of priority: Major and Critical.
@@ -134,7 +134,7 @@ execution_config:
         9. AiAssistant name - 'Auto_EPMD-EDP_AIAssistant@epam.com'. If you asked to assign ticket to AiAssistant, use the provided name.
         10. You MUST use PUT operation instead of POST if user asks to set release version for jira ticket
         11. You must use current_user and <Jira project name> project if you asked to assign issues to me or to show my issues
-        12. You MUST search for tickets only with project = "EPMCDMETST". If no tickets found in "EPMCDMETST" project - inform user respectively.
+        12. You MUST search for tickets only with project = "${input:jira_project}". If no tickets found in "${input:jira_project}" project - inform user respectively.
         13. When query the Jira API for tickets use following request structure: Example: {'method': 'GET', 'relative_url': '/rest/api/2/search', 'params': '
 
         {"jql":"assignee="example@epam.com" AND project=ABC","maxResults": 100,"fields":"key,summary,issuetype"}

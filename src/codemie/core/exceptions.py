@@ -21,6 +21,18 @@ class ValidationException(ValueError):
     """Raised when request or domain validation fails."""
 
 
+class MissingPlaceholderVariablesException(ValidationException):
+    """Raised when materialization request omits required template variables."""
+
+    def __init__(self, missing_variables: list[str]):
+        self.missing_variables = missing_variables
+        super().__init__("Required placeholder variables are missing or blank.")
+
+
+class MaterializationFailedException(ValidationException):
+    """Raised when a template cannot be materialized into a valid workflow seed."""
+
+
 class NotFoundException(Exception):
     """Raised when a requested resource does not exist."""
 

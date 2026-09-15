@@ -25,6 +25,11 @@ from pydantic import BaseModel, Field, ValidationError, computed_field
 
 from codemie.configs import config, logger
 from codemie.core.ability import Owned, Action
+from codemie.workflows.placeholders import (
+    substitute_placeholders_for_yaml_load,
+    restore_sentinels_in_obj,
+    extract_placeholder_names,
+)
 from codemie.core.constants import DEMO_PROJECT
 from codemie.core.exceptions import NotFoundException
 from codemie.core.models import UserEntity
@@ -352,15 +357,66 @@ class WorkflowConfig(BaseModelWithSQLSupport, WorkflowConfigBase, table=True):
 class WorkflowConfigTemplate(WorkflowConfigBase):
     slug: str
     video_link: Optional[str] = None
+    required_variables: list[str] = Field(default_factory=list)
+    template_source: str = Field(default="", exclude=True)
 
     @classmethod
-    def from_yaml(cls, yaml_str: str):
+    def from_yaml(cls, yaml_str: str) -> WorkflowConfigTemplate | None:
         """Initialize from YAML with Link to video"""
         try:
-            yaml_dict = yaml.safe_load(yaml_str)
-            return super().from_yaml(yaml_dict, slug=yaml_dict.get('slug'), video_link=yaml_dict.get('video_link'))
-        except yaml.YAMLError as e:
-            logger.error(f"Error parsing YAML codemie.core.workflow. Yaml: {yaml_str} {e}", exc_info=True)
+            preprocessed, sentinel_map = substitute_placeholders_for_yaml_load(yaml_str)
+            yaml_dict = yaml.safe_load(preprocessed)
+            if not isinstance(yaml_dict, dict):
+                logger.warning("Failed to load workflow template from YAML: top-level value is not a mapping.")
+                return None
+            if sentinel_map:
+                yaml_dict = restore_sentinels_in_obj(yaml_dict, sentinel_map)
+            execution_config = yaml_dict.get("execution_config", {})
+            if not isinstance(execution_config, dict):
+                logger.warning("Failed to load workflow template from YAML: execution_config is not a mapping.")
+                return None
+            template = super().from_yaml(
+                yaml_dict,
+                slug=yaml_dict.get('slug'),
+                video_link=yaml_dict.get('video_link'),
+            )
+            if template is not None:
+                template.template_source = yaml_str
+                template.required_variables = extract_placeholder_names(yaml_str)
+                return template
+
+            required_variables = extract_placeholder_names(yaml_str)
+            if not required_variables:
+                return None
+            return cls.model_construct(
+                name=yaml_dict.get("name", ""),
+                description=yaml_dict.get("description", ""),
+                start_hint=yaml_dict.get("start_hint"),
+                icon_url=yaml_dict.get("icon_url"),
+                mode=yaml_dict.get("mode", WorkflowMode.SEQUENTIAL),
+                yaml_config=yaml.safe_dump(execution_config),
+                assistants=execution_config.get("assistants", []),
+                custom_nodes=execution_config.get("custom_nodes", []),
+                tools=execution_config.get("tools", []),
+                states=execution_config.get("states", []),
+                retry_policy=execution_config.get("retry_policy"),
+                messages_limit_before_summarization=execution_config.get("messages_limit_before_summarization"),
+                tokens_limit_before_summarization=execution_config.get("tokens_limit_before_summarization"),
+                type=execution_config.get("type"),
+                enable_summarization_node=execution_config.get("enable_summarization_node", False),
+                verbose=yaml_dict.get("verbose", True),
+                max_iteration_key_output_limit=execution_config.get("max_iteration_key_output_limit", 200),
+                slug=yaml_dict.get("slug"),
+                video_link=yaml_dict.get("video_link"),
+                template_source=yaml_str,
+                required_variables=required_variables,
+            )
+        except (yaml.YAMLError, ValidationError) as e:
+            logger.warning(
+                "Failed to load workflow template from YAML (invalid structure or field types): %s",
+                e,
+                exc_info=True,
+            )
             return None
 
 

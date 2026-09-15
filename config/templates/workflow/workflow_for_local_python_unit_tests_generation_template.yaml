@@ -83,7 +83,7 @@ execution_config:
       3. Do not search in Jira unless Jira issue or task ID (for example EPMCDME-3333) was provided to you.
 
       Jira Context:
-      1. Project: EPMCDME (only relevant when working with Jira issues)
+      1. Project: ${input:jira_project} (only relevant when working with Jira issues)
   - id: tests_developer_assistant
     model: claude-4-5-sonnet
     datasource_ids:

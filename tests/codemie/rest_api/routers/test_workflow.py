@@ -16,6 +16,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 from fastapi import status
 from fastapi.testclient import TestClient
 from httpx import AsyncClient, ASGITransport
@@ -71,6 +72,11 @@ states:
         then: end
         otherwise: business_analyst
 """
+
+placeholder_yaml_config = test_yaml_config.replace(
+    "You must create Jira story for detailed user input for PROJ project. Put everything to description.",
+    "Keep literal ${input:assistant_id} text.",
+)
 
 workflow_config_data = WorkflowConfig(
     id="workflow_123",
@@ -330,6 +336,42 @@ async def test_create_workflow(mock_get_guardrail_assignments, create_workflow_r
 
 @pytest.mark.asyncio
 @patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_create_workflow_accepts_placeholder_like_text(
+    mock_get_guardrail_assignments, create_workflow_request, request_header
+):
+    request = create_workflow_request.model_copy(
+        update={
+            "description": "Keep literal ${input:assistant_id} text.",
+            "yaml_config": placeholder_yaml_config,
+        }
+    )
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.create_workflow",
+            return_value=workflow_config_data,
+        ) as create_workflow,
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.validate_workflow_config_resources_availability"),
+        patch(
+            "codemie.workflows.workflow.WorkflowExecutor.create_executor",
+            return_value=MagicMock(_init_workflow=MagicMock(return_value=None)),
+        ),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        mock_get_guardrail_assignments.return_value = None
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post("/v1/workflows", json=request.model_dump(), headers=request_header)
+
+    assert response.status_code == status.HTTP_200_OK
+    assert create_workflow.call_args.args[0].description == "Keep literal ${input:assistant_id} text."
+    assert "${input:assistant_id}" in create_workflow.call_args.args[0].yaml_config
+
+
+@pytest.mark.asyncio
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
 async def test_create_workflow_reports_consumer_slot_warnings(
     mock_get_guardrail_assignments, create_workflow_request, request_header
 ):
@@ -417,6 +459,48 @@ async def test_update_workflow(
         assert result == "Workflow updated successfully"
         mock_validate.assert_called_once()
         assert response.json()["data"] == workflow_config_data.model_dump()
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can", return_value=True)
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_update_workflow_accepts_placeholder_like_text(
+    mock_get_guardrail_assignments, _mock_ability, workflow_config, update_workflow_request, request_header
+):
+    request = update_workflow_request.model_copy(
+        update={
+            "description": "Keep literal ${input:assistant_id} text.",
+            "yaml_config": placeholder_yaml_config,
+        }
+    )
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.get_workflow", return_value=workflow_config),
+        patch(
+            "codemie.service.workflow_service.WorkflowService.update_workflow",
+            return_value=workflow_config_data,
+        ) as update_workflow,
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+        patch("codemie.workflows.workflow.validate_workflow_config_resources_availability"),
+        patch(
+            "codemie.workflows.workflow.WorkflowExecutor.create_executor",
+            return_value=MagicMock(_init_workflow=MagicMock(return_value=None)),
+        ),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        mock_get_guardrail_assignments.return_value = None
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config.id}",
+                json=request.model_dump(),
+                headers=request_header,
+            )
+
+    assert response.status_code == status.HTTP_200_OK
+    assert update_workflow.call_args.args[1].description == "Keep literal ${input:assistant_id} text."
+    assert "${input:assistant_id}" in update_workflow.call_args.args[1].yaml_config
 
 
 @pytest.mark.asyncio
@@ -703,6 +787,51 @@ def test_get_prebuilt_workflows_with_project(mock_cached_workflows):
 
     assert response.status_code == status.HTTP_200_OK
     assert all(workflow["project"] == user.current_project for workflow in response.json())
+
+
+@patch.object(WorkflowService, '_cached_prebuilt_workflows', new_callable=list)
+def test_get_prebuilt_workflows_list_includes_required_variables(mock_cached_workflows):
+    wf = WorkflowConfigTemplate(
+        name="Template",
+        description="desc",
+        slug="test-slug",
+        required_variables=["team_name"],
+    )
+    mock_cached_workflows.append(wf)
+
+    response = client.get(
+        "/v1/workflows/prebuilt",
+        headers={"user-id": user.id, "username": user.username, "name": user.name},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert len(data) == 1
+    assert "raw_yaml" not in data[0]
+    assert "template_source" not in data[0]
+    assert data[0]["required_variables"] == ["team_name"]
+
+
+@patch.object(WorkflowService, '_cached_prebuilt_workflows', new_callable=list)
+def test_get_prebuilt_workflow_by_slug_has_required_variables(mock_cached_workflows):
+    wf = WorkflowConfigTemplate(
+        name="Template",
+        description="desc",
+        slug="test-slug",
+        required_variables=["team_name", "role"],
+    )
+    mock_cached_workflows.append(wf)
+
+    response = client.get(
+        "/v1/workflows/prebuilt/test-slug",
+        headers={"user-id": user.id, "username": user.username, "name": user.name},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    body = response.json()
+    assert "raw_yaml" not in body
+    assert "template_source" not in body
+    assert body["required_variables"] == ["team_name", "role"]
 
 
 @pytest.mark.asyncio
@@ -1048,3 +1177,155 @@ async def test_refine_workflow_not_found(request_header):
                 headers=request_header,
             )
         assert response.status_code == 404
+
+
+@patch.object(WorkflowService, '_cached_prebuilt_workflows', new_callable=list)
+def test_materialize_substitutes_variables(mock_cached_workflows):
+    template_source = (
+        "name: Example\n"
+        "description: Hello ${input:team_name}\n"
+        "start_hint: Start for ${input:team_name}\n"
+        "slug: mat-slug\n"
+        "mode: Sequential\n"
+        "execution_config:\n"
+        "  assistants: []\n"
+        "  team: ${input:team_name}\n"
+    )
+    wf = WorkflowConfigTemplate(
+        name="Example",
+        description="Hello ${input:team_name}",
+        start_hint="Start for ${input:team_name}",
+        yaml_config="assistants: []\nteam: ${input:team_name}\n",
+        slug="mat-slug",
+        required_variables=["team_name"],
+        template_source=template_source,
+    )
+    mock_cached_workflows.append(wf)
+
+    response = client.post(
+        "/v1/workflows/prebuilt/mat-slug/materialize",
+        json={"variables": {"team_name": "Alice"}},
+        headers={"user-id": user.id, "username": user.username, "name": user.name},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert data["description"] == "Hello Alice"
+    assert data["start_hint"] == "Start for Alice"
+    assert isinstance(data["yaml_config"], str)
+    assert "Alice" in data["yaml_config"]
+    assert "${input:team_name}" not in data["yaml_config"]
+
+
+@patch.object(WorkflowService, '_cached_prebuilt_workflows', new_callable=list)
+def test_materialize_missing_or_blank_variable_returns_structured_400(mock_cached_workflows):
+    source = "name: Example\n" "description: Hello ${input:team_name}\n" "slug: mat-slug\n" "execution_config: {}\n"
+    mock_cached_workflows.append(
+        WorkflowConfigTemplate(
+            name="Example",
+            description="Hello ${input:team_name}",
+            slug="mat-slug",
+            required_variables=["team_name"],
+            template_source=source,
+        )
+    )
+
+    for variables in ({}, {"team_name": "  "}):
+        response = client.post(
+            "/v1/workflows/prebuilt/mat-slug/materialize",
+            json={"variables": variables},
+            headers={"user-id": user.id, "username": user.username, "name": user.name},
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.json()["error"]["details"] == {
+            "error_type": "missing_placeholder_variables",
+            "errors": [{"placeholder": "team_name"}],
+        }
+
+
+def test_materialize_unknown_slug_returns_404():
+    response = client.post(
+        "/v1/workflows/prebuilt/nonexistent-slug/materialize",
+        json={"variables": {}},
+        headers={"user-id": user.id, "username": user.username, "name": user.name},
+    )
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+@patch.object(WorkflowService, 'materialize_template')
+def test_materialize_requires_authentication(mock_materialize_template):
+    app.dependency_overrides = {}
+
+    response = client.post(
+        "/v1/workflows/prebuilt/mat-slug/materialize",
+        json={"variables": {}},
+    )
+
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+    mock_materialize_template.assert_not_called()
+
+
+@patch.object(WorkflowService, 'get_prebuilt_workflow_by_slug')
+def test_materialize_yaml_injection_is_preserved_as_a_scalar(mock_get_by_slug):
+    template_source = (
+        "name: Example\n"
+        "description: desc\n"
+        "slug: inject-slug\n"
+        "mode: Sequential\n"
+        "execution_config:\n"
+        "  team: ${input:team_name}\n"
+    )
+    wf = WorkflowConfigTemplate(
+        name="Example",
+        description="desc",
+        start_hint=None,
+        yaml_config="team: ${input:team_name}\n",
+        slug="inject-slug",
+        required_variables=["team_name"],
+        template_source=template_source,
+    )
+    mock_get_by_slug.return_value = wf
+
+    response = client.post(
+        "/v1/workflows/prebuilt/inject-slug/materialize",
+        json={"variables": {"team_name": "foo\n  injected_key: injected_val"}},
+        headers={"user-id": user.id, "username": user.username, "name": user.name},
+    )
+
+    assert response.status_code == status.HTTP_200_OK
+    yaml_config = response.json()["yaml_config"]
+    parsed_config = yaml.safe_load(yaml_config)
+    assert parsed_config == {"team": "foo\n  injected_key: injected_val"}
+
+
+@patch.object(WorkflowService, 'get_prebuilt_workflow_by_slug')
+def test_materialize_duplicate_slug_returns_materialization_failed(mock_get_by_slug):
+    mock_get_by_slug.side_effect = ValueError("Multiple workflows found with slug 'dup-slug'")
+
+    response = client.post(
+        "/v1/workflows/prebuilt/dup-slug/materialize",
+        json={"variables": {}},
+        headers={"user-id": user.id, "username": user.username, "name": user.name},
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert response.json()["error"]["details"] == {"error_type": "materialization_failed"}
+
+
+@patch.object(WorkflowService, 'get_prebuilt_workflow_by_slug')
+def test_materialize_invalid_template_returns_materialization_failed(mock_get_by_slug):
+    mock_get_by_slug.return_value = WorkflowConfigTemplate(
+        name="Example",
+        description="desc",
+        slug="invalid-template",
+        template_source="name: Example\nexecution_config: [\n",
+    )
+
+    response = client.post(
+        "/v1/workflows/prebuilt/invalid-template/materialize",
+        json={"variables": {}},
+        headers={"user-id": user.id, "username": user.username, "name": user.name},
+    )
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    assert response.json()["error"]["details"] == {"error_type": "materialization_failed"}

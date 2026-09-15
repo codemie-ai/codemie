@@ -27,7 +27,7 @@ from sqlmodel.sql.expression import and_, or_
 from codemie.configs import config, logger
 from codemie.core.ability import Ability, Action
 from codemie.core.constants import ChatRole, MermaidMimeType
-from codemie.core.exceptions import ExtendedHTTPException
+from codemie.core.exceptions import ExtendedHTTPException, MaterializationFailedException
 from codemie.core.models import UserEntity
 from codemie.core.utils import safe_divide
 from codemie.core.workflow_models import (
@@ -40,6 +40,7 @@ from codemie.core.workflow_models import (
     WorkflowExecutionStatusEnum,
     YamlConfigHistory,
 )
+from codemie.core.workflow_models.workflow_config import WorkflowConfigBase
 from codemie.repository.repository_factory import FileRepositoryFactory
 from codemie.rest_api.models.conversation import GeneratedMessage
 from codemie.rest_api.security.user import User
@@ -607,16 +608,28 @@ class WorkflowService:
         templates_dir = config.WORKFLOW_TEMPLATES_DIR
         logger.info(f"Loading prebuilt templates from {templates_dir}")
         try:
-            for filename in os.listdir(templates_dir):
-                if not filename.endswith("_template.yaml"):
-                    continue
-                with open(os.path.join(templates_dir, filename), 'r', encoding='utf-8') as file:
-                    workflow_config = WorkflowConfigTemplate.from_yaml(file.read())
-                    if workflow_config:
-                        prebuilt_workflows.append(workflow_config)
-            self._cached_prebuilt_workflows = sorted(prebuilt_workflows, key=lambda wf: wf.name)
+            filenames = os.listdir(templates_dir)
         except Exception as e:
             logger.error(f"Failed to load prebuilt workflows: {e}")
+            return self._cached_prebuilt_workflows
+
+        for filename in filenames:
+            if not filename.endswith("_template.yaml"):
+                continue
+            try:
+                with open(os.path.join(templates_dir, filename), 'r', encoding='utf-8') as file:
+                    workflow_config = WorkflowConfigTemplate.from_yaml(file.read())
+                if workflow_config:
+                    prebuilt_workflows.append(workflow_config)
+                else:
+                    logger.warning(
+                        "Skipped template file '%s' — failed to parse (invalid YAML structure "
+                        "or incompatible field types; check for placeholders in numeric fields).",
+                        filename,
+                    )
+            except Exception as e:
+                logger.error("Failed to load prebuilt workflow template '%s': %s", filename, e)
+        self._cached_prebuilt_workflows = sorted(prebuilt_workflows, key=lambda wf: wf.name)
         return self._cached_prebuilt_workflows
 
     def get_prebuilt_workflow_by_slug(self, slug: str) -> Optional[WorkflowConfigTemplate]:
@@ -628,6 +641,24 @@ class WorkflowService:
             return None
         else:
             raise ValueError(f"Multiple workflows found with slug '{slug}'")
+
+    def materialize_template(self, slug: str, variables: dict[str, str]) -> dict[str, str | None] | None:
+        from codemie.workflows.placeholders import materialize_template_source
+
+        template = self.get_prebuilt_workflow_by_slug(slug)
+        if template is None:
+            return None
+
+        source = materialize_template_source(template.template_source, variables)
+        materialized = WorkflowConfigBase.from_yaml(source)
+        if materialized is None or not materialized.yaml_config:
+            raise MaterializationFailedException("The template cannot be converted into a workflow seed.")
+
+        return {
+            "description": materialized.description,
+            "start_hint": materialized.start_hint,
+            "yaml_config": materialized.yaml_config,
+        }
 
     def save_workflow_schema(self, workflow_config: WorkflowConfig, workflow_schema: bytes):
         try:

@@ -350,3 +350,114 @@ class TestWorkflowConfigUpdatePreservesHistory:
             pytest.raises(NotFoundException, match="WorkflowConfig missing not found"),
         ):
             workflow.update()
+
+
+def test_template_from_yaml_extracts_required_variables():
+    raw = (
+        "name: Example\n"
+        "description: Team ${input:team_name}\n"
+        "slug: template-placeholder-test\n"
+        "mode: Sequential\n"
+        "start_hint: ${input:start_hint}\n"
+        "execution_config:\n"
+        "  assistants: []\n"
+        "  states:\n"
+        "    - id: step\n"
+        '      assistant_id: "${input:assistant_id}"\n'
+        "      task: do work\n"
+        "      next: {}\n"
+    )
+    from codemie.core.workflow_models.workflow_config import WorkflowConfigTemplate
+
+    tmpl = WorkflowConfigTemplate.from_yaml(raw)
+    assert tmpl is not None
+    assert tmpl.slug == "template-placeholder-test"
+    assert "${input:team_name}" in tmpl.description
+    assert "${input:assistant_id}" in tmpl.yaml_config
+    assert tmpl.template_source == raw
+    assert tmpl.required_variables == ["team_name", "start_hint", "assistant_id"]
+
+
+def test_template_from_yaml_loads_mid_string_quoted_placeholder():
+    raw = '''name: Example
+description: "Process ${input:topic} data"
+slug: template-placeholder-mid-string
+mode: Sequential
+start_hint: hint
+execution_config:
+  assistants: []
+  states: []
+'''
+    from codemie.core.workflow_models.workflow_config import WorkflowConfigTemplate
+
+    tmpl = WorkflowConfigTemplate.from_yaml(raw)
+    assert tmpl is not None
+    assert tmpl.description == "Process ${input:topic} data"
+    assert tmpl.required_variables == ["topic"]
+
+
+def test_template_from_yaml_keeps_template_with_numeric_field_placeholder():
+    raw = (
+        "name: Example\n"
+        "description: desc\n"
+        "slug: cr001-test\n"
+        "mode: Sequential\n"
+        "execution_config:\n"
+        "  assistants: []\n"
+        "  states: []\n"
+        "  messages_limit_before_summarization: ${input:limit}\n"
+    )
+    from codemie.core.workflow_models.workflow_config import WorkflowConfigTemplate
+
+    tmpl = WorkflowConfigTemplate.from_yaml(raw)
+    assert tmpl is not None
+    assert tmpl.required_variables == ["limit"]
+    assert tmpl.template_source == raw
+
+
+def test_template_required_variables_include_name_placeholders():
+    raw = (
+        "name: Workflow for ${input:wf_name}\n"
+        "description: desc\n"
+        "slug: cr004-test\n"
+        "mode: Sequential\n"
+        "execution_config:\n"
+        "  assistants: []\n"
+        "  states: []\n"
+    )
+    from codemie.core.workflow_models.workflow_config import WorkflowConfigTemplate
+
+    tmpl = WorkflowConfigTemplate.from_yaml(raw)
+    assert tmpl is not None
+    assert tmpl.required_variables == ["wf_name"]
+
+
+def test_template_required_variables_include_wrapper_placeholders():
+    raw = (
+        "name: Example\n"
+        "description: desc\n"
+        "slug: cr004-supervisor-test\n"
+        "mode: Sequential\n"
+        "supervisor_prompt: Handle ${input:supervisor_var} cases\n"
+        "execution_config:\n"
+        "  assistants: []\n"
+        "  states: []\n"
+    )
+    from codemie.core.workflow_models.workflow_config import WorkflowConfigTemplate
+
+    tmpl = WorkflowConfigTemplate.from_yaml(raw)
+    assert tmpl is not None
+    assert tmpl.required_variables == ["supervisor_var"]
+
+
+def test_template_from_yaml_returns_none_when_execution_config_is_not_a_mapping():
+    raw = (
+        "name: Example\n"
+        "description: desc\n"
+        "slug: non-mapping-execution-config\n"
+        "mode: Sequential\n"
+        "execution_config: ${input:execution_config}\n"
+    )
+    from codemie.core.workflow_models.workflow_config import WorkflowConfigTemplate
+
+    assert WorkflowConfigTemplate.from_yaml(raw) is None

@@ -41,7 +41,7 @@ execution_config:
         - name: list_branches_in_repo
         - name: create_pull_request
         - name: get_pr_changes
-      datasource_ids: [ <GIT_DATASOURCE_ID> ] # Code source
+      datasource_ids: [ ${input:git_datasource_id} ] # Code source
 
     - id: plan
       system_prompt: |
@@ -68,7 +68,7 @@ execution_config:
         - name: read_files_content_summary
         - name: search_code_repo_by_path
 
-      datasource_ids: [ <GIT_DATASOURCE_ID>, <INSTRUCTION_FILE_OR_CONFLUENCE_DATASOURCE_ID> ] # Code source and instructions
+      datasource_ids: [ ${input:git_datasource_id}, ${input:instructions_datasource_id} ] # Code source and instructions
 
     - id: dev
       system_prompt: |
@@ -99,7 +99,7 @@ execution_config:
         - name: read_files_content_summary
         - name: search_code_repo_by_path
 
-      datasource_ids: [ <GIT_DATASOURCE_ID>, <INSTRUCTION_FILE_OR_CONFLUENCE_DATASOURCE_ID> ] # Code source and instructions
+      datasource_ids: [ ${input:git_datasource_id}, ${input:instructions_datasource_id} ] # Code source and instructions
 
   states:
     - assistant_id: git

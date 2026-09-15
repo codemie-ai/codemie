@@ -80,10 +80,10 @@ execution_config:
           
           
           JIRA API CONTEXT:
-          1. Current Jira project is EPMCDME
+          1. Current Jira project is ${input:jira_project}
           2. Release version has the following format for ex. Prod 0.1.1 or Logical 0.1.1
           3. For jira tickets always get only: key,  summary,  issuetype, description. 
-          Example of "jql":"project = EPMCDME AND fixVersion = 'Prod 0.8.0'","fields":"key,summary,issuetype,description"}'}
+          Example of "jql":"project = ${input:jira_project} AND fixVersion = 'Prod 0.8.0'","fields":"key,summary,issuetype,description"}'}
           4. For videos: you should use links and titles only from the "Video Tutorial" section in the ticket description.
     - id: hotfix_summarizer
       model: gpt-4.1
@@ -102,7 +102,7 @@ execution_config:
           2. Search for Prod 0.(X-1).1 in "fixVersion" field: 
           - If Prod 0.(X-1).1 does not exist for the field 'fixVersion' - do not search for the next hotfix version. Just write that there are no hotfixes related to this release.
           - If you found Prod 0.(X-1).1, search for the next version Prod 0.(X-1).2, and so on. You should proceed searching for higher versions until you find that a certain version does not exist for the 'fixVersion' field. Once you receive a response that a certain version is not available - stop searching.
-          3. Once you found all available hotfixes versions, search for the JIRA tickets available for all found versions at once (filter example e.g. project = EPMCDME AND fixVersion in ("Prod 0.10.1", "Prod 0.10.2").
+          3. Once you found all available hotfixes versions, search for the JIRA tickets available for all found versions at once (filter example e.g. project = ${input:jira_project} AND fixVersion in ("Prod 0.10.1", "Prod 0.10.2").
           4. Check general purpose, value for the user, objective mentioned and general description in each JIRA ticket. 
           5. Check Video Tutorial section in each ticket description. If it is available, collect links and titles of the video tutorials from Video Tutorial section.
           6. Generate a brief human-readable summary of the hotfix(es) updates following example provided below, starting with: **Additional Improvements** made within the hotfix(es) Prod 0.X.Y (and Prod 0.X.Y).  
@@ -114,14 +114,14 @@ execution_config:
           
           
           JIRA CONTEXT:
-          1. Current Jira project is EPMCDME
+          1. Current Jira project is ${input:jira_project}
           2. Release versions have the following format: Prod 0.X.Y: 
           a) Main release is the release version where Y = zero (e.g. Prod 0.2.0)
           b) Hotfix version that you should look for is a Release version that corresponds the next conditions: 
           - X is the main release number minus 1 (X-1, e.g. main release version is Prod 0.2.0, then hotfix is Prod 0.1.1);
           - Y is NOT zero (is bigger than zero, e.g. Prod 0.1.1, Prod 0.1.2).
           4. For video tutorials, you should use links and titles only from the "Video Tutorial" section in the JIRA ticket description. If Video Tutorial section is not present, don't make up links yourself.
-          5. For jira tickets always get only: key,  summary,  issuetype, description. Example of "jql": "project = EPMCDME AND fixVersion in ('Prod 0.10.1', 'Prod 0.10.2')","fields":"key,summary,issuetype,description"}'}
+          5. For jira tickets always get only: key,  summary,  issuetype, description. Example of "jql": "project = ${input:jira_project} AND fixVersion in ('Prod 0.10.1', 'Prod 0.10.2')","fields":"key,summary,issuetype,description"}'}
           
           CONSTRAINTS:
           1. Overall summary of the hotfix(es) updates should be not more than 50 tokens maximum.

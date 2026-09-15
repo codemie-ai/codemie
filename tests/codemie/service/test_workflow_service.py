@@ -21,6 +21,7 @@ import pytest
 from typing import Union
 from yaml import parser
 
+from codemie.configs import config
 from codemie.core.constants import ChatRole, DEMO_PROJECT
 from codemie.core.models import UserEntity
 from codemie.core.workflow_models import (
@@ -402,6 +403,67 @@ def test_get_prebuilt_workflows_template_count(workflow_service: WorkflowService
     actual_templates_count = len(templates)
     comparison_fail = f'Expected {expected_templates_count} prebuilt workflow templates, got {actual_templates_count}'
     assert actual_templates_count == expected_templates_count, comparison_fail
+
+
+@pytest.mark.parametrize(
+    ("slug", "required_variables"),
+    [
+        ("template-java-sonar-issues-fixer-workflow", ["default_branch", "git_project_id"]),
+        ("template-newsletter-generator-workflow", ["jira_project"]),
+        ("template-python-unit-tests-generation-workflow", ["jira_project"]),
+        ("amna-windup-jira-resolver", ["git_datasource_id"]),
+        ("amna-py-unittest-gen-simple", ["git_datasource_id"]),
+        ("amna-okta-implementation-migration", ["git_datasource_id"]),
+        ("amna-linq-to-sql-migration", ["git_datasource_id"]),
+        ("amna-java-migration", ["git_datasource_id"]),
+        ("amna-dot-net-8-migration", ["git_datasource_id", "instructions_datasource_id"]),
+        ("amna-cobol-migration-java", ["jira_project"]),
+    ],
+)
+def test_placeholder_templates_expose_and_materialize_required_variables(
+    workflow_service: WorkflowService, slug: str, required_variables: list[str]
+) -> None:
+    template = workflow_service.get_prebuilt_workflow_by_slug(slug)
+
+    assert template is not None
+    assert template.required_variables == required_variables
+
+    seed = workflow_service.materialize_template(
+        slug,
+        {name: f"value-for-{name}" for name in required_variables},
+    )
+
+    assert seed is not None
+    assert "${input:" not in "\n".join(value or "" for value in seed.values())
+
+
+@patch.object(WorkflowService, "_cached_prebuilt_workflows", new_callable=list)
+def test_get_prebuilt_workflows_continues_after_one_template_error(
+    _mock_cached_workflows, tmp_path, monkeypatch, workflow_service
+):
+    (tmp_path / "good_template.yaml").write_text(
+        "name: Good Template\n"
+        "description: ok\n"
+        "slug: good-template\n"
+        "mode: Sequential\n"
+        "execution_config:\n"
+        "  assistants: []\n"
+        "  states: []\n"
+    )
+    (tmp_path / "explode_template.yaml").write_text("name: explode\n")
+    monkeypatch.setattr(config, "WORKFLOW_TEMPLATES_DIR", str(tmp_path))
+
+    original_from_yaml = WorkflowConfigTemplate.from_yaml
+
+    def from_yaml_or_raise(yaml_str: str):
+        if "explode" in yaml_str:
+            raise RuntimeError("boom")
+        return original_from_yaml(yaml_str)
+
+    with patch.object(WorkflowConfigTemplate, "from_yaml", side_effect=from_yaml_or_raise):
+        templates = workflow_service.get_prebuilt_workflows()
+
+    assert [template.slug for template in templates] == ["good-template"]
 
 
 @patch.object(WorkflowService, '_cached_prebuilt_workflows', new_callable=list)

@@ -35,7 +35,7 @@ execution_config:
           - name: create_branch
           - name: set_active_branch
           - name: list_branches_in_repo
-        datasource_ids: [ <GIT_DATASOURCE_ID> ] # Source code/target repo
+        datasource_ids: [ ${input:git_datasource_id} ] # Source code/target repo
 
       - id: jira_resolver
         system_prompt: |
@@ -59,7 +59,7 @@ execution_config:
           - name: read_files_content
           - name: read_files_content_summary
           - name: generic_jira_tool
-        datasource_ids: [ <GIT_DATASOURCE_ID> ] # Source code/target repo
+        datasource_ids: [ ${input:git_datasource_id} ] # Source code/target repo
 
     retry_policy:
       initial_interval_seconds: 5.0 # Amount of time that must elapse before the first retry occurs. In seconds
