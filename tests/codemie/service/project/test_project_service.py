@@ -381,17 +381,81 @@ class TestProjectServiceValidation:
         assert exc_info.value.code == 400
         assert exc_info.value.message == f"Project name '{reserved_name}' is reserved and cannot be used"
 
-    @pytest.mark.parametrize("description", ["", "   "])
-    def test_empty_description_returns_400(self, description):
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            ProjectService.create_shared_project(
-                user=User(id="u1", username="u1", email="u1@example.com"),
-                project_name="valid-name",
-                description=description,
-            )
+    def _make_session_mocks(self):
+        """Return (mock_get_session, mock_app_repo, mock_user_repo, mock_session) ready for create tests."""
+        from unittest.mock import MagicMock
 
-        assert exc_info.value.code == 400
-        assert exc_info.value.message == "Project description is required"
+        mock_session = MagicMock()
+        mock_app_repo = MagicMock()
+        mock_user_repo = MagicMock()
+        mock_app_repo.get_by_name_case_insensitive.return_value = None
+        mock_app_repo.count_shared_projects_created_by_user.return_value = 0
+        mock_user_repo.get_active_by_id.return_value = MagicMock(project_limit=5)
+        created_app = SimpleNamespace(name="valid-name", description=None, project_type="shared", created_by="u1")
+        mock_app_repo.create.return_value = created_app
+        return mock_session, mock_app_repo, mock_user_repo, created_app
+
+    @pytest.mark.parametrize("description", ["", "   "])
+    @patch("codemie.service.project.project_service.activity_event_repository")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.cost_center_service")
+    @patch("codemie.service.project.project_service.user_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.get_session")
+    def test_empty_description_stored_as_null(
+        self, mock_get_session, mock_app_repo, mock_user_repo, mock_cost_center, mock_upr, mock_activity, description
+    ):
+        """Empty or whitespace-only description normalizes to None rather than raising (EPMCDME-14336)."""
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repo.get_active_by_id.return_value = MagicMock(project_limit=5)
+        mock_cost_center.ensure_exists_for_project.return_value = None
+        mock_app_repo.get_by_name_case_insensitive.return_value = None
+        mock_app_repo.count_shared_projects_created_by_user.return_value = 0
+        mock_app_repo.create.return_value = SimpleNamespace(
+            name="valid-name", description=None, project_type="shared", created_by="u1"
+        )
+
+        result = ProjectService.create_shared_project(
+            user=User(id="u1", username="u1", email="u1@example.com"),
+            project_name="valid-name",
+            description=description,
+        )
+
+        assert result is not None
+        mock_app_repo.create.assert_called_once()
+        call_kwargs = mock_app_repo.create.call_args.kwargs
+        assert call_kwargs["description"] is None
+
+    @patch("codemie.service.project.project_service.activity_event_repository")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.cost_center_service")
+    @patch("codemie.service.project.project_service.user_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.get_session")
+    def test_create_project_without_description_succeeds(
+        self, mock_get_session, mock_app_repo, mock_user_repo, mock_cost_center, mock_upr, mock_activity
+    ):
+        """Omitting description (None) succeeds and stores None (EPMCDME-14336)."""
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        mock_user_repo.get_active_by_id.return_value = MagicMock(project_limit=5)
+        mock_cost_center.ensure_exists_for_project.return_value = None
+        mock_app_repo.get_by_name_case_insensitive.return_value = None
+        mock_app_repo.count_shared_projects_created_by_user.return_value = 0
+        mock_app_repo.create.return_value = SimpleNamespace(
+            name="valid-name", description=None, project_type="shared", created_by="u1"
+        )
+
+        result = ProjectService.create_shared_project(
+            user=User(id="u1", username="u1", email="u1@example.com"),
+            project_name="valid-name",
+        )
+
+        assert result is not None
+        mock_app_repo.create.assert_called_once()
+        call_kwargs = mock_app_repo.create.call_args.kwargs
+        assert call_kwargs["description"] is None
 
     def test_description_too_long_returns_400(self):
         with pytest.raises(ExtendedHTTPException) as exc_info:

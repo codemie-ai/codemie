@@ -116,13 +116,13 @@ class ProjectService:
         cls,
         user: User,
         project_name: str,
-        description: str,
+        description: str | None = None,
         display_name: str | None = None,
         cost_center_id: UUID | None = None,
     ) -> Application:
         """Create a shared project and grant creator project-admin membership."""
         validated_name = cls._validate_shared_project_name(project_name)
-        validated_description = cls._validate_project_description(description)
+        validated_description = cls._validate_project_description(description) if description is not None else None
         validated_display_name = cls._validate_display_name(display_name) if display_name is not None else None
 
         with get_session() as session:
@@ -188,6 +188,7 @@ class ProjectService:
         display_name: str | None = None,
         clear_display_name: bool = False,
         description: str | None = None,
+        clear_description: bool = False,
         cost_center_id: UUID | None = None,
         clear_cost_center: bool = False,
         enforce_member_spend_limits: bool | None = None,
@@ -207,7 +208,9 @@ class ProjectService:
                 )
 
             validated_name = cls._resolve_updated_name(session, project_name, name)
-            validated_description = cls._validate_project_description(description) if description is not None else None
+            resolved_description, resolved_clear_description = cls._resolve_updated_description(
+                description, clear_description
+            )
             resolved_display_name = cls._resolve_updated_display_name(project, display_name, clear_display_name)
             resolved_cost_center_id = cls._resolve_updated_cost_center_id(
                 session, project, cost_center_id, clear_cost_center
@@ -223,7 +226,8 @@ class ProjectService:
                 project,
                 name=validated_name,
                 display_name=resolved_display_name,
-                description=validated_description,
+                description=resolved_description,
+                clear_description=resolved_clear_description,
                 cost_center_id=resolved_cost_center_id,
                 chargeback_enabled=chargeback_enabled,
                 chargeback_attribution=chargeback_attribution,
@@ -289,6 +293,19 @@ class ProjectService:
         if clear_display_name:
             return None
         return project.display_name
+
+    @classmethod
+    def _resolve_updated_description(cls, description: str | None, clear_description: bool) -> tuple[str | None, bool]:
+        """Return (normalized_description, clear_description) for repository forwarding."""
+        if clear_description:
+            return None, True
+        if description is not None:
+            normalized = cls._validate_project_description(description)
+            # whitespace-only normalizes to None → treat as an explicit clear
+            if normalized is None:
+                return None, True
+            return normalized, False
+        return None, False
 
     @classmethod
     def _resolve_updated_cost_center_id(
@@ -369,14 +386,15 @@ class ProjectService:
         return name
 
     @classmethod
-    def _validate_project_description(cls, description: str) -> str:
-        if not description.strip():
-            raise ExtendedHTTPException(code=400, message=cls.ERRORS.DESC_REQUIRED)
+    def _validate_project_description(cls, description: str) -> str | None:
+        stripped = description.strip()
+        if not stripped:
+            return None
 
-        if len(description) > cls.MAX_PROJECT_DESCRIPTION_LENGTH:
+        if len(stripped) > cls.MAX_PROJECT_DESCRIPTION_LENGTH:
             raise ExtendedHTTPException(code=400, message=cls.ERRORS.DESC_TOO_LONG)
 
-        return description
+        return stripped
 
     @classmethod
     def _validate_display_name(cls, display_name: str) -> str:

@@ -1,0 +1,43 @@
+{
+  "decision": "request-changes",
+  "confidence": "high",
+  "rationale": "One critical spec deviation: PATCH with whitespace-only description silently no-ops instead of clearing, contradicting the spec requirement that '\"description\": \"   \"' clears the field. The test for this case passes but does not catch the bug because it only checks the description kwarg, not clear_description. One major gap: missing coverage for the AC requiring that a missing name is still the rejection reason when description is also absent.",
+  "risk_flags": [],
+  "business_review": [
+    {"criterion": "POST without description stores null", "status": "pass", "notes": "Covered by test_create_project_without_description_succeeds and router test."},
+    {"criterion": "POST whitespace-only/empty description stored as null", "status": "pass", "notes": "test_empty_description_stored_as_null parametrized with '' and '   '."},
+    {"criterion": ">500 chars still rejected", "status": "pass", "notes": "test_description_too_long_returns_400 unchanged."},
+    {"criterion": "Missing name rejects with name reason when description absent", "status": "not-tested", "notes": "No test equivalent to test_missing_name_rejected_when_description_absent exists."},
+    {"criterion": "PATCH clear_description=true clears field", "status": "pass", "notes": "Service and router tests both cover this path."},
+    {"criterion": "PATCH clear_description=true alone passes validate_non_empty", "status": "pass", "notes": "test_update_project_clear_description_alone_passes_non_empty_validator."},
+    {"criterion": "PATCH description + clear_description=true → 422", "status": "pass", "notes": "test_update_project_description_and_clear_mutually_exclusive."},
+    {"criterion": "PATCH omitting description leaves unchanged", "status": "pass", "notes": "Logic and kwargs validated."},
+    {"criterion": "Response returns null, never empty string", "status": "pass", "notes": "test_project_response_null_description_not_coerced_to_empty."},
+    {"criterion": "PATCH whitespace-only description clears to null", "status": "fail", "notes": "_resolve_updated_description('   ', False) returns (None, False); repo receives clear_description=False and description=None so it skips both branches — old value is preserved, not cleared. Test only checks description kwarg, not clear_description, so it passes without detecting the regression."}
+  ],
+  "standards_review": [
+    {"standard": "mirrors clear_display_name/clear_cost_center pattern", "status": "pass", "notes": "Flag, mutual-exclusion guard, resolver, and repo param all follow the existing pattern."},
+    {"standard": "no response coercion (null → empty string)", "status": "pass", "notes": "Both `or ''` and `or payload.description` removed."},
+    {"standard": "TDD evidence", "status": "pass", "notes": "Tests exist for the new paths; existing tests updated for new kwargs."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "triage": "patch",
+      "severity": "critical",
+      "location": "src/codemie/service/project/project_service.py:_resolve_updated_description",
+      "problem": "PATCH with whitespace-only description silently no-ops instead of clearing the field.",
+      "impact": "A caller sends PATCH {\"description\": \"   \"} expecting the description to be cleared. The response returns 200. The description in the DB is silently left unchanged. Spec §PATCH whitespace semantics explicitly requires this to store null.",
+      "recommendation": "In _resolve_updated_description, when _validate_project_description returns None from a non-None input (i.e., the input was whitespace-only), return (None, True) instead of (None, False) so the repo's clear_description branch fires. Also update test_update_project_whitespace_description_treated_as_clear to assert call_kwargs.get('clear_description') is True."
+    },
+    {
+      "id": "CR-002",
+      "triage": "patch",
+      "severity": "major",
+      "location": "tests/codemie/rest_api/routers/test_projects_router.py",
+      "problem": "No test verifies that a request with no name and no description rejects with the missing-name error (not a missing-description error).",
+      "impact": "The spec lists this as an explicit AC: 'Missing name still rejects with name reason when both name and description are absent.' Without the test, a future refactor of the name validator could accidentally surface a description-related error, breaking the contract silently.",
+      "recommendation": "Add test_missing_name_rejected_when_description_absent: POST /projects with {} (no name, no description) → 422 with a name-related validation error, not a description error."
+    }
+  ]
+}

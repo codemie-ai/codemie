@@ -1488,6 +1488,7 @@ class TestUpdateProjectEndpoint:
             display_name=None,
             clear_display_name=False,
             description="new description",
+            clear_description=False,
             cost_center_id=None,
             clear_cost_center=False,
             enforce_member_spend_limits=None,
@@ -1529,6 +1530,7 @@ class TestUpdateProjectEndpoint:
             name=None,
             display_name=None,
             clear_display_name=False,
+            clear_description=False,
             description=None,
             cost_center_id=cost_center_id,
             clear_cost_center=False,
@@ -1570,6 +1572,7 @@ class TestUpdateProjectEndpoint:
             name=None,
             display_name=None,
             clear_display_name=False,
+            clear_description=False,
             description=None,
             cost_center_id=None,
             clear_cost_center=True,
@@ -1610,6 +1613,7 @@ class TestUpdateProjectEndpoint:
             name=None,
             display_name=None,
             clear_display_name=False,
+            clear_description=False,
             description=None,
             cost_center_id=None,
             clear_cost_center=False,
@@ -2934,6 +2938,7 @@ class TestProjectDisplayNameEndpoints:
             name=None,
             display_name="My Project",
             clear_display_name=False,
+            clear_description=False,
             description=None,
             cost_center_id=None,
             clear_cost_center=False,
@@ -2977,6 +2982,7 @@ class TestProjectDisplayNameEndpoints:
             display_name=None,
             clear_display_name=False,
             description="desc",
+            clear_description=False,
             cost_center_id=None,
             clear_cost_center=False,
             enforce_member_spend_limits=None,
@@ -3017,6 +3023,7 @@ class TestProjectDisplayNameEndpoints:
             name=None,
             display_name=None,
             clear_display_name=True,
+            clear_description=False,
             description=None,
             cost_center_id=None,
             clear_cost_center=False,
@@ -3093,6 +3100,7 @@ class TestChargebackEnabledField:
             name=None,
             display_name=None,
             clear_display_name=False,
+            clear_description=False,
             description=None,
             cost_center_id=None,
             clear_cost_center=False,
@@ -3193,6 +3201,7 @@ class TestChargebackAttributionField:
             display_name=None,
             clear_display_name=False,
             description=None,
+            clear_description=False,
             cost_center_id=None,
             clear_cost_center=False,
             enforce_member_spend_limits=None,
@@ -3240,3 +3249,108 @@ class TestChargebackAttributionField:
         )
 
         assert response.chargeback_attribution == "cost_center"
+
+
+class TestProjectDescriptionOptional:
+    """Tests for optional description (EPMCDME-14336)."""
+
+    def _project(self, description=None):
+        return SimpleNamespace(
+            name="proj",
+            display_name=None,
+            description=description,
+            project_type="shared",
+            created_by="user-1",
+            date=datetime(2026, 1, 1, tzinfo=UTC),
+            chargeback_enabled=False,
+            chargeback_attribution="project",
+        )
+
+    @patch("codemie.rest_api.routers.projects.SettingsService")
+    @patch("codemie.rest_api.routers.projects.config")
+    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    def test_create_project_without_description_returns_201_null(
+        self, mock_cc, mock_svc, mock_config, mock_settings, regular_user
+    ):
+        """POST /projects without description returns 201 with description=None."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_cc.return_value = None
+        mock_settings.get_enforce_member_spend_limits.return_value = False
+        mock_svc.create_shared_project.return_value = self._project(description=None)
+
+        response = create_project(
+            payload=ProjectCreateRequest(name="proj"),
+            user=regular_user,
+        )
+
+        assert response.description is None
+
+    @patch("codemie.rest_api.routers.projects.SettingsService")
+    @patch("codemie.rest_api.routers.projects.config")
+    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    def test_project_response_null_description_not_coerced_to_empty(
+        self, mock_cc, mock_svc, mock_config, mock_settings, super_admin_user
+    ):
+        """PATCH response with description=None must not be coerced to ''."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_cc.return_value = None
+        mock_settings.get_enforce_member_spend_limits.return_value = False
+        mock_svc.update_project.return_value = self._project(description=None)
+
+        response = update_project(
+            payload=ProjectUpdateRequest(clear_description=True),
+            project_name="proj",
+            user=super_admin_user,
+        )
+
+        assert response.description is None
+
+    def test_update_project_description_and_clear_mutually_exclusive(self):
+        """PATCH with description and clear_description=True must raise 422."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            ProjectUpdateRequest(description="text", clear_description=True)
+
+    def test_update_project_clear_description_alone_passes_non_empty_validator(self):
+        """clear_description=True alone must pass the validate_non_empty check."""
+        req = ProjectUpdateRequest(clear_description=True)
+        assert req.clear_description is True
+
+    @patch("codemie.rest_api.routers.projects.SettingsService")
+    @patch("codemie.rest_api.routers.projects.config")
+    @patch("codemie.rest_api.routers.projects.project_service")
+    @patch("codemie.rest_api.routers.projects._resolve_cost_center_name")
+    def test_update_project_clear_description_returns_null(
+        self, mock_cc, mock_svc, mock_config, mock_settings, super_admin_user
+    ):
+        """PATCH with clear_description=True calls service with clear_description=True."""
+        mock_config.ENABLE_USER_MANAGEMENT = True
+        mock_cc.return_value = None
+        mock_settings.get_enforce_member_spend_limits.return_value = False
+        mock_svc.update_project.return_value = self._project(description=None)
+
+        response = update_project(
+            payload=ProjectUpdateRequest(clear_description=True),
+            project_name="proj",
+            user=super_admin_user,
+        )
+
+        call_kwargs = mock_svc.update_project.call_args.kwargs
+        assert call_kwargs.get("clear_description") is True
+        assert response.description is None
+
+    def test_missing_name_rejected_when_description_absent(self):
+        """POST with no name and no description must reject with name validation error, not description."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as exc_info:
+            ProjectCreateRequest()
+
+        errors = exc_info.value.errors()
+        assert any(e["loc"] == ("name",) for e in errors), "Expected name field error"
+        assert not any("description" in str(e["loc"]) for e in errors), "Description error must not appear"

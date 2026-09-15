@@ -627,6 +627,7 @@ class TestProjectServiceUpdateProject:
             name=None,
             display_name=None,
             description="new desc",
+            clear_description=False,
             cost_center_id=None,
             chargeback_enabled=None,
             chargeback_attribution=None,
@@ -716,6 +717,7 @@ class TestProjectServiceUpdateProject:
             name=None,
             display_name=None,
             description=None,
+            clear_description=False,
             cost_center_id="cc-1",
             chargeback_enabled=None,
             chargeback_attribution=None,
@@ -745,6 +747,7 @@ class TestProjectServiceUpdateProject:
             name=None,
             display_name=None,
             description=None,
+            clear_description=False,
             cost_center_id=None,
             chargeback_enabled=None,
             chargeback_attribution=None,
@@ -776,6 +779,7 @@ class TestProjectServiceUpdateProject:
             name=None,
             display_name=None,
             description=None,
+            clear_description=False,
             cost_center_id=None,
             chargeback_enabled=None,
             chargeback_attribution=None,
@@ -806,6 +810,7 @@ class TestProjectServiceUpdateProject:
             name=None,
             display_name="Existing Display Name",
             description="new description",
+            clear_description=False,
             cost_center_id=None,
             chargeback_enabled=None,
             chargeback_attribution=None,
@@ -839,6 +844,7 @@ class TestProjectServiceUpdateProject:
             name=None,
             display_name=None,
             description=None,
+            clear_description=False,
             cost_center_id=None,
             chargeback_enabled=None,
             chargeback_attribution=None,
@@ -938,3 +944,90 @@ class TestProjectServiceUpdateProject:
 
         mock_logger.info.assert_called_once()
         assert "project_updated" in mock_logger.info.call_args[0][0]
+
+
+class TestUpdateProjectClearDescription:
+    """Tests for clear_description parameter in ProjectService.update_project (EPMCDME-14336)."""
+
+    def _make_super_admin(self):
+        from codemie.rest_api.security.user import User
+
+        return User(id="admin-1", username="admin", email="admin@example.com", is_admin=True)
+
+    @patch("codemie.service.project.project_service.activity_event_repository")
+    @patch("codemie.service.project.project_service.cost_center_service")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.get_session")
+    def test_update_project_clear_description_removes_value(
+        self, mock_get_session, mock_app_repo, mock_cc_service, mock_activity
+    ):
+        """clear_description=True forwards clear_description=True to the repository."""
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        project = _make_app("my-project")
+        project.description = "has a description"
+        mock_app_repo.get_by_name.return_value = project
+        cleared = _make_app("my-project")
+        cleared.description = None
+        mock_app_repo.update_project.return_value = cleared
+
+        ProjectService.update_project(
+            user=self._make_super_admin(),
+            project_name="my-project",
+            clear_description=True,
+        )
+
+        call_kwargs = mock_app_repo.update_project.call_args.kwargs
+        assert call_kwargs.get("clear_description") is True
+        assert call_kwargs.get("description") is None
+
+    @patch("codemie.service.project.project_service.activity_event_repository")
+    @patch("codemie.service.project.project_service.cost_center_service")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.get_session")
+    def test_update_project_omitted_description_unchanged(
+        self, mock_get_session, mock_app_repo, mock_cc_service, mock_activity
+    ):
+        """Omitting description (no clear) does not pass description to repository."""
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        project = _make_app("my-project")
+        project.description = "stays"
+        mock_app_repo.get_by_name.return_value = project
+        mock_app_repo.update_project.return_value = project
+
+        ProjectService.update_project(
+            user=self._make_super_admin(),
+            project_name="my-project",
+        )
+
+        call_kwargs = mock_app_repo.update_project.call_args.kwargs
+        assert call_kwargs.get("description") is None
+        assert call_kwargs.get("clear_description") is False
+
+    @patch("codemie.service.project.project_service.activity_event_repository")
+    @patch("codemie.service.project.project_service.cost_center_service")
+    @patch("codemie.service.project.project_service.application_repository")
+    @patch("codemie.service.project.project_service.get_session")
+    def test_update_project_whitespace_description_treated_as_clear(
+        self, mock_get_session, mock_app_repo, mock_cc_service, mock_activity
+    ):
+        """Whitespace-only description normalizes to None and triggers an explicit clear (clear_description=True)."""
+        mock_session = MagicMock()
+        mock_get_session.return_value.__enter__.return_value = mock_session
+        project = _make_app("my-project")
+        project.description = "old desc"
+        mock_app_repo.get_by_name.return_value = project
+        cleared = _make_app("my-project")
+        cleared.description = None
+        mock_app_repo.update_project.return_value = cleared
+
+        ProjectService.update_project(
+            user=self._make_super_admin(),
+            project_name="my-project",
+            description="   ",
+        )
+
+        call_kwargs = mock_app_repo.update_project.call_args.kwargs
+        assert call_kwargs.get("description") is None
+        assert call_kwargs.get("clear_description") is True

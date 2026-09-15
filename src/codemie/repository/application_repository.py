@@ -724,6 +724,7 @@ class ApplicationRepository:
         name: Optional[str] = None,
         display_name: Optional[str] = None,
         description: Optional[str] = None,
+        clear_description: bool = False,
         cost_center_id: UUID | None = None,
         chargeback_enabled: bool | None = None,
         chargeback_attribution: str | None = None,
@@ -733,7 +734,9 @@ class ApplicationRepository:
             application.id = name
             application.name = name
         application.display_name = display_name
-        if description is not None:
+        if clear_description:
+            application.description = None
+        elif description is not None:
             application.description = description
         application.cost_center_id = cost_center_id
         if chargeback_enabled is not None:

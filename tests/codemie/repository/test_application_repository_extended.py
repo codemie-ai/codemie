@@ -740,3 +740,38 @@ class TestApplicationRepositoryVisibilityHelpers:
         # The CASE expression must include applications.name = '...' so that a project
         # with display_name set is still ranked #1 when its technical name is the query.
         assert "applications.name = 'epm-fdeg'" in query_text
+
+
+class TestUpdateProjectClearDescription:
+    """Tests for update_project clear_description parameter (EPMCDME-14336)."""
+
+    def _make_app(self, description: str = "existing description") -> Application:
+        return Application(
+            id="proj-x",
+            name="proj-x",
+            description=description,
+            project_type="shared",
+            date=datetime.now(),
+            update_date=datetime.now(),
+        )
+
+    def test_update_project_clear_description_sets_null(self):
+        """clear_description=True unconditionally sets description to None even when description arg is None."""
+        mock_session = MagicMock()
+        app = self._make_app("existing description")
+        mock_session.exec.return_value.first.return_value = app
+        mock_session.refresh.side_effect = lambda obj: None
+
+        result = application_repository.update_project(mock_session, app, description=None, clear_description=True)
+
+        assert result.description is None
+
+    def test_update_project_no_clear_description_leaves_description_unchanged(self):
+        """clear_description=False with description=None does not overwrite existing description."""
+        mock_session = MagicMock()
+        app = self._make_app("keep me")
+        mock_session.refresh.side_effect = lambda obj: None
+
+        result = application_repository.update_project(mock_session, app, description=None, clear_description=False)
+
+        assert result.description == "keep me"

@@ -236,14 +236,14 @@ class ProjectDetailResponse(BaseModel):
 class ProjectCreateRequest(BaseModel):
     name: str
     display_name: Optional[str] = None
-    description: str = Field(description="Project description")
+    description: Optional[str] = None
     cost_center_id: Optional[UUID] = None
 
 
 class ProjectCreateResponse(BaseModel):
     name: str
     display_name: Optional[str] = None
-    description: str
+    description: Optional[str] = None
     project_type: str
     created_by: str
     created_at: datetime
@@ -259,6 +259,7 @@ class ProjectUpdateRequest(BaseModel):
     display_name: Optional[str] = None
     clear_display_name: bool = False
     description: Optional[str] = None
+    clear_description: bool = False
     cost_center_id: Optional[UUID] = None
     clear_cost_center: bool = False
     enforce_member_spend_limits: Optional[bool] = None
@@ -277,12 +278,15 @@ class ProjectUpdateRequest(BaseModel):
             and self.chargeback_attribution is None
             and not self.clear_cost_center
             and not self.clear_display_name
+            and not self.clear_description
         ):
             raise ValueError("At least one mutable field must be provided")
         if self.cost_center_id is not None and self.clear_cost_center:
             raise ValueError("Provide either cost_center_id or clear_cost_center")
         if self.display_name is not None and self.clear_display_name:
             raise ValueError("Provide either display_name or clear_display_name")
+        if self.description is not None and self.clear_description:
+            raise ValueError("Provide either description or clear_description")
         return self
 
 
@@ -733,7 +737,7 @@ def create_project(payload: ProjectCreateRequest, user: User = Depends(authentic
     return ProjectCreateResponse(
         name=project.name,
         display_name=project.display_name,
-        description=project.description or payload.description,
+        description=project.description,
         project_type=project.project_type,
         created_by=project.created_by or user.id,
         created_at=project.date,
@@ -1087,6 +1091,7 @@ def update_project(
         display_name=payload.display_name,
         clear_display_name=payload.clear_display_name,
         description=payload.description,
+        clear_description=payload.clear_description,
         cost_center_id=None if payload.clear_cost_center else payload.cost_center_id,
         clear_cost_center=payload.clear_cost_center,
         enforce_member_spend_limits=payload.enforce_member_spend_limits,
@@ -1097,7 +1102,7 @@ def update_project(
     return ProjectCreateResponse(
         name=project.name,
         display_name=project.display_name,
-        description=project.description or "",
+        description=project.description,
         project_type=project.project_type,
         created_by=project.created_by or user.id,
         created_at=project.date or datetime.now(UTC),
