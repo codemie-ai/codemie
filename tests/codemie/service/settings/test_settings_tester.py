@@ -114,6 +114,7 @@ def test_handlers():
 
     assert instance.handlers[CredentialTypes.JIRA] == SettingsTester._test_jira
     assert instance.handlers[CredentialTypes.CONFLUENCE] == SettingsTester._test_confluence
+    assert instance.handlers[CredentialTypes.SQL] == SettingsTester._test_sql
 
 
 @patch.object(GenericJiraIssueTool, 'healthcheck')
@@ -426,3 +427,187 @@ def test_test_sharepoint_ignores_stored_delegated_tokens():
     config = mock_tool_class.call_args.kwargs['config']
     assert config.tenant_id == 'tenant-id'
     assert config.client_secret == 'client-secret'
+
+
+@patch('codemie.service.settings.settings_tester.SQLTool')
+def test_test_sql_postgres_success(mock_tool_class):
+    mock_tool = MagicMock()
+    mock_tool.healthcheck.return_value = (True, '')
+    mock_tool_class.return_value = mock_tool
+
+    request = TestSettingRequest(
+        credential_type=CredentialTypes.SQL,
+        credential_values=[
+            CredentialValues(key='dialect', value='postgres'),
+            CredentialValues(key='url', value='localhost'),
+            CredentialValues(key='port', value='5432'),
+            CredentialValues(key='database_name', value='mydb'),
+            CredentialValues(key='username', value='user'),
+            CredentialValues(key='password', value='pass'),
+        ],
+    )
+    result = SettingsTester(request)._test_sql()
+
+    assert result == (True, '')
+    mock_tool.healthcheck.assert_called_once()
+
+
+@patch('codemie.service.settings.settings_tester.SQLTool')
+def test_test_sql_postgres_fail(mock_tool_class):
+    mock_tool = MagicMock()
+    mock_tool.healthcheck.return_value = (False, 'Cannot connect to database: password authentication failed')
+    mock_tool_class.return_value = mock_tool
+
+    request = TestSettingRequest(
+        credential_type=CredentialTypes.SQL,
+        credential_values=[
+            CredentialValues(key='dialect', value='postgres'),
+            CredentialValues(key='url', value='localhost'),
+            CredentialValues(key='port', value='5432'),
+            CredentialValues(key='database_name', value='mydb'),
+            CredentialValues(key='username', value='user'),
+            CredentialValues(key='password', value='pass'),
+        ],
+    )
+    result = SettingsTester(request)._test_sql()
+
+    assert result == (False, 'Cannot connect to database: password authentication failed')
+    mock_tool.healthcheck.assert_called_once()
+
+
+@patch('codemie.service.settings.settings_tester.SQLTool')
+def test_test_sql_mysql_success(mock_tool_class):
+    mock_tool = MagicMock()
+    mock_tool.healthcheck.return_value = (True, '')
+    mock_tool_class.return_value = mock_tool
+
+    request = TestSettingRequest(
+        credential_type=CredentialTypes.SQL,
+        credential_values=[
+            CredentialValues(key='dialect', value='mysql'),
+            CredentialValues(key='url', value='localhost'),
+            CredentialValues(key='port', value='3306'),
+            CredentialValues(key='database_name', value='mydb'),
+            CredentialValues(key='username', value='user'),
+            CredentialValues(key='password', value='pass'),
+        ],
+    )
+    result = SettingsTester(request)._test_sql()
+
+    assert result == (True, '')
+    mock_tool.healthcheck.assert_called_once()
+
+
+@patch('codemie.service.settings.settings_tester.SQLTool')
+def test_test_sql_mysql_fail(mock_tool_class):
+    mock_tool = MagicMock()
+    mock_tool.healthcheck.return_value = (False, 'Cannot connect to database: Access denied for user')
+    mock_tool_class.return_value = mock_tool
+
+    request = TestSettingRequest(
+        credential_type=CredentialTypes.SQL,
+        credential_values=[
+            CredentialValues(key='dialect', value='mysql'),
+            CredentialValues(key='url', value='localhost'),
+            CredentialValues(key='port', value='3306'),
+            CredentialValues(key='database_name', value='mydb'),
+            CredentialValues(key='username', value='user'),
+            CredentialValues(key='password', value='pass'),
+        ],
+    )
+    result = SettingsTester(request)._test_sql()
+
+    assert result == (False, 'Cannot connect to database: Access denied for user')
+    mock_tool.healthcheck.assert_called_once()
+
+
+@patch('codemie.service.settings.settings_tester.SQLTool')
+def test_test_sql_mssql_success(mock_tool_class):
+    mock_tool = MagicMock()
+    mock_tool.healthcheck.return_value = (True, '')
+    mock_tool_class.return_value = mock_tool
+
+    request = TestSettingRequest(
+        credential_type=CredentialTypes.SQL,
+        credential_values=[
+            CredentialValues(key='dialect', value='mssql'),
+            CredentialValues(key='url', value='localhost'),
+            CredentialValues(key='port', value='1433'),
+            CredentialValues(key='database_name', value='mydb'),
+            CredentialValues(key='username', value='user'),
+            CredentialValues(key='password', value='pass'),
+        ],
+    )
+    result = SettingsTester(request)._test_sql()
+
+    assert result == (True, '')
+    mock_tool.healthcheck.assert_called_once()
+
+
+@patch('codemie.service.settings.settings_tester.SQLTool')
+def test_test_sql_mssql_fail(mock_tool_class):
+    mock_tool = MagicMock()
+    mock_tool.healthcheck.return_value = (False, 'Cannot connect to database: General SQL Server error')
+    mock_tool_class.return_value = mock_tool
+
+    request = TestSettingRequest(
+        credential_type=CredentialTypes.SQL,
+        credential_values=[
+            CredentialValues(key='dialect', value='mssql'),
+            CredentialValues(key='url', value='localhost'),
+            CredentialValues(key='port', value='1433'),
+            CredentialValues(key='database_name', value='mydb'),
+            CredentialValues(key='username', value='user'),
+            CredentialValues(key='password', value='pass'),
+        ],
+    )
+    result = SettingsTester(request)._test_sql()
+
+    assert result == (False, 'Cannot connect to database: General SQL Server error')
+    mock_tool.healthcheck.assert_called_once()
+
+
+@patch('codemie.service.settings.settings_tester.SQLTool')
+def test_test_sql_influxdb_success(mock_tool_class):
+    mock_tool = MagicMock()
+    mock_tool.healthcheck.return_value = (True, '')
+    mock_tool_class.return_value = mock_tool
+
+    request = TestSettingRequest(
+        credential_type=CredentialTypes.SQL,
+        credential_values=[
+            CredentialValues(key='dialect', value='influxdb'),
+            CredentialValues(key='url', value='localhost'),
+            CredentialValues(key='port', value='8086'),
+            CredentialValues(key='token', value='mytoken'),
+            CredentialValues(key='org', value='myorg'),
+            CredentialValues(key='bucket', value='mybucket'),
+        ],
+    )
+    result = SettingsTester(request)._test_sql()
+
+    assert result == (True, '')
+    mock_tool.healthcheck.assert_called_once()
+
+
+@patch('codemie.service.settings.settings_tester.SQLTool')
+def test_test_sql_influxdb_fail(mock_tool_class):
+    mock_tool = MagicMock()
+    mock_tool.healthcheck.return_value = (False, 'Cannot connect to InfluxDB at localhost:8086: Connection refused')
+    mock_tool_class.return_value = mock_tool
+
+    request = TestSettingRequest(
+        credential_type=CredentialTypes.SQL,
+        credential_values=[
+            CredentialValues(key='dialect', value='influxdb'),
+            CredentialValues(key='url', value='localhost'),
+            CredentialValues(key='port', value='8086'),
+            CredentialValues(key='token', value='mytoken'),
+            CredentialValues(key='org', value='myorg'),
+            CredentialValues(key='bucket', value='mybucket'),
+        ],
+    )
+    result = SettingsTester(request)._test_sql()
+
+    assert result == (False, 'Cannot connect to InfluxDB at localhost:8086: Connection refused')
+    mock_tool.healthcheck.assert_called_once()

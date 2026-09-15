@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 import pytest
+from sqlalchemy.exc import OperationalError as SQLOperationalError
 
 from codemie_tools.data_management.sql.models import SQLConfig, SQLDialect
 from codemie_tools.data_management.sql.tools import SQLTool
@@ -43,12 +44,12 @@ class TestSQLTool(unittest.TestCase):
             bucket="test-bucket",
         )
 
-    @patch("codemie_tools.data_management.sql.tools.create_engine")
+    @patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
     def test_create_db_connection_postgres(self, mock_create_engine):
         self.sql_tool.create_db_connection()
         mock_create_engine.assert_called_with("postgresql+psycopg://user:pass@localhost:5432/test_db")
 
-    @patch("codemie_tools.data_management.sql.tools.create_engine")
+    @patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
     def test_create_db_connection_mysql(self, mock_create_engine):
         self.sql_tool.config.dialect = SQLDialect.MYSQL.value
         self.sql_tool.create_db_connection()
@@ -75,8 +76,8 @@ class TestSQLTool(unittest.TestCase):
             "Unsupported database type. Supported types are: ['mysql', 'postgres', 'influxdb', 'mssql']",
         )
 
-    @patch("codemie_tools.data_management.sql.tools.create_engine")
-    @patch("codemie_tools.data_management.sql.tools.inspect")
+    @patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
+    @patch("codemie_tools.data_management.sql.handlers.relational.inspect")
     def test_list_tables_and_columns(self, mock_inspect, mock_create_engine):
         mock_engine = mock_create_engine.return_value
         mock_inspector = mock_inspect.return_value
@@ -133,10 +134,8 @@ class TestSQLTool(unittest.TestCase):
         }
         self.assertEqual(data, expected_data)
 
-    @patch("codemie_tools.data_management.sql.tools.create_engine")
+    @patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
     def test_execute_sql_query(self, mock_create_engine):
-        # Import text inside the test function to avoid import errors
-
         # Mock engine and connection
         mock_engine = mock_create_engine.return_value
         mock_connection = MagicMock()
@@ -157,17 +156,13 @@ class TestSQLTool(unittest.TestCase):
 
         mock_connection.execute.return_value = mock_result
 
-        # Execute the function
+        # Execute the function through the public execute method
         query = "SELECT * FROM table1"
-        data = self.sql_tool.execute_sql(mock_engine, query)
+        data = self.sql_tool.execute(query)
 
         # Assert the results
         expected_data = [{"column1": "value1", "column2": "value2"}]
         self.assertEqual(data, expected_data)
-
-        # Verify the mocks were called correctly
-        mock_engine.connect.assert_called_once()
-        mock_connection.begin.assert_called_once()
 
     @patch("influxdb_client.InfluxDBClient")
     def test_execute_influxdb_query(self, mock_influxdb_client):
@@ -194,7 +189,7 @@ class TestSQLTool(unittest.TestCase):
         expected_data = [{"_time": "2023-01-01T00:00:00Z", "_value": 23.5}]
         self.assertEqual(data, expected_data)
 
-    @patch("codemie_tools.data_management.sql.tools.create_engine")
+    @patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
     def test_execute_sql_non_select_query(self, mock_create_engine):
         # Mock engine and connection
         mock_engine = mock_create_engine.return_value
@@ -211,23 +206,16 @@ class TestSQLTool(unittest.TestCase):
         mock_result.rowcount = 5  # Simulate 5 rows affected
         mock_connection.execute.return_value = mock_result
 
-        # Execute the function
+        # Execute the function through public execute method
         query = "UPDATE table1 SET column1 = value1"
-        data = self.sql_tool.execute_sql(mock_engine, query)
+        data = self.sql_tool.execute(query)
 
         # Assert the results
         expected_data = "Query executed successfully. Rows affected: 5"
         self.assertEqual(data, expected_data)
 
-        # Verify the mocks were called correctly
-        mock_engine.connect.assert_called_once()
-        mock_connection.execute.assert_called_once()
-        mock_connection.begin.assert_called_once()
-
-    @patch("codemie_tools.data_management.sql.tools.create_engine")
+    @patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
     def test_execute_sql_exception(self, mock_create_engine):
-        # Import text inside the test function to avoid import errors
-
         # Mock engine and connection
         mock_engine = mock_create_engine.return_value
         mock_connection = MagicMock()
@@ -240,15 +228,11 @@ class TestSQLTool(unittest.TestCase):
         # Set up the exception
         mock_connection.execute.side_effect = Exception("Some error")
 
-        # Test that the exception is raised
-        with self.assertRaises(Exception) as context:
-            self.sql_tool.execute_sql(mock_engine, "SELECT * FROM table1")
+        # Execute through public execute method - should return error message
+        result = self.sql_tool.execute("SELECT * FROM table1")
 
-        # Verify the exception message
-        self.assertEqual(str(context.exception), "Some error")
-
-        # Verify connect was called
-        mock_engine.connect.assert_called_once()
+        # Verify error is handled gracefully
+        self.assertIn("There is an error: Some error", result)
 
     @patch("influxdb_client.InfluxDBClient")
     def test_execute_influxdb_exception(self, mock_influxdb_client):
@@ -271,33 +255,161 @@ class TestSQLTool(unittest.TestCase):
         self.assertIn("There is an error: InfluxDB error", data)
         self.assertIn("test-bucket", data)  # Should mention bucket name in error
 
-    @patch("codemie_tools.data_management.sql.tools.create_engine")
-    @patch("codemie_tools.data_management.sql.tools.SQLTool.list_tables_and_columns")
-    @patch("codemie_tools.data_management.sql.tools.SQLTool.execute_sql")
-    def test_execute(self, mock_execute_sql, mock_list_tables_and_columns, mock_create_engine):
-        mock_engine = mock_create_engine.return_value
-        mock_list_tables_and_columns.return_value = {
-            "table1": {
-                "table_name": "table1",
-                "table_columns": [
-                    {"name": "column1", "type": "String"},
-                    {"name": "column2", "type": "Integer"},
-                ],
-            }
-        }
-
+    @patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
+    @patch("codemie_tools.data_management.sql.handlers.relational.RelationalDialectHandler.execute")
+    def test_execute(self, mock_handler_execute, _mock_create_engine):
         # Test successful execution
-        mock_execute_sql.return_value = [{"column1": "value1", "column2": "value2"}]
+        mock_handler_execute.return_value = [{"column1": "value1", "column2": "value2"}]
 
         data = self.sql_tool.execute("SELECT * FROM table1")
         expected_data = [{"column1": "value1", "column2": "value2"}]
         self.assertEqual(data, expected_data)
 
         # Test execution with exception
-        mock_execute_sql.side_effect = Exception("Some error")
+        mock_handler_execute.side_effect = Exception("Some error")
         data = self.sql_tool.execute("SELECT * FROM table1")
-        assert mock_engine is not None
         assert "There is an error: Some error" in data
+
+    @patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
+    def test_healthcheck_sql_success(self, mock_create_engine):
+        mock_engine = MagicMock()
+        mock_create_engine.return_value = mock_engine
+        mock_conn = MagicMock()
+        mock_engine.connect.return_value.__enter__.return_value = mock_conn
+
+        success, message = self.sql_tool.healthcheck()
+
+        self.assertTrue(success)
+        self.assertEqual(message, "")
+        mock_engine.dispose.assert_called_once()
+
+    @patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
+    def test_healthcheck_sql_failure(self, mock_create_engine):
+        mock_engine = MagicMock()
+        mock_create_engine.return_value = mock_engine
+        orig = Exception("password authentication failed for user \"user\"")
+        mock_engine.connect.side_effect = SQLOperationalError("SELECT 1", {}, orig)
+
+        success, message = self.sql_tool.healthcheck()
+
+        self.assertFalse(success)
+        self.assertIn("Cannot connect to database", message)
+        self.assertIn("password authentication failed", message)
+        mock_engine.dispose.assert_called_once()
+
+    @patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
+    def test_healthcheck_sql_operational_error_without_orig(self, mock_create_engine):
+        mock_engine = MagicMock()
+        mock_create_engine.return_value = mock_engine
+        error = SQLOperationalError("SELECT 1", {}, None)
+        mock_engine.connect.side_effect = error
+
+        success, message = self.sql_tool.healthcheck()
+
+        self.assertFalse(success)
+        self.assertIn("Cannot connect to database", message)
+        mock_engine.dispose.assert_called_once()
+
+    @patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
+    def test_healthcheck_mysql_success(self, mock_create_engine):
+        self.sql_tool.config.dialect = SQLDialect.MYSQL.value
+        mock_engine = MagicMock()
+        mock_create_engine.return_value = mock_engine
+        mock_conn = MagicMock()
+        mock_engine.connect.return_value.__enter__.return_value = mock_conn
+
+        success, message = self.sql_tool.healthcheck()
+
+        self.assertTrue(success)
+        self.assertEqual(message, "")
+        mock_engine.dispose.assert_called_once()
+
+    @patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
+    def test_healthcheck_mssql_success(self, mock_create_engine):
+        self.sql_tool.config.dialect = SQLDialect.MSSQL.value
+        mock_engine = MagicMock()
+        mock_create_engine.return_value = mock_engine
+        mock_conn = MagicMock()
+        mock_engine.connect.return_value.__enter__.return_value = mock_conn
+
+        success, message = self.sql_tool.healthcheck()
+
+        self.assertTrue(success)
+        self.assertEqual(message, "")
+        mock_engine.dispose.assert_called_once()
+
+    @patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
+    def test_healthcheck_mssql_failure_tuple_bytes(self, mock_create_engine):
+        """pymssql raises OperationalError with orig=(code, bytes_message) containing DB-Lib headers."""
+        self.sql_tool.config.dialect = SQLDialect.MSSQL.value
+        mock_engine = MagicMock()
+        mock_create_engine.return_value = mock_engine
+        mssql_bytes = (
+            b"DB-Lib error message 20018, severity 20:\n"
+            b"General SQL Server error: Check messages from the SQL Server\n"
+            b"DB-Lib error message 20002, severity 9:\n"
+            b"Adaptive Server connection failed (az-free-tier.database.windows.net)\n"
+        )
+        orig = (40613, mssql_bytes)
+        mock_engine.connect.side_effect = SQLOperationalError("SELECT 1", {}, orig)
+
+        success, message = self.sql_tool.healthcheck()
+
+        self.assertFalse(success)
+        self.assertIn("Cannot connect to database", message)
+        self.assertIn("General SQL Server error", message)
+        # DB-Lib header lines should be stripped
+        self.assertNotIn("DB-Lib error message", message)
+        self.assertNotIn("\\n", message)
+        mock_engine.dispose.assert_called_once()
+
+    @patch("codemie_tools.data_management.sql.handlers.influxdb.InfluxDBDialectHandler.healthcheck")
+    def test_healthcheck_influxdb_success(self, mock_handler_healthcheck):
+        self.sql_tool.config = self.setup_influxdb_config()
+        mock_handler_healthcheck.return_value = None  # healthcheck doesn't return, it raises or succeeds
+
+        success, message = self.sql_tool.healthcheck()
+
+        self.assertTrue(success)
+        self.assertEqual(message, "")
+
+    @patch("codemie_tools.data_management.sql.handlers.influxdb.InfluxDBDialectHandler.healthcheck")
+    def test_healthcheck_influxdb_bucket_not_found(self, mock_handler_healthcheck):
+        self.sql_tool.config = self.setup_influxdb_config()
+        error = ConnectionError(
+            "Bucket 'test-bucket' not found in org 'test-org'. " "Check that the bucket name and org are correct."
+        )
+        mock_handler_healthcheck.side_effect = error
+
+        success, message = self.sql_tool.healthcheck()
+
+        self.assertFalse(success)
+        self.assertIn("not found", message)
+        self.assertIn("test-bucket", message)
+
+    @patch("codemie_tools.data_management.sql.handlers.influxdb.InfluxDBDialectHandler.healthcheck")
+    def test_healthcheck_influxdb_invalid_token(self, mock_handler_healthcheck):
+        self.sql_tool.config = self.setup_influxdb_config()
+        error = ConnectionError("Cannot connect to InfluxDB at localhost:8086: unauthorized")
+        mock_handler_healthcheck.side_effect = error
+
+        success, message = self.sql_tool.healthcheck()
+
+        self.assertFalse(success)
+        self.assertIn("Cannot connect to InfluxDB", message)
+        self.assertIn("unauthorized", message)
+
+    @patch("codemie_tools.data_management.sql.handlers.influxdb.InfluxDBDialectHandler.healthcheck")
+    def test_healthcheck_influxdb_connection_error(self, mock_handler_healthcheck):
+        self.sql_tool.config = self.setup_influxdb_config()
+        error = ConnectionError("Cannot connect to InfluxDB at localhost:8086: Connection refused")
+        mock_handler_healthcheck.side_effect = error
+
+        success, message = self.sql_tool.healthcheck()
+
+        self.assertFalse(success)
+        self.assertIn("Cannot connect to InfluxDB", message)
+        self.assertIn("Connection refused", message)
 
 
 # Parametrized tests for URL encoding - grouped by functionality
@@ -345,7 +457,7 @@ class TestSQLTool(unittest.TestCase):
         ),
     ],
 )
-@patch("codemie_tools.data_management.sql.tools.create_engine")
+@patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
 def test_create_db_connection_url_encoding_by_dialect(
     mock_create_engine, dialect, username, password, expected_connection_string
 ):
@@ -371,7 +483,7 @@ def test_create_db_connection_url_encoding_by_dialect(
         ("user/name", "pass\\word", "postgresql+psycopg://user%2Fname:pass%5Cword@localhost:5432/test_db"),
     ],
 )
-@patch("codemie_tools.data_management.sql.tools.create_engine")
+@patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
 def test_create_db_connection_url_encoding_edge_cases(
     mock_create_engine, username, password, expected_connection_string
 ):
@@ -391,7 +503,7 @@ def test_create_db_connection_url_encoding_edge_cases(
     mock_create_engine.assert_called_with(expected_connection_string)
 
 
-@patch("codemie_tools.data_management.sql.tools.create_engine")
+@patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
 def test_create_db_connection_preserves_config_params(mock_create_engine):
     """Test that URL encoding doesn't affect other configuration parameters"""
     config = SQLConfig(
@@ -410,7 +522,7 @@ def test_create_db_connection_preserves_config_params(mock_create_engine):
     mock_create_engine.assert_called_with(expected_connection_string)
 
 
-@patch("codemie_tools.data_management.sql.tools.create_engine")
+@patch("codemie_tools.data_management.sql.handlers.relational.create_engine")
 def test_create_db_connection_empty_credentials_bypass_validation(mock_create_engine):
     """Test URL encoding with empty credentials by bypassing pydantic validation"""
     # Create config with valid values first

@@ -45,6 +45,8 @@ from codemie_tools.qa.xray.models import XrayConfig
 from codemie_tools.qa.xray.tools import XrayGetTestsTool
 from codemie_tools.report_portal.models import ReportPortalConfig
 from codemie_tools.report_portal.tools import GetAllLaunchesTool
+from codemie_tools.data_management.sql.models import SQLConfig
+from codemie_tools.data_management.sql.tools import SQLTool
 
 from codemie.core.models import CodeRepoType
 from codemie.rest_api.models.settings import Settings, TestSettingRequest
@@ -100,6 +102,7 @@ class SettingsTester(SettingsService):
             CredentialTypes.REPORT_PORTAL: SettingsTester._test_report_portal,
             CredentialTypes.SHAREPOINT: SettingsTester._test_sharepoint,
             CredentialTypes.XWIKI: SettingsTester._test_xwiki,
+            CredentialTypes.SQL: SettingsTester._test_sql,
         }
 
     def _test_xwiki(self) -> Tuple[bool, str]:
@@ -174,6 +177,9 @@ class SettingsTester(SettingsService):
 
     def _test_report_portal(self) -> Tuple[bool, str]:
         return GetAllLaunchesTool(config=ReportPortalConfig(**self.credential_values)).healthcheck()
+
+    def _test_sql(self) -> Tuple[bool, str]:
+        return SQLTool(config=SQLConfig(**self.credential_values)).healthcheck()
 
     def _normalize_credential_values(self, credential_values: list) -> dict:
         """Normalize credential values to a dictionary"""

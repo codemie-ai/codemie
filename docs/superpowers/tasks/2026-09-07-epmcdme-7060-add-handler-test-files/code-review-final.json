@@ -1,0 +1,111 @@
+{
+  "decision": "request-changes",
+  "confidence": "high",
+  "rationale": "Branch introduces handler unit tests for SQL dialect abstraction, but the underlying implementation has critical resource-management gaps that must be fixed before merge. Edge-case lens identified 7 blocking issues: (1) SQLAlchemy engines created in execute() are never disposed, leaking connection pools under sustained load; (2) InfluxDB clients are never closed in execute(), leaking file descriptors; (3) Engine created in error_hint() is never disposed on exception; (4) None measurement names corrupt schema dict and interpolated unsanitized into Flux queries; (5) Measurement names with quotes break Flux parsing; (6) list_tables_and_columns() crashes with AttributeError when config is None; (7) Non-SQLOperationalError exceptions escape unwrapped from healthcheck(). Test files themselves are well-structured, but they do not cover these resource-cleanup and error-path scenarios. All commits properly formatted and linting passes.",
+  "business_review": [],
+  "standards_review": [
+    {
+      "standard": "commit-format",
+      "status": "pass",
+      "notes": "All commits follow EPMCDME-7060: <description> pattern"
+    },
+    {
+      "standard": "code-quality",
+      "status": "pass",
+      "notes": "Ruff format + check both passed; no lint violations"
+    },
+    {
+      "standard": "resource-management",
+      "status": "fail",
+      "notes": "SQLAlchemy engines and InfluxDB clients not disposed/closed in execute() and error paths"
+    },
+    {
+      "standard": "error-handling",
+      "status": "fail",
+      "notes": "Non-SQLOperationalError exceptions escape unwrapped; missing None checks for config"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "title": "SQLAlchemy engine never disposed after execute()",
+      "file": "src/codemie_tools/data_management/sql/tools.py",
+      "line": 71,
+      "severity": "critical",
+      "problem": "create_db_connection() creates a brand-new SQLAlchemy Engine on every call. The returned engine is passed to handler.execute() but is never disposed afterwards — not in the success path and not in the exception path. In contrast, healthcheck() explicitly calls engine.dispose() in a finally block.",
+      "impact": "Each query call grows the number of live connection pools. Under sustained load or in long-running agent processes this exhausts the database server's max-connections limit. GC will eventually reclaim them, but non-deterministically.",
+      "recommendation": "Wrap the client lifetime in a try/finally block inside execute(). For the relational handler, call engine.dispose() in finally. For InfluxDB, call client.close() in finally. Alternatively, make create_db_connection() a context manager.",
+      "triage": "patch"
+    },
+    {
+      "id": "CR-002",
+      "title": "InfluxDB client never closed in execute()",
+      "file": "src/codemie_tools/data_management/sql/handlers/influxdb/__init__.py",
+      "line": 46,
+      "severity": "critical",
+      "problem": "InfluxDBDialectHandler.execute() receives a client but never closes it. healthcheck() explicitly calls client.close() in a finally block; execute() has no equivalent cleanup.",
+      "impact": "Each query against InfluxDB leaves an open HTTP session. Over repeated calls this leaks file descriptors and sockets.",
+      "recommendation": "Have execute() or the caller wrap the client with try/finally and call client.close() in finally block.",
+      "triage": "patch"
+    },
+    {
+      "id": "CR-003",
+      "title": "Engine created in error_hint() is never disposed",
+      "file": "src/codemie_tools/data_management/sql/handlers/relational/__init__.py",
+      "line": 104,
+      "severity": "critical",
+      "problem": "error_hint() calls create_connection() to build a new Engine but never calls engine.dispose(). If list_schema() raises, the engine leaks before the exception propagates.",
+      "impact": "On every query failure for a relational database, a connection pool is created and leaked. Under repeated failures this accumulates dangling pools.",
+      "recommendation": "Wrap with try/finally: engine = self.create_connection(config); try: schema = self.list_schema(engine, config); finally: engine.dispose().",
+      "triage": "patch"
+    },
+    {
+      "id": "CR-004",
+      "title": "None measurement key silently corrupts schema dict",
+      "file": "src/codemie_tools/data_management/sql/handlers/influxdb/__init__.py",
+      "line": 66,
+      "severity": "major",
+      "problem": "record.values.get('_value') can return None. When measurement is None, it is used as dict key and interpolated into Flux query as string 'None'.",
+      "impact": "Schema dict gets a None key; fields query for measurement 'None' returns empty results or error, producing incomplete schema data.",
+      "recommendation": "Add guard: if measurement is None: continue before using measurement.",
+      "triage": "patch"
+    },
+    {
+      "id": "CR-005",
+      "title": "Measurement name unsanitized in Flux query",
+      "file": "src/codemie_tools/data_management/sql/handlers/influxdb/__init__.py",
+      "line": 67,
+      "severity": "major",
+      "problem": "Measurement value inserted directly into f-string without escaping: measurement: \"{measurement}\". A measurement name containing a double quote breaks the Flux string literal.",
+      "impact": "If any measurement name contains a quote, list_schema() raises an exception, causing schema introspection to fail completely.",
+      "recommendation": "Escape double quotes: measurement.replace('\"', '\\\\\"'). Apply same fix to config.bucket in both queries.",
+      "triage": "patch"
+    },
+    {
+      "id": "CR-006",
+      "title": "list_tables_and_columns() crashes on None config",
+      "file": "src/codemie_tools/data_management/sql/tools.py",
+      "line": 81,
+      "severity": "major",
+      "problem": "list_tables_and_columns() calls _get_handler() with no null check for self.config. execute() guards against config is None, but list_tables_and_columns() does not.",
+      "impact": "Calling list_tables_and_columns() on unconfigured tool raises AttributeError: 'NoneType' object has no attribute 'dialect' instead of meaningful error.",
+      "recommendation": "Add guard: if self.config is None: raise ValueError(...) before calling _get_handler().",
+      "triage": "patch"
+    },
+    {
+      "id": "CR-007",
+      "title": "Non-SQLOperationalError exceptions escape unwrapped",
+      "file": "src/codemie_tools/data_management/sql/handlers/relational/__init__.py",
+      "line": 56,
+      "severity": "major",
+      "problem": "healthcheck() only catches SQLOperationalError. Other exceptions (gaierror, InterfaceError, ValueError) propagate as-is instead of being wrapped in ConnectionError.",
+      "impact": "UI sees raw exception string (e.g., '[Errno -2] Name or service not known') instead of expected 'Cannot connect to database: ...' format. Inconsistent error messages.",
+      "recommendation": "Add fallback: except Exception as e: raise ConnectionError(f'Cannot connect to database: {e}') from None.",
+      "triage": "patch"
+    }
+  ],
+  "risk_flags": [
+    "resource-leak",
+    "error-handling"
+  ]
+}
