@@ -59,9 +59,6 @@ COPY --from=builder --chown=codemie:codemie /app /app
 # Pre-create writable directories so named volumes inherit codemie ownership on first mount
 RUN mkdir -p /app/codemie-storage /app/codemie-repos
 
-# Download NLTK packages
-RUN poetry run download_nltk_packages
-
 # Expose port
 EXPOSE 8080
 

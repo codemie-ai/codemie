@@ -113,9 +113,8 @@ docker compose up --build codemie postgres elasticsearch clickhouse otelcollecto
 #### Setup
 1. Install poetry according to the [official guide](https://python-poetry.org/)
 2. Install dependencies: `poetry install`
-3. Download NLTK packages: `poetry run download_nltk_packages`
-4. Start required services locally, for example: `docker compose up postgres elasticsearch`
-5. Apply database migrations from `src/external/alembic`:
+3. Start required services locally, for example: `docker compose up postgres elasticsearch`
+4. Apply database migrations from `src/external/alembic`:
    ```bash
    cd src/external/alembic
    poetry run alembic upgrade head
