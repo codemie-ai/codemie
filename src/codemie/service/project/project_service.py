@@ -43,6 +43,7 @@ from codemie.repository.user_repository import user_repository
 from codemie.rest_api.security.user import User
 from codemie.service.cost_center_service import cost_center_service
 from codemie.service.settings.settings import SettingsService
+from codemie.service.project.project_assignment_service import ProjectAssignmentService
 from codemie.service.user.authentication_service import invalidate_user_from_cache
 
 
@@ -518,6 +519,10 @@ class ProjectService:
         affected_group_ids = project_budget_group_repository.clear_project_on_deleted_groups(session, project_name)
 
         application_repository.delete_by_name(session, project_name)
+        if creator_id is not None:
+            user_project_repository.remove_project(session, creator_id, project_name)
+            ProjectAssignmentService._sync_project_budget_member_removed(session, project_name, creator_id)
+            invalidate_user_from_cache(creator_id)
         activity_event_repository.insert(
             ActivityEventCreate(
                 domain=ActivityDomain.PROJECT_MANAGEMENT,

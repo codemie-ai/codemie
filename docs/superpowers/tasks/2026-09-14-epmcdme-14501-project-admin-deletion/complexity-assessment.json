@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "task": "Fix RBAC bug where deleting and recreating a project with the same name causes the original Project Admin to inherit access to the new project.",
+  "generated": "2026-09-14T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 3, "label": "M" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 14,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Base S — cleanup call pattern already present in delete_project (budget row cleanup is an exact structural analog). Two bumps applied: (1) auto-bump from S to M because the acceptance criteria require a delete-then-recreate regression test scenario for which no existing test template exists; (2) red-flag bump from M to L because the fix directly affects RBAC authorization outcomes (orphaned UserProject rows bypass all RBAC membership queries keyed on project_name). Calibration note: the M bundle example (epmcdme-10203) scores Technical Risk S=2 for a new endpoint with no security angle; L=4 here is justified by the RBAC sensitivity, not by implementation novelty."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Primary change is ProjectService.delete_project (service layer) calling existing UserProjectRepository.remove_project. Secondary concerns are adding invalidate_user_from_cache for the creator on deletion and triggering ProjectAssignmentService._sync_project_budget_member_removed for the creator's budget rows — 2-3 components across service + repository layers, clear pattern."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk auto-bumped from S to M: acceptance criteria enumerate a delete-then-recreate regression test scenario (AC #5) for which no existing test template exists in the project.",
+    "Technical Risk bumped from M to L: task affects authentication/authorization — the fix cleans up UserProject rows whose orphaned presence bypasses RBAC membership and access queries."
+  ],
+  "split_recommendation": null
+}

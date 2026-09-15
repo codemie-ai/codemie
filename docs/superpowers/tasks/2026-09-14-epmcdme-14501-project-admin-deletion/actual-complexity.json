@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "generated": "2026-09-14T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 10,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 3,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "The fix tightens an authorization guard inside delete_project — creator is excluded from the assigned-users block, and their membership row is cleaned up post-deletion. Auth surface is touched, warranting a bump from S to M. Existing patterns (invalidate_user_from_cache, remove_project, _sync_project_budget_member_removed) are well-established; null-creator legacy path is covered by a null guard and its own test."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Change is confined to a single service method (delete_project) in project_service.py plus its corresponding test class. All dependencies invoked (user_project_repository, ProjectAssignmentService, invalidate_user_from_cache) are existing utilities called in a new conditional code path — no new components introduced."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from S(2) to M(3): fix affects authorization flow — creator exclusion from assigned-users check and post-deletion membership cleanup touch the auth/membership boundary"
+  ],
+  "split_recommendation": null
+}

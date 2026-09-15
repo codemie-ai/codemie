@@ -484,6 +484,70 @@ class TestProjectServiceDeleteProject:
 
         mock_app_repo.get_project_entity_counts_bulk.assert_called_once_with(mock_session, ["analytics"])
 
+    @patch("codemie.service.project.project_service.ProjectAssignmentService")
+    @patch("codemie.service.project.project_service.invalidate_user_from_cache")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_delete_cleans_up_creator_membership(self, mock_app_repo, mock_upr, mock_invalidate, mock_assignment_svc):
+        mock_session = MagicMock()
+        creator_record = MagicMock()
+        creator_record.user_id = "creator-1"
+        mock_upr.get_by_project_name.return_value = [creator_record]
+        mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
+
+        ProjectService.delete_project(
+            session=mock_session,
+            project_name="my-project",
+            project_type=Application.ProjectType.SHARED,
+            actor_id="creator-1",
+            action="DELETE /v1/projects/my-project",
+            creator_id="creator-1",
+        )
+
+        mock_upr.remove_project.assert_called_once_with(mock_session, "creator-1", "my-project")
+        mock_invalidate.assert_called_once_with("creator-1")
+        mock_assignment_svc._sync_project_budget_member_removed.assert_called_once_with(
+            mock_session, "my-project", "creator-1"
+        )
+
+    @patch("codemie.service.project.project_service.ProjectAssignmentService")
+    @patch("codemie.service.project.project_service.project_budget_group_repository")
+    @patch("codemie.service.project.project_service.budget_repository")
+    @patch("codemie.service.project.project_service.activity_event_repository")
+    @patch("codemie.service.project.project_service.invalidate_user_from_cache")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_null_creator_id_skips_membership_cleanup(
+        self,
+        mock_app_repo,
+        mock_upr,
+        mock_invalidate,
+        mock_activity,
+        mock_budgets,
+        mock_groups,
+        mock_assignment_svc,
+    ):
+        """Legacy projects with created_by=NULL pass creator_id=None; delete_project must
+        complete successfully without calling remove_project or invalidate_user_from_cache."""
+        mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
+        mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
+        mock_budgets.clear_project_on_deleted_budgets.return_value = []
+        mock_groups.clear_project_on_deleted_groups.return_value = []
+
+        ProjectService.delete_project(
+            session=mock_session,
+            project_name="my-project",
+            project_type=Application.ProjectType.SHARED,
+            actor_id="actor-1",
+            action="DELETE /v1/projects/my-project",
+        )
+
+        mock_upr.remove_project.assert_not_called()
+        mock_invalidate.assert_not_called()
+        mock_assignment_svc._sync_project_budget_member_removed.assert_not_called()
+        mock_app_repo.delete_by_name.assert_called_once_with(mock_session, "my-project")
+
 
 # ---------------------------------------------------------------------------
 # Tests for ProjectService.update_project
@@ -944,6 +1008,42 @@ class TestProjectServiceUpdateProject:
 
         mock_logger.info.assert_called_once()
         assert "project_updated" in mock_logger.info.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# Regression: delete-then-same-name-recreate must not inherit membership
+# ---------------------------------------------------------------------------
+
+
+class TestProjectServiceDeleteRecreate:
+    """Regression: deleting and recreating a same-named project must not inherit membership."""
+
+    @patch("codemie.service.project.project_service.ProjectAssignmentService")
+    @patch("codemie.service.project.project_service.invalidate_user_from_cache")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_old_creator_membership_removed_before_name_reuse(
+        self, mock_app_repo, mock_upr, mock_invalidate, mock_assignment_svc
+    ):
+        """After delete_project, the creator's UserProject row is removed so
+        a new project with the same name starts with clean membership."""
+        mock_session = MagicMock()
+        creator_record = MagicMock()
+        creator_record.user_id = "original-admin"
+        mock_upr.get_by_project_name.return_value = [creator_record]
+        mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("alpha")
+
+        ProjectService.delete_project(
+            session=mock_session,
+            project_name="alpha",
+            project_type=Application.ProjectType.SHARED,
+            actor_id="original-admin",
+            action="DELETE /v1/projects/alpha",
+            creator_id="original-admin",
+        )
+
+        mock_upr.remove_project.assert_called_once_with(mock_session, "original-admin", "alpha")
+        mock_invalidate.assert_called_once_with("original-admin")
 
 
 class TestUpdateProjectClearDescription:

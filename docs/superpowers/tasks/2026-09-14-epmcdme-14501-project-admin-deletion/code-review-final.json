@@ -1,0 +1,76 @@
+{
+  "decision": "request-changes",
+  "rationale": "Critical RBAC regression: `if creator_id:` on line 504 is falsy for None, so legacy projects with created_by=NULL skip remove_project, _sync_project_budget_member_removed, and invalidate_user_from_cache entirely — the original inheritance bug persists for that class of projects. Both required lenses ran cleanly; 0 deferred; 3 dismissed as noise (return-value log gap, flush-rollback, test-class wording).",
+  "confidence": "high",
+  "risk_flags": ["security"],
+  "business_review": [
+    {
+      "kind": "acceptance",
+      "item": "AC1: After delete+same-name recreate, original creator has no UserProject row and no Project Admin role",
+      "status": "pass",
+      "notes": "remove_project called; TestProjectServiceDeleteRecreate asserts row removed; Application row deleted."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC2: delete_project calls remove_project for creator on every successful deletion path",
+      "status": "partial",
+      "notes": "Skipped when creator_id=None (legacy NULL created_by). `if creator_id:` is falsy for None."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC3: delete_project calls invalidate_user_from_cache for creator on every successful deletion path",
+      "status": "partial",
+      "notes": "Same if creator_id: guard; cache invalidation silently skipped when creator_id=None."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC4: ProjectAssignmentService._sync_project_budget_member_removed triggered for creator budget rows on deletion",
+      "status": "partial",
+      "notes": "Skipped when creator_id=None; same guard as AC2/AC3."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC5: New unit test covers delete-then-same-name-recreate and asserts old creator has no membership",
+      "status": "pass",
+      "notes": "TestProjectServiceDeleteRecreate.test_old_creator_membership_removed_before_name_reuse added; asserts required behavior."
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC6: Existing tests extended to assert membership cleanup and cache invalidation on the deletion success path",
+      "status": "partial",
+      "notes": "Two new test classes added rather than extending existing tests. Behavior is covered but spec said 'existing tests extended.'"
+    },
+    {
+      "kind": "acceptance",
+      "item": "AC7: All existing tests in the four named files continue to pass without modification",
+      "status": "pending-stage-7",
+      "notes": "No existing test was modified; new code is gated by if creator_id:. Full confirmation requires running the suite."
+    }
+  ],
+  "standards_review": [],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/project/project_service.py",
+      "line": 504,
+      "title": "Falsy guard skips cleanup for NULL creator_id",
+      "problem": "`if creator_id:` on line 504 evaluates to False when creator_id is None. Legacy projects whose `created_by` column is NULL reach the deletion success path with no call to remove_project, _sync_project_budget_member_removed, or invalidate_user_from_cache. The router passes `authorized_project.created_by` directly, which is nullable.",
+      "impact": "The original RBAC bug — Project Admin row surviving into a same-name recreated project — persists for any project with a NULL created_by. A user recreating such a project inherits stale admin membership from the deleted one.",
+      "recommendation": "Change `if creator_id:` to `if creator_id is not None:` on line 504. Alternatively, implement a fallback that queries and removes all UserProject rows by project_name when creator_id is absent, ensuring no membership survives for any deletion path."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "tests/codemie/service/project/test_project_service_delete_update.py",
+      "title": "No test for creator_id=None deletion path",
+      "problem": "No test passes creator_id=None to delete_project and asserts that remove_project and invalidate_user_from_cache are not called and that the deletion completes without error.",
+      "impact": "A future change removing or altering the None guard will re-introduce the RBAC bug on legacy projects and go undetected by the test suite.",
+      "recommendation": "Add a test: call delete_project with creator_id=None and assert remove_project and invalidate_user_from_cache are never called while the project deletion succeeds."
+    }
+  ]
+}

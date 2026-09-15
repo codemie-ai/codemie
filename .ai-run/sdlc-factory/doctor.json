@@ -1,10 +1,1 @@
-{
-  "checked_at": "2026-09-08T00:00:00Z",
-  "ttl_days": 7,
-  "fingerprint": "node-v24.15.0-git-2.50.1",
-  "checks": {
-    "superpowers": "ok",
-    "node": "v24.15.0",
-    "git": "2.50.1"
-  }
-}
+{"schema":1,"checked_at":"2026-09-14T11:49:31Z","passed":true,"checks":{"superpowers":"6.3.0","node":"v24.6.0","git":"2.50.0.windows.1"},"fingerprint":"git=2.50.0.windows.1|node=v24.6.0|superpowers=6.3.0"}
