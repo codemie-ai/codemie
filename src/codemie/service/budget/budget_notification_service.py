@@ -133,11 +133,16 @@ async def notify_soft_limit_reached(
             resolved_budget_id = budget.budget_id
             budget_duration = budget.budget_duration
             notify_once = budget.soft_limit_notify_once
+            notification_enabled = budget.soft_limit_notification_enabled
             project_name = budget.project_name
             budget_category = budget.budget_category
 
             if not email or not email.strip():
                 logger.debug(f"budget_notify_skipped budget_id={budget_id!r} reason=no_owner_email")
+                return
+
+            if not notification_enabled:
+                logger.debug(f"budget_notify_skipped budget_id={budget_id!r} reason=notifications_disabled")
                 return
 
             window = _effective_dedup_window(budget_duration)

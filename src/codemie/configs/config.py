@@ -294,6 +294,7 @@ class Config(BaseSettings):
     # ===========================================
     EMAIL_VERIFICATION_ENABLED: bool = True  # Enable/disable email verification for local auth
     BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED: bool = False  # Send email to notification_owner_email on soft limit
+    BUDGET_SOFT_LIMIT_EMAIL_ENABLED: bool = False  # Allow email dispatch (UI/owner assignment still works when False)
     EMAIL_SMTP_HOST: str = ""
     EMAIL_SMTP_PORT: int = 587
     EMAIL_SMTP_USERNAME: str = ""

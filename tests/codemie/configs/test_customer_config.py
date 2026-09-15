@@ -117,6 +117,7 @@ class TestCustomerConfig(unittest.TestCase):
             mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
             mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
             mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+            mock_config.BUDGET_SOFT_LIMIT_EMAIL_ENABLED = False
             mock_config.GITLAB_OAUTH_ENABLED = False
             mock_config.JIRA_OAUTH_ENABLED = False
             mock_config.CONFLUENCE_OAUTH_ENABLED = False
@@ -258,6 +259,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
         mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_EMAIL_ENABLED = False
         mock_config.GITLAB_OAUTH_ENABLED = False
         mock_config.JIRA_OAUTH_ENABLED = False
         mock_config.CONFLUENCE_OAUTH_ENABLED = False
@@ -290,6 +292,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
         mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_EMAIL_ENABLED = False
         mock_config.GITLAB_OAUTH_ENABLED = False
         mock_config.JIRA_OAUTH_ENABLED = False
         mock_config.CONFLUENCE_OAUTH_ENABLED = False
@@ -346,6 +349,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
         mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_EMAIL_ENABLED = False
         mock_config.GITLAB_OAUTH_ENABLED = False
         mock_config.JIRA_OAUTH_ENABLED = False
         mock_config.CONFLUENCE_OAUTH_ENABLED = False
@@ -397,6 +401,7 @@ class TestRuntimeFeatures(unittest.TestCase):
         mock_config.CALLBACK_API_BASE_URL = "http://localhost:8080"
         mock_config.CHAT_CONTEXTUAL_NAMING_ENABLED = False
         mock_config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED = False
+        mock_config.BUDGET_SOFT_LIMIT_EMAIL_ENABLED = False
         mock_config.GITLAB_OAUTH_ENABLED = False
         mock_config.JIRA_OAUTH_ENABLED = False
         mock_config.CONFLUENCE_OAUTH_ENABLED = False

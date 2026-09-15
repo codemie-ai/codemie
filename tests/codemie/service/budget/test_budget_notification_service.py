@@ -35,6 +35,7 @@ def _budget(**overrides):
         "notification_owner_email": "owner@example.com",
         "soft_limit_notified_at": None,
         "soft_limit_notify_once": False,
+        "soft_limit_notification_enabled": True,
         "project_name": None,
         "budget_category": None,
     }
@@ -213,6 +214,7 @@ async def test_reads_budget_attributes_before_commit_expires_them():
                 "notification_owner_email": "owner@example.com",
                 "soft_limit_notified_at": None,
                 "soft_limit_notify_once": False,
+                "soft_limit_notification_enabled": True,
                 "project_name": None,
                 "budget_category": None,
             }

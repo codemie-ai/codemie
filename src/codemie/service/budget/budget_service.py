@@ -207,6 +207,8 @@ class BudgetService:
             provider_metadata=self._provider_metadata(data.budget_id),
             created_by=actor_id,
             notification_owner_email=data.notification_owner_email,
+            soft_limit_notify_once=data.soft_limit_notify_once,
+            soft_limit_notification_enabled=data.soft_limit_notification_enabled,
         )
 
         try:
@@ -449,14 +451,21 @@ class BudgetService:
             "budget_duration",
             "notification_owner_email",
             "soft_limit_notify_once",
+            "soft_limit_notification_enabled",
         ):
             if field in provided:
                 fields[field] = getattr(data, field)
         if "budget_category" in provided:
             fields["budget_category"] = new_category
-        # Reset soft-limit dedup when soft_budget or notification owner changes so the
-        # new value / new owner is notified on the next crossing (EPMCDME-13959).
-        if "soft_budget" in fields or "notification_owner_email" in fields:
+        # Reset soft-limit dedup when soft_budget, notification owner, or notification
+        # enabled flag changes so the new value / new owner is notified on the next
+        # crossing (EPMCDME-13959).
+        if (
+            "soft_budget" in fields
+            or "notification_owner_email" in fields
+            or "soft_limit_notification_enabled" in fields
+            or "soft_limit_notify_once" in fields
+        ):
             fields["soft_limit_notified_at"] = None
         return fields
 

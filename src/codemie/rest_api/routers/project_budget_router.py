@@ -232,16 +232,19 @@ def _can_read_project_budget(user: User, project_name: str) -> bool:
     return project_name in (user.admin_project_names or [])
 
 
+_PROJECT_ADMIN_ALLOWED_FIELDS = {"categories", "soft_limit_notification_enabled"}
+
+
 def _ensure_allowed_budget_group_update_fields(user: User, payload: "ProjectBudgetGroupUpdateRequest") -> None:
-    """Project administrators may only change the category distribution."""
+    """Project administrators may change category distribution and notification toggling."""
     if user.is_maintainer:
         return
-    restricted = sorted(set(ProjectBudgetGroupUpdateRequest.model_fields) - {"categories"})
+    restricted = sorted(set(ProjectBudgetGroupUpdateRequest.model_fields) - _PROJECT_ADMIN_ALLOWED_FIELDS)
     if any(getattr(payload, field, None) is not None for field in restricted):
         raise ExtendedHTTPException(
             code=403,
             message=_ACCESS_DENIED_MESSAGE,
-            details="Project administrators may only update the categories field.",
+            details="Project administrators may only update the categories and soft_limit_notification_enabled fields.",
             help="To change other fields, contact a system administrator.",
         )
 
@@ -529,6 +532,10 @@ class ProjectBudgetGroupCreateRequest(BaseModel):
         default=False,
         description="When true the soft-limit notification fires only once per budget edit cycle.",
     )
+    soft_limit_notification_enabled: bool = Field(
+        default=False,
+        description="When false, soft-limit notification emails are suppressed when notification_owner_email is set.",
+    )
 
 
 class CategoryBudgetSpecUpdate(BaseModel):
@@ -546,7 +553,8 @@ class ProjectBudgetGroupUpdateRequest(BaseModel):
     description: Optional[str] = Field(default=None, max_length=500)
     categories: Optional[dict[str, CategoryBudgetSpecUpdate]] = Field(default=None)
     notification_owner_email: Optional[EmailStr] = Field(default=None)
-    soft_limit_notify_once: Optional[bool] = Field(default=None)
+    soft_limit_notify_once: bool | None = Field(default=None)
+    soft_limit_notification_enabled: bool | None = Field(default=None)
 
 
 class CategoryBudgetDetailResponse(BaseModel):
@@ -578,6 +586,7 @@ class ProjectBudgetGroupResponse(BaseModel):
     categories: list[CategoryBudgetDetailResponse]
     notification_owner_email: Optional[str] = None
     soft_limit_notify_once: bool = False
+    soft_limit_notification_enabled: bool = False
 
     model_config = {'from_attributes': True}
 
@@ -624,6 +633,7 @@ def _build_project_budget_group_response(result: ProjectBudgetGroupFullResult) -
         categories=categories,
         notification_owner_email=first_budget.notification_owner_email if first_budget else None,
         soft_limit_notify_once=first_budget.soft_limit_notify_once if first_budget else False,
+        soft_limit_notification_enabled=first_budget.soft_limit_notification_enabled if first_budget else False,
     )
 
 

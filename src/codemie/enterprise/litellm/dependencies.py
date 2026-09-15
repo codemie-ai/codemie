@@ -349,6 +349,14 @@ def _dispatch_soft_limit_notification(
         return
 
     if not config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED:
+        if config.BUDGET_SOFT_LIMIT_EMAIL_ENABLED:
+            logger.warning(
+                f"budget_event=soft_limit_notification_skipped reason=master_flag_disabled "
+                f"budget_id={budget_id!r} hint=set BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED=true to enable notifications"
+            )
+        return
+
+    if not config.BUDGET_SOFT_LIMIT_EMAIL_ENABLED:
         return
 
     try:

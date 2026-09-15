@@ -35,6 +35,7 @@ CONFIG_IDS = {
     "mcpAuthOrigin": "mcpAuthOrigin",
     "chatContextualNaming": "features:chatContextualNaming",
     "budgetSoftLimitNotification": "features:budgetSoftLimitNotification",
+    "budgetSoftLimitEmail": "features:budgetSoftLimitEmail",
     "gitlabOauth": "features:gitlabOauth",
     "jiraOauth": "features:jiraOauth",
     "confluenceOauth": "features:confluenceOauth",
@@ -191,6 +192,13 @@ class CustomerConfig(BaseModel):
             Component(
                 id=CONFIG_IDS["budgetSoftLimitNotification"],
                 settings=ComponentSetting(enabled=config.BUDGET_SOFT_LIMIT_NOTIFICATION_ENABLED),
+            )
+        )
+
+        runtime_config.append(
+            Component(
+                id=CONFIG_IDS["budgetSoftLimitEmail"],
+                settings=ComponentSetting(enabled=config.BUDGET_SOFT_LIMIT_EMAIL_ENABLED),
             )
         )
 

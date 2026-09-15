@@ -63,6 +63,10 @@ class BudgetCreateRequest(BaseModel):
         default=False,
         description="When true the soft-limit notification fires only once per budget edit cycle (no repeats).",
     )
+    soft_limit_notification_enabled: bool = Field(
+        default=False,
+        description="When false, soft-limit notification emails are suppressed when notification_owner_email is set.",
+    )
 
 
 class BudgetUpdateRequest(BaseModel):
@@ -75,7 +79,8 @@ class BudgetUpdateRequest(BaseModel):
     budget_duration: Optional[str] = Field(default=None, pattern=r"^\d+[dhm]$")
     budget_category: Optional[BudgetCategory] = None
     notification_owner_email: Optional[EmailStr] = Field(default=None)
-    soft_limit_notify_once: Optional[bool] = Field(default=None)
+    soft_limit_notify_once: bool | None = Field(default=None)
+    soft_limit_notification_enabled: bool | None = Field(default=None)
 
 
 class BudgetResponse(BaseModel):
@@ -92,6 +97,8 @@ class BudgetResponse(BaseModel):
     updated_at: Optional[datetime]
     is_preconfigured: bool = False
     notification_owner_email: Optional[str] = None
+    soft_limit_notification_enabled: bool = False
+    soft_limit_notify_once: bool = False
 
     model_config = {"from_attributes": True}
 
