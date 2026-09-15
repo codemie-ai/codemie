@@ -79,6 +79,15 @@ def raise_unprocessable_entity(action: str, resource: str, exc: Exception) -> No
     ) from exc
 
 
+def raise_conflict(message: str) -> NoReturn:
+    raise ExtendedHTTPException(
+        code=status.HTTP_409_CONFLICT,
+        message=message,
+        details=message,
+        help="Resolve the conflict and retry.",
+    )
+
+
 def raise_not_found(resource_id: str, resource_type: str) -> NoReturn:
     raise ExtendedHTTPException(
         code=status.HTTP_404_NOT_FOUND,

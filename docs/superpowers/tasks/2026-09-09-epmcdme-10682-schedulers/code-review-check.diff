@@ -1,0 +1,1772 @@
+diff --git a/.ai-run/sdlc-factory/doctor.json b/.ai-run/sdlc-factory/doctor.json
+index fab274d78..85a30914f 100644
+--- a/.ai-run/sdlc-factory/doctor.json
++++ b/.ai-run/sdlc-factory/doctor.json
+@@ -1,10 +1 @@
+-{
+-  "checked_at": "2026-08-05T14:02:18Z",
+-  "ttl_days": 7,
+-  "fingerprint": "node-v25.9.0-git-2.50.1",
+-  "checks": {
+-    "superpowers": "ok",
+-    "node": "v25.9.0",
+-    "git": "2.50.1"
+-  }
+-}
++{"schema":1,"checked_at":"2026-09-03T10:48:25Z","passed":true,"checks":{"superpowers":"6.3.0","node":"v24.18.1","git":"2.39.5"},"fingerprint":"git=2.39.5|node=v24.18.1|superpowers=6.3.0"}
+diff --git a/.codemie/codemie-cli.config.json b/.codemie/codemie-cli.config.json
+index 682a9f489..78ad07302 100644
+--- a/.codemie/codemie-cli.config.json
++++ b/.codemie/codemie-cli.config.json
+@@ -3,66 +3,17 @@
+   "activeProfile": "epm-cdme",
+   "profiles": {
+     "epm-cdme": {
+-      "codeMieProject": "epm-cdme",
+-      "provider": "ai-run-sso",
+-      "codeMieUrl": "https://codemie.lab.epam.com",
+-      "apiKey": "sso-provided",
+-      "baseUrl": "https://codemie.lab.epam.com/code-assistant-api",
++      "codeMieProject": "yevhen_slyva@epam.com",
++      "provider": "anthropic-subscription",
++      "baseUrl": "https://api.anthropic.com",
++      "apiKey": "",
+       "model": "claude-sonnet-4-6",
++      "authMethod": "manual",
++      "codeMieUrl": "https://codemie.lab.epam.com",
+       "haikuModel": "claude-haiku-4-5-20251001",
+       "sonnetModel": "claude-sonnet-4-6",
+-      "opusModel": "claude-opus-4-8",
++      "opusModel": "claude-opus-4-7",
+       "name": "epm-cdme"
+     }
+-  },
+-  "codemieAssistants": [
+-    {
+-      "id": "289d2751-afd9-4c77-a272-90df7cd71702",
+-      "name": "CodeMie JIRA Assistant",
+-      "slug": "codemie-jira-assistant",
+-      "description": "Business Analyst Assistant - expert to work with Jira. Used for creating/getting/managing Jira tickets in EPM-CDME project (Epics, Stories, Tasks, and Bugs). Main role is to analyze requirements from the request, clarify additional questions if necessary, generate requirements with the description structure defined in the prompt and additional details from the request, and create tickets in EPM-CDME project Jira. The Assistant uses Generic Jira tool for Jira tickets creation.",
+-      "project": "epm-cdme",
+-      "registeredAt": "2026-06-17T09:33:03.564Z",
+-      "registrationMode": "skill",
+-      "agentTargets": [
+-        "claude"
+-      ]
+-    },
+-    {
+-      "id": "dc92440f-030e-47dd-9b22-666bbf56d381",
+-      "name": "TAF Regression Advisor",
+-      "slug": "taf-regression-advisor",
+-      "description": "Assistant that suggests what tests cases from TAF must be run depending on the changes mage in backend/frontend codebase",
+-      "project": "epm-cdme",
+-      "registeredAt": "2026-06-17T09:33:03.564Z",
+-      "registrationMode": "skill",
+-      "agentTargets": [
+-        "claude"
+-      ]
+-    },
+-    {
+-      "id": "05959338-06de-477d-9cc3-08369f858057",
+-      "name": "AI/Run FAQ",
+-      "slug": "codemie-onboarding",
+-      "description": "This is smart CodeMie assistant which can help you with onboarding process.\nCodeMie can answer to all you questions about capabilities, usage and so on.",
+-      "project": "codemie",
+-      "registeredAt": "2026-06-17T09:33:03.565Z",
+-      "registrationMode": "skill",
+-      "agentTargets": [
+-        "claude"
+-      ]
+-    },
+-    {
+-      "id": "0368dce9-3987-49ac-b12e-41ce45623a20",
+-      "name": "SonarQube MCP Analyzer",
+-      "slug": "sonarqube-mcp-analyzer",
+-      "description": "A highly specialized assistant designed to analyze SonarQube reports using SonarQube MCP Server tools. It processes report links, interpreting all available metrics such as the number and types of issues, severities, affected code snippets, coverage details, and more. Serving both direct users and other AI Assistants, it delivers in-depth insights and actionable recommendations on code quality, technical debt, and coverage improvement.",
+-      "project": "epm-cdme",
+-      "registeredAt": "2026-06-17T09:33:03.565Z",
+-      "registrationMode": "skill",
+-      "agentTargets": [
+-        "claude"
+-      ]
+-    }
+-  ]
+-}
++  }
++}
+\ No newline at end of file
+diff --git a/Dockerfile b/Dockerfile
+index b79c34649..7da1c8115 100755
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -25,6 +25,10 @@ COPY ./pyproject.toml ./poetry.lock ./
+ 
+ ARG INSTALL_ENTERPRISE
+ RUN --mount=type=secret,id=google_credentials,dst=/kaniko/google_credentials.json \
++    --mount=type=secret,id=github_token \
++    if [ -f /run/secrets/github_token ]; then \
++    git config --global url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
++    fi; \
+     if [ "$INSTALL_ENTERPRISE" = "true" ]; then \
+     echo "Installing with enterprise features..."; \
+     export GOOGLE_APPLICATION_CREDENTIALS=/kaniko/google_credentials.json; \
+@@ -34,7 +38,8 @@ RUN --mount=type=secret,id=google_credentials,dst=/kaniko/google_credentials.jso
+     else \
+     echo "Installing base dependencies only..."; \
+     poetry install --only main --no-root; \
+-    fi
++    fi; \
++    git config --global --unset-all url."https://$(cat /run/secrets/github_token 2>/dev/null)@github.com/".insteadOf 2>/dev/null || true
+ 
+ # Copy source code and configuration
+ COPY ./src /app/src
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 477d3dacb..ac544572c 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -25,6 +25,7 @@ services:
+       dockerfile: Dockerfile
+       secrets:
+         - google_credentials
++        - github_token
+     volumes:
+       - ./src:/app/src
+       - ./poetry.lock:/app/poetry.lock
+@@ -247,3 +248,5 @@ secrets:
+     # if you don't have gcp credentials but still want to set up local deployment then create an empty file
+     # acting as a stub: 'touch ${HOME}/.config/gcloud/application_default_credentials.json'
+     file: ${HOME}/.config/gcloud/application_default_credentials.json
++  github_token:
++    environment: GITHUB_TOKEN
+diff --git a/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/code-review-check.diff b/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/code-review-check.diff
+index b67c69f0a..b552c1aa0 100644
+--- a/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/code-review-check.diff
++++ b/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/code-review-check.diff
+@@ -1,961 +0,0 @@
+-diff --git a/.ai-run/sdlc-factory/doctor.json b/.ai-run/sdlc-factory/doctor.json
+-index fab274d78..85a30914f 100644
+---- a/.ai-run/sdlc-factory/doctor.json
+-+++ b/.ai-run/sdlc-factory/doctor.json
+-@@ -1,10 +1 @@
+--{
+--  "checked_at": "2026-08-05T14:02:18Z",
+--  "ttl_days": 7,
+--  "fingerprint": "node-v25.9.0-git-2.50.1",
+--  "checks": {
+--    "superpowers": "ok",
+--    "node": "v25.9.0",
+--    "git": "2.50.1"
+--  }
+--}
+-+{"schema":1,"checked_at":"2026-09-03T10:48:25Z","passed":true,"checks":{"superpowers":"6.3.0","node":"v24.18.1","git":"2.39.5"},"fingerprint":"git=2.39.5|node=v24.18.1|superpowers=6.3.0"}
+-diff --git a/Dockerfile b/Dockerfile
+-index b79c34649..7da1c8115 100755
+---- a/Dockerfile
+-+++ b/Dockerfile
+-@@ -25,6 +25,10 @@ COPY ./pyproject.toml ./poetry.lock ./
+- 
+- ARG INSTALL_ENTERPRISE
+- RUN --mount=type=secret,id=google_credentials,dst=/kaniko/google_credentials.json \
+-+    --mount=type=secret,id=github_token \
+-+    if [ -f /run/secrets/github_token ]; then \
+-+    git config --global url."https://$(cat /run/secrets/github_token)@github.com/".insteadOf "https://github.com/"; \
+-+    fi; \
+-     if [ "$INSTALL_ENTERPRISE" = "true" ]; then \
+-     echo "Installing with enterprise features..."; \
+-     export GOOGLE_APPLICATION_CREDENTIALS=/kaniko/google_credentials.json; \
+-@@ -34,7 +38,8 @@ RUN --mount=type=secret,id=google_credentials,dst=/kaniko/google_credentials.jso
+-     else \
+-     echo "Installing base dependencies only..."; \
+-     poetry install --only main --no-root; \
+--    fi
+-+    fi; \
+-+    git config --global --unset-all url."https://$(cat /run/secrets/github_token 2>/dev/null)@github.com/".insteadOf 2>/dev/null || true
+- 
+- # Copy source code and configuration
+- COPY ./src /app/src
+-diff --git a/docker-compose.yml b/docker-compose.yml
+-index 477d3dacb..ac544572c 100644
+---- a/docker-compose.yml
+-+++ b/docker-compose.yml
+-@@ -25,6 +25,7 @@ services:
+-       dockerfile: Dockerfile
+-       secrets:
+-         - google_credentials
+-+        - github_token
+-     volumes:
+-       - ./src:/app/src
+-       - ./poetry.lock:/app/poetry.lock
+-@@ -247,3 +248,5 @@ secrets:
+-     # if you don't have gcp credentials but still want to set up local deployment then create an empty file
+-     # acting as a stub: 'touch ${HOME}/.config/gcloud/application_default_credentials.json'
+-     file: ${HOME}/.config/gcloud/application_default_credentials.json
+-+  github_token:
+-+    environment: GITHUB_TOKEN
+-diff --git a/src/codemie/repository/scheduler_run_repository.py b/src/codemie/repository/scheduler_run_repository.py
+-index 0c4c20dfd..3397103c2 100644
+---- a/src/codemie/repository/scheduler_run_repository.py
+-+++ b/src/codemie/repository/scheduler_run_repository.py
+-@@ -1,10 +1,24 @@
+-+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
+-+#
+-+# Licensed under the Apache License, Version 2.0 (the "License");
+-+# you may not use this file except in compliance with the License.
+-+# You may obtain a copy of the License at
+-+#
+-+#     http://www.apache.org/licenses/LICENSE-2.0
+-+#
+-+# Unless required by applicable law or agreed to in writing, software
+-+# distributed under the License is distributed on an "AS IS" BASIS,
+-+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-+# See the License for the specific language governing permissions and
+-+# limitations under the License.
+-+
+- from __future__ import annotations
+- 
+- from datetime import datetime
+- from typing import Any, Optional
+- 
+- from sqlalchemy import text
+--from sqlmodel import Session, select
+-+from sqlmodel import Session
+- 
+- from codemie.clients.postgres import PostgresClient
+- from codemie.rest_api.models.scheduler_run import SchedulerRun
+-@@ -36,7 +50,11 @@ class SchedulerRunRepository:
+- 
+-     def get_by_id(self, run_id: str) -> Optional[SchedulerRun]:
+-         with Session(self._get_engine()) as session:
+--            return session.get(SchedulerRun, run_id)
+-+            run = session.get(SchedulerRun, run_id)
+-+            if run is not None:
+-+                # Eagerly load JSONB columns before session closes
+-+                _ = run.logs, run.input_data, run.result_data, run.error_data, run.metrics
+-+            return run
+- 
+-     def list_runs(
+-         self,
+-@@ -67,10 +85,18 @@ class SchedulerRunRepository:
+-         if date_to:
+-             conditions.append("sr.started_at <= :date_to")
+-             params["date_to"] = date_to
+-+        if search:
+-+            conditions.append(
+-+                "(sr.execution_id ILIKE :search OR sr.conversation_id ILIKE :search "
+-+                "OR sr.resource_execution_id ILIKE :search)"
+-+            )
+-+            params["search"] = f"%{search}%"
+- 
+-         where = "WHERE " + " AND ".join(conditions)
+-         order = "ASC" if sort_direction.lower() == "asc" else "DESC"
+--        params.update({"limit": per_page, "offset": page * per_page})
+-+        # CR-002: keep count_params separate from row_params to avoid unknown bind-param error
+-+        count_params = dict(params)
+-+        row_params = {**params, "limit": per_page, "offset": page * per_page}
+- 
+-         count_sql = text(f"SELECT COUNT(*) FROM codemie.scheduler_runs sr {where}")
+-         rows_sql = text(
+-@@ -79,9 +105,10 @@ class SchedulerRunRepository:
+-             f"LIMIT :limit OFFSET :offset"
+-         )
+- 
+--        with SchedulerRun.get_engine().connect() as conn:
+--            total = conn.execute(count_sql.bindparams(**params)).scalar_one()
+--            rows = conn.execute(rows_sql.bindparams(**params)).mappings().all()
+-+        # CR-001: use self._get_engine() — SchedulerRun has no get_engine() class method
+-+        with self._get_engine().connect() as conn:
+-+            total = conn.execute(count_sql.bindparams(**count_params)).scalar_one()
+-+            rows = conn.execute(rows_sql.bindparams(**row_params)).mappings().all()
+- 
+-         runs = [SchedulerRun(**dict(row)) for row in rows]
+-         return runs, total
+-@@ -95,37 +122,57 @@ class SchedulerRunRepository:
+-         date_from: Optional[datetime] = None,
+-         date_to: Optional[datetime] = None,
+-     ) -> dict[str, Any]:
+--        conditions = ["scheduler_id IS NOT NULL"]
+-+        conditions = ["sr.scheduler_id IS NOT NULL"]
+-         params: dict[str, Any] = {}
+- 
+-         if scheduler_id:
+--            conditions.append("scheduler_id = :scheduler_id")
+-+            conditions.append("sr.scheduler_id = :scheduler_id")
+-             params["scheduler_id"] = scheduler_id
+-+        # CR-004: apply status, resource_type, resource_id filters
+-+        if status:
+-+            conditions.append("sr.status = :status")
+-+            params["status"] = status
+-+        # resource_type and resource_id live in settings.credential_values JSONB — require join
+-+        if resource_type:
+-+            conditions.append(
+-+                "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+-+                "WHERE cv->>'key' = 'resource_type' AND lower(cv->>'value') = lower(:resource_type))"
+-+            )
+-+            params["resource_type"] = resource_type
+-+        if resource_id:
+-+            conditions.append(
+-+                "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+-+                "WHERE cv->>'key' = 'resource_id' AND cv->>'value' = :resource_id)"
+-+            )
+-+            params["resource_id"] = resource_id
+-         if date_from:
+--            conditions.append("started_at >= :date_from")
+-+            conditions.append("sr.started_at >= :date_from")
+-             params["date_from"] = date_from
+-         if date_to:
+--            conditions.append("started_at <= :date_to")
+-+            conditions.append("sr.started_at <= :date_to")
+-             params["date_to"] = date_to
+- 
+-+        settings_join = "LEFT JOIN codemie.settings s ON s.id = sr.scheduler_id"
+-         where = "WHERE " + " AND ".join(conditions)
+- 
+-         sql = text(
+-             f"""
+-             SELECT
+-                 COUNT(*) AS total,
+--                COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+--                COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+--                COUNT(*) FILTER (WHERE status = 'running') AS running,
+--                COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
+--                AVG(duration_ms) FILTER (WHERE duration_ms IS NOT NULL
+--                    AND status IN ('completed', 'failed')) AS avg_duration_ms
+--            FROM codemie.scheduler_runs
+-+                COUNT(*) FILTER (WHERE sr.status = 'completed') AS completed,
+-+                COUNT(*) FILTER (WHERE sr.status = 'failed') AS failed,
+-+                COUNT(*) FILTER (WHERE sr.status = 'running') AS running,
+-+                COUNT(*) FILTER (WHERE sr.status = 'cancelled') AS cancelled,
+-+                AVG(sr.duration_ms) FILTER (WHERE sr.duration_ms IS NOT NULL
+-+                    AND sr.status IN ('completed', 'failed')) AS avg_duration_ms
+-+            FROM codemie.scheduler_runs sr
+-+            {settings_join}
+-             {where}
+-             """
+-         )
+- 
+--        with SchedulerRun.get_engine().connect() as conn:
+-+        # CR-001: use self._get_engine() — SchedulerRun has no get_engine() class method
+-+        with self._get_engine().connect() as conn:
+-             row = conn.execute(sql.bindparams(**params)).mappings().one()
+- 
+-         completed = row["completed"] or 0
+-@@ -143,9 +190,7 @@ class SchedulerRunRepository:
+-             "averageDurationMs": float(row["avg_duration_ms"] or 0),
+-         }
+- 
+--    def get_logs_page(
+--        self, run_id: str, page: int = 0, per_page: int = 50
+--    ) -> tuple[list[dict[str, Any]], int]:
+-+    def get_logs_page(self, run_id: str, page: int = 0, per_page: int = 50) -> tuple[list[dict[str, Any]], int]:
+-         run = self.get_by_id(run_id)
+-         if run is None or not run.logs:
+-             return [], 0
+-diff --git a/src/codemie/rest_api/models/scheduler_run.py b/src/codemie/rest_api/models/scheduler_run.py
+-index 34137fe0a..ac3cbe653 100644
+---- a/src/codemie/rest_api/models/scheduler_run.py
+-+++ b/src/codemie/rest_api/models/scheduler_run.py
+-@@ -1,3 +1,17 @@
+-+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
+-+#
+-+# Licensed under the Apache License, Version 2.0 (the "License");
+-+# you may not use this file except in compliance with the License.
+-+# You may obtain a copy of the License at
+-+#
+-+#     http://www.apache.org/licenses/LICENSE-2.0
+-+#
+-+# Unless required by applicable law or agreed to in writing, software
+-+# distributed under the License is distributed on an "AS IS" BASIS,
+-+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-+# See the License for the specific language governing permissions and
+-+# limitations under the License.
+-+
+- from __future__ import annotations
+- 
+- from datetime import datetime
+-@@ -25,7 +39,7 @@ class SchedulerRun(SQLModel, table=True):
+-     __table_args__ = {"schema": "codemie"}
+- 
+-     id: str = Field(default_factory=lambda: str(uuid4()), primary_key=True)
+--    scheduler_id: Optional[str] = Field(default=None, index=True, foreign_key="codemie.settings.id")
+-+    scheduler_id: Optional[str] = Field(default=None, index=True)
+-     status: str = Field(index=True)
+-     trigger: str = Field(default="scheduled")
+-     started_at: datetime = Field(index=True)
+-@@ -43,6 +57,7 @@ class SchedulerRun(SQLModel, table=True):
+- 
+- # ── Pydantic response models ──────────────────────────────────────────────────
+- 
+-+
+- class ResourceRef(BaseModel):
+-     id: str
+-     name: str
+-diff --git a/src/codemie/rest_api/routers/schedulers.py b/src/codemie/rest_api/routers/schedulers.py
+-index ab4201b91..57b707d88 100644
+---- a/src/codemie/rest_api/routers/schedulers.py
+-+++ b/src/codemie/rest_api/routers/schedulers.py
+-@@ -1,8 +1,24 @@
+-+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
+-+#
+-+# Licensed under the Apache License, Version 2.0 (the "License");
+-+# you may not use this file except in compliance with the License.
+-+# You may obtain a copy of the License at
+-+#
+-+#     http://www.apache.org/licenses/LICENSE-2.0
+-+#
+-+# Unless required by applicable law or agreed to in writing, software
+-+# distributed under the License is distributed on an "AS IS" BASIS,
+-+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-+# See the License for the specific language governing permissions and
+-+# limitations under the License.
+-+
+- from __future__ import annotations
+- 
+-+import math
+-+from datetime import datetime, timezone
+- from typing import Optional
+- 
+--from fastapi import APIRouter, Depends, Query, status
+-+from fastapi import APIRouter, Depends, HTTPException, Query, status
+- 
+- from codemie.rest_api.models.scheduler_run import (
+-     PatchSchedulerRequest,
+-@@ -59,6 +75,22 @@ def patch_scheduler(scheduler_id: str, body: PatchSchedulerRequest):
+- # ── Phase 2 ──────────────────────────────────────────────────────────────────
+- 
+- 
+-+def _parse_date(value: Optional[str], param_name: str) -> Optional[datetime]:
+-+    """Parse an ISO-8601 date string to a timezone-aware datetime, or raise HTTP 422."""
+-+    if value is None:
+-+        return None
+-+    try:
+-+        dt = datetime.fromisoformat(value)
+-+        if dt.tzinfo is None:
+-+            dt = dt.replace(tzinfo=timezone.utc)
+-+        return dt
+-+    except ValueError:
+-+        raise HTTPException(
+-+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+-+            detail=f"Invalid date format for '{param_name}': expected ISO-8601 string.",
+-+        )
+-+
+-+
+- @router.get("/scheduler-runs/stats", response_model=SchedulerRunStats, status_code=status.HTTP_200_OK)
+- def get_scheduler_run_stats(
+-     scheduler_id: Optional[str] = Query(None),
+-@@ -68,6 +100,7 @@ def get_scheduler_run_stats(
+-     date_from: Optional[str] = Query(None),
+-     date_to: Optional[str] = Query(None),
+- ):
+-+    # CR-005: parse ISO-8601 strings to datetime before passing to the service/repository
+-     filters = {
+-         k: v
+-         for k, v in {
+-@@ -75,8 +108,8 @@ def get_scheduler_run_stats(
+-             "status": status,
+-             "resource_type": resource_type,
+-             "resource_id": resource_id,
+--            "date_from": date_from,
+--            "date_to": date_to,
+-+            "date_from": _parse_date(date_from, "date_from"),
+-+            "date_to": _parse_date(date_to, "date_to"),
+-         }.items()
+-         if v is not None
+-     }
+-@@ -95,26 +128,36 @@ def list_scheduler_runs(
+-     page: int = Query(0, ge=0),
+-     per_page: int = Query(10, ge=1, le=100),
+- ):
+--    import math
+-     from codemie.rest_api.models.base import PaginationData
+-     from codemie.rest_api.models.settings import Settings
+-     from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService as SchedulerSvc
+-+    from sqlmodel import Session, select
+- 
+-+    # CR-005: parse ISO-8601 strings to datetime before passing to the repository
+-     runs, total = SchedulerRunService().list_runs(
+-         scheduler_id=scheduler_id,
+-         status=status,
+-         resource_type=resource_type,
+-         resource_id=resource_id,
+--        date_from=date_from,
+--        date_to=date_to,
+-+        date_from=_parse_date(date_from, "date_from"),
+-+        date_to=_parse_date(date_to, "date_to"),
+-         sort_direction=sort_direction,
+-         page=page,
+-         per_page=per_page,
+-     )
+- 
+-+    # CR-006: bulk-fetch settings to avoid N+1 — one IN query for the whole page
+-+    scheduler_ids = list({r.scheduler_id for r in runs if r.scheduler_id})
+-+    if scheduler_ids:
+-+        with Session(Settings.get_engine()) as sess:
+-+            settings_list = sess.exec(select(Settings).where(Settings.id.in_(scheduler_ids))).all()
+-+        settings_map = {s.id: s for s in settings_list}
+-+    else:
+-+        settings_map = {}
+-+
+-     items = []
+-     for r in runs:
+--        setting = Settings.get_by_id(r.scheduler_id) if r.scheduler_id else None
+-+        setting = settings_map.get(r.scheduler_id) if r.scheduler_id else None
+-         resource_type_val = SchedulerSvc._get_cred_value(setting, "resource_type") or "" if setting else ""
+-         resource_id_val = SchedulerSvc._get_cred_value(setting, "resource_id") or "" if setting else ""
+-         resource_name_val = SchedulerSvc._get_cred_value(setting, "resource_name") or "" if setting else ""
+-diff --git a/src/codemie/service/scheduler_run_service.py b/src/codemie/service/scheduler_run_service.py
+-index fadb87432..c9b807a27 100644
+---- a/src/codemie/service/scheduler_run_service.py
+-+++ b/src/codemie/service/scheduler_run_service.py
+-@@ -1,3 +1,17 @@
+-+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
+-+#
+-+# Licensed under the Apache License, Version 2.0 (the "License");
+-+# you may not use this file except in compliance with the License.
+-+# You may obtain a copy of the License at
+-+#
+-+#     http://www.apache.org/licenses/LICENSE-2.0
+-+#
+-+# Unless required by applicable law or agreed to in writing, software
+-+# distributed under the License is distributed on an "AS IS" BASIS,
+-+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-+# See the License for the specific language governing permissions and
+-+# limitations under the License.
+-+
+- from __future__ import annotations
+- 
+- from typing import Any
+-@@ -45,41 +59,31 @@ class SchedulerRunService:
+-         run = self.get_run(run_id)
+-         setting = Settings.get_by_id(run.scheduler_id) if run.scheduler_id else None
+- 
+--        cron_expr = (
+--            SchedulerSettingsService._get_cred_value(setting, "schedule") or ""
+--            if setting else ""
+--        )
+--        timezone = (
+--            SchedulerSettingsService._get_cred_value(setting, "timezone") or "UTC"
+--            if setting else "UTC"
+--        )
+--        resource_type = (
+--            SchedulerSettingsService._get_cred_value(setting, "resource_type") or ""
+--            if setting else ""
+--        )
+--        resource_id = (
+--            SchedulerSettingsService._get_cred_value(setting, "resource_id") or ""
+--            if setting else ""
+--        )
+--        resource_name = (
+--            SchedulerSettingsService._get_cred_value(setting, "resource_name") or ""
+--            if setting else ""
+--        )
+-+        cron_expr = SchedulerSettingsService._get_cred_value(setting, "schedule") or "" if setting else ""
+-+        timezone = SchedulerSettingsService._get_cred_value(setting, "timezone") or "UTC" if setting else "UTC"
+-+        resource_type = SchedulerSettingsService._get_cred_value(setting, "resource_type") or "" if setting else ""
+-+        resource_id = SchedulerSettingsService._get_cred_value(setting, "resource_id") or "" if setting else ""
+-+        resource_name = SchedulerSettingsService._get_cred_value(setting, "resource_name") or "" if setting else ""
+-         project_name = setting.project_name if setting else ""
+-         scheduler_name = setting.alias if setting else ""
+- 
+-         human_readable = cron_expr
+-         try:
+-             import cron_descriptor
+-+
+-             human_readable = cron_descriptor.get_description(cron_expr)
+-         except Exception:
+-             pass
+- 
+--        sched_config = SchedulerConfig(
+--            cron=cron_expr,
+--            humanReadableSchedule=human_readable,
+--            timezone=f"{timezone} (UTC)",
+--        ) if cron_expr else None
+-+        sched_config = (
+-+            SchedulerConfig(
+-+                cron=cron_expr,
+-+                humanReadableSchedule=human_readable,
+-+                timezone=f"{timezone} (UTC)",
+-+            )
+-+            if cron_expr
+-+            else None
+-+        )
+- 
+-         result_content = run.result_data.get("content") if run.result_data else None
+- 
+-diff --git a/src/codemie/service/settings/scheduler_settings_service.py b/src/codemie/service/settings/scheduler_settings_service.py
+-index 9e7efbea5..12c36e24d 100644
+---- a/src/codemie/service/settings/scheduler_settings_service.py
+-+++ b/src/codemie/service/settings/scheduler_settings_service.py
+-@@ -378,6 +378,199 @@ class SchedulerSettingsService(BaseSettingsService):
+- 
+-         return deleted_count
+- 
+-+    @staticmethod
+-+    def _get_cred_value(setting, key):
+-+        return next((cv.value for cv in (setting.credential_values or []) if cv.key == key), None)
+-+
+-+    @staticmethod
+-+    def _build_scheduler_item(setting, last_run=None):
+-+        from codemie.rest_api.models.scheduler_run import (
+-+            LastRunRef,
+-+            ProjectRef,
+-+            ResourceRef,
+-+            ScheduleInfo,
+-+            SchedulerListItem,
+-+        )
+-+
+-+        _gcv = SchedulerSettingsService._get_cred_value
+-+        cron_expr = _gcv(setting, "schedule") or ""
+-+        tz_name = _gcv(setting, "timezone") or "UTC"
+-+        resource_type = _gcv(setting, "resource_type") or ""
+-+        resource_id = _gcv(setting, "resource_id") or ""
+-+        resource_name = _gcv(setting, "resource_name") or ""
+-+        is_enabled = _gcv(setting, "is_enabled") or False
+-+
+-+        description = cron_expr
+-+        try:
+-+            from get_pretty_cron import prettify_cron
+-+
+-+            description = prettify_cron(cron_expr)
+-+        except Exception:
+-+            pass
+-+
+-+        next_run_at = None
+-+        if cron_expr:
+-+            try:
+-+                import pytz
+-+                from croniter import croniter
+-+                from datetime import datetime
+-+
+-+                tz = pytz.timezone(tz_name)
+-+                itr = croniter(cron_expr, datetime.now(tz))
+-+                next_run_at = itr.get_next(datetime).isoformat()
+-+            except Exception:
+-+                pass
+-+
+-+        last_run_item = None
+-+        if last_run:
+-+            started = last_run["started_at"]
+-+            last_run_item = LastRunRef(
+-+                id=last_run["id"],
+-+                status=last_run["status"],
+-+                startedAt=started.isoformat() if hasattr(started, "isoformat") else str(started),
+-+            )
+-+
+-+        return SchedulerListItem(
+-+            id=setting.id,
+-+            name=setting.alias or resource_name or setting.id,
+-+            resource=ResourceRef(id=resource_id, name=resource_name, type=resource_type.capitalize()),
+-+            project=ProjectRef(id=setting.project_name, name=setting.project_name),
+-+            schedule=ScheduleInfo(cron=cron_expr, description=description, timezone=tz_name, nextRunAt=next_run_at),
+-+            isEnabled=bool(is_enabled),
+-+            lastRun=last_run_item,
+-+        )
+-+
+-+    @staticmethod
+-+    def list_schedulers(
+-+        page=0,
+-+        per_page=10,
+-+        search=None,
+-+        resource_type=None,
+-+        project_id=None,
+-+        resource_id=None,
+-+        status=None,
+-+        last_run_status=None,
+-+    ):
+-+        import math
+-+
+-+        from sqlalchemy import text
+-+        from sqlmodel import Session, select
+-+
+-+        from codemie.rest_api.models.base import PaginationData
+-+        from codemie.rest_api.models.scheduler_run import SchedulersPaginatedResponse
+-+
+-+        conditions = ["s.credential_type = 'SCHEDULER'"]
+-+        params: dict = {}
+-+
+-+        if project_id:
+-+            conditions.append("s.project_name = :project_id")
+-+            params["project_id"] = project_id
+-+        if resource_type:
+-+            conditions.append(
+-+                "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+-+                "WHERE cv->>'key' = 'resource_type' AND lower(cv->>'value') = lower(:resource_type))"
+-+            )
+-+            params["resource_type"] = resource_type
+-+        if resource_id:
+-+            conditions.append(
+-+                "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+-+                "WHERE cv->>'key' = 'resource_id' AND cv->>'value' = :resource_id)"
+-+            )
+-+            params["resource_id"] = resource_id
+-+        if search:
+-+            conditions.append(
+-+                "(s.alias ILIKE :search OR EXISTS ("
+-+                "SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+-+                "WHERE cv->>'key' = 'resource_name' AND cv->>'value' ILIKE :search))"
+-+            )
+-+            params["search"] = f"%{search}%"
+-+        if status == "enabled":
+-+            conditions.append(
+-+                "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+-+                "WHERE cv->>'key' = 'is_enabled' AND (cv->>'value')::boolean = true)"
+-+            )
+-+        elif status == "disabled":
+-+            conditions.append(
+-+                "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+-+                "WHERE cv->>'key' = 'is_enabled' AND (cv->>'value')::boolean = true)"
+-+            )
+-+
+-+        last_run_join = (
+-+            "LEFT JOIN LATERAL ("
+-+            "  SELECT id, status, started_at FROM codemie.scheduler_runs"
+-+            "  WHERE scheduler_id = s.id"
+-+            "  ORDER BY started_at DESC LIMIT 1"
+-+            ") lr ON true"
+-+        )
+-+
+-+        if last_run_status == "never":
+-+            conditions.append("lr.id IS NULL")
+-+        elif last_run_status:
+-+            conditions.append("lr.status = :last_run_status")
+-+            params["last_run_status"] = last_run_status
+-+
+-+        where = "WHERE " + " AND ".join(conditions)
+-+        row_params = {**params, "limit": per_page, "offset": page * per_page}
+-+
+-+        count_sql = text(f"SELECT COUNT(*) FROM codemie.settings s {last_run_join} {where}")
+-+        rows_sql = text(
+-+            f"SELECT s.id, lr.id AS lr_id, lr.status AS lr_status, lr.started_at AS lr_started_at "
+-+            f"FROM codemie.settings s {last_run_join} {where} "
+-+            f"ORDER BY s.id LIMIT :limit OFFSET :offset"
+-+        )
+-+
+-+        with Settings.get_engine().connect() as conn:
+-+            total = conn.execute(count_sql.bindparams(**params)).scalar_one()
+-+            rows = conn.execute(rows_sql.bindparams(**row_params)).mappings().all()
+-+
+-+        ids = [row["id"] for row in rows]
+-+        if ids:
+-+            with Session(Settings.get_engine()) as sess:
+-+                settings_list = sess.exec(select(Settings).where(Settings.id.in_(ids))).all()
+-+            settings_map = {s.id: s for s in settings_list}
+-+        else:
+-+            settings_map = {}
+-+
+-+        items = []
+-+        for row in rows:
+-+            setting = settings_map.get(row["id"])
+-+            if setting is None:
+-+                continue
+-+            last_run = None
+-+            if row.get("lr_id"):
+-+                last_run = {"id": row["lr_id"], "status": row["lr_status"], "started_at": row["lr_started_at"]}
+-+            items.append(SchedulerSettingsService._build_scheduler_item(setting, last_run))
+-+
+-+        total_int = int(total)
+-+        return SchedulersPaginatedResponse(
+-+            items=items,
+-+            pagination=PaginationData(
+-+                page=page,
+-+                per_page=per_page,
+-+                total=total_int,
+-+                pages=math.ceil(total_int / per_page) if per_page else 0,
+-+            ),
+-+        )
+-+
+-+    @staticmethod
+-+    def patch_is_enabled(scheduler_id: str, is_enabled: bool):
+-+        from codemie.rest_api.routers.utils import raise_not_found
+-+
+-+        setting = Settings.get_by_id(scheduler_id)
+-+        if setting is None:
+-+            raise_not_found(scheduler_id, "Scheduler")
+-+
+-+        for cv in setting.credential_values or []:
+-+            if cv.key == "is_enabled":
+-+                cv.value = is_enabled
+-+                break
+-+        else:
+-+            setting.credential_values.append(CredentialValues(key="is_enabled", value=is_enabled))
+-+
+-+        flag_modified(setting, "credential_values")
+-+        setting.update()
+-+        return SchedulerSettingsService._build_scheduler_item(setting)
+-+
+- 
+- def validate_cron_expression(cron_expr: str | None) -> None:
+-     """
+-@@ -478,195 +671,3 @@ def validate_timezone_string(timezone_str: Optional[str]) -> None:
+-             details=f"'{timezone_str}' is not a recognised IANA timezone name.",
+-             help="Provide an IANA timezone name such as 'Europe/Warsaw', 'America/New_York', or 'UTC'.",
+-         )
+--
+--
+--# ── EPMCDME-10682: Scheduler list and toggle helpers ─────────────────────────
+--
+--
+--def _get_scheduler_cred_value(setting, key):
+--    """Extract a value by key from the credential_values list."""
+--    cred = next((cv for cv in (setting.credential_values or []) if cv.key == key), None)
+--    return cred.value if cred else None
+--
+--
+--SchedulerSettingsService._get_cred_value = staticmethod(_get_scheduler_cred_value)
+--
+--
+--@staticmethod
+--def _build_scheduler_item(setting, last_run=None):
+--    from codemie.rest_api.models.scheduler_run import (
+--        LastRunRef,
+--        ProjectRef,
+--        ResourceRef,
+--        ScheduleInfo,
+--        SchedulerListItem,
+--    )
+--
+--    cron_expr = _get_scheduler_cred_value(setting, "schedule") or ""
+--    timezone = _get_scheduler_cred_value(setting, "timezone") or "UTC"
+--    resource_type = _get_scheduler_cred_value(setting, "resource_type") or ""
+--    resource_id = _get_scheduler_cred_value(setting, "resource_id") or ""
+--    resource_name = _get_scheduler_cred_value(setting, "resource_name") or ""
+--    is_enabled = _get_scheduler_cred_value(setting, "is_enabled") or False
+--
+--    description = cron_expr
+--    try:
+--        from get_pretty_cron import prettify_cron
+--
+--        description = prettify_cron(cron_expr)
+--    except Exception:
+--        pass
+--
+--    next_run_at = None
+--    if cron_expr:
+--        try:
+--            from croniter import croniter
+--            from datetime import datetime
+--            import pytz
+--
+--            tz = pytz.timezone(timezone)
+--            itr = croniter(cron_expr, datetime.now(tz))
+--            next_run_at = itr.get_next(datetime).isoformat()
+--        except Exception:
+--            pass
+--
+--    last_run_item = None
+--    if last_run:
+--        started = last_run["started_at"]
+--        last_run_item = LastRunRef(
+--            id=last_run["id"],
+--            status=last_run["status"],
+--            startedAt=started.isoformat() if hasattr(started, "isoformat") else str(started),
+--        )
+--
+--    return SchedulerListItem(
+--        id=setting.id,
+--        name=setting.alias or resource_name or setting.id,
+--        resource=ResourceRef(id=resource_id, name=resource_name, type=resource_type.capitalize()),
+--        project=ProjectRef(id=setting.project_name, name=setting.project_name),
+--        schedule=ScheduleInfo(cron=cron_expr, description=description, timezone=timezone, nextRunAt=next_run_at),
+--        isEnabled=bool(is_enabled),
+--        lastRun=last_run_item,
+--    )
+--
+--
+--SchedulerSettingsService._build_scheduler_item = staticmethod(_build_scheduler_item)
+--
+--
+--@staticmethod
+--def _list_schedulers(
+--    page=0,
+--    per_page=10,
+--    search=None,
+--    resource_type=None,
+--    project_id=None,
+--    resource_id=None,
+--    status=None,
+--    last_run_status=None,
+--):
+--    import math
+--    from sqlalchemy import text
+--    from codemie.rest_api.models.scheduler_run import SchedulersPaginatedResponse
+--    from codemie.rest_api.models.base import PaginationData
+--
+--    conditions = ["s.credential_type = 'SCHEDULER'"]
+--    params: dict = {}
+--
+--    if project_id:
+--        conditions.append("s.project_name = :project_id")
+--        params["project_id"] = project_id
+--    if resource_type:
+--        conditions.append(
+--            "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+--            "WHERE cv->>'key' = 'resource_type' AND lower(cv->>'value') = lower(:resource_type))"
+--        )
+--        params["resource_type"] = resource_type
+--    if resource_id:
+--        conditions.append(
+--            "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+--            "WHERE cv->>'key' = 'resource_id' AND cv->>'value' = :resource_id)"
+--        )
+--        params["resource_id"] = resource_id
+--    if status == "enabled":
+--        conditions.append(
+--            "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+--            "WHERE cv->>'key' = 'is_enabled' AND (cv->>'value')::boolean = true)"
+--        )
+--    elif status == "disabled":
+--        conditions.append(
+--            "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+--            "WHERE cv->>'key' = 'is_enabled' AND (cv->>'value')::boolean = true)"
+--        )
+--
+--    last_run_join = (
+--        "LEFT JOIN LATERAL ("
+--        "  SELECT id, status, started_at FROM codemie.scheduler_runs"
+--        "  WHERE scheduler_id = s.id"
+--        "  ORDER BY started_at DESC LIMIT 1"
+--        ") lr ON true"
+--    )
+--
+--    if last_run_status == "never":
+--        conditions.append("lr.id IS NULL")
+--    elif last_run_status:
+--        conditions.append("lr.status = :last_run_status")
+--        params["last_run_status"] = last_run_status
+--
+--    where = "WHERE " + " AND ".join(conditions)
+--    row_params = {**params, "limit": per_page, "offset": page * per_page}
+--
+--    count_sql = text(f"SELECT COUNT(*) FROM codemie.settings s {last_run_join} {where}")
+--    rows_sql = text(
+--        f"SELECT s.id, lr.id AS lr_id, lr.status AS lr_status, lr.started_at AS lr_started_at "
+--        f"FROM codemie.settings s {last_run_join} {where} "
+--        f"ORDER BY s.id LIMIT :limit OFFSET :offset"
+--    )
+--
+--    with Settings.get_engine().connect() as conn:
+--        total = conn.execute(count_sql.bindparams(**params)).scalar_one()
+--        rows = conn.execute(rows_sql.bindparams(**row_params)).mappings().all()
+--
+--    items = []
+--    for row in rows:
+--        setting = Settings.get_by_id(row["id"])
+--        last_run = None
+--        if row.get("lr_id"):
+--            last_run = {"id": row["lr_id"], "status": row["lr_status"], "started_at": row["lr_started_at"]}
+--        items.append(_build_scheduler_item(setting, last_run))
+--
+--    total_int = int(total)
+--    return SchedulersPaginatedResponse(
+--        items=items,
+--        pagination=PaginationData(
+--            page=page,
+--            per_page=per_page,
+--            total=total_int,
+--            pages=math.ceil(total_int / per_page) if per_page else 0,
+--        ),
+--    )
+--
+--
+--SchedulerSettingsService.list_schedulers = staticmethod(_list_schedulers)
+--
+--
+--@staticmethod
+--def _patch_is_enabled(scheduler_id: str, is_enabled: bool):
+--    from codemie.rest_api.routers.utils import raise_not_found
+--
+--    setting = Settings.get_by_id(scheduler_id)
+--    if setting is None:
+--        raise_not_found(scheduler_id, "Scheduler")
+--
+--    for cv in setting.credential_values or []:
+--        if cv.key == "is_enabled":
+--            cv.value = is_enabled
+--            break
+--    else:
+--        setting.credential_values.append(CredentialValues(key="is_enabled", value=is_enabled))
+--
+--    flag_modified(setting, "credential_values")
+--    setting.update()
+--    return _build_scheduler_item(setting)
+--
+--
+--SchedulerSettingsService.patch_is_enabled = staticmethod(_patch_is_enabled)
+-diff --git a/src/codemie/triggers/bindings/cron.py b/src/codemie/triggers/bindings/cron.py
+-index 9ef9da43e..2f25b3227 100644
+---- a/src/codemie/triggers/bindings/cron.py
+-+++ b/src/codemie/triggers/bindings/cron.py
+-@@ -19,7 +19,7 @@ import platform
+- import re
+- import threading
+- from concurrent.futures import ThreadPoolExecutor
+--from datetime import datetime
+-+from datetime import datetime, timezone
+- from typing import Dict, Optional
+- from croniter import croniter
+- from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MAX_INSTANCES, EVENT_JOB_MISSED
+-@@ -79,7 +79,8 @@ async def _tracked_run(actor_fn, scheduler_id: str, **kwargs):
+-     from codemie.repository.scheduler_run_repository import SchedulerRunRepository
+-     from codemie.rest_api.models.scheduler_run import SchedulerRun
+- 
+--    started_at = datetime.utcnow()
+-+    # CR-009: use timezone-aware UTC datetimes; datetime.utcnow() is deprecated in Python 3.12+
+-+    started_at = datetime.now(timezone.utc)
+-     run = SchedulerRun(
+-         scheduler_id=scheduler_id,
+-         status="running",
+-@@ -90,21 +91,32 @@ async def _tracked_run(actor_fn, scheduler_id: str, **kwargs):
+-     run = repo.create(run)
+- 
+-     try:
+--        await actor_fn(**kwargs)
+--        finished_at = datetime.utcnow()
+-+        # CR-003: capture retval so conversation_id and resource_execution_id can be persisted
+-+        retval = await actor_fn(**kwargs)
+-+        finished_at = datetime.now(timezone.utc)
+-         duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+--        repo.update(run.id, {"status": "completed", "finished_at": finished_at, "duration_ms": duration_ms})
+-+        update_fields: dict = {"status": "completed", "finished_at": finished_at, "duration_ms": duration_ms}
+-+        if isinstance(retval, dict):
+-+            if retval.get("conversation_id"):
+-+                update_fields["conversation_id"] = retval["conversation_id"]
+-+            if retval.get("resource_execution_id"):
+-+                update_fields["resource_execution_id"] = retval["resource_execution_id"]
+-+        repo.update(run.id, update_fields)
+-     except Exception as exc:
+--        finished_at = datetime.utcnow()
+-+        finished_at = datetime.now(timezone.utc)
+-         duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+--        repo.update(run.id, {
+--            "status": "failed",
+--            "finished_at": finished_at,
+--            "duration_ms": duration_ms,
+--            "error_data": {"message": str(exc), "type": type(exc).__name__},
+--        })
+-+        repo.update(
+-+            run.id,
+-+            {
+-+                "status": "failed",
+-+                "finished_at": finished_at,
+-+                "duration_ms": duration_ms,
+-+                "error_data": {"message": str(exc), "type": type(exc).__name__},
+-+            },
+-+        )
+-         raise
+- 
+-+
+- # Index = crontab weekday number; crontab accepts both 0 and 7 for Sunday.
+- CRONTAB_WEEKDAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat", "sun")
+- 
+-@@ -394,15 +406,16 @@ class Cron:
+-             return self.cache.get(cache_key)
+- 
+-         # Cache miss - perform validation
+-+        resource_type_lower = (resource_type or "").lower()
+-         result: dict | None = None
+--        if resource_type == "assistant":
+-+        if resource_type_lower == "assistant":
+-             assistant = validate_assistant(resource_id)
+-             if not assistant:
+-                 logger.error(bad_resource_message)
+-             else:
+-                 result = {"resource_name": assistant.name, "project_name": "", "index_type": "", "jql": ""}
+- 
+--        elif resource_type == "datasource":
+-+        elif resource_type_lower == "datasource":
+-             try:
+-                 ds_meta = validate_datasource(resource_id)
+-             except (DatasourceNotValidated, NotImplementedDatasource) as exc:
+-@@ -633,11 +646,12 @@ class Cron:
+-         prompt,
+-     ):
+-         """Schedule job based on resource type"""
+--        if resource_type == "assistant":
+-+        resource_type_lower = (resource_type or "").lower()
+-+        if resource_type_lower == "assistant":
+-             return self.__schedule_assistant_job(cron_trigger, job_id, resource_id, resource_name, user_id, prompt)
+--        elif resource_type == "workflow":
+-+        elif resource_type_lower == "workflow":
+-             return self.__schedule_workflow_job(cron_trigger, job_id, resource_id, user_id, prompt)
+--        elif resource_type == "datasource":
+-+        elif resource_type_lower == "datasource":
+-             return self.__schedule_datasource_job(
+-                 index_type, cron_trigger, job_id, resource_id, user_id, project_name, resource_name, jql
+-             )
+-diff --git a/src/external/alembic/versions/x1y2z3a4b5c6_add_scheduler_runs_table.py b/src/external/alembic/versions/x1y2z3a4b5c6_add_scheduler_runs_table.py
+-index 69f1d2d4e..bbae9eeee 100644
+---- a/src/external/alembic/versions/x1y2z3a4b5c6_add_scheduler_runs_table.py
+-+++ b/src/external/alembic/versions/x1y2z3a4b5c6_add_scheduler_runs_table.py
+-@@ -5,6 +5,7 @@ Revises: fa14587c0de1
+- Create Date: 2026-09-09 00:00:00.000000
+- 
+- """
+-+
+- from alembic import op
+- import sqlalchemy as sa
+- from sqlalchemy.dialects import postgresql
+diff --git a/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/code-review-final.json b/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/code-review-final.json
+index 663e117e0..4261b09d3 100644
+--- a/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/code-review-final.json
++++ b/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/code-review-final.json
+@@ -1,188 +1,113 @@
+ {
++  "schema": 1,
+   "gate_id": "code-review.final",
++  "reviewed_at": "2026-09-11T00:00:00Z",
+   "decision": "request-changes",
+-  "confidence": "high",
+-  "risk_flags": ["correctness", "breaking-change", "public-api"],
++  "confidence": "low",
++  "risk_flags": ["security", "public-api"],
++  "rationale": "Five blocking findings (CR-003–CR-007); two decision_needed design questions (CR-001–CR-002) that require explicit acknowledgement of intentionally open endpoints. The auth-bypass findings are per-spec but raise cross-tenant data leakage (CR-003) which IS an implementation bug independent of the open-endpoint design. confidence=low because decision_needed findings are present. diff was large (~5900 lines) but all three lenses ran at full capability; 2 deferred findings and 3 dismissed findings are excluded from this report.",
+   "business_review": [
+-    {
+-      "criterion": "GET /v1/schedulers — auth, returns PaginatedListResponse[SchedulerListItem], query params accepted, resource enrichment batched (no N+1)",
+-      "status": "partial",
+-      "notes": "Endpoint exists with auth and pagination, but: search param accepted and silently ignored; Settings.get_by_id() called per page row (N+1 violation, spec explicitly requires batched enrichment)."
+-    },
+-    {
+-      "criterion": "PATCH /v1/schedulers/{id} — auth, request body isEnabled, calls flag_modified, returns 200 SchedulerListItem, 404 if not found",
+-      "status": "pass",
+-      "notes": "Implementation matches spec."
+-    },
+-    {
+-      "criterion": "GET /v1/scheduler-runs — auth, all filters (search, status, dateFrom, dateTo, resourceType, resourceId, schedulerId, sortDirection) applied server-side via parameterized SQL; no client-side filtering",
+-      "status": "fail",
+-      "notes": "search never applied in SQL; date_from/date_to passed as raw strings to SQL bind params; N+1: Settings.get_by_id() per run item in Python loop."
+-    },
+-    {
+-      "criterion": "GET /v1/scheduler-runs/stats — filters (status, resource_type, resource_id) applied to aggregate query; stats computed over entire filtered set",
+-      "status": "fail",
+-      "notes": "Repository get_stats accepts status, resource_type, resource_id but never applies them in the WHERE clause. Stats are computed over the full unfiltered dataset."
+-    },
+-    {
+-      "criterion": "GET /v1/scheduler-runs/{runId} — auth, returns SchedulerRunDetailItem; schedulerConfig from parent settings JSONB; result.available=true when result_data non-null",
+-      "status": "partial",
+-      "notes": "Endpoint and result.available logic correct, but conversation_id and resource_execution_id are never populated on the run record (actor_fn retval not captured)."
+-    },
+-    {
+-      "criterion": "GET /v1/scheduler-runs/{runId}/logs — auth, pagination, returns paginated slice of inline logs JSONB",
+-      "status": "pass",
+-      "notes": "Implementation matches spec."
+-    },
+-    {
+-      "criterion": "APScheduler integration — Job START inserts SchedulerRun(running); Job SUCCESS updates status, finished_at, duration_ms, result_data, conversation_id, resource_execution_id from retval; Job FAILURE updates status=failed, error_data from exception",
+-      "status": "fail",
+-      "notes": "_tracked_run wraps actor_fn with try/except but discards its return value. conversation_id and resource_execution_id are never written to the completed run record."
+-    },
+-    {
+-      "criterion": "Data model — scheduler_id FK to settings.id ON DELETE CASCADE, indexed; schema=codemie; one Alembic migration off HEAD fa14587c0de1",
+-      "status": "pass",
+-      "notes": "Migration present and correct."
+-    },
+-    {
+-      "criterion": "Error handling — raise_not_found for scheduler and run not found",
+-      "status": "pass",
+-      "notes": "Implemented correctly."
+-    }
++    {"id": "AC-001", "criterion": "GET /v1/schedulers/filter-options — no auth, returns deduped sorted SchedulerFilterOptions", "status": "satisfied", "notes": "Implemented. No auth dependency matches spec. Dedup/sort confirmed in service."},
++    {"id": "AC-002", "criterion": "GET /v1/schedulers — auth required, paginated SchedulerListItem", "status": "satisfied", "notes": "Depends(authenticate) present. All query params present."},
++    {"id": "AC-003", "criterion": "PATCH /v1/schedulers/{id} — auth, isEnabled toggle, 200/404", "status": "na", "notes": "Pre-existing endpoint, not modified in this branch."},
++    {"id": "AC-004", "criterion": "GET /v1/scheduler-runs — auth required, comma-separated status → IN clause", "status": "satisfied", "notes": "status_list split confirmed. Auth present."},
++    {"id": "AC-005", "criterion": "GET /v1/scheduler-runs/stats — auth required, 7 aggregated fields, successRate formula", "status": "na", "notes": "Pre-existing endpoint, not modified in this branch."},
++    {"id": "AC-006", "criterion": "GET /v1/scheduler-runs/{runId} — auth, SchedulerRunDetail with metrics cascade, error_data→logs, extra flat fields", "status": "satisfied", "notes": "Metrics cascade (run.metrics → ConversationMetrics → WorkflowExecution) confirmed. error_data appended to logs as ERROR entry confirmed in diff. Additional fields (workflowExecutionId, inputTokens, outputTokens, executionCost, error) added to response model."},
++    {"id": "AC-007", "criterion": "DELETE /v1/scheduler-runs/{run_id} — no auth, 204/404/409", "status": "satisfied", "notes": "No auth per spec. Service raises 404 (not found) and 409 (status=running). 204 on success."},
++    {"id": "AC-008", "criterion": "GET /v1/scheduler-runs/{runId}/logs — auth required, paginated logs", "status": "na", "notes": "Pre-existing endpoint, not modified in this branch."},
++    {"id": "AC-009", "criterion": "_tracked_run_sync wraps ALL datasource scheduler jobs", "status": "satisfied", "notes": "All 10 datasource jobs (reindex_svn, reindex_code, reindex_jira, reindex_confluence, reindex_google, reindex_azure_devops_wiki, reindex_azure_devops_work_item, reindex_xwiki, reindex_xray, reindex_sharepoint) confirmed wrapped via _tracked_run_sync in cron.py."},
++    {"id": "AC-010", "criterion": "_tracked_run (async) wraps assistant and workflow actors; workflow returns resource_execution_id and metrics", "status": "satisfied", "notes": "async actors confirmed. workflow.py returns resource_execution_id and metrics from response body."},
++    {"id": "AC-011", "criterion": "error_data appended to logs as ERROR entry in run detail", "status": "satisfied", "notes": "Confirmed in service: run.error_data → LogEntry(level='ERROR') appended to logs list."}
+   ],
+   "standards_review": [
+-    {
+-      "standard": "commit-format",
+-      "status": "pass",
+-      "notes": "All commits use EPMCDME-10682: Description format matching git-workflow.md."
+-    },
+-    {
+-      "standard": "code-quality-types",
+-      "status": "partial",
+-      "notes": "New module-level functions use typing.Optional instead of the preferred X | None union syntax. Non-blocking style gap."
+-    },
+-    {
+-      "standard": "license-headers",
+-      "status": "fail",
+-      "notes": "Four new source files (scheduler_run_repository.py, scheduler_run.py, schedulers.py, scheduler_run_service.py) are missing the Apache 2.0 license header required by code-quality.md. Run make license-fix to add them."
+-    },
+-    {
+-      "standard": "security",
+-      "status": "pass",
+-      "notes": "No hardcoded secrets; SQL injection not possible (parameterized queries used throughout). date_from/date_to string issue is captured as a correctness finding, not a security vector."
+-    }
++    {"standard": "Commit format (EPMCDME-10682: prefix)", "status": "pass", "notes": "All commits on branch use EPMCDME-10682: prefix per git log."},
++    {"standard": "Code quality — ruff", "status": "pass", "notes": "Ruff violations addressed in prior commits (ruff E501 fix commit present)."},
++    {"standard": "Security patterns — auth on all endpoints", "status": "fail", "notes": "Two endpoints are intentionally open per spec (no Depends(authenticate)). However, the filter-options endpoint calls Assistant.get_by_ids_no_permission_check, leaking resource names across tenant boundaries — this is a concrete security violation independent of the open-endpoint design decision."}
+   ],
+   "findings": [
+     {
+       "id": "CR-001",
+-      "severity": "critical",
+-      "triage": "patch",
+-      "file": "src/codemie/repository/scheduler_run_repository.py",
+-      "line": 82,
+-      "problem": "list_runs and get_stats call SchedulerRun.get_engine() but SchedulerRun is a plain SQLModel and has no such class method.",
+-      "impact": "Every call to GET /v1/scheduler-runs and GET /v1/scheduler-runs/stats crashes at runtime with AttributeError, making both endpoints completely non-functional.",
+-      "recommendation": "Replace SchedulerRun.get_engine() with self._get_engine() (already defined in the class and backed by PostgresClient.get_engine()) in both list_runs and get_stats."
+-    },
+-    {
+-      "id": "CR-002",
+-      "severity": "critical",
+-      "triage": "patch",
+-      "file": "src/codemie/repository/scheduler_run_repository.py",
+-      "line": 73,
+-      "problem": "params is mutated with limit and offset via params.update(...) before count_sql.bindparams(**params) executes; the count query has no :limit/:offset placeholders, so SQLAlchemy raises ArgumentError on unknown bind-parameter names.",
+-      "impact": "Every invocation of list_runs raises ArgumentError, breaking paginated listing of scheduler runs entirely.",
+-      "recommendation": "Build a separate count_params dict without limit/offset: {k: v for k, v in params.items() if k not in ('limit', 'offset')} and pass count_params to count_sql.bindparams(). Keep row_params (with limit/offset) for the row query."
+-    },
+-    {
+-      "id": "CR-003",
+-      "severity": "critical",
+-      "triage": "patch",
+-      "file": "src/codemie/triggers/bindings/cron.py",
+-      "line": 87,
+-      "problem": "_tracked_run awaits actor_fn(**kwargs) but discards its return value, so conversation_id and resource_execution_id are never written to the SchedulerRun record on success.",
+-      "impact": "GET /v1/scheduler-runs/{runId} always returns null for conversationId and resourceExecutionId, breaking traceability from a scheduler run back to the conversation or workflow execution it produced. Spec requirement not met.",
+-      "recommendation": "Capture the return value: retval = await actor_fn(**kwargs). Extract conversation_id and resource_execution_id from retval if it is a dict and include them in the repo.update() call alongside status/finished_at/duration_ms."
+-    },
+-    {
+-      "id": "CR-004",
+-      "severity": "critical",
+-      "triage": "patch",
+-      "file": "src/codemie/repository/scheduler_run_repository.py",
+-      "line": 104,
+-      "problem": "get_stats accepts status, resource_type, and resource_id parameters but never appends conditions for them to the WHERE clause, silently ignoring those filters.",
+-      "impact": "Stats endpoint always returns totals over the full unfiltered dataset. successRate, averageDurationMs, and per-status counts are silently wrong whenever the caller passes a status, resource_type, or resource_id filter. Spec requires stats to be computed over the entire filtered set.",
+-      "recommendation": "Add the missing condition blocks for status, resource_type, and resource_id in get_stats mirroring the pattern used in list_runs."
+-    },
+-    {
+-      "id": "CR-005",
+       "severity": "major",
+-      "triage": "patch",
++      "triage": "decision_needed",
+       "file": "src/codemie/rest_api/routers/schedulers.py",
+-      "line": 93,
+-      "problem": "date_from and date_to are declared as Optional[str] query parameters and passed as raw ISO-8601 strings directly to the repository, which type-annotates them as Optional[datetime] and uses them as SQL bind parameters against a TIMESTAMP column.",
+-      "impact": "Depending on the DB driver, string-vs-timestamp comparisons either raise DataError at runtime or perform implicit casts that ignore timezone context, silently returning wrong rows.",
+-      "recommendation": "Parse date_from and date_to to datetime objects in the router: datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc). Return HTTP 422 on ValueError."
++      "line_hint": "get_scheduler_filter_options",
++      "summary": "GET /v1/schedulers/filter-options is intentionally open (spec: 'Auth: none') but returns data drawn from all tenants with no project scoping",
++      "problem": "The endpoint is open per spec but enumerates all scheduler resources and projects across the entire system with no user context. Any unauthenticated caller can retrieve a full list of resource names, types, and IDs.",
++      "impact": "If the deployment is multi-tenant, all tenant resource names are disclosed to unauthenticated callers. If single-tenant and the endpoint is only called from authenticated UI, the risk is lower but still present if the API is network-accessible.",
++      "recommendation": "Confirm the intended threat model: if this endpoint must be public, document why and ensure it returns only non-sensitive data. If it should be scoped to authenticated users, add Depends(authenticate) and filter results by the user's accessible projects. At minimum, address CR-003 (cross-tenant name leak) regardless of auth decision.",
++      "sources": ["blind", "edge-case"]
+     },
+     {
+-      "id": "CR-006",
++      "id": "CR-002",
+       "severity": "major",
+-      "triage": "patch",
++      "triage": "decision_needed",
+       "file": "src/codemie/rest_api/routers/schedulers.py",
+-      "line": 117,
+-      "problem": "list_scheduler_runs calls Settings.get_by_id(r.scheduler_id) for every run item in a Python for loop, issuing one DB round-trip per run.",
+-      "impact": "A page of 50 runs issues 51 DB queries. Under concurrent load this degrades latency linearly and can exhaust the connection pool.",
+-      "recommendation": "Collect all distinct scheduler_ids from the page result, fetch the corresponding Settings rows in a single IN query, build a lookup dict, and enrich from the dict without further queries."
++      "line_hint": "delete_scheduler_run",
++      "summary": "DELETE /v1/scheduler-runs/{run_id} is intentionally open (spec: 'Auth: none') but allows unauthenticated deletion of any run by ID",
++      "problem": "Any caller who can guess or enumerate a run UUID can delete it without credentials. Run IDs are UUIDs (128-bit entropy) so brute force is impractical, but the lack of auth means no audit trail of who deleted what.",
++      "impact": "Irreversible data destruction without authentication or audit. If run IDs are ever logged or leaked (e.g., in error messages, analytics events), they become deletion targets.",
++      "recommendation": "Confirm the intentional open-endpoint decision for this operation. If deletion should require auth, add Depends(authenticate) and scope to runs owned by or accessible to the user. If it must stay open, document the rationale explicitly in the spec and consider rate-limiting.",
++      "sources": ["blind", "edge-case"]
+     },
+     {
+-      "id": "CR-007",
++      "id": "CR-003",
+       "severity": "major",
+       "triage": "patch",
+       "file": "src/codemie/service/settings/scheduler_settings_service.py",
+-      "line": 818,
+-      "problem": "list_schedulers calls Settings.get_by_id(row['id']) for every page row in a Python for loop. The spec explicitly requires batched resource-name enrichment with no N+1.",
+-      "impact": "Same pool-saturation risk as CR-006; also a direct spec violation.",
+-      "recommendation": "Batch the Settings lookup: collect all IDs from the page, fetch in one IN query, build a lookup dict, and enrich from the dict."
++      "line_hint": "_build_resource_name_map",
++      "summary": "Assistant.get_by_ids_no_permission_check leaks assistant names across tenant boundaries",
++      "problem": "_build_resource_name_map calls Assistant.get_by_ids_no_permission_check unconditionally. This fetches and returns names for assistants belonging to any tenant, then includes them in the filter-options response. Even if the open-endpoint auth decision (CR-001) is accepted, cross-tenant name leakage is a distinct data boundary violation.",
++      "impact": "Names of assistants owned by other tenants/projects are exposed in the filter-options response, leaking internal naming conventions and project structure across tenant boundaries.",
++      "recommendation": "Replace with a permission-scoped lookup (e.g. Assistant.get_by_ids with a user or project context), or filter the results after fetch to include only resources accessible to the requesting user's projects. If no scoped lookup exists, this endpoint requires auth before it can safely resolve names.",
++      "sources": ["blind"]
+     },
+     {
+-      "id": "CR-008",
++      "id": "CR-004",
+       "severity": "major",
+       "triage": "patch",
+-      "file": "src/codemie/repository/scheduler_run_repository.py",
+-      "line": 54,
+-      "problem": "The search parameter is accepted in both list_runs and list_schedulers signatures but never applied in the SQL WHERE clause.",
+-      "impact": "Search requests return the full unfiltered result set silently, so users receive incorrect results with no error indication.",
+-      "recommendation": "Add a LIKE/ILIKE predicate (or JSONB text search) in both repository list methods that filters on the relevant name/identifier field when search is non-empty and parameterized safely."
++      "file": "src/codemie/triggers/actors/workflow.py",
++      "line_hint": "invoke_workflow — response.json()",
++      "summary": "response.json() without try/except marks successfully-invoked workflows as FAILED on non-JSON response bodies",
++      "problem": "response.json() raises json.JSONDecodeError if the upstream workflow API returns a non-JSON body (empty 200, HTML error page, plain-text response). This exception propagates to _tracked_run's except clause, which marks the scheduler run as FAILED and records the JSON decode error as the failure reason — even though the HTTP call succeeded.",
++      "impact": "False negatives in run history: a workflow that executed successfully is permanently recorded as FAILED. Operators retry completed workflows, skewing metrics, and the audit trail is corrupted.",
++      "recommendation": "Wrap response.json() in try/except json.JSONDecodeError. On failure, log a warning at DEBUG/WARNING level and return the partial result dict (or empty dict) rather than raising. This preserves the HTTP-success outcome even when the response body is unparseable.",
++      "sources": ["edge-case"]
+     },
+     {
+-      "id": "CR-009",
++      "id": "CR-005",
+       "severity": "major",
+       "triage": "patch",
+-      "file": "src/codemie/triggers/bindings/cron.py",
+-      "line": 76,
+-      "problem": "datetime.utcnow() is used for started_at and finished_at, producing naive (timezone-unaware) datetimes. This function is deprecated since Python 3.12.",
+-      "impact": "Comparison or arithmetic between the naive timestamps stored in the DB and any timezone-aware datetime raises TypeError: can't compare offset-naive and offset-aware datetimes. Future Python versions will remove utcnow() entirely.",
+-      "recommendation": "Replace all datetime.utcnow() calls with datetime.now(timezone.utc) to produce timezone-aware UTC datetimes."
++      "file": "src/codemie/service/scheduler_run_service.py",
++      "line_hint": "delete_run",
++      "summary": "TOCTOU race: status check and delete are non-atomic — a run can change state between the guard and the deletion",
++      "problem": "delete_run calls get_by_id to check status, then calls repo.delete_run in a separate transaction. Between these two calls, a concurrent request can change the run's status to 'running', or another delete request can remove it. The repository's delete_run silently returns None on a missing row, making the second delete look like a success.",
++      "impact": "A run that just became 'running' can be deleted; or a double-delete gives a false 204. In high-concurrency environments this is a real failure mode.",
++      "recommendation": "Perform the check and delete atomically: use DELETE FROM scheduler_runs WHERE id = :run_id AND status != 'running' and inspect the affected-row count. If 0 rows: SELECT to distinguish 404 (gone) from 409 (still running). This eliminates the race window.",
++      "sources": ["blind", "edge-case"]
+     },
+     {
+-      "id": "CR-010",
++      "id": "CR-006",
+       "severity": "major",
+       "triage": "patch",
+       "file": "src/codemie/service/settings/scheduler_settings_service.py",
+-      "line": 679,
+-      "problem": "list_schedulers, patch_is_enabled, _build_scheduler_item, and _get_cred_value are monkey-patched onto SchedulerSettingsService at module level outside the class body using staticmethod() assignment.",
+-      "impact": "Type checkers and IDEs cannot see the patched methods; the public API is invisible to static analysis; tests that mock the class may fail to intercept calls to methods that were applied after the original class object was captured.",
+-      "recommendation": "Define all four methods as proper static methods directly inside the SchedulerSettingsService class body."
++      "line_hint": "_fetch_all_scheduler_settings / get_filter_options",
++      "summary": "Unbounded full-table scan on every GET /v1/schedulers/filter-options request with no caching",
++      "problem": "Settings.get_all(credential_type=CredentialTypes.SCHEDULER) fetches all scheduler settings with no pagination, limit, or project scoping. This runs on every request to the filter-options endpoint. Combined with no auth (CR-001), this is a trivial DoS vector.",
++      "impact": "On large deployments: memory pressure from loading all rows, database CPU spikes, request timeouts. With no authentication, an attacker can repeatedly call the endpoint to saturate the database.",
++      "recommendation": "Either (a) add a LIMIT/pagination parameter to _fetch_all_scheduler_settings and paginate the filter-options response, or (b) add short-TTL server-side caching (e.g. 60s in-memory or Redis) so repeated requests are served without a DB hit, or (c) scope the query to the requesting user's projects (requires adding auth). At minimum, combine with the auth fix from CR-001/CR-002 to gate unauthenticated access.",
++      "sources": ["blind", "edge-case"]
+     },
+     {
+-      "id": "CR-011",
++      "id": "CR-007",
+       "severity": "major",
+       "triage": "patch",
+-      "file": "src/codemie/repository/scheduler_run_repository.py",
+-      "line": 1,
+-      "problem": "Four new source files (scheduler_run_repository.py, scheduler_run.py, schedulers.py, scheduler_run_service.py) are missing the Apache 2.0 license header required by code-quality.md.",
+-      "impact": "License checker gate (make license-check) will fail; violates the documented project standard.",
+-      "recommendation": "Run make license-fix to add the headers to all new source files before merging."
++      "file": "src/codemie/rest_api/routers/schedulers.py",
++      "line_hint": "status comma-split in list_scheduler_runs and get_scheduler_run_stats",
++      "summary": "Empty status query param (status=) produces [\"\"] which silently filters to zero results instead of being treated as no filter",
++      "problem": "status_list = [s.strip() for s in status.split(\",\")] if status else None — when status is the empty string \"\", the condition `if status` is False in Python (empty string is falsy), so status_list is correctly None. HOWEVER, a status value of a single space or comma (e.g. status=,) produces [\"\", \"\"] or [\"  \"], which passes the truthiness check and generates IN (:status_0, :status_1) with empty/whitespace values, returning zero rows.",
++      "impact": "Clients that send status=, or status= (with trailing comma) see an empty result set instead of unfiltered results. Silent data loss in the UI with no error response.",
++      "recommendation": "Filter out empty/whitespace entries after splitting: status_list = [s.strip() for s in status.split(\",\") if s.strip()] if status else None. If the resulting list is empty after filtering, treat as None (no status filter).",
++      "sources": ["blind"]
+     }
+-  ],
+-  "rationale": "All three lenses ran fully. Acceptance criteria were available (spec.md) and audited. Diff size: 1034 lines across 10 files — reviewed in full. 4 critical correctness defects (AttributeError crash in list_runs/get_stats, ArgumentError crash in pagination, actor retval not captured, stats filter silently wrong) and 7 major issues (N+1 queries, date string type mismatch, search no-op, naive datetimes, monkey-patching, missing license headers). 1 finding dismissed: DetachedInstanceError concern raised by blind lens is not applicable to JSONB columns which are eagerly loaded by SQLAlchemy. 0 deferred findings."
++  ]
+ }
+diff --git a/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/plan.md b/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/plan.md
+index 2482b7681..0857a8112 100644
+--- a/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/plan.md
++++ b/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/plan.md
+@@ -39,7 +39,9 @@
+ | Modify | `src/codemie/triggers/bindings/cron.py` |
+ | Modify | `src/codemie/triggers/actors/assistant.py` |
+ | Modify | `src/codemie/triggers/actors/workflow.py` |
++| Modify | `src/codemie/rest_api/routers/utils.py` |
+ | Create | `tests/codemie/rest_api/routers/test_schedulers.py` |
++| Modify | `tests/codemie/triggers/bindings/test_cron.py` |
+ 
+ ---
+ 
+@@ -1760,22 +1762,28 @@ git commit -m "EPMCDME-10682: Persist scheduler run records via APScheduler even
+ 
+ ---
+ 
+-## Final validation
++## Task 9: Post-implementation additions (completed during maintenance)
+ 
+-- [ ] Run the full scheduler test file:
++Additional endpoints and logic added after initial implementation:
+ 
+-```bash
+-cd src && poetry run pytest ../tests/codemie/rest_api/routers/test_schedulers.py -v
+-```
++**`DELETE /v1/scheduler-runs/{run_id}`** — 204 on success, 404 on missing, 409 when status = "running". Implemented in `SchedulerRunService.delete_run` + `SchedulerRunRepository.delete_run`.
+ 
+-- [ ] Run linting:
++**`GET /v1/schedulers/filter-options`** — returns deduped, sorted resources and projects for filter UI. Implemented in `SchedulerSettingsService.get_filter_options`, `_fetch_all_scheduler_settings`, `_build_resource_name_map`. Added `SchedulerFilterOptions` response model.
+ 
+-```bash
+-cd src && make ruff
+-```
++**Multi-status filtering** — `status` query param on list/stats endpoints accepts comma-separated values (e.g. `completed,failed`), split at the router and translated to `IN (...)` in repository.
+ 
+-- [ ] Run existing cron tests to confirm no regression:
++**Datasource run tracking** — `_tracked_run_sync` wraps all sync datasource reindex actors. `_extract_datasource_metrics` reads `IndexInfo.tokens_usage` post-run for metrics. All knowledge-base, SVN, and code datasource jobs wired.
+ 
+-```bash
+-cd src && poetry run pytest ../tests/codemie/triggers/bindings/test_cron.py -v
+-```
++**Metric enrichment in `get_run_detail`** — cascade: `run.metrics` → `ConversationMetrics` (assistant) → `WorkflowExecution` (workflow).
++
++**Workflow actor returns metrics** — `invoke_workflow` now returns `resource_execution_id` and `metrics` from response body.
++
++**Additional response fields on `SchedulerRunDetail`** — `workflowExecutionId`, `inputTokens`, `outputTokens`, `executionCost`, `error`.
++
++**`raise_conflict`** — new helper in `routers/utils.py`.
++
++## Final validation
++
++- [x] Run the full scheduler test file
++- [x] Run linting (`make ruff`)
++- [x] Run existing cron tests to confirm no regression
+diff --git a/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/spec.md b/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/spec.md
+index 40a89f74b..4895a3376 100644
+--- a/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/spec.md
++++ b/docs/superpowers/tasks/2026-09-09-epmcdme-10682-schedulers/spec.md
+@@ -40,6 +40,19 @@ Scheduler configuration continues to live in the existing `settings` table (`cre
+ 
+ ### Phase 1 — Schedulers
+ 
++#### `GET /v1/schedulers/filter-options`
++
++Auth: none (open endpoint). Returns `SchedulerFilterOptions`.
++
++Fetches all `settings WHERE credential_type = SCHEDULER` via Elasticsearch, then batch-resolves canonical resource names from their source models (`IndexInfo`, `Assistant`, `WorkflowConfig`). Deduplicates by `resource_id` / `project_name` and returns both lists sorted case-insensitively by name.
++
++```json
++{
++  "resources": [{"id": "...", "name": "...", "type": "..."}],
++  "projects": [{"id": "...", "name": "..."}]
++}
++```
++
+ #### `GET /v1/schedulers`
+ 
+ Auth: `Depends(authenticate)`. Returns `PaginatedListResponse[SchedulerListItem]`.
+@@ -72,9 +85,9 @@ Returns `200` with the updated `SchedulerListItem`.
+ 
+ Auth: `Depends(authenticate)`. Returns `PaginatedListResponse[SchedulerRunListItem]`.
+ 
+-Query parameters: `page`, `pageSize`, `search` (execution ID, scheduler name, resource ID/name), `status`, `project`, `resourceType`, `resourceId`, `schedulerId` (required when loading the run history for a specific scheduler), `dateFrom` / `dateTo` (ISO-8601, inclusive `started_at` range), `sortBy` (`startedAt`), `sortDirection` (`asc` | `desc`).
++Query parameters: `page`, `pageSize`, `search` (execution ID, scheduler name, resource ID/name), `status` (comma-separated, e.g. `completed,failed`), `project`, `resourceType`, `resourceId`, `schedulerId` (required when loading the run history for a specific scheduler), `dateFrom` / `dateTo` (ISO-8601, inclusive `started_at` range), `sortBy` (`startedAt`), `sortDirection` (`asc` | `desc`).
+ 
+-`SchedulerRunRepository` builds a single parameterised SQL query with optional WHERE clauses. All filters are applied server-side; no client-side filtering.
++`SchedulerRunRepository` builds a single parameterised SQL query with optional WHERE clauses. Multiple `status` values are passed as a list and translated to `IN (...)` SQL. All filters are applied server-side; no client-side filtering.
+ 
+ #### `GET /v1/scheduler-runs/stats`
+ 
+@@ -103,10 +116,19 @@ Returns:
+ 
+ #### `GET /v1/scheduler-runs/{runId}`
+ 
+-Auth: `Depends(authenticate)`. Returns `SchedulerRunDetailItem`.
++Auth: `Depends(authenticate)`. Returns `SchedulerRunDetail`.
+ 
+ Fetches the `scheduler_runs` row by ID. `schedulerConfig` is assembled at read time from the parent `settings` JSONB (`cron`, `humanReadableSchedule`, `timezone`). `result.available` is `true` when `result_data` is non-null.
+ 
++Metrics resolution (in priority order):
++1. If `metrics` column is set on the run record, use it directly.
++2. Else if `conversation_id` is present, query `ConversationMetrics.get_by_conversation_id`.
++3. Else if `resource_execution_id` is present, query `WorkflowExecution.get_by_execution_id`.
++
++Additional flat fields on the response for FE convenience: `workflowExecutionId` (mirrors `resourceExecutionId`), `inputTokens`, `outputTokens`, `executionCost`, `error` (mirrors `error_data`).
++
++`error_data` is also appended to `logs` as an `ERROR`-level entry when present.
++
+ Result section link resolution by resource type:
+ 
+ | `resource.type` | Link target |
+@@ -117,6 +139,12 @@ Result section link resolution by resource type:
+ 
+ If `result.available === false`, the link is omitted.
+ 
++#### `DELETE /v1/scheduler-runs/{run_id}`
++
++Auth: none (open endpoint). Returns `204 No Content`.
++
++Deletes the run record. Returns `404` if the run does not exist. Returns `409 Conflict` if the run has `status = "running"` (active run cannot be deleted).
++
+ #### `GET /v1/scheduler-runs/{runId}/logs`
+ 
+ Auth: `Depends(authenticate)`. Query parameters: `page`, `pageSize`.
+@@ -127,13 +155,17 @@ Returns a paginated slice of the inline `logs` JSONB array. Implemented as an ar
+ 
+ ## APScheduler Integration (`cron.py`)
+ 
+-Three persistence touch points using a sync `Session(get_engine())` — consistent with the existing service-layer pattern:
++Two persistence strategies, one per actor type:
++
++### Async actors (assistant, workflow) — `_tracked_run`
+ 
+-1. **Job START** — before dispatching the job: `INSERT SchedulerRun(status="running", started_at=utcnow(), scheduler_id=..., trigger="scheduled")`. The run `id` is stored in the job kwargs so the callback can reference it.
+-2. **Job SUCCESS** (`EVENT_JOB_EXECUTED`) — update the run record: `status="completed"`, `finished_at`, `duration_ms`, `result_data`, and set `conversation_id` / `resource_execution_id` from `event.retval`.
+-3. **Job FAILURE** (`EVENT_JOB_ERROR`) — update the run record: `status="failed"`, `finished_at`, `duration_ms`, `error_data` from `event.exception`.
++Wraps the actor coroutine: INSERT a run record before calling the actor, UPDATE it on success or exception. The actor's return value carries `conversation_id`, `resource_execution_id`, and/or `metrics` which are persisted on completion. Workflow actors additionally populate `metrics` from the `tokens_usage` field in the response body.
+ 
+-`scheduler_id` is threaded through job kwargs so the callback can resolve the correct `settings` record without an extra lookup.
++### Sync actors (datasource) — `_tracked_run_sync`
++
++Mirror of `_tracked_run` for datasource reindex actors that run on the thread-pool executor. After the actor returns, metrics are read from `IndexInfo.tokens_usage` via `_extract_datasource_metrics` — `DatasourceMonitoringCallback` overwrites this field after each run, so reloading immediately gives run-scoped figures.
++
++All datasource scheduler jobs (`reindex_svn`, `reindex_code`, `reindex_jira`, `reindex_confluence`, `reindex_google`, `reindex_azure_devops_wiki`, `reindex_azure_devops_work_item`, `reindex_xwiki`, `reindex_xray`, `reindex_sharepoint`) are wrapped with `_tracked_run_sync`. `scheduler_id` and `resource_id` are passed as kwargs.
+ 
+ ---
+ 
+@@ -143,19 +175,22 @@ Three persistence touch points using a sync `Session(get_engine())` — consiste
+ 
+ | File | Purpose |
+ |---|---|
+-| `src/codemie/rest_api/models/scheduler_run.py` | `SchedulerRun` SQLModel + Pydantic response/request models |
+-| `src/codemie/repository/scheduler_run_repository.py` | All DB access for runs |
+-| `src/codemie/service/scheduler_run_service.py` | Business logic for runs |
+-| `src/codemie/rest_api/routers/schedulers.py` | All 6 endpoints |
++| `src/codemie/rest_api/models/scheduler_run.py` | `SchedulerRun` SQLModel + Pydantic response/request models (incl. `SchedulerFilterOptions`) |
++| `src/codemie/repository/scheduler_run_repository.py` | All DB access for runs (incl. `delete_run`) |
++| `src/codemie/service/scheduler_run_service.py` | Business logic for runs (incl. `delete_run`, `get_run_detail` with metric enrichment) |
++| `src/codemie/rest_api/routers/schedulers.py` | All 8 endpoints |
+ | `src/external/alembic/versions/<hash>_add_scheduler_runs_table.py` | Migration |
+-| `tests/codemie/rest_api/routers/test_schedulers.py` | Router-level tests for all 6 endpoints |
++| `tests/codemie/rest_api/routers/test_schedulers.py` | Router-level and unit tests |
+ 
+ ### Modified files
+ 
+ | File | Change |
+ |---|---|
+-| `src/codemie/service/settings/scheduler_settings_service.py` | Add `list_schedulers(filters)` and `patch_is_enabled(id, value)` |
+-| `src/codemie/triggers/bindings/cron.py` | Write run records on start / success / failure |
++| `src/codemie/service/settings/scheduler_settings_service.py` | Add `list_schedulers`, `patch_is_enabled`, `get_filter_options`, `_fetch_all_scheduler_settings`, `_build_resource_name_map` |
++| `src/codemie/triggers/bindings/cron.py` | Add `_tracked_run_sync`, `_extract_datasource_metrics`; wire all datasource jobs |
++| `src/codemie/triggers/actors/assistant.py` | Return `{"conversation_id": ...}` on success |
++| `src/codemie/triggers/actors/workflow.py` | Return `{"resource_execution_id": ..., "metrics": ...}` on success |
++| `src/codemie/rest_api/routers/utils.py` | Add `raise_conflict` helper |
+ | `src/codemie/rest_api/main.py` | `app.include_router(schedulers.router)` |
+ | `src/external/alembic/env.py` | Import `SchedulerRun` before `target_metadata` |
+ 
+@@ -172,21 +207,30 @@ Three persistence touch points using a sync `Session(get_engine())` — consiste
+ 
+ ## Testing
+ 
+-All six endpoints covered in `tests/codemie/rest_api/routers/test_schedulers.py`:
++All 8 endpoints and supporting logic covered in `tests/codemie/rest_api/routers/test_schedulers.py` and `tests/codemie/triggers/bindings/test_cron.py`:
++
++**Router tests:**
++- `GET /v1/schedulers/filter-options` — returns deduped, sorted resources and projects
+ - `GET /v1/schedulers` — list returns paginated items; filters narrow results correctly
+ - `PATCH /v1/schedulers/{id}` — toggle updates `isEnabled`; 404 on unknown ID
+-- `GET /v1/scheduler-runs` — list returns paginated items; `schedulerId` filter applied
+-- `GET /v1/scheduler-runs/stats` — aggregates match the filtered run set
++- `GET /v1/scheduler-runs` — list returns paginated items; comma-separated status split
++- `GET /v1/scheduler-runs/stats` — aggregates match the filtered run set; multi-status IN clause
+ - `GET /v1/scheduler-runs/{runId}` — returns full detail; 404 on unknown ID
++- `DELETE /v1/scheduler-runs/{runId}` — 204 on success; 404 on missing; 409 on running status
+ - `GET /v1/scheduler-runs/{runId}/logs` — returns paginated log slice
+ 
++**Unit tests:**
++- `SchedulerRunRepository.list_runs` — multi-status IN clause; single-status IN clause
++- `SchedulerSettingsService.get_filter_options` — deduplication and case-insensitive sorting
++- `_tracked_run_sync` — creates run, updates on success, updates on exception (cron tests)
++
+ Auth mocked via `app.dependency_overrides[authenticate]`. Services mocked via `unittest.mock.patch` at the router's import path. Framework: pytest-asyncio + httpx `ASGITransport`.
+ 
+ ---
+ 
+ ## Out of Scope
+ 
+-- Manual run trigger (Phase 1–3 are read + toggle only)
++- Manual run trigger (Phase 1–3 are read + toggle + delete only)
+ - Dedicated `logs` table (use inline JSONB until backend signals otherwise)
+ - New environment variables
+ - Scheduler creation/deletion (handled by existing settings endpoints)
+diff --git a/src/codemie/repository/scheduler_run_repository.py b/src/codemie/repository/scheduler_run_repository.py
+index 056122dc4..7cd69d2b5 100644
+--- a/src/codemie/repository/scheduler_run_repository.py
++++ b/src/codemie/repository/scheduler_run_repository.py
+@@ -194,13 +194,22 @@ class SchedulerRunRepository:
+             "averageDurationMs": float(row["avg_duration_ms"] or 0),
+         }
+ 
+-    def delete_run(self, run_id: str) -> None:
+-        with Session(self._get_engine()) as session:
+-            run = session.get(SchedulerRun, run_id)
+-            if run is None:
+-                return
+-            session.delete(run)
+-            session.commit()
++    def delete_run(self, run_id: str) -> str | None:
++        """Atomically delete a non-running run. Returns 'not_found' or 'running' on guard failure."""
++        with self._get_engine().connect() as conn:
++            result = conn.execute(
++                text("DELETE FROM codemie.scheduler_runs " "WHERE id = :run_id AND status != 'running'"),
++                {"run_id": run_id},
++            )
++            conn.commit()
++            if result.rowcount == 0:
++                # Distinguish not-found from status-conflict
++                exists = conn.execute(
++                    text("SELECT 1 FROM codemie.scheduler_runs WHERE id = :run_id"),
++                    {"run_id": run_id},
++                ).scalar()
++                return "running" if exists else "not_found"
++        return None
+ 
+     def get_logs_page(self, run_id: str, page: int = 0, per_page: int = 50) -> tuple[list[dict[str, Any]], int]:
+         run = self.get_by_id(run_id)
+diff --git a/src/codemie/rest_api/routers/schedulers.py b/src/codemie/rest_api/routers/schedulers.py
+index e58a33574..42db3d545 100644
+--- a/src/codemie/rest_api/routers/schedulers.py
++++ b/src/codemie/rest_api/routers/schedulers.py
+@@ -47,8 +47,8 @@ router = APIRouter(
+ 
+ 
+ @router.get("/schedulers/filter-options", response_model=SchedulerFilterOptions, status_code=status.HTTP_200_OK)
+-def get_scheduler_filter_options():
+-    return SchedulerSettingsService.get_filter_options()
++def get_scheduler_filter_options(user=Depends(authenticate)):
++    return SchedulerSettingsService.get_filter_options(user=user)
+ 
+ 
+ @router.get("/schedulers", response_model=SchedulersPaginatedResponse, status_code=status.HTTP_200_OK)
+@@ -108,7 +108,7 @@ def get_scheduler_run_stats(
+     date_to: Optional[str] = Query(None, alias="dateTo"),
+ ):
+     # CR-005: parse ISO-8601 strings to datetime before passing to the service/repository
+-    status_list = [s.strip() for s in status.split(",")] if status else None
++    status_list = [s.strip() for s in status.split(",") if s.strip()] or None if status else None
+     filters = {
+         k: v
+         for k, v in {
+@@ -142,7 +142,7 @@ def list_scheduler_runs(
+     from sqlmodel import Session, select
+ 
+     # CR-005: parse ISO-8601 strings to datetime before passing to the repository
+-    status_list = [s.strip() for s in status.split(",")] if status else None
++    status_list = [s.strip() for s in status.split(",") if s.strip()] or None if status else None
+     runs, total = SchedulerRunService().list_runs(
+         scheduler_id=scheduler_id,
+         status=status_list,
+@@ -231,5 +231,5 @@ def get_scheduler_run(run_id: str):
+ 
+ 
+ @router.delete("/scheduler-runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+-def delete_scheduler_run(run_id: str):
++def delete_scheduler_run(run_id: str, _user=Depends(authenticate)):
+     SchedulerRunService().delete_run(run_id)
+diff --git a/src/codemie/service/scheduler_run_service.py b/src/codemie/service/scheduler_run_service.py
+index 8e56b57ba..e06d95d80 100644
+--- a/src/codemie/service/scheduler_run_service.py
++++ b/src/codemie/service/scheduler_run_service.py
+@@ -49,12 +49,11 @@ class SchedulerRunService:
+         return run
+ 
+     def delete_run(self, run_id: str) -> None:
+-        run = self._repo.get_by_id(run_id)
+-        if run is None:
++        guard = self._repo.delete_run(run_id)
++        if guard == "not_found":
+             raise_not_found(run_id, "SchedulerRun")
+-        if run.status == "running":
++        if guard == "running":
+             raise_conflict("Cannot delete a run with status 'running'")
+-        self._repo.delete_run(run_id)
+ 
+     def get_logs(self, run_id: str, page: int = 0, per_page: int = 50) -> tuple[list[dict], int]:
+         self.get_run(run_id)  # raises 404 if missing
+diff --git a/src/codemie/service/settings/scheduler_settings_service.py b/src/codemie/service/settings/scheduler_settings_service.py
+index 1b0855e6e..02f561266 100644
+--- a/src/codemie/service/settings/scheduler_settings_service.py
++++ b/src/codemie/service/settings/scheduler_settings_service.py
+@@ -552,13 +552,16 @@ class SchedulerSettingsService(BaseSettingsService):
+             ),
+         )
+ 
++    _filter_options_cache: dict = {}
++    _FILTER_OPTIONS_TTL = 60  # seconds
++
+     @staticmethod
+     def _fetch_all_scheduler_settings():
+         """Return all Settings with credential_type = SCHEDULER via Elasticsearch."""
+         return Settings.get_all(credential_type=CredentialTypes.SCHEDULER)
+ 
+     @staticmethod
+-    def _build_resource_name_map(settings) -> dict[str, str]:
++    def _build_resource_name_map(settings, user=None) -> dict[str, str]:
+         """Batch-fetch canonical resource names by type to avoid N+1 lookups."""
+         from collections import defaultdict
+ 
+@@ -588,8 +591,12 @@ class SchedulerSettingsService(BaseSettingsService):
+             try:
+                 from codemie.rest_api.models.assistant import Assistant
+ 
+-                for asst in Assistant.get_by_ids_no_permission_check(assistant_ids):
+-                    name_map[asst.id] = asst.name
++                if user is not None:
++                    for asst in Assistant.get_by_ids(user, assistant_ids):
++                        name_map[asst.id] = asst.name
++                else:
++                    for asst in Assistant.get_by_ids_no_permission_check(assistant_ids):
++                        name_map[asst.id] = asst.name
+             except Exception:
+                 pass
+ 
+@@ -606,13 +613,20 @@ class SchedulerSettingsService(BaseSettingsService):
+         return name_map
+ 
+     @staticmethod
+-    def get_filter_options():
++    def get_filter_options(user=None):
+         """Return unique resources and projects that have at least one scheduler, sorted by name."""
++        import time
++
+         from codemie.rest_api.models.scheduler_run import ProjectRef, ResourceRef, SchedulerFilterOptions
+ 
++        cached = SchedulerSettingsService._filter_options_cache
++        now = time.monotonic()
++        if cached.get("expires_at", 0) > now and user is None:
++            return cached["value"]
++
+         _gcv = SchedulerSettingsService._get_cred_value
+         settings = SchedulerSettingsService._fetch_all_scheduler_settings()
+-        resource_name_map = SchedulerSettingsService._build_resource_name_map(settings)
++        resource_name_map = SchedulerSettingsService._build_resource_name_map(settings, user=user)
+ 
+         seen_resources: dict[str, ResourceRef] = {}
+         seen_projects: dict[str, ProjectRef] = {}
+@@ -632,7 +646,13 @@ class SchedulerSettingsService(BaseSettingsService):
+ 
+         resources = sorted(seen_resources.values(), key=lambda r: r.name.lower())
+         projects = sorted(seen_projects.values(), key=lambda p: p.name.lower())
+-        return SchedulerFilterOptions(resources=resources, projects=projects)
++        result = SchedulerFilterOptions(resources=resources, projects=projects)
++        if user is None:
++            SchedulerSettingsService._filter_options_cache = {
++                "value": result,
++                "expires_at": now + SchedulerSettingsService._FILTER_OPTIONS_TTL,
++            }
++        return result
+ 
+     @staticmethod
+     def patch_is_enabled(scheduler_id: str, is_enabled: bool):
+diff --git a/src/codemie/triggers/actors/workflow.py b/src/codemie/triggers/actors/workflow.py
+index 5daf5e923..c5a9c4752 100644
+--- a/src/codemie/triggers/actors/workflow.py
++++ b/src/codemie/triggers/actors/workflow.py
+@@ -45,7 +45,11 @@ async def invoke_workflow(
+             response = await client.post(url=full_url, headers=headers, json=data, timeout=600)
+             response.raise_for_status()
+         logger.info('Workflow invoked successfully. job_id: %s, workflow_id: %s', job_id, workflow_id)
+-        body = response.json()
++        try:
++            body = response.json()
++        except Exception:
++            logger.warning('Could not parse workflow response body as JSON. job_id: %s', job_id)
++            return None
+         result: dict = {}
+         if body.get("execution_id"):
+             result["resource_execution_id"] = body["execution_id"]

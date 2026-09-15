@@ -378,6 +378,307 @@ class SchedulerSettingsService(BaseSettingsService):
 
         return deleted_count
 
+    @staticmethod
+    def _get_cred_value(setting, key):
+        return next((cv.value for cv in (setting.credential_values or []) if cv.key == key), None)
+
+    @staticmethod
+    def _build_scheduler_item(setting, last_run=None):
+        from codemie.rest_api.models.scheduler_run import (
+            LastRunRef,
+            ProjectRef,
+            ResourceRef,
+            ScheduleInfo,
+            SchedulerListItem,
+        )
+
+        _gcv = SchedulerSettingsService._get_cred_value
+        cron_expr = _gcv(setting, "schedule") or ""
+        tz_name = _gcv(setting, "timezone") or "UTC"
+        resource_type = _gcv(setting, "resource_type") or ""
+        resource_id = _gcv(setting, "resource_id") or ""
+        resource_name = _gcv(setting, "resource_name") or ""
+        is_enabled = _gcv(setting, "is_enabled") or False
+
+        description = cron_expr
+        try:
+            from get_pretty_cron import prettify_cron
+
+            description = prettify_cron(cron_expr)
+        except Exception:
+            pass
+
+        next_run_at = None
+        if cron_expr:
+            try:
+                from zoneinfo import ZoneInfo
+                from croniter import croniter
+                from datetime import datetime
+
+                tz = ZoneInfo(tz_name)
+                itr = croniter(cron_expr, datetime.now(tz))
+                next_run_at = itr.get_next(datetime).isoformat()
+            except Exception:
+                pass
+
+        last_run_item = None
+        if last_run:
+            started = last_run["started_at"]
+            last_run_item = LastRunRef(
+                id=last_run["id"],
+                status=last_run["status"],
+                startedAt=started.isoformat() if hasattr(started, "isoformat") else str(started),
+            )
+
+        return SchedulerListItem(
+            id=setting.id,
+            name=setting.alias or resource_name or setting.id,
+            resource=ResourceRef(id=resource_id, name=resource_name, type=resource_type.capitalize()),
+            project=ProjectRef(id=setting.project_name, name=setting.project_name),
+            schedule=ScheduleInfo(cron=cron_expr, description=description, timezone=tz_name, nextRunAt=next_run_at),
+            isEnabled=bool(is_enabled),
+            lastRun=last_run_item,
+        )
+
+    @staticmethod
+    def _build_list_filters(project_id, resource_type, resource_id, search, status, last_run_status):
+        conditions = ["s.credential_type = 'SCHEDULER'"]
+        params: dict = {}
+
+        if project_id:
+            conditions.append("s.project_name = :project_id")
+            params["project_id"] = project_id
+        if resource_type:
+            conditions.append(
+                "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+                "WHERE cv->>'key' = 'resource_type' AND lower(cv->>'value') = lower(:resource_type))"
+            )
+            params["resource_type"] = resource_type
+        if resource_id:
+            conditions.append(
+                "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+                "WHERE cv->>'key' = 'resource_id' AND cv->>'value' = :resource_id)"
+            )
+            params["resource_id"] = resource_id
+        if search:
+            conditions.append(
+                "(s.alias ILIKE :search OR EXISTS ("
+                "SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+                "WHERE cv->>'key' = 'resource_name' AND cv->>'value' ILIKE :search))"
+            )
+            params["search"] = f"%{search}%"
+        if status == "enabled":
+            conditions.append(
+                "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+                "WHERE cv->>'key' = 'is_enabled' AND (cv->>'value')::boolean = true)"
+            )
+        elif status == "disabled":
+            conditions.append(
+                "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+                "WHERE cv->>'key' = 'is_enabled' AND (cv->>'value')::boolean = true)"
+            )
+        if last_run_status == "never":
+            conditions.append("lr.id IS NULL")
+        elif last_run_status:
+            conditions.append("lr.status = :last_run_status")
+            params["last_run_status"] = last_run_status
+
+        return conditions, params
+
+    @staticmethod
+    def list_schedulers(
+        page=0,
+        per_page=10,
+        search=None,
+        resource_type=None,
+        project_id=None,
+        resource_id=None,
+        status=None,
+        last_run_status=None,
+    ):
+        import math
+
+        from sqlalchemy import text
+        from sqlmodel import Session, select
+
+        from codemie.rest_api.models.base import PaginationData
+        from codemie.rest_api.models.scheduler_run import SchedulersPaginatedResponse
+
+        conditions, params = SchedulerSettingsService._build_list_filters(
+            project_id, resource_type, resource_id, search, status, last_run_status
+        )
+
+        last_run_join = (
+            "LEFT JOIN LATERAL ("
+            "  SELECT id, status, started_at FROM codemie.scheduler_runs"
+            "  WHERE scheduler_id = s.id"
+            "  ORDER BY started_at DESC LIMIT 1"
+            ") lr ON true"
+        )
+
+        where = "WHERE " + " AND ".join(conditions)
+        row_params = {**params, "limit": per_page, "offset": page * per_page}
+
+        count_sql = text(f"SELECT COUNT(*) FROM codemie.settings s {last_run_join} {where}")
+        rows_sql = text(
+            f"SELECT s.id, lr.id AS lr_id, lr.status AS lr_status, lr.started_at AS lr_started_at "
+            f"FROM codemie.settings s {last_run_join} {where} "
+            f"ORDER BY s.id LIMIT :limit OFFSET :offset"
+        )
+
+        with Settings.get_engine().connect() as conn:
+            total = conn.execute(count_sql.bindparams(**params)).scalar_one()
+            rows = conn.execute(rows_sql.bindparams(**row_params)).mappings().all()
+
+        ids = [row["id"] for row in rows]
+        if ids:
+            with Session(Settings.get_engine()) as sess:
+                settings_list = sess.exec(select(Settings).where(Settings.id.in_(ids))).all()
+            settings_map = {s.id: s for s in settings_list}
+        else:
+            settings_map = {}
+
+        items = []
+        for row in rows:
+            setting = settings_map.get(row["id"])
+            if setting is None:
+                continue
+            last_run = None
+            if row.get("lr_id"):
+                last_run = {"id": row["lr_id"], "status": row["lr_status"], "started_at": row["lr_started_at"]}
+            items.append(SchedulerSettingsService._build_scheduler_item(setting, last_run))
+
+        total_int = int(total)
+        return SchedulersPaginatedResponse(
+            items=items,
+            pagination=PaginationData(
+                page=page,
+                per_page=per_page,
+                total=total_int,
+                pages=math.ceil(total_int / per_page) if per_page else 0,
+            ),
+        )
+
+    _filter_options_cache: dict = {}
+    _FILTER_OPTIONS_TTL = 60  # seconds
+
+    @staticmethod
+    def _fetch_all_scheduler_settings():
+        """Return all Settings with credential_type = SCHEDULER via Elasticsearch."""
+        return Settings.get_all(credential_type=CredentialTypes.SCHEDULER)
+
+    @staticmethod
+    def _fetch_datasource_names(ids: list[str]) -> dict[str, str]:
+        try:
+            from codemie.rest_api.models.index import IndexInfo
+
+            return {ds.id: ds.repo_name for ds in IndexInfo.get_by_ids(ids)}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _fetch_assistant_names(ids: list[str], user) -> dict[str, str]:
+        try:
+            from codemie.rest_api.models.assistant import Assistant
+
+            if user is not None:
+                items = Assistant.get_by_ids(user, ids)
+            else:
+                items = Assistant.get_by_ids_no_permission_check(ids)
+            return {a.id: a.name for a in items}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _fetch_workflow_names(ids: list[str]) -> dict[str, str]:
+        try:
+            from codemie.core.workflow_models.workflow_config import WorkflowConfig
+
+            return {wf.id: wf.name for wf in WorkflowConfig.get_by_ids(ids)}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _build_resource_name_map(settings, user=None) -> dict[str, str]:
+        """Batch-fetch canonical resource names by type to avoid N+1 lookups."""
+        from collections import defaultdict
+
+        ids_by_type: dict[str, list[str]] = defaultdict(list)
+        _gcv = SchedulerSettingsService._get_cred_value
+
+        for setting in settings:
+            rid = _gcv(setting, "resource_id") or ""
+            rtype = (_gcv(setting, "resource_type") or "").lower()
+            if rid and rtype:
+                ids_by_type[rtype].append(rid)
+
+        _svc = SchedulerSettingsService
+        name_map: dict[str, str] = {}
+        name_map.update(_svc._fetch_datasource_names(list(set(ids_by_type.get("datasource", [])))))
+        name_map.update(_svc._fetch_assistant_names(list(set(ids_by_type.get("assistant", []))), user))
+        name_map.update(_svc._fetch_workflow_names(list(set(ids_by_type.get("workflow", [])))))
+        return name_map
+
+    @staticmethod
+    def get_filter_options(user=None):
+        """Return unique resources and projects that have at least one scheduler, sorted by name."""
+        import time
+
+        from codemie.rest_api.models.scheduler_run import ProjectRef, ResourceRef, SchedulerFilterOptions
+
+        now = time.monotonic()
+        cached = SchedulerSettingsService._filter_options_cache
+        if cached.get("expires_at", 0) > now:
+            return cached["value"]
+
+        _gcv = SchedulerSettingsService._get_cred_value
+        settings = SchedulerSettingsService._fetch_all_scheduler_settings()
+        resource_name_map = SchedulerSettingsService._build_resource_name_map(settings, user=user)
+
+        seen_resources: dict[str, ResourceRef] = {}
+        seen_projects: dict[str, ProjectRef] = {}
+
+        for setting in settings:
+            resource_id = _gcv(setting, "resource_id") or ""
+            resource_type = (_gcv(setting, "resource_type") or "").capitalize()
+            project_id = setting.project_name or ""
+
+            # Canonical name from the resource model; fall back to stored credential then alias
+            resource_name = resource_name_map.get(resource_id) or _gcv(setting, "resource_name") or ""
+
+            if resource_id and resource_name and resource_id not in seen_resources:
+                seen_resources[resource_id] = ResourceRef(id=resource_id, name=resource_name, type=resource_type)
+            if project_id and project_id not in seen_projects:
+                seen_projects[project_id] = ProjectRef(id=project_id, name=project_id)
+
+        resources = sorted(seen_resources.values(), key=lambda r: r.name.lower())
+        projects = sorted(seen_projects.values(), key=lambda p: p.name.lower())
+        result = SchedulerFilterOptions(resources=resources, projects=projects)
+        SchedulerSettingsService._filter_options_cache = {
+            "value": result,
+            "expires_at": now + SchedulerSettingsService._FILTER_OPTIONS_TTL,
+        }
+        return result
+
+    @staticmethod
+    def patch_is_enabled(scheduler_id: str, is_enabled: bool):
+        from codemie.rest_api.routers.utils import raise_not_found
+
+        setting = Settings.get_by_id(scheduler_id)
+        if setting is None:
+            raise_not_found(scheduler_id, "Scheduler")
+
+        for cv in setting.credential_values or []:
+            if cv.key == "is_enabled":
+                cv.value = is_enabled
+                break
+        else:
+            setting.credential_values.append(CredentialValues(key="is_enabled", value=is_enabled))
+
+        flag_modified(setting, "credential_values")
+        setting.update()
+        return SchedulerSettingsService._build_scheduler_item(setting)
+
 
 def validate_cron_expression(cron_expr: str | None) -> None:
     """

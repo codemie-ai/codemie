@@ -1,0 +1,113 @@
+{
+  "schema": 1,
+  "gate_id": "code-review.final",
+  "reviewed_at": "2026-09-11T00:00:00Z",
+  "decision": "request-changes",
+  "confidence": "low",
+  "risk_flags": ["security", "public-api"],
+  "rationale": "Five blocking findings (CR-003–CR-007); two decision_needed design questions (CR-001–CR-002) that require explicit acknowledgement of intentionally open endpoints. The auth-bypass findings are per-spec but raise cross-tenant data leakage (CR-003) which IS an implementation bug independent of the open-endpoint design. confidence=low because decision_needed findings are present. diff was large (~5900 lines) but all three lenses ran at full capability; 2 deferred findings and 3 dismissed findings are excluded from this report.",
+  "business_review": [
+    {"id": "AC-001", "criterion": "GET /v1/schedulers/filter-options — no auth, returns deduped sorted SchedulerFilterOptions", "status": "satisfied", "notes": "Implemented. No auth dependency matches spec. Dedup/sort confirmed in service."},
+    {"id": "AC-002", "criterion": "GET /v1/schedulers — auth required, paginated SchedulerListItem", "status": "satisfied", "notes": "Depends(authenticate) present. All query params present."},
+    {"id": "AC-003", "criterion": "PATCH /v1/schedulers/{id} — auth, isEnabled toggle, 200/404", "status": "na", "notes": "Pre-existing endpoint, not modified in this branch."},
+    {"id": "AC-004", "criterion": "GET /v1/scheduler-runs — auth required, comma-separated status → IN clause", "status": "satisfied", "notes": "status_list split confirmed. Auth present."},
+    {"id": "AC-005", "criterion": "GET /v1/scheduler-runs/stats — auth required, 7 aggregated fields, successRate formula", "status": "na", "notes": "Pre-existing endpoint, not modified in this branch."},
+    {"id": "AC-006", "criterion": "GET /v1/scheduler-runs/{runId} — auth, SchedulerRunDetail with metrics cascade, error_data→logs, extra flat fields", "status": "satisfied", "notes": "Metrics cascade (run.metrics → ConversationMetrics → WorkflowExecution) confirmed. error_data appended to logs as ERROR entry confirmed in diff. Additional fields (workflowExecutionId, inputTokens, outputTokens, executionCost, error) added to response model."},
+    {"id": "AC-007", "criterion": "DELETE /v1/scheduler-runs/{run_id} — no auth, 204/404/409", "status": "satisfied", "notes": "No auth per spec. Service raises 404 (not found) and 409 (status=running). 204 on success."},
+    {"id": "AC-008", "criterion": "GET /v1/scheduler-runs/{runId}/logs — auth required, paginated logs", "status": "na", "notes": "Pre-existing endpoint, not modified in this branch."},
+    {"id": "AC-009", "criterion": "_tracked_run_sync wraps ALL datasource scheduler jobs", "status": "satisfied", "notes": "All 10 datasource jobs (reindex_svn, reindex_code, reindex_jira, reindex_confluence, reindex_google, reindex_azure_devops_wiki, reindex_azure_devops_work_item, reindex_xwiki, reindex_xray, reindex_sharepoint) confirmed wrapped via _tracked_run_sync in cron.py."},
+    {"id": "AC-010", "criterion": "_tracked_run (async) wraps assistant and workflow actors; workflow returns resource_execution_id and metrics", "status": "satisfied", "notes": "async actors confirmed. workflow.py returns resource_execution_id and metrics from response body."},
+    {"id": "AC-011", "criterion": "error_data appended to logs as ERROR entry in run detail", "status": "satisfied", "notes": "Confirmed in service: run.error_data → LogEntry(level='ERROR') appended to logs list."}
+  ],
+  "standards_review": [
+    {"standard": "Commit format (EPMCDME-10682: prefix)", "status": "pass", "notes": "All commits on branch use EPMCDME-10682: prefix per git log."},
+    {"standard": "Code quality — ruff", "status": "pass", "notes": "Ruff violations addressed in prior commits (ruff E501 fix commit present)."},
+    {"standard": "Security patterns — auth on all endpoints", "status": "fail", "notes": "Two endpoints are intentionally open per spec (no Depends(authenticate)). However, the filter-options endpoint calls Assistant.get_by_ids_no_permission_check, leaking resource names across tenant boundaries — this is a concrete security violation independent of the open-endpoint design decision."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/rest_api/routers/schedulers.py",
+      "line_hint": "get_scheduler_filter_options",
+      "summary": "GET /v1/schedulers/filter-options is intentionally open (spec: 'Auth: none') but returns data drawn from all tenants with no project scoping",
+      "problem": "The endpoint is open per spec but enumerates all scheduler resources and projects across the entire system with no user context. Any unauthenticated caller can retrieve a full list of resource names, types, and IDs.",
+      "impact": "If the deployment is multi-tenant, all tenant resource names are disclosed to unauthenticated callers. If single-tenant and the endpoint is only called from authenticated UI, the risk is lower but still present if the API is network-accessible.",
+      "recommendation": "Confirm the intended threat model: if this endpoint must be public, document why and ensure it returns only non-sensitive data. If it should be scoped to authenticated users, add Depends(authenticate) and filter results by the user's accessible projects. At minimum, address CR-003 (cross-tenant name leak) regardless of auth decision.",
+      "sources": ["blind", "edge-case"]
+    },
+    {
+      "id": "CR-002",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/rest_api/routers/schedulers.py",
+      "line_hint": "delete_scheduler_run",
+      "summary": "DELETE /v1/scheduler-runs/{run_id} is intentionally open (spec: 'Auth: none') but allows unauthenticated deletion of any run by ID",
+      "problem": "Any caller who can guess or enumerate a run UUID can delete it without credentials. Run IDs are UUIDs (128-bit entropy) so brute force is impractical, but the lack of auth means no audit trail of who deleted what.",
+      "impact": "Irreversible data destruction without authentication or audit. If run IDs are ever logged or leaked (e.g., in error messages, analytics events), they become deletion targets.",
+      "recommendation": "Confirm the intentional open-endpoint decision for this operation. If deletion should require auth, add Depends(authenticate) and scope to runs owned by or accessible to the user. If it must stay open, document the rationale explicitly in the spec and consider rate-limiting.",
+      "sources": ["blind", "edge-case"]
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/settings/scheduler_settings_service.py",
+      "line_hint": "_build_resource_name_map",
+      "summary": "Assistant.get_by_ids_no_permission_check leaks assistant names across tenant boundaries",
+      "problem": "_build_resource_name_map calls Assistant.get_by_ids_no_permission_check unconditionally. This fetches and returns names for assistants belonging to any tenant, then includes them in the filter-options response. Even if the open-endpoint auth decision (CR-001) is accepted, cross-tenant name leakage is a distinct data boundary violation.",
+      "impact": "Names of assistants owned by other tenants/projects are exposed in the filter-options response, leaking internal naming conventions and project structure across tenant boundaries.",
+      "recommendation": "Replace with a permission-scoped lookup (e.g. Assistant.get_by_ids with a user or project context), or filter the results after fetch to include only resources accessible to the requesting user's projects. If no scoped lookup exists, this endpoint requires auth before it can safely resolve names.",
+      "sources": ["blind"]
+    },
+    {
+      "id": "CR-004",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/triggers/actors/workflow.py",
+      "line_hint": "invoke_workflow — response.json()",
+      "summary": "response.json() without try/except marks successfully-invoked workflows as FAILED on non-JSON response bodies",
+      "problem": "response.json() raises json.JSONDecodeError if the upstream workflow API returns a non-JSON body (empty 200, HTML error page, plain-text response). This exception propagates to _tracked_run's except clause, which marks the scheduler run as FAILED and records the JSON decode error as the failure reason — even though the HTTP call succeeded.",
+      "impact": "False negatives in run history: a workflow that executed successfully is permanently recorded as FAILED. Operators retry completed workflows, skewing metrics, and the audit trail is corrupted.",
+      "recommendation": "Wrap response.json() in try/except json.JSONDecodeError. On failure, log a warning at DEBUG/WARNING level and return the partial result dict (or empty dict) rather than raising. This preserves the HTTP-success outcome even when the response body is unparseable.",
+      "sources": ["edge-case"]
+    },
+    {
+      "id": "CR-005",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/scheduler_run_service.py",
+      "line_hint": "delete_run",
+      "summary": "TOCTOU race: status check and delete are non-atomic — a run can change state between the guard and the deletion",
+      "problem": "delete_run calls get_by_id to check status, then calls repo.delete_run in a separate transaction. Between these two calls, a concurrent request can change the run's status to 'running', or another delete request can remove it. The repository's delete_run silently returns None on a missing row, making the second delete look like a success.",
+      "impact": "A run that just became 'running' can be deleted; or a double-delete gives a false 204. In high-concurrency environments this is a real failure mode.",
+      "recommendation": "Perform the check and delete atomically: use DELETE FROM scheduler_runs WHERE id = :run_id AND status != 'running' and inspect the affected-row count. If 0 rows: SELECT to distinguish 404 (gone) from 409 (still running). This eliminates the race window.",
+      "sources": ["blind", "edge-case"]
+    },
+    {
+      "id": "CR-006",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/settings/scheduler_settings_service.py",
+      "line_hint": "_fetch_all_scheduler_settings / get_filter_options",
+      "summary": "Unbounded full-table scan on every GET /v1/schedulers/filter-options request with no caching",
+      "problem": "Settings.get_all(credential_type=CredentialTypes.SCHEDULER) fetches all scheduler settings with no pagination, limit, or project scoping. This runs on every request to the filter-options endpoint. Combined with no auth (CR-001), this is a trivial DoS vector.",
+      "impact": "On large deployments: memory pressure from loading all rows, database CPU spikes, request timeouts. With no authentication, an attacker can repeatedly call the endpoint to saturate the database.",
+      "recommendation": "Either (a) add a LIMIT/pagination parameter to _fetch_all_scheduler_settings and paginate the filter-options response, or (b) add short-TTL server-side caching (e.g. 60s in-memory or Redis) so repeated requests are served without a DB hit, or (c) scope the query to the requesting user's projects (requires adding auth). At minimum, combine with the auth fix from CR-001/CR-002 to gate unauthenticated access.",
+      "sources": ["blind", "edge-case"]
+    },
+    {
+      "id": "CR-007",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/schedulers.py",
+      "line_hint": "status comma-split in list_scheduler_runs and get_scheduler_run_stats",
+      "summary": "Empty status query param (status=) produces [\"\"] which silently filters to zero results instead of being treated as no filter",
+      "problem": "status_list = [s.strip() for s in status.split(\",\")] if status else None — when status is the empty string \"\", the condition `if status` is False in Python (empty string is falsy), so status_list is correctly None. HOWEVER, a status value of a single space or comma (e.g. status=,) produces [\"\", \"\"] or [\"  \"], which passes the truthiness check and generates IN (:status_0, :status_1) with empty/whitespace values, returning zero rows.",
+      "impact": "Clients that send status=, or status= (with trailing comma) see an empty result set instead of unfiltered results. Silent data loss in the UI with no error response.",
+      "recommendation": "Filter out empty/whitespace entries after splitting: status_list = [s.strip() for s in status.split(\",\") if s.strip()] if status else None. If the resulting list is empty after filtering, treat as None (no status filter).",
+      "sources": ["blind"]
+    }
+  ]
+}

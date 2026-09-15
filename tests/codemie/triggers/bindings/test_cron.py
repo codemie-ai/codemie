@@ -17,7 +17,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import pytz
-from codemie.triggers.bindings.cron import Cron, CronTrigger, Job, invoke_assistant, invoke_workflow, reindex_code
+from codemie.triggers.bindings.cron import (
+    Cron,
+    CronTrigger,
+    Job,
+    _extract_datasource_metrics,
+    _tracked_run_sync,
+    invoke_assistant,
+    invoke_workflow,
+    reindex_code,
+)
 from codemie.triggers.bindings.utils import validate_datasource
 from codemie.triggers.actors.datasource import resume_stale_datasource  # noqa: F401 — imported for patch path resolution
 
@@ -264,7 +273,11 @@ def test_invalid_resource_type(cron_instance, mock_setting):
     with (
         patch.object(cron_instance, '_Cron__updated_setting', return_value=True),
         patch.object(cron_instance, '_Cron__valid_schedule', return_value=True),
+        patch('codemie.triggers.bindings.cron.validate_assistant') as mock_validate_assistant,
     ):
+        mock_assistant = MagicMock()
+        mock_assistant.name = "Test Assistant"
+        mock_validate_assistant.return_value = mock_assistant
         result = cron_instance._Cron__valid_setting(mock_setting)
         assert result is not False
 
@@ -571,7 +584,8 @@ def test_schedule_datasource_job_xray_schedules_job(cron_instance):
 
     mock_scheduler.add_job.assert_called_once()
     call_kwargs = mock_scheduler.add_job.call_args
-    assert call_kwargs[0][0] is reindex_xray
+    assert call_kwargs[0][0].__name__ == "_tracked_run_sync"
+    assert call_kwargs[1]["kwargs"]["actor_fn"] is reindex_xray
 
 
 def test_schedule_datasource_job_sharepoint_schedules_job(cron_instance):
@@ -600,7 +614,8 @@ def test_schedule_datasource_job_sharepoint_schedules_job(cron_instance):
 
     mock_scheduler.add_job.assert_called_once()
     call_kwargs = mock_scheduler.add_job.call_args
-    assert call_kwargs[0][0] is reindex_sharepoint
+    assert call_kwargs[0][0].__name__ == "_tracked_run_sync"
+    assert call_kwargs[1]["kwargs"]["actor_fn"] is reindex_sharepoint
 
 
 # ===================== Timezone threading in trigger engine (Task 7) =====================
@@ -984,3 +999,251 @@ def test_create_cron_trigger_without_day_of_week_fires_daily():
         assert moment.hour == expected_hour
         assert moment.minute == 41
         moment += timedelta(minutes=1)
+
+
+# ── _tracked_run_sync tests ──────────────────────────────────────────────────
+
+
+@patch("codemie.repository.scheduler_run_repository.SchedulerRunRepository")
+@patch("codemie.rest_api.models.scheduler_run.SchedulerRun")
+def test_tracked_run_sync_success(mock_run_cls, mock_repo_cls):
+    mock_repo = mock_repo_cls.return_value
+    mock_run = MagicMock(id="run-1")
+    mock_repo.create.return_value = mock_run
+
+    actor = MagicMock(return_value=None)
+    _tracked_run_sync(actor, scheduler_id="sched-1", resource_id="res-1", payload=MagicMock())
+
+    mock_run_cls.assert_called_once()
+    ctor_kwargs = mock_run_cls.call_args[1]
+    assert ctor_kwargs["scheduler_id"] == "sched-1"
+    assert ctor_kwargs["status"] == "running"
+    assert ctor_kwargs["input_data"] == {"resourceId": "res-1"}
+    mock_repo.create.assert_called_once()
+
+    mock_repo.update.assert_called_once()
+    update_fields = mock_repo.update.call_args[0][1]
+    assert update_fields["status"] == "completed"
+    assert "finished_at" in update_fields
+    assert "duration_ms" in update_fields
+
+
+@patch("codemie.repository.scheduler_run_repository.SchedulerRunRepository")
+@patch("codemie.rest_api.models.scheduler_run.SchedulerRun")
+def test_tracked_run_sync_failure(mock_run_cls, mock_repo_cls):
+    mock_repo = mock_repo_cls.return_value
+    mock_run = MagicMock(id="run-2")
+    mock_repo.create.return_value = mock_run
+
+    actor = MagicMock(side_effect=RuntimeError("boom"))
+    with pytest.raises(RuntimeError, match="boom"):
+        _tracked_run_sync(actor, scheduler_id="sched-2", resource_id="res-2")
+
+    update_fields = mock_repo.update.call_args[0][1]
+    assert update_fields["status"] == "failed"
+    assert update_fields["error_data"] == {"message": "boom", "type": "RuntimeError"}
+    assert "duration_ms" in update_fields
+
+
+@patch("codemie.repository.scheduler_run_repository.SchedulerRunRepository")
+@patch("codemie.rest_api.models.scheduler_run.SchedulerRun")
+def test_tracked_run_sync_lock_skip_recorded_as_completed(mock_run_cls, mock_repo_cls):
+    """Lock-skip actors return None — should still produce a completed record."""
+    mock_repo = mock_repo_cls.return_value
+    mock_run = MagicMock(id="run-3")
+    mock_repo.create.return_value = mock_run
+
+    actor = MagicMock(return_value=None)  # mimics lock-skip
+    _tracked_run_sync(actor, scheduler_id="sched-3")
+
+    update_fields = mock_repo.update.call_args[0][1]
+    assert update_fields["status"] == "completed"
+
+
+# ── _extract_datasource_metrics tests ───────────────────────────────────────
+
+
+def test_extract_datasource_metrics_returns_none_when_no_index_info():
+    payload = MagicMock(spec=[])  # no index_info attribute
+    assert _extract_datasource_metrics(payload) is None
+
+
+def test_extract_datasource_metrics_returns_none_when_payload_is_none():
+    assert _extract_datasource_metrics(None) is None
+
+
+@patch("codemie.rest_api.models.index.IndexInfo")
+def test_extract_datasource_metrics_returns_metrics_from_index_info(mock_index_cls):
+    tokens_usage = MagicMock(input_tokens=1000, output_tokens=0, money_spent=0.0002)
+    fresh_index = MagicMock(tokens_usage=tokens_usage)
+    mock_index_cls.get_by_id.return_value = fresh_index
+
+    index_info = MagicMock(id="idx-1")
+    payload = MagicMock(index_info=index_info)
+
+    metrics = _extract_datasource_metrics(payload)
+
+    mock_index_cls.get_by_id.assert_called_once_with("idx-1")
+    assert metrics == {"inputTokens": 1000, "outputTokens": 0, "cost": 0.0002}
+
+
+@patch("codemie.rest_api.models.index.IndexInfo")
+def test_extract_datasource_metrics_returns_none_when_tokens_usage_none(mock_index_cls):
+    fresh_index = MagicMock(tokens_usage=None)
+    mock_index_cls.get_by_id.return_value = fresh_index
+
+    payload = MagicMock(index_info=MagicMock(id="idx-2"))
+    assert _extract_datasource_metrics(payload) is None
+
+
+@patch("codemie.rest_api.models.index.IndexInfo")
+def test_extract_datasource_metrics_swallows_db_errors(mock_index_cls):
+    mock_index_cls.get_by_id.side_effect = RuntimeError("db down")
+
+    payload = MagicMock(index_info=MagicMock(id="idx-3"))
+    assert _extract_datasource_metrics(payload) is None
+
+
+@patch(
+    "codemie.triggers.bindings.cron._extract_datasource_metrics",
+    return_value={"inputTokens": 500, "outputTokens": 0, "cost": 0.0001},
+)
+@patch("codemie.repository.scheduler_run_repository.SchedulerRunRepository")
+@patch("codemie.rest_api.models.scheduler_run.SchedulerRun")
+def test_tracked_run_sync_persists_metrics(mock_run_cls, mock_repo_cls, mock_extract):
+    mock_repo = mock_repo_cls.return_value
+    mock_run = MagicMock(id="run-4")
+    mock_repo.create.return_value = mock_run
+
+    _tracked_run_sync(MagicMock(), scheduler_id="sched-4", payload=MagicMock())
+
+    update_fields = mock_repo.update.call_args[0][1]
+    assert update_fields["metrics"] == {"inputTokens": 500, "outputTokens": 0, "cost": 0.0001}
+
+
+# ── __schedule_datasource_job wiring tests ──────────────────────────────────
+
+
+@patch("codemie.triggers.bindings.cron.SVNReindexTask")
+@patch("codemie.triggers.bindings.cron.resolve_trigger_user")
+@patch("codemie.triggers.bindings.cron.SVNRepo")
+def test_schedule_datasource_svn_uses_tracked_run_sync(mock_svn_repo, mock_resolve_user, mock_svn_task):
+    mock_resolve_user.return_value = MagicMock()
+    index_info = MagicMock(repo_type="svn")
+    svn_repo_mock = MagicMock()
+    svn_repo_mock.name = "my-repo"
+    mock_svn_repo.get_by_app_id.return_value = [svn_repo_mock]
+
+    cron = Cron()
+    cron.scheduler = MagicMock()
+    cron.cache = MagicMock()
+    cron.cache.fetch_with_cache.return_value = index_info
+
+    cron._Cron__schedule_datasource_job(
+        index_type="svn",
+        cron_trigger=MagicMock(),
+        job_id="job-1",
+        resource_id="res-1",
+        user_id="user-1",
+        project_name="proj",
+        resource_name="my-repo",
+        jql=None,
+    )
+
+    fn_arg = cron.scheduler.add_job.call_args[0][0]
+    assert fn_arg.__name__ == "_tracked_run_sync"
+    kwargs = cron.scheduler.add_job.call_args[1]["kwargs"]
+    assert kwargs["actor_fn"].__name__ == "reindex_svn"
+    assert kwargs["scheduler_id"] == "job-1"
+    assert kwargs["resource_id"] == "job-1"
+
+
+@patch("codemie.triggers.bindings.cron.CodeReindexTask")
+@patch("codemie.triggers.bindings.cron.resolve_trigger_user")
+@patch("codemie.triggers.bindings.cron.GitRepo")
+def test_schedule_datasource_code_uses_tracked_run_sync(mock_git_repo, mock_resolve_user, mock_code_task):
+    mock_resolve_user.return_value = MagicMock()
+    index_info = MagicMock(repo_type="git")
+    mock_git_repo.identifier_from_fields.return_value = "repo-id-1"
+
+    cron = Cron()
+    cron.scheduler = MagicMock()
+    cron.cache = MagicMock()
+    cron.cache.fetch_with_cache.return_value = index_info
+
+    cron._Cron__schedule_datasource_job(
+        index_type="code",
+        cron_trigger=MagicMock(),
+        job_id="job-2",
+        resource_id="res-2",
+        user_id="user-2",
+        project_name="proj",
+        resource_name="my-repo",
+        jql=None,
+    )
+
+    fn_arg = cron.scheduler.add_job.call_args[0][0]
+    assert fn_arg.__name__ == "_tracked_run_sync"
+    kwargs = cron.scheduler.add_job.call_args[1]["kwargs"]
+    assert kwargs["actor_fn"].__name__ == "reindex_code"
+    assert kwargs["scheduler_id"] == "job-2"
+    assert kwargs["resource_id"] == "job-2"
+
+
+# ── __schedule_knowledge_base_job wiring tests ──────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "index_type_str,actor_name,task_cls_path",
+    [
+        ("knowledge_base_jira", "reindex_jira", "codemie.triggers.bindings.cron.JiraReindexTask"),
+        ("knowledge_base_confluence", "reindex_confluence", "codemie.triggers.bindings.cron.ConfluenceReindexTask"),
+        ("llm_routing_google", "reindex_google", "codemie.triggers.bindings.cron.GoogleReindexTask"),
+        (
+            "knowledge_base_azure_devops_wiki",
+            "reindex_azure_devops_wiki",
+            "codemie.triggers.bindings.cron.AzureDevOpsWikiReindexTask",
+        ),
+        (
+            "knowledge_base_azure_devops_work_item",
+            "reindex_azure_devops_work_item",
+            "codemie.triggers.bindings.cron.AzureDevOpsWorkItemReindexTask",
+        ),
+        ("knowledge_base_xwiki", "reindex_xwiki", "codemie.triggers.bindings.cron.XWikiReindexTask"),
+        ("knowledge_base_xray", "reindex_xray", "codemie.triggers.bindings.cron.XrayReindexTask"),
+        ("knowledge_base_sharepoint", "reindex_sharepoint", "codemie.triggers.bindings.cron.SharePointReindexTask"),
+    ],
+)
+def test_knowledge_base_jobs_use_tracked_run_sync(index_type_str, actor_name, task_cls_path):
+    index_info = MagicMock(
+        confluence=MagicMock(),
+        google_doc_link="http://gdoc",
+        azure_devops_wiki=MagicMock(),
+        azure_devops_work_item=MagicMock(),
+        xwiki=MagicMock(),
+    )
+
+    cron = Cron()
+    cron.scheduler = MagicMock()
+
+    with patch(task_cls_path):
+        cron._Cron__schedule_knowledge_base_job(
+            index_type=index_type_str,
+            index_type_str=index_type_str,
+            cron_trigger=MagicMock(),
+            job_id="job-kb",
+            user=MagicMock(),
+            index_info=index_info,
+            project_name="proj",
+            resource_name="res",
+            jql="project=X",
+        )
+
+    fn_arg = cron.scheduler.add_job.call_args[0][0]
+    assert (
+        fn_arg.__name__ == "_tracked_run_sync"
+    ), f"{index_type_str}: expected _tracked_run_sync, got {fn_arg.__name__}"
+    kwargs = cron.scheduler.add_job.call_args[1]["kwargs"]
+    assert kwargs["actor_fn"].__name__ == actor_name
+    assert kwargs["scheduler_id"] == "job-kb"
+    assert kwargs["resource_id"] == "job-kb"

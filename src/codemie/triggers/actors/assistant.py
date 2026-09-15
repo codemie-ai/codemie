@@ -63,6 +63,7 @@ async def invoke_assistant(
             )
             response.raise_for_status()
             logger.info('Successfully invoked assistant: %s, job_id: %s', assistant_id, job_id)
+            return {"conversation_id": conversation_id}
     except httpx.HTTPError as e:
         logger.error('Failed to invoke assistant %s for job_id %s: %s', assistant_id, job_id, str(e))
         if created_conversation_id:

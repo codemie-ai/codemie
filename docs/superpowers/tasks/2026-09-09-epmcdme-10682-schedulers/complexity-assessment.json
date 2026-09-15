@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "task": "Implement Schedulers REST API (list/toggle, run history/stats, run detail/logs) with new scheduler_runs DB table, migration, repository, service layer, and APScheduler callback extension for run persistence.",
+  "generated": "2026-09-09T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 6, "label": "XXL" }
+  },
+  "total": 25,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Five new or extended components span five layers: new schedulers router, new SchedulerRunService, extended SchedulerSettingsService, new SchedulerRunRepository, new SchedulerRun SQLModel, and cron.py trigger binding extension — a full-stack greenfield feature within a single codebase."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Injecting persistence logic into APScheduler's thread-pool-executed __on_job_event callback has no existing precedent in the codebase; async DB writes from executor threads require careful handling. Additionally the GET /v1/schedulers list endpoint needs multi-table enrichment (settings + assistants/workflows/index_info) with a derived lastRunStatus that requires a design decision (denormalized column vs. subquery join). Base score L (4) bumped to XL (5) by the new-DB-schema red flag."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "API (new router), Service (new + extended), Repository (new), DB-Persistence (new SQLModel + Alembic migration), and Trigger/Cron (cron.py extension) are all touched — five distinct layers. Base XL (5) bumped to XXL (6) by the 'Changes database schema significantly' red flag (new scheduler_runs table with migration chain dependency on fa14587c0de1)."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Estimated 9–12 files: schedulers.py router (new), scheduler_run_service.py (new), scheduler_run_repository.py (new), scheduler_run.py SQLModel (new), Alembic migration (new), alembic/env.py (edit), main.py (edit), SchedulerSettingsService additions (edit), cron.py (edit), plus 1–2 test files — spanning 5+ directories."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L (4) to XL (5): new scheduler_runs table introduces a significant DB schema change (greenfield table + Alembic migration).",
+    "Affected Layers bumped from XL (5) to XXL (6): same DB schema change red flag; five distinct architectural layers are all modified."
+  ],
+  "split_recommendation": null
+}

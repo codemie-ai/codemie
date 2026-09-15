@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 # Stub optional native packages that may not be available in all environments
 # (e.g. tree_sitter_languages has no Python 3.13 wheel on Windows).
 # This must run before any codemie imports so the stubs are in place at import time.
-for _missing_pkg in ("tree_sitter_languages", "python_calamine"):
+for _missing_pkg in ("tree_sitter_languages", "python_calamine", "switchyard", "switchyard.libsy"):
     try:
         __import__(_missing_pkg)
     except ImportError:

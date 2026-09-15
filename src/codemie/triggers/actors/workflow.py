@@ -45,5 +45,21 @@ async def invoke_workflow(
             response = await client.post(url=full_url, headers=headers, json=data, timeout=600)
             response.raise_for_status()
         logger.info('Workflow invoked successfully. job_id: %s, workflow_id: %s', job_id, workflow_id)
+        try:
+            body = response.json()
+        except Exception:
+            logger.warning('Could not parse workflow response body as JSON. job_id: %s', job_id)
+            return None
+        result: dict = {}
+        if body.get("execution_id"):
+            result["resource_execution_id"] = body["execution_id"]
+        tokens = body.get("tokens_usage") or {}
+        if tokens.get("input_tokens") is not None:
+            result["metrics"] = {
+                "inputTokens": tokens.get("input_tokens"),
+                "outputTokens": tokens.get("output_tokens"),
+                "cost": tokens.get("money_spent"),
+            }
+        return result or None
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         logger.error('Failed to invoke workflow. job_id: %s, workflow_id: %s, error: %s', job_id, workflow_id, str(e))

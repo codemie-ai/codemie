@@ -105,6 +105,7 @@ from codemie.rest_api.routers import (
     skill_events,
     dynamic_config,
 )
+from codemie.rest_api.routers import schedulers
 from codemie.rest_api.routers import sharepoint_oauth
 from codemie.rest_api.routers import google_oauth
 from codemie.rest_api.routers import gitlab_oauth
@@ -1001,6 +1002,7 @@ app.include_router(ai_kata.router)
 app.include_router(skill_events.router)
 app.include_router(skill.router)
 app.include_router(dynamic_config.router)
+app.include_router(schedulers.router)
 if is_litellm_enabled() and config.LLM_PROXY_BUDGET_CHECK_ENABLED:
     app.include_router(budget_router.router)
 app.include_router(project_budget_router.router)

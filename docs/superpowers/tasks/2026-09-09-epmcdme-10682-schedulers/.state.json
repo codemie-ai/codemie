@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "flow": "sdlc-standard",
+  "slug": "epmcdme-10682-schedulers",
+  "branch": "EPMCDME-10682_schedulers-api",
+  "phase": "maintenance",
+  "started_at": "2026-09-09T00:00:00Z",
+  "completed_at": "2026-09-11T00:00:00Z",
+  "last_sync_commit": "b40130d981b27a8a945d37e4cb721108035016a5"
+}

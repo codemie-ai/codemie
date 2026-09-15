@@ -19,7 +19,7 @@ import platform
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional
 from croniter import croniter
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MAX_INSTANCES, EVENT_JOB_MISSED
@@ -74,6 +74,127 @@ from codemie.triggers.trigger_models import (
 
 # Constants
 DEFAULT_TASK_PROMPT = "Do it"
+
+
+async def _tracked_run(actor_fn, scheduler_id: str, **kwargs):
+    """Wrap a scheduler actor with SchedulerRun persistence."""
+    from codemie.repository.scheduler_run_repository import SchedulerRunRepository
+    from codemie.rest_api.models.scheduler_run import SchedulerRun
+
+    # CR-009: use timezone-aware UTC datetimes; datetime.utcnow() is deprecated in Python 3.12+
+    started_at = datetime.now(timezone.utc)
+    input_data: dict = {}
+    if kwargs.get("task"):
+        input_data["task"] = kwargs["task"]
+    if kwargs.get("assistant_id"):
+        input_data["assistantId"] = kwargs["assistant_id"]
+    elif kwargs.get("workflow_id"):
+        input_data["workflowId"] = kwargs["workflow_id"]
+    run = SchedulerRun(
+        scheduler_id=scheduler_id,
+        status="running",
+        trigger="scheduled",
+        started_at=started_at,
+        input_data=input_data or None,
+    )
+    repo = SchedulerRunRepository()
+    run = repo.create(run)
+
+    try:
+        # CR-003: capture retval so conversation_id and resource_execution_id can be persisted
+        retval = await actor_fn(**kwargs)
+        finished_at = datetime.now(timezone.utc)
+        duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+        update_fields: dict = {"status": "completed", "finished_at": finished_at, "duration_ms": duration_ms}
+        if isinstance(retval, dict):
+            if retval.get("conversation_id"):
+                update_fields["conversation_id"] = retval["conversation_id"]
+            if retval.get("resource_execution_id"):
+                update_fields["resource_execution_id"] = retval["resource_execution_id"]
+            if retval.get("metrics"):
+                update_fields["metrics"] = retval["metrics"]
+        repo.update(run.id, update_fields)
+    except Exception as exc:
+        finished_at = datetime.now(timezone.utc)
+        duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+        repo.update(
+            run.id,
+            {
+                "status": "failed",
+                "finished_at": finished_at,
+                "duration_ms": duration_ms,
+                "error_data": {"message": str(exc), "type": type(exc).__name__},
+            },
+        )
+        raise
+
+
+def _extract_datasource_metrics(payload) -> dict | None:
+    """Read per-run token/cost metrics from the IndexInfo attached to a datasource payload.
+
+    DatasourceMonitoringCallback overwrites IndexInfo.tokens_usage after each run with the
+    current run's data, so reloading from DB immediately after the actor returns gives us
+    the run-scoped figures without needing a before/after delta.
+    Returns None when the payload carries no index_info (e.g. SVN, code reindex tasks).
+    """
+    index_info = getattr(payload, "index_info", None)
+    if index_info is None:
+        return None
+    try:
+        from codemie.rest_api.models.index import IndexInfo
+
+        fresh = IndexInfo.get_by_id(str(index_info.id))
+        if fresh is None or fresh.tokens_usage is None:
+            return None
+        return {
+            "inputTokens": fresh.tokens_usage.input_tokens,
+            "outputTokens": fresh.tokens_usage.output_tokens,
+            "cost": fresh.tokens_usage.money_spent,
+        }
+    except Exception:
+        return None
+
+
+def _tracked_run_sync(actor_fn, scheduler_id: str, resource_id: str | None = None, **kwargs):
+    """Synchronous mirror of _tracked_run for datasource actors on the thread-pool executor."""
+    from codemie.repository.scheduler_run_repository import SchedulerRunRepository
+    from codemie.rest_api.models.scheduler_run import SchedulerRun
+
+    started_at = datetime.now(timezone.utc)
+    input_data = {"resourceId": resource_id} if resource_id else None
+    run = SchedulerRun(
+        scheduler_id=scheduler_id,
+        status="running",
+        trigger="scheduled",
+        started_at=started_at,
+        input_data=input_data,
+    )
+    repo = SchedulerRunRepository()
+    run = repo.create(run)
+
+    try:
+        actor_fn(**kwargs)
+        finished_at = datetime.now(timezone.utc)
+        duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+        metrics = _extract_datasource_metrics(kwargs.get("payload"))
+        repo.update(
+            run.id,
+            {"status": "completed", "finished_at": finished_at, "duration_ms": duration_ms, "metrics": metrics},
+        )
+    except Exception as exc:
+        finished_at = datetime.now(timezone.utc)
+        duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+        repo.update(
+            run.id,
+            {
+                "status": "failed",
+                "finished_at": finished_at,
+                "duration_ms": duration_ms,
+                "error_data": {"message": str(exc), "type": type(exc).__name__},
+            },
+        )
+        raise
+
 
 # Index = crontab weekday number; crontab accepts both 0 and 7 for Sunday.
 CRONTAB_WEEKDAYS = ("sun", "mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -359,44 +480,42 @@ class Cron:
 
         return prompt if prompt else DEFAULT_TASK_PROMPT
 
+    def __fetch_resource_details(self, resource_type_lower, resource_id, bad_resource_message):
+        """Fetch and return resource detail dict for the given type, or None on failure."""
+        if resource_type_lower == "assistant":
+            assistant = validate_assistant(resource_id)
+            if not assistant:
+                logger.error(bad_resource_message)
+                return None
+            return {"resource_name": assistant.name, "project_name": "", "index_type": "", "jql": ""}
+
+        if resource_type_lower == "datasource":
+            try:
+                ds_meta = validate_datasource(resource_id)
+            except (DatasourceNotValidated, NotImplementedDatasource) as exc:
+                logger.error("Datasource validation error for resource_id=%s: %s", resource_id, exc)
+                ds_meta = None
+            if not ds_meta:
+                logger.error(bad_resource_message)
+                return None
+            return {
+                "resource_name": ds_meta.repo_name,
+                "project_name": ds_meta.project_name,
+                "index_type": ds_meta.index_type,
+                "jql": ds_meta.jira.jql if ds_meta.jira else "",
+            }
+
+        return {"resource_name": "", "project_name": "", "index_type": "", "jql": ""}
+
     def __validate_resource(self, resource_type, resource_id, bad_resource_message):
         """Validate resource based on type and return resource details with caching"""
         cache_key = f"{resource_type}:{resource_id}"
 
-        # Check cache first — use is_valid so a cached None also short-circuits
         if self.cache.is_valid(cache_key):
             return self.cache.get(cache_key)
 
-        # Cache miss - perform validation
-        result: dict | None = None
-        if resource_type == "assistant":
-            assistant = validate_assistant(resource_id)
-            if not assistant:
-                logger.error(bad_resource_message)
-            else:
-                result = {"resource_name": assistant.name, "project_name": "", "index_type": "", "jql": ""}
-
-        elif resource_type == "datasource":
-            try:
-                ds_meta = validate_datasource(resource_id)
-            except (DatasourceNotValidated, NotImplementedDatasource) as exc:
-                logger.error(
-                    "Datasource validation error for resource_id=%s: %s",
-                    resource_id,
-                    exc,
-                )
-                ds_meta = None
-            if not ds_meta:
-                logger.error(bad_resource_message)
-            else:
-                result = {
-                    "resource_name": ds_meta.repo_name,
-                    "project_name": ds_meta.project_name,
-                    "index_type": ds_meta.index_type,
-                    "jql": ds_meta.jira.jql if ds_meta.jira else "",
-                }
-        else:
-            result = {"resource_name": "", "project_name": "", "index_type": "", "jql": ""}
+        resource_type_lower = (resource_type or "").lower()
+        result = self.__fetch_resource_details(resource_type_lower, resource_id, bad_resource_message)
 
         # Cache the result (even if None, to avoid repeated failed validations)
         self.cache.set(cache_key, result)
@@ -607,11 +726,12 @@ class Cron:
         prompt,
     ):
         """Schedule job based on resource type"""
-        if resource_type == "assistant":
+        resource_type_lower = (resource_type or "").lower()
+        if resource_type_lower == "assistant":
             return self.__schedule_assistant_job(cron_trigger, job_id, resource_id, resource_name, user_id, prompt)
-        elif resource_type == "workflow":
+        elif resource_type_lower == "workflow":
             return self.__schedule_workflow_job(cron_trigger, job_id, resource_id, user_id, prompt)
-        elif resource_type == "datasource":
+        elif resource_type_lower == "datasource":
             return self.__schedule_datasource_job(
                 index_type, cron_trigger, job_id, resource_id, user_id, project_name, resource_name, jql
             )
@@ -626,12 +746,14 @@ class Cron:
             "Scheduling assistant job %s (%s) with custom prompt: %s...", job_id, resource_name, task_prompt[:50]
         )
         return self.scheduler.add_job(
-            invoke_assistant,
+            _tracked_run,
             trigger=cron_trigger,
             id=job_id,
             replace_existing=True,
             executor="asyncio",
             kwargs={
+                "actor_fn": invoke_assistant,
+                "scheduler_id": job_id,
                 "assistant_id": resource_id,
                 "user_id": user_id,
                 "job_id": job_id,
@@ -645,12 +767,14 @@ class Cron:
         task_prompt = prompt or DEFAULT_TASK_PROMPT
         logger.info("Scheduling workflow job %s with custom prompt: %s...", job_id, task_prompt[:50])
         return self.scheduler.add_job(
-            invoke_workflow,
+            _tracked_run,
             trigger=cron_trigger,
             id=job_id,
             replace_existing=True,
             executor="asyncio",
             kwargs={
+                "actor_fn": invoke_workflow,
+                "scheduler_id": job_id,
                 "workflow_id": resource_id,
                 "user_id": user_id,
                 "job_id": job_id,
@@ -698,11 +822,11 @@ class Cron:
                 svn_repo_id=svn_repo.id,
             )
             return self.scheduler.add_job(
-                reindex_svn,
+                _tracked_run_sync,
                 trigger=cron_trigger,
                 id=job_id,
                 replace_existing=True,
-                kwargs={"payload": payload},
+                kwargs={"actor_fn": reindex_svn, "scheduler_id": job_id, "resource_id": job_id, "payload": payload},
             )
         elif index_type_str in (CodeIndexType.CODE, CodeIndexType.SUMMARY, CodeIndexType.CHUNK_SUMMARY):
             # Get repo_id from the Git repository
@@ -718,11 +842,11 @@ class Cron:
                 repo_id=repo_id,
             )
             return self.scheduler.add_job(
-                reindex_code,
+                _tracked_run_sync,
                 trigger=cron_trigger,
                 id=job_id,
                 replace_existing=True,
-                kwargs={"payload": payload},
+                kwargs={"actor_fn": reindex_code, "scheduler_id": job_id, "resource_id": job_id, "payload": payload},
             )
         return self.__schedule_knowledge_base_job(
             index_type=index_type,
@@ -754,11 +878,11 @@ class Cron:
                 jql=jql,
             )
             return self.scheduler.add_job(
-                reindex_jira,
+                _tracked_run_sync,
                 trigger=cron_trigger,
                 id=job_id,
                 replace_existing=True,
-                kwargs={"payload": payload},
+                kwargs={"actor_fn": reindex_jira, "scheduler_id": job_id, "resource_id": job_id, "payload": payload},
             )
         elif index_type_str == FullDatasourceTypes.CONFLUENCE.value:
             payload = ConfluenceReindexTask(
@@ -770,11 +894,16 @@ class Cron:
                 confluence_index_info=index_info.confluence,
             )
             return self.scheduler.add_job(
-                reindex_confluence,
+                _tracked_run_sync,
                 trigger=cron_trigger,
                 id=job_id,
                 replace_existing=True,
-                kwargs={"payload": payload},
+                kwargs={
+                    "actor_fn": reindex_confluence,
+                    "scheduler_id": job_id,
+                    "resource_id": job_id,
+                    "payload": payload,
+                },
             )
         elif index_type_str == FullDatasourceTypes.GIT_FAQ.value:
             payload = GitFaqReindexTask(
@@ -801,11 +930,11 @@ class Cron:
                 google_doc_link=index_info.google_doc_link,
             )
             return self.scheduler.add_job(
-                reindex_google,
+                _tracked_run_sync,
                 trigger=cron_trigger,
                 id=job_id,
                 replace_existing=True,
-                kwargs={"payload": payload},
+                kwargs={"actor_fn": reindex_google, "scheduler_id": job_id, "resource_id": job_id, "payload": payload},
             )
         elif index_type_str == FullDatasourceTypes.AZURE_DEVOPS_WIKI.value:
             payload = AzureDevOpsWikiReindexTask(
@@ -817,11 +946,16 @@ class Cron:
                 azure_devops_wiki_index_info=index_info.azure_devops_wiki,
             )
             return self.scheduler.add_job(
-                reindex_azure_devops_wiki,
+                _tracked_run_sync,
                 trigger=cron_trigger,
                 id=job_id,
                 replace_existing=True,
-                kwargs={"payload": payload},
+                kwargs={
+                    "actor_fn": reindex_azure_devops_wiki,
+                    "scheduler_id": job_id,
+                    "resource_id": job_id,
+                    "payload": payload,
+                },
             )
         elif index_type_str == FullDatasourceTypes.AZURE_DEVOPS_WORK_ITEM.value:
             payload = AzureDevOpsWorkItemReindexTask(
@@ -833,11 +967,16 @@ class Cron:
                 azure_devops_work_item_index_info=index_info.azure_devops_work_item,
             )
             return self.scheduler.add_job(
-                reindex_azure_devops_work_item,
+                _tracked_run_sync,
                 trigger=cron_trigger,
                 id=job_id,
                 replace_existing=True,
-                kwargs={"payload": payload},
+                kwargs={
+                    "actor_fn": reindex_azure_devops_work_item,
+                    "scheduler_id": job_id,
+                    "resource_id": job_id,
+                    "payload": payload,
+                },
             )
         elif index_type_str == FullDatasourceTypes.XWIKI.value:
             payload = XWikiReindexTask(
@@ -849,11 +988,11 @@ class Cron:
                 xwiki_index_info=index_info.xwiki,
             )
             return self.scheduler.add_job(
-                reindex_xwiki,
+                _tracked_run_sync,
                 trigger=cron_trigger,
                 id=job_id,
                 replace_existing=True,
-                kwargs={"payload": payload},
+                kwargs={"actor_fn": reindex_xwiki, "scheduler_id": job_id, "resource_id": job_id, "payload": payload},
             )
         elif index_type_str == "knowledge_base_xray":
             payload = XrayReindexTask(
@@ -864,11 +1003,11 @@ class Cron:
                 index_info=index_info,
             )
             return self.scheduler.add_job(
-                reindex_xray,
+                _tracked_run_sync,
                 trigger=cron_trigger,
                 id=job_id,
                 replace_existing=True,
-                kwargs={"payload": payload},
+                kwargs={"actor_fn": reindex_xray, "scheduler_id": job_id, "resource_id": job_id, "payload": payload},
             )
         elif index_type_str == "knowledge_base_sharepoint":
             payload = SharePointReindexTask(
@@ -879,11 +1018,16 @@ class Cron:
                 index_info=index_info,
             )
             return self.scheduler.add_job(
-                reindex_sharepoint,
+                _tracked_run_sync,
                 trigger=cron_trigger,
                 id=job_id,
                 replace_existing=True,
-                kwargs={"payload": payload},
+                kwargs={
+                    "actor_fn": reindex_sharepoint,
+                    "scheduler_id": job_id,
+                    "resource_id": job_id,
+                    "payload": payload,
+                },
             )
         else:
             logger.error("Datasource index type not supported: %s", index_type)

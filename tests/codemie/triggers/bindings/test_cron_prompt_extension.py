@@ -161,6 +161,8 @@ class TestCronPromptExtension:
     @patch('codemie.triggers.bindings.cron.CronTrigger')
     def test_actualize_assistant_job_with_custom_prompt(self, mock_cron_trigger, mock_invoke_assistant, cron_instance):
         """Test that assistant jobs are created with custom prompts"""
+        from codemie.triggers.bindings.cron import _tracked_run
+
         mock_trigger = MagicMock()
         mock_cron_trigger.return_value = mock_trigger
         mock_instance = MagicMock()
@@ -179,14 +181,16 @@ class TestCronPromptExtension:
             prompt=custom_prompt,
         )
 
-        # Verify job was scheduled with correct parameters
+        # Verify job was scheduled via _tracked_run wrapper with correct parameters
         cron_instance.scheduler.add_job.assert_called_once_with(
-            mock_invoke_assistant,
+            _tracked_run,
             trigger=mock_trigger,
             id="test_job",
             replace_existing=True,
             executor="asyncio",
             kwargs={
+                "actor_fn": mock_invoke_assistant,
+                "scheduler_id": "test_job",
                 "assistant_id": "assistant_123",
                 "user_id": "test_user",
                 "job_id": "test_job",
@@ -202,6 +206,8 @@ class TestCronPromptExtension:
     @patch('codemie.triggers.bindings.cron.CronTrigger')
     def test_actualize_workflow_job_with_custom_prompt(self, mock_cron_trigger, mock_invoke_workflow, cron_instance):
         """Test that workflow jobs are created with custom prompts"""
+        from codemie.triggers.bindings.cron import _tracked_run
+
         mock_trigger = MagicMock()
         mock_cron_trigger.return_value = mock_trigger
         mock_instance = MagicMock()
@@ -219,14 +225,16 @@ class TestCronPromptExtension:
             prompt=custom_prompt,
         )
 
-        # Verify job was scheduled with correct parameters
+        # Verify job was scheduled via _tracked_run wrapper with correct parameters
         cron_instance.scheduler.add_job.assert_called_once_with(
-            mock_invoke_workflow,
+            _tracked_run,
             trigger=mock_trigger,
             id="test_workflow_job",
             replace_existing=True,
             executor="asyncio",
             kwargs={
+                "actor_fn": mock_invoke_workflow,
+                "scheduler_id": "test_workflow_job",
                 "workflow_id": "workflow_123",
                 "user_id": "test_user",
                 "job_id": "test_workflow_job",

@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "gate_id": "code-review.check",
+  "reviewed_at": "2026-09-11T00:00:00Z",
+  "decision": "approve",
+  "confidence": "medium",
+  "risk_flags": [],
+  "rationale": "All seven original findings resolved. CR-001/CR-002: both endpoints now carry Depends(authenticate). CR-003: permission-aware Assistant.get_by_ids used when user present. CR-004: response.json() wrapped in try/except. CR-005: delete_run is a single atomic DELETE WHERE with row-count discrimination. CR-006: 60s TTL in-memory cache active on the authenticated hot path after removing the incorrect user-is-None gate. CR-007: empty/whitespace tokens filtered from status comma-split. No new blocking findings introduced. NF-002 (class-level dict race) is accepted — the worst case is a duplicate ES call, not data corruption, and the simpler fix is appropriate at this scale.",
+  "finding_status": {
+    "CR-001": "resolved",
+    "CR-002": "resolved",
+    "CR-003": "resolved",
+    "CR-004": "resolved",
+    "CR-005": "resolved",
+    "CR-006": "resolved",
+    "CR-007": "resolved"
+  },
+  "findings": []
+}
