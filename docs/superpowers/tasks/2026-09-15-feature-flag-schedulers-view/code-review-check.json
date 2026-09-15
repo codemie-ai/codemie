@@ -1,0 +1,16 @@
+{
+  "decision": "approve",
+  "rationale": "CR-001 resolved: both descriptions now accurately say 'Controls whether the Schedulers navigation item is visible in the UI' — no longer implies API gating. Fix-up diff is exactly the two description lines and nothing else. No new issues introduced.",
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Description changed in both customer_config_declarations.py and customer-config.yaml to navigation-only wording."
+    }
+  ],
+  "business_review": [],
+  "standards_review": [],
+  "risk_flags": [],
+  "confidence": "high"
+}

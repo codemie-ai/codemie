@@ -155,7 +155,20 @@ WEB_SEARCH = SettingDeclaration(
     ],
 )
 
-DECLARATIONS: tuple[SettingDeclaration, ...] = (CHAT_DISCLAIMER, RELEASE_NOTES_RECENT_COUNT, WEB_SEARCH)
+SCHEDULERS = SettingDeclaration(
+    component_id="features:schedulersView",
+    label="Schedulers",
+    description="Controls whether the Schedulers navigation item is visible in the UI.",
+    fields=[
+        FieldDeclaration(
+            name="enabled",
+            type=FieldType.SWITCH,
+            label="Enable Schedulers",
+        ),
+    ],
+)
+
+DECLARATIONS: tuple[SettingDeclaration, ...] = (CHAT_DISCLAIMER, RELEASE_NOTES_RECENT_COUNT, WEB_SEARCH, SCHEDULERS)
 
 _BY_COMPONENT_ID = {declaration.component_id: declaration for declaration in DECLARATIONS}
 _BY_KEY = {declaration.key: declaration for declaration in DECLARATIONS}

@@ -16,6 +16,7 @@ import pytest
 
 from codemie.service.customer_config_declarations import (
     DECLARATIONS,
+    SCHEDULERS,
     FieldDeclaration,
     FieldType,
     Markup,
@@ -108,3 +109,23 @@ def test_release_notes_recent_count_field_is_a_digit_only_input():
     assert count_field.type is FieldType.INPUT
     assert count_field.required is False
     assert count_field.pattern == r"^[1-9][0-9]*$"
+
+
+def test_schedulers_declaration_registered():
+    ids = [d.component_id for d in DECLARATIONS]
+    assert "features:schedulersView" in ids
+
+
+def test_schedulers_declaration_has_enabled_switch():
+    assert SCHEDULERS.component_id == "features:schedulersView"
+    assert SCHEDULERS.label == "Schedulers"
+    field_names = {f.name for f in SCHEDULERS.fields}
+    assert "enabled" in field_names
+    enabled_field = next(f for f in SCHEDULERS.fields if f.name == "enabled")
+    assert enabled_field.type is FieldType.SWITCH
+
+
+def test_by_component_id_finds_schedulers():
+    decl = by_component_id("features:schedulersView")
+    assert decl is not None
+    assert decl is SCHEDULERS
