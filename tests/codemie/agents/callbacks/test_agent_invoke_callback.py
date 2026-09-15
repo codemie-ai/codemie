@@ -167,24 +167,27 @@ def test_overlapping_llm_activity_for_same_author_keeps_distinct_parents(callbac
     assert thoughts_by_parent["handoff-2"]["in_progress"] is False
 
 
-def test_on_llm_end_and_tool_start_preserve_switchyard_fields() -> None:
-    """routed_model/classifier_cost_usd are captured for LLM and tool thoughts."""
-    import dataclasses
+def test_on_llm_end_and_tool_start_preserve_routing_fields() -> None:
+    """routed_model/classifier_cost_usd are captured for LLM and tool thoughts.
 
+    Routing info is read from the canonical ``_ROUTING_INFO_KEY`` that
+    ``RouterChatModel._agenerate`` stamps onto ``response_metadata`` — not from raw
+    ``x-litellm-router-*``/``x-codemie-*`` headers.
+    """
     from langchain_core.messages import AIMessage
     from langchain_core.outputs import ChatGeneration, LLMResult
 
-    from codemie.enterprise.switchyard.routing_meta import SwitchyardMeta, _SWITCHYARD_RESPONSE_META_KEY
+    from codemie.core.routing_info import RoutingInfo, _ROUTING_INFO_KEY
 
     callback = AgentInvokeCallback()
     run_id = uuid.uuid4()
 
     callback.on_llm_start({}, [], run_id=run_id)
     callback.on_llm_new_token(" reasoning", run_id=run_id)
-    meta = SwitchyardMeta(routed_model="claude-haiku-4", classifier_cost_usd=0.0003)
+    routing = RoutingInfo(routed_model="claude-haiku-4", classifier_cost_usd=0.0003)
     message = AIMessage(
         content="",
-        response_metadata={_SWITCHYARD_RESPONSE_META_KEY: dataclasses.asdict(meta)},
+        response_metadata={_ROUTING_INFO_KEY: routing.model_dump()},
     )
     callback.on_llm_end(
         LLMResult(generations=[[ChatGeneration(message=message)]]),
@@ -203,3 +206,59 @@ def test_on_llm_end_and_tool_start_preserve_switchyard_fields() -> None:
     assert llm_thought["metadata"]["llm_tier"] == "claude-haiku-4"
     assert tool_thought["routing"]["routed_model"] == "claude-haiku-4"
     assert tool_thought["metadata"]["llm_tier"] == "claude-haiku-4"
+
+
+def test_on_llm_end_reads_canonical_routing_info_from_response_metadata() -> None:
+    """on_llm_end feeds the callback's LastRoutingTracker from the canonical RoutingInfo
+    stamped by RouterChatModel, when the response carries it under ``_ROUTING_INFO_KEY``."""
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    from codemie.core.routing_info import RoutingInfo, _ROUTING_INFO_KEY
+
+    callback = AgentInvokeCallback()
+    message = AIMessage(
+        content="hi",
+        response_metadata={_ROUTING_INFO_KEY: RoutingInfo(routed_model="claude-4-5-haiku").model_dump()},
+    )
+    response = LLMResult(generations=[[ChatGeneration(message=message)]])
+
+    callback.on_llm_end(response, run_id=uuid.uuid4())
+
+    assert callback._routing_tracker.current is not None
+    assert callback._routing_tracker.current.routed_model == "claude-4-5-haiku"
+
+
+def test_on_llm_end_no_routing_when_key_absent() -> None:
+    """on_llm_end leaves the routing tracker's .current unset when the response carries no
+    routing info."""
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+
+    callback = AgentInvokeCallback()
+    message = AIMessage(content="hi", response_metadata={})
+    response = LLMResult(generations=[[ChatGeneration(message=message)]])
+
+    callback.on_llm_end(response, run_id=uuid.uuid4())
+
+    assert callback._routing_tracker.current is None
+
+
+def test_on_llm_end_reads_canonical_routing_info_from_raw_aimessage() -> None:
+    """on_llm_end also accepts a raw AIMessage directly (not wrapped in LLMResult) — the shape
+    it actually receives via LangGraphCallbackBridge in production (langgraph_event_adapter.py),
+    as opposed to the LLMResult shape LangChain's own AgentExecutor callback dispatch uses."""
+    from langchain_core.messages import AIMessage
+
+    from codemie.core.routing_info import RoutingInfo, _ROUTING_INFO_KEY
+
+    callback = AgentInvokeCallback()
+    message = AIMessage(
+        content="hi",
+        response_metadata={_ROUTING_INFO_KEY: RoutingInfo(routed_model="claude-4-5-haiku").model_dump()},
+    )
+
+    callback.on_llm_end(message, run_id=uuid.uuid4())
+
+    assert callback._routing_tracker.current is not None
+    assert callback._routing_tracker.current.routed_model == "claude-4-5-haiku"

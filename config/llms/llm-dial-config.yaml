@@ -185,9 +185,6 @@ llm_models:
     enabled: true
     provider: "aws_bedrock"
     max_output_tokens: 64000
-    switchyard:
-      efficient: "claude-4-5-haiku"
-      modes: [signal, classifier]
     cost:
       input: 0.0000033
       output: 0.0000165
@@ -203,8 +200,14 @@ llm_models:
     provider: "aws_bedrock"
     max_output_tokens: 64000
     switchyard:
-      efficient: "claude-4-5-haiku"
-      modes: [signal, classifier]
+      - base_name: "claude-sonnet-4-6-switchyard-claude-4-5-haiku-signal"
+        label: "SY Signal Sonnet/Haiku"
+        efficient: "claude-4-5-haiku"
+        mode: signal
+      - base_name: "claude-sonnet-4-6-switchyard-claude-4-5-haiku-classifier"
+        label: "SY Classifier Sonnet/Haiku"
+        efficient: "claude-4-5-haiku"
+        mode: classifier
     cost:
       input: 0.0000033
       output: 0.0000165
@@ -218,9 +221,6 @@ llm_models:
     enabled: true
     provider: "aws_bedrock"
     max_output_tokens: 64000
-    switchyard:
-      efficient: "claude-4-5-sonnet"
-      modes: [signal, classifier]
     cost:
       input: 0.0000055
       output: 0.0000275
@@ -235,8 +235,14 @@ llm_models:
     provider: "aws_bedrock"
     max_output_tokens: 128000
     switchyard:
-      efficient: "claude-sonnet-4-6"
-      modes: [signal, classifier]
+      - base_name: "claude-opus-4-6-20260205-switchyard-claude-sonnet-4-6-signal"
+        label: "SY Signal Opus/Sonnet"
+        efficient: "claude-sonnet-4-6"
+        mode: signal
+      - base_name: "claude-opus-4-6-20260205-switchyard-claude-sonnet-4-6-classifier"
+        label: "SY Classifier Opus/Sonnet"
+        efficient: "claude-sonnet-4-6"
+        mode: classifier
     cost:
       input: 0.0000055
       output: 0.0000275

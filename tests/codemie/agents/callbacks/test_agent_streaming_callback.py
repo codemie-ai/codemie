@@ -414,24 +414,27 @@ def test_set_context_with_author_updates_existing_storage() -> None:
 
 
 def test_on_llm_end_stamps_routed_model_and_cost_on_thought_and_metadata() -> None:
-    """The LLM thought carries routed_model/classifier_cost_usd and mirrors them into metadata."""
-    import dataclasses
+    """The LLM thought carries routed_model/classifier_cost_usd and mirrors them into metadata.
 
+    Routing info is read from the canonical ``_ROUTING_INFO_KEY`` that
+    ``RouterChatModel._agenerate`` stamps onto ``response_metadata`` — not from raw
+    ``x-litellm-router-*``/``x-codemie-*`` headers.
+    """
     from langchain_core.messages import AIMessage
 
-    from codemie.enterprise.switchyard.routing_meta import SwitchyardMeta, _SWITCHYARD_RESPONSE_META_KEY
+    from codemie.core.routing_info import RoutingInfo, _ROUTING_INFO_KEY
 
     generator = ThreadedGenerator()
     callback = AgentStreamingCallback(gen=generator)
     run_id = uuid.uuid4()
 
-    meta = SwitchyardMeta(routed_model="claude-sonnet-4", classifier_cost_usd=0.0012)
+    routing = RoutingInfo(routed_model="claude-sonnet-4", classifier_cost_usd=0.0012)
     callback.on_llm_start(None, [], run_id=run_id)
     callback.on_llm_new_token("Hello ", run_id=run_id)
     callback.on_llm_end(
         AIMessage(
             content="Hello world",
-            response_metadata={_SWITCHYARD_RESPONSE_META_KEY: dataclasses.asdict(meta)},
+            response_metadata={_ROUTING_INFO_KEY: routing.model_dump()},
         ),
         run_id=run_id,
     )
@@ -475,11 +478,9 @@ def test_on_llm_end_redundant_finalize_after_partial_routing_does_not_resend() -
     Uses a send-count spy rather than the merge-by-id ``generator.thoughts`` list,
     since that list collapses repeated sends for the same thought id and would not
     reveal a duplicate resend."""
-    import dataclasses
-
     from langchain_core.messages import AIMessage
 
-    from codemie.enterprise.switchyard.routing_meta import SwitchyardMeta, _SWITCHYARD_RESPONSE_META_KEY
+    from codemie.core.routing_info import RoutingInfo, _ROUTING_INFO_KEY
 
     generator = ThreadedGenerator()
     callback = AgentStreamingCallback(gen=generator)
@@ -488,13 +489,13 @@ def test_on_llm_end_redundant_finalize_after_partial_routing_does_not_resend() -
     # First call: only classifier cost resolved, no routed model tier yet, so the
     # thought is finalized (in_progress False) but kept in storage (model_resolved
     # is False) awaiting a later call that might carry the tier.
-    partial_meta = SwitchyardMeta(routed_model=None, classifier_cost_usd=0.0007)
+    partial_routing = RoutingInfo(routed_model=None, classifier_cost_usd=0.0007)
     callback.on_llm_start(None, [], run_id=run_id)
     callback.on_llm_new_token("Hi ", run_id=run_id)
     callback.on_llm_end(
         AIMessage(
             content="Hi there",
-            response_metadata={_SWITCHYARD_RESPONSE_META_KEY: dataclasses.asdict(partial_meta)},
+            response_metadata={_ROUTING_INFO_KEY: partial_routing.model_dump()},
         ),
         run_id=run_id,
     )
@@ -505,3 +506,40 @@ def test_on_llm_end_redundant_finalize_after_partial_routing_does_not_resend() -
 
     send_spy.assert_not_called()
     assert callback._get_storage(None).get(str(run_id)) is None
+
+
+def test_extract_response_routing_reads_canonical_routing_info() -> None:
+    """_extract_response_routing returns the routed model/cost stamped under _ROUTING_INFO_KEY,
+    and merges it into the callback's LastRoutingTracker (readable via .current)."""
+    from langchain_core.messages import AIMessage
+
+    from codemie.core.routing_info import RoutingInfo, _ROUTING_INFO_KEY
+
+    callback = AgentStreamingCallback(gen=ThreadedGenerator())
+    routing = RoutingInfo(routed_model="claude-4-5-haiku", classifier_cost_usd=0.0005)
+    message = AIMessage(
+        content="hi",
+        response_metadata={_ROUTING_INFO_KEY: routing.model_dump()},
+    )
+
+    routed_model, classifier_cost_usd = callback._extract_response_routing(message)
+
+    assert routed_model == "claude-4-5-haiku"
+    assert classifier_cost_usd == 0.0005
+    assert callback._routing_tracker.current is not None
+    assert callback._routing_tracker.current.routed_model == "claude-4-5-haiku"
+
+
+def test_extract_response_routing_no_routing_when_key_absent() -> None:
+    """_extract_response_routing returns (None, None) and leaves the routing tracker's
+    .current unset when the response carries no canonical routing info."""
+    from langchain_core.messages import AIMessage
+
+    callback = AgentStreamingCallback(gen=ThreadedGenerator())
+    message = AIMessage(content="hi", response_metadata={})
+
+    routed_model, classifier_cost_usd = callback._extract_response_routing(message)
+
+    assert routed_model is None
+    assert classifier_cost_usd is None
+    assert callback._routing_tracker.current is None

@@ -2390,23 +2390,54 @@ class TestProxyResponseHeaderFiltering:
         assert "x-litellm-model-id" not in response_headers
         assert "x-litellm-key-spend" not in response_headers
 
-    def test_switchyard_headers_injected_into_response_headers(self):
-        from codemie.enterprise.switchyard.routing_meta import SwitchyardMeta
+    def test_should_forward_response_header_directly(self):
+        """Exercise the actual production predicate (the tests above re-implement its logic
+        inline against the raw constants — this one calls _should_forward_response_header
+        itself, so a regression in the exposure-policy mechanism is actually caught here)."""
+        from codemie.enterprise.litellm.proxy_router import (
+            CODEMIE_CACHE_HIT_HEADER,
+            _should_forward_response_header,
+        )
 
-        meta = SwitchyardMeta(
+        # Hop-by-hop and the internal cache-hit marker: always dropped.
+        assert _should_forward_response_header("Connection") is False
+        assert _should_forward_response_header(CODEMIE_CACHE_HIT_HEADER) is False
+        # Non-x-litellm-* headers: always pass.
+        assert _should_forward_response_header("content-type") is True
+        assert _should_forward_response_header("x-custom-header") is True
+        assert _should_forward_response_header("x-codemie-routed-model") is True
+        # x-litellm-* internal headers: hidden by default...
+        assert _should_forward_response_header("x-litellm-call-id") is False
+        assert _should_forward_response_header("x-litellm-key-spend") is False
+        # ...except the explicit allowlist (router headers + LITELLM_FORWARDED_HEADERS).
+        assert _should_forward_response_header("x-litellm-router-tier") is True
+        assert _should_forward_response_header("X-LITELLM-ROUTER-TIER") is True  # case-insensitive
+        assert _should_forward_response_header("x-litellm-model-name") is True
+
+    def test_header_exposure_policy_is_per_prefix_and_allowlist(self):
+        """Unit-level coverage of _HeaderExposurePolicy itself, independent of the concrete
+        LiteLLM policy — this is the mechanism a second upstream backend would reuse by
+        appending its own policy to _HEADER_EXPOSURE_POLICIES."""
+        from codemie.enterprise.litellm.proxy_router import _HeaderExposurePolicy
+
+        policy = _HeaderExposurePolicy(prefix="x-newproxy-", exposed=frozenset({"x-newproxy-tier"}))
+        assert policy.hides("x-newproxy-internal-id") is True
+        assert policy.hides("x-newproxy-tier") is False
+        assert policy.hides("x-litellm-router-tier") is False  # different prefix entirely
+
+    def test_switchyard_headers_injected_into_response_headers(self):
+        from codemie.core.routing_info import RoutingInfo
+        from codemie.enterprise.switchyard.proxy import _routing_info_to_headers
+
+        routing_info = RoutingInfo(
             routed_model="claude-haiku-4-5-20251001",
-            requested_model="claude-sonnet-5",
-            tier="efficient",
-            confidence=0.82,
+            classifier_cost_usd=0.00042,
         )
         response_headers: dict[str, str] = {"content-type": "application/json"}
-        response_headers.update(meta.to_headers())
+        response_headers.update(_routing_info_to_headers(routing_info))
 
         assert response_headers["x-codemie-routed-model"] == "claude-haiku-4-5-20251001"
-        assert response_headers["x-codemie-requested-model"] == "claude-sonnet-5"
-        assert response_headers["x-codemie-routing-tier"] == "efficient"
-        assert response_headers["x-codemie-routing-confidence"] == "0.82"
-        assert "x-codemie-routing-decision-source" not in response_headers  # None → omitted
+        assert response_headers["x-codemie-routing-classifier-cost-usd"] == "0.00042"
         assert response_headers["content-type"] == "application/json"  # existing headers preserved
 
 

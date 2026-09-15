@@ -59,6 +59,7 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
     """
     from codemie.configs.llm_config import (
         CostConfig,
+        LiteLLMRouterConfig,
         LLMFeatures,
         LLMModel,
         LLMProvider,
@@ -127,16 +128,27 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
 
             logger.warning(f"Unknown category '{category}' for model {model_name}")
 
-    # Extract switchyard config, when the live proxy declares one for this model
-    switchyard_raw = model_info.get("switchyard")
-    switchyard: ModelSwitchyard | None = None
-    if switchyard_raw:
+    # Extract switchyard config, when the live proxy declares any for this model
+    switchyard_raw = model_info.get("switchyard") or []
+    switchyard: list[ModelSwitchyard] = []
+    for raw_entry in switchyard_raw:
         try:
-            switchyard = ModelSwitchyard(**switchyard_raw)
+            switchyard.append(ModelSwitchyard(**raw_entry))
         except Exception as exc:  # malformed data from the live proxy must not break the whole catalog fetch
             from codemie.configs import logger
 
-            logger.warning(f"Invalid switchyard config for model {model_name}: {exc}")
+            logger.warning(f"Invalid switchyard entry for model {model_name}: {exc}")
+
+    # Extract the LiteLLM auto-router declaration, when the live proxy carries one for this model
+    litellm_router_raw = model_info.get("litellm_router")
+    litellm_router: LiteLLMRouterConfig | None = None
+    if litellm_router_raw:
+        try:
+            litellm_router = LiteLLMRouterConfig(**litellm_router_raw)
+        except Exception as exc:  # malformed data from the live proxy must not break the whole catalog fetch
+            from codemie.configs import logger
+
+            logger.warning(f"Invalid litellm_router entry for model {model_name}: {exc}")
 
     # Extract model properties
     multimodal = model_info.get("supports_vision", False)
@@ -164,6 +176,7 @@ def map_litellm_to_llm_model(litellm_model: dict[str, Any]) -> "LLMModel":
         forbidden_for_web=forbidden_for_web,
         api_version=api_version,
         switchyard=switchyard,
+        litellm_router=litellm_router,
     )
 
 

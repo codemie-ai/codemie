@@ -184,8 +184,8 @@ class LangGraphEventAdapter:
             last_message = value["agent"]["messages"][-1]
             if self.agent.is_finish_reason_tool_calls(last_message):
                 self.agent._safe_check_for_truncation(last_message)
-                # Always restore headers and call _on_llm_end for tool-calling turns so
-                # _last_routing is set before _on_tool_start fires. When the LLM
+                # Always restore headers and call _on_llm_end for tool-calling turns so the
+                # callback's routing tracker is updated before _on_tool_start fires. When the LLM
                 # makes a direct tool call with no text content the streaming callback still
                 # needs routing metadata to stamp routed_model onto the tool thought.
                 self._restore_response_headers(last_message)

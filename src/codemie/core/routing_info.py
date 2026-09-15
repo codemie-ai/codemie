@@ -12,25 +12,51 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Canonical routing metadata value-object and provider-neutral composer.
+"""Canonical routing metadata value-object and header-codec mixin.
 
-This module depends on neither the switchyard nor the litellm package, so both can
-import RoutingInfo / RoutingMetadataExtractor from here without an import cycle.
-Concrete extractors live in their owning packages; the composer is assembled by the
-caller (callbacks) from an explicit provider list.
+Pure DTOs, zero business logic: ``RoutingInfo`` (the router-agnostic value carried on domain
+models), ``ClassifierUsage``, and ``RoutingHeaderCodec`` (shared by ``SwitchyardMeta`` and
+``LiteLLMRouterMeta`` for HTTP-header (de)serialization). No import-time OR runtime
+dependency on switchyard/litellm/service — genuinely a leaf module. This includes
+``_ROUTING_INFO_KEY``/``stamp_routing_info``: they live here, next to ``RoutingInfo`` itself,
+rather than in ``core/router_chat_model.py`` (which stamps them onto a response) — the
+opposite placement used to force ``RoutingInfo.from_response`` to reach into
+``router_chat_model``'s private module state to read its own serialization key back out,
+which was backwards (a value type should own its own wire format) and created an import
+cycle between the two modules, papered over only by a lazy import.
+
+The ``Router`` interface, ``RoutingDecision``/``CallContext``, and the ``create_router()``
+factory live elsewhere: ``core/router.py`` and
+``codemie.service.llm_service.router_factory`` respectively.
 """
 
 from __future__ import annotations
 
 import contextlib
 import dataclasses
-from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast, runtime_checkable
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast
 from urllib.parse import quote
 
 from langchain_core.messages import AIMessage
-from langchain_core.outputs import LLMResult
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+# Key under which the canonical RoutingInfo (not a router-specific dataclass) is stamped onto
+# an AIMessage's response_metadata after a routed call returns, by RouterChatModel._agenerate
+# — read back self-describingly by RoutingInfo.from_response(), and by
+# AgentInvokeCallback/AgentStreamingCallback, which never need a Router reference at all.
+# Prefer stamp_routing_info()/RoutingInfo.from_response() over touching this key directly.
+_ROUTING_INFO_KEY = "_routing_info"
+
+
+def stamp_routing_info(message: AIMessage, info: "RoutingInfo") -> None:
+    """Stamp the canonical RoutingInfo onto *message*.response_metadata, in place. Read back
+    with RoutingInfo.from_response()."""
+    message.response_metadata = {
+        **(message.response_metadata or {}),
+        _ROUTING_INFO_KEY: info.model_dump(),
+    }
+
 
 # Printable ASCII minus '%' — safe to pass through unencoded in HTTP/1.1 header values.
 # Non-ASCII characters (e.g. Cyrillic from LLM output) are percent-encoded so the value
@@ -112,17 +138,30 @@ class RoutingInfo(BaseModel):
     Extractors populate only what they read from the response (``routed_model``,
     ``classifier_cost_usd``). ``routed_model_label`` is filled by the label layer
     after composition.
+
+    ``meta`` is an opaque, mechanism-specific passthrough bag (header-name -> already
+    -formatted string value). It exists purely for forwarding: the router that produces it
+    is the only code allowed to populate or read specific keys out of it (e.g.
+    SwitchyardRouter/apply_router_routing stash the full x-codemie-routing-* header set
+    there so the proxy can re-emit it). Generic consumers (callbacks, RouterChatModel) must
+    never branch on its contents — that would just move the RoutingDecision-leak problem
+    from typed attributes into stringly-typed dict keys.
     """
 
     routed_model: str | None = None
     routed_model_label: str | None = None
     classifier_cost_usd: float | None = None
+    meta: dict[str, str] = Field(default_factory=dict)
 
     def is_empty(self) -> bool:
         return self.routed_model is None and self.routed_model_label is None and self.classifier_cost_usd is None
 
     def merged_over(self, base: "RoutingInfo") -> "RoutingInfo":
-        """Field-wise overlay: this instance's non-None fields win over ``base``."""
+        """Field-wise overlay: this instance's non-None fields win over ``base``.
+
+        ``meta`` merges as a dict union with this instance's keys winning on collision,
+        consistent with how every other field resolves.
+        """
         return RoutingInfo(
             routed_model=self.routed_model if self.routed_model is not None else base.routed_model,
             routed_model_label=(
@@ -131,43 +170,83 @@ class RoutingInfo(BaseModel):
             classifier_cost_usd=(
                 self.classifier_cost_usd if self.classifier_cost_usd is not None else base.classifier_cost_usd
             ),
+            meta={**base.meta, **self.meta},
         )
 
+    @classmethod
+    def from_response(cls, response: object) -> "RoutingInfo":
+        """Read the canonical RoutingInfo that RouterChatModel._agenerate stamps onto a
+        response's response_metadata under _ROUTING_INFO_KEY.
 
-@runtime_checkable
-class RoutingMetadataExtractor(Protocol):
-    """Reads routing metadata from an LLM response into a (partial) RoutingInfo."""
+        Duck-typed, not isinstance-gated: accepts a bare AIMessage-like object (the shape the
+        agent path passes) or an LLMResult-like wrapper (the shape LangChain's own callback
+        hooks, e.g. on_llm_end, always pass instead) — including test doubles that only set
+        the attributes they need. The single canonical implementation for what used to be
+        three independent copies (SwitchyardRouter.extract, AgentInvokeCallback,
+        AgentStreamingCallback).
+        """
 
-    def extract(self, response: LLMResult | AIMessage) -> RoutingInfo: ...
+        def _from_metadata(metadata: object) -> "RoutingInfo":
+            if isinstance(metadata, dict) and _ROUTING_INFO_KEY in metadata:
+                return cls(**metadata[_ROUTING_INFO_KEY])
+            return cls()
+
+        info = _from_metadata(getattr(response, "response_metadata", None))
+        if not info.is_empty():
+            return info
+        for gen_list in getattr(response, "generations", None) or []:
+            for gen in gen_list:
+                info = _from_metadata(getattr(getattr(gen, "message", None), "response_metadata", None))
+                if not info.is_empty():
+                    return info
+        return cls()
 
 
-def compose_routing_info(
-    response: LLMResult | AIMessage,
-    extractors: Sequence[RoutingMetadataExtractor],
-) -> RoutingInfo:
-    """Fold extractors in list order; the earlier extractor wins per field.
+class LastRoutingTracker:
+    """Accumulates the most recently observed RoutingInfo across a sequence of LLM calls
+    within one agent run, merging each new observation over what came before via
+    RoutingInfo.merged_over. Extracted out of AgentInvokeCallback/AgentStreamingCallback,
+    which each maintained their own near-identical ``_last_routing: RoutingInfo | None``
+    field plus merge logic — this is the shared state and merge behavior, not the
+    per-callback thought/metadata formatting, which still differs between the two and stays
+    where it is.
 
-    Precedence == list order at the call site. To change precedence, reorder the list.
-    Called with a real LLM response; extractors return an empty RoutingInfo when they
-    find no routing metadata.
-    """
-    result = RoutingInfo()
-    for extractor in extractors:
-        # result accumulated so far wins over later extractors:
-        result = result.merged_over(extractor.extract(response))
-    return result
+    Used to know which routing tier/classifier cost to stamp onto tool thoughts that follow
+    a routed LLM call, even though that information was only observed on an earlier call
+    (e.g. the LLM call itself, before any tool call thoughts exist to stamp)."""
+
+    def __init__(self) -> None:
+        self._current: RoutingInfo | None = None
+
+    @property
+    def current(self) -> RoutingInfo | None:
+        """The merged routing state observed so far, or None if nothing has ever been
+        observed."""
+        return self._current
+
+    def observe(self, response: object) -> RoutingInfo:
+        """Extract RoutingInfo.from_response(response), merge it into the tracked state (only
+        if non-empty), and return the extracted, UNMERGED RoutingInfo for this call alone.
+
+        Callers that need "what did this specific call report" (e.g. to avoid stamping a
+        stale routed-model name before the real one is known) use the return value; callers
+        that need "what's the running merged state" (e.g. to stamp a later, unrelated tool
+        thought) use .current instead — these are deliberately different values.
+        """
+        info = RoutingInfo.from_response(response)
+        if not info.is_empty():
+            self._current = info.merged_over(self._current) if self._current is not None else info
+        return info
 
 
-def default_routing_extractors() -> list[RoutingMetadataExtractor]:
-    """Canonical extractor list: Switchyard (x-codemie-*) wins over LiteLLM-router (x-litellm-*).
+@dataclasses.dataclass(frozen=True)
+class ClassifierUsage:
+    """One router's classifier sub-call usage, attributed to that router by construction —
+    replaces the untagged tuple-based classifier usage plumbing tokens_callback.py used to
+    build separately per mechanism (LiteLLM headers vs Switchyard RunnableConfig metadata)."""
 
-    Single source for every call site that needs to compose RoutingInfo from an LLM
-    response, so precedence can never drift between callers. Imported lazily so this
-    module keeps its documented zero import-time dependency on switchyard/litellm (see
-    module docstring) — both packages are fully initialized by the time any caller
-    actually invokes this function.
-    """
-    from codemie.enterprise.litellm.routing_headers import LiteLLMRouterExtractor
-    from codemie.enterprise.switchyard.extractor import SwitchyardRoutingExtractor
-
-    return [SwitchyardRoutingExtractor(), LiteLLMRouterExtractor()]
+    provider: str  # the Router.name that reported this usage
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float | None = None
+    model: str | None = None

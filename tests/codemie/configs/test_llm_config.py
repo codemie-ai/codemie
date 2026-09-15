@@ -24,12 +24,8 @@ _DIAL_CONFIG = _CONFIGS_DIR / "llm-dial-config.yaml"
 
 _DIAL_EXPECTED_ROUTER_NAMES: frozenset[str] = frozenset(
     {
-        "claude-opus-4-5-20251101-switchyard-claude-4-5-sonnet-signal",
-        "claude-opus-4-5-20251101-switchyard-claude-4-5-sonnet-classifier",
         "claude-opus-4-6-20260205-switchyard-claude-sonnet-4-6-signal",
         "claude-opus-4-6-20260205-switchyard-claude-sonnet-4-6-classifier",
-        "claude-4-5-sonnet-switchyard-claude-4-5-haiku-signal",
-        "claude-4-5-sonnet-switchyard-claude-4-5-haiku-classifier",
         "claude-sonnet-4-6-switchyard-claude-4-5-haiku-signal",
         "claude-sonnet-4-6-switchyard-claude-4-5-haiku-classifier",
     }
@@ -95,8 +91,14 @@ llm_models:
     deployment_name: 'capable'
     enabled: true
     switchyard:
-      efficient: 'efficient'
-      modes: [signal, classifier]
+      - base_name: 'capable-switchyard-efficient-signal'
+        label: 'SY (Signal) Capable'
+        efficient: 'efficient'
+        mode: signal
+      - base_name: 'capable-switchyard-efficient-classifier'
+        label: 'SY (Classifier) Capable'
+        efficient: 'efficient'
+        mode: classifier
   - base_name: 'efficient'
     deployment_name: 'efficient'
     enabled: true
@@ -105,9 +107,9 @@ embeddings_models: []
     )
     cfg = LLMConfig(yaml_file=yaml_file)
     capable = cfg.llm_models[0]
-    assert capable.switchyard is not None
-    assert capable.switchyard.efficient == 'efficient'
-    assert capable.switchyard.modes == [RoutingMode.SIGNAL, RoutingMode.CLASSIFIER]
+    assert len(capable.switchyard) == 2
+    assert {e.mode for e in capable.switchyard} == {RoutingMode.SIGNAL, RoutingMode.CLASSIFIER}
+    assert all(e.efficient == 'efficient' for e in capable.switchyard)
 
 
 def test_switchyard_routers_generated(tmp_path, monkeypatch):
@@ -123,8 +125,14 @@ llm_models:
     label: 'Cap Model'
     enabled: true
     switchyard:
-      efficient: 'eff'
-      modes: [signal, classifier]
+      - base_name: 'cap-switchyard-eff-signal'
+        label: 'SY (Signal) Cap Model'
+        efficient: 'eff'
+        mode: signal
+      - base_name: 'cap-switchyard-eff-classifier'
+        label: 'SY (Classifier) Cap Model'
+        efficient: 'eff'
+        mode: classifier
   - base_name: 'eff'
     deployment_name: 'eff'
     enabled: true
@@ -141,6 +149,39 @@ embeddings_models: []
     assert signal.enabled is True
 
 
+def test_switchyard_classifier_without_classifier_model_skipped(tmp_path, monkeypatch):
+    """A classifier-mode entry with no classifier_model configured (globally or per-router)
+    must not generate a router at all — it must not silently generate one that claims
+    RoutingMode.CLASSIFIER but can never invoke a classifier (see engine.py::pick_model,
+    which picks its confidence threshold from routing_mode, not from classifier availability)."""
+    from codemie.configs.config import config as app_config
+
+    monkeypatch.setattr(app_config, "SWITCHYARD_ENABLED", True)
+    monkeypatch.setattr(app_config, "SWITCHYARD_CLASSIFIER_MODEL", None)
+    yaml_file = _write_yaml(
+        tmp_path,
+        '''
+llm_models:
+  - base_name: 'cap'
+    deployment_name: 'cap'
+    enabled: true
+    switchyard:
+      - base_name: 'cap-switchyard-eff-signal'
+        efficient: 'eff'
+        mode: signal
+      - base_name: 'cap-switchyard-eff-classifier'
+        efficient: 'eff'
+        mode: classifier
+  - base_name: 'eff'
+    deployment_name: 'eff'
+    enabled: true
+embeddings_models: []
+''',
+    )
+    cfg = LLMConfig(yaml_file=yaml_file)
+    assert {r.base_name for r in cfg.llm_routers} == {'cap-switchyard-eff-signal'}
+
+
 def test_switchyard_unknown_efficient_skipped(tmp_path):
     yaml_file = _write_yaml(
         tmp_path,
@@ -150,8 +191,59 @@ llm_models:
     deployment_name: 'cap'
     enabled: true
     switchyard:
-      efficient: 'missing'
-      modes: [signal]
+      - base_name: 'cap-switchyard-missing-signal'
+        efficient: 'missing'
+        mode: signal
+embeddings_models: []
+''',
+    )
+    cfg = LLMConfig(yaml_file=yaml_file)
+    assert cfg.llm_routers == []
+
+
+def test_switchyard_capable_is_litellm_router_skipped(tmp_path):
+    """Router-on-router is not supported: a capable model that is itself declared as a
+    LiteLLM auto-router must not generate a Switchyard router (see
+    engine.py::get_proxy_switchyard_router for the symmetric live-catalog check)."""
+    yaml_file = _write_yaml(
+        tmp_path,
+        '''
+llm_models:
+  - base_name: 'cap'
+    deployment_name: 'cap'
+    enabled: true
+    litellm_router: {}
+    switchyard:
+      - base_name: 'cap-switchyard-eff-signal'
+        efficient: 'eff'
+        mode: signal
+  - base_name: 'eff'
+    deployment_name: 'eff'
+    enabled: true
+embeddings_models: []
+''',
+    )
+    cfg = LLMConfig(yaml_file=yaml_file)
+    assert cfg.llm_routers == []
+
+
+def test_switchyard_efficient_is_litellm_router_skipped(tmp_path):
+    """Same as above, but the efficient model is the one declared as a LiteLLM auto-router."""
+    yaml_file = _write_yaml(
+        tmp_path,
+        '''
+llm_models:
+  - base_name: 'cap'
+    deployment_name: 'cap'
+    enabled: true
+    switchyard:
+      - base_name: 'cap-switchyard-eff-signal'
+        efficient: 'eff'
+        mode: signal
+  - base_name: 'eff'
+    deployment_name: 'eff'
+    enabled: true
+    litellm_router: {}
 embeddings_models: []
 ''',
     )
@@ -173,8 +265,37 @@ llm_models:
     deployment_name: 'cap'
     enabled: true
     switchyard:
-      efficient: 'eff'
-      modes: [signal, classifier]
+      - base_name: 'cap-switchyard-eff-signal'
+        efficient: 'eff'
+        mode: signal
+      - base_name: 'cap-switchyard-eff-classifier'
+        efficient: 'eff'
+        mode: classifier
+  - base_name: 'eff'
+    deployment_name: 'eff'
+    enabled: true
+embeddings_models: []
+''',
+    )
+    cfg = LLMConfig(yaml_file=yaml_file)
+    assert cfg.llm_routers == []
+
+
+def test_switchyard_base_name_collides_with_model_skipped(tmp_path):
+    """A switchyard entry whose base_name matches an existing regular model's base_name must
+    be rejected — router identities now live in free-form YAML, so nothing else guarantees
+    they can't collide with a real model."""
+    yaml_file = _write_yaml(
+        tmp_path,
+        '''
+llm_models:
+  - base_name: 'cap'
+    deployment_name: 'cap'
+    enabled: true
+    switchyard:
+      - base_name: 'eff'
+        efficient: 'eff'
+        mode: signal
   - base_name: 'eff'
     deployment_name: 'eff'
     enabled: true
@@ -193,3 +314,23 @@ def test_dial_config_generates_expected_router_names(monkeypatch) -> None:
     cfg = LLMConfig(yaml_file=_DIAL_CONFIG)
     generated = {r.base_name for r in cfg.llm_routers}
     assert generated == _DIAL_EXPECTED_ROUTER_NAMES
+
+
+def test_llm_model_litellm_router_defaults_to_none():
+    from codemie.configs.llm_config import LLMModel
+
+    model = LLMModel(base_name="gpt-5.6-luna", deployment_name="gpt-5.6-luna", enabled=True)
+    assert model.litellm_router is None
+
+
+def test_llm_model_litellm_router_declared():
+    from codemie.configs.llm_config import LLMModel, LiteLLMRouterConfig
+
+    model = LLMModel(
+        base_name="smart-router",
+        deployment_name="smart-router",
+        enabled=True,
+        litellm_router=LiteLLMRouterConfig(),
+    )
+    assert model.litellm_router is not None
+    assert model.litellm_router.is_router is True

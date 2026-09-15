@@ -80,6 +80,7 @@ def test_get_llm_models(mock_llm_service):
             'label': 'Model A',
             'supports_image_generation': False,
             'forbidden_for_web': False,
+            'switchyard': [],
         },
         {
             'base_name': 'model-b',
@@ -99,6 +100,7 @@ def test_get_llm_models(mock_llm_service):
             'label': 'Model B',
             'supports_image_generation': False,
             'forbidden_for_web': False,
+            'switchyard': [],
         },
     ]
 
@@ -222,6 +224,7 @@ def test_get_embeddings_models(mock_llm_service):
             'label': 'Embedding A',
             'supports_image_generation': False,
             'forbidden_for_web': False,
+            'switchyard': [],
         },
         {
             'base_name': 'embedding-b',
@@ -241,6 +244,7 @@ def test_get_embeddings_models(mock_llm_service):
             'label': 'Embedding B',
             'supports_image_generation': False,
             'forbidden_for_web': False,
+            'switchyard': [],
         },
     ]
 
@@ -277,6 +281,7 @@ def test_get_image_generation_models(mock_llm_service):
             'label': 'Image Model',
             'supports_image_generation': True,
             'forbidden_for_web': False,
+            'switchyard': [],
         },
     ]
 

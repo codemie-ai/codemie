@@ -1,0 +1,147 @@
+{
+  "decision": "approve",
+  "rationale": "Follow-up disposition pass by the ticket owner on 2026-09-14, after code-review.final. All 9 findings resolved: CR-001 and CR-007 fixed in commits 32f377d0d and fd6b220eb respectively (each verified by new/updated tests, full affected suite green, ruff clean); CR-004 and CR-005 were already fixed upstream in commit 46e52a069 and verified against current source; CR-002, CR-003, CR-006 and CR-008 are recorded human decisions to accept the behavior as designed/acceptable risk; CR-009 (unprefixed WIP commits) is resolved procedurally by this repo's documented squash-merge strategy, which folds the branch into one ticket-prefixed commit at merge time. See finding_status below and docs/superpowers/tasks/2026-09-14-EPMCDME-14083-router-abstraction-review/code-review-resolution.md for detail.",
+  "confidence": "high",
+  "risk_flags": ["breaking-change", "public-api"],
+  "business_review": [
+    { "kind": "story-ac", "item": "Routers remain a first-class separate entity; LLMRouter.to_llm_model() deleted / never reintroduced", "status": "pass", "notes": "Confirmed: LLMRouter class has no to_llm_model method in current source." },
+    { "kind": "story-ac", "item": "Coercion to selectable REST shape happens in exactly one place (LlmRouterOption projection, no cost/deployment_name)", "status": "pass", "notes": "LlmRouterOption has no cost/deployment_name field; llm_models.py unchanged by this diff, added by an earlier same-ticket commit." },
+    { "kind": "story-ac", "item": "Frontend (codemie-ui) not touched by this ticket's change", "status": "pass", "notes": "No codemie-ui files in diff." },
+    { "kind": "story-ac", "item": "Router matrix generated automatically from compact per-model switchyard declaration, single source, no cross-config drift", "status": "fail", "notes": "ModelSwitchyard redesigned as self-configuring list[ModelSwitchyard]; base_name/label hand-authored per entry, not formula-derived. See CR-002." },
+    { "kind": "story-ac", "item": "A router base_name reaching an execution path hard-fails instead of silently collapsing", "status": "fail", "notes": "get_model_details() falls back to the default model for any unresolved name; get_llm_by_credentials never checks. See CR-008." },
+    { "kind": "story-ac", "item": "Non-goal: no change to the routing algorithm (signal/classifier decision logic)", "status": "partial", "notes": "Picking logic preserved, but RoutingDecision dropped confidence/signal_score/classifier_p_solve/crux/primary_rule/decision_source fields. See CR-003." },
+    { "kind": "story-ac", "item": "Non-goal: no change to router base_name scheme (kept 1:1 for backward compatibility)", "status": "partial", "notes": "Existing YAML entries still match the old pattern, but base_name is now freely author-specified, no code-enforced formula. See CR-002." },
+    { "kind": "story-ac", "item": "RoutingMode(str, Enum) {SIGNAL, CLASSIFIER} preserved end-to-end", "status": "pass", "notes": "Used unchanged throughout the diff." },
+    { "kind": "story-ac", "item": "SwitchyardConfig{capable_model, efficient_model, mode} domain shape preserved", "status": "pass", "notes": "Confirmed in llm_config.py and tests." },
+    { "kind": "story-ac", "item": "LLMModel.switchyard is a single optional ModelSwitchyard, not a collection", "status": "fail", "notes": "Defined as list[ModelSwitchyard] = Field(default_factory=list), not Optional[ModelSwitchyard]. See CR-002." },
+    { "kind": "story-ac", "item": "LLMConfig.llm_routers stays populated by a model_validator, never read directly from YAML", "status": "pass", "notes": "build_switchyard_routers continues to populate llm_routers via validator logic." },
+    { "kind": "story-ac", "item": "Service layer: get_all_routers()/get_allowed_router_options()/_find_router() added to llm_service.py", "status": "pass", "notes": "All three methods verified present; added by an earlier same-ticket commit, file untouched by this diff." },
+    { "kind": "story-ac", "item": "REST boundary: LlmRouterOption model, GET /v1/llm_models response_model change, capability-flag derivation", "status": "pass", "notes": "Verified present in llm_models.py; added by an earlier same-ticket commit, file untouched by this diff." },
+    { "kind": "story-ac", "item": "Agent path: capable_llm/efficient_llm built from resolved base names, not router alias; TokensCalculationCallback keeps labeling", "status": "pass", "notes": "Confirmed via Router.build_chat_model candidate construction and unchanged tokens_callback.py labeling." },
+    { "kind": "story-ac", "item": "Regression: existing switchyard/litellm proxy router tests still pass", "status": "pending-stage-7", "notes": "Code and test files updated; suite execution is Stage 7's responsibility." }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "partial", "notes": "4 of 38 commit subjects in 06d554d..HEAD lack the EPMCDME-14083 prefix (unrelated execution-container spec content, later removed). See CR-009." },
+    { "kind": "code-quality", "status": "pass", "notes": "Spot-checked core files: Apache header, future annotations, full type hints, modern union syntax throughout." },
+    { "kind": "security", "status": "pass", "notes": "No secrets/credentials logged or hardcoded; header-exposure policy hides internal headers by default; git dependency moved off personal fork." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/configs/llm_config.py",
+      "line": 298,
+      "title": "CLASSIFIER fallback log mismatches actual mode",
+      "problem": "When a Switchyard entry declares mode=CLASSIFIER with no classifier_model configured, build_switchyard_routers logs that it will fall back to signal-only routing but never changes entry.mode/the resolved SwitchyardConfig.mode away from CLASSIFIER.",
+      "impact": "ProxySwitchyardRouter.pick_model() uses classifier_threshold (not signal_threshold) for this router, contradicting the logged claim and silently applying the wrong threshold.",
+      "recommendation": "Either construct the router with mode=RoutingMode.SIGNAL when falling back, or correct the log message to state the mode stays CLASSIFIER and clarify what the fallback actually does at request time."
+    },
+    {
+      "id": "CR-002",
+      "kind": "decision",
+      "severity": "critical",
+      "triage": "decision_needed",
+      "file": "src/codemie/configs/llm_config.py",
+      "title": "Switchyard router config redesigned self-configuring, diverging from spec",
+      "problem": "ModelSwitchyard is now a freely-authored list[ModelSwitchyard] entry (base_name/label hand-specified per entry) rather than the spec's single Optional[ModelSwitchyard] field with base_name/label auto-derived from a formula; commit history confirms this was a deliberate pivot ('Make Switchyard config a self-configuring list per capable model'). build_switchyard_routers treats a base_name collision as log.error + skip, not a load failure.",
+      "impact": "Reintroduces the manual per-router authoring the ticket's problem statement wanted removed as duplicated/error-prone; nothing enforces the old 1:1 base_name scheme for new entries; a typo'd base_name silently produces fewer routers than intended, discoverable only via logs.",
+      "recommendation": "Confirm with the spec/story owner whether this self-configuring shape is an approved design pivot (and update the spec to match) or whether formula-derived base_name/label plus load-time collision failure should be restored."
+    },
+    {
+      "id": "CR-003",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/core/router.py",
+      "line": 104,
+      "title": "RoutingDecision drops diagnostic fields with no migration note",
+      "problem": "RoutingDecision now carries only model/tier/classifier; confidence, signal_score, classifier_p_solve, crux, primary_rule, decision_source are gone, and the matching x-codemie-routing-signal-*/confidence/decision_source headers are dropped from SwitchyardMeta/SWITCHYARD_FIELD_TO_HEADER with no replacement.",
+      "impact": "The spec's non-goal was 'no change to the routing algorithm'; picking logic is preserved, but any downstream dashboard/log parser reading those headers now sees permanently missing fields with no error.",
+      "recommendation": "Confirm with the spec owner whether this field/header removal is an approved simplification (and document it for downstream consumers) or whether the fields need restoring."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/router.py",
+      "line": 236,
+      "title": "Agent-path routing badge never populates for LiteLLM auto-router",
+      "problem": "LiteLLMRouter never overrides candidate_models() (stays empty), so Router.build_chat_model() always returns the raw client for it, skipping RouterChatModel. Only RouterChatModel._agenerate calls stamp_routing_info(), and RoutingInfo.from_response() (used by AgentInvokeCallback/AgentStreamingCallback) now reads only that canonical stamp — the previous raw-header-reading extractor is gone.",
+      "impact": "The UI's routed-model/classifier-cost badge, fed by these two callbacks via LastRoutingTracker.observe(), never populates for a LiteLLM-autorouted response on the agent path.",
+      "recommendation": "Have the agent-path callbacks fall back to router.extract() (which does read raw headers) when the canonical stamp is empty, or otherwise ensure stamp_routing_info() runs for LiteLLMRouter-resolved models."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/enterprise/litellm/models.py",
+      "line": 40,
+      "title": "Live-catalog models never carry litellm_router declaration",
+      "problem": "map_litellm_to_llm_model never sets litellm_router on the LLMModel it builds, so is_declared_litellm_router() is always False for any model sourced from the live LiteLLM/DIAL catalog, independent of whether LiteLLM's own proxy config.yaml declares that model_name as an auto-router.",
+      "impact": "Defeats router_factory._resolve_litellm_router (TokensCalculationCallback's classifier-usage/billed-model extraction silently loses tracking whenever the live catalog is preferred) and build_switchyard_routers' router-on-router guard for live-catalog capable/efficient models, with no error surfaced.",
+      "recommendation": "Propagate/derive litellm_router in map_litellm_to_llm_model from the live catalog's model_info (mirroring the static YAML shape), or explicitly document that live-catalog auto-router declarations are unsupported."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/enterprise/switchyard/engine.py",
+      "line": 150,
+      "title": "Unrecognized libsy Step variant silently dropped",
+      "problem": "_consume_algorithm's match step: only handles Step.CallModel and Step.Done with no catch-all case; an unrecognized Step variant is silently skipped by the match (not even logged) and the async loop continues.",
+      "impact": "If a future Step variant is yielded (e.g. after the pinned nemo-switchyard commit is bumped), a call-shaped step could never get a response and run_stream could hang instead of failing fast. Reachability against the actual Step enum at the currently pinned commit could not be confirmed.",
+      "recommendation": "Add an explicit case _: that logs and raises/breaks, matching the exhaustive-match pattern used elsewhere in this codebase."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/enterprise/switchyard/engine.py",
+      "line": 291,
+      "title": "Router-on-router check defaults to wrong model when target missing",
+      "problem": "_resolve_switchyard_setup calls llm_service.get_model_details(target) for the switchyard config's capable/efficient model; when target is missing or misconfigured, get_model_details doesn't return None — it silently falls back to the catalog's default model, so details.is_declared_litellm_router() evaluates the default model's flag, not the missing target's.",
+      "impact": "A misconfigured/typo'd capable_model or efficient_model reference silently passes the router-on-router guard (evaluated against the wrong model) instead of being rejected as invalid.",
+      "recommendation": "Check llm_service.get_model_deployment_name(target) is None (or equivalent) first and reject the setup outright, rather than consulting get_model_details' default-model fallback."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/llm_service/llm_service.py",
+      "line": 238,
+      "title": "Router base_name silently resolves to default model",
+      "problem": "get_model_details() never returns None; when a name isn't found among real models/embeddings/routers it silently falls back to the catalog's default model, and get_llm_by_credentials (core/dependecies.py) calls it unconditionally with no rejection path for a router base_name reaching an execution path.",
+      "impact": "A router base_name (or any misconfigured model name) reaching this path is silently treated as the default model rather than raising, masking the real misconfiguration and violating the spec's required hard-fail behavior.",
+      "recommendation": "Add an explicit check in get_llm_by_credentials/get_model_details that rejects (raises) when the resolved name is a router base_name."
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "unknown",
+      "title": "4 unprefixed commits remain in branch history",
+      "problem": "git-workflow.md requires 'EPMCDME-####: Description' for repository commits; 4 commit subjects in 06d554d..HEAD ('Replace RPC channel with sentinel-file polling; add Agent Workspace precedent', 'Correct execution-container spec: gVisor is already the prod baseline', 'Explain why JOBS-mode over SHARED-mode in execution container spec', 'Add design spec: isolated execution container for code-driven workflows') carry no ticket prefix.",
+      "impact": "Documented commit-format standard is violated for part of the review range; squash-merge history retains unrelated, unprefixed commits even though their file changes were later removed.",
+      "recommendation": "Squash/rebase these 4 commits out of the branch history, or confirm the eventual squash-merge commit message itself carries the correct EPMCDME-14083 prefix."
+    }
+  ],
+  "finding_status": [
+    { "id": "CR-001", "status": "resolved", "notes": "Fixed in commit 32f377d0d: classifier-mode router skipped (not generated) when no classifier_model is configured. Covered by new test_switchyard_classifier_without_classifier_model_skipped." },
+    { "id": "CR-002", "status": "resolved", "notes": "Recorded decision: approved as an intentional design pivot; no code change requested." },
+    { "id": "CR-003", "status": "resolved", "notes": "Recorded decision: dropped diagnostic fields accepted; no code change requested." },
+    { "id": "CR-004", "status": "resolved", "notes": "Already fixed upstream in commit 46e52a069 (LiteLLMRouter.build_chat_model now wraps RouterChatModel); verified against current source." },
+    { "id": "CR-005", "status": "resolved", "notes": "Already fixed upstream in commit 46e52a069 (map_litellm_to_llm_model now parses model_info.litellm_router); verified against current source." },
+    { "id": "CR-006", "status": "resolved", "notes": "Recorded decision: accepted risk. Step is a closed 2-variant union at the currently pinned switchyard_rust commit; revisit only if that pin is bumped." },
+    { "id": "CR-007", "status": "resolved", "notes": "Fixed in commit fd6b220eb: _resolve_switchyard_setup now rejects a setup when get_model_deployment_name can't resolve a target, instead of falling back to the default model's flag. Covered by new test_get_proxy_switchyard_router_rejects_target_not_in_catalog." },
+    { "id": "CR-008", "status": "resolved", "notes": "Recorded decision: intentional — internal service processes need a usable model, not a router; no code change requested." },
+    { "id": "CR-009", "status": "resolved", "notes": "Resolved procedurally: this repo's git-workflow guide defaults to squash merge, so the final ticket-prefixed squash commit absorbs these 4 unprefixed WIP commits at merge time." }
+  ]
+}

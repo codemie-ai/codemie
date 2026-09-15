@@ -76,19 +76,13 @@ class LLMService:
     def get_llm_routers(self) -> list[LLMRouter]:
         """Return the effective Switchyard router catalog.
 
-        Prefers each model's `switchyard` declaration from the live LiteLLM/DIAL catalog
-        (get_all_llm_model_info) when present, falling back to the static YAML declaration
-        for that base_name otherwise. The candidate set is the UNION of live and static
-        base_names (not just static) — a model that exists only on the live proxy (new
-        deployment, not yet added to the YAML) must still be resolvable both as a router's
-        own capable model and as another router's `efficient` target.
+        Built from the same model source as every other catalog view (get_all_llm_model_info):
+        the live LiteLLM/DIAL catalog when the proxy is enabled and initialized, the static
+        YAML declaration otherwise. No merge between the two — mixing a live capable/efficient
+        model with a stale YAML one (or vice versa) would let a router pair models that never
+        coexist in the same catalog view.
         """
-        live_by_name = {m.base_name: m for m in self.get_all_llm_model_info()}
-        merged_by_name: dict[str, LLMModel] = {m.base_name: m for m in self.llm_config.llm_models}
-        for base_name, live_model in live_by_name.items():
-            if base_name not in merged_by_name or live_model.switchyard:
-                merged_by_name[base_name] = live_model
-        return build_switchyard_routers(list(merged_by_name.values()))
+        return build_switchyard_routers(self.get_all_llm_model_info())
 
     def _find_router(self, name: str) -> LLMRouter | None:
         return next((r for r in self.get_llm_routers() if r.base_name == name and r.enabled), None)

@@ -80,7 +80,7 @@ class TestLangGraphAgent:
         with patch("codemie.agents.langgraph_agent.create_smart_react_agent") as mock_create_agent:
             mock_agent = MagicMock()
             mock_create_agent.return_value = mock_agent
-            with patch("codemie.agents.langgraph_agent.get_llm_by_credentials"):
+            with patch("codemie.core.dependecies.get_llm_by_credentials"):
                 agent = LangGraphAgent(**agent_config)
                 yield agent
 
@@ -109,7 +109,7 @@ class TestLangGraphAgent:
         }
         with (
             patch("codemie.agents.langgraph_agent.create_smart_react_agent"),
-            patch("codemie.agents.langgraph_agent.get_llm_by_credentials"),
+            patch("codemie.core.dependecies.get_llm_by_credentials"),
         ):
             return LangGraphAgent(**config)
 

@@ -69,10 +69,11 @@ llm_models:
     label: 'Cap Model'
     enabled: true
     switchyard:
-      efficient: 'eff'
-      modes: [signal]
-      tuning:
-        classifier_base_threshold: 0.9
+      - base_name: 'cap-switchyard-eff-signal'
+        efficient: 'eff'
+        mode: signal
+        tuning:
+          classifier_base_threshold: 0.9
   - base_name: 'eff'
     deployment_name: 'eff'
     enabled: true
@@ -97,8 +98,9 @@ llm_models:
     label: 'Cap Model'
     enabled: true
     switchyard:
-      efficient: 'eff'
-      modes: [signal]
+      - base_name: 'cap-switchyard-eff-signal'
+        efficient: 'eff'
+        mode: signal
   - base_name: 'eff'
     deployment_name: 'eff'
     enabled: true
@@ -121,8 +123,9 @@ llm_models:
     label: 'Cap Model'
     enabled: true
     switchyard:
-      efficient: 'eff'
-      modes: [classifier]
+      - base_name: 'cap-switchyard-eff-classifier'
+        efficient: 'eff'
+        mode: classifier
   - base_name: 'eff'
     deployment_name: 'eff'
     enabled: true

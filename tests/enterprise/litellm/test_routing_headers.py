@@ -16,36 +16,10 @@ from __future__ import annotations
 
 import dataclasses
 
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatGeneration, LLMResult
-
 from codemie.enterprise.litellm.litellm_router_meta import (
     LITELLM_ROUTER_FIELD_TO_HEADER,
     LiteLLMRouterMeta,
 )
-from codemie.enterprise.litellm.routing_headers import LiteLLMRouterExtractor
-
-
-def _llm_result_with_headers(headers: dict) -> LLMResult:
-    msg = AIMessage(content="", response_metadata={"headers": headers})
-    gen = ChatGeneration(message=msg, generation_info={"headers": headers})
-    return LLMResult(generations=[[gen]])
-
-
-def test_extracts_routed_model_and_classifier_cost_from_headers():
-    result = _llm_result_with_headers(
-        {
-            "x-litellm-router-routed-model": "claude-4-5-haiku",
-            "x-litellm-classifier-cost": "0.0009",
-        }
-    )
-    info = LiteLLMRouterExtractor().extract(result)
-    assert info.routed_model == "claude-4-5-haiku"
-    assert info.classifier_cost_usd == 0.0009
-
-
-def test_empty_when_no_router_headers():
-    assert LiteLLMRouterExtractor().extract(_llm_result_with_headers({})).is_empty()
 
 
 def test_litellm_router_meta_from_headers_reads_known_fields():

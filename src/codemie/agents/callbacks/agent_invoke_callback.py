@@ -35,7 +35,7 @@ from codemie.agents.callbacks.callback_utils import (
 from codemie.chains.base import Thought, ThoughtOutputFormat, ThoughtAuthorType
 from codemie.configs import logger
 from codemie.core.constants import OUTPUT_FORMAT
-from codemie.core.routing_info import RoutingInfo, compose_routing_info, default_routing_extractors
+from codemie.core.routing_info import LastRoutingTracker, RoutingInfo
 from codemie.service.llm_service.llm_service import llm_service
 
 
@@ -60,7 +60,7 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
         # Last routing info (routed model / classifier cost) observed from a Switchyard- or
         # LiteLLM-router-routed LLM call. Stamped onto subsequent tool thoughts so replay
         # metadata survives reload.
-        self._last_routing: RoutingInfo | None = None
+        self._routing_tracker = LastRoutingTracker()
 
     @property
     def parent_id(self) -> Optional[str]:
@@ -81,7 +81,7 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
     def _stamp_switchyard_metadata(self, thought: Thought) -> None:
         """Stamp the last observed routing info (tier/cost) onto a thought and its metadata."""
         metadata = dict(thought.metadata) if thought.metadata else {}
-        last_routing = self._last_routing
+        last_routing = self._routing_tracker.current
         routed_model = last_routing.routed_model if last_routing is not None else None
         classifier_cost_usd = last_routing.classifier_cost_usd if last_routing is not None else None
         if routed_model is not None:
@@ -237,11 +237,7 @@ class AgentInvokeCallback(StreamingStdOutCallbackHandler):
         """Run when LLM ends running."""
         author = kwargs.get("author")
         run_id = kwargs.get("run_id")
-        info = RoutingInfo()
-        if response is not None and getattr(response, "generations", None):
-            info = compose_routing_info(response, default_routing_extractors())
-        if not info.is_empty():
-            self._last_routing = info.merged_over(self._last_routing) if self._last_routing else info
+        self._routing_tracker.observe(response)
 
         current_thought = self._get_current_thought(author, run_id=run_id)
         if not current_thought:

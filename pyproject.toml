@@ -178,9 +178,8 @@ vsdx = "^0.6.1"
 starlette = "~1.3.1"  # Security (EPMCDME-12870): pin >=1.3.1 to fix CVE-2026-48818 and CVE-2026-54283
 # Security (EPMCDME-13006): pin ^8.2.1 to fix GHSA-rpj2-4hq8-938g (CWE-502 unsafe YAML deserialization in vcrpy, arbitrary code exec)
 vcrpy = "^8.2.1"
-# EPMCDME-14083: pinned to feat/routing-metadata-extra tip — main lacks Step.Decision/PyDecision
-# (the routing metadata API this repo's switchyard engine.py depends on)
-nemo-switchyard = {git = "https://github.com/yanaSelin/Switchyard.git", rev = "c7293949e2ca0e632090acbc354ab0a32f24c7c9"}
+# EPMCDME-14083: pinned to the official NVIDIA-NeMo/Switchyard main HEAD.
+nemo-switchyard = {git = "https://github.com/NVIDIA-NeMo/Switchyard.git", rev = "9b6efb94cedadca4652e2e4c3e014abed2c44831"}
 
 
 [tool.poetry.extras]

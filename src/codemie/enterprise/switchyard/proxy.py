@@ -12,46 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Proxy-side Switchyard model-routing integration.
+"""Proxy-side Router entry point plus routing-metadata SSE injection.
 
-This module sits between the LiteLLM HTTP proxy (`proxy_router.py`) and the
-Switchyard routing engine (`engine.py`). It runs the router
-when the requested capable model has a Switchyard configuration, mutates the
-request body when a cheaper model is chosen, and builds the routing metadata
-injected into responses.
+This module sits between the LiteLLM HTTP proxy (`proxy_router.py`) and whichever concrete
+Router `create_router()` resolves for a given request. It is Switchyard-owned only by
+location, not by content: `apply_router_routing()` below runs any decide()-capable Router
+(SwitchyardRouter today; any future one for free), mutates the request body when a different
+model is chosen, and builds the RoutingInfo injected into response headers/SSE
+`message_start`.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 from codemie.configs import logger
+from codemie.core.router import RoutingDecision
 
-from .decision import RoutingDecision
-from .engine import get_proxy_switchyard_router, is_switchyard_eligible_endpoint
-from codemie.enterprise.switchyard.routing_meta import SwitchyardMeta
-
-
-_MODELS_WITHOUT_ADAPTIVE_THINKING: frozenset[str] = frozenset(
-    {
-        "claude-haiku-4-5-20251001",
-    }
-)
-
-
-def _strip_adaptive_thinking(request_body: dict[str, object], model: str) -> bool:
-    """Remove adaptive thinking params from request_body when model doesn't support them.
-
-    Mutates request_body in place. Returns True if anything was stripped.
-    """
-    if model not in _MODELS_WITHOUT_ADAPTIVE_THINKING:
-        return False
-    stripped = False
-    if "thinking" in request_body:
-        del request_body["thinking"]
-        stripped = True
-    return stripped
+if TYPE_CHECKING:
+    from codemie.core.routing_info import RoutingInfo
 
 
 def _inject_routing_into_message_start(
@@ -101,6 +82,17 @@ def _process_buffered_sse_events(
     return chunks, False
 
 
+def _routing_info_to_headers(info: RoutingInfo) -> dict[str, str]:
+    """Canonical fields plus the opaque meta passthrough. Canonical fields are applied last
+    so they stay authoritative if a meta key happens to collide with one of them."""
+    headers: dict[str, str] = dict(info.meta)
+    if info.routed_model is not None:
+        headers["x-codemie-routed-model"] = info.routed_model
+    if info.classifier_cost_usd is not None:
+        headers["x-codemie-routing-classifier-cost-usd"] = f"{info.classifier_cost_usd:.6g}"
+    return headers
+
+
 async def with_routing_metadata_stream(
     source: AsyncIterator[bytes],
     routing_meta: dict[str, str],
@@ -128,79 +120,46 @@ async def with_routing_metadata_stream(
         yield bytes(buf)
 
 
-def build_switchyard_routing_meta(routing_decision: RoutingDecision) -> SwitchyardMeta:
-    """Build SwitchyardMeta from a RoutingDecision."""
-    return SwitchyardMeta(
-        requested_model=routing_decision.capable_model,
-        tier=routing_decision.tier,
-        decision_source=routing_decision.decision_source or None,
-        confidence=routing_decision.confidence,
-        classifier_model=routing_decision.classifier_model,
-        classifier_input_tokens=routing_decision.classifier_input_tokens,
-        classifier_output_tokens=routing_decision.classifier_output_tokens,
-        classifier_cached_tokens=routing_decision.classifier_cached_tokens,
-        classifier_cache_creation_tokens=routing_decision.classifier_cache_creation_tokens,
-        classifier_cost_usd=routing_decision.classifier_cost_usd,
-        classifier_p_solve=routing_decision.classifier_p_solve,
-        classifier_crux=routing_decision.classifier_crux or None,
-        classifier_primary_rule=routing_decision.classifier_primary_rule or None,
-        classifier_capability_boundary=routing_decision.classifier_capability_boundary or None,
-        signal_score=routing_decision.signal_score,
-        signal_confidence=routing_decision.signal_confidence,
-        signal_severity=routing_decision.signal_severity,
-        signal_spinning=routing_decision.signal_spinning,
-        signal_exploring=routing_decision.signal_exploring,
-        signal_production=routing_decision.signal_production_intensity,
-    )
-
-
-async def apply_switchyard_proxy_routing(
+async def apply_router_routing(
     endpoint: str,
     router_name: str,
     request_body: dict[str, object] | None,
     body_bytes: bytes,
-) -> tuple[bytes, dict[str, object] | None, RoutingDecision | None, SwitchyardMeta | None]:
-    """Apply Switchyard model routing to a proxy request.
+) -> tuple[bytes, dict[str, object] | None, RoutingDecision | None, RoutingInfo | None]:
+    """Apply Router-based model routing to a proxy request.
 
-    Runs the Switchyard router when the requested model is a configured router,
-    rewrites the request body model if a different tier is chosen, strips
-    unsupported parameters, and builds the routing metadata dict.
+    Resolves a Router via create_router(), runs it when the requested endpoint is routable,
+    rewrites the request body model if a different tier is chosen, and builds the RoutingInfo
+    directly from the decision (NOT via Router.extract() — that method is agent-path-only; the
+    proxy path already has the decision in hand and never needs to read it back out of a
+    response).
 
     Returns:
-        (updated_body_bytes, updated_request_body, routing_decision, routing_meta).
-        routing_decision and routing_meta are None when routing was not performed.
+        (updated_body_bytes, updated_request_body, routing_decision, routing_info).
+        routing_decision and routing_info are None when routing was not performed.
     """
-    if not is_switchyard_eligible_endpoint(endpoint) or not request_body:
+    from codemie.core.router import is_routable_endpoint
+    from codemie.service.llm_service.router_factory import create_router
+
+    if not is_routable_endpoint(endpoint) or not request_body:
         return body_bytes, request_body, None, None
 
-    router = get_proxy_switchyard_router(router_name=router_name)
-    if router is None:
-        return body_bytes, request_body, None, None
-
+    router = create_router(router_name)
     raw_messages = request_body.get("messages", [])
     messages: list[dict[str, object]] = (
         [m for m in raw_messages if isinstance(m, dict)] if isinstance(raw_messages, list) else []
     )
-    routing_decision = await router.pick_model(messages)
-    if routing_decision is None:
+    decision = await router.decide(messages)
+    if decision is None:
         return body_bytes, request_body, None, None
 
-    chosen_model = routing_decision.model
-    body_dirty = False
+    chosen_model = decision.model
     if chosen_model != router_name:
         request_body["model"] = chosen_model
-        body_dirty = True
-        logger.debug("[SWITCHYARD-PROXY] Override %r -> %r", router_name, chosen_model)
-    else:
-        logger.debug("[SWITCHYARD-PROXY] Keeping %r", chosen_model)
-
-    if _strip_adaptive_thinking(request_body, chosen_model):
-        body_dirty = True
-        logger.debug("[SWITCHYARD-PROXY] Stripped adaptive thinking for model=%r", chosen_model)
-
-    if body_dirty:
         body_bytes = json.dumps(request_body).encode("utf-8")
+        logger.debug("[ROUTING-PROXY] Override %r -> %r", router_name, chosen_model)
+    else:
+        logger.debug("[ROUTING-PROXY] Keeping %r", chosen_model)
 
-    routing_meta = build_switchyard_routing_meta(routing_decision)
-    routing_meta.routed_model = routing_decision.model  # actual chosen model
-    return body_bytes, request_body, routing_decision, routing_meta
+    routing_info = router.routing_info(decision)
+    return body_bytes, request_body, decision, routing_info

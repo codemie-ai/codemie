@@ -94,7 +94,6 @@ from codemie.core.constants import (
     OUTPUT_FORMAT,
     SUPERVISOR_HANDOFF_TOOL_PREFIX,
 )
-from codemie.core.dependecies import get_llm_by_credentials
 from codemie.core.models import ChatMessage, AssistantChatRequest
 from codemie.core.thread import HedgingCancellationReason, ThreadedGenerator
 from codemie.core.utils import extract_text_from_llm_output, calculate_tokens, unpack_json_strings
@@ -583,26 +582,17 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         )
 
     def _initialize_llm(self) -> BaseChatModel:
-        from codemie.enterprise.switchyard.agent import LLMParams, build_switchyard_routing_model
+        from codemie.core.router_chat_model import LLMParams
+        from codemie.service.llm_service.router_factory import create_router
 
-        # Per-call routing: each _agenerate call lets the algorithm pick capable or efficient.
-        # Returns None when self.llm_model has no Switchyard configuration.
-        llm = build_switchyard_routing_model(
-            router_name=self.llm_model,
+        router = create_router(self.llm_model)
+        if router.candidate_models():
+            logger.info(f"[ROUTING] Per-call routing active for {self.llm_model!r} via router={router.name!r}")
+        return router.build_chat_model(
+            model_name=self.llm_model,
             request_id=self.request_uuid,
             llm_params=LLMParams(temperature=self.temperature, top_p=self.top_p),
         )
-        if llm is not None:
-            logger.info(f"[SWITCHYARD-AGENT] Per-call routing active for {self.llm_model!r}")
-        else:
-            llm = get_llm_by_credentials(
-                llm_model=self.llm_model,
-                temperature=self.temperature,
-                top_p=self.top_p,
-                request_id=self.request_uuid,
-            )
-
-        return llm
 
     ###### Called by external entities ######
 

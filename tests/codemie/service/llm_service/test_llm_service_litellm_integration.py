@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
-from codemie.configs.llm_config import LLMModel, LLMProvider, LiteLLMModels
+from codemie.configs.llm_config import LLMConfig, LLMModel, LLMProvider, LiteLLMModels, ModelSwitchyard, RoutingMode
 from codemie.service.llm_service.llm_service import LLMService
 
 
@@ -169,6 +169,98 @@ class TestLiteLLMModelFallback:
 
             # Should return YAML config embeddings (not LiteLLM)
             assert all(emb.base_name != "litellm-ada-002" for emb in embeddings)
+
+
+class TestGetLlmRoutersSourceConsistency:
+    """get_llm_routers must use the same either/or model source as get_all_llm_model_info —
+    no merge between the static YAML and the live LiteLLM/DIAL catalog."""
+
+    @staticmethod
+    def _config(tmp_path, body: str) -> LLMConfig:
+        yaml_file = tmp_path / "c.yaml"
+        yaml_file.write_text(body)
+        return LLMConfig(yaml_file=yaml_file)
+
+    _YAML_WITH_SWITCHYARD = """
+llm_models:
+  - base_name: 'cap'
+    deployment_name: 'cap'
+    enabled: true
+    switchyard:
+      - base_name: 'cap-switchyard-eff-signal'
+        efficient: 'eff'
+        mode: signal
+  - base_name: 'eff'
+    deployment_name: 'eff'
+    enabled: true
+embeddings_models: []
+"""
+
+    def test_uses_yaml_switchyard_when_litellm_not_initialized(self, tmp_path, monkeypatch):
+        from codemie.configs.config import config as app_config
+
+        monkeypatch.setattr(app_config, "SWITCHYARD_ENABLED", True)
+        service = LLMService(self._config(tmp_path, self._YAML_WITH_SWITCHYARD))
+
+        routers = service.get_llm_routers()
+
+        assert {r.base_name for r in routers} == {"cap-switchyard-eff-signal"}
+
+    def test_ignores_yaml_switchyard_when_litellm_enabled_with_no_live_declaration(self, tmp_path, monkeypatch):
+        """When the proxy is enabled and initialized, routers come only from the live catalog —
+        a switchyard block declared in the static YAML for the same base_name must not leak in."""
+        from codemie.configs.config import config as app_config
+
+        monkeypatch.setattr(app_config, "SWITCHYARD_ENABLED", True)
+        monkeypatch.setattr(app_config, "LLM_PROXY_ENABLED", True)
+        service = LLMService(self._config(tmp_path, self._YAML_WITH_SWITCHYARD))
+        service.initialize_default_litellm_models(
+            LiteLLMModels(
+                chat_models=[
+                    LLMModel(base_name="cap", deployment_name="cap", enabled=True),
+                    LLMModel(base_name="eff", deployment_name="eff", enabled=True),
+                ]
+            )
+        )
+
+        routers = service.get_llm_routers()
+
+        assert routers == []
+
+    def test_uses_live_catalog_switchyard_when_litellm_enabled(self, tmp_path, monkeypatch):
+        from codemie.configs.config import config as app_config
+
+        monkeypatch.setattr(app_config, "SWITCHYARD_ENABLED", True)
+        monkeypatch.setattr(app_config, "LLM_PROXY_ENABLED", True)
+        yaml_no_switchyard = """
+llm_models:
+  - base_name: 'cap'
+    deployment_name: 'cap'
+    enabled: true
+embeddings_models: []
+"""
+        service = LLMService(self._config(tmp_path, yaml_no_switchyard))
+        service.initialize_default_litellm_models(
+            LiteLLMModels(
+                chat_models=[
+                    LLMModel(
+                        base_name="cap",
+                        deployment_name="cap",
+                        enabled=True,
+                        switchyard=[
+                            ModelSwitchyard(
+                                base_name="cap-switchyard-eff-signal", efficient="eff", mode=RoutingMode.SIGNAL
+                            )
+                        ],
+                    ),
+                    LLMModel(base_name="eff", deployment_name="eff", enabled=True),
+                ]
+            )
+        )
+
+        routers = service.get_llm_routers()
+
+        assert {r.base_name for r in routers} == {"cap-switchyard-eff-signal"}
 
 
 class TestLiteLLMDeploymentNames:

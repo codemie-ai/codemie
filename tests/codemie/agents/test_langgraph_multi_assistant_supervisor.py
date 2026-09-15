@@ -163,7 +163,7 @@ class TestLangGraphMultiAssistantSupervisor:
             mock_supervisor.compile.return_value = MagicMock()
             mock_create_supervisor.return_value = mock_supervisor
 
-            with patch("codemie.agents.langgraph_agent.get_llm_by_credentials"):
+            with patch("codemie.core.dependecies.get_llm_by_credentials"):
                 agent = LangGraphAgent(**agent_config_with_subagents)
                 yield agent
 
@@ -195,7 +195,7 @@ class TestLangGraphMultiAssistantSupervisor:
                 mock_supervisor.compile.return_value = MagicMock()
                 mock_create_supervisor.return_value = mock_supervisor
 
-                with patch("codemie.agents.langgraph_agent.get_llm_by_credentials"):
+                with patch("codemie.core.dependecies.get_llm_by_credentials"):
                     LangGraphAgent(**config)
 
                 mock_create_supervisor.assert_called_once()
@@ -224,7 +224,7 @@ class TestLangGraphMultiAssistantSupervisor:
             with patch("codemie.agents.langgraph_agent.create_smart_react_agent") as mock_create_smart_react:
                 mock_create_smart_react.return_value = MagicMock()
 
-                with patch("codemie.agents.langgraph_agent.get_llm_by_credentials"):
+                with patch("codemie.core.dependecies.get_llm_by_credentials"):
                     LangGraphAgent(**config)
 
                 mock_create_smart_react.assert_called_once()
@@ -256,7 +256,7 @@ class TestLangGraphMultiAssistantSupervisor:
             mock_supervisor.compile.return_value = MagicMock()
             mock_create_supervisor.return_value = mock_supervisor
 
-            with patch("codemie.agents.langgraph_agent.get_llm_by_credentials"):
+            with patch("codemie.core.dependecies.get_llm_by_credentials"):
                 agent = LangGraphAgent(**agent_config_with_subagents)
 
         assert len(agent.supervisor_callbacks) == 1
@@ -320,7 +320,7 @@ class TestLangGraphMultiAssistantSupervisor:
 
         with patch("codemie.agents.langgraph_agent.create_smart_react_agent") as mock_create_smart_react:
             mock_create_smart_react.return_value = MagicMock()
-            with patch("codemie.agents.langgraph_agent.get_llm_by_credentials"):
+            with patch("codemie.core.dependecies.get_llm_by_credentials"):
                 agent = LangGraphAgent(**config)
 
         mock_stream = [
@@ -478,7 +478,7 @@ class TestLangGraphMultiAssistantSupervisor:
             mock_supervisor.compile.return_value = MagicMock()
             mock_create_supervisor.return_value = mock_supervisor
 
-            with patch("codemie.agents.langgraph_agent.get_llm_by_credentials"):
+            with patch("codemie.core.dependecies.get_llm_by_credentials"):
                 agent = LangGraphAgent(**agent_config_with_subagents)
 
         first_run_id = uuid4()
@@ -564,7 +564,7 @@ class TestLangGraphMultiAssistantSupervisor:
             mock_supervisor.compile.return_value = MagicMock()
             mock_create_supervisor.return_value = mock_supervisor
 
-            with patch("codemie.agents.langgraph_agent.get_llm_by_credentials"):
+            with patch("codemie.core.dependecies.get_llm_by_credentials"):
                 agent = LangGraphAgent(**agent_config_with_subagents)
 
         first_run_id = uuid4()
@@ -740,7 +740,7 @@ class TestLangGraphMultiAssistantSupervisor:
 
         with patch("codemie.agents.langgraph_agent.create_smart_react_agent") as mock_create_smart_react:
             mock_create_smart_react.return_value = MagicMock()
-            with patch("codemie.agents.langgraph_agent.get_llm_by_credentials"):
+            with patch("codemie.core.dependecies.get_llm_by_credentials"):
                 agent = LangGraphAgent(**config)
 
         ai_message = AIMessage(content="Regular agent response")

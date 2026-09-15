@@ -315,6 +315,54 @@ class TestMapLiteLLMToLLMModel:
         result_without_tools = map_litellm_to_llm_model(litellm_model_without_tools)
         assert result_without_tools.react_agent is True
 
+    def test_maps_litellm_router_declaration(self):
+        """Test maps litellm_router from the live proxy's model_info."""
+        litellm_model = {
+            "model_name": "azure/auto-router",
+            "model_info": {
+                "litellm_router": {"is_router": True},
+            },
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.is_declared_litellm_router() is True
+
+    def test_handles_missing_litellm_router(self):
+        """Test litellm_router stays None when the live proxy doesn't declare it."""
+        litellm_model = {
+            "model_name": "azure/gpt-4",
+            "model_info": {},
+        }
+
+        from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+        result = map_litellm_to_llm_model(litellm_model)
+
+        assert result.litellm_router is None
+        assert result.is_declared_litellm_router() is False
+
+    def test_handles_invalid_litellm_router_gracefully(self):
+        """Test handles a malformed litellm_router dict (logs warning, skips)."""
+        litellm_model = {
+            "model_name": "azure/auto-router",
+            "model_info": {
+                "litellm_router": {"is_router": "not-a-bool-and-not-coercible"},
+            },
+        }
+
+        with patch("codemie.configs.logger") as mock_logger:
+            from codemie.enterprise.litellm.models import map_litellm_to_llm_model
+
+            result = map_litellm_to_llm_model(litellm_model)
+
+            assert result.litellm_router is None
+            mock_logger.warning.assert_called_once()
+            warning_msg = mock_logger.warning.call_args[0][0]
+            assert "litellm_router" in warning_msg
+
     def test_handles_max_completion_tokens_param(self):
         """Test recognizes max_completion_tokens as max_tokens support."""
         litellm_model = {

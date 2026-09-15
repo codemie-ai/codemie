@@ -39,7 +39,7 @@ from codemie.chains.base import StreamedGenerationResult, Thought, ThoughtOutput
 from codemie.core.constants import OUTPUT_FORMAT, ToolNamePrefix
 from codemie.configs import logger
 from codemie.configs.logger import current_user_email, set_logging_info
-from codemie.core.routing_info import RoutingInfo, compose_routing_info, default_routing_extractors
+from codemie.core.routing_info import LastRoutingTracker, RoutingInfo
 from codemie.core.thread import ThreadedGenerator
 from codemie.core.thought_queue import ThoughtQueue
 from codemie.service.llm_service.llm_service import llm_service
@@ -114,7 +114,7 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         }
         # Routing info (routed model / classifier cost) from the most recent Switchyard- or
         # LiteLLM-router-routed call. Updated in on_llm_end, stamped onto thoughts in on_tool_start.
-        self._last_routing: RoutingInfo | None = None
+        self._routing_tracker = LastRoutingTracker()
 
     @property
     def parent_id(self) -> str | None:
@@ -152,17 +152,16 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         thought = storage.create_thought(run_id=run_id, tool_name=self.GENERIC_TOOL_NAME)
         self._send_thought(thought)
 
-    def _update_last_routing(self, info: RoutingInfo) -> None:
-        """Merge *info* into ``_last_routing`` when it carries at least one field."""
-        if not info.is_empty():
-            self._last_routing = info.merged_over(self._last_routing) if self._last_routing else info
-
     def _extract_response_routing(self, response: "LLMResult | AIMessage | str") -> tuple[str | None, float | None]:
-        """Extract routed-model and classifier-cost from *response*, updating ``_last_routing``."""
-        info = RoutingInfo()
-        if isinstance(response, AIMessage) or (not isinstance(response, str) and hasattr(response, "generations")):
-            info = compose_routing_info(response, default_routing_extractors())
-        self._update_last_routing(info)
+        """Extract routed-model and classifier-cost from *response* alone (NOT the merged
+        running state — see LastRoutingTracker.observe), while still feeding the observation
+        into the tracker for later tool thoughts to read via .current.
+
+        Reads the canonical RoutingInfo via RoutingInfo.from_response — duck-typed, so a
+        plain ``str`` response (no ``response_metadata``/``generations`` attributes) resolves
+        to an empty RoutingInfo without needing a separate branch.
+        """
+        info = self._routing_tracker.observe(response)
         return info.routed_model, info.classifier_cost_usd
 
     def _build_routing_update_fields(
@@ -205,8 +204,9 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
         **kwargs: Any,
     ) -> None:
         # Extract the routed model and classifier cost from the response itself. We
-        # intentionally keep this separate from ``_last_routing`` so that we do not
-        # stamp a stale base name onto the thought before the real routed model is known.
+        # intentionally keep this separate from ``self._routing_tracker.current`` (the merged
+        # running state) so that we do not stamp a stale base name onto the thought before the
+        # real routed model is known.
         response_tier, response_cost = self._extract_response_routing(response)
 
         storage = self._get_storage(author)
@@ -324,7 +324,7 @@ class AgentStreamingCallback(StreamingStdOutCallbackHandler):
             output_format=output_format,
             by_run_id=True,
         )
-        last_routing = self._last_routing
+        last_routing = self._routing_tracker.current
         if last_routing is not None and last_routing.routed_model is not None and thought.metadata is not None:
             thought.metadata["llm_tier"] = last_routing.routed_model
         if last_routing is not None and not last_routing.is_empty():

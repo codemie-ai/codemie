@@ -13,16 +13,23 @@
 # limitations under the License.
 
 import pytest
-from uuid import UUID
-from unittest.mock import patch
+from uuid import UUID, uuid4
+from unittest.mock import MagicMock, patch
 import asyncio
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import LLMResult, Generation, ChatGeneration
 
 from codemie.agents.callbacks.tokens_callback import TokensCalculationCallback
+from codemie.core.router import ClassifierCall, RoutingDecision
+from codemie.core.routing_info import ClassifierUsage, RoutingInfo
 from codemie.service.request_summary_manager import LLMRun
 from codemie.service.llm_service.llm_service import LLMService
 from codemie.configs.llm_config import CostConfig
+
+
+def _llm_result(content: str = "hi") -> LLMResult:
+    message = AIMessage(content=content, usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
+    return LLMResult(generations=[[ChatGeneration(message=message)]])
 
 
 @pytest.fixture
@@ -452,6 +459,34 @@ def test_on_llm_end_falls_back_to_calculate_when_header_absent(
 
 
 @patch('codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost')
+@patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
+@patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
+def test_on_llm_end_uses_response_metadata_model_name_when_generation_info_has_no_model(
+    mock_calculate_token_cost, mock_update_llm_run, mock_get_model_cost, callback
+):
+    """Plain (non-proxied) providers embed the actually-served model in response_metadata
+    (e.g. ChatOpenAI's `model_name`), not generation_info — this must still resolve
+    billed_model for the cost-model lookup."""
+    message = AIMessage(
+        content="Test response",
+        usage_metadata={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+        response_metadata={"model_name": "gpt-4o-2024-08-06"},
+    )
+    generation = ChatGeneration(text="Test response", message=message)
+    result = LLMResult(generations=[[generation]])
+
+    mock_get_model_cost.return_value = CostConfig(input=0.001, output=0.002)
+    mock_calculate_token_cost.return_value = (0.05, 0.0, 0.0)
+
+    asyncio.run(callback.on_llm_end(response=result, run_id=UUID('12345678-1234-5678-1234-567812345678')))
+
+    mock_get_model_cost.assert_called_once_with("gpt-4o-2024-08-06")
+    mock_calculate_token_cost.assert_called_once()
+    assert mock_calculate_token_cost.call_args[1]["llm_model"] == "gpt-4o-2024-08-06"
+    mock_update_llm_run.assert_called_once()
+
+
+@patch('codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost')
 @patch('codemie.agents.callbacks.tokens_callback.config')
 @patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
 @patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
@@ -612,61 +647,62 @@ def test_on_llm_end_skips_litellm_proxy_lru_cache_hit(mock_update_llm_run, mock_
     )
 
 
-class TestExtractRoutedModelFromResponseMetadata:
-    """Unit tests for _extract_routed_model_from_response_metadata."""
-
-    @staticmethod
-    def _call(metadata: dict) -> str | None:
-        from codemie.agents.callbacks.tokens_callback import TokensCalculationCallback
-
-        return TokensCalculationCallback._extract_routed_model_from_response_metadata(metadata)
-
-    def test_proxy_model_fallback(self):
-        result = self._call({"model": "gpt-4o"})
-        assert result == "gpt-4o"
-
-    def test_returns_none_when_empty(self):
-        assert self._call({}) is None
-
-
 def _make_switchyard_decision(**overrides: object):
     """Build a minimal RoutingDecision for tests without depending on pick_model()'s internals."""
     import dataclasses
 
-    from codemie.enterprise.switchyard.decision import RoutingDecision
-
     base = RoutingDecision(
         model="claude-haiku-4-5-20251001",
         tier="efficient",
-        capable_model="claude-sonnet-5",
-        confidence=0.3,
     )
     return dataclasses.replace(base, **overrides)
+
+
+def _make_router(
+    *,
+    routing_info: RoutingInfo | None = None,
+    classifier_usage: ClassifierUsage | None = None,
+) -> MagicMock:
+    """A duck-typed Router double exposing the methods on_llm_end relies on. Both
+    routing_info() and extract() are stubbed identically: on_llm_end picks whichever one
+    applies (routing_info() when a decision was stashed, extract() otherwise — see
+    TokensCalculationCallback.on_llm_end), and these tests don't care which, only what
+    display_routing ends up being."""
+    router = MagicMock()
+    resolved = routing_info if routing_info is not None else RoutingInfo()
+    router.extract.return_value = resolved
+    router.routing_info.return_value = resolved
+    router.extract_classifier_usage.return_value = classifier_usage
+    return router
 
 
 @patch('codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost')
 @patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
 @patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
-def test_on_llm_end_registers_switchyard_classifier_as_separate_run(
+def test_on_llm_end_registers_router_classifier_usage_as_separate_run(
     mock_calculate_token_cost, mock_update_llm_run, mock_get_model_cost, callback
 ):
-    """Switchyard's classifier sub-call gets its own billable LLMRun, mirroring the LiteLLM-router path.
+    """A router's classifier sub-call usage gets its own billable LLMRun.
 
-    The decision travels through on_chat_model_start's config metadata (see
-    switchyard/agent.py::_agenerate), not response_metadata — response_metadata for this
-    call doesn't exist yet at the time on_chat_model_start/on_llm_end fire on this callback.
+    The (router, decision) pair travels through on_chat_model_start's config metadata (see
+    core/router_chat_model.py::RouterChatModel._agenerate), not response_metadata —
+    response_metadata for this call doesn't exist yet at the time on_chat_model_start/
+    on_llm_end fire on this callback.
     """
-    from codemie.enterprise.switchyard.routing_meta import _SWITCHYARD_DECISION_METADATA_KEY
+    from codemie.core.router_chat_model import _ROUTING_CTX_KEY
 
     run_id = UUID('12345678-1234-5678-1234-567812345678')
-    decision = _make_switchyard_decision(
-        classifier_used=True,
-        classifier_model="gpt-5.6-luna-2026-07-09",
-        classifier_input_tokens=200,
-        classifier_output_tokens=15,
-        classifier_cost_usd=0.0021,
+    decision = _make_switchyard_decision(classifier=ClassifierCall())
+    router = _make_router(
+        classifier_usage=ClassifierUsage(
+            provider="switchyard",
+            input_tokens=200,
+            output_tokens=15,
+            cost_usd=0.0021,
+            model="gpt-5.6-luna-2026-07-09",
+        )
     )
-    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={_SWITCHYARD_DECISION_METADATA_KEY: decision})
+    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={_ROUTING_CTX_KEY: (router, decision)})
 
     message = BaseMessage(
         type="",
@@ -690,22 +726,24 @@ def test_on_llm_end_registers_switchyard_classifier_as_separate_run(
     assert classifier_run.input_tokens == 200
     assert classifier_run.output_tokens == 15
     assert classifier_run.llm_model == "gpt-5.6-luna-2026-07-09"
-    # The pending decision must be consumed exactly once.
-    assert run_id not in callback._pending_decisions
+    router.extract_classifier_usage.assert_called_once()
+    # The pending (router, decision) pair must be consumed exactly once.
+    assert run_id not in callback._pending
 
 
 @patch('codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost')
 @patch('codemie.agents.callbacks.tokens_callback.request_summary_manager.update_llm_run')
 @patch('codemie.agents.callbacks.tokens_callback.calculate_token_cost')
-def test_on_llm_end_skips_switchyard_classifier_run_when_classifier_not_used(
+def test_on_llm_end_skips_classifier_run_when_router_reports_no_usage(
     mock_calculate_token_cost, mock_update_llm_run, mock_get_model_cost, callback
 ):
     """Signal-mode routing (no classifier call) must not fabricate a classifier LLMRun."""
-    from codemie.enterprise.switchyard.routing_meta import _SWITCHYARD_DECISION_METADATA_KEY
+    from codemie.core.router_chat_model import _ROUTING_CTX_KEY
 
     run_id = UUID('12345678-1234-5678-1234-567812345678')
-    decision = _make_switchyard_decision()  # classifier_used defaults to False
-    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={_SWITCHYARD_DECISION_METADATA_KEY: decision})
+    decision = _make_switchyard_decision()  # classifier defaults to None (no classifier sub-call)
+    router = _make_router(classifier_usage=None)
+    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={_ROUTING_CTX_KEY: (router, decision)})
 
     message = BaseMessage(
         type="",
@@ -723,17 +761,67 @@ def test_on_llm_end_skips_switchyard_classifier_run_when_classifier_not_used(
     mock_update_llm_run.assert_called_once()
 
 
-def test_on_llm_error_clears_pending_decision():
-    """A pending decision must not leak in self._pending_decisions when the call errors."""
-    from codemie.agents.callbacks.tokens_callback import TokensCalculationCallback
-    from codemie.enterprise.switchyard.routing_meta import _SWITCHYARD_DECISION_METADATA_KEY
+def test_on_llm_error_clears_pending_routing_ctx():
+    """A pending (router, decision) pair must not leak in self._pending when the call errors."""
+    from codemie.core.router_chat_model import _ROUTING_CTX_KEY
 
     callback = TokensCalculationCallback(request_id="test_request_id", llm_model="gpt-4.1-mini")
     run_id = UUID('12345678-1234-5678-1234-567812345678')
     decision = _make_switchyard_decision()
-    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={_SWITCHYARD_DECISION_METADATA_KEY: decision})
-    assert run_id in callback._pending_decisions
+    router = _make_router()
+    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={_ROUTING_CTX_KEY: (router, decision)})
+    assert run_id in callback._pending
 
     callback.on_llm_error(RuntimeError("boom"), run_id=run_id)
 
-    assert run_id not in callback._pending_decisions
+    assert run_id not in callback._pending
+
+
+@pytest.mark.asyncio
+async def test_on_llm_end_uses_stashed_router_when_present():
+    """When a decision was stashed pre-call, display_routing must come from
+    router.routing_info(decision), NOT router.extract(response) — extract() reads a stamp
+    that RouterChatModel._agenerate only applies *after* this callback's own on_llm_end fires
+    (see Router.extract()'s docstring on core/router.py), so for a SwitchyardRouter-style
+    decision-bearing call, extract() would see this unstamped _llm_result() and return empty.
+    routing_info(decision) has no such ordering dependency — this is the regression test for
+    that fix."""
+    callback = TokensCalculationCallback(request_id="req-1", llm_model="claude-4-5-haiku")
+    router = MagicMock()
+    router.routing_info.return_value = RoutingInfo(routed_model="claude-4-5-haiku")
+    router.extract_classifier_usage.return_value = None
+    decision = RoutingDecision(
+        model="claude-4-5-haiku",
+        tier="efficient",
+    )
+    run_id = uuid4()
+    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={"_routing_ctx": (router, decision)})
+
+    with patch("codemie.service.request_summary_manager.request_summary_manager.update_llm_run") as mock_update:
+        await callback.on_llm_end(_llm_result(), run_id=run_id)
+
+    router.routing_info.assert_called_once_with(decision)
+    router.extract.assert_not_called()
+    router.extract_classifier_usage.assert_called_once()
+    mock_update.assert_called_once()
+    llm_run = mock_update.call_args.kwargs["llm_run"]
+    assert llm_run.routing == RoutingInfo(routed_model="claude-4-5-haiku")
+
+
+@pytest.mark.asyncio
+async def test_on_llm_end_falls_back_to_create_router_when_nothing_stashed():
+    callback = TokensCalculationCallback(request_id="req-1", llm_model="gpt-4.1")
+    fallback_router = MagicMock()
+    fallback_router.extract.return_value = RoutingInfo()
+    fallback_router.extract_classifier_usage.return_value = None
+    run_id = uuid4()
+    # No on_chat_model_start call at all — nothing stashed for this run_id.
+
+    with (
+        patch("codemie.service.llm_service.router_factory.create_router", return_value=fallback_router) as mock_create,
+        patch("codemie.service.request_summary_manager.request_summary_manager.update_llm_run"),
+    ):
+        await callback.on_llm_end(_llm_result(), run_id=run_id)
+
+    mock_create.assert_called_once_with("gpt-4.1")
+    fallback_router.extract.assert_called_once()

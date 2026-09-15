@@ -21,7 +21,6 @@ from codemie.enterprise.switchyard.routing_meta import (
     SwitchyardMeta,
     SWITCHYARD_FIELD_TO_HEADER,
     SWITCHYARD_HEADERS,
-    _SWITCHYARD_RESPONSE_META_KEY,
 )
 
 
@@ -30,7 +29,7 @@ def test_to_headers_includes_only_non_none_fields():
     headers = meta.to_headers()
     assert headers["x-codemie-routing-tier"] == "efficient"
     assert headers["x-codemie-routed-model"] == "claude-haiku-4-5"
-    assert "x-codemie-routing-confidence" not in headers  # None field omitted
+    assert "x-codemie-routing-classifier-model" not in headers  # None field omitted
 
 
 def test_classifier_model_round_trips_through_headers_and_dict():
@@ -47,9 +46,8 @@ def test_classifier_model_round_trips_through_headers_and_dict():
 
 
 def test_to_headers_serialises_float_fields():
-    meta = SwitchyardMeta(confidence=0.875, classifier_cost_usd=0.001234)
+    meta = SwitchyardMeta(classifier_cost_usd=0.001234)
     headers = meta.to_headers()
-    assert headers["x-codemie-routing-confidence"] == "0.875"
     assert headers["x-codemie-routing-classifier-cost-usd"] == "0.001234"
 
 
@@ -70,24 +68,20 @@ def test_switchyard_headers_matches_field_to_header_values():
     assert frozenset(SWITCHYARD_FIELD_TO_HEADER.values()) == SWITCHYARD_HEADERS
 
 
-def test_response_meta_key_is_stable():
-    assert _SWITCHYARD_RESPONSE_META_KEY == "_switchyard_routing"
-
-
 def test_field_to_header_keys_match_dataclass_fields():
     field_names = {f.name for f in dataclasses.fields(SwitchyardMeta)}
     assert set(SWITCHYARD_FIELD_TO_HEADER.keys()) == field_names
 
 
 def test_to_headers_percent_encodes_non_ascii_characters():
-    # LLM classifiers can emit Unicode (e.g. "разработка") in crux/rule fields.
-    # Starlette raises UnicodeEncodeError if header values contain chars > 255.
-    # Non-ASCII is percent-encoded (reversible) rather than replaced with '?'.
-    meta = SwitchyardMeta(classifier_crux="разработка", classifier_primary_rule="→ simple")
+    # Model/tier names could in principle carry Unicode. Starlette raises
+    # UnicodeEncodeError if header values contain chars > 255. Non-ASCII is
+    # percent-encoded (reversible) rather than replaced with '?'.
+    meta = SwitchyardMeta(requested_model="разработка", classifier_model="→ simple")
     headers = meta.to_headers()
     # All values must be representable as latin-1 (no UnicodeEncodeError)
     for v in headers.values():
         v.encode("latin-1")  # must not raise
     # Original Unicode is fully preserved after percent-decoding
-    assert unquote(headers["x-codemie-routing-classifier-crux"]) == "разработка"
-    assert unquote(headers["x-codemie-routing-classifier-primary-rule"]) == "→ simple"
+    assert unquote(headers["x-codemie-requested-model"]) == "разработка"
+    assert unquote(headers["x-codemie-routing-classifier-model"]) == "→ simple"

@@ -96,10 +96,11 @@ from codemie.repository.project_budget_repository import project_budget_assignme
 # Import proxy utils from loader (with enterprise package availability check)
 from ..loader import inject_user_into_body, parse_usage_from_response
 from codemie.enterprise.switchyard.proxy import (
-    apply_switchyard_proxy_routing,
+    apply_router_routing,
     with_routing_metadata_stream,
+    _routing_info_to_headers,
 )
-from codemie.enterprise.switchyard.routing_meta import SwitchyardMeta
+from codemie.core.routing_info import RoutingInfo
 from codemie.enterprise.litellm.litellm_router_meta import LITELLM_ROUTER_HEADERS
 
 
@@ -164,14 +165,35 @@ LITELLM_FORWARDED_HEADERS = frozenset(
 )
 
 
+@dataclass(frozen=True)
+class _HeaderExposurePolicy:
+    """One upstream backend's own header-hiding policy: every response header name under
+    ``prefix`` is hidden from clients by default (assumed internal to that backend — call
+    IDs, spend figures, key material, ...), except the individually allowlisted names in
+    ``exposed``. This proxy currently forwards to exactly one such backend (LiteLLM,
+    ``x-litellm-*``); if a second upstream starts putting its own internal header family on
+    responses this proxy forwards, it gets one more policy appended to
+    ``_HEADER_EXPOSURE_POLICIES`` below — ``_should_forward_response_header`` itself never
+    needs to change."""
+
+    prefix: str
+    exposed: frozenset[str]
+
+    def hides(self, header_name_lower: str) -> bool:
+        return header_name_lower.startswith(self.prefix) and header_name_lower not in self.exposed
+
+
+_HEADER_EXPOSURE_POLICIES: tuple[_HeaderExposurePolicy, ...] = (
+    _HeaderExposurePolicy(prefix="x-litellm-", exposed=LITELLM_ROUTER_HEADERS | LITELLM_FORWARDED_HEADERS),
+)
+
+
 def _should_forward_response_header(name: str) -> bool:
     """Return True when *name* should be included in the upstream response forwarded to clients."""
     ln = name.lower()
-    return (
-        ln not in PROXY_RESPONSE_HOP_BY_HOP_HEADERS
-        and ln != CODEMIE_CACHE_HIT_HEADER
-        and (not ln.startswith("x-litellm-") or ln in LITELLM_ROUTER_HEADERS or ln in LITELLM_FORWARDED_HEADERS)
-    )
+    if ln in PROXY_RESPONSE_HOP_BY_HOP_HEADERS or ln == CODEMIE_CACHE_HIT_HEADER:
+        return False
+    return not any(policy.hides(ln) for policy in _HEADER_EXPOSURE_POLICIES)
 
 
 def _sanitize_local_response_headers(headers: dict) -> dict:
@@ -1151,7 +1173,7 @@ async def _streaming_response_with_usage_tracking(
     request_info: dict,
     llm_model: str,
     background_tasks: BackgroundTasks,
-    routing_meta: SwitchyardMeta | None = None,
+    routing_info: RoutingInfo | None = None,
 ):
     """
     Stream response with usage tracking (uses codemie services).
@@ -1182,8 +1204,8 @@ async def _streaming_response_with_usage_tracking(
 
     try:
         chunk_source = (
-            with_routing_metadata_stream(downstream_response.aiter_raw(), routing_meta.to_headers())
-            if routing_meta
+            with_routing_metadata_stream(downstream_response.aiter_raw(), _routing_info_to_headers(routing_info))
+            if routing_info
             else downstream_response.aiter_raw()
         )
         async for chunk in chunk_source:
@@ -1426,8 +1448,8 @@ async def _proxy_to_llm_proxy(
     body_bytes, request_body = await _read_request_body(request)
     request_info[LLM_MODEL] = _extract_model(request_body, request_info, path_params) or UNKNOWN
 
-    # Switchyard proxy routing: score conversation history and pick model tier.
-    body_bytes, request_body, routing_decision, switchyard_routing_meta = await apply_switchyard_proxy_routing(
+    # Router-based model routing: score conversation history and pick model tier.
+    body_bytes, request_body, routing_decision, routing_info = await apply_router_routing(
         endpoint=endpoint,
         router_name=request_info.get(LLM_MODEL, UNKNOWN),
         request_body=request_body,
@@ -1552,8 +1574,8 @@ async def _proxy_to_llm_proxy(
     # Exception: LiteLLM router headers (explicit allowlist via LITELLM_ROUTER_HEADERS)
     # and LITELLM_FORWARDED_HEADERS are explicitly forwarded for client observability.
     response_headers = {k: v for k, v in downstream_response.headers.items() if _should_forward_response_header(k)}
-    if switchyard_routing_meta is not None:
-        response_headers.update(switchyard_routing_meta.to_headers())
+    if routing_info is not None:
+        response_headers.update(_routing_info_to_headers(routing_info))
 
     # GET /v1/models is a plain pass-through to LiteLLM, which lists only concrete
     # deployments. Switchyard routers are virtual models resolved inside this proxy,
@@ -1582,7 +1604,7 @@ async def _proxy_to_llm_proxy(
                 request_info=request_info,
                 llm_model=llm_model,
                 background_tasks=background_tasks,
-                routing_meta=switchyard_routing_meta,
+                routing_info=routing_info,
             ),
             status_code=downstream_response.status_code,
             headers=response_headers,

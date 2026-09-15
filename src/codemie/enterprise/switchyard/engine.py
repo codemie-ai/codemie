@@ -27,17 +27,18 @@ stateless (the classifier client is per-call, and the routing stub client
 is a dummy).
 
 Configuration:
-    config.SWITCHYARD_ENABLED: master switch (default True); False disables all routing
+    config.SWITCHYARD_ENABLED: master switch (default False); False disables all routing
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Protocol
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
 import switchyard.libsy as libsy
 
 from codemie.configs import config, logger
-from codemie.enterprise.switchyard.decision import RoutingDecision, RoutingTier
+from codemie.core.router import ClassifierCall, RoutingDecision
 from codemie.enterprise.switchyard.llm_clients import _BASE_REQUEST, _ClassifierLlmClient, _RoutingLlmClient
 from codemie.enterprise.switchyard.message_format import (
     _has_recent_compaction_marker,
@@ -47,64 +48,18 @@ from codemie.enterprise.switchyard.message_format import (
 
 if TYPE_CHECKING:
     from codemie.configs.llm_config import SwitchyardConfig, SwitchyardTuning
+    from codemie.enterprise.switchyard.llm_clients import _ClassifierUsage
 
 
-_SWITCHYARD_ELIGIBLE_ENDPOINTS: frozenset[str] = frozenset(
-    {
-        "v1/messages",
-        "v1/chat/completions",
-    }
-)
+class RoutingTier(StrEnum):
+    """Which candidate model a Switchyard routing decision selected. Switchyard-owned, not
+    part of the shared RoutingDecision contract (core/router.py) — RoutingDecision.tier is a
+    plain str precisely because tier naming/meaning is a per-router concept, and today
+    Switchyard is the only router with tiers at all. StrEnum members are themselves str
+    instances, so they satisfy RoutingDecision.tier's str type directly, with no cast."""
 
-
-class _PyDecision(Protocol):
-    """Structural type for libsy's opaque native (PyO3) decision object.
-
-    libsy ships no Python type stubs, so this documents the subset of its
-    interface pick_model() actually relies on, in place of Any. ``get_str``
-    is deliberately NOT part of this protocol: older .so builds don't have
-    it, so callers probe for it with getattr(decision, "get_str", None).
-    """
-
-    def get(self, key: str) -> Any: ...
-    @property
-    def selected_model_id(self) -> str: ...
-
-
-def _decision_get(decision: _PyDecision, key: str, fallback: str | None = None) -> Any:
-    """Read a scalar value from a PyDecision with an optional legacy fallback key."""
-    value = decision.get(key)
-    if value is None and fallback:
-        value = decision.get(fallback)
-    return value
-
-
-def _decision_get_str(decision: _PyDecision, key: str, fallback: str | None = None) -> str | None:
-    """Read a string value from a PyDecision with an optional legacy fallback key."""
-    getter = getattr(decision, "get_str", None)
-    if getter is None:
-        return None
-    value = getter(key)
-    if value is None and fallback:
-        value = getter(fallback)
-    return value
-
-
-def _compute_routing_confidence(
-    classifier_used: bool,
-    classifier_p_solve: float | None,
-    signal_score: float | None,
-) -> float | None:
-    """Return routing confidence in [0, 1]: P(capable model needed).
-
-    Classifier path: 1 - classifier_p_solve  (classifier_p_solve = P(efficient sufficient)).
-    Signal path: (signal_score + 1) / 2  (score in (-1,+1), +1=capable, -1=efficient).
-    """
-    if classifier_used and classifier_p_solve is not None:
-        return 1.0 - classifier_p_solve
-    if signal_score is not None:
-        return (signal_score + 1.0) / 2.0
-    return None
+    CAPABLE = "capable"
+    EFFICIENT = "efficient"
 
 
 class ProxySwitchyardRouter:
@@ -135,14 +90,17 @@ class ProxySwitchyardRouter:
         # Routing stub used by libsy stage_router when it asks for a dummy completion.
         self._routing_client = _RoutingLlmClient()
 
-    def _fallback_decision(self, decision_source: str) -> RoutingDecision:
-        """Escalate to capable when routing can't run to completion (compaction/error/no-decision)."""
+    def _fallback_decision(self, reason: str) -> RoutingDecision:
+        """Escalate to capable when routing can't run to completion (compaction/error/no-decision).
+
+        *reason* is logged (not stored — RoutingDecision carries no decision-source field)
+        so the "no_decision" case, which has no other log line at its call site, still shows
+        up in observability.
+        """
+        logger.info("[SWITCHYARD-PROXY] Fallback to capable: reason=%s", reason)
         return RoutingDecision(
             model=self.capable_model,
             tier=RoutingTier.CAPABLE,
-            capable_model=self.capable_model,
-            confidence=None,
-            decision_source=decision_source,
         )
 
     def _build_classifier(self) -> tuple[_ClassifierLlmClient | None, libsy.LlmFallback | None]:
@@ -150,7 +108,6 @@ class ProxySwitchyardRouter:
             return None, None
         classifier_client = _ClassifierLlmClient(self.tuning.classifier_model)
         classifier = libsy.LlmFallback(
-            "classifier",
             config=libsy.TaskClassifierConfig(
                 base_threshold=self.tuning.classifier_base_threshold,
                 threshold_step=self.tuning.classifier_threshold_step,
@@ -160,10 +117,13 @@ class ProxySwitchyardRouter:
         return classifier_client, classifier
 
     async def _dispatch_call(self, call: libsy.ModelCall, classifier_client: _ClassifierLlmClient | None) -> None:
-        """Answer one algorithm-issued model call (classifier or routing stub)."""
-        target = call.models[0] if call.models else "efficient"
+        """Answer one algorithm-issued model call. call.models carries the literal model ID(s)
+        this call targets (drawn from the `models` mapping passed to run_stream) — the judge's
+        classifier_model when the algorithm is invoking the classifier, or capable_model/
+        efficient_model when it's probing a routing candidate (e.g. for context-window fit)."""
+        target = call.models[0] if call.models else self.efficient_model
         try:
-            if target == "classifier" and classifier_client:
+            if classifier_client is not None and target == self.tuning.classifier_model:
                 response = await classifier_client.call(call.request)
             else:
                 response = await self._routing_client.call(call.request)
@@ -182,27 +142,73 @@ class ProxySwitchyardRouter:
         self,
         algorithm: libsy.Algorithm,
         routing_request: dict[str, object],
+        models: dict[str, list[str]],
         classifier_client: _ClassifierLlmClient | None,
-    ) -> _PyDecision | None:
-        """Drive the algorithm's step stream to completion, returning its last decision."""
-        last_decision: _PyDecision | None = None
-        async for step in algorithm.run_stream(routing_request):
+    ) -> libsy.RoutingOutcome | None:
+        """Drive the algorithm's step stream to completion, returning its final outcome."""
+        outcome: libsy.RoutingOutcome | None = None
+        async for step in algorithm.run_stream(routing_request, models):
             match step:
                 case libsy.Step.CallModel(call=call):
                     await self._dispatch_call(call, classifier_client)
-                case libsy.Step.Decision(decision=decision):
-                    last_decision = decision
-        return last_decision
+                case libsy.Step.Done(outcome=done_outcome):
+                    outcome = done_outcome
+        return outcome
 
     def _resolve_tier_and_model(self, selected_model_id: str) -> tuple[RoutingTier, str]:
-        # Trust the algorithm's selected_model_id — it already applied the configured
+        # Trust the algorithm's selection — it already applied the configured
         # confidence_threshold internally.  The FallThrough cascade always terminates
-        # with a DefaultTarget (FallOpen) so last_decision always carries a selection.
-        # selected_model_id itself is a raw string from the libsy native binding — its
-        # target-name convention ("capable"/"efficient"), not our RoutingTier.
-        if selected_model_id == "efficient":
+        # with a DefaultTarget (FallOpen) so outcome.selected_model_ids always carries a
+        # selection. selected_model_id is one of the literal capable_model/efficient_model
+        # strings passed via the `models` mapping in run_stream — not a role name.
+        if selected_model_id == self.efficient_model:
             return RoutingTier.EFFICIENT, self.efficient_model_deployment_name
         return RoutingTier.CAPABLE, self.capable_model_deployment_name
+
+    def _resolve_classifier_usage(
+        self, classifier_client: "_ClassifierLlmClient | None"
+    ) -> tuple["_ClassifierUsage | None", bool]:
+        """Read usage directly from the per-call instance — no shared state involved."""
+        usage = classifier_client.usage if (classifier_client and classifier_client.usage.called) else None
+        classifier_used = classifier_client.usage.classifier_used if classifier_client else False
+        return usage, classifier_used
+
+    def _build_classifier_call(self, usage: "_ClassifierUsage | None") -> ClassifierCall:
+        input_tokens = usage.input_tokens if usage else 0
+        output_tokens = usage.output_tokens if usage else 0
+        cached_tokens = usage.cached_tokens if usage else None
+        cache_creation_tokens = usage.cache_creation_tokens if usage else None
+        cost_usd = usage.cost_usd if usage else None
+        return ClassifierCall(
+            model=self.tuning.classifier_model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+            cache_creation_tokens=cache_creation_tokens,
+            cost_usd=cost_usd,
+        )
+
+    def _log_decision(
+        self,
+        tier: RoutingTier,
+        chosen: str,
+        threshold: float,
+        classifier_call: ClassifierCall | None,
+    ) -> None:
+        cost = classifier_call.cost_usd if classifier_call else None
+        logger.info(
+            "[SWITCHYARD-PROXY] decision: tier=%s model=%r mode=%s threshold=%s "
+            "classifier_tokens=%s/%s cached=%s creation=%s classifier_cost=%s",
+            tier,
+            chosen,
+            self.routing_mode,
+            threshold,
+            classifier_call.input_tokens if classifier_call else None,
+            classifier_call.output_tokens if classifier_call else None,
+            classifier_call.cached_tokens if classifier_call else None,
+            classifier_call.cache_creation_tokens if classifier_call else None,
+            f"{cost:.6f}" if cost is not None else "n/a",
+        )
 
     async def pick_model(
         self,
@@ -245,124 +251,88 @@ class ProxySwitchyardRouter:
 
         classifier_client, classifier = self._build_classifier()
         algorithm: libsy.Algorithm = libsy.algorithms.stage_router(
-            "capable",
-            "efficient",
             picker="efficient_first",
             confidence_threshold=threshold,
             recent_window=self.tuning.recent_window,
             classifier=classifier,
         )
+        models: dict[str, list[str]] = {
+            "capable": [self.capable_model],
+            "efficient": [self.efficient_model],
+            "any": [self.capable_model, self.efficient_model],
+        }
+        if classifier_client is not None and self.tuning.classifier_model:
+            models["judge"] = [self.tuning.classifier_model]
 
         try:
-            last_decision = await self._consume_algorithm(algorithm, routing_request, classifier_client)
+            outcome = await self._consume_algorithm(algorithm, routing_request, models, classifier_client)
         except Exception as exc:
             logger.warning("[SWITCHYARD-PROXY] Algorithm routing failed: %s", exc)
             return self._fallback_decision("router_error")
 
-        # Read usage directly from the per-call instance — no shared state involved.
-        _c = classifier_client.usage if (classifier_client and classifier_client.usage.called) else None
-        classifier_used: bool = classifier_client.usage.classifier_used if classifier_client else False
-        classifier_confidence: float | None = None
-        classifier_input_tokens: int | None = _c.input_tokens if _c else None
-        classifier_output_tokens: int | None = _c.output_tokens if _c else None
-        classifier_cached_tokens: int | None = _c.cached_tokens if _c else None
-        classifier_cache_creation_tokens: int | None = _c.cache_creation_tokens if _c else None
-        classifier_cost_usd: float | None = _c.cost_usd if _c else None
+        usage, classifier_used = self._resolve_classifier_usage(classifier_client)
+        classifier_call = self._build_classifier_call(usage) if classifier_used else None
 
-        if last_decision is None:
+        if outcome is None or not outcome.selected_model_ids:
             return self._fallback_decision("no_decision")
 
-        # Read routing metadata from state.extra.
-        # Scalars via PyDecision.get(); strings via PyDecision.get_str() (requires rebuilt .so).
-        signal_score: float | None = last_decision.get("signal_score")
-        signal_confidence: float | None = last_decision.get("signal_confidence")
-        signal_severity: float | None = last_decision.get("signal_severity")
-        signal_spinning: float | None = last_decision.get("signal_spinning")
-        signal_exploring: float | None = last_decision.get("signal_exploring")
-        signal_production_intensity: float | None = last_decision.get("signal_production_intensity")
-        classifier_p_solve: float | None = _decision_get(last_decision, "classifier_p_solve", "judge_p_solve")
-        classifier_crux: str | None = _decision_get_str(last_decision, "classifier_crux", "judge_crux")
-        classifier_primary_rule: str | None = _decision_get_str(
-            last_decision, "classifier_primary_rule", "judge_primary_rule"
-        )
-        classifier_capability_boundary: str | None = _decision_get_str(
-            last_decision, "classifier_capability_boundary", "judge_capability_boundary"
-        )
-        decision_source: str | None = _decision_get_str(last_decision, "decision_source")
-
-        confidence = _compute_routing_confidence(classifier_used, classifier_p_solve, signal_score)
-
-        tier, chosen = self._resolve_tier_and_model(last_decision.selected_model_id)
-
-        logger.info(
-            "[SWITCHYARD-PROXY] decision: tier=%s model=%r mode=%s threshold=%s "
-            "classifier_tokens=%s/%s cached=%s creation=%s classifier_cost=%s "
-            "signal_score=%s signal_confidence=%s classifier_p_solve=%s decision_source=%s",
-            tier,
-            chosen,
-            self.routing_mode,
-            threshold,
-            classifier_input_tokens,
-            classifier_output_tokens,
-            classifier_cached_tokens,
-            classifier_cache_creation_tokens,
-            f"{classifier_cost_usd:.6f}" if classifier_cost_usd is not None else "n/a",
-            signal_score,
-            signal_confidence,
-            classifier_p_solve,
-            decision_source,
-        )
+        tier, chosen = self._resolve_tier_and_model(outcome.selected_model_ids[0])
+        self._log_decision(tier, chosen, threshold, classifier_call)
         return RoutingDecision(
             model=chosen,
             tier=tier,
-            capable_model=self.capable_model,
-            confidence=confidence,
-            classifier_used=classifier_used,
-            classifier_model=self.tuning.classifier_model if classifier_used else None,
-            classifier_confidence=classifier_confidence,
-            classifier_input_tokens=classifier_input_tokens,
-            classifier_output_tokens=classifier_output_tokens,
-            classifier_cached_tokens=classifier_cached_tokens,
-            classifier_cache_creation_tokens=classifier_cache_creation_tokens,
-            classifier_cost_usd=classifier_cost_usd,
-            signal_score=signal_score,
-            signal_confidence=signal_confidence,
-            signal_severity=signal_severity,
-            signal_spinning=signal_spinning,
-            signal_exploring=signal_exploring,
-            signal_production_intensity=signal_production_intensity,
-            classifier_p_solve=classifier_p_solve,
-            classifier_crux=classifier_crux,
-            classifier_primary_rule=classifier_primary_rule,
-            classifier_capability_boundary=classifier_capability_boundary,
-            decision_source=decision_source,
+            classifier=classifier_call,
         )
 
 
-def _get_model_deployment_name(base_name: str) -> str | None:
-    """Return the deployment_name for a model base_name, preferring the live LiteLLM/DIAL
-    catalog when available — matches the AGENT-path resolution in get_llm_by_credentials,
-    so proxy-path and agent-path routing decisions target the same deployment."""
-    from codemie.service.llm_service.llm_service import llm_service  # local import to avoid circular deps
-
-    return llm_service.get_model_deployment_name(base_name)
-
-
-def _get_switchyard_model_config(router_name: str) -> SwitchyardConfig | None:
-    """Return the SwitchyardConfig for *router_name*, or None if not configured.
-
-    Reads the effective router catalog (live LiteLLM/DIAL catalog when available,
-    static YAML fallback otherwise — see LLMService.get_llm_routers).
+def _resolve_switchyard_setup(router_name: str) -> tuple[SwitchyardConfig, str, str] | None:
+    """Resolve everything get_proxy_switchyard_router needs from the live catalog in one pass:
+    the router's SwitchyardConfig, plus its capable/efficient deployment names — or None if
+    Switchyard is disabled, *router_name* has no Switchyard configuration, either target does
+    not resolve to a real model in the live catalog, or either target is itself resolvable as a
+    router (a Switchyard alias, via is_router_model, or a declared LiteLLM auto-router). Both
+    checks run against the live catalog, not just the static YAML build_switchyard_routers
+    already validates against — this is defense in depth against catalog drift, mirroring the
+    `details is not None and ...` guard style already used in router_factory.create_router.
     """
     if not config.SWITCHYARD_ENABLED:
         return None
 
     from codemie.service.llm_service.llm_service import llm_service  # local import to avoid circular deps
 
+    sw_config: SwitchyardConfig | None = None
     for router in llm_service.get_llm_routers():
         if router.base_name == router_name and router.enabled:
-            return router.switchyard
-    return None
+            sw_config = router.switchyard
+            break
+    if sw_config is None:
+        return None
+
+    deployments: dict[str, str] = {}
+    for role, target in (("capable", sw_config.capable_model), ("efficient", sw_config.efficient_model)):
+        deployment = llm_service.get_model_deployment_name(target)
+        if deployment is None:
+            logger.warning(
+                "[SWITCHYARD-PROXY] %r's %s model %r not found in the current catalog; skipping Switchyard for %r.",
+                router_name,
+                role,
+                target,
+                router_name,
+            )
+            return None
+        details = llm_service.get_model_details(target)
+        if llm_service.is_router_model(target) or (details is not None and details.is_declared_litellm_router()):
+            logger.error(
+                "[SWITCHYARD-PROXY] Router-on-router not supported: %r's %s model is itself a "
+                "router; skipping Switchyard for %r.",
+                router_name,
+                role,
+                router_name,
+            )
+            return None
+        deployments[role] = deployment
+
+    return sw_config, deployments["capable"], deployments["efficient"]
 
 
 def get_proxy_switchyard_router(
@@ -374,26 +344,20 @@ def get_proxy_switchyard_router(
     configuration.  The router is stateless, so a new instance is created for
     every request.
     """
-    sw_config = _get_switchyard_model_config(router_name)
-    if sw_config is None:
+    setup = _resolve_switchyard_setup(router_name)
+    if setup is None:
         return None
+    sw_config, capable_deployment, efficient_deployment = setup
 
     logger.debug(
         f"[SWITCHYARD-PROXY] New router: "
         f"capable={sw_config.capable_model!r} efficient={sw_config.efficient_model!r} mode={sw_config.mode}"
     )
-    efficient_deployment = _get_model_deployment_name(sw_config.efficient_model)
-    capable_deployment = _get_model_deployment_name(sw_config.capable_model)
     return ProxySwitchyardRouter(
         capable_model=sw_config.capable_model,
         efficient_model=sw_config.efficient_model,
         routing_mode=sw_config.mode,
-        capable_model_deployment_name=capable_deployment or sw_config.capable_model,
-        efficient_model_deployment_name=efficient_deployment or sw_config.efficient_model,
+        capable_model_deployment_name=capable_deployment,
+        efficient_model_deployment_name=efficient_deployment,
         tuning=sw_config.tuning,
     )
-
-
-def is_switchyard_eligible_endpoint(endpoint: str) -> bool:
-    """Return True for endpoints that support Switchyard model routing."""
-    return endpoint.lstrip("/") in _SWITCHYARD_ELIGIBLE_ENDPOINTS

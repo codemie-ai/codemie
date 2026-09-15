@@ -1,13 +1,13 @@
 # Copyright 2026 EPAM Systems, Inc. (“EPAM”)
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
+# Licensed under the Apache License, Version 2.0 (the “License”);
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
+# distributed under the License is distributed on an “AS IS” BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
@@ -15,9 +15,7 @@
 import dataclasses
 from typing import ClassVar
 
-from langchain_core.messages import AIMessage
-
-from codemie.core.routing_info import RoutingHeaderCodec, RoutingInfo, compose_routing_info
+from codemie.core.routing_info import ClassifierUsage, RoutingHeaderCodec, RoutingInfo
 
 
 def test_merged_over_prefers_self_non_none_fields():
@@ -34,29 +32,23 @@ def test_merged_over_keeps_base_when_self_empty():
     assert merged == base
 
 
+def test_merged_over_unions_meta_with_self_winning_on_collision():
+    base = RoutingInfo(meta={"x-codemie-routing-tier": "capable", "x-codemie-routing-confidence": "0.9"})
+    top = RoutingInfo(meta={"x-codemie-routing-tier": "efficient"})
+    merged = top.merged_over(base)
+    assert merged.meta == {"x-codemie-routing-tier": "efficient", "x-codemie-routing-confidence": "0.9"}
+
+
 def test_is_empty():
     assert RoutingInfo().is_empty()
     assert not RoutingInfo(routed_model="x").is_empty()
 
 
-class _Fixed:
-    def __init__(self, info: RoutingInfo) -> None:
-        self._info = info
-
-    def extract(self, response):  # noqa: ARG002
-        return self._info
-
-
-def test_compose_first_extractor_wins_per_field():
-    first = _Fixed(RoutingInfo(routed_model="haiku"))
-    second = _Fixed(RoutingInfo(routed_model="sonnet", classifier_cost_usd=0.02))
-    merged = compose_routing_info(response=AIMessage(content=""), extractors=[first, second])
-    assert merged.routed_model == "haiku"  # first wins
-    assert merged.classifier_cost_usd == 0.02  # only second had it
-
-
-def test_compose_empty_extractors_returns_empty():
-    assert compose_routing_info(response=AIMessage(content=""), extractors=[]).is_empty()
+def test_is_empty_ignores_meta():
+    """meta is a bonus passthrough, not part of the "did we route" signal used by
+    request_summary_manager.py / conversation.py / assistant_handlers.py to decide whether to
+    attach routing info at all."""
+    assert RoutingInfo(meta={"x-codemie-routing-tier": "capable"}).is_empty()
 
 
 @dataclasses.dataclass
@@ -105,3 +97,12 @@ def test_header_codec_percent_encodes_non_ascii():
 
     assert restored.name is not None
     assert unquote(restored.name) == "разработка"
+
+
+def test_classifier_usage_is_a_plain_dataclass_with_defaults():
+    usage = ClassifierUsage(provider="switchyard", input_tokens=10, output_tokens=5)
+    assert usage.provider == "switchyard"
+    assert usage.input_tokens == 10
+    assert usage.output_tokens == 5
+    assert usage.cost_usd is None
+    assert usage.model is None
