@@ -1,0 +1,383 @@
+uvx codemie-test-harness --sanity-api
+Downloading botocore (14.7MiB)
+Downloading codemie-test-harness (81.7MiB)
+ Downloaded botocore
+ Downloaded codemie-test-harness
+Installed 119 packages in 523ms
+Running test suite: sanity-api - API sanity suite - stable API tests without 
+external service credentials
+Running: 
+/Users/oleg_sotnichenko/.cache/uv/archive-v0/vKYbmJ-l6rHqnJzz/bin/python -m 
+pytest 
+/Users/oleg_sotnichenko/.cache/uv/archive-v0/vKYbmJ-l6rHqnJzz/lib/python3.13/sit
+e-packages/codemie_test_harness/tests -n 8 -m api and sanity --reruns 2 
+--timeout 300 
+(cwd=/Users/oleg_sotnichenko/.cache/uv/archive-v0/vKYbmJ-l6rHqnJzz/lib/python3.1
+3/site-packages/codemie_test_harness)
+API Domain: http://localhost:8080
+AWS credentials: Not configured
+
+============================================================
+[pytest_configure] CODEMIE_API_DOMAIN: http://localhost:8080
+============================================================
+
+============================= test session starts ==============================
+platform darwin -- Python 3.13.14, pytest-8.4.2, pluggy-1.6.0 -- /Users/oleg_sotnichenko/.cache/uv/archive-v0/vKYbmJ-l6rHqnJzz/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/oleg_sotnichenko/.cache/uv/archive-v0/vKYbmJ-l6rHqnJzz/lib/python3.13/site-packages/codemie_test_harness
+configfile: pytest.ini
+plugins: repeat-0.9.4, xdist-3.8.0, timeout-2.4.0, anyio-4.14.2, rerunfailures-15.1, langsmith-0.10.10, reportportal-5.6.1, base-url-2.1.0, playwright-0.8.0
+timeout: 300.0s
+timeout method: signal
+timeout func_only: True
+created: 8/8 workers
+8 workers [172 items]
+
+scheduling tests via LoadScheduling
+
+tests/assistant/marketplace/test_marketplace.py::test_marketplace_unpublish 
+tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.docx] 
+tests/assistant/test_assistants.py::test_delete_assistant 
+tests/assistant/datasource/test_file_indexing.py::test_create_file_datasource_with_two_files 
+tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.gif] 
+tests/assistant/marketplace/test_marketplace.py::test_reaction_marketplace_assistant 
+tests/assistant/test_assistants.py::test_get_prebuilt_assistants 
+tests/assistant/test_assistants.py::test_get_assistant_by_id 
+[gw4] [  0%] PASSED tests/assistant/test_assistants.py::test_get_prebuilt_assistants 
+tests/assistant/test_assistants.py::test_get_users_assistants 
+[gw4] [  1%] PASSED tests/assistant/test_assistants.py::test_get_users_assistants 
+tests/assistant/test_assistants.py::test_get_default_marketplace_assistants 
+[gw6] [  1%] PASSED tests/assistant/test_assistants.py::test_delete_assistant 
+[gw4] [  2%] PASSED tests/assistant/test_assistants.py::test_get_default_marketplace_assistants 
+tests/assistant/test_assistants.py::test_get_assistant_context 
+tests/assistant/test_assistants.py::test_ask_assistant 
+[gw4] [  2%] PASSED tests/assistant/test_assistants.py::test_get_assistant_context 
+tests/assistant/test_assistants.py::test_get_available_tools 
+[gw6] [  3%] PASSED tests/assistant/test_assistants.py::test_ask_assistant 
+tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.docx] 
+[gw2] [  4%] PASSED tests/assistant/marketplace/test_marketplace.py::test_marketplace_unpublish 
+tests/assistant/marketplace/test_marketplace.py::test_marketplace_validation_fields_recommendation[wrong_name_good_description_good_prompt] 
+[gw3] [  4%] PASSED tests/assistant/marketplace/test_marketplace.py::test_reaction_marketplace_assistant 
+tests/assistant/test_assistant_builtin_subagents.py::test_builtin_subagent_catalog_contains_general_purpose 
+[gw3] [  5%] PASSED tests/assistant/test_assistant_builtin_subagents.py::test_builtin_subagent_catalog_contains_general_purpose 
+tests/assistant/test_assistant_builtin_subagents.py::test_builtin_subagent_catalog_has_display_name 
+[gw3] [  5%] PASSED tests/assistant/test_assistant_builtin_subagents.py::test_builtin_subagent_catalog_has_display_name 
+tests/assistant/test_assistants.py::test_create_assistant 
+[gw3] [  6%] PASSED tests/assistant/test_assistants.py::test_create_assistant 
+tests/assistant/test_assistants.py::test_get_all_assistants 
+[gw3] [  6%] PASSED tests/assistant/test_assistants.py::test_get_all_assistants 
+tests/conversations/test_conversations_endpoints.py::test_get_conversation_by_assistant_id 
+[gw5] [  7%] PASSED tests/assistant/test_assistants.py::test_get_assistant_by_id 
+tests/assistant/test_assistants.py::test_get_assistant_by_slug 
+[gw4] [  8%] PASSED tests/assistant/test_assistants.py::test_get_available_tools 
+tests/assistant/test_sub_assistants.py::test_create_assistant_with_multiple_sub_assistants 
+[gw5] [  8%] PASSED tests/assistant/test_assistants.py::test_get_assistant_by_slug 
+tests/assistant/test_assistants.py::test_list_assistants_minimal_response 
+[gw5] [  9%] PASSED tests/assistant/test_assistants.py::test_list_assistants_minimal_response 
+tests/assistant/test_assistants.py::test_list_assistants_full_response 
+[gw5] [  9%] PASSED tests/assistant/test_assistants.py::test_list_assistants_full_response 
+tests/assistant/test_assistants.py::test_update_assistant 
+[gw4] [ 10%] PASSED tests/assistant/test_sub_assistants.py::test_create_assistant_with_multiple_sub_assistants 
+tests/assistant/test_sub_assistants.py::test_update_assistant_to_add_sub_assistant 
+[gw5] [ 11%] PASSED tests/assistant/test_assistants.py::test_update_assistant 
+tests/conversations/test_conversations_endpoints.py::test_update_conversation_name 
+[gw4] [ 11%] PASSED tests/assistant/test_sub_assistants.py::test_update_assistant_to_add_sub_assistant 
+tests/assistant/test_sub_assistants.py::test_update_assistant_to_remove_sub_assistant 
+[gw4] [ 12%] PASSED tests/assistant/test_sub_assistants.py::test_update_assistant_to_remove_sub_assistant 
+tests/assistant/test_sub_assistants.py::test_nested_sub_assistants_not_allowed 
+[gw4] [ 12%] PASSED tests/assistant/test_sub_assistants.py::test_nested_sub_assistants_not_allowed 
+tests/assistant/test_sub_assistants.py::test_chat_with_sub_assistant_and_output_schema[pydantic_non_stream] 
+[gw3] [ 13%] PASSED tests/conversations/test_conversations_endpoints.py::test_get_conversation_by_assistant_id 
+tests/conversations/test_conversations_endpoints.py::test_delete_conversation 
+[gw5] [ 13%] PASSED tests/conversations/test_conversations_endpoints.py::test_update_conversation_name 
+tests/conversations/test_conversations_endpoints.py::test_update_conversation_pin_status 
+[gw3] [ 14%] PASSED tests/conversations/test_conversations_endpoints.py::test_delete_conversation 
+tests/conversations/test_conversations_endpoints.py::test_get_non_existent_conversation 
+[gw3] [ 15%] PASSED tests/conversations/test_conversations_endpoints.py::test_get_non_existent_conversation 
+tests/conversations/test_conversations_endpoints.py::test_create_conversation 
+[gw3] [ 15%] PASSED tests/conversations/test_conversations_endpoints.py::test_create_conversation 
+tests/conversations/test_conversations_endpoints.py::test_create_conversation_with_folder 
+[gw3] [ 16%] PASSED tests/conversations/test_conversations_endpoints.py::test_create_conversation_with_folder 
+tests/conversations/test_conversations_endpoints.py::test_create_and_list_folders 
+[gw3] [ 16%] PASSED tests/conversations/test_conversations_endpoints.py::test_create_and_list_folders 
+tests/conversations/test_conversations_endpoints.py::test_update_folder_name 
+[gw3] [ 17%] PASSED tests/conversations/test_conversations_endpoints.py::test_update_folder_name 
+tests/conversations/test_conversations_endpoints.py::test_delete_folder_without_conversations 
+[gw3] [ 18%] PASSED tests/conversations/test_conversations_endpoints.py::test_delete_folder_without_conversations 
+tests/conversations/test_conversations_endpoints.py::test_delete_folder_with_conversations 
+[gw3] [ 18%] PASSED tests/conversations/test_conversations_endpoints.py::test_delete_folder_with_conversations 
+tests/conversations/test_conversations_endpoints.py::test_delete_conversation_history 
+[gw5] [ 19%] PASSED tests/conversations/test_conversations_endpoints.py::test_update_conversation_pin_status 
+tests/conversations/test_conversations_endpoints.py::test_update_conversation_folder 
+[gw3] [ 19%] PASSED tests/conversations/test_conversations_endpoints.py::test_delete_conversation_history 
+tests/conversations/test_conversations_endpoints.py::test_delete_history_by_index 
+[gw5] [ 20%] PASSED tests/conversations/test_conversations_endpoints.py::test_update_conversation_folder 
+tests/conversations/test_conversations_endpoints.py::test_get_conversation_files 
+[gw4] [ 20%] PASSED tests/assistant/test_sub_assistants.py::test_chat_with_sub_assistant_and_output_schema[pydantic_non_stream] 
+tests/conversations/test_conversations_endpoints.py::test_list_conversations 
+[gw5] [ 21%] PASSED tests/conversations/test_conversations_endpoints.py::test_get_conversation_files 
+tests/conversations/test_conversations_endpoints.py::test_get_conversation_files_with_uploaded_file 
+[gw4] [ 22%] PASSED tests/conversations/test_conversations_endpoints.py::test_list_conversations 
+tests/conversations/test_conversations_endpoints.py::test_get_specific_conversation 
+[gw6] [ 22%] PASSED tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.docx] 
+tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.xlsx] 
+[gw4] [ 23%] PASSED tests/conversations/test_conversations_endpoints.py::test_get_specific_conversation 
+tests/conversations/test_conversations_sharing.py::test_share_nonexistent_conversation 
+[gw4] [ 23%] PASSED tests/conversations/test_conversations_sharing.py::test_share_nonexistent_conversation 
+tests/conversations/test_conversations_sharing.py::test_access_shared_conversation_invalid_token 
+[gw4] [ 24%] PASSED tests/conversations/test_conversations_sharing.py::test_access_shared_conversation_invalid_token 
+tests/projects/test_projects_positive.py::test_list_projects 
+[gw4] [ 25%] PASSED tests/projects/test_projects_positive.py::test_list_projects 
+tests/search/test_search_assistant.py::test_search_assistant_by_filters[search_full_name] 
+[gw4] [ 25%] PASSED tests/search/test_search_assistant.py::test_search_assistant_by_filters[search_full_name] 
+tests/search/test_search_assistant.py::test_search_assistant_by_filters[created_by_and_search_full] 
+[gw4] [ 26%] SKIPPED tests/search/test_search_assistant.py::test_search_assistant_by_filters[created_by_and_search_full] 
+tests/search/test_search_assistant.py::test_search_assistant_by_filters[created_by_only] 
+[gw4] [ 26%] SKIPPED tests/search/test_search_assistant.py::test_search_assistant_by_filters[created_by_only] 
+tests/search/test_search_assistant.py::test_search_assistant_by_filters[shared_and_search_full] 
+[gw4] [ 27%] PASSED tests/search/test_search_assistant.py::test_search_assistant_by_filters[shared_and_search_full] 
+tests/search/test_search_assistant.py::test_search_assistant_by_filters[not_global_and_search_full] 
+[gw4] [ 27%] PASSED tests/search/test_search_assistant.py::test_search_assistant_by_filters[not_global_and_search_full] 
+tests/search/test_search_assistant.py::test_search_assistant_by_filters[search_partial_name] 
+[gw4] [ 28%] PASSED tests/search/test_search_assistant.py::test_search_assistant_by_filters[search_partial_name] 
+tests/search/test_search_assistant.py::test_search_assistant_by_filters[created_by_and_search_partial] 
+[gw4] [ 29%] SKIPPED tests/search/test_search_assistant.py::test_search_assistant_by_filters[created_by_and_search_partial] 
+tests/search/test_search_assistant.py::test_search_assistant_by_filters[shared_and_search_partial] 
+[gw4] [ 29%] PASSED tests/search/test_search_assistant.py::test_search_assistant_by_filters[shared_and_search_partial] 
+tests/search/test_search_assistant.py::test_search_assistant_by_filters[not_global_and_search_partial] 
+[gw4] [ 30%] PASSED tests/search/test_search_assistant.py::test_search_assistant_by_filters[not_global_and_search_partial] 
+tests/search/test_search_workflow.py::test_search_workflows_by_filters[name_only] 
+[gw4] [ 30%] PASSED tests/search/test_search_workflow.py::test_search_workflows_by_filters[name_only] 
+tests/search/test_search_workflow.py::test_search_workflows_by_filters[project_only] 
+[gw4] [ 31%] PASSED tests/search/test_search_workflow.py::test_search_workflows_by_filters[project_only] 
+tests/search/test_search_workflow.py::test_search_workflows_by_filters[project_and_name] 
+[gw5] [ 31%] PASSED tests/conversations/test_conversations_endpoints.py::test_get_conversation_files_with_uploaded_file 
+[gw4] [ 32%] PASSED tests/search/test_search_workflow.py::test_search_workflows_by_filters[project_and_name] 
+tests/conversations/test_conversations_sharing.py::test_share_conversation_with_multiple_messages 
+tests/search/test_search_workflow.py::test_search_workflows_by_filters[shared_only] 
+[gw4] [ 33%] PASSED tests/search/test_search_workflow.py::test_search_workflows_by_filters[shared_only] 
+tests/search/test_search_workflow.py::test_search_workflows_by_filters[shared_and_name] 
+[gw4] [ 33%] PASSED tests/search/test_search_workflow.py::test_search_workflows_by_filters[shared_and_name] 
+tests/search/test_search_workflow.py::test_search_workflows_by_filters[partial_name] 
+[gw4] [ 34%] PASSED tests/search/test_search_workflow.py::test_search_workflows_by_filters[partial_name] 
+tests/search/test_search_workflow.py::test_search_workflows_by_filters[project_and_partial_name] 
+[gw4] [ 34%] PASSED tests/search/test_search_workflow.py::test_search_workflows_by_filters[project_and_partial_name] 
+tests/skill/test_skill_crud.py::test_create_skill 
+[gw4] [ 35%] PASSED tests/skill/test_skill_crud.py::test_create_skill 
+tests/skill/test_skill_crud.py::test_get_skill_by_id 
+[gw3] [ 36%] PASSED tests/conversations/test_conversations_endpoints.py::test_delete_history_by_index 
+tests/conversations/test_conversations_endpoints.py::test_update_history_by_index 
+[gw4] [ 36%] PASSED tests/skill/test_skill_crud.py::test_get_skill_by_id 
+tests/skill/test_skill_crud.py::test_list_skills 
+[gw4] [ 37%] PASSED tests/skill/test_skill_crud.py::test_list_skills 
+tests/skill/test_skill_crud.py::test_update_skill_all_fields 
+[gw4] [ 37%] PASSED tests/skill/test_skill_crud.py::test_update_skill_all_fields 
+tests/skill/test_skill_crud.py::test_delete_skill 
+[gw4] [ 38%] PASSED tests/skill/test_skill_crud.py::test_delete_skill 
+tests/skill/test_skill_crud.py::test_get_skill_by_name 
+[gw4] [ 38%] PASSED tests/skill/test_skill_crud.py::test_get_skill_by_name 
+tests/skill/test_skill_crud.py::test_create_skill_with_visibility_user 
+[gw4] [ 39%] PASSED tests/skill/test_skill_crud.py::test_create_skill_with_visibility_user 
+tests/skill/test_skill_import_export.py::test_import_skill_from_md 
+[gw4] [ 40%] PASSED tests/skill/test_skill_import_export.py::test_import_skill_from_md 
+tests/skill/test_skill_import_export.py::test_export_skill 
+[gw4] [ 40%] PASSED tests/skill/test_skill_import_export.py::test_export_skill 
+tests/skill/test_skill_import_export.py::test_import_and_export_roundtrip 
+[gw1] [ 41%] PASSED tests/assistant/datasource/test_file_indexing.py::test_create_file_datasource_with_two_files 
+tests/assistant/datasource/test_zip_file_indexing.py::test_create_file_datasource_from_zip_with_mixed_file_types 
+[gw4] [ 41%] PASSED tests/skill/test_skill_import_export.py::test_import_and_export_roundtrip 
+tests/skill/test_skill_statistics.py::test_events_log_returns_list_response 
+[gw4] [ 42%] PASSED tests/skill/test_skill_statistics.py::test_events_log_returns_list_response 
+tests/skill/test_skill_statistics.py::test_events_stats_returns_list_response 
+[gw4] [ 43%] PASSED tests/skill/test_skill_statistics.py::test_events_stats_returns_list_response 
+tests/swagger/test_swagger_endpoint.py::test_swagger_endpoint_is_accessible 
+[gw4] [ 43%] PASSED tests/swagger/test_swagger_endpoint.py::test_swagger_endpoint_is_accessible 
+tests/swagger/test_swagger_endpoint.py::test_swagger_endpoint_returns_html 
+[gw4] [ 44%] PASSED tests/swagger/test_swagger_endpoint.py::test_swagger_endpoint_returns_html 
+tests/swagger/test_swagger_endpoint.py::test_openapi_json_endpoint 
+[gw4] [ 44%] PASSED tests/swagger/test_swagger_endpoint.py::test_openapi_json_endpoint 
+tests/user/test_user_info.py::test_about_me 
+[gw4] [ 45%] PASSED tests/user/test_user_info.py::test_about_me 
+tests/user/test_user_info.py::test_get_user_data 
+[gw4] [ 45%] PASSED tests/user/test_user_info.py::test_get_user_data 
+tests/workflow/chat_mode/test_workflow_chat_mode.py::test_workflow_with_assistant_chat_mode 
+[gw0] [ 46%] PASSED tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.docx] 
+tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.xlsx] 
+[gw7] [ 47%] PASSED tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.gif] 
+tests/assistant/test_assistants.py::test_assistant_has_an_access_to_the_history 
+[gw3] [ 47%] PASSED tests/conversations/test_conversations_endpoints.py::test_update_history_by_index 
+tests/conversations/test_conversations_endpoints.py::test_upsert_history_conversation 
+[gw3] [ 48%] PASSED tests/conversations/test_conversations_endpoints.py::test_upsert_history_conversation 
+tests/conversations/test_conversations_sharing.py::test_share_conversation_basic 
+[gw2] [ 48%] PASSED tests/assistant/marketplace/test_marketplace.py::test_marketplace_validation_fields_recommendation[wrong_name_good_description_good_prompt] 
+tests/assistant/marketplace/test_marketplace.py::test_marketplace_validation_fields_recommendation[good_name_wrong_description_good_prompt] 
+[gw3] [ 49%] PASSED tests/conversations/test_conversations_sharing.py::test_share_conversation_basic 
+tests/workflow/context_management/test_clear_prior_messages.py::test_workflow_clear_prior_messages_false_default 
+[gw5] [ 50%] PASSED tests/conversations/test_conversations_sharing.py::test_share_conversation_with_multiple_messages 
+tests/conversations/test_conversations_sharing.py::test_access_conversation_multiple_times 
+[gw4] [ 50%] PASSED tests/workflow/chat_mode/test_workflow_chat_mode.py::test_workflow_with_assistant_chat_mode 
+tests/workflow/chat_mode/test_workflow_chat_mode.py::test_workflow_with_virtual_assistant_chat_mode 
+[gw5] [ 51%] PASSED tests/conversations/test_conversations_sharing.py::test_access_conversation_multiple_times 
+tests/conversations/test_conversations_sharing.py::test_share_conversation_with_file_attachment 
+[gw6] [ 51%] PASSED tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.xlsx] 
+tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.csv] 
+[gw7] [ 52%] PASSED tests/assistant/test_assistants.py::test_assistant_has_an_access_to_the_history 
+tests/assistant/test_assistants.py::test_passing_history_to_chat 
+[gw0] [ 52%] PASSED tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.xlsx] 
+tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.csv] 
+[gw5] [ 53%] PASSED tests/conversations/test_conversations_sharing.py::test_share_conversation_with_file_attachment 
+tests/conversations/test_conversations_sharing.py::test_share_conversation_updated_after_sharing 
+[gw4] [ 54%] PASSED tests/workflow/chat_mode/test_workflow_chat_mode.py::test_workflow_with_virtual_assistant_chat_mode 
+tests/workflow/context_management/test_clear_context_store.py::test_workflow_clear_context_store_false_default 
+[gw5] [ 54%] PASSED tests/conversations/test_conversations_sharing.py::test_share_conversation_updated_after_sharing 
+tests/conversations/test_conversations_sharing.py::test_share_workflow_conversation 
+[gw3] [ 55%] PASSED tests/workflow/context_management/test_clear_prior_messages.py::test_workflow_clear_prior_messages_false_default 
+tests/workflow/context_management/test_clear_prior_messages.py::test_workflow_clear_prior_messages_true 
+[gw7] [ 55%] PASSED tests/assistant/test_assistants.py::test_passing_history_to_chat 
+tests/assistant/test_assistants.py::test_chat_with_output_schema[pydantic_non_stream] 
+[gw7] [ 56%] PASSED tests/assistant/test_assistants.py::test_chat_with_output_schema[pydantic_non_stream] 
+tests/assistant/test_sub_assistants.py::test_create_assistant_with_single_sub_assistant 
+[gw6] [ 56%] PASSED tests/assistant/test_assistants.py::test_create_assistant_and_prompt_with_file[test.csv] 
+tests/workflow/context_management/test_clear_prior_messages.py::test_workflow_clear_prior_messages_multi_phase 
+[gw7] [ 57%] PASSED tests/assistant/test_sub_assistants.py::test_create_assistant_with_single_sub_assistant 
+tests/workflow/context_management/test_include_in_llm_history.py::test_workflow_include_in_llm_history_true_default 
+[gw2] [ 58%] PASSED tests/assistant/marketplace/test_marketplace.py::test_marketplace_validation_fields_recommendation[good_name_wrong_description_good_prompt] 
+tests/assistant/marketplace/test_marketplace.py::test_marketplace_validation_fields_recommendation[good_name_good_description_wrong_prompt] 
+[gw5] [ 58%] PASSED tests/conversations/test_conversations_sharing.py::test_share_workflow_conversation 
+tests/workflow/context_management/test_context_combinations.py::test_workflow_context_combination_store_true_history_false 
+[gw0] [ 59%] PASSED tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.csv] 
+tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.gif] 
+[gw0] [ 59%] SKIPPED tests/assistant/datasource/test_file_indexing.py::test_create_assistant_with_file_datasource[codemie-text-embedding-ada-002-test.gif] 
+tests/assistant/datasource/test_file_indexing.py::test_edit_description_for_file_datasource 
+[gw4] [ 60%] PASSED tests/workflow/context_management/test_clear_context_store.py::test_workflow_clear_context_store_false_default 
+tests/workflow/context_management/test_clear_context_store.py::test_workflow_clear_context_store_true 
+[gw1] [ 61%] PASSED tests/assistant/datasource/test_zip_file_indexing.py::test_create_file_datasource_from_zip_with_mixed_file_types 
+tests/assistant/marketplace/test_marketplace.py::test_marketplace_publish_with_valid_data 
+[gw3] [ 61%] PASSED tests/workflow/context_management/test_clear_prior_messages.py::test_workflow_clear_prior_messages_true 
+tests/workflow/context_management/test_context_combinations.py::test_workflow_multi_state_context_propagation 
+[gw0] [ 62%] PASSED tests/assistant/datasource/test_file_indexing.py::test_edit_description_for_file_datasource 
+tests/workflow/context_management/test_reset_context_keys.py::test_reset_keys_removes_specified_key_preserves_others 
+[gw7] [ 62%] PASSED tests/workflow/context_management/test_include_in_llm_history.py::test_workflow_include_in_llm_history_true_default 
+[gw6] [ 63%] PASSED tests/workflow/context_management/test_clear_prior_messages.py::test_workflow_clear_prior_messages_multi_phase 
+tests/workflow/context_management/test_include_in_llm_history.py::test_workflow_include_in_llm_history_false 
+tests/workflow/context_management/test_context_and_message_combinations.py::test_workflow_clear_context_and_messages_combined 
+[gw5] [ 63%] PASSED tests/workflow/context_management/test_context_combinations.py::test_workflow_context_combination_store_true_history_false 
+tests/workflow/context_management/test_context_combinations.py::test_workflow_context_combination_store_false_history_true 
+[gw3] [ 64%] PASSED tests/workflow/context_management/test_context_combinations.py::test_workflow_multi_state_context_propagation 
+tests/workflow/context_management/test_context_combinations.py::test_workflow_context_with_json_output_schema 
+[gw4] [ 65%] PASSED tests/workflow/context_management/test_clear_context_store.py::test_workflow_clear_context_store_true 
+tests/workflow/context_management/test_store_in_context.py::test_workflow_store_in_context_false 
+[gw0] [ 65%] PASSED tests/workflow/context_management/test_reset_context_keys.py::test_reset_keys_removes_specified_key_preserves_others 
+tests/workflow/context_management/test_store_in_context.py::test_workflow_store_in_context_true_default 
+[gw1] [ 66%] PASSED tests/assistant/marketplace/test_marketplace.py::test_marketplace_publish_with_valid_data 
+tests/assistant/marketplace/test_marketplace.py::test_marketplace_publish_with_invalid_data 
+[gw2] [ 66%] PASSED tests/assistant/marketplace/test_marketplace.py::test_marketplace_validation_fields_recommendation[good_name_good_description_wrong_prompt] 
+tests/assistant/marketplace/test_marketplace.py::test_marketplace_validation_fields_recommendation[all_fields_wrong] 
+[gw7] [ 67%] PASSED tests/workflow/context_management/test_include_in_llm_history.py::test_workflow_include_in_llm_history_false 
+tests/workflow/nodes/test_conditional.py::test_simple_numeric_comparison_less_than 
+[gw6] [ 68%] PASSED tests/workflow/context_management/test_context_and_message_combinations.py::test_workflow_clear_context_and_messages_combined 
+tests/workflow/nodes/test_conditional.py::test_string_equality_comparison 
+[gw7] [ 68%] PASSED tests/workflow/nodes/test_conditional.py::test_simple_numeric_comparison_less_than 
+tests/workflow/nodes/test_conditional.py::test_key_existence_check_missing_key 
+[gw5] [ 69%] PASSED tests/workflow/context_management/test_context_combinations.py::test_workflow_context_combination_store_false_history_true 
+tests/workflow/nodes/test_conditional.py::test_complex_logical_expression_and 
+[gw3] [ 69%] PASSED tests/workflow/context_management/test_context_combinations.py::test_workflow_context_with_json_output_schema 
+tests/workflow/nodes/test_conditional.py::test_complex_logical_expression_or 
+[gw0] [ 70%] PASSED tests/workflow/context_management/test_store_in_context.py::test_workflow_store_in_context_true_default 
+tests/workflow/nodes/test_conditional.py::test_string_contains_check 
+[gw6] [ 70%] PASSED tests/workflow/nodes/test_conditional.py::test_string_equality_comparison 
+tests/workflow/nodes/test_conditional.py::test_string_startswith_method 
+[gw4] [ 71%] PASSED tests/workflow/context_management/test_store_in_context.py::test_workflow_store_in_context_false 
+tests/workflow/nodes/test_conditional.py::test_simple_numeric_comparison_greater_than 
+[gw5] [ 72%] PASSED tests/workflow/nodes/test_conditional.py::test_complex_logical_expression_and 
+tests/workflow/nodes/test_conditional.py::test_numeric_comparison_operators 
+[gw7] [ 72%] PASSED tests/workflow/nodes/test_conditional.py::test_key_existence_check_missing_key 
+tests/workflow/nodes/test_conditional.py::test_string_endswith_method 
+[gw3] [ 73%] PASSED tests/workflow/nodes/test_conditional.py::test_complex_logical_expression_or 
+tests/workflow/nodes/test_conditional.py::test_logical_not_operator 
+[gw0] [ 73%] PASSED tests/workflow/nodes/test_conditional.py::test_string_contains_check 
+tests/workflow/nodes/test_conditional.py::test_string_boolean_conversion 
+[gw6] [ 74%] PASSED tests/workflow/nodes/test_conditional.py::test_string_startswith_method 
+tests/workflow/nodes/test_conditional.py::test_expression_evaluation_failure_defaults_to_otherwise 
+[gw4] [ 75%] PASSED tests/workflow/nodes/test_conditional.py::test_simple_numeric_comparison_greater_than 
+tests/workflow/nodes/test_conditional.py::test_direct_variable_reference_no_curly_braces 
+[gw5] [ 75%] PASSED tests/workflow/nodes/test_conditional.py::test_numeric_comparison_operators 
+tests/workflow/nodes/test_iterator.py::test_simple_list_iteration 
+[gw2] [ 76%] PASSED tests/assistant/marketplace/test_marketplace.py::test_marketplace_validation_fields_recommendation[all_fields_wrong] 
+tests/workflow/nodes/test_conditional.py::test_key_existence_check_with_keys_variable 
+[gw7] [ 76%] PASSED tests/workflow/nodes/test_conditional.py::test_string_endswith_method 
+tests/workflow/nodes/test_iterator.py::test_dictionary_with_list_iteration 
+[gw3] [ 77%] PASSED tests/workflow/nodes/test_conditional.py::test_logical_not_operator 
+tests/workflow/nodes/test_iterator.py::test_nested_structure_json_pointer_iteration 
+[gw0] [ 77%] PASSED tests/workflow/nodes/test_conditional.py::test_string_boolean_conversion 
+tests/workflow/nodes/test_iterator.py::test_complex_nested_array_iteration 
+[gw1] [ 78%] PASSED tests/assistant/marketplace/test_marketplace.py::test_marketplace_publish_with_invalid_data 
+tests/assistant/marketplace/test_marketplace.py::test_marketplace_publish_ignore_recommendations 
+[gw1] [ 79%] PASSED tests/assistant/marketplace/test_marketplace.py::test_marketplace_publish_ignore_recommendations 
+tests/workflow/nodes/test_switch.py::test_status_based_routing_pending 
+[gw6] [ 79%] PASSED tests/workflow/nodes/test_conditional.py::test_expression_evaluation_failure_defaults_to_otherwise 
+tests/workflow/nodes/test_iterator.py::test_array_of_objects_context_population 
+[gw4] [ 80%] PASSED tests/workflow/nodes/test_conditional.py::test_direct_variable_reference_no_curly_braces 
+tests/workflow/nodes/test_iterator.py::test_multi_stage_iteration_with_object_items 
+[gw2] [ 80%] PASSED tests/workflow/nodes/test_conditional.py::test_key_existence_check_with_keys_variable 
+tests/workflow/nodes/test_iterator.py::test_iter_key_cannot_combine_with_parallel_transitions 
+[gw2] [ 81%] PASSED tests/workflow/nodes/test_iterator.py::test_iter_key_cannot_combine_with_parallel_transitions 
+tests/workflow/nodes/test_switch.py::test_numeric_range_routing[Output exactly: {"score": 30}-poor_handler-poor] 
+[gw1] [ 81%] PASSED tests/workflow/nodes/test_switch.py::test_status_based_routing_pending 
+tests/workflow/nodes/test_switch.py::test_default_state_when_no_cases_match 
+[gw7] [ 82%] PASSED tests/workflow/nodes/test_iterator.py::test_dictionary_with_list_iteration 
+tests/workflow/nodes/test_iterator.py::test_iter_key_cannot_combine_with_condition 
+[gw7] [ 83%] PASSED tests/workflow/nodes/test_iterator.py::test_iter_key_cannot_combine_with_condition 
+tests/workflow/nodes/test_switch.py::test_type_based_routing[Output exactly: {"type": "sms_alert"}-sms_processor-sms] 
+[gw5] [ 83%] PASSED tests/workflow/nodes/test_iterator.py::test_simple_list_iteration 
+tests/workflow/nodes/test_iterator.py::test_context_merging_after_iteration 
+[gw3] [ 84%] PASSED tests/workflow/nodes/test_iterator.py::test_nested_structure_json_pointer_iteration 
+tests/workflow/nodes/test_iterator.py::test_iter_key_cannot_combine_with_switch 
+[gw3] [ 84%] PASSED tests/workflow/nodes/test_iterator.py::test_iter_key_cannot_combine_with_switch 
+tests/workflow/nodes/test_switch.py::test_case_condition_evaluation_failure_continues 
+[gw0] [ 85%] PASSED tests/workflow/nodes/test_iterator.py::test_complex_nested_array_iteration 
+tests/workflow/nodes/test_switch.py::test_status_based_routing_completed 
+[gw2] [ 86%] PASSED tests/workflow/nodes/test_switch.py::test_numeric_range_routing[Output exactly: {"score": 30}-poor_handler-poor] 
+tests/workflow/nodes/test_switch.py::test_complex_conditions_with_logical_operators 
+[gw6] [ 86%] PASSED tests/workflow/nodes/test_iterator.py::test_array_of_objects_context_population 
+tests/workflow/nodes/test_switch.py::test_numeric_range_routing[Output exactly: {"score": 95}-excellent_handler-excellent] 
+[gw4] [ 87%] PASSED tests/workflow/nodes/test_iterator.py::test_multi_stage_iteration_with_object_items 
+tests/workflow/nodes/test_switch.py::test_numeric_range_routing[Output exactly: {"score": 75}-good_handler-good] 
+[gw1] [ 87%] PASSED tests/workflow/nodes/test_switch.py::test_default_state_when_no_cases_match 
+tests/workflow/nodes/test_switch.py::test_type_based_routing[Output exactly: {"type": "EMAIL_NOTIFICATION"}-email_processor-email] 
+[gw3] [ 88%] PASSED tests/workflow/nodes/test_switch.py::test_case_condition_evaluation_failure_continues 
+tests/workflow/nodes/test_transform.py::test_extract_mapping 
+[gw0] [ 88%] PASSED tests/workflow/nodes/test_switch.py::test_status_based_routing_completed 
+tests/workflow/nodes/test_transform.py::test_array_map_mapping 
+[gw2] [ 89%] PASSED tests/workflow/nodes/test_switch.py::test_complex_conditions_with_logical_operators 
+tests/workflow/nodes/test_transform.py::test_condition_and_script_mapping 
+[gw6] [ 90%] PASSED tests/workflow/nodes/test_switch.py::test_numeric_range_routing[Output exactly: {"score": 95}-excellent_handler-excellent] 
+tests/workflow/nodes/test_transform.py::test_constant_mapping 
+[gw7] [ 90%] PASSED tests/workflow/nodes/test_switch.py::test_type_based_routing[Output exactly: {"type": "sms_alert"}-sms_processor-sms] 
+tests/workflow/nodes/test_switch.py::test_type_based_routing[Output exactly: {"type": "fax"}-unsupported_handler-unsupported] 
+[gw4] [ 91%] PASSED tests/workflow/nodes/test_switch.py::test_numeric_range_routing[Output exactly: {"score": 75}-good_handler-good] 
+tests/workflow/nodes/test_transform.py::test_error_handling_strategies[on_error: default] 
+[gw1] [ 91%] PASSED tests/workflow/nodes/test_switch.py::test_type_based_routing[Output exactly: {"type": "EMAIL_NOTIFICATION"}-email_processor-email] 
+tests/workflow/nodes/test_transform.py::test_error_handling_strategies[on_error: skip] 
+[gw5] [ 92%] PASSED tests/workflow/nodes/test_iterator.py::test_context_merging_after_iteration 
+tests/workflow/nodes/test_switch.py::test_first_match_wins_with_overlapping_conditions 
+[gw3] [ 93%] PASSED tests/workflow/nodes/test_transform.py::test_extract_mapping 
+tests/workflow/nodes/test_transform.py::test_input_source_user_input 
+[gw0] [ 93%] PASSED tests/workflow/nodes/test_transform.py::test_array_map_mapping 
+tests/workflow/test_workflows.py::test_workflow_with_user_input_and_file_attachment[test.docx] 
+[gw2] [ 94%] PASSED tests/workflow/nodes/test_transform.py::test_condition_and_script_mapping 
+tests/workflow/test_workflows.py::test_workflow_with_user_input_and_file_attachment[test.xlsx] 
+[gw6] [ 94%] PASSED tests/workflow/nodes/test_transform.py::test_constant_mapping 
+tests/workflow/test_workflows.py::test_workflow_with_user_input_and_file_attachment[test.csv] 
+[gw7] [ 95%] PASSED tests/workflow/nodes/test_switch.py::test_type_based_routing[Output exactly: {"type": "fax"}-unsupported_handler-unsupported] 
+tests/workflow/test_workflows.py::test_workflow_with_user_input_and_file_attachment[test.gif] 
+[gw4] [ 95%] PASSED tests/workflow/nodes/test_transform.py::test_error_handling_strategies[on_error: default] 
+[gw3] [ 96%] PASSED tests/workflow/nodes/test_transform.py::test_input_source_user_input 
+[gw1] [ 97%] PASSED tests/workflow/nodes/test_transform.py::test_error_handling_strategies[on_error: skip] 
+[gw5] [ 97%] PASSED tests/workflow/nodes/test_switch.py::test_first_match_wins_with_overlapping_conditions 
+[gw6] [ 98%] PASSED tests/workflow/test_workflows.py::test_workflow_with_user_input_and_file_attachment[test.csv] 
+[gw0] [ 98%] PASSED tests/workflow/test_workflows.py::test_workflow_with_user_input_and_file_attachment[test.docx] 
+[gw7] [ 99%] PASSED tests/workflow/test_workflows.py::test_workflow_with_user_input_and_file_attachment[test.gif] 
+[gw2] [100%] PASSED tests/workflow/test_workflows.py::test_workflow_with_user_input_and_file_attachment[test.xlsx] 
+
+================== 168 passed, 4 skipped in 144.21s (0:02:24) ==================

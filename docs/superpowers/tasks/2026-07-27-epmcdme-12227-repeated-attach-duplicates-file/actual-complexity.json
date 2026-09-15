@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "task": "EPMCDME-12227: fix repeated attach request duplicating prior-turn files by scoping _collect_files_from_conversation to the latest USER turn and dropping _filter_requested_files silent fallback to all_files on LLM name mismatch.",
+  "generated": "2026-07-27T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 13,
+  "size": "S",
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Two production components across two layers — _collect_files_from_conversation in codemie/core/utils.py (Service/Utility) and _filter_requested_files in codemie_tools/base/file_tool_mixin.py (Agent-Tool). Bumped M→L because codemie/core/utils.py is a widely-imported shared utility module (cost calc, file building, sanitization) — the 'touches core shared utilities' red flag applies."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Task description named exact function signatures, exact behaviors, and edge cases. Three code-review defect labels (CR-001 falsy-name filter, CR-002 role filter, CR-003 latest-turn-index over all user messages) were identified and resolved during implementation — all ambiguity cleared by the time code was written."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M (3) to L (4): codemie/core/utils.py is a core shared utility module imported across many subsystems; 'touches core shared utilities' red flag applies."
+  ],
+  "split_recommendation": null
+}

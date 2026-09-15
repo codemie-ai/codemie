@@ -1,0 +1,215 @@
+diff --git a/docs/webhook-configuration.md b/docs/webhook-configuration.md
+index 290c4f518..e408b87ee 100644
+--- a/docs/webhook-configuration.md
++++ b/docs/webhook-configuration.md
+@@ -33,8 +33,15 @@ an HMAC signature.) Always use HTTPS so the plaintext token is not exposed in tr
+ ### MR event filtering
+ 
+ Set **GitLab MR Event Filter** to a comma-separated list of merge-request actions. Only
+-those actions trigger the workflow; every other MR action returns `400` and does not run.
+-Leaving the filter empty triggers on **all** MR actions (default behavior).
++those actions trigger the workflow; every other MR action is acknowledged with `200`
++(`Webhook received, event filtered out`) and does not run. The ACK is deliberate: GitLab
++auto-disables a webhook after repeated non-2xx responses, so a filtered event must not
++look like a failure. Leaving the filter empty triggers on **all** MR actions (default
++behavior).
++
++The action is read from `object_attributes.action`, which is where GitLab puts it (a real
++`Merge Request Hook` payload has no top-level `action` key); a top-level `action` is still
++honored as a fallback for custom webhook templates.
+ 
+ Supported actions:
+ 
+@@ -56,7 +63,8 @@ Examples:
+ 
+ - **401 Invalid GitLab token** — the `X-Gitlab-Token` sent by GitLab does not match the
+   stored `GitLab Webhook Secret Token`. Re-copy the token into both places (no extra spaces).
+-- **400 GitLab MR event action '…' is not allowed** — the MR action is not in your filter.
+-  Add it to **GitLab MR Event Filter**, or clear the filter to allow all actions.
++- **200 `Webhook received, event filtered out`** — the MR action is not in your filter, so
++  the delivery was acknowledged without running the resource. Add the action to **GitLab MR
++  Event Filter**, or clear the filter to allow all actions.
+ - **Workflow not triggering** — confirm the webhook is enabled, the token matches, and the
+   MR action is within the filter. Check CodeMie logs for the delivery and verification result.
+diff --git a/src/codemie/triggers/bindings/gitlab_webhook_security.py b/src/codemie/triggers/bindings/gitlab_webhook_security.py
+index 357f3b807..3d3aa39c9 100644
+--- a/src/codemie/triggers/bindings/gitlab_webhook_security.py
++++ b/src/codemie/triggers/bindings/gitlab_webhook_security.py
+@@ -63,23 +63,20 @@ class GitLabWebhookSecurity:
+     def extract_mr_action(cls, body: bytes | str | dict[str, object]) -> str | None:
+         """Return the MR action for merge_request events, else None.
+ 
++        GitLab delivers the action inside ``object_attributes.action``; a real
++        ``Merge Request Hook`` payload has no top-level ``action`` key at all.
++        The top level is still consulted as a fallback because a custom webhook
++        template can put it there.
++
+         Accepts a dict, a JSON str, or raw bytes.
+         """
+-        if isinstance(body, (bytes, bytearray)):
+-            try:
+-                body = body.decode("utf-8", errors="strict")
+-            except UnicodeDecodeError:
+-                return None
+-        if isinstance(body, str):
+-            try:
+-                body = json.loads(body)
+-            except (json.JSONDecodeError, TypeError):
+-                return None
+-        if not isinstance(body, dict):
+-            return None
+-        if body.get("object_kind") != "merge_request":
++        parsed = cls._parse_body(body)
++        if parsed.get("object_kind") != "merge_request":
+             return None
+-        action = body.get("action")
++        object_attributes = parsed.get("object_attributes")
++        action = object_attributes.get("action") if isinstance(object_attributes, dict) else None
++        if action is None:
++            action = parsed.get("action")
+         return action if action in cls.MR_ACTIONS else None
+ 
+     @classmethod
+diff --git a/tests/codemie/triggers/bindings/conftest.py b/tests/codemie/triggers/bindings/conftest.py
+index 249b523d7..8edb65dde 100644
+--- a/tests/codemie/triggers/bindings/conftest.py
++++ b/tests/codemie/triggers/bindings/conftest.py
+@@ -16,7 +16,14 @@ import pytest
+ 
+ 
+ def _mr_payload(action: str, state: str = "opened", **attr_overrides) -> dict:
+-    """Build a GitLab merge_request webhook payload for the given action."""
++    """Build a GitLab merge_request webhook payload for the given action.
++
++    Mirrors the shape GitLab actually delivers (verified against GitLab 17.11):
++    the action lives in ``object_attributes.action`` and there is NO top-level
++    ``action`` key. Top-level keys of a real delivery are exactly
++    ``changes``, ``event_type``, ``labels``, ``object_attributes``,
++    ``object_kind``, ``project``, ``repository`` and ``user``.
++    """
+     object_attributes = {
+         "id": 100,
+         "iid": 1,
+@@ -25,23 +32,38 @@ def _mr_payload(action: str, state: str = "opened", **attr_overrides) -> dict:
+         "source_branch": "feature/test",
+         "target_branch": "main",
+         "state": state,
++        "action": action,
+         "url": "https://gitlab.com/group/test-project/-/merge_requests/1",
+     }
+     object_attributes.update(attr_overrides)
+     return {
+         "object_kind": "merge_request",
+-        "action": action,
+         "event_type": "merge_request",
+         "user": {"id": 1, "name": "John Doe", "username": "johndoe"},
++        "labels": [],
++        "changes": {},
+         "project": {
+             "id": 12345,
+             "name": "test-project",
+             "path_with_namespace": "group/test-project",
+         },
++        "repository": {"name": "test-project", "homepage": "https://gitlab.com/group/test-project"},
+         "object_attributes": object_attributes,
+     }
+ 
+ 
++def _mr_payload_top_level_action(action: str) -> dict:
++    """MR payload carrying the action at the top level only.
++
++    Not a shape GitLab sends natively, but reachable through a custom webhook
++    template, so the extractor keeps supporting it as a fallback.
++    """
++    payload = _mr_payload(action)
++    payload["object_attributes"].pop("action", None)
++    payload["action"] = action
++    return payload
++
++
+ @pytest.fixture
+ def gitlab_mr_open_payload():
+     return _mr_payload("open", "opened")
+@@ -77,6 +99,12 @@ def gitlab_mr_unapproved_payload():
+     return _mr_payload("unapproved", "opened")
+ 
+ 
++@pytest.fixture
++def gitlab_mr_open_payload_top_level_action():
++    """Legacy/custom-template shape: action at the top level, not in object_attributes."""
++    return _mr_payload_top_level_action("open")
++
++
+ @pytest.fixture
+ def gitlab_push_payload():
+     """Non-MR event, for negative testing."""
+diff --git a/tests/codemie/triggers/bindings/test_gitlab_webhook_security.py b/tests/codemie/triggers/bindings/test_gitlab_webhook_security.py
+index fc472b486..29aa90b14 100644
+--- a/tests/codemie/triggers/bindings/test_gitlab_webhook_security.py
++++ b/tests/codemie/triggers/bindings/test_gitlab_webhook_security.py
+@@ -12,6 +12,8 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++import json
++
+ import pytest
+ from unittest.mock import Mock
+ 
+@@ -211,3 +213,56 @@ def test_extract_gitlab_metadata(mock_gitlab_request):
+     assert metadata["event_type"] == "Merge Request Hook"
+     assert metadata["delivery_id"] == "12345-67890-abcdef"
+     assert "GitLab" in metadata["user_agent"]
++
++
++def test_extract_mr_action_reads_object_attributes_not_top_level(gitlab_mr_open_payload):
++    """Regression: real GitLab payloads carry the action in object_attributes only.
++
++    A live GitLab 17.11 `Merge Request Hook` delivery has no top-level `action`
++    key; reading it there yields None and silently drops every MR event once a
++    filter is configured.
++    """
++    assert "action" not in gitlab_mr_open_payload
++    assert gitlab_mr_open_payload["object_attributes"]["action"] == "open"
++    assert GitLabWebhookSecurity.extract_mr_action(gitlab_mr_open_payload) == "open"
++
++
++def test_extract_mr_action_falls_back_to_top_level(gitlab_mr_open_payload_top_level_action):
++    """Custom webhook templates may place the action at the top level."""
++    payload = gitlab_mr_open_payload_top_level_action
++    assert "action" not in payload["object_attributes"]
++    assert GitLabWebhookSecurity.extract_mr_action(payload) == "open"
++
++
++def test_extract_mr_action_object_attributes_wins_over_top_level(gitlab_mr_open_payload):
++    """object_attributes is the authoritative source when both are present."""
++    payload = dict(gitlab_mr_open_payload)
++    payload["action"] = "update"
++    assert GitLabWebhookSecurity.extract_mr_action(payload) == "open"
++
++
++def test_extract_mr_action_unknown_object_attributes_action(gitlab_mr_open_payload):
++    """An action outside MR_ACTIONS is not extracted."""
++    payload = dict(gitlab_mr_open_payload)
++    payload["object_attributes"] = {**payload["object_attributes"], "action": "unknown_action"}
++    assert GitLabWebhookSecurity.extract_mr_action(payload) is None
++
++
++def test_apply_mr_action_filter_dispatches_real_gitlab_open_payload(gitlab_mr_open_payload):
++    """Regression: an allowed action in a real payload must dispatch, not be filtered."""
++    dispatch, filtered_action = GitLabWebhookSecurity.apply_mr_action_filter(gitlab_mr_open_payload, "open,merge")
++    assert dispatch is True
++    assert filtered_action is None
++
++
++def test_apply_mr_action_filter_blocks_real_gitlab_update_payload(gitlab_mr_update_payload):
++    """A real payload whose action is outside the allowlist is still filtered out."""
++    dispatch, filtered_action = GitLabWebhookSecurity.apply_mr_action_filter(gitlab_mr_update_payload, "open,merge")
++    assert dispatch is False
++    assert filtered_action == "update"
++
++
++def test_apply_mr_action_filter_serialized_real_payload_dispatches(gitlab_mr_open_payload):
++    """The bytes path (raw request body) must behave like the dict path."""
++    raw = json.dumps(gitlab_mr_open_payload).encode("utf-8")
++    assert GitLabWebhookSecurity.apply_mr_action_filter(raw, "open,merge") == (True, None)

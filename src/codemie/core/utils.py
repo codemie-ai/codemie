@@ -615,25 +615,35 @@ def _get_unique_messages_from_history(history: list, history_index: int | None) 
 
 def _collect_files_from_conversation(conversation_id: str, history_index: int | None, unique_files_dict: dict) -> None:
     """
-    Collect files from conversation history and add them to the unique files dictionary.
+    Collect files from the most recent USER turn in conversation history.
+
+    Scoped to the single most recent user turn, computed over ALL user messages in scope
+    (not only those that carry files), so an edit-to-empty of the latest user turn does
+    not fall back to a prior turn's files. The ``_get_unique_messages_from_history``
+    last-write-wins guard runs first, so an edited-to-empty message wins over its
+    original at the same ``history_index``.
 
     Args:
         conversation_id: The conversation ID to retrieve history from
-        history_index: Optional history index to limit file collection
-        unique_files_dict: Dictionary to store unique FileObjects
+        history_index: Optional upper bound (exclusive) on messages to consider; forwarded to
+            ``_get_unique_messages_from_history``.
+        unique_files_dict: Dictionary to store unique FileObjects (mutated in place).
     """
+    from codemie.core.constants import ChatRole
     from codemie.rest_api.models.conversation import Conversation
 
     conversation = Conversation.find_by_id(conversation_id)
     history = getattr(conversation, "history", [])
 
-    # Deduplicate messages to keep only the latest version of each (role, history_index)
-    # This ensures edited messages with removed files don't leave old file references accessible
     unique_messages = _get_unique_messages_from_history(history, history_index)
 
-    # Collect files only from the latest version of each message
-    for message in unique_messages.values():
-        if message.file_names:
+    user_messages = [m for m in unique_messages.values() if m.role == ChatRole.USER and m.history_index is not None]
+    if not user_messages:
+        return
+
+    latest_user_turn_index = max(m.history_index for m in user_messages)
+    for message in user_messages:
+        if message.history_index == latest_user_turn_index and message.file_names:
             _process_file_names_to_objects(message.file_names, unique_files_dict)
 
 
@@ -666,8 +676,9 @@ def build_unique_file_objects(
     if file_names:
         _process_file_names_to_objects(file_names, unique_files_dict)
 
-    # Process files from conversation history if conversation_id is provided
-    if conversation_id:
+    # Skip history collection when the current request carries its own files —
+    # merging prior-turn files would re-attach them (EPMCDME-12227).
+    if conversation_id and not file_names:
         _collect_files_from_conversation(conversation_id, history_index, unique_files_dict)
 
     return unique_files_dict
