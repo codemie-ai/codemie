@@ -1,0 +1,67 @@
+{
+  "task": "Auto-delete a project's PROJECT-scoped integrations (Settings rows) instead of blocking project deletion when integrations are the only assigned resource.",
+  "generated": "2026-09-15T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 2,
+      "label": "S",
+      "affected": "ApplicationRepository.get_project_entity_counts_bulk (integrations_q filtered by setting_type=PROJECT), ProjectService.delete_project / _check_has_no_resources (integrations excluded from the blocking check and auto-deleted via SettingsService)",
+      "layers": "Repository, Service"
+    },
+    "requirements_clarity": {
+      "score": 2,
+      "label": "S",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 3,
+      "label": "M",
+      "risk_factors": "Behavior change from blocking project deletion (409) to silently auto-deleting project-scoped integrations; irreversible once executed as part of the same delete flow as the project row itself",
+      "mitigation": "Reuses existing SettingsService.delete_setting for the actual removal (no new deletion logic introduced); Settings.get_by_project_names scopes the query to the target project only; deleted integration IDs are recorded in the project_deleted activity event (affected_integrations) for audit; unit tests cover the zero-integration skip path, multi-integration deletion, and exclusion of integrations_count from the blocking calculation"
+    },
+    "file_change_estimate": {
+      "score": 3,
+      "label": "M",
+      "modified_files": 4,
+      "modified_file_list": [
+        "src/codemie/repository/application_repository.py",
+        "src/codemie/service/project/project_service.py",
+        "tests/codemie/repository/test_application_repository_entity_counts.py",
+        "tests/codemie/service/project/test_project_service_delete_update.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": [
+        "src/codemie/repository",
+        "src/codemie/service/project",
+        "tests/codemie/repository",
+        "tests/codemie/service/project"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 2,
+      "label": "S",
+      "layers_changed": ["Repository", "Service"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 13,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 4,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Auto-deleting project integrations during project deletion is an irreversible behavior change (previously blocked with 409, now silently removes data); mitigated by reusing the existing SettingsService.delete_setting pattern, scoping deletion to the target project, recording affected_integrations in the activity event, and thorough test coverage of zero/single/multiple-integration scenarios." },
+    { "dimension": "file_change_estimate", "reason": "4 files modified per diffstat (repository, service, and their two existing test files) — no new files created; maps to the M band under the file-count mapping (4-6 files = M)." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

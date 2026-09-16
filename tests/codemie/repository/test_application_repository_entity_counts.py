@@ -129,6 +129,18 @@ class TestGetProjectEntityCountsBulk:
 
         assert result["my-proj"]["integrations_count"] == 2
 
+    def test_integrations_query_filters_by_setting_type_project(self):
+        """integrations_q only counts Settings rows with setting_type == PROJECT."""
+        mock_session = MagicMock()
+        mock_session.exec.return_value.all.return_value = []
+
+        application_repository.get_project_entity_counts_bulk(mock_session, ["my-proj"])
+
+        compiled_statement = mock_session.exec.call_args[0][0]
+        sql = _compile_sql(compiled_statement)
+        assert "setting_type" in sql
+        assert "'project'" in sql
+
     def test_budgets_counted_correctly(self):
         """Budgets count is populated from the UNION ALL query."""
         mock_session = MagicMock()

@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "task": "Fix project deletion blocked by an inflated integrations count (missing setting_type filter) and auto-delete project integrations before deleting the project instead of blocking on them",
+  "generated": "2026-09-14T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 18,
+  "size": "M",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Touches application_repository (integrations_q filter), ProjectService (delete_project + _check_has_no_resources), and — for the first time — the Settings/SettingsService vertical, which previously had no dependency from project-service code. Crossing into that shared subsystem is the driver for the bump from M to L." },
+    { "dimension": "technical_risk", "reason": "The auto-delete-integrations path is genuinely new (no exact precedent — the existing budget/group pattern detaches soft-deleted rows, but Settings has no soft-delete column so integrations must be hard-deleted). A session-ownership mismatch exists: Settings.delete()/delete_setting() open their own session while delete_project uses a caller-supplied session, so an explicit atomicity decision is required. There is also an open design choice between a bulk SQL delete (simple, but risks orphaning external OAuth tokens for Google/GitLab/Jira/Confluence) and routing through SettingsService.delete_setting (preserves token revocation, more code). No existing test covers the new path." },
+    { "dimension": "requirements_clarity", "reason": "The ticket states the algorithm clearly (block if other resources exist, auto-delete integrations then delete project, delete straight away if none), but leaves the deletion mechanism (bulk vs. service-level with OAuth revocation) and transaction/atomicity handling as open implementation decisions the technical-analysis flags explicitly." },
+    { "dimension": "file_change_estimate", "reason": "Estimated ~4-6 modified files (application_repository.py, project_service.py, possibly settings.py, plus 2-3 existing test files needing updates for the inverted 409 assertion and new auto-delete coverage), 0-1 new files, spanning repository/, service/project/, and test directories." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M (3) to L (4): touches core shared utilities — the Settings/SettingsService subsystem is a shared vertical (used by both user-settings and project-settings routers) that project-service code has never depended on before; this task creates that cross-link for the first time."
+  ],
+  "split_recommendation": null
+}

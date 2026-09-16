@@ -222,25 +222,58 @@ class TestProjectServiceDeleteProject:
         assert exc_info.value.code == 409
         mock_app_repo.delete_by_name.assert_not_called()
 
+    @patch("codemie.service.project.project_service.Settings")
+    @patch("codemie.service.project.project_service.SettingsService")
     @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
-    def test_project_with_integrations_raises_409(self, mock_app_repo, mock_upr):
-        """delete_project raises 409 when project has integrations."""
+    def test_project_with_integrations_deletes_them_then_succeeds(
+        self, mock_app_repo, mock_upr, mock_settings_service, mock_settings
+    ):
+        """delete_project auto-deletes project integrations instead of blocking on them."""
         mock_session = MagicMock()
         mock_upr.get_by_project_name.return_value = []
-        mock_app_repo.get_project_entity_counts_bulk.return_value = _counts_with("my-project", integrations_count=1)
+        mock_app_repo.get_project_entity_counts_bulk.return_value = _counts_with("my-project", integrations_count=2)
+        setting_1 = MagicMock(id="setting-1")
+        setting_2 = MagicMock(id="setting-2")
+        mock_settings.get_by_project_names.return_value = [setting_1, setting_2]
 
-        with pytest.raises(ExtendedHTTPException) as exc_info:
-            ProjectService.delete_project(
-                session=mock_session,
-                project_name="my-project",
-                project_type=Application.ProjectType.SHARED,
-                actor_id="user-1",
-                action="DELETE /v1/projects/my-project",
-            )
+        ProjectService.delete_project(
+            session=mock_session,
+            project_name="my-project",
+            project_type=Application.ProjectType.SHARED,
+            actor_id="user-1",
+            action="DELETE /v1/projects/my-project",
+        )
 
-        assert exc_info.value.code == 409
-        mock_app_repo.delete_by_name.assert_not_called()
+        mock_settings.get_by_project_names.assert_called_once_with(["my-project"])
+        assert mock_settings_service.delete_setting.call_count == 2
+        mock_settings_service.delete_setting.assert_any_call("setting-1")
+        mock_settings_service.delete_setting.assert_any_call("setting-2")
+        mock_app_repo.delete_by_name.assert_called_once_with(mock_session, "my-project")
+
+    @patch("codemie.service.project.project_service.Settings")
+    @patch("codemie.service.project.project_service.SettingsService")
+    @patch("codemie.service.project.project_service.user_project_repository")
+    @patch("codemie.service.project.project_service.application_repository")
+    def test_project_with_zero_integrations_skips_settings_lookup(
+        self, mock_app_repo, mock_upr, mock_settings_service, mock_settings
+    ):
+        """delete_project does not touch Settings/SettingsService when integrations_count is 0."""
+        mock_session = MagicMock()
+        mock_upr.get_by_project_name.return_value = []
+        mock_app_repo.get_project_entity_counts_bulk.return_value = _zero_counts("my-project")
+
+        ProjectService.delete_project(
+            session=mock_session,
+            project_name="my-project",
+            project_type=Application.ProjectType.SHARED,
+            actor_id="user-1",
+            action="DELETE /v1/projects/my-project",
+        )
+
+        mock_settings.get_by_project_names.assert_not_called()
+        mock_settings_service.delete_setting.assert_not_called()
+        mock_app_repo.delete_by_name.assert_called_once_with(mock_session, "my-project")
 
     @patch("codemie.service.project.project_service.user_project_repository")
     @patch("codemie.service.project.project_service.application_repository")
@@ -464,6 +497,7 @@ class TestProjectServiceDeleteProject:
         assert event.attributes == {
             "affected_budgets": ["budget-1", "budget-2"],
             "affected_budget_groups": ["group-1"],
+            "affected_integrations": [],
         }
 
     @patch("codemie.service.project.project_service.user_project_repository")

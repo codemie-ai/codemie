@@ -1,0 +1,28 @@
+{
+  "decision": "approve",
+  "rationale": "All 3 lenses ran with parseable output; a spec was present and all 14 extracted spec criteria pass. Standards review (commit-format, code-quality, security) all pass. 9 raw observations from blind/edge-case were dismissed after verification: 2 were false positives disproven by reading the actual repo (no rename call site exists for _check_has_no_resources; Settings.get_by_project_names already filters setting_type==PROJECT, so count/delete filters are consistent, not divergent); the remaining 7 were cosmetic/below-floor (docstring wording, type-hint style, sequential-loop performance at expected low integration counts, brittle-but-consistent SQL-text test style, no auth-context change since delete_setting's existing signature is unchanged). 3 observations deferred (real, but not blocking this change): (1) mid-loop SettingsService.delete_setting failure aborts the call, but this is self-healing on retry by the exact same reasoning the approved spec already gives for the project-delete-fails-after-integrations-deleted case; (2) a narrow TOCTOU on setting_type reassignment between fetch and delete mirrors the existing, never-blocked check-then-act pattern already used for budgets/budget_groups in this same method; (3) legacy Settings rows with setting_type NULL (nullable=True per migration 074d06e75b25) are excluded from both the count and the auto-delete fetch, but this extends â€” not regresses â€” the ticket's own fix rationale: NULL rows behave like USER-type rows, which were never cleaned up on project deletion before this change either. 0 findings meet the patch/decision_needed bar.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "integrations_q filters Settings by setting_type == PROJECT (application_repository.py)", "status": "pass", "notes": "application_repository.py:670-673 adds the filter; SettingType imported at :611"},
+    {"kind": "spec", "item": "_check_has_no_resources excludes integrations_count from blocking sum check, still blocks on other resources", "status": "pass", "notes": "project_service.py:450-451 computes blocking_counts excluding integrations_count; other keys unaffected"},
+    {"kind": "spec", "item": "_check_has_no_resources returns the counts dict to its caller (was None)", "status": "pass", "notes": "project_service.py:434 signature -> dict; :458 returns counts"},
+    {"kind": "spec", "item": "delete_project: if integrations_count > 0, fetch Settings.get_by_project_names and call SettingsService.delete_setting per row, before budget/group detach and delete_by_name", "status": "pass", "notes": "project_service.py:508-513 runs before :515-516 and :518"},
+    {"kind": "spec", "item": "Activity event attributes gain affected_integrations", "status": "pass", "notes": "project_service.py:508,513,529"},
+    {"kind": "spec", "item": "Zero-integrations path: project deleted straight away, no Settings/SettingsService calls", "status": "pass", "notes": "guarded by counts.get(...)>0 at :509; covered by test_project_with_zero_integrations_skips_settings_lookup"},
+    {"kind": "spec", "item": "Other blocking resources still block deletion with 409, unchanged", "status": "pass", "notes": "existing 409 tests for assistants/workflows/skills/datasources/budgets/budget_groups untouched"},
+    {"kind": "spec", "item": "Order: personal-project -> assigned-users -> resource check -> delete integrations -> detach budgets/groups -> delete project -> activity log", "status": "pass", "notes": "verified in project_service.py:487-534"},
+    {"kind": "spec", "item": "API-only change; no FE surface; ProjectCounters response shape unchanged", "status": "pass", "notes": "diff touches only repository/service layers and tests"},
+    {"kind": "spec", "item": "Non-atomic by design; integrations deleted first so a project-delete failure is safe to retry", "status": "pass", "notes": "ordering matches; explicitly not scored as a defect per approved trade-off"},
+    {"kind": "spec", "item": "Test: assert integrations_q compiled SQL filters on setting_type == PROJECT", "status": "pass", "notes": "test_integrations_query_filters_by_setting_type_project added"},
+    {"kind": "spec", "item": "Test: rewrite integrations-409 test to assert success + delete_setting called per row", "status": "pass", "notes": "test_project_with_integrations_deletes_them_then_succeeds"},
+    {"kind": "spec", "item": "New test: zero-integrations path calls delete_by_name directly, no SettingsService calls", "status": "pass", "notes": "test_project_with_zero_integrations_skips_settings_lookup"},
+    {"kind": "spec", "item": "Out of scope: no session refactor, no FE changes, no change to delete_setting's cleanup logic", "status": "pass", "notes": "confirmed absent from diff"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "Both commits use 'EPMCDME-14866: <Capital sentence>' per git-workflow.md"},
+    {"kind": "code-quality", "status": "pass", "notes": "New code uses modern type hints (list[str], dict); no new files, no license-header concern"},
+    {"kind": "security", "status": "pass", "notes": "No secret logging, no auth bypass; delete_setting's existing signature/behavior unchanged"}
+  ],
+  "findings": []
+}

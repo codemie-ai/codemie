@@ -608,7 +608,7 @@ class ApplicationRepository:
         from codemie.core.workflow_models.workflow_config import WorkflowConfig
         from codemie.rest_api.models.assistant import Assistant
         from codemie.rest_api.models.index import IndexInfo
-        from codemie.rest_api.models.settings import Settings
+        from codemie.rest_api.models.settings import Settings, SettingType
         from codemie.rest_api.models.skill import Skill
         from codemie.service.budget.budget_models import Budget, ProjectBudgetGroup
 
@@ -667,7 +667,10 @@ class ApplicationRepository:
                 literal("integrations").label("entity_type"),
                 func.count(Settings.id).label("cnt"),
             )
-            .where(Settings.project_name.in_(project_names))
+            .where(
+                Settings.project_name.in_(project_names),
+                Settings.setting_type == SettingType.PROJECT.value,
+            )
             .group_by(Settings.project_name)
         )
         budgets_q = (

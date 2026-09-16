@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "runner": "poetry",
+  "gates": [
+    {"id": "lint", "command": "poetry run ruff format && poetry run ruff check --fix && poetry run ruff check", "available": true, "source": "guide"},
+    {"id": "build", "command": "poetry build", "available": true, "source": "guide"},
+    {"id": "license-check", "command": "poetry run python scripts/license_headers/check_license_headers.py --check --quiet", "available": true, "source": "guide"},
+    {"id": "gitleaks", "command": "docker run --rm -v \"<winpath>:/workspace\" ghcr.io/gitleaks/gitleaks:v8.30.1 dir --no-banner --verbose --config=/workspace/.gitleaks.toml /workspace", "available": true, "source": "guide"},
+    {"id": "unit", "command": "poetry run pytest tests/", "available": true, "source": "guide"},
+    {"id": "coverage", "command": "poetry run coverage run -m pytest tests/ -W ignore::DeprecationWarning --cov --cov-report=html", "available": true, "source": "guide"},
+    {"id": "sonar-local", "command": "node scripts/sonar/run-local-sonar.js", "available": true, "source": "guide"},
+    {"id": "test-harness", "command": "make test-harness", "available": false, "source": "guide"}
+  ],
+  "ui_globs": ["\\.(tsx|jsx|css|html|vue|svelte)$", "src/(ui|frontend|components)/"],
+  "detected_at": "2026-09-14T18:57:00Z"
+}

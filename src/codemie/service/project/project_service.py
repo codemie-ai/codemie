@@ -40,6 +40,7 @@ from codemie.service.activity.activity_models import (
 )
 from codemie.service.activity.activity_repository import activity_event_repository
 from codemie.repository.user_repository import user_repository
+from codemie.rest_api.models.settings import Settings
 from codemie.rest_api.security.user import User
 from codemie.service.cost_center_service import cost_center_service
 from codemie.service.settings.settings import SettingsService
@@ -449,23 +450,31 @@ class ProjectService:
         return f"Project '{project_name}' already exists. Please choose a different name."
 
     @classmethod
-    def _check_has_no_resources(cls, session: Session, project_name: str, action: str) -> None:
-        """Raise 409 if the project has any assigned resources.
+    def _check_has_no_resources(cls, session: Session, project_name: str, action: str) -> dict:
+        """Raise 409 if the project has any blocking resources; integrations are excluded.
+
+        Integrations are handled separately by the caller (auto-deleted, not blocked on).
 
         Args:
             session: Database session
             project_name: Project name to check
             action: Human-readable action word for the error message ('deleted' or 'renamed')
+
+        Returns:
+            The full entity-counts dict for project_name (including integrations_count),
+            so the caller can decide whether to auto-delete integrations without a second query.
         """
         entity_counts = application_repository.get_project_entity_counts_bulk(session, [project_name])
         counts = entity_counts.get(project_name, {})
-        if sum(counts.values()) > 0:
-            non_zero = {k: v for k, v in counts.items() if v > 0}
+        blocking_counts = {k: v for k, v in counts.items() if k != "integrations_count"}
+        if sum(blocking_counts.values()) > 0:
+            non_zero = {k: v for k, v in blocking_counts.items() if v > 0}
             raise ExtendedHTTPException(
                 code=409,
                 message=cls.ERRORS.HAS_RESOURCES.format(name=project_name, action=action),
                 details=str(non_zero),
             )
+        return counts
 
     @classmethod
     def delete_project(
@@ -513,7 +522,14 @@ class ProjectService:
                 details=f"Assigned users: {len(assigned)}",
             )
 
-        cls._check_has_no_resources(session, project_name, "deleted")
+        counts = cls._check_has_no_resources(session, project_name, "deleted")
+
+        affected_integration_ids: list[str] = []
+        if counts.get("integrations_count", 0) > 0:
+            project_settings = Settings.get_by_project_names([project_name])
+            for setting in project_settings:
+                SettingsService.delete_setting(setting.id)
+                affected_integration_ids.append(setting.id)
 
         affected_budget_ids = budget_repository.clear_project_on_deleted_budgets(session, project_name)
         affected_group_ids = project_budget_group_repository.clear_project_on_deleted_groups(session, project_name)
@@ -533,6 +549,7 @@ class ProjectService:
                 attributes={
                     "affected_budgets": affected_budget_ids,
                     "affected_budget_groups": affected_group_ids,
+                    "affected_integrations": affected_integration_ids,
                 },
             ),
             session,
