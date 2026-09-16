@@ -15,7 +15,6 @@ google_credentials.json
 venv
 .__pycache__
 .pytest_cache
-dist/
 .elasticsearch_data/
 .keys/
 

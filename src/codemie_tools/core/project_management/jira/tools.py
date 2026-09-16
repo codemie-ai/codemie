@@ -19,7 +19,6 @@ import re
 from typing import Type, Optional, Any, Dict, Union
 
 from atlassian import Jira
-from langchain_core.tools import ToolException
 from pydantic import BaseModel, Field
 
 from langchain_core.language_models import BaseChatModel
@@ -183,15 +182,12 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin, JiraAttachmentMixin):
     def execute(self, method: str, relative_url: str, params: Optional[str] = "", *args):
         self._ensure_client()
         if self._is_attachment_operation(relative_url):
-            payload_params = parse_payload_params(params)
             all_files = self._resolve_files()
-            requested_files = self._filter_requested_files(all_files, payload_params) if all_files else {}
-            if requested_files:
-                return self._handle_file_attachments(relative_url, params, requested_files)
-            # Never fall through to a plain JSON POST on /attachments — Jira requires multipart
-            # form-data and returns 415 with an empty body, which surfaces as "root cause is: ''"
-            # (EPMCDME-12227). Raise a clear error naming what the tool needed.
-            raise ToolException(self._build_missing_attachment_message(payload_params, list(all_files.keys())))
+            if all_files:
+                payload_params = parse_payload_params(params)
+                requested_files = self._filter_requested_files(all_files, payload_params)
+                if requested_files:
+                    return self._handle_file_attachments(relative_url, params, requested_files)
 
         payload_params = parse_payload_params(params)
 
@@ -325,23 +321,6 @@ class GenericJiraIssueTool(CodeMieTool, FileToolMixin, JiraAttachmentMixin):
     def _is_attachment_operation(self, relative_url: str) -> bool:
         """Check if the operation is for file attachments."""
         return "/attachments" in relative_url or "/attachment" in relative_url
-
-    @staticmethod
-    def _build_missing_attachment_message(payload_params: Dict[str, Any], available: list[str]) -> str:
-        raw_names = payload_params.get("file") if "file" in payload_params else payload_params.get("files")
-        if isinstance(raw_names, list):
-            requested = [str(n) for n in raw_names if n]
-        elif raw_names:
-            requested = [str(raw_names)]
-        else:
-            requested = []
-        requested_str = ", ".join(f"'{n}'" for n in requested) if requested else "(none named)"
-        available_str = ", ".join(f"'{n}'" for n in available) if available else "(none)"
-        return (
-            f"Cannot attach file to Jira: requested {requested_str} but the tool has no matching upload "
-            f"in the current turn. Available files: {available_str}. "
-            "Ask the user to re-upload the file in this message and retry."
-        )
 
     def _handle_file_attachments(
         self, relative_url: str, params: Optional[str], files_content: Dict[str, tuple]

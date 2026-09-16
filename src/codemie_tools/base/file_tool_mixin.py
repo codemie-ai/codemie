@@ -165,8 +165,6 @@ class FileToolMixin:
             files_param = params_dict["files"]
             requested_file_names = files_param if isinstance(files_param, list) else [files_param]
 
-        requested_file_names = [n for n in requested_file_names if n]
-
         logger.debug(f"Requested file names from params: {requested_file_names}")
 
         if not requested_file_names:
@@ -181,5 +179,6 @@ class FileToolMixin:
             else:
                 logger.warning(f"Requested file '{file_name}' not found in available files: {list(all_files.keys())}")
 
-        logger.debug(f"Filtered result: {len(filtered_files)} files - {list(filtered_files.keys())}")
-        return filtered_files
+        result = filtered_files if filtered_files else all_files
+        logger.debug(f"Filtered result: {len(result)} files - {list(result.keys())}")
+        return result
