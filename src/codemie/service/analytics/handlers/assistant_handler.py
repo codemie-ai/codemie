@@ -29,7 +29,7 @@ from codemie.service.analytics.handlers.field_constants import (
 )
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,6 @@ class AssistantHandler:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
-        client_source: str | None = None,
     ) -> dict:
         """Get assistants/chats analytics with performance metrics.
 
@@ -70,7 +69,6 @@ class AssistantHandler:
             projects: Filter by specific projects
             page: Page number (zero-indexed)
             per_page: Items per page
-            client_source: Filter by client source (optional)
 
         Returns:
             Tabular response with assistants metrics including min/median/max statistics
@@ -121,17 +119,14 @@ FROM codemie_metrics_logs*
             esql_query=esql_query,
             result_parser=self._parse_assistants_chats_result,
             columns=self._get_assistants_chats_columns(),
-            filters=AnalyticsQueryFilters(
-                metric_filters=[MetricName.CONVERSATION_ASSISTANT_USAGE.value],
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-                client_source=client_source,
-            ),
+            metric_filters=[MetricName.CONVERSATION_ASSISTANT_USAGE.value],
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
         )
 
     def _parse_assistants_chats_result(self, result: dict) -> list[dict]:
@@ -248,16 +243,14 @@ FROM codemie_metrics_logs*
             result_parser=self._parse_agents_usage_result,
             columns=self._get_agents_usage_columns(),
             group_by_field=ASSISTANT_NAME_KEYWORD_FIELD,
-            filters=AnalyticsQueryFilters(
-                metric_filters=None,
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-            ),
+            metric_filters=None,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
         )
 
     def _build_agents_usage_aggregation(self, query: dict, fetch_size: int) -> dict:
@@ -491,7 +484,6 @@ FROM codemie_metrics_logs*
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
-        client_source: str | None = None,
     ) -> dict:
         """Get top agents usage: invocations, cost, unique users, and most recent user per assistant."""
         logger.info("Requesting top-agents-usage analytics")
@@ -501,17 +493,14 @@ FROM codemie_metrics_logs*
             result_parser=self._parse_top_agents_usage_result,
             columns=self._get_top_agents_usage_columns(),
             group_by_field=ASSISTANT_NAME_KEYWORD_FIELD,
-            filters=AnalyticsQueryFilters(
-                metric_filters=None,
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-                client_source=client_source,
-            ),
+            metric_filters=None,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
         )
 
     def _build_top_agents_usage_aggregation(self, query: dict, fetch_size: int) -> dict:
@@ -660,7 +649,6 @@ FROM codemie_metrics_logs*
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
-        client_source: str | None = None,
     ) -> dict:
         """Get published to marketplace analytics: assistants published per user."""
         logger.info("Requesting published-to-marketplace analytics")
@@ -670,17 +658,14 @@ FROM codemie_metrics_logs*
             result_parser=self._parse_published_to_marketplace_result,
             columns=self._get_published_to_marketplace_columns(),
             group_by_field=USER_ID_KEYWORD_FIELD,
-            filters=AnalyticsQueryFilters(
-                metric_filters=[MetricName.PUBLISH_TO_MARKETPLACE.value],
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-                client_source=client_source,
-            ),
+            metric_filters=[MetricName.PUBLISH_TO_MARKETPLACE.value],
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_email")
         return result

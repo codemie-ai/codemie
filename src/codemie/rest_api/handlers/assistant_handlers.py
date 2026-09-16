@@ -56,7 +56,6 @@ from codemie.rest_api.models.assistant import Assistant, AssistantType
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.conversation import Conversation
 from codemie.rest_api.routers.utils import run_assistant_in_thread_pool
-from codemie.rest_api.security.client_context import get_client_source
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.request_utils import extract_custom_headers
 from codemie.service.assistant_service import AssistantService
@@ -103,9 +102,6 @@ class AssistantRequestHandler(ABC):
         self.user = user
         self.request_uuid = request_uuid
         self.background_tasks: BackgroundTasks | None = None
-        # Snapshotted here (not read later at metric-emission time) because the
-        # streaming path loses contextvars set earlier — see save_chat_history.
-        self.client_source = get_client_source()
 
     @abstractmethod
     def process_request(
@@ -449,7 +445,6 @@ class AssistantRequestHandler(ABC):
             a2ui_envelopes=data.a2ui_envelopes,
             request_id=self.request_uuid,
             background_tasks=self.background_tasks,
-            client_source=self.client_source,
         )
         request_summary_manager.clear_summary(self.request_uuid)
 

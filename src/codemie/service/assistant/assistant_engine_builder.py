@@ -299,17 +299,9 @@ class LangGraphAssistantBuilder:
             assistant,
             tool_call_policy_override=request.tool_call_policy,
         )
-        require_tool_confirmation = (
+        agent_kwargs["require_tool_confirmation"] = (
             allow_tool_confirmation and permissions.tool_call_policy != ToolCallPolicy.AUTO_APPROVE
         )
-        if require_tool_confirmation:
-            # The checkpointer is DB-backed and keyed by conversation_id. It may need to
-            # write a checkpoint before the assistant response (and thus upsert_chat_history)
-            # ever completes, so the Conversation row must exist up front, not after the fact.
-            from codemie.service.conversation_service import ConversationService
-
-            ConversationService.find_or_create_conversation(request, assistant, user)
-        agent_kwargs["require_tool_confirmation"] = require_tool_confirmation
         agent_kwargs["tool_call_policy"] = permissions.tool_call_policy
 
         subagents = create_subagent_executors(

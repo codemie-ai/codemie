@@ -26,8 +26,6 @@ import time
 from datetime import datetime
 from typing import Callable
 
-from pydantic.dataclasses import dataclass as pydantic_dataclass
-
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.aggregation_builder import AggregationBuilder
@@ -37,21 +35,6 @@ from codemie.service.analytics.time_parser import TimeParser
 from codemie.service.analytics.totals_calculator import TotalsCalculator
 
 logger = logging.getLogger(__name__)
-
-
-@pydantic_dataclass
-class AnalyticsQueryFilters:
-    """Shared filter/pagination parameters accepted by AnalyticsQueryPipeline methods."""
-
-    metric_filters: list[str] | None = None
-    time_period: str | None = None
-    start_date: datetime | None = None
-    end_date: datetime | None = None
-    users: list[str] | None = None
-    projects: list[str] | None = None
-    page: int = 0
-    per_page: int = 20
-    client_source: str | None = None
 
 
 class AnalyticsQueryPipeline:
@@ -80,7 +63,14 @@ class AnalyticsQueryPipeline:
         result_parser: Callable[[dict], list[dict]],
         columns: list[dict],
         group_by_field: str,
-        filters: AnalyticsQueryFilters | None = None,
+        metric_filters: list[str] | None = None,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
         use_bucket_selector: bool = False,
         totals_aggs: dict[str, dict] | None = None,
     ) -> dict:
@@ -97,8 +87,14 @@ class AnalyticsQueryPipeline:
             result_parser: Function that parses ES result to list of row dicts
             columns: Column definitions for response
             group_by_field: Field for cardinality aggregation (e.g., "attributes.project.keyword")
-            filters: Shared query filters/pagination (metric_filters, time_period, start_date,
-                     end_date, users, projects, page, per_page, client_source)
+            metric_filters: Optional metric name filters
+            time_period: Predefined time range
+            start_date: Custom range start
+            end_date: Custom range end
+            users: Filter by users
+            projects: Filter by projects
+            page: Page number (0-indexed)
+            per_page: Items per page
             use_bucket_selector: If True, aggregation uses bucket_selector which requires
                                 fetching more buckets and calculating total_count from
                                 filtered buckets (not cardinality)
@@ -112,13 +108,11 @@ class AnalyticsQueryPipeline:
         Returns:
             Tabular response with rows, columns, metadata, and pagination
         """
-        filters = filters or AnalyticsQueryFilters()
-        page, per_page = filters.page, filters.per_page
         start_time = time.time()
 
         # 1. Parse time and build base query with filters
-        start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
-        query = self._build_query(start_dt, end_dt, filters)
+        start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
+        query = self._build_query(start_dt, end_dt, users, projects, metric_filters)
 
         # 2. Calculate fetch sizes and execute queries
         if use_bucket_selector:
@@ -186,7 +180,7 @@ class AnalyticsQueryPipeline:
 
         # 9. Format and return response
         execution_time_ms = (time.time() - start_time) * 1000
-        filters_applied = self._build_filters_applied(filters, start_dt, end_dt)
+        filters_applied = self._build_filters_applied(time_period, start_dt, end_dt, users, projects)
 
         # Build pagination dict directly to override has_more calculation
         pagination = {
@@ -214,7 +208,14 @@ class AnalyticsQueryPipeline:
         columns: list[dict],
         flattening_multiplier: int = 10,
         sort_keys: list[tuple[str, bool]] | None = None,
-        filters: AnalyticsQueryFilters | None = None,
+        metric_filters: list[str] | None = None,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
     ) -> dict:
         """Execute analytics query with row-level pagination for flattened nested aggregations.
 
@@ -233,19 +234,23 @@ class AnalyticsQueryPipeline:
             flattening_multiplier: Multiplier for over-fetching buckets (default 10)
             sort_keys: List of (field, reverse) tuples for consistent ordering.
                       Example: [("total_requests", True), ("user_name", False)]
-            filters: Shared query filters/pagination (metric_filters, time_period, start_date,
-                     end_date, users, projects, page, per_page, client_source)
+            metric_filters: Optional metric name filters
+            time_period: Predefined time range
+            start_date: Custom range start
+            end_date: Custom range end
+            users: Filter by users
+            projects: Filter by projects
+            page: Page number (0-indexed)
+            per_page: Items per page
 
         Returns:
             Tabular response with rows, columns, metadata, and pagination
         """
-        filters = filters or AnalyticsQueryFilters()
-        page, per_page = filters.page, filters.per_page
         start_time = time.time()
 
         # 1. Parse time and build base query with filters
-        start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
-        query = self._build_query(start_dt, end_dt, filters)
+        start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
+        query = self._build_query(start_dt, end_dt, users, projects, metric_filters)
 
         # 2. Calculate over-fetch size to account for nested flattening
         # If page=0 and per_page=10 with multiplier=10: fetch_size=100
@@ -296,7 +301,7 @@ class AnalyticsQueryPipeline:
 
         # 11. Format and return response
         execution_time_ms = (time.time() - start_time) * 1000
-        filters_applied = self._build_filters_applied(filters, start_dt, end_dt)
+        filters_applied = self._build_filters_applied(time_period, start_dt, end_dt, users, projects)
 
         pagination = {
             "page": page,
@@ -320,7 +325,12 @@ class AnalyticsQueryPipeline:
         self,
         agg_builder: Callable[[dict], dict],
         metrics_builder: Callable[[dict], list[dict]],
-        filters: AnalyticsQueryFilters | None = None,
+        metric_filters: list[str] | None = None,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
         timestamp_field: str = "@timestamp",
     ) -> dict:
         """Execute analytics query that returns summary metrics.
@@ -328,19 +338,22 @@ class AnalyticsQueryPipeline:
         Args:
             agg_builder: Function that builds aggregation body from query
             metrics_builder: Function that builds metrics list from ES result
-            filters: Shared query filters (metric_filters, time_period, start_date,
-                     end_date, users, projects, client_source)
+            metric_filters: Optional metric name filters
+            time_period: Predefined time range
+            start_date: Custom range start
+            end_date: Custom range end
+            users: Filter by users
+            projects: Filter by projects
             timestamp_field: Elasticsearch timestamp field for time range filter
 
         Returns:
             Summary response with metrics and metadata
         """
-        filters = filters or AnalyticsQueryFilters()
         start_time = time.time()
 
         # Parse time and build query
-        start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
-        query = self._build_query(start_dt, end_dt, filters, timestamp_field)
+        start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
+        query = self._build_query(start_dt, end_dt, users, projects, metric_filters, timestamp_field)
 
         # Build aggregation
         agg_body = agg_builder(query)
@@ -353,7 +366,7 @@ class AnalyticsQueryPipeline:
 
         # Format response
         execution_time_ms = (time.time() - start_time) * 1000
-        filters_applied = self._build_filters_applied(filters, start_dt, end_dt)
+        filters_applied = self._build_filters_applied(time_period, start_dt, end_dt, users, projects)
 
         return ResponseFormatter.format_summary_response(
             metrics=metrics, filters_applied=filters_applied, execution_time_ms=execution_time_ms
@@ -363,7 +376,12 @@ class AnalyticsQueryPipeline:
         self,
         agg_builder: Callable[[dict], dict],
         result_parser: Callable[[dict, dict], dict],
-        filters: AnalyticsQueryFilters | None = None,
+        metric_filters: list[str] | None = None,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
     ) -> dict:
         """Execute analytics query with custom aggregation and response format.
 
@@ -374,18 +392,21 @@ class AnalyticsQueryPipeline:
         Args:
             agg_builder: Function that builds aggregation body from query
             result_parser: Function that parses ES result and metadata into final response dict
-            filters: Shared query filters (metric_filters, time_period, start_date,
-                     end_date, users, projects, client_source)
+            metric_filters: Optional metric name filters
+            time_period: Predefined time range
+            start_date: Custom range start
+            end_date: Custom range end
+            users: Filter by users
+            projects: Filter by projects
 
         Returns:
             Custom response dict with data and metadata (format defined by result_parser)
         """
-        filters = filters or AnalyticsQueryFilters()
         start_time = time.time()
 
         # 1. Parse time and build secure query with filters
-        start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
-        query = self._build_query(start_dt, end_dt, filters)
+        start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
+        query = self._build_query(start_dt, end_dt, users, projects, metric_filters)
 
         # 2. Build aggregation body
         agg_body = agg_builder(query)
@@ -395,7 +416,7 @@ class AnalyticsQueryPipeline:
 
         # 4. Parse result into final response (with metadata)
         execution_time_ms = (time.time() - start_time) * 1000
-        filters_applied = self._build_filters_applied(filters, start_dt, end_dt)
+        filters_applied = self._build_filters_applied(time_period, start_dt, end_dt, users, projects)
         metadata = ResponseFormatter.create_metadata(filters_applied, execution_time_ms)
 
         # 5. Let result_parser build final response with metadata
@@ -406,7 +427,14 @@ class AnalyticsQueryPipeline:
         esql_query: str,
         result_parser: Callable[[dict], list[dict]],
         columns: list[dict],
-        filters: AnalyticsQueryFilters | None = None,
+        metric_filters: list[str] | None = None,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
     ) -> dict:
         """Execute ES|QL query with in-memory pagination.
 
@@ -417,19 +445,23 @@ class AnalyticsQueryPipeline:
             esql_query: ES|QL query string
             result_parser: Function that parses ES|QL result to list of row dicts
             columns: Column definitions for response
-            filters: Shared query filters/pagination (metric_filters, time_period, start_date,
-                     end_date, users, projects, page, per_page, client_source)
+            metric_filters: Optional metric name filters
+            time_period: Predefined time range
+            start_date: Custom range start
+            end_date: Custom range end
+            users: Filter by users
+            projects: Filter by projects
+            page: Page number (0-indexed)
+            per_page: Items per page
 
         Returns:
             Tabular response with rows, columns, metadata, and pagination
         """
-        filters = filters or AnalyticsQueryFilters()
-        page, per_page = filters.page, filters.per_page
         start_time = time.time()
 
         # 1. Parse time and build filter query
-        start_dt, end_dt = TimeParser.parse(filters.time_period, filters.start_date, filters.end_date)
-        filter_query = self._build_query(start_dt, end_dt, filters)
+        start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
+        filter_query = self._build_query(start_dt, end_dt, users, projects, metric_filters)
 
         # 2. Execute ES|QL query (fetch ALL results, up to 10k limit)
         result = await self._repository.execute_esql_query(esql_query, filter_query=filter_query)
@@ -450,7 +482,7 @@ class AnalyticsQueryPipeline:
 
         # 6. Calculate execution time and build filters
         execution_time_ms = (time.time() - start_time) * 1000
-        filters_applied = self._build_filters_applied(filters, start_dt, end_dt)
+        filters_applied = self._build_filters_applied(time_period, start_dt, end_dt, users, projects)
 
         # 7. Format and return response
         return ResponseFormatter.format_tabular_response(
@@ -496,49 +528,58 @@ class AnalyticsQueryPipeline:
         self,
         start_dt: datetime,
         end_dt: datetime,
-        filters: AnalyticsQueryFilters,
+        users: list[str] | None,
+        projects: list[str] | None,
+        metric_filters: list[str] | None,
         timestamp_field: str = "@timestamp",
     ) -> dict:
         """Build secure query with all filters."""
         query_builder = SecureQueryBuilder(self._user)
         query_builder.add_time_range(start_dt, end_dt, timestamp_field)
 
-        if filters.metric_filters:
-            query_builder.add_metric_filter(filters.metric_filters)
-        if filters.users:
-            query_builder.add_user_filter(filters.users)
-        if filters.projects:
-            query_builder.add_project_filter(filters.projects)
-        if filters.client_source:
-            query_builder.add_client_source_filter(filters.client_source)
+        if metric_filters:
+            query_builder.add_metric_filter(metric_filters)
+        if users:
+            query_builder.add_user_filter(users)
+        if projects:
+            query_builder.add_project_filter(projects)
 
         return query_builder.build()
 
-    def _build_query_without_time_filter(self, filters: AnalyticsQueryFilters) -> dict:
+    def _build_query_without_time_filter(
+        self,
+        users: list[str] | None,
+        projects: list[str] | None,
+        metric_filters: list[str] | None,
+    ) -> dict:
         """Build secure query WITHOUT time filter — for all-time engagement metrics (DAU, MAU, weekly).
 
         Access control (project/user scoping) is still fully applied.
         """
         query_builder = SecureQueryBuilder(self._user)
         # NOTE: no add_time_range() — intentionally omitted for all-time queries
-        if filters.metric_filters:
-            query_builder.add_metric_filter(filters.metric_filters)
-        if filters.users:
-            query_builder.add_user_filter(filters.users)
-        if filters.projects:
-            query_builder.add_project_filter(filters.projects)
-        if filters.client_source:
-            query_builder.add_client_source_filter(filters.client_source)
+        if metric_filters:
+            query_builder.add_metric_filter(metric_filters)
+        if users:
+            query_builder.add_user_filter(users)
+        if projects:
+            query_builder.add_project_filter(projects)
 
         return query_builder.build()
 
-    def _build_filters_applied(self, filters: AnalyticsQueryFilters, start_dt: datetime, end_dt: datetime) -> dict:
+    def _build_filters_applied(
+        self,
+        time_period: str | None,
+        start_dt: datetime,
+        end_dt: datetime,
+        users: list[str] | None,
+        projects: list[str] | None,
+    ) -> dict:
         """Build filters_applied dictionary."""
         return {
-            "time_period": filters.time_period or "custom",
-            "start_date": start_dt.isoformat() if not filters.time_period else None,
-            "end_date": end_dt.isoformat() if not filters.time_period else None,
-            "users": filters.users,
-            "projects": filters.projects,
-            "client_source": filters.client_source,
+            "time_period": time_period or "custom",
+            "start_date": start_dt.isoformat() if not time_period else None,
+            "end_date": end_dt.isoformat() if not time_period else None,
+            "users": users,
+            "projects": projects,
         }

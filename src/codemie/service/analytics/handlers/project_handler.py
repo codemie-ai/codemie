@@ -24,7 +24,7 @@ from codemie.repository.metrics_elastic_repository import MetricsElasticReposito
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.field_constants import METRIC_NAME_KEYWORD_FIELD, PROJECT_KEYWORD_FIELD
 from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
 from codemie.service.analytics.handlers.cli_cost_processor import CLICostAdjustmentMixin
 from codemie.service.analytics.time_parser import TimeParser
 
@@ -55,7 +55,6 @@ class ProjectHandler(CLICostAdjustmentMixin):
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
-        client_source: str | None = None,
     ) -> dict:
         """Get projects spending analytics.
 
@@ -70,7 +69,6 @@ class ProjectHandler(CLICostAdjustmentMixin):
             projects: Filter by specific projects (optional)
             page: Page number for pagination
             per_page: Number of results per page
-            client_source: Filter by client source (optional)
 
         Returns:
             Tabular response with columns: project_name, total_cost_usd
@@ -85,22 +83,17 @@ class ProjectHandler(CLICostAdjustmentMixin):
                 result_parser=self._parse_projects_spending_rows_raw,
                 columns=self._get_projects_spending_columns(),
                 group_by_field=PROJECT_KEYWORD_FIELD,
-                filters=AnalyticsQueryFilters(
-                    metric_filters=MetricName.to_list_from_group(MetricName.SPENDING_METRICS),
-                    time_period=time_period,
-                    start_date=start_date,
-                    end_date=end_date,
-                    users=users,
-                    projects=projects,
-                    page=page,
-                    per_page=per_page,
-                    client_source=client_source,
-                ),
+                metric_filters=MetricName.to_list_from_group(MetricName.SPENDING_METRICS),
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
                 use_bucket_selector=True,
             ),
-            self.get_cli_costs_grouped_by(
-                start_dt, end_dt, PROJECT_KEYWORD_FIELD, "project", users, projects, client_source=client_source
-            ),
+            self.get_cli_costs_grouped_by(start_dt, end_dt, PROJECT_KEYWORD_FIELD, "project", users, projects),
         )
         self._apply_cli_adjustment_to_rows(result["data"]["rows"], cli_costs_by_project, "project_name")
         return result
@@ -280,16 +273,14 @@ class ProjectHandler(CLICostAdjustmentMixin):
             result_parser=self._parse_projects_activity_result,
             columns=self._get_projects_activity_columns(),
             group_by_field=PROJECT_KEYWORD_FIELD,
-            filters=AnalyticsQueryFilters(
-                metric_filters=MetricName.to_list_from_group(MetricName.ACTIVITY_METRICS),
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-            ),
+            metric_filters=MetricName.to_list_from_group(MetricName.ACTIVITY_METRICS),
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
             use_bucket_selector=True,
         )
 
@@ -536,16 +527,14 @@ class ProjectHandler(CLICostAdjustmentMixin):
             result_parser=self._parse_projects_unique_daily_result,
             columns=self._get_projects_unique_daily_columns(),
             group_by_field="time",
-            filters=AnalyticsQueryFilters(
-                metric_filters=MetricName.to_list_from_group(MetricName.ACTIVITY_METRICS),
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=0,
-                per_page=10000,
-            ),
+            metric_filters=MetricName.to_list_from_group(MetricName.ACTIVITY_METRICS),
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=0,
+            per_page=10000,
         )
 
     def _build_projects_unique_daily_aggregation(self, query: dict) -> dict:

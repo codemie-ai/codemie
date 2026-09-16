@@ -34,7 +34,6 @@ from codemie.core.dependecies import get_stt_openai_client
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import AssistantChatRequest, UpdateConversationRequest, UpdateAiMessageRequest, TokensUsage
 from codemie.core.utils import safe_divide
-from codemie.rest_api.security.client_context import ClientSource
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.conversation import (
     ChatTurnData,
@@ -193,20 +192,6 @@ class ConversationService:
 
         return conversation, False, False
 
-    @classmethod
-    def find_or_create_conversation(cls, request: AssistantChatRequest, assistant: Assistant, user: User) -> None:
-        """Persist a Conversation row for request.conversation_id if none exists yet.
-
-        Tool-call confirmation needs a durable, DB-backed checkpoint keyed by conversation_id
-        before the graph starts streaming — LangGraph may checkpoint on the first step, well
-        before upsert_chat_history() runs (it only runs once the assistant response is fully
-        generated). Without this, turn 1 of a manual-confirmation conversation has no row for
-        the checkpointer to attach to, and the pending-tool-call save silently fails to persist.
-        """
-        conversation, should_create, _ = cls._find_or_create_conversation(request, assistant, user)
-        if should_create:
-            conversation.save()
-
     @staticmethod
     def _resolve_history_index(request: AssistantChatRequest, conversation: Conversation) -> int:
         if request.history_index is not None:
@@ -259,7 +244,6 @@ class ConversationService:
         a2ui_envelopes: list[dict] | None = None,
         request_id: Optional[str] = None,
         background_tasks: BackgroundTasks | None = None,
-        client_source: ClientSource | None = None,
     ):
         llm_model = request.llm_model if request.llm_model else assistant.llm_model_type
 
@@ -318,7 +302,6 @@ class ConversationService:
             llm_model,
             status,
             request_id=request_id,
-            client_source=client_source,
         )
         cls._upsert_conversation_metrics(
             conversation_id=request.conversation_id,

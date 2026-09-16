@@ -24,7 +24,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.field_constants import METRIC_NAME_KEYWORD_FIELD, USER_NAME_KEYWORD_FIELD
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -66,15 +66,13 @@ class MCPHandler:
             result_parser=self._parse_mcp_servers_result,
             columns=self._get_mcp_servers_columns(),
             group_by_field=MCP_NAME_KEYWORD_FIELD,
-            filters=AnalyticsQueryFilters(
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-            ),
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
         )
 
     def _build_mcp_servers_aggregation(self, query: dict, fetch_size: int) -> dict:
@@ -167,15 +165,13 @@ class MCPHandler:
                 ("user_name", False),  # Secondary: Alphabetical (ASC)
                 ("mcp_name", False),  # Tertiary: Alphabetical (ASC)
             ],
-            filters=AnalyticsQueryFilters(
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-            ),
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_name", target="name")
         return result

@@ -147,49 +147,6 @@ class TestGetSummaries:
         assert mock_repository.execute_aggregation_query.call_count == 3
         assert result is not None
 
-    @pytest.mark.asyncio
-    @patch("codemie.service.analytics.handlers.cli_cost_processor.config.CLI_METRICS_CUTOFF_DATE", "2024-01-01")
-    async def test_get_summaries_applies_client_source_filter(self, handler, mock_repository):
-        """Verify client_source is threaded into the ES query as a term filter on the keyword field."""
-        # Arrange
-        mock_repository.execute_aggregation_query.side_effect = [
-            {"aggregations": {"unique_users": {"value": 0}}},
-            {
-                "aggregations": {
-                    "total_tokens_agg": {
-                        "input_tokens": {"value": 0},
-                        "output_tokens": {"value": 0},
-                        "cache_read_input_tokens": {"value": 0},
-                        "cache_creation_tokens": {"value": 0},
-                    },
-                    "total_money_spent": {"sum": {"value": 0.0}},
-                    "platform_llm_cost": {"money_spent": {"value": 0.0}},
-                    "unique_assistants": {"count": {"value": 0}},
-                    "unique_workflows": {"count": {"value": 0}},
-                    "embedding_metrics": {"input_tokens": {"value": 0}, "money_spent": {"value": 0.0}},
-                    "cli_cost": {"money_spent": {"value": 0.0}},
-                    "cli_invoked": {"doc_count": 0},
-                    "cli_unique_sessions": {"count": {"value": 0}},
-                    "mcps_invoked": {"count": {"value": 0}},
-                    "webhooks_invoked": {"count": {"value": 0}},
-                    "skills_invoked": {"count": {"value": 0}},
-                }
-            },
-            {"aggregations": {"total_cost": {"value": 0.0}}},
-        ]
-
-        # Act
-        await handler.get_summaries(time_period="last_7_days", client_source="teams")
-
-        # Assert - at least one of the executed queries carries the client_source term filter
-        found = False
-        for call in mock_repository.execute_aggregation_query.call_args_list:
-            body = call.args[0] if call.args else call.kwargs.get("query", {})
-            if "attributes.client_source.keyword" in str(body) and "teams" in str(body):
-                found = True
-                break
-        assert found, "Expected attributes.client_source.keyword=teams term filter in at least one query"
-
 
 class TestAggregationBuilder:
     """Tests for aggregation builder methods."""

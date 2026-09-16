@@ -282,18 +282,12 @@ class TestGetSummariesEndpoint:
 
         # Act
         response = await get_summaries(
-            user=mock_user,
-            time_period="last_30_days",
-            start_date=None,
-            end_date=None,
-            users=None,
-            projects=None,
-            client_source=None,
+            user=mock_user, time_period="last_30_days", start_date=None, end_date=None, users=None, projects=None
         )
 
         # Assert
         mock_service.get_summaries.assert_called_once_with(
-            time_period="last_30_days", start_date=None, end_date=None, users=None, projects=None, client_source=None
+            time_period="last_30_days", start_date=None, end_date=None, users=None, projects=None
         )
         assert isinstance(response, JSONResponse)
         assert response.status_code == status.HTTP_200_OK
@@ -314,18 +308,12 @@ class TestGetSummariesEndpoint:
 
         # Act
         response = await get_summaries(
-            user=mock_user,
-            time_period=None,
-            start_date=start_date,
-            end_date=end_date,
-            users=None,
-            projects=None,
-            client_source=None,
+            user=mock_user, time_period=None, start_date=start_date, end_date=end_date, users=None, projects=None
         )
 
         # Assert
         mock_service.get_summaries.assert_called_once_with(
-            time_period=None, start_date=start_date, end_date=end_date, users=None, projects=None, client_source=None
+            time_period=None, start_date=start_date, end_date=end_date, users=None, projects=None
         )
         assert isinstance(response, JSONResponse)
         assert response.status_code == status.HTTP_200_OK
@@ -349,7 +337,6 @@ class TestGetSummariesEndpoint:
             end_date=None,
             users="user1@example.com,user2@example.com",
             projects=None,
-            client_source=None,
         )
 
         # Assert
@@ -359,7 +346,6 @@ class TestGetSummariesEndpoint:
             end_date=None,
             users=["user1@example.com", "user2@example.com"],
             projects=None,
-            client_source=None,
         )
         assert isinstance(response, JSONResponse)
 
@@ -382,7 +368,6 @@ class TestGetSummariesEndpoint:
             end_date=None,
             users=None,
             projects="codemie,project-alpha",
-            client_source=None,
         )
 
         # Assert
@@ -392,41 +377,6 @@ class TestGetSummariesEndpoint:
             end_date=None,
             users=None,
             projects=["codemie", "project-alpha"],
-            client_source=None,
-        )
-        assert isinstance(response, JSONResponse)
-
-    @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
-    async def test_with_client_source_filter(self, mock_service_class, mock_user, sample_summaries_response_data):
-        """Verify client_source enum query param is threaded to the service as its string value."""
-        # Arrange
-        from codemie.rest_api.security.client_context import ClientSource
-        from codemie.rest_api.routers.analytics import get_summaries
-
-        mock_service = AsyncMock()
-        mock_service.get_summaries.return_value = sample_summaries_response_data
-        mock_service_class.return_value = mock_service
-
-        # Act
-        response = await get_summaries(
-            user=mock_user,
-            time_period="last_30_days",
-            start_date=None,
-            end_date=None,
-            users=None,
-            projects=None,
-            client_source=ClientSource.TEAMS,
-        )
-
-        # Assert
-        mock_service.get_summaries.assert_called_once_with(
-            time_period="last_30_days",
-            start_date=None,
-            end_date=None,
-            users=None,
-            projects=None,
-            client_source="teams",
         )
         assert isinstance(response, JSONResponse)
 
@@ -452,7 +402,6 @@ class TestGetSummariesEndpoint:
             end_date=None,
             users="user1@example.com",
             projects="project1",
-            client_source=None,
         )
 
         # Assert
@@ -482,7 +431,6 @@ class TestPaginationEndpoints:
         response = await get_assistants_chats(
             user=mock_user,
             params=AnalyticsQueryParams(page=0, per_page=50),
-            client_source=None,
         )
 
         # Assert
@@ -508,7 +456,6 @@ class TestPaginationEndpoints:
         response = await get_assistants_chats(
             user=mock_user,
             params=AnalyticsQueryParams(page=2, per_page=100),
-            client_source=None,
         )
 
         # Assert
@@ -538,13 +485,10 @@ class TestWorkflowsEndpoint:
         response = await get_workflows(
             user=mock_user,
             params=AnalyticsQueryParams(time_period="last_7_days", page=0, per_page=50),
-            client_source=None,
         )
 
         # Assert
-        mock_service.get_workflows.assert_called_once_with(
-            "last_7_days", None, None, None, None, 0, 50, client_source=None
-        )
+        mock_service.get_workflows.assert_called_once_with("last_7_days", None, None, None, None, 0, 50)
         assert isinstance(response, JSONResponse)
         assert response.status_code == status.HTTP_200_OK
 
@@ -607,13 +551,7 @@ class TestErrorHandlingIntegration:
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:
             await get_summaries(
-                user=mock_user,
-                time_period="invalid_value",
-                start_date=None,
-                end_date=None,
-                users=None,
-                projects=None,
-                client_source=None,
+                user=mock_user, time_period="invalid_value", start_date=None, end_date=None, users=None, projects=None
             )
 
         exception = exc_info.value
@@ -635,13 +573,7 @@ class TestErrorHandlingIntegration:
         # Act & Assert
         with pytest.raises(ExtendedHTTPException) as exc_info:
             await get_summaries(
-                user=mock_user,
-                time_period="last_30_days",
-                start_date=None,
-                end_date=None,
-                users=None,
-                projects=None,
-                client_source=None,
+                user=mock_user, time_period="last_30_days", start_date=None, end_date=None, users=None, projects=None
             )
 
         exception = exc_info.value
@@ -727,19 +659,11 @@ class TestMultipleEndpointsPatterns:
                 page=0,
                 per_page=50,
             ),
-            client_source=None,
         )
 
         # Assert
         mock_service.get_llms_usage.assert_called_once_with(
-            "last_60_days",
-            None,
-            None,
-            ["user1@example.com", "user2@example.com"],
-            ["project1"],
-            0,
-            50,
-            client_source=None,
+            "last_60_days", None, None, ["user1@example.com", "user2@example.com"], ["project1"], 0, 50
         )
         assert isinstance(response, JSONResponse)
         assert response.status_code == status.HTTP_200_OK

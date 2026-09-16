@@ -35,7 +35,7 @@ from codemie.service.analytics.handlers.field_constants import (
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.handlers.cli_cost_processor import CLICostAdjustmentMixin
 from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
 from codemie.service.analytics.response_formatter import ResponseFormatter
 from codemie.service.analytics.time_parser import TimeParser
 
@@ -102,9 +102,7 @@ class UserHandler(CLICostAdjustmentMixin):
 
             execution_time_ms = (time.monotonic() - start_time) * 1000
             start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
-            filters_applied = self._pipeline._build_filters_applied(
-                AnalyticsQueryFilters(time_period=time_period, users=users, projects=projects), start_dt, end_dt
-            )
+            filters_applied = self._pipeline._build_filters_applied(time_period, start_dt, end_dt, users, projects)
             metadata = ResponseFormatter.create_metadata(filters_applied, execution_time_ms)
 
             logger.info(
@@ -115,13 +113,12 @@ class UserHandler(CLICostAdjustmentMixin):
         result = await self._pipeline.execute_composite_query(
             agg_builder=self._build_users_list_aggregation,
             result_parser=self._parse_users_list_result,
-            filters=AnalyticsQueryFilters(
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-            ),
+            metric_filters=None,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
         )
         merged = await UserIdentityResolver.resolve_and_merge(result.get("data", {}).get("users", []))
         result["data"]["users"] = merged
@@ -216,7 +213,6 @@ class UserHandler(CLICostAdjustmentMixin):
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
-        client_source: str | None = None,
     ) -> dict:
         """Get users spending analytics.
 
@@ -231,7 +227,6 @@ class UserHandler(CLICostAdjustmentMixin):
             projects: Filter by specific projects (optional)
             page: Page number for pagination
             per_page: Number of results per page
-            client_source: Filter by client source (optional)
 
         Returns:
             Tabular response with columns: user_email, total_cost_usd
@@ -246,22 +241,17 @@ class UserHandler(CLICostAdjustmentMixin):
                 result_parser=self._parse_users_spending_rows_raw,
                 columns=self._get_users_spending_columns(),
                 group_by_field=USER_ID_KEYWORD_FIELD,
-                filters=AnalyticsQueryFilters(
-                    metric_filters=MetricName.to_list_from_group(MetricName.SPENDING_METRICS),
-                    time_period=time_period,
-                    start_date=start_date,
-                    end_date=end_date,
-                    users=users,
-                    projects=projects,
-                    page=page,
-                    per_page=per_page,
-                    client_source=client_source,
-                ),
+                metric_filters=MetricName.to_list_from_group(MetricName.SPENDING_METRICS),
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
                 use_bucket_selector=True,
             ),
-            self.get_cli_costs_grouped_by(
-                start_dt, end_dt, USER_ID_KEYWORD_FIELD, "user", users, projects, client_source=client_source
-            ),
+            self.get_cli_costs_grouped_by(start_dt, end_dt, USER_ID_KEYWORD_FIELD, "user", users, projects),
         )
 
         self._apply_cli_adjustment_to_rows(result["data"]["rows"], cli_costs_by_user, "user_email")
@@ -400,7 +390,6 @@ class UserHandler(CLICostAdjustmentMixin):
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
-        client_source: str | None = None,
     ) -> dict:
         """Get platform spending per user (Assistants + Workflows + Datasources, no CLI).
 
@@ -414,7 +403,6 @@ class UserHandler(CLICostAdjustmentMixin):
             projects: Filter by specific projects (optional)
             page: Page number for pagination
             per_page: Number of results per page
-            client_source: Filter by client source (optional)
 
         Returns:
             Tabular response with columns: user_email, total_cost_usd
@@ -433,17 +421,14 @@ class UserHandler(CLICostAdjustmentMixin):
             result_parser=parse_platform,
             columns=self._get_users_spending_columns(),
             group_by_field=USER_ID_KEYWORD_FIELD,
-            filters=AnalyticsQueryFilters(
-                metric_filters=platform_metrics,
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-                client_source=client_source,
-            ),
+            metric_filters=platform_metrics,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
             use_bucket_selector=False,
             totals_aggs={"total_cost_usd": {"sum": {"field": MONEY_SPENT_FIELD}}},
         )
@@ -459,7 +444,6 @@ class UserHandler(CLICostAdjustmentMixin):
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
-        client_source: str | None = None,
     ) -> dict:
         """Get CLI-only spending per user (grouped by user_name).
 
@@ -474,7 +458,6 @@ class UserHandler(CLICostAdjustmentMixin):
             projects: Filter by specific projects (optional)
             page: Page number for pagination
             per_page: Number of results per page
-            client_source: Filter by client source (optional)
 
         Returns:
             Tabular response with columns: user_name, total_cost_usd
@@ -488,17 +471,14 @@ class UserHandler(CLICostAdjustmentMixin):
             result_parser=self._parse_cli_spending_result,
             columns=self._get_cli_spending_columns(),
             group_by_field=USER_NAME_KEYWORD_FIELD,
-            filters=AnalyticsQueryFilters(
-                metric_filters=MetricName.to_list(MetricName.CLI_LLM_USAGE_TOTAL),
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-                client_source=client_source,
-            ),
+            metric_filters=MetricName.to_list(MetricName.CLI_LLM_USAGE_TOTAL),
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
             use_bucket_selector=True,
             totals_aggs={
                 "total_cost_usd": {
@@ -650,16 +630,14 @@ class UserHandler(CLICostAdjustmentMixin):
             result_parser=self._parse_users_activity_result,
             columns=self._get_users_activity_columns(),
             group_by_field=USER_ID_KEYWORD_FIELD,
-            filters=AnalyticsQueryFilters(
-                metric_filters=MetricName.to_list_from_group(MetricName.ACTIVITY_METRICS),
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-            ),
+            metric_filters=MetricName.to_list_from_group(MetricName.ACTIVITY_METRICS),
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
             use_bucket_selector=True,
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_email")
@@ -904,16 +882,14 @@ class UserHandler(CLICostAdjustmentMixin):
             result_parser=self._parse_users_unique_daily_result,
             columns=self._get_users_unique_daily_columns(),
             group_by_field="time",
-            filters=AnalyticsQueryFilters(
-                metric_filters=MetricName.to_list_from_group(MetricName.ACTIVITY_METRICS),
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=0,
-                per_page=10000,
-            ),
+            metric_filters=MetricName.to_list_from_group(MetricName.ACTIVITY_METRICS),
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=0,
+            per_page=10000,
         )
 
     def _build_users_unique_daily_aggregation(self, query: dict) -> dict:
@@ -1045,7 +1021,6 @@ class UserHandler(CLICostAdjustmentMixin):
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
-        client_source: str | None = None,
     ) -> dict:
         """Get power users analytics: assistant and workflow creation/update/deletion activity per user."""
         logger.info("Requesting power-users analytics")
@@ -1055,16 +1030,14 @@ class UserHandler(CLICostAdjustmentMixin):
             result_parser=self._parse_power_users_result,
             columns=self._get_power_users_columns(),
             group_by_field=USER_ID_KEYWORD_FIELD,
-            filters=AnalyticsQueryFilters(
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-                client_source=client_source,
-            ),
+            metric_filters=None,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_email")
         return result
@@ -1168,15 +1141,14 @@ class UserHandler(CLICostAdjustmentMixin):
             result_parser=self._parse_knowledge_sharing_result,
             columns=self._get_knowledge_sharing_columns(),
             group_by_field=USER_ID_KEYWORD_FIELD,
-            filters=AnalyticsQueryFilters(
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
-                page=page,
-                per_page=per_page,
-            ),
+            metric_filters=None,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_email")
         return result

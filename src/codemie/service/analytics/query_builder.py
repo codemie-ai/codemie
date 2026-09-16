@@ -36,7 +36,6 @@ logger = logging.getLogger(__name__)
 # Elasticsearch field name constants
 PROJECT_FIELD = "attributes.project.keyword"
 USER_ID_FIELD = "attributes.user_id.keyword"
-CLIENT_SOURCE_FIELD = "attributes.client_source.keyword"
 
 
 class SecureQueryBuilder:
@@ -226,20 +225,6 @@ class SecureQueryBuilder:
         """
         if users:
             self._query["bool"]["filter"].append({"terms": {USER_ID_FIELD: users}})
-        return self
-
-    def add_client_source_filter(self, client_source: str) -> SecureQueryBuilder:
-        """Add client source filter to query (exact match, single value).
-
-        Args:
-            client_source: Client source value to filter on (e.g. "platform", "teams", "other").
-                           Should be a valid ClientSource enum value.
-
-        Returns:
-            Self for method chaining
-        """
-        if client_source:
-            self._query["bool"]["filter"].append({"term": {CLIENT_SOURCE_FIELD: client_source}})
         return self
 
     def add_project_filter(self, projects: list[str]) -> SecureQueryBuilder:
