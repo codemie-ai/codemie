@@ -22,7 +22,7 @@ from datetime import datetime
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -73,14 +73,16 @@ class EmbeddingsHandler:
             result_parser=self._parse_embeddings_usage_result,
             columns=self._get_embeddings_usage_columns(),
             group_by_field=EMBEDDINGS_MODEL_KEYWORD_FIELD,
-            metric_filters=[MetricName.DATASOURCE_TOKENS_USAGE.value],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.DATASOURCE_TOKENS_USAGE.value],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
             totals_aggs={
                 "total_input_tokens": {"sum": {"field": "attributes.input_tokens"}},
                 "total_cost_usd": {"sum": {"field": "attributes.money_spent"}},

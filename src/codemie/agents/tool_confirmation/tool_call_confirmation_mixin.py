@@ -197,8 +197,18 @@ class ToolCallConfirmationMixin:
         self.resume_from_interrupt()
 
     def _get_checkpoint_config(self) -> dict:
-        """Return the __pregel_checkpointer run-config block for this agent."""
-        if self.require_tool_confirmation:
+        """Return the __pregel_checkpointer run-config block for this agent.
+
+        The DB-backed checkpointer keys state by conversation_id (thread_id), and callers are
+        expected to eagerly persist a Conversation row for conversation_id before streaming
+        starts whenever require_tool_confirmation is set (see
+        LangGraphAssistantBuilder.configure_agent_kwargs / ConversationService.
+        find_or_create_conversation) — the checkpointer may write on the very first step,
+        well before the assistant response (and upsert_chat_history) completes. The
+        conversation_id truthiness check below is defense-in-depth for any caller that doesn't
+        go through that path; it does not by itself guarantee the row exists.
+        """
+        if self.require_tool_confirmation and self.conversation_id:
             from codemie.agents.tool_confirmation.conversation_checkpoint_saver import ConversationCheckpointSaver
             from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
 

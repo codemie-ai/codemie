@@ -25,7 +25,7 @@ from codemie.repository.metrics_elastic_repository import MetricsElasticReposito
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.cli_cost_processor import CLICostAdjustmentMixin
 from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
 from codemie.service.analytics.time_parser import TimeParser
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,7 @@ class SummaryHandler(CLICostAdjustmentMixin):
         end_date: datetime | None = None,
         users: list[str] | None = None,
         projects: list[str] | None = None,
+        client_source: str | None = None,
     ) -> dict:
         """Get summary metrics: tokens, costs, usage statistics.
 
@@ -63,6 +64,7 @@ class SummaryHandler(CLICostAdjustmentMixin):
             end_date: Custom range end
             users: Filter by specific users (optional)
             projects: Filter by specific projects (optional)
+            client_source: Filter by client source (optional)
 
         Returns:
             Summary response with metrics and metadata
@@ -79,8 +81,11 @@ class SummaryHandler(CLICostAdjustmentMixin):
                 end_date=end_date,
                 users=users,
                 projects=projects,
+                client_source=client_source,
             ),
-            self.get_cli_costs_with_adjustment(start_dt, end_dt, users, projects, include_cache_costs=False),
+            self.get_cli_costs_with_adjustment(
+                start_dt, end_dt, users, projects, include_cache_costs=False, client_source=client_source
+            ),
         )
         cli_adjusted_total = cli_adjusted["total_cost"]
 
@@ -89,12 +94,15 @@ class SummaryHandler(CLICostAdjustmentMixin):
             metrics_builder=lambda result: self._build_summaries_metrics(
                 result, unique_users_count, cli_adjusted_total
             ),
-            metric_filters=None,
-            time_period=None,
-            start_date=start_dt,
-            end_date=end_dt,
-            users=users,
-            projects=projects,
+            filters=AnalyticsQueryFilters(
+                metric_filters=None,
+                time_period=None,
+                start_date=start_dt,
+                end_date=end_dt,
+                users=users,
+                projects=projects,
+                client_source=client_source,
+            ),
             timestamp_field="time",
         )
 
@@ -208,6 +216,7 @@ class SummaryHandler(CLICostAdjustmentMixin):
         end_date: datetime | None,
         users: list[str] | None,
         projects: list[str] | None,
+        client_source: str | None = None,
     ) -> int:
         """Get unique users count across ALL metrics (separate query without metric_name filter).
 
@@ -220,6 +229,7 @@ class SummaryHandler(CLICostAdjustmentMixin):
             end_date: Custom range end
             users: Filter by users
             projects: Filter by projects
+            client_source: Filter by client source (optional)
 
         Returns:
             Count of unique users
@@ -238,12 +248,15 @@ class SummaryHandler(CLICostAdjustmentMixin):
                 },
             },
             metrics_builder=lambda result: result,
-            metric_filters=None,  # No metric_name filter - count across all metrics
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
+            filters=AnalyticsQueryFilters(
+                metric_filters=None,  # No metric_name filter - count across all metrics
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                client_source=client_source,
+            ),
             timestamp_field="time",
         )
 

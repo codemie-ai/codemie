@@ -32,6 +32,7 @@ from codemie.service.analytics.handlers.field_constants import (
 )
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
+from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters
 from codemie.service.analytics.response_formatter import ResponseFormatter
 from codemie.service.analytics.time_parser import TimeParser
 
@@ -165,7 +166,11 @@ class CLIInsightsHandler(CLIBaseHandler):
         """Get aggregated user classification metrics for CLI insights."""
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
         query = self._pipeline._build_query(
-            start_dt, end_dt, users, projects, MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            start_dt,
+            end_dt,
+            AnalyticsQueryFilters(
+                users=users, projects=projects, metric_filters=MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            ),
         )
         result = await self.repository.execute_aggregation_query(
             self._build_cli_insights_classification_aggregation(query)
@@ -218,7 +223,11 @@ class CLIInsightsHandler(CLIBaseHandler):
         """Get top CLI users ranked by cost."""
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
         query = self._pipeline._build_query(
-            start_dt, end_dt, users, projects, MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            start_dt,
+            end_dt,
+            AnalyticsQueryFilters(
+                users=users, projects=projects, metric_filters=MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            ),
         )
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_top_users_aggregation(query))
         rows = []
@@ -510,7 +519,11 @@ class CLIInsightsHandler(CLIBaseHandler):
 
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
         query = self._pipeline._build_query(
-            start_dt, end_dt, users, projects, MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            start_dt,
+            end_dt,
+            AnalyticsQueryFilters(
+                users=users, projects=projects, metric_filters=MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            ),
         )
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_identity_aggregation(query))
         buckets = result.get("aggregations", {}).get("users", {}).get("buckets", [])
@@ -630,9 +643,9 @@ class CLIInsightsHandler(CLIBaseHandler):
         query = self._pipeline._build_query(
             start_dt,
             end_dt,
-            users,
-            projects,
-            [MetricName.CLI_TOOL_USAGE_TOTAL.value],
+            AnalyticsQueryFilters(
+                users=users, projects=projects, metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value]
+            ),
         )
         result = await self.repository.execute_aggregation_query(
             {
@@ -684,9 +697,9 @@ class CLIInsightsHandler(CLIBaseHandler):
         query = self._pipeline._build_query(
             start_dt,
             end_dt,
-            users,
-            projects,
-            [MetricName.CLI_TOOL_USAGE_TOTAL.value],
+            AnalyticsQueryFilters(
+                users=users, projects=projects, metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value]
+            ),
         )
         result = await self.repository.execute_aggregation_query(
             {
@@ -732,7 +745,11 @@ class CLIInsightsHandler(CLIBaseHandler):
         """Build user-level CLI insight rows used by multiple widgets."""
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
         query = self._pipeline._build_query(
-            start_dt, end_dt, users, projects, MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            start_dt,
+            end_dt,
+            AnalyticsQueryFilters(
+                users=users, projects=projects, metric_filters=MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            ),
         )
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_user_aggregation(query))
         rows = []
@@ -786,7 +803,11 @@ class CLIInsightsHandler(CLIBaseHandler):
         """Build project-level CLI insight rows used by multiple widgets."""
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
         query = self._pipeline._build_query(
-            start_dt, end_dt, users, projects, MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            start_dt,
+            end_dt,
+            AnalyticsQueryFilters(
+                users=users, projects=projects, metric_filters=MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            ),
         )
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_project_aggregation(query))
         rows = []
@@ -1058,7 +1079,11 @@ class CLIInsightsHandler(CLIBaseHandler):
     ) -> dict:
         """Build base query scoped to one CLI user by name or email."""
         query = self._pipeline._build_query(
-            start_dt, end_dt, users, projects, MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            start_dt,
+            end_dt,
+            AnalyticsQueryFilters(
+                users=users, projects=projects, metric_filters=MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            ),
         )
         should_filters = [
             {"term": {USER_NAME_KEYWORD_FIELD: entity_name}},
@@ -1732,7 +1757,11 @@ class CLIInsightsHandler(CLIBaseHandler):
         """
         start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
         query = self._pipeline._build_query(
-            start_dt, end_dt, users, projects, MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            start_dt,
+            end_dt,
+            AnalyticsQueryFilters(
+                users=users, projects=projects, metric_filters=MetricName.to_list_from_group(MetricName.CLI_METRICS)
+            ),
         )
         result = await self.repository.execute_aggregation_query(self._build_cli_insights_enrichment_aggregation(query))
         user_rows = [

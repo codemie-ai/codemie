@@ -19,6 +19,7 @@ from codemie.core.models import TokensUsage
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.feedback import MarkEnum
+from codemie.rest_api.security.client_context import ClientSource
 from codemie.rest_api.security.user import User
 from codemie.service.monitoring.base_monitoring_service import BaseMonitoringService
 from codemie.service.monitoring.metrics_constants import MetricsAttributes
@@ -55,6 +56,7 @@ class ConversationMonitoringService(BaseMonitoringService):
         llm_model: str,
         status: ConversationStatus,
         request_id: Optional[str] = None,
+        client_source: ClientSource | None = None,
     ):
         attributes = {
             MetricsAttributes.USER_ID: user.id,
@@ -72,6 +74,7 @@ class ConversationMonitoringService(BaseMonitoringService):
             MetricsAttributes.LLM_MODEL: llm_model,
             MetricsAttributes.CONVERSATION_ID: conversation_id,
             MetricsAttributes.STATUS: status.value,
+            MetricsAttributes.CLIENT_SOURCE: (client_source or ClientSource.PLATFORM).value,
             **(({MetricsAttributes.REQUEST_ID: request_id}) if request_id else {}),
         }
 

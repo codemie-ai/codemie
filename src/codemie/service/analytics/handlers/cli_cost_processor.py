@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 
 from codemie.configs import config
 from codemie.service.analytics.metric_names import MetricName
+from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,7 @@ class CLICostAdjustmentMixin:
         users: list[str] | None = None,
         projects: list[str] | None = None,
         include_cache_costs: bool = True,
+        client_source: str | None = None,
     ) -> dict[str, float]:
         """Query CLI costs with automatic date range adjustment for cutoff.
 
@@ -133,6 +135,7 @@ class CLICostAdjustmentMixin:
             users: Optional user filter
             projects: Optional project filter
             include_cache_costs: Whether to include cache read/creation costs (default: True)
+            client_source: Optional client source filter
 
         Returns:
             dict with keys: total_cost, cache_read_cost (if enabled), cache_creation_cost (if enabled)
@@ -153,7 +156,9 @@ class CLICostAdjustmentMixin:
         adj_start_dt, adj_end_dt = adjusted_dates
 
         # Query CLI costs with adjusted dates
-        return await self._query_cli_costs(adj_start_dt, adj_end_dt, users, projects, include_cache_costs)
+        return await self._query_cli_costs(
+            adj_start_dt, adj_end_dt, users, projects, include_cache_costs, client_source=client_source
+        )
 
     async def get_cli_costs_grouped_by(
         self,
@@ -163,6 +168,7 @@ class CLICostAdjustmentMixin:
         entity_name: str,
         users: list[str] | None = None,
         projects: list[str] | None = None,
+        client_source: str | None = None,
     ) -> dict[str, float]:
         """Query CLI costs grouped by a field with adjusted dates.
 
@@ -176,6 +182,7 @@ class CLICostAdjustmentMixin:
             entity_name: Name for the entity (for logging, e.g., "project", "user")
             users: Optional user filter
             projects: Optional project filter
+            client_source: Optional client source filter
 
         Returns:
             dict mapping entity_value -> adjusted CLI cost
@@ -193,9 +200,12 @@ class CLICostAdjustmentMixin:
         query = self._pipeline._build_query(
             start_dt=adj_start_dt,
             end_dt=adj_end_dt,
-            users=users,
-            projects=projects,
-            metric_filters=[MetricName.CLI_LLM_USAGE_TOTAL.value],
+            filters=AnalyticsQueryFilters(
+                users=users,
+                projects=projects,
+                metric_filters=[MetricName.CLI_LLM_USAGE_TOTAL.value],
+                client_source=client_source,
+            ),
         )
 
         # Add cli_request filter
@@ -268,6 +278,7 @@ class CLICostAdjustmentMixin:
         users: list[str] | None,
         projects: list[str] | None,
         include_cache_costs: bool,
+        client_source: str | None = None,
     ) -> dict[str, float]:
         """Execute the actual CLI cost query (to be called with adjusted dates).
 
@@ -277,6 +288,7 @@ class CLICostAdjustmentMixin:
             users: Optional user filter
             projects: Optional project filter
             include_cache_costs: Whether to include cache costs
+            client_source: Optional client source filter
 
         Returns:
             dict with cost values
@@ -285,9 +297,12 @@ class CLICostAdjustmentMixin:
         query = self._pipeline._build_query(
             start_dt=start_date,
             end_dt=end_date,
-            users=users,
-            projects=projects,
-            metric_filters=[MetricName.CLI_LLM_USAGE_TOTAL.value],
+            filters=AnalyticsQueryFilters(
+                users=users,
+                projects=projects,
+                metric_filters=[MetricName.CLI_LLM_USAGE_TOTAL.value],
+                client_source=client_source,
+            ),
         )
 
         # Add cli_request filter

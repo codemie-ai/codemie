@@ -23,7 +23,7 @@ from codemie.repository.metrics_elastic_repository import MetricsElasticReposito
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.field_constants import USER_EMAIL_KEYWORD_FIELD, USER_NAME_KEYWORD_FIELD
 from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,7 @@ class WorkflowHandler:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get workflow execution analytics.
 
@@ -61,14 +62,17 @@ class WorkflowHandler:
             result_parser=self._parse_workflows_result,
             columns=self._get_workflows_columns(),
             group_by_field=WORKFLOW_NAME_KEYWORD_FIELD,
-            metric_filters=[MetricName.WORKFLOW_EXECUTION_TOTAL.value],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.WORKFLOW_EXECUTION_TOTAL.value],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+                client_source=client_source,
+            ),
             use_bucket_selector=True,
         )
 
@@ -216,6 +220,7 @@ class WorkflowHandler:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get top workflow usage: invocations, cost, unique users, and most recent user per workflow."""
         from codemie.service.analytics.handlers.field_constants import METRIC_NAME_KEYWORD_FIELD
@@ -229,14 +234,17 @@ class WorkflowHandler:
             result_parser=self._parse_top_workflow_usage_result,
             columns=self._get_top_workflow_usage_columns(),
             group_by_field=WORKFLOW_NAME_KEYWORD_FIELD,
-            metric_filters=None,
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=None,
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+                client_source=client_source,
+            ),
             use_bucket_selector=True,
         )
 

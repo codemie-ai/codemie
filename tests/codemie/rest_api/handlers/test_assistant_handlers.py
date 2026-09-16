@@ -25,6 +25,7 @@ from codemie.chains.base import GenerationResult
 from codemie.core.errors import AgentErrorDetails, ErrorCode, ErrorDetailLevel, ToolErrorDetails
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.handlers.assistant_handlers import ChatHistoryData, StandardAssistantHandler
+from codemie.rest_api.security.client_context import ClientSource, clear_client_source, set_client_source
 from codemie.rest_api.security.user import User
 
 
@@ -561,6 +562,39 @@ class TestSaveChatHistory:
     def test_background_tasks_defaults_to_none_before_process_request(self, handler):
         """Handler instances start with no background_tasks until process_request sets it"""
         assert handler.background_tasks is None
+
+    @pytest.fixture(autouse=True)
+    def reset_client_source_after_test(self):
+        yield
+        clear_client_source()
+
+    @pytest.mark.parametrize("source", [ClientSource.TEAMS, ClientSource.OTHER])
+    def test_save_chat_history_forwards_client_source_snapshotted_at_construction(
+        self, chat_history_data_save_true, source
+    ):
+        """client_source is snapshotted at __init__ time and survives unchanged
+        into upsert_chat_history, even though save_chat_history runs later and
+        may run in a copy_context() that has lost the ContextVar value
+        (see AssistantRequestHandler.__init__ inline comment)."""
+        set_client_source(source)
+        try:
+            user = Mock(spec=User, id="user-123")
+            assistant = Mock(id="assistant-123", project="test-project")
+            fresh_handler = StandardAssistantHandler(assistant, user, "request-uuid")
+        finally:
+            clear_client_source()  # simulate the ContextVar reverting after this "request"
+
+        with (
+            patch("codemie.service.llm_service.utils.set_llm_context"),
+            patch("codemie.rest_api.handlers.assistant_handlers.ConversationService") as mock_service,
+            patch("codemie.rest_api.handlers.assistant_handlers.request_summary_manager") as mock_manager,
+        ):
+            mock_manager.get_summary.return_value = Mock(tokens_usage=Mock())
+
+            fresh_handler.save_chat_history(chat_history_data_save_true)
+
+            _, call_kwargs = mock_service.upsert_chat_history.call_args
+            assert call_kwargs["client_source"] is source
 
 
 def test_populate_conversation_history_uses_legacy_chat_history_when_feature_flag_disabled():

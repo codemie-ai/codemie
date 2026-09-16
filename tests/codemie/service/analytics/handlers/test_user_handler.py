@@ -877,7 +877,7 @@ class TestGetUsersPlatformSpendingMetrics:
             await handler.get_users_platform_spending()
 
         _, kwargs = mock_exec.call_args
-        metric_filters = kwargs.get("metric_filters", mock_exec.call_args[0][3] if mock_exec.call_args[0] else [])
+        metric_filters = kwargs["filters"].metric_filters
         expected = set(MetricName.to_list_from_group(MetricName.PLATFORM_METRICS))
         assert set(metric_filters) == expected
 
@@ -900,5 +900,5 @@ class TestGetUsersPlatformSpendingMetrics:
             await handler.get_users_platform_spending()
 
         _, kwargs = mock_exec.call_args
-        metric_filters = kwargs.get("metric_filters", [])
+        metric_filters = kwargs["filters"].metric_filters or []
         assert MetricName.CLI_LLM_USAGE_TOTAL.value not in metric_filters

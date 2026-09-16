@@ -21,7 +21,7 @@ from datetime import datetime
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.cli_cost_processor import CLICostAdjustmentMixin
-from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
 from codemie.service.analytics.response_formatter import ResponseFormatter
 from codemie.service.analytics.time_parser import TimeParser
 
@@ -50,7 +50,9 @@ class CLIBaseHandler(CLICostAdjustmentMixin):
         projects: list[str] | None,
     ) -> dict:
         """Proxy shared pipeline filter formatting."""
-        return self._pipeline._build_filters_applied(time_period, start_dt, end_dt, users, projects)
+        return self._pipeline._build_filters_applied(
+            AnalyticsQueryFilters(time_period=time_period, users=users, projects=projects), start_dt, end_dt
+        )
 
     def _format_custom_tabular_response(
         self,

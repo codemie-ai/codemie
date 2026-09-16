@@ -111,6 +111,7 @@ class MetricsAttributes:
     OPERATION = "operation"
     CODEMIE_CLI = "codemie_cli"
     CODEMIE_CLIENT = "codemie_client"
+    CLIENT_SOURCE = "client_source"
     CHROME_EXTENSION = "chrome_extension"
     SKILL_ID = "skill_id"
     SKILL_NAME = "skill_name"
