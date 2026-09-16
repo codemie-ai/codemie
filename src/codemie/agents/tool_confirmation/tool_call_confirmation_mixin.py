@@ -198,7 +198,7 @@ class ToolCallConfirmationMixin:
 
     def _get_checkpoint_config(self) -> dict:
         """Return the __pregel_checkpointer run-config block for this agent."""
-        if self.require_tool_confirmation:
+        if self.require_tool_confirmation and self.conversation_id:
             from codemie.agents.tool_confirmation.conversation_checkpoint_saver import ConversationCheckpointSaver
             from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
 

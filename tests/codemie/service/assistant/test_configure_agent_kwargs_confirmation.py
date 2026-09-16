@@ -29,7 +29,10 @@ def _run_configure(*, request_policy, assistant_policy):
     customer_config_mock = MagicMock()
     customer_config_mock.is_feature_enabled.return_value = True
     customer_config_mock.get_feature_setting.return_value = None
-    with patch("codemie.service.tool_permissions_service.customer_config", customer_config_mock):
+    with (
+        patch("codemie.service.tool_permissions_service.customer_config", customer_config_mock),
+        patch("codemie.service.conversation_service.ConversationService.find_or_create_conversation"),
+    ):
         LangGraphAssistantBuilder.configure_agent_kwargs(
             agent_kwargs=agent_kwargs,
             assistant=assistant,
@@ -97,7 +100,10 @@ def _run_configure_full(*, request_policy, assistant_policy):
     customer_config_mock = MagicMock()
     customer_config_mock.is_feature_enabled.return_value = True
     customer_config_mock.get_feature_setting.return_value = None
-    with patch("codemie.service.tool_permissions_service.customer_config", customer_config_mock):
+    with (
+        patch("codemie.service.tool_permissions_service.customer_config", customer_config_mock),
+        patch("codemie.service.conversation_service.ConversationService.find_or_create_conversation"),
+    ):
         LangGraphAssistantBuilder.configure_agent_kwargs(
             agent_kwargs=agent_kwargs,
             assistant=assistant,
@@ -144,3 +150,66 @@ def test_tool_call_policy_uses_assistant_policy_when_no_request_override():
         assistant_policy=ToolCallPolicy.APPROVE_FOR_ME,
     )
     assert kwargs["tool_call_policy"] == ToolCallPolicy.APPROVE_FOR_ME
+
+
+def test_ask_for_approval_eagerly_persists_conversation():
+    """The DB-backed checkpointer needs a Conversation row before the graph can checkpoint,
+    which may happen before upsert_chat_history ever runs (see conversation_service.py)."""
+    agent_kwargs = {}
+    assistant = MagicMock()
+    assistant.tool_permissions = ToolPermissionsConfig(tool_call_policy=ToolCallPolicy.AUTO_APPROVE)
+    request = MagicMock()
+    request.tool_call_policy = ToolCallPolicy.ASK_FOR_APPROVAL
+    user = MagicMock()
+
+    customer_config_mock = MagicMock()
+    customer_config_mock.is_feature_enabled.return_value = True
+    customer_config_mock.get_feature_setting.return_value = None
+    with (
+        patch("codemie.service.tool_permissions_service.customer_config", customer_config_mock),
+        patch("codemie.service.conversation_service.ConversationService.find_or_create_conversation") as ensure_mock,
+    ):
+        LangGraphAssistantBuilder.configure_agent_kwargs(
+            agent_kwargs=agent_kwargs,
+            assistant=assistant,
+            user=user,
+            request=request,
+            request_uuid="uuid-1",
+            thread_generator=MagicMock(),
+            llm_model="gpt-4",
+            smart_tool_selection_enabled=False,
+            allow_tool_confirmation=True,
+            create_subagent_executors=lambda **_: [],
+            get_subagent_descriptions=lambda a, u: {},
+        )
+    ensure_mock.assert_called_once_with(request, assistant, user)
+
+
+def test_auto_approve_does_not_persist_conversation():
+    agent_kwargs = {}
+    assistant = MagicMock()
+    assistant.tool_permissions = ToolPermissionsConfig(tool_call_policy=ToolCallPolicy.AUTO_APPROVE)
+    request = MagicMock()
+    request.tool_call_policy = ToolCallPolicy.AUTO_APPROVE
+
+    customer_config_mock = MagicMock()
+    customer_config_mock.is_feature_enabled.return_value = True
+    customer_config_mock.get_feature_setting.return_value = None
+    with (
+        patch("codemie.service.tool_permissions_service.customer_config", customer_config_mock),
+        patch("codemie.service.conversation_service.ConversationService.find_or_create_conversation") as ensure_mock,
+    ):
+        LangGraphAssistantBuilder.configure_agent_kwargs(
+            agent_kwargs=agent_kwargs,
+            assistant=assistant,
+            user=MagicMock(),
+            request=request,
+            request_uuid="uuid-1",
+            thread_generator=MagicMock(),
+            llm_model="gpt-4",
+            smart_tool_selection_enabled=False,
+            allow_tool_confirmation=True,
+            create_subagent_executors=lambda **_: [],
+            get_subagent_descriptions=lambda a, u: {},
+        )
+    ensure_mock.assert_not_called()

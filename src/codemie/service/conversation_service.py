@@ -192,6 +192,20 @@ class ConversationService:
 
         return conversation, False, False
 
+    @classmethod
+    def find_or_create_conversation(cls, request: AssistantChatRequest, assistant: Assistant, user: User) -> None:
+        """Persist a Conversation row for request.conversation_id if none exists yet.
+
+        Tool-call confirmation needs a durable, DB-backed checkpoint keyed by conversation_id
+        before the graph starts streaming — LangGraph may checkpoint on the first step, well
+        before upsert_chat_history() runs (it only runs once the assistant response is fully
+        generated). Without this, turn 1 of a manual-confirmation conversation has no row for
+        the checkpointer to attach to, and the pending-tool-call save silently fails to persist.
+        """
+        conversation, should_create, _ = cls._find_or_create_conversation(request, assistant, user)
+        if should_create:
+            conversation.save()
+
     @staticmethod
     def _resolve_history_index(request: AssistantChatRequest, conversation: Conversation) -> int:
         if request.history_index is not None:
