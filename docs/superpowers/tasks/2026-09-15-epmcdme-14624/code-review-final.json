@@ -1,0 +1,39 @@
+{
+  "decision": "approve",
+  "rationale": "Both applicable lenses (edge-case, acceptance) and the standards audit ran clean with no blocking findings, and all business/spec criteria pass except one pending-stage-7 full-suite confirmation, which is not a failure. Of 3 edge-case candidates, 2 were dismissed after verification (the disconnect path correctly persists in_progress=true for genuine interruptions by design; finalize_thoughts' children-type risk never triggers because AgentInvokeCallback-derived children are always empty in the current code) and 1 pre-existing hedged-coordinator timeout gap (queue.Empty branch never calls save_chat_history) is deferred as out of this change's scope — see code-review-deferred.md.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"kind": "spec", "item": "finalize_thoughts helper forces in_progress=False on every thought and recursively on nested children, touching no other field", "status": "pass", "notes": "thread.py:32-42 implements this; verified by new tests in test_thread.py (top-level, nested children, missing-children, other-fields-untouched)."},
+    {"kind": "spec", "item": "Call site #1 _serve_data StopIteration branch uses finalize_thoughts(generator_queue.thoughts)", "status": "pass", "notes": "assistant_handlers.py:779; covered by test_serve_data_finalizes_stale_in_progress_thought_on_success."},
+    {"kind": "spec", "item": "Call site #2 hedged coordinator success branch uses finalize_thoughts(agent_queue.thoughts)", "status": "pass", "notes": "hedged_handler.py:419; covered by test_save_chat_history_finalizes_stale_in_progress_thought."},
+    {"kind": "spec", "item": "Call site #3 A2AAssistantHandler._handle_a2a_stream StopIteration branch uses finalize_thoughts(generator_queue.thoughts)", "status": "pass", "notes": "assistant_handlers.py:1243; covered by test_handle_a2a_stream_finalizes_stale_in_progress_thought_on_success."},
+    {"kind": "spec", "item": "Call site #4 _background_generate uses finalize_thoughts(agent.get_thoughts_from_callback())", "status": "pass", "notes": "assistant_handlers.py:948; covered by test_background_generate_finalizes_stale_in_progress_thought_on_success."},
+    {"kind": "spec", "item": "Call site #5 _handle_sync uses finalize_thoughts(agent.get_thoughts_from_callback())", "status": "pass", "notes": "assistant_handlers.py:999; covered by test_handle_sync_finalizes_stale_in_progress_thought_on_success."},
+    {"kind": "spec", "item": "No change to agent_streaming_callback.py / callback lifecycle on either accumulator mechanism", "status": "pass", "notes": "Not present in changed_files or diff."},
+    {"kind": "spec", "item": "No change to AssistantRequestHandler._filter_thoughts", "status": "pass", "notes": "Not touched in diff; only a new test class appended."},
+    {"kind": "spec", "item": "No change to _save_history_for_disconnect / ConversationStatus.INTERRUPTED handling", "status": "pass", "notes": "Not present in diff; verified by direct source inspection."},
+    {"kind": "spec", "item": "No change to tool-confirmation flow (tool_call_confirmation_mixin.py)", "status": "pass", "notes": "Not present in diff."},
+    {"kind": "spec", "item": "No change to ThreadedGenerator._process_thought merge semantics", "status": "pass", "notes": "thread.py diff only adds finalize_thoughts; _process_thought untouched."},
+    {"kind": "spec", "item": "No change to history_projection_service._normalize_status", "status": "pass", "notes": "Not present in diff."},
+    {"kind": "spec", "item": "No change to AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED behavior or either _filter_thoughts branch", "status": "pass", "notes": "Not present in diff."},
+    {"kind": "spec", "item": "No UI/frontend change", "status": "pass", "notes": "Diff touches only src/codemie/core and src/codemie/rest_api/handlers plus tests."},
+    {"kind": "spec", "item": "No data migration / no change to historical already-persisted conversations", "status": "pass", "notes": "Helper applied only pre-persistence at the five call sites; no migration script in diff."},
+    {"kind": "story-ac", "item": "Every thought (incl. nested children) in a turn completing successfully through any of the five call sites is persisted with in_progress: false", "status": "pass", "notes": "finalize_thoughts applied at all five sites; nested-children handling verified in test_thread.py."},
+    {"kind": "story-ac", "item": "Reload of a conversation whose tool call completed successfully (post-fix turn) no longer shows it as interrupted", "status": "pass", "notes": "Direct consequence of persisted in_progress:false at all five sites; no FE change required."},
+    {"kind": "story-ac", "item": "Historical rendering for post-fix turns uses actual persisted completion/error/interruption state", "status": "pass", "notes": "Same evidence as above; pre-fix conversations explicitly out of scope."},
+    {"kind": "story-ac", "item": "Genuinely interrupted/disconnected turn is unaffected and still persists/renders as interrupted", "status": "pass", "notes": "_save_history_for_disconnect not touched by diff; verified in review."},
+    {"kind": "story-ac", "item": "A turn where a tool genuinely errored still persists error/aborted as before; only in_progress forced false", "status": "pass", "notes": "test_finalize_thoughts_leaves_other_fields_untouched asserts error/aborted/interrupted preserved."},
+    {"kind": "story-ac", "item": "Live streaming of an in-progress turn is unaffected", "status": "pass", "notes": "_process_thought unchanged; finalize_thoughts only called at post-completion call sites."},
+    {"kind": "story-ac", "item": "New unit test(s) for the finalize helper itself (top-level + nested children, unpaired last-event-true case)", "status": "pass", "notes": "tests/codemie/core/test_thread.py covers top-level, nested children, and orphaned in_progress cases."},
+    {"kind": "story-ac", "item": "New/updated test(s) at all five call sites asserting save_chat_history invoked with fully finalized thoughts on success", "status": "pass", "notes": "One test per site across handler and hedged-handler test modules asserting persisted in_progress is False."},
+    {"kind": "story-ac", "item": "Existing _filter_thoughts tests and test_agent_streaming_callback.py assertions continue to pass unmodified", "status": "pending-stage-7", "notes": "Diff does not modify _filter_thoughts or agent_streaming_callback.py; actual pass/fail is full-suite execution evidence owned by Stage 7."},
+    {"kind": "spec", "item": "Known test gap: AgentInvokeCallback.thoughts has no test asserting behavior when a thought's closing event never arrives for its run_id", "status": "pass", "notes": "test_agent_invoke_callback.py adds test_get_thoughts_from_callback_retains_stale_in_progress_true_when_tool_end_never_fires."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 4 commit subjects in range follow the documented 'EPMCDME-####: Description' format (git-workflow.md)."},
+    {"kind": "code-quality", "status": "pass", "notes": "finalize_thoughts uses parameterized generics with explicit types and a docstring; call sites are simple wraps; no new untyped public functions or license-header gaps."},
+    {"kind": "security", "status": "pass", "notes": "Security checklist not implicated; only logging touched (hedged_handler.py:396,407-409) logs assistant_id/chunk counts, no credentials; no new external input parsing."}
+  ],
+  "findings": []
+}

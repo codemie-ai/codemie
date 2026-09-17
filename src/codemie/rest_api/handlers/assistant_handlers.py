@@ -48,7 +48,7 @@ from codemie.core.models import (
     ToolCallAction,
 )
 from codemie.core.routing_info import RoutingInfo
-from codemie.core.thread import ThreadedGenerator
+from codemie.core.thread import ThreadedGenerator, finalize_thoughts
 from codemie.rest_api.a2a.client.remote_agent_connection import RemoteAgentConnections, TaskCallbackArg
 from codemie.rest_api.a2a.types import Task, SendTaskRequest, SendTaskStreamingRequest, AgentCard, TaskState
 from codemie.rest_api.a2a.utils import convert_to_task_request, convert_to_base_model_response
@@ -776,7 +776,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
                     execution_start=execution_start,
                     request=request,
                     response=response.generated,
-                    thoughts=generator_queue.thoughts,
+                    thoughts=finalize_thoughts(generator_queue.thoughts),
                     user_message_received_at=user_message_received_at,
                     a2ui_envelopes=a2ui_envelopes or None,
                 )
@@ -945,7 +945,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
         else:
             response = generation_result
 
-        thoughts = agent.get_thoughts_from_callback()
+        thoughts = finalize_thoughts(agent.get_thoughts_from_callback())
         self.save_chat_history(
             ChatHistoryData(
                 execution_start=execution_start,
@@ -996,7 +996,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
         if request.output_schema and isinstance(response, str):
             response = json.loads(response)
         time_elapsed = time() - execution_start
-        thoughts = agent.get_thoughts_from_callback()
+        thoughts = finalize_thoughts(agent.get_thoughts_from_callback())
         self.save_chat_history(
             ChatHistoryData(
                 execution_start=execution_start,
@@ -1240,7 +1240,7 @@ class A2AAssistantHandler(AssistantRequestHandler):
                             execution_start=execution_start,
                             request=request,
                             response=response.generated,
-                            thoughts=generator_queue.thoughts,
+                            thoughts=finalize_thoughts(generator_queue.thoughts),
                         )
                     )
                     break

@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "generated": "2026-09-16T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 15,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 8,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "The diff adds a shared core utility (finalize_thoughts in src/codemie/core/thread.py) and threads it through six distinct call sites across two production handler modules (assistant_handlers.py: _serve_data, _background_generate, _handle_sync, _handle_a2a_stream; hedged_handler.py: _stream_agent_path, _handle_sync) — 3 production components, core-utility + API/handler layers." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 8 files changed (3 production files, 5 test files: test_thread.py, test_agent_invoke_callback.py, test_assistant_handlers.py, test_assistant_handlers_streaming.py, test_hedged_handler.py) — mapped to the L band (7-10 files) per the mechanical file-count rule." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: touches a core shared utility (finalize_thoughts in core/thread.py) that is consumed by every persistence path across two separate handler classes."
+  ],
+  "split_recommendation": null
+}

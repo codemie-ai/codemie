@@ -782,6 +782,75 @@ def test_filter_thoughts_preserves_parent_id_when_feature_flag_enabled():
     assert filtered[0].message == "tool result"
 
 
+class TestThoughtFinalizationOnSuccess:
+    """finalize_thoughts is applied to the callback's raw thoughts before persisting."""
+
+    @pytest.fixture
+    def handler(self):
+        assistant = Mock()
+        assistant.id = "assistant-123"
+        assistant.project = "test-project"
+        user = Mock(spec=User)
+        user.id = "user-123"
+        return StandardAssistantHandler(assistant=assistant, user=user, request_uuid="req-uuid")
+
+    @staticmethod
+    def _mock_agent():
+        agent = Mock()
+        agent.generate.return_value = GenerationResult(
+            generated="Some response",
+            time_elapsed=1.0,
+            input_tokens_used=10,
+            tokens_used=20,
+            success=True,
+            agent_error=None,
+            tool_errors=None,
+        )
+        agent.get_thoughts_from_callback.return_value = [{'id': 't1', 'in_progress': True, 'children': []}]
+        return agent
+
+    def test_handle_sync_finalizes_stale_in_progress_thought_on_success(self, handler):
+        raw_request = Mock()
+        raw_request.state.uuid = "req-uuid"
+
+        with (
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent",
+                return_value=self._mock_agent(),
+            ),
+            patch("codemie.rest_api.handlers.assistant_handlers.extract_custom_headers", return_value={}),
+            patch("codemie.rest_api.handlers.assistant_handlers.set_disable_prompt_cache"),
+            patch.object(handler, "save_chat_history") as mock_save,
+        ):
+            handler._handle_sync(request=AssistantChatRequest(text="run"), raw_request=raw_request, execution_start=0.0)
+
+        persisted = mock_save.call_args[0][0].thoughts
+        assert persisted[0]['in_progress'] is False
+
+    def test_background_generate_finalizes_stale_in_progress_thought_on_success(self, handler):
+        raw_request = Mock()
+        raw_request.state.uuid = "req-uuid"
+
+        with (
+            patch(
+                "codemie.rest_api.handlers.assistant_handlers.AssistantService.build_agent",
+                return_value=self._mock_agent(),
+            ),
+            patch("codemie.rest_api.handlers.assistant_handlers.extract_custom_headers", return_value={}),
+            patch("codemie.rest_api.handlers.assistant_handlers.set_disable_prompt_cache"),
+            patch.object(handler, "save_chat_history") as mock_save,
+        ):
+            handler._background_generate(
+                request=AssistantChatRequest(text="run"),
+                background_task_id="task-1",
+                raw_request=raw_request,
+                execution_start=0.0,
+            )
+
+        persisted = mock_save.call_args[0][0].thoughts
+        assert persisted[0]['in_progress'] is False
+
+
 class TestGuardConversationNotFinished:
     """Tests for StandardAssistantHandler._guard_conversation_not_finished."""
 

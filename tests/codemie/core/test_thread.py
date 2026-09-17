@@ -12,16 +12,57 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import pytest
 import queue
 from unittest.mock import patch
 
-from codemie.core.thread import ThreadedGenerator
+from codemie.core.thread import ThreadedGenerator, finalize_thoughts
 
 
 @pytest.fixture
 def generator():
     return ThreadedGenerator(request_uuid='request_uuid', user_id='user_id', conversation_id='conversation_id')
+
+
+def test_finalize_thoughts_forces_top_level_in_progress_false():
+    thoughts = [{'id': 't1', 'in_progress': True, 'children': []}]
+    assert finalize_thoughts(thoughts)[0]['in_progress'] is False
+
+
+def test_finalize_thoughts_forces_nested_children_in_progress_false():
+    thoughts = [{'id': 't1', 'in_progress': False, 'children': [{'id': 'c1', 'in_progress': True, 'children': []}]}]
+    finalize_thoughts(thoughts)
+    assert thoughts[0]['children'][0]['in_progress'] is False
+
+
+def test_finalize_thoughts_handles_missing_children_key():
+    thoughts = [{'id': 't1', 'in_progress': True}]
+    finalize_thoughts(thoughts)
+    assert thoughts[0]['in_progress'] is False
+
+
+def test_finalize_thoughts_leaves_other_fields_untouched():
+    thoughts = [{'id': 't1', 'in_progress': True, 'error': True, 'aborted': True, 'interrupted': False}]
+    finalize_thoughts(thoughts)
+    assert thoughts[0] == {'id': 't1', 'in_progress': False, 'error': True, 'aborted': True, 'interrupted': False}
+
+
+def test_process_thought_leaves_orphaned_thought_in_progress_true_when_closing_event_never_arrives(generator):
+    # Mirrors a real streaming turn: one thought's start+end events both arrive normally;
+    # a second thought (e.g. a "CodeMie Thoughts" generic LLM entry) only ever gets its
+    # start event — its closing event is lost, the same LangChain callback-lifecycle
+    # unreliability documented in EPMCDME-14850. This reads generator.thoughts directly,
+    # pre-finalize-helper, to prove the raw accumulator itself holds the stale value.
+    generator.send(json.dumps({'thought': {'id': 'resolved', 'in_progress': True, 'message': 'start'}}))
+    generator.send(json.dumps({'thought': {'id': 'resolved', 'in_progress': False, 'message': ' end'}}))
+    generator.send(json.dumps({'thought': {'id': 'orphaned', 'in_progress': True, 'message': 'start'}}))
+    # no closing event ever sent for 'orphaned'
+
+    resolved = next(t for t in generator.thoughts if t['id'] == 'resolved')
+    orphaned = next(t for t in generator.thoughts if t['id'] == 'orphaned')
+    assert resolved['in_progress'] is False
+    assert orphaned['in_progress'] is True
 
 
 def test_init(generator):

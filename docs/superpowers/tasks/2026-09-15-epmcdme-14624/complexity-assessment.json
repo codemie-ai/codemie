@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "task": "Finalize in_progress=False on all persisted Codemie Thoughts (including nested children) when a chat turn completes successfully, across both the standard and hedged request-handler paths.",
+  "generated": "2026-09-15T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 17,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "The fix must land in the shared save_chat_history/_filter_thoughts pipeline that both AssistantRequestHandler._serve_data and hedged_handler's coordinator loop funnel through, and must recurse into nested Thought children — a core shared utility used by two near-duplicate request-handler paths, not a single self-contained change."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "AC#6 (genuinely interrupted/failed tool calls must still render as interrupted) and AC#7 (live streaming must not regress) are edge-case acceptance criteria, and the testing landscape confirms no existing test covers them for this path: ThreadedGenerator._process_thought has zero unit tests, and both existing _filter_thoughts tests only exercise in_progress=False or absent, never the stale True case this ticket is about."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped M to L: acceptance criteria enumerate specific edge/error cases (AC#6, AC#7) with no existing defensive test coverage for the stale in_progress merge/finalize scenario.",
+    "Component Scope bumped M to L: touches the core shared accumulator/persistence utility (ThreadedGenerator.thoughts -> save_chat_history -> _filter_thoughts) reused by both the standard and hedged handler paths."
+  ],
+  "split_recommendation": null
+}

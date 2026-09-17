@@ -29,6 +29,19 @@ def _merge_routing(target: dict, source: dict) -> None:
     target['routing'] = {**existing, **{k: v for k, v in incoming.items() if v is not None}}
 
 
+def finalize_thoughts(thoughts: list[dict]) -> list[dict]:
+    """Force in_progress=False on every thought and, recursively, every
+    nested children entry. Call only on a turn's raw accumulated thought
+    list once the turn has completed successfully; no other field is
+    touched."""
+    for thought in thoughts:
+        thought['in_progress'] = False
+        children = thought.get('children')
+        if children:
+            finalize_thoughts(children)
+    return thoughts
+
+
 class MessageQueue(Protocol):
     def __iter__(self): ...
 

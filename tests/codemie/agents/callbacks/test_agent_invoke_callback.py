@@ -244,6 +244,26 @@ def test_on_llm_end_no_routing_when_key_absent() -> None:
     assert callback._routing_tracker.current is None
 
 
+def test_get_thoughts_from_callback_retains_stale_in_progress_true_when_tool_end_never_fires(callback):
+    # on_tool_start appends in_progress=True immediately via thought_processing(); nothing
+    # revisits that entry unless on_tool_end/on_tool_error fires for the same run_id. This
+    # proves, by running the real callback, that an unpaired start leaves the stale True in
+    # callback.thoughts (== get_thoughts_from_callback()'s return value) with no sweep.
+    resolved_run_id = uuid.uuid4()
+    orphaned_run_id = uuid.uuid4()
+
+    callback.on_tool_start({"name": "search_kb"}, "query one", run_id=resolved_run_id)
+    callback.on_tool_end("result one", run_id=resolved_run_id)
+
+    callback.on_tool_start({"name": "search_kb"}, "query two", run_id=orphaned_run_id)
+    # on_tool_end/on_tool_error never fires for orphaned_run_id
+
+    resolved = next(t for t in callback.thoughts if t['input_text'] == 'query one')
+    orphaned = next(t for t in callback.thoughts if t['input_text'] == 'query two')
+    assert resolved['in_progress'] is False
+    assert orphaned['in_progress'] is True
+
+
 def test_on_llm_end_reads_canonical_routing_info_from_raw_aimessage() -> None:
     """on_llm_end also accepts a raw AIMessage directly (not wrapped in LLMResult) — the shape
     it actually receives via LangGraphCallbackBridge in production (langgraph_event_adapter.py),

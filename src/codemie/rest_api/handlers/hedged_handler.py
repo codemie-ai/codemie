@@ -34,7 +34,7 @@ from codemie.core.dependecies import set_disable_prompt_cache
 from codemie.core.errors import ErrorDetailLevel
 from codemie.core.models import AssistantChatRequest, BaseModelResponse
 from codemie.core.otel_tracing import attach_otel_context, detach_otel_context, get_otel_context_for_thread
-from codemie.core.thread import HedgingCancellationReason, ThreadedGenerator
+from codemie.core.thread import HedgingCancellationReason, ThreadedGenerator, finalize_thoughts
 from codemie.enterprise.observability import get_observability_provider
 from codemie.rest_api.handlers.assistant_handlers import (
     NDJSON_MEDIA_TYPE,
@@ -416,7 +416,7 @@ class HedgedAssistantHandler(StandardAssistantHandler):
                             execution_start,
                             request,
                             response.generated,
-                            agent_queue.thoughts,
+                            finalize_thoughts(agent_queue.thoughts),
                             user_message_received_at=user_message_received_at,
                         )
                     )

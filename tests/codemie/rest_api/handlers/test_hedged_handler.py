@@ -293,6 +293,38 @@ class TestHandleStreamFastPathEmpty:
 
         assert not real_tg.is_closed()
 
+    def test_save_chat_history_finalizes_stale_in_progress_thought(self, handler, request_, raw_request):
+        from codemie.core.thread import ThreadedGenerator  # lazy: avoids circular import at module level
+
+        real_tg = ThreadedGenerator(request_uuid="req-uuid", user_id="user-1", conversation_id="")
+        real_tg.thoughts.append({'id': 't1', 'in_progress': True, 'children': []})
+
+        def agent_stream():
+            real_tg.queue.put(AGENT_CHUNK)
+            real_tg.queue.put(StopIteration)
+
+        mock_agent = Mock()
+        mock_agent.last_generation_result = None
+        mock_agent.stream = agent_stream
+
+        with (
+            patch(
+                "codemie.rest_api.handlers.hedged_handler.HedgingToolService.instantiate",
+                return_value=_make_fast_tool(_MISS_RESULT),
+            ),
+            patch("codemie.rest_api.handlers.hedged_handler.AssistantService.build_agent", return_value=mock_agent),
+            patch("codemie.rest_api.handlers.hedged_handler.ThreadedGenerator", return_value=real_tg),
+            patch("codemie.rest_api.handlers.hedged_handler.extract_custom_headers", return_value={}),
+            patch("codemie.rest_api.handlers.hedged_handler.set_disable_prompt_cache"),
+            patch.object(handler, "save_chat_history") as mock_save,
+        ):
+            response = handler._handle_stream(request_, raw_request, time())
+            asyncio.run(_consume(response.body_iterator))
+
+        mock_save.assert_called_once()
+        history_data: ChatHistoryData = mock_save.call_args[0][0]
+        assert history_data.thoughts[0]['in_progress'] is False
+
 
 # ---------------------------------------------------------------------------
 # TestHandleStreamInstantiateFails
