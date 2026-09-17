@@ -1,0 +1,61 @@
+{
+  "confidence": "high",
+  "findings": [
+    {
+      "file": "src/codemie/service/settings/scheduler_settings_service.py",
+      "line": 494,
+      "summary": "`owner_type.upper()` produces 'USER'/'PROJECT' but `setting_type` column stores lowercase 'user'/'project' — ownerType filter always returns zero results.",
+      "failure_scenario": "Client sends `ownerType=user`; `params['owner_type']` is set to `'USER'`; the SQL `s.setting_type = 'USER'` never matches the stored lowercase enum values.",
+      "severity": "high",
+      "introduced_by": "pre-existing"
+    },
+    {
+      "file": "src/codemie/service/settings/scheduler_settings_service.py",
+      "line": 583,
+      "summary": "`_fetch_all_scheduler_settings` compares `Settings.credential_type == CredentialTypes.SCHEDULER.value` where `.value = 'Scheduler'` (mixed case) but DB stores `'SCHEDULER'` (all caps) — always returns zero rows.",
+      "failure_scenario": "`CredentialTypes.SCHEDULER.value = 'Scheduler'`; pre-existing raw-SQL path hardcodes `'SCHEDULER'` and works, proving DB stores uppercase. New ORM condition never matches — `get_filter_options` returns empty lists for every user.",
+      "severity": "high",
+      "introduced_by": "this PR"
+    },
+    {
+      "file": "tests/codemie/service/settings/test_scheduler_settings_service_class.py",
+      "line": 378,
+      "summary": "`test_build_list_filters_explicit_project_id_overrides_scope` asserts only that `:project_id` is present, not that `project_names` scope is absent — implementation ANDs both, returning zero rows when both are set.",
+      "failure_scenario": "Both conditions are applied simultaneously: `project_name = ANY(['proj-a']) AND project_name = 'proj-x'` — always empty. Test name/docstring implies mutual exclusion but code does not enforce it.",
+      "severity": "medium",
+      "introduced_by": "this PR"
+    },
+    {
+      "file": "src/codemie/service/settings/scheduler_settings_service.py",
+      "line": 452,
+      "summary": "Empty `project_names=[]` passed to `ANY(:project_names)` via raw `text().bindparams()` causes a PostgreSQL type-resolution error (500) instead of returning an empty result.",
+      "failure_scenario": "Non-admin user with empty `project_names` list triggers psycopg2 to emit untyped `'{}'`; PostgreSQL raises operator-does-not-exist error.",
+      "severity": "medium",
+      "introduced_by": "this PR"
+    },
+    {
+      "file": "src/codemie/service/settings/scheduler_settings_service.py",
+      "line": 584,
+      "summary": "Project-scope filtering is duplicated across `_build_list_filters` (raw SQL) and `_fetch_all_scheduler_settings` (ORM) with no shared logic.",
+      "failure_scenario": "Future access-control change in one copy silently misses the other; filter-options and list endpoints diverge.",
+      "severity": "low",
+      "introduced_by": "this PR"
+    },
+    {
+      "file": "src/codemie/service/settings/scheduler_settings_service.py",
+      "line": 648,
+      "summary": "`_filter_options_cache` accumulates one permanent entry per distinct `frozenset(user.project_names)` and never evicts expired keys.",
+      "failure_scenario": "Over time the class-level dict grows without bound in multi-tenant deployments with many distinct project memberships.",
+      "severity": "low",
+      "introduced_by": "this PR"
+    },
+    {
+      "file": "src/codemie/service/settings/scheduler_settings_service.py",
+      "line": 582,
+      "summary": "`_fetch_all_scheduler_settings` opens an inline `Session` directly, bypassing shared session/transaction patterns.",
+      "failure_scenario": "Test fixtures using rolled-back transactions cannot intercept this call; data written but not yet committed is invisible.",
+      "severity": "low",
+      "introduced_by": "this PR"
+    }
+  ]
+}

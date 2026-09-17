@@ -441,9 +441,42 @@ class SchedulerSettingsService(BaseSettingsService):
         )
 
     @staticmethod
-    def _build_list_filters(project_id, resource_type, resource_id, search, status, last_run_status):
+    def _apply_status_filter(conditions, status):
+        if status == "enabled":
+            conditions.append(
+                "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+                "WHERE cv->>'key' = 'is_enabled' AND (cv->>'value')::boolean = true)"
+            )
+        elif status == "disabled":
+            conditions.append(
+                "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
+                "WHERE cv->>'key' = 'is_enabled' AND (cv->>'value')::boolean = true)"
+            )
+
+    @staticmethod
+    def _apply_owner_filter(conditions, params, owner_type, user):
+        if not owner_type:
+            return
+        conditions.append("s.setting_type = :owner_type")
+        params["owner_type"] = owner_type.upper()
+        if owner_type.upper() == "USER" and user is not None:
+            conditions.append("s.user_id = :caller_id")
+            params["caller_id"] = str(user.id)
+
+    @staticmethod
+    def _build_list_filters(
+        project_id, resource_type, resource_id, search, status, last_run_status, owner_type=None, user=None
+    ):
         conditions = ["s.credential_type = 'SCHEDULER'"]
         params: dict = {}
+
+        if user is not None and not user.is_admin_or_maintainer:
+            project_names = list(user.project_names)
+            if not project_names:
+                conditions.append("1=0")
+            else:
+                conditions.append("s.project_name = ANY(:project_names)")
+                params["project_names"] = project_names
 
         if project_id:
             conditions.append("s.project_name = :project_id")
@@ -467,21 +500,16 @@ class SchedulerSettingsService(BaseSettingsService):
                 "WHERE cv->>'key' = 'resource_name' AND cv->>'value' ILIKE :search))"
             )
             params["search"] = f"%{search}%"
-        if status == "enabled":
-            conditions.append(
-                "EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
-                "WHERE cv->>'key' = 'is_enabled' AND (cv->>'value')::boolean = true)"
-            )
-        elif status == "disabled":
-            conditions.append(
-                "NOT EXISTS (SELECT 1 FROM jsonb_array_elements(s.credential_values::jsonb) cv "
-                "WHERE cv->>'key' = 'is_enabled' AND (cv->>'value')::boolean = true)"
-            )
+
+        SchedulerSettingsService._apply_status_filter(conditions, status)
+
         if last_run_status == "never":
             conditions.append("lr.id IS NULL")
         elif last_run_status:
             conditions.append("lr.status = :last_run_status")
             params["last_run_status"] = last_run_status
+
+        SchedulerSettingsService._apply_owner_filter(conditions, params, owner_type, user)
 
         return conditions, params
 
@@ -495,6 +523,8 @@ class SchedulerSettingsService(BaseSettingsService):
         resource_id=None,
         status=None,
         last_run_status=None,
+        owner_type=None,
+        user=None,
     ):
         import math
 
@@ -505,7 +535,7 @@ class SchedulerSettingsService(BaseSettingsService):
         from codemie.rest_api.models.scheduler_run import SchedulersPaginatedResponse
 
         conditions, params = SchedulerSettingsService._build_list_filters(
-            project_id, resource_type, resource_id, search, status, last_run_status
+            project_id, resource_type, resource_id, search, status, last_run_status, owner_type, user=user
         )
 
         last_run_join = (
@@ -563,9 +593,18 @@ class SchedulerSettingsService(BaseSettingsService):
     _FILTER_OPTIONS_TTL = 60  # seconds
 
     @staticmethod
-    def _fetch_all_scheduler_settings():
-        """Return all Settings with credential_type = SCHEDULER via Elasticsearch."""
-        return Settings.get_all(credential_type=CredentialTypes.SCHEDULER)
+    def _fetch_all_scheduler_settings(user=None):
+        """Return Settings with credential_type = SCHEDULER, scoped to user's projects for non-admins."""
+        from sqlmodel import Session, select
+
+        with Session(Settings.get_engine()) as session:
+            query = select(Settings).where(Settings.credential_type == CredentialTypes.SCHEDULER.value.upper())
+            if user is not None and not user.is_admin_or_maintainer:
+                project_names = list(user.project_names)
+                if not project_names:
+                    return []
+                query = query.where(Settings.project_name.in_(project_names))
+            return session.exec(query).all()
 
     @staticmethod
     def _fetch_datasource_names(ids: list[str]) -> dict[str, str]:
@@ -627,12 +666,13 @@ class SchedulerSettingsService(BaseSettingsService):
         from codemie.rest_api.models.scheduler_run import ProjectRef, ResourceRef, SchedulerFilterOptions
 
         now = time.monotonic()
-        cached = SchedulerSettingsService._filter_options_cache
+        cache_key = "admin" if (user is None or user.is_admin_or_maintainer) else frozenset(user.project_names)
+        cached = SchedulerSettingsService._filter_options_cache.get(cache_key, {})
         if cached.get("expires_at", 0) > now:
             return cached["value"]
 
         _gcv = SchedulerSettingsService._get_cred_value
-        settings = SchedulerSettingsService._fetch_all_scheduler_settings()
+        settings = SchedulerSettingsService._fetch_all_scheduler_settings(user=user)
         resource_name_map = SchedulerSettingsService._build_resource_name_map(settings, user=user)
 
         seen_resources: dict[str, ResourceRef] = {}
@@ -654,7 +694,7 @@ class SchedulerSettingsService(BaseSettingsService):
         resources = sorted(seen_resources.values(), key=lambda r: r.name.lower())
         projects = sorted(seen_projects.values(), key=lambda p: p.name.lower())
         result = SchedulerFilterOptions(resources=resources, projects=projects)
-        SchedulerSettingsService._filter_options_cache = {
+        SchedulerSettingsService._filter_options_cache[cache_key] = {
             "value": result,
             "expires_at": now + SchedulerSettingsService._FILTER_OPTIONS_TTL,
         }

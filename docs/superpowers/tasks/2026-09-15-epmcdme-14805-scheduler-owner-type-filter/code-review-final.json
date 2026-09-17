@@ -1,0 +1,25 @@
+{
+  "decision": "approve",
+  "rationale": "Both lenses ran cleanly. No blocking findings. The implementation follows the existing conditions/params accumulator pattern exactly: parameterised binding (no injection risk), .lower() normalisation, and backward-compatible default None. Two deferred observations: whitespace in ownerType is not stripped (no other filter does so either) and invalid values return silent empty results (consistent with all other filters). Confidence is low because no acceptance artifact (story/spec) was available for criterion-level audit — no-spec mode.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "name": "commit-format",
+      "status": "pass",
+      "notes": "Both commits follow EPMCDME-14805: Description format per git-workflow guide."
+    },
+    {
+      "name": "code-quality",
+      "status": "pass",
+      "notes": "Change follows existing accumulator pattern consistently; no duplication introduced."
+    },
+    {
+      "name": "security",
+      "status": "pass",
+      "notes": "Value bound via named parameter (:owner_type); no string interpolation; no injection risk."
+    }
+  ],
+  "findings": []
+}

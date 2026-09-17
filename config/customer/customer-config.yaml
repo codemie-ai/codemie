@@ -143,7 +143,7 @@ components:
         fallbackLabel: "Pure chat"
   - id: "features:schedulersView"
     settings:
-      enabled: false
+      enabled: true
       name: "Schedulers"
       description: "Controls whether the Schedulers navigation item is visible in the UI"
   - id: "features:webSearch"

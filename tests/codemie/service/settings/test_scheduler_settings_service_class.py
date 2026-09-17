@@ -329,3 +329,182 @@ def test_get_scheduler_settings_returns_dict_with_timezone(mock_get_all):
     result = SchedulerSettingsService.get_scheduler_settings_for_datasources(user_id="user123", datasource_ids=["res1"])
 
     assert result == {"res1": {"cron_expression": "0 9 * * *", "timezone": "Asia/Tokyo"}}
+
+
+# ===================== _build_list_filters user-scoping tests =====================
+
+
+def _make_user(is_admin=False, project_names=None):
+    """Helper to create a mock User for scoping tests."""
+    user = Mock()
+    user.is_admin_or_maintainer = is_admin
+    user.project_names = project_names or []
+    return user
+
+
+def test_build_list_filters_non_admin_adds_project_scope():
+    """Non-admin user must see only their own projects."""
+    user = _make_user(is_admin=False, project_names=["proj-a", "proj-b"])
+    conditions, params = SchedulerSettingsService._build_list_filters(
+        project_id=None,
+        resource_type=None,
+        resource_id=None,
+        search=None,
+        status=None,
+        last_run_status=None,
+        owner_type=None,
+        user=user,
+    )
+    assert any("project_names" in c for c in conditions), "Expected project_names scope condition"
+    assert params.get("project_names") == ["proj-a", "proj-b"]
+
+
+def test_build_list_filters_admin_skips_project_scope():
+    """Admin/maintainer must see all projects — no project_names condition added."""
+    user = _make_user(is_admin=True, project_names=["proj-a"])
+    conditions, params = SchedulerSettingsService._build_list_filters(
+        project_id=None,
+        resource_type=None,
+        resource_id=None,
+        search=None,
+        status=None,
+        last_run_status=None,
+        owner_type=None,
+        user=user,
+    )
+    assert not any("project_names" in c for c in conditions), "Admins must not be scoped to project_names"
+
+
+def test_build_list_filters_explicit_project_id_adds_alongside_scope():
+    """When project_id is given explicitly it is ANDed with the user's project_names scope."""
+    user = _make_user(is_admin=False, project_names=["proj-a"])
+    conditions, params = SchedulerSettingsService._build_list_filters(
+        project_id="proj-a",
+        resource_type=None,
+        resource_id=None,
+        search=None,
+        status=None,
+        last_run_status=None,
+        owner_type=None,
+        user=user,
+    )
+    assert any(":project_id" in c for c in conditions)
+    assert params.get("project_id") == "proj-a"
+    assert any("project_names" in c for c in conditions), "project_names scope must still be applied"
+
+
+# ===================== get_filter_options user-scoping tests =====================
+
+
+@patch.object(SchedulerSettingsService, "_fetch_all_scheduler_settings")
+@patch.object(SchedulerSettingsService, "_build_resource_name_map")
+def test_get_filter_options_scopes_to_user_projects(mock_name_map, mock_fetch):
+    """get_filter_options must pass user to _fetch_all_scheduler_settings."""
+    # Clear any cached value
+    SchedulerSettingsService._filter_options_cache = {}
+
+    user = _make_user(is_admin=False, project_names=["proj-a"])
+    mock_fetch.return_value = []
+    mock_name_map.return_value = {}
+
+    SchedulerSettingsService.get_filter_options(user=user)
+
+    mock_fetch.assert_called_once_with(user=user)
+
+
+def test_build_list_filters_empty_project_names_returns_no_rows_condition():
+    """Non-admin with empty project_names must produce a 'never match' condition, not a type error."""
+    user = _make_user(is_admin=False, project_names=[])
+    conditions, params = SchedulerSettingsService._build_list_filters(
+        project_id=None,
+        resource_type=None,
+        resource_id=None,
+        search=None,
+        status=None,
+        last_run_status=None,
+        owner_type=None,
+        user=user,
+    )
+    assert any("1=0" in c for c in conditions), "Empty project list must yield a no-match condition"
+    assert "project_names" not in params
+
+
+# ===================== ownerType=User user-scoping tests (EPMCDME-10682 fix) =====================
+
+
+def _make_user_with_id(user_id="user-42", is_admin=False, project_names=None):
+    user = _make_user(is_admin=is_admin, project_names=project_names or ["proj-a"])
+    user.id = user_id
+    return user
+
+
+def test_build_list_filters_owner_type_user_adds_caller_id_for_non_admin():
+    """ownerType=User must scope results to the caller's user_id for regular users."""
+    user = _make_user_with_id(user_id="user-42", is_admin=False)
+    conditions, params = SchedulerSettingsService._build_list_filters(
+        project_id=None,
+        resource_type=None,
+        resource_id=None,
+        search=None,
+        status=None,
+        last_run_status=None,
+        owner_type="User",
+        user=user,
+    )
+    assert any("s.setting_type" in c for c in conditions)
+    assert params.get("owner_type") == "USER"
+    assert any("s.user_id" in c for c in conditions), "caller_id filter must be present for ownerType=User"
+    assert params.get("caller_id") == "user-42"
+
+
+def test_build_list_filters_owner_type_user_adds_caller_id_for_admin():
+    """ownerType=User must scope results to the caller's user_id even for admins — no bypass."""
+    user = _make_user_with_id(user_id="admin-99", is_admin=True)
+    conditions, params = SchedulerSettingsService._build_list_filters(
+        project_id=None,
+        resource_type=None,
+        resource_id=None,
+        search=None,
+        status=None,
+        last_run_status=None,
+        owner_type="User",
+        user=user,
+    )
+    assert params.get("owner_type") == "USER"
+    assert any("s.user_id" in c for c in conditions), "Admin must also be scoped to own user_id when ownerType=User"
+    assert params.get("caller_id") == "admin-99"
+
+
+def test_build_list_filters_owner_type_project_does_not_add_caller_id():
+    """ownerType=Project must NOT add a user_id constraint."""
+    user = _make_user_with_id(user_id="user-42", is_admin=False)
+    conditions, params = SchedulerSettingsService._build_list_filters(
+        project_id=None,
+        resource_type=None,
+        resource_id=None,
+        search=None,
+        status=None,
+        last_run_status=None,
+        owner_type="Project",
+        user=user,
+    )
+    assert params.get("owner_type") == "PROJECT"
+    assert not any("s.user_id" in c for c in conditions), "user_id must not be added for ownerType=Project"
+    assert "caller_id" not in params
+
+
+def test_build_list_filters_no_owner_type_does_not_add_caller_id():
+    """When ownerType is absent, no user_id constraint should be added."""
+    user = _make_user_with_id(user_id="user-42", is_admin=False)
+    conditions, params = SchedulerSettingsService._build_list_filters(
+        project_id=None,
+        resource_type=None,
+        resource_id=None,
+        search=None,
+        status=None,
+        last_run_status=None,
+        owner_type=None,
+        user=user,
+    )
+    assert not any("s.user_id" in c for c in conditions)
+    assert "caller_id" not in params

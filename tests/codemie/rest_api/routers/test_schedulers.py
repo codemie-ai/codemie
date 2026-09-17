@@ -489,6 +489,66 @@ def test_repository_delete_run_noop_when_missing():
 # ── T1: raise_conflict ────────────────────────────────────────────────────────
 
 
+# ── EPMCDME-14805: ownerType filter ──────────────────────────────────────────
+
+
+def test_router_forwards_owner_type_to_service():
+    """ownerType query param is forwarded as owner_type to SchedulerSettingsService."""
+    with patch("codemie.rest_api.routers.schedulers.SchedulerSettingsService") as mock_svc_cls:
+        mock_svc_cls.list_schedulers.return_value = MagicMock(items=[], total=0, page=0, pageSize=10, totalPages=0)
+
+        from codemie.rest_api.routers.schedulers import list_schedulers
+
+        list_schedulers(
+            page=0,
+            page_size=10,
+            search=None,
+            resource_type=None,
+            project_id=None,
+            resource_id=None,
+            status=None,
+            last_run_status=None,
+            owner_type="Project",
+        )
+
+        _, kwargs = mock_svc_cls.list_schedulers.call_args
+        assert kwargs["owner_type"] == "Project"
+
+
+def test_build_list_filters_appends_setting_type_when_owner_type_provided():
+    from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService
+
+    conditions, params = SchedulerSettingsService._build_list_filters(
+        project_id=None,
+        resource_type=None,
+        resource_id=None,
+        search=None,
+        status=None,
+        last_run_status=None,
+        owner_type="User",
+    )
+
+    assert "s.setting_type = :owner_type" in conditions
+    assert params["owner_type"] == "USER"
+
+
+def test_build_list_filters_omits_setting_type_when_owner_type_is_none():
+    from codemie.service.settings.scheduler_settings_service import SchedulerSettingsService
+
+    conditions, params = SchedulerSettingsService._build_list_filters(
+        project_id=None,
+        resource_type=None,
+        resource_id=None,
+        search=None,
+        status=None,
+        last_run_status=None,
+        owner_type=None,
+    )
+
+    assert "s.setting_type = :owner_type" not in conditions
+    assert "owner_type" not in params
+
+
 def test_raise_conflict_raises_409():
     from codemie.core.exceptions import ExtendedHTTPException
     from codemie.rest_api.routers.utils import raise_conflict

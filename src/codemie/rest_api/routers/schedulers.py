@@ -61,6 +61,8 @@ def list_schedulers(
     resource_id: Optional[str] = Query(None, alias="resourceId"),
     status: Optional[str] = Query(None),
     last_run_status: Optional[str] = Query(None, alias="lastRunStatus"),
+    owner_type: Optional[str] = Query(None, alias="ownerType"),
+    user=Depends(authenticate),
 ):
     return SchedulerSettingsService.list_schedulers(
         page=page,
@@ -71,6 +73,8 @@ def list_schedulers(
         resource_id=resource_id,
         status=status,
         last_run_status=last_run_status,
+        owner_type=owner_type,
+        user=user,
     )
 
 
