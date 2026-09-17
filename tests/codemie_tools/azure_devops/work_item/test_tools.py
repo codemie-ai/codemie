@@ -16,10 +16,14 @@ import base64
 import hashlib
 from unittest.mock import Mock, MagicMock, patch
 
+import json
 import pytest
+
+from langchain_core.tools import ToolException
 
 from codemie_tools.azure_devops.work_item.models import AzureDevOpsWorkItemConfig
 from codemie_tools.azure_devops.work_item.tools import (
+    BaseAzureDevOpsWorkItemTool,
     SearchWorkItemsTool,
     CreateWorkItemTool,
     UpdateWorkItemTool,
@@ -77,6 +81,182 @@ def get_tool(mock_config, mock_client):
     tool = GetWorkItemTool(config=mock_config)
     tool._client = mock_client
     return tool
+
+
+@pytest.fixture
+def base_tool(mock_config):
+    class ConcreteBase(BaseAzureDevOpsWorkItemTool):
+        name: str = "test_base"
+        description: str = "test"
+
+        def execute(self, **kwargs): ...
+
+        def is_safe(self, args: dict) -> bool:
+            return True
+
+    return ConcreteBase(config=mock_config)
+
+
+class TestTransformWorkItem:
+    def test_valid_simple(self, base_tool):
+        result = base_tool._transform_work_item('{"fields": {"System.Title": "Hello"}}')
+        assert result == [{"op": "add", "path": "/fields/System.Title", "value": "Hello"}]
+
+    def test_missing_fields_key(self, base_tool):
+        with pytest.raises(ToolException, match="'fields' property is missing"):
+            base_tool._transform_work_item('{"title": "oops"}')
+
+    def test_malformed_json_actionable_message(self, base_tool):
+        with pytest.raises(ToolException) as exc_info:
+            base_tool._transform_work_item('{"fields": {"System.Title": unquoted_value}}')
+        msg = str(exc_info.value)
+        # Must NOT be double-wrapped
+        assert msg.count("work_item_json") == 1
+        # Must include position hint
+        assert "char" in msg or "line" in msg or "column" in msg
+        # Must include field guidance
+        assert "escape" in msg.lower() or "quote" in msg.lower() or "html" in msg.lower()
+
+    def test_valid_html_description(self, base_tool):
+        payload = json.dumps(
+            {
+                "fields": {
+                    "System.Title": "Story",
+                    "System.Description": "<p>Hello <b>world</b></p>",
+                }
+            }
+        )
+        result = base_tool._transform_work_item(payload)
+        desc = next(op for op in result if op["path"] == "/fields/System.Description")
+        assert desc["value"] == "<p>Hello <b>world</b></p>"
+
+    def test_valid_long_html_with_quotes(self, base_tool):
+        long_html = "<p>" + ("A" * 3000) + ' said &quot;hello&quot;</p>'
+        payload = json.dumps(
+            {
+                "fields": {
+                    "System.Title": "Long Story",
+                    "System.Description": long_html,
+                    "Microsoft.VSTS.Common.AcceptanceCriteria": "<ul><li>AC1</li><li>AC2</li></ul>",
+                }
+            }
+        )
+        result = base_tool._transform_work_item(payload)
+        assert len(result) == 3
+
+    def test_valid_tags_and_path_fields(self, base_tool):
+        payload = json.dumps(
+            {
+                "fields": {
+                    "System.Title": "Tagged",
+                    "System.Tags": "tag1; tag2; tag3",
+                    "System.AreaPath": "MyProject\\Team A",
+                    "System.IterationPath": "MyProject\\Sprint 1",
+                }
+            }
+        )
+        result = base_tool._transform_work_item(payload)
+        paths = [op["path"] for op in result]
+        assert "/fields/System.Tags" in paths
+        assert "/fields/System.AreaPath" in paths
+
+    def test_valid_nested_json_string_in_value(self, base_tool):
+        # A field value that is itself a JSON string (escaped) — valid JSON overall
+        inner = json.dumps({"key": 'value with "quotes"'})
+        payload = json.dumps({"fields": {"Custom.Metadata": inner}})
+        result = base_tool._transform_work_item(payload)
+        assert result[0]["value"] == inner
+
+    def test_literal_newline_in_string_value_is_sanitized(self, base_tool):
+        # LLM-generated JSON with a literal newline inside a string value
+        payload = '{"fields": {"System.Description": "line1\nline2"}}'
+        result = base_tool._transform_work_item(payload)
+        desc = next(op for op in result if op["path"] == "/fields/System.Description")
+        assert "line1" in desc["value"]
+        assert "line2" in desc["value"]
+
+    def test_literal_control_chars_in_html_field_sanitized(self, base_tool):
+        # Literal \r\n and \t embedded in HTML — LLM often generates these
+        payload = '{"fields": {"System.Description": "<p>Summary\r\n</p>\t<p>Details</p>"}}'
+        result = base_tool._transform_work_item(payload)
+        desc = next(op for op in result if op["path"] == "/fields/System.Description")
+        assert "Summary" in desc["value"]
+        assert "Details" in desc["value"]
+
+    def test_real_world_epmcdme_14788_payload(self, base_tool):
+        # Regression for EPMCDME-14788: the LLM emitted work_item_json with a missing outer
+        # closing "}" — the JSON ends after the fields object but the wrapper object is never
+        # closed. json.loads reports "Expecting ',' delimiter" at char ~2828 (end of the
+        # AcceptanceCriteria value) because it expects more content or a closing brace.
+        payload = (
+            '{"fields":'
+            '{"System.Title":"[BE] Analyse current TechnicalControls behaviour and impacted tables for Table Library",'
+            '"System.Description":"<p><strong>Summary</strong><br/>Analyse the existing technical controls'
+            " implementation and orchestration to understand how TechnicalControls currently work for datasets"
+            " and table library, what tables/entities they update, and how failures are handled."
+            " This analysis will be the basis for designing the new Test Table Library Prep And Controls pipeline."
+            "</p><p><strong>Description</strong><br/>As an Test backend maintainer, I need a clear understanding"
+            " of current TechnicalControls behaviour so that the new table library controls pipeline and callbacks"
+            " remain aligned with existing Tech-Control specifications and avoid regressions on datasets."
+            "</p><p><strong>Functional Details</strong><br/>- Review the Tech-Control wiki and existing dataset"
+            " controls orchestration (Test-Orchestration: Dataset controls and execution)."
+            "<br/>- Identify the current TechnicalControls implementation in Test-data and calculation engine"
+            " (TechInitialiser, techcontrol Jar, notebooks)."
+            "<br/>- Map which SQL tables/entities are updated when technical controls run for datasets and"
+            " table library (e.g. ExpectedTable, control execution tables)."
+            "<br/>- Document current behaviour in case of technical controls failure"
+            " (blocking vs non-blocking, status flags, impact on subsequent steps for table library)."
+            "<br/>- Share a short analysis document or wiki update summarizing findings and open points"
+            ' for the new pipeline.</p><p><strong>Affected areas</strong><br/>- Tech-Control functional'
+            " specification.<br/>- Dataset and table library orchestration flows."
+            '<br/>- Test backend persistence of control results.</p>",'
+            '"Microsoft.VSTS.Common.AcceptanceCriteria":"<p><strong>1. Current TechnicalControls flow'
+            " documented</strong><br/>Given existing Tech-Control documentation and code have been reviewed"
+            "<br/>When the analysis is completed<br/>Then a summary of the current TechnicalControls flow"
+            " for datasets and table library is documented (including main steps, inputs and outputs)."
+            "</p><p><strong>2. Impacted tables/entities identified</strong><br/>Given the current persistence"
+            " logic for controls has been analysed<br/>When the analysis is completed<br/>Then the list of"
+            " SQL tables/entities updated by technical controls (datasets and table library) is clearly"
+            " identified and shared.</p><p><strong>3. Failure behaviour understood</strong><br/>Given existing"
+            " error handling has been reviewed<br/>When the analysis is completed<br/>Then the behaviour in"
+            " case of technical controls failure (blocking vs non-blocking, state transitions) is documented"
+            ' for datasets and table library.</p>",'
+            '"System.AreaPath":"Test",'
+            '"Microsoft.VSTS.Common.ValueArea":"Business",'
+            '"System.IterationPath":"Test",'
+            # Missing outer closing "}" — the LLM omitted it, leaving {"fields": {...} unclosed
+            '"System.Tags":"AI-Assisted;AI-Assistant-BA"}'
+        )
+        result = base_tool._transform_work_item(payload)
+        titles = {op["path"] for op in result}
+        assert "/fields/System.Title" in titles
+        assert "/fields/System.Description" in titles
+        assert "/fields/Microsoft.VSTS.Common.AcceptanceCriteria" in titles
+        assert "/fields/System.Tags" in titles
+
+    def test_missing_outer_closing_brace_is_recovered(self, base_tool):
+        # LLM omits the outer closing "}" — {"fields": {...} instead of {"fields": {...}}
+        payload = '{"fields": {"System.Title": "Story", "System.Tags": "tag1"}'
+        result = base_tool._transform_work_item(payload)
+        paths = {op["path"] for op in result}
+        assert "/fields/System.Title" in paths
+        assert "/fields/System.Tags" in paths
+
+    def test_missing_both_closing_braces_is_recovered(self, base_tool):
+        # LLM truncates output — both the inner fields object and outer wrapper are unclosed
+        payload = '{"fields": {"System.Title": "Story", "System.Tags": "tag1"'
+        result = base_tool._transform_work_item(payload)
+        paths = {op["path"] for op in result}
+        assert "/fields/System.Title" in paths
+        assert "/fields/System.Tags" in paths
+
+    def test_genuinely_malformed_json_still_raises(self, base_tool):
+        # Sanitization must not mask real structural errors
+        with pytest.raises(ToolException) as exc_info:
+            base_tool._transform_work_item('{"fields": {"System.Title": unquoted_value}}')
+        msg = str(exc_info.value)
+        assert msg.count("work_item_json") == 1
+        assert "char" in msg or "line" in msg
 
 
 class TestSearchWorkItemsTool:
@@ -150,6 +330,98 @@ class TestCreateWorkItemTool:
         mock_upload.assert_called_once_with("spec.pdf", b"spec content")
         assert "created successfully" in result
         assert "spec.pdf" in result
+
+    def test_create_work_item_html_description(self, create_tool, mock_client):
+        """Valid payload with HTML description and acceptance criteria must succeed."""
+        payload = json.dumps(
+            {
+                "fields": {
+                    "System.Title": "Story with HTML",
+                    "System.Description": "<p>As a user I want <b>feature</b></p>",
+                    "Microsoft.VSTS.Common.AcceptanceCriteria": "<ul><li>AC1</li></ul>",
+                }
+            }
+        )
+        mock_response = MagicMock()
+        mock_response.id = 42
+        mock_response.url = "http://test-url/42"
+        mock_client.create_work_item.return_value = mock_response
+
+        result = create_tool.execute(work_item_json=payload)
+
+        assert "42" in result
+        assert "created successfully" in result
+        called_doc = mock_client.create_work_item.call_args.kwargs["document"]
+        paths = [op["path"] for op in called_doc]
+        assert "/fields/System.Description" in paths
+        assert "/fields/Microsoft.VSTS.Common.AcceptanceCriteria" in paths
+
+    def test_create_work_item_tags_and_paths(self, create_tool, mock_client):
+        """Valid payload with tags and area/iteration path fields must succeed."""
+        payload = json.dumps(
+            {
+                "fields": {
+                    "System.Title": "Tagged Story",
+                    "System.Tags": "backend; api",
+                    "System.AreaPath": "Proj\\Team",
+                    "System.IterationPath": "Proj\\Sprint 2",
+                }
+            }
+        )
+        mock_response = MagicMock()
+        mock_response.id = 7
+        mock_response.url = "http://test-url/7"
+        mock_client.create_work_item.return_value = mock_response
+
+        result = create_tool.execute(work_item_json=payload)
+
+        assert "7" in result
+        called_doc = mock_client.create_work_item.call_args.kwargs["document"]
+        paths = [op["path"] for op in called_doc]
+        assert "/fields/System.Tags" in paths
+
+    def test_create_work_item_malformed_json_raises_tool_exception(self, create_tool, mock_client):
+        """Malformed JSON must raise ToolException with actionable message, not double-wrapped."""
+        with pytest.raises(ToolException) as exc_info:
+            create_tool.execute(work_item_json='{"fields": {"System.Title": unquoted_value}}')
+        msg = str(exc_info.value)
+        assert msg.count("work_item_json") == 1  # not double-wrapped
+        assert "char" in msg or "line" in msg or "column" in msg
+
+    def test_create_work_item_llm_literal_newlines_in_html(self, create_tool, mock_client):
+        """LLM-generated JSON with literal newlines in HTML field values must succeed."""
+        payload = (
+            '{"fields": {"System.Title": "Story",'
+            ' "System.Description": "<p>Summary</p>\n<p>Details</p>",'
+            ' "Microsoft.VSTS.Common.AcceptanceCriteria": "<p>AC1</p>\n<p>AC2</p>"}}'
+        )
+        mock_response = MagicMock()
+        mock_response.id = 50
+        mock_response.url = "http://test-url/50"
+        mock_client.create_work_item.return_value = mock_response
+
+        result = create_tool.execute(work_item_json=payload)
+        assert "50" in result
+        assert "created successfully" in result
+
+    def test_create_work_item_long_html_no_false_positive(self, create_tool, mock_client):
+        """Long HTML payload must not trigger a false-positive parse error."""
+        long_html = "<p>" + ("word " * 600) + "</p>"
+        payload = json.dumps(
+            {
+                "fields": {
+                    "System.Title": "Long",
+                    "System.Description": long_html,
+                }
+            }
+        )
+        mock_response = MagicMock()
+        mock_response.id = 99
+        mock_response.url = "http://test-url/99"
+        mock_client.create_work_item.return_value = mock_response
+
+        result = create_tool.execute(work_item_json=payload)
+        assert "99" in result
 
 
 class TestUpdateWorkItemTool:
@@ -326,6 +598,65 @@ class TestUpdateWorkItemTool:
             update_tool.execute(id=work_item_id, work_item_json=_WI_JSON_STUB)
 
         mock_upload.assert_called_once_with("report.pdf", b"revised content")
+
+    def test_update_work_item_html_description(self, update_tool, mock_client):
+        """Valid payload with HTML description must succeed without parse error."""
+        payload = json.dumps(
+            {
+                "fields": {
+                    "System.Description": "<p>Updated <em>description</em></p>",
+                    "Microsoft.VSTS.Common.AcceptanceCriteria": "<ul><li>Done</li></ul>",
+                }
+            }
+        )
+        mock_response = MagicMock()
+        mock_response.id = 10
+        mock_client.update_work_item.return_value = mock_response
+
+        result = update_tool.execute(id=10, work_item_json=payload)
+
+        assert "was updated" in result
+        called_doc = mock_client.update_work_item.call_args.kwargs["document"]
+        paths = [op["path"] for op in called_doc]
+        assert "/fields/System.Description" in paths
+
+    def test_update_work_item_malformed_json_raises_tool_exception(self, update_tool, mock_client):
+        """Malformed JSON must raise ToolException with actionable message, not double-wrapped."""
+        with pytest.raises(ToolException) as exc_info:
+            update_tool.execute(id=5, work_item_json='{"fields": {"System.Title": unquoted}}')
+        msg = str(exc_info.value)
+        assert msg.count("work_item_json") == 1  # not double-wrapped
+        assert "char" in msg or "line" in msg or "column" in msg
+
+    def test_update_work_item_llm_literal_newlines_in_html(self, update_tool, mock_client):
+        """LLM-generated JSON with literal newlines in HTML field values must succeed on update."""
+        payload = (
+            '{"fields": {"System.Description": "<p>Updated</p>\n<p>More text</p>",'
+            ' "Microsoft.VSTS.Common.AcceptanceCriteria": "<p>Criterion 1</p>\n<p>Criterion 2</p>"}}'
+        )
+        mock_response = MagicMock()
+        mock_response.id = 20
+        mock_client.update_work_item.return_value = mock_response
+
+        result = update_tool.execute(id=20, work_item_json=payload)
+        assert "was updated" in result
+
+    def test_update_work_item_tags_and_path_fields(self, update_tool, mock_client):
+        """Tags and path fields must parse without error."""
+        payload = json.dumps(
+            {
+                "fields": {
+                    "System.Tags": "qa; regression",
+                    "System.AreaPath": "Proj\\QA",
+                }
+            }
+        )
+        mock_response = MagicMock()
+        mock_response.id = 3
+        mock_client.update_work_item.return_value = mock_response
+
+        result = update_tool.execute(id=3, work_item_json=payload)
+        assert "was updated" in result
 
 
 class TestGetWorkItemTool:

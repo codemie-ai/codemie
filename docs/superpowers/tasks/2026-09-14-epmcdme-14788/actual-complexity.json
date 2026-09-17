@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "generated": "2026-09-14T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 1, "label": "XS" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 10,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 2,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Single self-contained component: one tool file and its test file, both in src/codemie_tools/azure_devops/work_item/. New GetWorkItemAttachmentContentTool class added; GetWorkItemTool extended with include_attachments path. All changes lean on existing AzureDevOpsAttachmentMixin and AttachmentContentMixin."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Two layers touched: the External integration layer (Azure DevOps API calls via WorkItemTrackingClient) and the Service/agent-tool layer (LangChain tool execution). No API router, no DB persistence, no UI, no infrastructure changes."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -61,6 +61,42 @@ from codemie_tools.azure_devops.attachment_content_mixin import AttachmentConten
 
 _HIERARCHY_REVERSE = "System.LinkTypes.Hierarchy-Reverse"
 
+_CTRL_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t", "\b": "\\b", "\f": "\\f"}
+
+
+def _sanitize_json_control_chars(s: str) -> str:
+    """Escape literal control characters that appear inside JSON string values.
+
+    LLMs sometimes embed literal newlines or other control characters inside
+    JSON string values (e.g. in long HTML descriptions). Those are invalid JSON
+    but can be recovered by escaping them before parsing.
+    """
+    result = []
+    in_string = False
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if in_string:
+            if c == "\\":
+                result.append(c)
+                i += 1
+                if i < len(s):
+                    result.append(s[i])
+            elif c == '"':
+                in_string = False
+                result.append(c)
+            elif ord(c) < 0x20:
+                result.append(_CTRL_ESCAPES.get(c, f"\\u{ord(c):04x}"))
+            else:
+                result.append(c)
+        else:
+            if c == '"':
+                in_string = True
+            result.append(c)
+        i += 1
+    return "".join(result)
+
+
 # Ensure Azure DevOps cache directory is set
 if not os.environ.get("AZURE_DEVOPS_CACHE_DIR", None):
     os.environ["AZURE_DEVOPS_CACHE_DIR"] = ""
@@ -130,10 +166,31 @@ class BaseAzureDevOpsWorkItemTool(CodeMieTool, AzureDevOpsAttachmentMixin):
         return parsed_items
 
     def _transform_work_item(self, work_item_json: str) -> list[dict]:
-        try:
-            params = json.loads(work_item_json)
-        except ValueError as e:
-            raise ToolException(f"Issues during attempt to parse work_item_json: {str(e)}")
+        sanitized = _sanitize_json_control_chars(work_item_json)
+        stripped = work_item_json.rstrip()
+        stripped_sanitized = sanitized.rstrip()
+        last_error: json.JSONDecodeError | None = None
+        params = None
+        for candidate in (
+            work_item_json,
+            sanitized,
+            stripped + "}",
+            stripped_sanitized + "}",
+            stripped + "}}",
+            stripped_sanitized + "}}",
+        ):
+            try:
+                params = json.loads(candidate)
+                break
+            except json.JSONDecodeError as e:
+                last_error = e
+        if params is None:
+            raise ToolException(
+                f"Failed to parse work_item_json: {last_error.msg} at line {last_error.lineno} "
+                f"column {last_error.colno} (char {last_error.pos}). Ensure all double-quotes "
+                f"inside field values (e.g. HTML attributes, description text) are escaped as "
+                f'\\" and the JSON is well-formed.'
+            )
 
         if "fields" not in params:
             raise ToolException("The 'fields' property is missing from the work_item_json.")
@@ -280,10 +337,7 @@ class CreateWorkItemTool(BaseAzureDevOpsFileWorkItemTool):
 
     def execute(self, work_item_json: str, wi_type: str = "Task") -> str:
         """Create a work item in Azure DevOps with optional file attachments."""
-        try:
-            patch_document = self._transform_work_item(work_item_json)
-        except Exception as e:
-            raise ToolException(f"Issues during attempt to parse work_item_json: {str(e)}")
+        patch_document = self._transform_work_item(work_item_json)
 
         try:
             # Use the transformed patch_document to create the work item
@@ -314,10 +368,7 @@ class UpdateWorkItemTool(BaseAzureDevOpsFileWorkItemTool):
 
     def execute(self, id: int, work_item_json: str) -> str:
         """Updates existing work item per defined data with optional file attachments."""
-        try:
-            patch_document = self._transform_work_item(work_item_json)
-        except Exception as e:
-            raise ToolException(f"Issues during attempt to parse work_item_json: {str(e)}")
+        patch_document = self._transform_work_item(work_item_json)
 
         try:
             work_item = self._client.update_work_item(id=id, document=patch_document, project=self.config.project)
