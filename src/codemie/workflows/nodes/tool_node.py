@@ -218,6 +218,7 @@ class ToolNode(BaseNode[AgentMessages]):
             self.user,
             self.workflow_config.project,
             owner_user_id=owner_user_id,
+            execution_id=self.execution_id,
         )
 
         # Direct assignment is required here: CodeExecutorTool.__init__ ignores the `config`

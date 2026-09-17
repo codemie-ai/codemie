@@ -1371,3 +1371,60 @@ def test_tc_tnc_018_marketplace_workflow_no_created_by_passes_no_owner_user_id(
 
     _, find_kwargs = mock_tools_service.find_tool_from_config.call_args
     assert find_kwargs["owner_user_id"] is None
+
+
+@patch("codemie.workflows.nodes.tool_node.VirtualAssistantService")
+@patch("codemie.workflows.nodes.tool_node.ToolkitService")
+@patch("codemie.workflows.nodes.tool_node.ToolsService")
+def test_tc_tnc_019_regular_tool_forwards_execution_id_to_find_tool_from_config(
+    mock_tools_service: MagicMock,
+    mock_toolkit_service: MagicMock,
+    mock_virtual_assistant_service: MagicMock,
+    mock_workflow_execution_service: MagicMock,
+    mock_thought_queue: MagicMock,
+    mock_callbacks: list,
+    mock_user: MagicMock,
+    mock_workflow_config: MagicMock,
+) -> None:
+    """
+    TC_TNC_019: _execute_regular_tool passes execution_id through to
+    ToolsService.find_tool_from_config so bare tool states share one
+    AgentWorkspace within a workflow execution (EPMCDME-14138).
+    """
+    # Arrange
+    mock_assistant = Mock()
+    mock_assistant.id = "assistant-123"
+    mock_virtual_assistant_service.create_from_tool_config.return_value = mock_assistant
+
+    mock_tool = Mock()
+    mock_tool.args_schema = {}
+    mock_tool.execute.return_value = "result"
+    mock_tools_service.find_tool_from_config.return_value = mock_tool
+    mock_toolkit_service.get_toolkit_methods.return_value = []
+
+    state_schema = {CONTEXT_STORE_VARIABLE: {}, MESSAGES_VARIABLE: []}
+
+    workflow_state = WorkflowState(
+        id="tool_node",
+        task="Execute tool",
+        next=WorkflowNextState(state_id="next"),
+        tool_id="tool_1",
+    )
+
+    node = ToolNode(
+        callbacks=mock_callbacks,
+        workflow_execution_service=mock_workflow_execution_service,
+        thought_queue=mock_thought_queue,
+        workflow_state=workflow_state,
+        workflow_config=mock_workflow_config,
+        user=mock_user,
+        execution_id="exec_123",
+    )
+
+    with patch("codemie.workflows.nodes.tool_node.process_values", return_value={}):
+        # Act
+        node._execute_regular_tool(state_schema)
+
+    # Assert — execution_id forwarded as the workspace-sharing correlation id
+    _, find_kwargs = mock_tools_service.find_tool_from_config.call_args
+    assert find_kwargs["execution_id"] == "exec_123"

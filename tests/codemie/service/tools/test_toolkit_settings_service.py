@@ -401,3 +401,63 @@ class TestImageGenerationModelSelection:
             result = ToolkitSettingService._resolve_image_generation_model(mock_assistant, mock_request)
 
         assert result == "request-image-model"
+
+
+class TestGetAgentWorkspaceToolkit:
+    """Tests for ToolkitSettingService.get_agent_workspace_toolkit conversation_id handling."""
+
+    def test_returns_empty_list_when_request_is_none(self, mock_assistant, mock_user):
+        tools = ToolkitSettingService.get_agent_workspace_toolkit(
+            assistant=mock_assistant,
+            project_name="test-project",
+            user=mock_user,
+            llm_model=None,
+            request_uuid="test-uuid",
+            request=None,
+        )
+
+        assert tools == []
+
+    def test_returns_empty_list_when_conversation_id_falsy(self, mock_assistant, mock_user):
+        mock_request = MagicMock()
+        mock_request.conversation_id = None
+
+        tools = ToolkitSettingService.get_agent_workspace_toolkit(
+            assistant=mock_assistant,
+            project_name="test-project",
+            user=mock_user,
+            llm_model=None,
+            request_uuid="test-uuid",
+            request=mock_request,
+        )
+
+        assert tools == []
+
+    @patch("codemie.service.tools.toolkit_settings_service.AgentWorkspaceToolkit")
+    @patch.object(ToolkitSettingService, "_build_workspace_image_generator", return_value=None)
+    def test_delegates_to_agent_workspace_toolkit_with_request_conversation_id(
+        self,
+        mock_build_image_generator: MagicMock,
+        mock_agent_workspace_toolkit: MagicMock,
+        mock_assistant,
+        mock_user,
+    ):
+        mock_request = MagicMock()
+        mock_request.conversation_id = "exec_123"
+
+        mock_toolkit_instance = MagicMock()
+        mock_toolkit_instance.get_tools.return_value = [MagicMock()]
+        mock_agent_workspace_toolkit.get_toolkit.return_value = mock_toolkit_instance
+
+        tools = ToolkitSettingService.get_agent_workspace_toolkit(
+            assistant=mock_assistant,
+            project_name="test-project",
+            user=mock_user,
+            llm_model=None,
+            request_uuid="test-uuid",
+            request=mock_request,
+        )
+
+        assert tools == mock_toolkit_instance.get_tools.return_value
+        _, kwargs = mock_agent_workspace_toolkit.get_toolkit.call_args
+        assert kwargs["conversation_id"] == "exec_123"

@@ -89,6 +89,7 @@ class ToolsService:
         user: User,
         project_name: str,
         owner_user_id: str | None = None,
+        execution_id: str | None = None,
     ) -> object:
         toolkit = ToolsService.get_toolkit_from_workflow_tool_config(
             tool_config, user, project_name, owner_user_id=owner_user_id
@@ -107,7 +108,10 @@ class ToolsService:
             toolkit_name = toolkit.toolkit
             toolkit_method = toolkits.get(toolkit_name)
             if toolkit_method:
-                tools = toolkits[toolkit_name](assistant, user, '', '', AssistantChatRequest(tools_config=config))
+                request_kwargs = {"tools_config": config}
+                if execution_id:
+                    request_kwargs["conversation_id"] = execution_id
+                tools = toolkits[toolkit_name](assistant, user, '', '', AssistantChatRequest(**request_kwargs))
 
         return cls.find_tool(tool_config.tool, tools)
 

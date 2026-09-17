@@ -20,6 +20,8 @@ import mimetypes
 from pathlib import PurePosixPath
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
+
 from codemie.core.exceptions import ValidationException
 from codemie.core.models import UserEntity
 from codemie.repository.agent_workspace_repository import AgentWorkspaceRepository
@@ -112,21 +114,30 @@ class AgentWorkspaceService:
 
     def create_workspace(self, request: CreateAgentWorkspaceRequest, user: User) -> AgentWorkspaceResponse:
         existing = self.repository.get_by_conversation_for_user(request.conversation_id, user.id)
-        if existing:
-            return AgentWorkspaceResponse.from_model(existing)
+        if existing is None:
+            workspace = AgentWorkspace(
+                conversation_id=request.conversation_id,
+                user_id=user.id,
+                name=request.name,
+            )
+            try:
+                self.repository.save_workspace(workspace)
+            except IntegrityError:
+                # A concurrent caller (e.g. another bare tool state in the same workflow
+                # execution) won the race to create this (conversation_id, user_id) workspace;
+                # uq_agent_workspaces_conversation_user already prevents duplicate rows.
+                existing = self.repository.get_by_conversation_for_user(request.conversation_id, user.id)
+                if existing is None:
+                    raise
+            else:
+                existing = workspace
 
-        workspace = AgentWorkspace(
-            conversation_id=request.conversation_id,
-            user_id=user.id,
-            name=request.name,
-        )
-        self.repository.save_workspace(workspace)
         self.sync_uploaded_files(
             conversation_id=request.conversation_id,
             file_urls=self._get_conversation_uploaded_file_urls(request.conversation_id),
             user=user,
         )
-        return AgentWorkspaceResponse.from_model(workspace)
+        return AgentWorkspaceResponse.from_model(existing)
 
     def sync_uploaded_files(
         self,

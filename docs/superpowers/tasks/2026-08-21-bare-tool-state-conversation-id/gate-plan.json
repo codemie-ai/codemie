@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "runner": "poetry",
+  "gates": [
+    {"id": "lint", "command": "make ruff", "available": true},
+    {"id": "build", "command": "make build", "available": true},
+    {"id": "license-check", "command": "make license-check", "available": true},
+    {"id": "unit", "command": "make test", "available": true},
+    {"id": "gitleaks", "command": "make gitleaks", "available": false, "reason": "Docker not installed in this environment"},
+    {"id": "coverage", "command": "make coverage", "available": true, "reason": "not requested for this run"},
+    {"id": "sonar-local", "command": "make sonar-local", "available": true, "reason": "Sonar credentials/network not configured in this environment"},
+    {"id": "test-harness", "command": "make test-harness", "available": true, "reason": "no MR being opened in this run"},
+    {"id": "ui", "command": null, "available": false}
+  ],
+  "ui_globs": ["\\.(tsx|jsx|css|html|vue|svelte)$", "src/(ui|frontend|components)/"],
+  "detected_at": "2026-08-21T13:53:48Z"
+}
