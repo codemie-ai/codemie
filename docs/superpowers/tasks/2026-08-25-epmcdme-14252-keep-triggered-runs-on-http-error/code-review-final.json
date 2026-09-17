@@ -1,0 +1,156 @@
+{
+  "decision": "request-changes",
+  "confidence": "medium",
+  "risk_flags": ["security"],
+  "rationale": "All three review lenses ran successfully and the spec was fully audited. Five major patch findings block approval: a null-payload crash path in _create_mcp_auth_error, a TypeError on dict error_context, a vacuous token-leak test, a tautological oauth assertion, and a spec-required test that is entirely absent. The core feature logic and security invariants (no str(e), no auth_location leak) are correctly implemented.",
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Every triggered run that fails stays visible — delete_conversation never called on any error path",
+      "status": "pass",
+      "notes": "delete_conversation import removed; both RequestError and HTTPStatusError branches contain no delete_conversation call"
+    },
+    {
+      "kind": "spec",
+      "item": "Failed runs show a clear sanitized error message via save_error_history_turn on RequestError",
+      "status": "pass",
+      "notes": "RequestError branch calls save_error_history_turn with type(e).__name__ — no str(e), no URL"
+    },
+    {
+      "kind": "spec",
+      "item": "HTTPStatusError path: do not delete conversation; do not call save_error_history_turn",
+      "status": "pass",
+      "notes": "HTTPStatusError branch only logs status code + class name; no save or delete call"
+    },
+    {
+      "kind": "spec",
+      "item": "save_error_history_turn added to conversation.py — PUT /v1/conversations/{id}/history; swallows httpx.HTTPError",
+      "status": "pass",
+      "notes": "Function present; PUT endpoint correct; except httpx.HTTPError swallowed; logs type(e).__name__ not str(e)"
+    },
+    {
+      "kind": "spec",
+      "item": "_create_mcp_auth_error extracts only allowlisted fields; never calls str(exc) or dumps full payload",
+      "status": "pass",
+      "notes": "Reads mcp_server_name/mcp_config_name/error_context only; no str(exc) or payload serialization"
+    },
+    {
+      "kind": "spec",
+      "item": "Security: no str(e) in actor error logging (RequestError/HTTPStatusError)",
+      "status": "pass",
+      "notes": "Logs type(e).__name__ for RequestError; e.response.status_code + type(e).__name__ for HTTPStatusError"
+    },
+    {
+      "kind": "spec",
+      "item": "Security: broker error saved text must not contain auth_location URL",
+      "status": "pass",
+      "notes": "_create_assistant_error called with hardcoded strings only; BrokerAuthRequiredException.auth_location never read"
+    },
+    {
+      "kind": "spec",
+      "item": "_ask_assistant: MCPAuthenticationRequiredException calls _save_error then re-raises original",
+      "status": "pass",
+      "notes": "_save_error called then bare raise; HTTP 401 + payload shape unchanged for live-chat Sign-in"
+    },
+    {
+      "kind": "spec",
+      "item": "_ask_assistant: BrokerAuthRequiredException calls _save_error with sanitized message then re-raises",
+      "status": "pass",
+      "notes": "_save_error called with 'Broker authentication required' hardcoded text; bare raise preserves original"
+    },
+    {
+      "kind": "spec",
+      "item": "_ask_virtual_assistant is NOT changed — save_history=False, no _save_error call",
+      "status": "pass",
+      "notes": "_ask_virtual_assistant body unchanged; test_virtual_assistant_reraises_mcp_authentication_required_without_wrapping asserts mock_save_error.assert_not_called()"
+    },
+    {
+      "kind": "story-ac",
+      "item": "test_reraises_mcp_authentication_required_without_wrapping: _save_error called once; details contain 401/authentication; no raw tokens",
+      "status": "pass",
+      "notes": "Test asserts mock_save_error.assert_called_once(); checks for '401'/'authentication'/'GitHub'; asserts 'auth-1' and 'initiate' not in details"
+    },
+    {
+      "kind": "story-ac",
+      "item": "test_ask_assistant_broker_auth_saves_error_and_reraises: original exception re-raised; auth_location not in saved text",
+      "status": "partial",
+      "notes": "auth.example.com exclusion asserted correctly; but line asserting 'oauth' not in details_text is a tautology (always True) — the auth_location /oauth/start path leak is unverified. See CR-001."
+    },
+    {
+      "kind": "story-ac",
+      "item": "test_manual_model_401_returns_401_payload_unchanged: live /model 401 returns HTTP 401 + original payload unchanged",
+      "status": "fail",
+      "notes": "No test with this name or equivalent behavior exists in tests/codemie/rest_api/routers/test_assistant.py. Spec-required regression guard for live-chat Sign-in is absent. See CR-002."
+    },
+    {
+      "kind": "story-ac",
+      "item": "test_invoke_assistant_log_does_not_leak_token: ConnectError on URL with ?token=secret-token; log does not contain token",
+      "status": "partial",
+      "notes": "Test uses _POST_URL which has no query string — assertion passes vacuously; the property it was designed to prove (str(e) would embed the token) is never exercised. See CR-005."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "git-workflow: commit subject format EPMCDME-NNNNN: Description",
+      "status": "pass",
+      "notes": "Branch EPMCDME-14252_keep-triggered-runs-on-http-error and all commit subjects follow the documented format"
+    },
+    {
+      "standard": "code-quality: Ruff clean, typed hints, Apache 2.0 headers",
+      "status": "pass",
+      "notes": "Ruff passed during implementation; all new functions have type hints; license headers present in all modified files"
+    },
+    {
+      "standard": "security-patterns: no str(e)/raw payload/auth headers in persisted or logged content",
+      "status": "partial",
+      "notes": "Main paths correct. error_context is joined with s['error_context'] directly without type coercion — if the field is a dict/list rather than str, this raises TypeError at runtime, which could surface internal object shapes. See CR-003."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "triage": "patch",
+      "severity": "major",
+      "problem": "Tautological assertion in test_ask_assistant_broker_auth_saves_error_and_reraises: `assert 'oauth' not in details_text.lower() or 'oauth' in details_text.lower()` is always True (A or not-A) regardless of content.",
+      "impact": "The intended security assertion — that the auth_location URL fragment '/oauth/start' does not appear in the persisted error text — is never enforced. The test passes even if auth_location leaks.",
+      "recommendation": "Replace the tautology with a targeted negative assertion: `assert 'oauth/start' not in details_text.lower()` (or compare directly against the full auth_location string in the test fixture).",
+      "sources": ["blind", "acceptance"]
+    },
+    {
+      "id": "CR-002",
+      "triage": "patch",
+      "severity": "major",
+      "problem": "Spec-required test `test_manual_model_401_returns_401_payload_unchanged` is absent from tests/codemie/rest_api/routers/test_assistant.py.",
+      "impact": "No regression guard exists for the live-chat Sign-in contract. A future refactor of the MCPAuthenticationRequiredException handler could silently break the HTTP 401 + original payload shape without any test catching it.",
+      "recommendation": "Add a test that raises MCPAuthenticationRequiredException through the actual /model endpoint path (or _ask_assistant) and asserts the response status is 401 and exc_info.value.payload matches the original payload (unchanged, not wrapped to 500).",
+      "sources": ["acceptance"]
+    },
+    {
+      "id": "CR-003",
+      "triage": "patch",
+      "severity": "major",
+      "problem": "In _create_mcp_auth_error, error_context is joined with `s['error_context']` directly. If any server entry's error_context is a dict or list (valid in the payload model), this raises TypeError: sequence item N: expected str instance, dict found.",
+      "impact": "A malformed MCP payload crashes _create_mcp_auth_error at runtime, causing an unhandled exception inside the except block of _ask_assistant. The original MCPAuthenticationRequiredException would not be re-raised, breaking the live-chat Sign-in flow.",
+      "recommendation": "Coerce to string: `error_contexts = ', '.join(str(s['error_context']) for s in servers if s.get('error_context'))`",
+      "sources": ["edge-case", "blind"]
+    },
+    {
+      "id": "CR-004",
+      "triage": "patch",
+      "severity": "major",
+      "problem": "In _create_mcp_auth_error, `payload.get('servers')` assumes payload is a dict. If MCPAuthenticationRequiredException is constructed with payload=None (a valid construction), `payload.get(...)` raises AttributeError: 'NoneType' object has no attribute 'get'.",
+      "impact": "Same as CR-003: crash inside the except block breaks the re-raise, breaking live-chat Sign-in.",
+      "recommendation": "Guard at function entry: `payload = payload or {}`",
+      "sources": ["edge-case"]
+    },
+    {
+      "id": "CR-005",
+      "triage": "patch",
+      "severity": "major",
+      "problem": "test_invoke_assistant_log_does_not_leak_token uses _POST_URL which contains no query string (no ?token=secret-token). The test assertion `assert 'secret-token' not in all_logged` passes vacuously because the URL never had a token to leak.",
+      "impact": "The leak-prevention property the test was designed to verify — that type(e).__name__ is logged instead of str(e) which would embed the full URL with query string — is never actually demonstrated. A regression that switches back to str(e) would still pass this test.",
+      "recommendation": "Register the exception on a URL that includes a token query parameter: `url_with_token = _POST_URL + '?token=secret-token'`; add_exception on that URL, and assert both `'ConnectError' in all_logged` and `'secret-token' not in all_logged`.",
+      "sources": ["blind", "acceptance"]
+    }
+  ]
+}

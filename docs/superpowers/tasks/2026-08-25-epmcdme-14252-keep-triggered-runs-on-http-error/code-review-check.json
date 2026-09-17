@@ -1,0 +1,95 @@
+{
+  "decision": "approve",
+  "rationale": "Follow-up check round for CR-001 through CR-005 from code-review-final.json. All five patch findings have been addressed in commit 8613b4250. CR-004 (None payload crash): `payload = payload or {}` guard added at the top of `_create_mcp_auth_error`. CR-003 (TypeError on dict error_context): `str(s['error_context'])` coercion applied in the join. CR-001 (tautological oauth assertion): replaced `assert 'oauth' not in details_text.lower() or 'oauth' in details_text.lower()` with `assert 'oauth/start' not in details_text.lower()`, targeting the actual auth_location fragment. CR-002 (missing spec-required test): `test_manual_model_401_returns_401_payload_unchanged` added — raises MCPAuthenticationRequiredException through `_ask_assistant`, asserts the original exception is re-raised unwrapped (`exc_info.value is auth_error`) and payload shape is unchanged. CR-005 (vacuous token-leak test): exception message now includes `http://server?token=secret-token` so the assertion `'secret-token' not in all_logged` is no longer vacuous. No production code changed beyond the two-line guard in `_create_mcp_auth_error`. All previously passing spec/story-ac items remain green. No new findings introduced.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "Every triggered run that fails stays visible — delete_conversation never called on any error path",
+      "status": "pass",
+      "notes": "Unchanged from final review — confirmed still correct"
+    },
+    {
+      "kind": "spec",
+      "item": "Failed runs show a clear sanitized error message via save_error_history_turn on RequestError",
+      "status": "pass",
+      "notes": "Unchanged from final review — confirmed still correct"
+    },
+    {
+      "kind": "spec",
+      "item": "_create_mcp_auth_error: null payload no longer crashes (CR-004)",
+      "status": "pass",
+      "notes": "`payload = payload or {}` guard inserted as first statement; AttributeError on None is eliminated"
+    },
+    {
+      "kind": "spec",
+      "item": "_create_mcp_auth_error: dict/list error_context no longer raises TypeError (CR-003)",
+      "status": "pass",
+      "notes": "`str(s['error_context'])` coercion applied; any JSON-typed error_context field is now safely serialised"
+    },
+    {
+      "kind": "story-ac",
+      "item": "test_ask_assistant_broker_auth_saves_error_and_reraises: auth_location oauth fragment not in saved text (CR-001)",
+      "status": "pass",
+      "notes": "Tautology removed; `assert 'oauth/start' not in details_text.lower()` now exercises the intended security invariant"
+    },
+    {
+      "kind": "story-ac",
+      "item": "test_manual_model_401_returns_401_payload_unchanged: live /model 401 returns HTTP 401 + original payload unchanged (CR-002)",
+      "status": "pass",
+      "notes": "Test added in tests/codemie/rest_api/routers/test_assistant.py; asserts `exc_info.value is auth_error` and `exc_info.value.payload == auth_payload`"
+    },
+    {
+      "kind": "story-ac",
+      "item": "test_invoke_assistant_log_does_not_leak_token: ConnectError message contains token; logged output must not contain it (CR-005)",
+      "status": "pass",
+      "notes": "Exception message now embeds `?token=secret-token`; assertion `'secret-token' not in all_logged` is no longer vacuous; `'ConnectError' in all_logged` confirmed separately"
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "git-workflow: commit subject format EPMCDME-NNNNN: Description",
+      "status": "pass",
+      "notes": "All new commits follow the documented format"
+    },
+    {
+      "standard": "code-quality: Ruff clean, typed hints, Apache 2.0 headers",
+      "status": "pass",
+      "notes": "Ruff passed; no new untyped callables; license headers intact"
+    },
+    {
+      "standard": "security-patterns: no str(e)/raw payload/auth headers in persisted or logged content",
+      "status": "pass",
+      "notes": "CR-003 fix uses str() only for the already-allowlisted error_context field, not for exception messages or auth headers"
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Tautological `or` condition replaced with targeted `assert 'oauth/start' not in details_text.lower()`. Security invariant now actually enforced."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "`test_manual_model_401_returns_401_payload_unchanged` added to TestAskAssistantWithGuardrails. Raises MCPAuthenticationRequiredException directly through `_ask_assistant`; asserts identity (`is auth_error`) and payload equality."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "`str(s['error_context'])` coercion applied in join expression. TypeError on dict/list payloads eliminated."
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "`payload = payload or {}` guard added as first line of `_create_mcp_auth_error`. AttributeError on None payload eliminated."
+    },
+    {
+      "id": "CR-005",
+      "status": "resolved",
+      "notes": "Exception registered with message containing `?token=secret-token`. The `'secret-token' not in all_logged` assertion now genuinely tests that `str(e)` is not used for logging."
+    }
+  ]
+}

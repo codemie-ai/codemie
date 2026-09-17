@@ -1,0 +1,5 @@
+{"event":"lifecycle_emission","intent":"record_complexity_score","mode":"initial","status":"skipped"}
+{"event":"decision.recorded","ts":"2026-08-25T00:00:00Z","gate_id":"spec.approved","mode":"hitl","phase":3,"actor":"decision-router","summary":"Decision recorded for spec.approved: approve","artifacts":["decisions.jsonl"],"data":{"gate_id":"spec.approved","mode":"hitl","decision":"approve","source":"hitl","escalated":false}}
+{"event":"lifecycle_emission","intent":"artifact_published","artifact_kind":"spec","status":"skipped"}
+{"event":"decision.recorded","ts":"2026-08-25T00:00:00Z","gate_id":"plan.approved","mode":"hitl","phase":4,"actor":"decision-router","summary":"Decision recorded for plan.approved: approve","artifacts":["decisions.jsonl"],"data":{"gate_id":"plan.approved","mode":"hitl","decision":"approve","source":"hitl","escalated":false}}
+{"event":"lifecycle_emission","intent":"artifact_published","artifact_kind":"plan","status":"skipped"}

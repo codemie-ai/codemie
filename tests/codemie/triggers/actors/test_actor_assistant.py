@@ -102,7 +102,7 @@ async def test_invoke_assistant_post_request_failure(httpx_mock, mocker):
         new_callable=AsyncMock,
         return_value=_CONVERSATION_ID,
     )
-    mock_delete = mocker.patch('codemie.triggers.actors.assistant.delete_conversation', new_callable=AsyncMock)
+    mocker.patch('codemie.triggers.actors.assistant.save_error_history_turn', new_callable=AsyncMock)
     httpx_mock.add_response(method='POST', url=_POST_URL, status_code=500)
 
     await invoke_assistant(
@@ -112,8 +112,6 @@ async def test_invoke_assistant_post_request_failure(httpx_mock, mocker):
         task='Do a task',
         url=_ASSISTANT_URL,
     )
-
-    mock_delete.assert_called_once_with(_CONVERSATION_ID, _USER_ID, _JOB_ID, _ASSISTANT_URL)
 
 
 @pytest.mark.asyncio
@@ -124,7 +122,7 @@ async def test_invoke_assistant_failure_no_cleanup_when_conversation_not_created
         new_callable=AsyncMock,
         return_value=None,
     )
-    mock_delete = mocker.patch('codemie.triggers.actors.assistant.delete_conversation', new_callable=AsyncMock)
+    mocker.patch('codemie.triggers.actors.assistant.save_error_history_turn', new_callable=AsyncMock)
     httpx_mock.add_response(method='POST', url=_POST_URL, status_code=500)
 
     await invoke_assistant(
@@ -135,4 +133,165 @@ async def test_invoke_assistant_failure_no_cleanup_when_conversation_not_created
         url=_ASSISTANT_URL,
     )
 
-    mock_delete.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_invoke_assistant_http_status_error_no_delete(httpx_mock, mocker):
+    mocker.patch('codemie.triggers.actors.assistant.sign_internal_request', return_value=_MOCK_SIGN_HEADERS)
+    mocker.patch(
+        'codemie.triggers.actors.assistant.create_conversation',
+        new_callable=AsyncMock,
+        return_value=_CONVERSATION_ID,
+    )
+    mock_save_turn = mocker.patch('codemie.triggers.actors.assistant.save_error_history_turn', new_callable=AsyncMock)
+    httpx_mock.add_response(method='POST', url=_POST_URL, status_code=401)
+
+    await invoke_assistant(
+        assistant_id=_ASSISTANT_ID,
+        user_id=_USER_ID,
+        job_id=_JOB_ID,
+        task='Do a task',
+        url=_ASSISTANT_URL,
+    )
+
+    mock_save_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_invoke_assistant_connect_error_persists_error_turn(httpx_mock, mocker):
+    import httpx as httpx_lib
+
+    mocker.patch('codemie.triggers.actors.assistant.sign_internal_request', return_value=_MOCK_SIGN_HEADERS)
+    mocker.patch(
+        'codemie.triggers.actors.assistant.create_conversation',
+        new_callable=AsyncMock,
+        return_value=_CONVERSATION_ID,
+    )
+    mock_save_turn = mocker.patch('codemie.triggers.actors.assistant.save_error_history_turn', new_callable=AsyncMock)
+    httpx_mock.add_exception(httpx_lib.ConnectError('connection refused'), url=_POST_URL, method='POST')
+
+    await invoke_assistant(
+        assistant_id=_ASSISTANT_ID,
+        user_id=_USER_ID,
+        job_id=_JOB_ID,
+        task='Do a task',
+        url=_ASSISTANT_URL,
+    )
+
+    mock_save_turn.assert_called_once()
+    call_kwargs = mock_save_turn.call_args.kwargs
+    assert call_kwargs['conversation_id'] == _CONVERSATION_ID
+    assert call_kwargs['assistant_id'] == _ASSISTANT_ID
+    assert 'ConnectError' in call_kwargs['error_message']
+    assert 'secret' not in call_kwargs['error_message'].lower()
+    assert 'token=' not in call_kwargs['error_message']
+
+
+@pytest.mark.asyncio
+async def test_invoke_assistant_timeout_persists_error_turn(httpx_mock, mocker):
+    import httpx as httpx_lib
+
+    mocker.patch('codemie.triggers.actors.assistant.sign_internal_request', return_value=_MOCK_SIGN_HEADERS)
+    mocker.patch(
+        'codemie.triggers.actors.assistant.create_conversation',
+        new_callable=AsyncMock,
+        return_value=_CONVERSATION_ID,
+    )
+    mock_save_turn = mocker.patch('codemie.triggers.actors.assistant.save_error_history_turn', new_callable=AsyncMock)
+    httpx_mock.add_exception(httpx_lib.TimeoutException('timed out'), url=_POST_URL, method='POST')
+
+    await invoke_assistant(
+        assistant_id=_ASSISTANT_ID,
+        user_id=_USER_ID,
+        job_id=_JOB_ID,
+        task='Do a task',
+        url=_ASSISTANT_URL,
+    )
+
+    mock_save_turn.assert_called_once()
+    call_kwargs = mock_save_turn.call_args.kwargs
+    assert 'TimeoutException' in call_kwargs['error_message']
+
+
+@pytest.mark.asyncio
+async def test_invoke_assistant_no_persist_when_no_conversation_id(httpx_mock, mocker):
+    import httpx as httpx_lib
+
+    mocker.patch('codemie.triggers.actors.assistant.sign_internal_request', return_value=_MOCK_SIGN_HEADERS)
+    mocker.patch(
+        'codemie.triggers.actors.assistant.create_conversation',
+        new_callable=AsyncMock,
+        return_value=None,
+    )
+    mock_save_turn = mocker.patch('codemie.triggers.actors.assistant.save_error_history_turn', new_callable=AsyncMock)
+    httpx_mock.add_exception(httpx_lib.ConnectError('connection refused'), url=_POST_URL, method='POST')
+
+    await invoke_assistant(
+        assistant_id=_ASSISTANT_ID,
+        user_id=_USER_ID,
+        job_id=_JOB_ID,
+        task='Do a task',
+        url=_ASSISTANT_URL,
+    )
+
+    mock_save_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_invoke_assistant_log_does_not_leak_token(httpx_mock, mocker):
+    import httpx as httpx_lib
+
+    mocker.patch('codemie.triggers.actors.assistant.sign_internal_request', return_value=_MOCK_SIGN_HEADERS)
+    mocker.patch(
+        'codemie.triggers.actors.assistant.create_conversation',
+        new_callable=AsyncMock,
+        return_value=_CONVERSATION_ID,
+    )
+    mocker.patch('codemie.triggers.actors.assistant.save_error_history_turn', new_callable=AsyncMock)
+    mock_logger_error = mocker.patch('codemie.triggers.actors.assistant.logger.error')
+    # Exception message contains the token. If str(e) were logged instead of
+    # type(e).__name__, the token would appear in the log output.
+    httpx_mock.add_exception(
+        httpx_lib.ConnectError('connection refused to http://server?token=secret-token'),
+        url=_POST_URL,
+        method='POST',
+    )
+
+    await invoke_assistant(
+        assistant_id=_ASSISTANT_ID,
+        user_id=_USER_ID,
+        job_id=_JOB_ID,
+        task='Do a task',
+        url=_ASSISTANT_URL,
+    )
+
+    assert mock_logger_error.called
+    all_logged = ' '.join(str(a) for a in mock_logger_error.call_args.args)
+    assert 'ConnectError' in all_logged
+    assert 'secret-token' not in all_logged
+    assert 'token=' not in all_logged
+
+
+@pytest.mark.asyncio
+async def test_invoke_assistant_log_does_not_leak_url_on_status_error(httpx_mock, mocker):
+    mocker.patch('codemie.triggers.actors.assistant.sign_internal_request', return_value=_MOCK_SIGN_HEADERS)
+    mocker.patch(
+        'codemie.triggers.actors.assistant.create_conversation',
+        new_callable=AsyncMock,
+        return_value=_CONVERSATION_ID,
+    )
+    mocker.patch('codemie.triggers.actors.assistant.save_error_history_turn', new_callable=AsyncMock)
+    mock_logger_error = mocker.patch('codemie.triggers.actors.assistant.logger.error')
+    httpx_mock.add_response(method='POST', url=_POST_URL, status_code=500)
+
+    await invoke_assistant(
+        assistant_id=_ASSISTANT_ID,
+        user_id=_USER_ID,
+        job_id=_JOB_ID,
+        task='Do a task',
+        url=_ASSISTANT_URL,
+    )
+
+    assert mock_logger_error.called
+    all_logged = ' '.join(str(a) for a in mock_logger_error.call_args.args)
+    assert '500' in all_logged
+    assert 'http://mockserver' not in all_logged

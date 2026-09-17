@@ -19,7 +19,7 @@ import httpx
 
 from codemie.configs import logger
 from codemie.rest_api.security.authentication import sign_internal_request
-from codemie.triggers.actors.conversation import create_conversation, delete_conversation
+from codemie.triggers.actors.conversation import create_conversation, save_error_history_turn
 from codemie.triggers.config import BASE_API_URL
 
 
@@ -64,7 +64,31 @@ async def invoke_assistant(
             response.raise_for_status()
             logger.info('Successfully invoked assistant: %s, job_id: %s', assistant_id, job_id)
             return {"conversation_id": conversation_id}
-    except httpx.HTTPError as e:
-        logger.error('Failed to invoke assistant %s for job_id %s: %s', assistant_id, job_id, str(e))
+    except httpx.RequestError as e:
+        logger.error(
+            'Failed to invoke assistant %s for job_id %s: %s',
+            assistant_id,
+            job_id,
+            type(e).__name__,
+        )
         if created_conversation_id:
-            await delete_conversation(created_conversation_id, user_id, job_id, url)
+            await save_error_history_turn(
+                conversation_id=created_conversation_id,
+                assistant_id=assistant_id,
+                user_id=user_id,
+                job_id=job_id,
+                error_message=(
+                    f'Failed to invoke assistant: {type(e).__name__}. '
+                    'Refresh or fix the MCP token/configuration, then re-run or '
+                    'wait for the next webhook/scheduler execution.'
+                ),
+                url=url,
+            )
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            'Failed to invoke assistant %s for job_id %s: HTTP %s %s',
+            assistant_id,
+            job_id,
+            e.response.status_code,
+            type(e).__name__,
+        )

@@ -19,6 +19,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from codemie.core.exceptions import ExtendedHTTPException, MCPAuthenticationRequiredException
+from codemie.service.security.token_providers.base_provider import BrokerAuthRequiredException
 from codemie.core.models import AssistantChatRequest
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.guardrail import GuardrailEntity, GuardrailSource
@@ -302,7 +303,13 @@ class TestAskAssistantWithGuardrails:
             _ask_assistant(mock_assistant, raw_request, request, mock_user, background_tasks)
 
         assert exc_info.value.payload == auth_payload
-        mock_save_error.assert_not_called()
+        mock_save_error.assert_called_once()
+        saved_error_arg = mock_save_error.call_args.args[2]
+        assert saved_error_arg is not None
+        details_text = saved_error_arg.details or ''
+        assert 'GitHub' in details_text or '401' in details_text or 'authentication' in details_text.lower()
+        assert 'auth-1' not in details_text
+        assert 'initiate' not in details_text
 
     @patch("codemie.rest_api.routers.assistant._save_error")
     @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
@@ -354,6 +361,155 @@ class TestAskAssistantWithGuardrails:
         mock_validate_files.assert_called_once_with(mock_assistant, request.file_names)
         mock_validate_model.assert_called_once_with(mock_assistant, request.llm_model)
         mock_save_error.assert_not_called()
+
+    @patch("codemie.rest_api.routers.assistant._save_error")
+    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    def test_ask_assistant_broker_auth_saves_error_and_reraises(
+        self,
+        mock_get_handler,
+        mock_record_usage,
+        mock_request_summary,
+        mock_save_error,
+        mock_user,
+        mock_assistant,
+    ):
+        broker_error = BrokerAuthRequiredException(
+            message='broker auth required',
+            auth_location='https://auth.example.com/oauth/start',
+            details='token exchange returned 401',
+        )
+        mock_handler = MagicMock()
+        mock_handler.process_request.side_effect = broker_error
+        mock_get_handler.return_value = mock_handler
+
+        request = AssistantChatRequest(text=None)
+        raw_request = MagicMock()
+        raw_request.state.uuid = "test-uuid"
+        background_tasks = MagicMock()
+
+        with pytest.raises(BrokerAuthRequiredException) as exc_info:
+            _ask_assistant(mock_assistant, raw_request, request, mock_user, background_tasks)
+
+        assert exc_info.value is broker_error
+        mock_save_error.assert_called_once()
+        saved_error_arg = mock_save_error.call_args.args[2]
+        assert saved_error_arg is not None
+        details_text = (saved_error_arg.details or '') + (saved_error_arg.message or '')
+        assert 'auth.example.com' not in details_text
+        assert 'oauth/start' not in details_text.lower()
+        assert '401' in details_text or 'broker' in details_text.lower() or 'authentication' in details_text.lower()
+
+    @patch("codemie.rest_api.routers.assistant._save_error")
+    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    def test_ask_assistant_mcp_auth_reraises_when_save_error_fails(
+        self,
+        mock_get_handler,
+        mock_record_usage,
+        mock_request_summary,
+        mock_save_error,
+        mock_user,
+        mock_assistant,
+    ):
+        auth_payload = {
+            "error": "authentication_required",
+            "servers": [{"mcp_server_name": "GitHub", "status": "authentication_required"}],
+        }
+        auth_error = MCPAuthenticationRequiredException(auth_payload)
+        mock_handler = MagicMock()
+        mock_handler.process_request.side_effect = auth_error
+        mock_get_handler.return_value = mock_handler
+        mock_save_error.side_effect = RuntimeError('persist failed')
+
+        request = AssistantChatRequest(text=None)
+        raw_request = MagicMock()
+        raw_request.state.uuid = "test-uuid"
+        background_tasks = MagicMock()
+
+        with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+            _ask_assistant(mock_assistant, raw_request, request, mock_user, background_tasks)
+
+        assert exc_info.value is auth_error
+        mock_save_error.assert_called_once()
+
+    @patch("codemie.rest_api.routers.assistant._save_error")
+    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    def test_ask_assistant_broker_auth_reraises_when_save_error_fails(
+        self,
+        mock_get_handler,
+        mock_record_usage,
+        mock_request_summary,
+        mock_save_error,
+        mock_user,
+        mock_assistant,
+    ):
+        broker_error = BrokerAuthRequiredException(
+            message='broker auth required',
+            auth_location='https://auth.example.com/oauth/start',
+            details='token exchange returned 401',
+        )
+        mock_handler = MagicMock()
+        mock_handler.process_request.side_effect = broker_error
+        mock_get_handler.return_value = mock_handler
+        mock_save_error.side_effect = RuntimeError('persist failed')
+
+        request = AssistantChatRequest(text=None)
+        raw_request = MagicMock()
+        raw_request.state.uuid = "test-uuid"
+        background_tasks = MagicMock()
+
+        with pytest.raises(BrokerAuthRequiredException) as exc_info:
+            _ask_assistant(mock_assistant, raw_request, request, mock_user, background_tasks)
+
+        assert exc_info.value is broker_error
+        mock_save_error.assert_called_once()
+
+    @patch("codemie.rest_api.routers.assistant._save_error")
+    @patch("codemie.rest_api.routers.assistant.request_summary_manager.create_request_summary")
+    @patch("codemie.rest_api.routers.assistant.assistant_user_interaction_service.record_usage")
+    @patch("codemie.rest_api.routers.assistant.get_request_handler")
+    def test_manual_model_401_returns_401_payload_unchanged(
+        self,
+        mock_get_handler,
+        mock_record_usage,
+        mock_request_summary,
+        mock_save_error,
+        mock_user,
+        mock_assistant,
+    ):
+        auth_payload = {
+            "error": "authentication_required",
+            "servers": [
+                {
+                    "mcp_config_name": "GitHub",
+                    "mcp_server_name": "GitHub",
+                    "status": "authentication_required",
+                    "error_context": None,
+                    "initiate_url": "/v1/mcp-auth/oauth2/initiate",
+                }
+            ],
+        }
+        auth_error = MCPAuthenticationRequiredException(auth_payload)
+        mock_handler = MagicMock()
+        mock_handler.process_request.side_effect = auth_error
+        mock_get_handler.return_value = mock_handler
+
+        request = AssistantChatRequest(text="hello")
+        raw_request = MagicMock()
+        raw_request.state.uuid = "test-uuid"
+        background_tasks = MagicMock()
+
+        with pytest.raises(MCPAuthenticationRequiredException) as exc_info:
+            _ask_assistant(mock_assistant, raw_request, request, mock_user, background_tasks)
+
+        # Original exception re-raised unwrapped — payload shape and HTTP 401 unchanged
+        assert exc_info.value is auth_error
+        assert exc_info.value.payload == auth_payload
 
 
 class TestPrepareAssistantForExecutionWithSkills:

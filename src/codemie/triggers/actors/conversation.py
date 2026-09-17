@@ -89,23 +89,40 @@ async def update_conversation(
         logger.error('Failed to update conversation %s: %s', conversation_id, str(e))
 
 
-async def delete_conversation(conversation_id: str, user_id: str, job_id: str, url: str = BASE_API_URL):
-    """Delete conversation."""
+async def save_error_history_turn(
+    conversation_id: str,
+    assistant_id: str,
+    user_id: str,
+    job_id: str,
+    error_message: str,
+    url: str = BASE_API_URL,
+) -> None:
+    """Persist a single assistant-role error message onto an existing conversation."""
     headers = {
         'Content-Type': CONTENT_TYPE_JSON,
         **sign_internal_request(user_id),
     }
-
-    logger.info(
-        'Invoking triggered actor "delete_conversation", job_id: %s, conversation_id: %s', job_id, conversation_id
-    )
-
+    data = {
+        'assistant_id': assistant_id,
+        'history': [{'role': 'assistant', 'message': error_message}],
+    }
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.delete(
-                url=f'{url.rstrip("/")}/v1/conversations/{conversation_id}', headers=headers, timeout=600
+            response = await client.put(
+                url=f'{url.rstrip("/")}/v1/conversations/{conversation_id}/history',
+                headers=headers,
+                json=data,
+                timeout=60,
             )
             response.raise_for_status()
-            logger.info('Successfully deleted conversation: %s', conversation_id)
+            logger.info(
+                'Saved error history turn for conversation %s, job_id %s',
+                conversation_id,
+                job_id,
+            )
     except httpx.HTTPError as e:
-        logger.warning('Failed to delete orphan conversation %s: %s', conversation_id, str(e))
+        logger.warning(
+            'Failed to save error history for conversation %s: %s',
+            conversation_id,
+            type(e).__name__,
+        )

@@ -2246,6 +2246,36 @@ def _create_assistant_error(message: str, details: str, help_text: str) -> Exten
     )
 
 
+def _create_mcp_auth_error(payload: dict) -> ExtendedHTTPException:
+    payload = payload or {}
+    servers = payload.get('servers') or []
+    server_names = (
+        ', '.join(
+            s.get('mcp_server_name') or s.get('mcp_config_name') or ''
+            for s in servers
+            if s.get('mcp_server_name') or s.get('mcp_config_name')
+        )
+        or payload.get('mcp_server_name')
+        or payload.get('auth_config_id')
+        or 'unknown'
+    )
+    error_contexts = ', '.join(str(s['error_context']) for s in servers if s.get('error_context')) or str(
+        payload.get('error_context') or ''
+    )
+    details = f'MCP request failed due to 401 Unauthorized or expired/invalid authentication. Server(s): {server_names}'
+    if error_contexts:
+        details += f'. Context: {error_contexts}'
+    return ExtendedHTTPException(
+        code=status.HTTP_401_UNAUTHORIZED,
+        message='MCP authentication required',
+        details=details,
+        help=(
+            'Refresh or fix the MCP token/configuration, then re-run or '
+            'wait for the next webhook/scheduler execution.'
+        ),
+    )
+
+
 def _save_error(
     request_uuid: str,
     request: AssistantChatRequest,
@@ -2342,6 +2372,13 @@ def _ask_virtual_assistant(
         raise error from e
 
 
+def _try_save_error(request_uuid, request, error, user, assistant, context: str):
+    try:
+        _save_error(request_uuid, request, error, user, assistant)
+    except Exception:
+        logger.exception('Failed to persist %s error for request %s', context, request_uuid)
+
+
 def _ask_assistant(
     assistant: Assistant,
     raw_request: Request,
@@ -2422,9 +2459,24 @@ def _ask_assistant(
         )
         _save_error(request_uuid, request, error, user, assistant)
         raise error from mce
-    except MCPAuthenticationRequiredException:
+    except MCPAuthenticationRequiredException as exc:
+        _try_save_error(
+            request_uuid, request, _create_mcp_auth_error(exc.payload), user, assistant, 'MCP authentication'
+        )
         raise
     except BrokerAuthRequiredException:
+        _try_save_error(
+            request_uuid,
+            request,
+            _create_assistant_error(
+                'Broker authentication required',
+                'Authentication with the configured broker failed (401 Unauthorized).',
+                'Refresh or fix the broker token/configuration, then re-run or wait for the next trigger.',
+            ),
+            user,
+            assistant,
+            'broker authentication',
+        )
         raise
     except ExtendedHTTPException as ehe:
         _save_error(request_uuid, request, ehe, user, assistant)

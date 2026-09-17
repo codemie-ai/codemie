@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import pytest
 from unittest.mock import AsyncMock, ANY
-from codemie.triggers.actors.conversation import create_conversation, update_conversation
+from codemie.triggers.actors.conversation import create_conversation, update_conversation, save_error_history_turn
 from codemie.core.models import UpdateConversationRequest
 
 _USER_ID = 'test_user_id'
@@ -62,3 +63,59 @@ async def test_create_conversation_forwards_url_to_update(httpx_mock, mocker):
 
     assert result == 'conv-123'
     mock_update.assert_called_once_with('conv-123', ANY, 'user-1', 'job-1', url=custom_url)
+
+
+_URL = 'http://mockserver:8080'
+_CONV_ID = 'conv-id'
+_ASST_ID = 'asst-id'
+_JOB_ID = 'job-id'
+_PUT_HISTORY_URL = f'{_URL}/v1/conversations/{_CONV_ID}/history'
+
+
+@pytest.mark.asyncio
+async def test_save_error_history_turn_calls_put(httpx_mock, mocker):
+    mocker.patch(
+        'codemie.triggers.actors.conversation.sign_internal_request',
+        return_value=_MOCK_SIGN_HEADERS,
+    )
+    httpx_mock.add_response(method='PUT', url=_PUT_HISTORY_URL, status_code=200)
+
+    await save_error_history_turn(
+        conversation_id=_CONV_ID,
+        assistant_id=_ASST_ID,
+        user_id=_USER_ID,
+        job_id=_JOB_ID,
+        error_message='Failed to invoke assistant: ConnectError.',
+        url=_URL,
+    )
+
+    requests = httpx_mock.get_requests()
+    assert len(requests) == 1
+    assert requests[0].method == 'PUT'
+    assert str(requests[0].url) == _PUT_HISTORY_URL
+    body = json.loads(requests[0].content)
+    assert body['assistant_id'] == _ASST_ID
+    assert len(body['history']) == 1
+    assert body['history'][0]['role'] == 'assistant'
+    assert 'ConnectError' in body['history'][0]['message']
+    assert requests[0].headers['user-id'] == _USER_ID
+    assert requests[0].headers['X-Bind-Key'] == 'mock-sig'
+
+
+@pytest.mark.asyncio
+async def test_save_error_history_turn_swallows_http_error(httpx_mock, mocker):
+    mocker.patch(
+        'codemie.triggers.actors.conversation.sign_internal_request',
+        return_value=_MOCK_SIGN_HEADERS,
+    )
+    httpx_mock.add_response(method='PUT', url=_PUT_HISTORY_URL, status_code=500)
+
+    # Must not raise — same swallow pattern as other conversation helpers
+    await save_error_history_turn(
+        conversation_id=_CONV_ID,
+        assistant_id=_ASST_ID,
+        user_id=_USER_ID,
+        job_id=_JOB_ID,
+        error_message='some error',
+        url=_URL,
+    )
