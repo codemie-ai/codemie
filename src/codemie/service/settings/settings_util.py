@@ -39,10 +39,13 @@ def user_can_access_setting(
         user must have access to that project (via ``User.has_access_to_application``).
         Integrations from any other project (even a project the user is also a member of)
         are rejected.
-      - marketplace assistants (``marketplace=True``): project scoping is intentionally
-        relaxed — any PROJECT integration is allowed, regardless of the assistant's own
-        project or the user's membership. The USER owner-only rule is unchanged, so this
-        only opens cross-project PROJECT credentials, never other users' personal ones.
+      - marketplace assistants (``marketplace=True``): the integration is not tied to the
+        assistant's own project, so any project may match, but the user must still have
+        access to *that* integration's own project (via ``User.has_access_to_application``).
+        This still lets a marketplace assistant reference a different project than its own,
+        it just never opens a project the requesting user cannot otherwise reach. The USER
+        owner-only rule is unchanged, so this only ever concerns PROJECT credentials, never
+        other users' personal ones.
 
     Used to gate per-user tool mappings both on save and defensively at runtime, so a stale
     or forged mapping can never surface credentials the current user has no access to. Fails
@@ -53,7 +56,7 @@ def user_can_access_setting(
 
     if setting.setting_type == SettingType.PROJECT:
         if marketplace:
-            return True
+            return user.has_access_to_application(setting.project_name)
         return (
             bool(assistant_project)
             and setting.project_name == assistant_project

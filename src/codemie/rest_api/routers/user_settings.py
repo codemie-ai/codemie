@@ -57,7 +57,6 @@ INVALID_SETTING_DATA_MSG = (
     "Invalid setting data. Please provide a non-empty, unique alias for the setting "
     "and ensure all required fields are filled correctly. If the problem persists, contact support."
 )
-SETTINGS_SCOPE_MARKETPLACE = "marketplace"
 PERSONAL_LITELLM_FEATURE = "personalLiteLLMIntegrations"
 PERSONAL_LITELLM_DISABLED_DETAILS = "Personal LiteLLM integrations are not enabled for this customer."
 PERSONAL_LITELLM_DISABLED_HELP = "Please contact your system administrator to enable personal LiteLLM integrations."
@@ -128,17 +127,17 @@ def index_user_settings(
     response_model=List[Settings],
     response_model_by_alias=True,
 )
-def index_settings(request: Request, scope: Optional[str] = None, user: User = Depends(authenticate)):
+def index_settings(request: Request, user: User = Depends(authenticate)):
     """
     Returns all saved credentials available for user.
 
-    ``scope=marketplace`` returns every PROJECT integration (any project, regardless of the
-    user's membership) so the per-user selection UI of a marketplace (``is_global``)
-    assistant can offer cross-project integrations. The USER part is unchanged in both modes:
-    only the current user's own USER integrations are returned, so another user's personal
-    credentials are never listed.
+    PROJECT integrations are always limited to projects the user can access — broader
+    visibility is granted only by role (admin/maintainer sees every project; an applications
+    admin sees their admin projects), never by a caller-supplied scope. Only the current
+    user's own USER integrations are returned, so another user's personal credentials are
+    never listed.
     """
-    if scope == SETTINGS_SCOPE_MARKETPLACE or user.is_admin_or_maintainer:
+    if user.is_admin_or_maintainer:
         project_settings = SettingsService.get_all_settings(settings_type=SettingType.PROJECT)
     elif user.is_applications_admin:
         project_settings = SettingsService.get_settings(

@@ -81,18 +81,25 @@ def test_user_cannot_access_assistant_project_setting_without_membership():
     assert user_can_access_setting(setting, user, assistant_project="proj-c") is False
 
 
-def test_marketplace_allows_project_setting_of_any_project():
-    # Marketplace assistants relax project scoping: any PROJECT setting is accessible,
-    # even one from a project the user is not a member of.
-    user = _make_user(user_id="user-1", project_names=["proj-a"])
+def test_marketplace_allows_project_setting_of_other_membership_project():
+    # Marketplace assistants relax project scoping to allow a PROJECT setting outside the
+    # assistant's own project, but only when the user has access to that setting's project.
+    user = _make_user(user_id="user-1", project_names=["proj-a", "proj-b"])
     setting = _make_setting(SettingType.PROJECT, project_name="proj-b")
     assert user_can_access_setting(setting, user, assistant_project="proj-a", marketplace=True) is True
 
 
-def test_marketplace_allows_project_setting_without_assistant_project():
+def test_marketplace_rejects_project_setting_of_non_member_project():
+    # The cross-project relaxation never opens a project the user cannot otherwise access.
+    user = _make_user(user_id="user-1", project_names=["proj-a"])
+    setting = _make_setting(SettingType.PROJECT, project_name="proj-b")
+    assert user_can_access_setting(setting, user, assistant_project="proj-a", marketplace=True) is False
+
+
+def test_marketplace_rejects_project_setting_without_assistant_project_when_not_member():
     user = _make_user(user_id="user-1", project_names=[])
     setting = _make_setting(SettingType.PROJECT, project_name="proj-b")
-    assert user_can_access_setting(setting, user, assistant_project=None, marketplace=True) is True
+    assert user_can_access_setting(setting, user, assistant_project=None, marketplace=True) is False
 
 
 def test_marketplace_still_rejects_other_users_user_setting():
