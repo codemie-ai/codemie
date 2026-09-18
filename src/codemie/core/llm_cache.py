@@ -23,13 +23,13 @@ from typing import Any
 def is_litellm_proxy_cache_hit(generation_info: Mapping) -> bool:
     """Return True when the LiteLLM proxy response header signals a cache hit.
 
-    Presence of ``x-litellm-cache-key`` in ``generation_info['headers']`` means
-    the response was served from LiteLLM's LRU prompt cache.
+    LiteLLM's cache key or CodeMie's forwarded cache-hit header means the response
+    was served from LiteLLM's LRU prompt cache.
     """
     headers = generation_info.get("headers")
     if not isinstance(headers, Mapping):
         return False
-    return "x-litellm-cache-key" in headers
+    return "x-litellm-cache-key" in headers or str(headers.get("x-codemie-litellm-cache-hit", "")).lower() == "true"
 
 
 def is_llm_cache_hit(value: Any) -> bool:

@@ -16,7 +16,7 @@
 
 Used by ``LiteLLMRouter.extract`` (``codemie/enterprise/litellm/router.py``) to locate the
 headers mapping on an LLM response, wherever LangChain happened to stash it for the given call
-path.
+path. Also provides catalog lookups for routing dimensions like counterfactual_model.
 """
 
 from __future__ import annotations
@@ -43,10 +43,52 @@ def _iter_header_maps(response: LLMResult | AIMessage) -> Iterator[Mapping[str, 
         return
     for gen_list in getattr(response, "generations", []):
         for gen in gen_list:
-            for source in (
-                getattr(gen, "generation_info", None),
-                getattr(getattr(gen, "message", None), "response_metadata", None),
-            ):
-                h = _headers_of(source)
-                if h:
-                    yield h
+            # generation_info is captured directly from LiteLLM's LLMResult before
+            # LangChain assembles response_metadata. The latter may contain a corrupted
+            # duplicate of the same x-litellm-* values on assistant calls, so never merge
+            # it with the authoritative generation_info copy.
+            generation_headers = _headers_of(getattr(gen, "generation_info", None))
+            if generation_headers is not None:
+                yield generation_headers
+                continue
+
+            response_headers = _headers_of(getattr(getattr(gen, "message", None), "response_metadata", None))
+            if response_headers is not None:
+                yield response_headers
+
+
+def resolve_counterfactual_model(router_model_name: str | None) -> str | None:
+    """Look up the router's declared counterfactual_model from the model catalog.
+
+    For Switchyard routers, returns the capable model (implicit, since switchyard.efficient
+    is the fallback). For LiteLLM auto-routers, returns the declared counterfactual_model from
+    the model's litellm_router config, if present.
+
+    Returns None if the router is not found or has no declared counterfactual anchor.
+    Any exception during lookup is swallowed; savings simply aren't computable for that
+    response, which is safe — the fields stay None.
+    """
+    if not router_model_name:
+        return None
+
+    from codemie.configs import logger
+    from codemie.service.llm_service.llm_service import llm_service
+
+    try:
+        model = llm_service.get_model_details(router_model_name)
+        if not model:
+            return None
+
+        # For Switchyard routers: the capable model is always the counterfactual anchor.
+        if model.switchyard:
+            # switchyard is a list; if any entry exists, this model is a Switchyard capable.
+            return model.base_name
+
+        # For LiteLLM auto-routers: use the declared counterfactual_model.
+        if model.litellm_router and model.litellm_router.counterfactual_model:
+            return model.litellm_router.counterfactual_model
+
+        return None
+    except Exception:
+        logger.debug(f"Could not resolve counterfactual_model for router {router_model_name}")
+        return None

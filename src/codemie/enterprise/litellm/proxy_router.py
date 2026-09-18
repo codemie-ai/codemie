@@ -64,7 +64,6 @@ from codemie.core.constants import (
 )
 from codemie.core.dependecies import litellm_context
 from codemie.core.utils import calculate_token_cost
-from codemie.core.llm_cache import is_llm_cache_hit
 from codemie.rest_api.security.authentication import BEARER_AUTHORIZATION_HEADER, authenticate
 from codemie.rest_api.security.user import User
 from codemie.enterprise.litellm.dependencies import check_user_budget
@@ -78,6 +77,7 @@ from codemie.service.budget.budget_resolution_service import (
 from codemie.service.budget.budget_service import budget_service
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.monitoring.llm_proxy_monitoring_service import LLMProxyMonitoringService
+from codemie.service.monitoring.routing_monitoring_service import RoutingMonitoringService
 
 from .client import get_llm_proxy_client
 from .budget_categories import BudgetCategory
@@ -101,7 +101,9 @@ from codemie.enterprise.switchyard.proxy import (
     _routing_info_to_headers,
 )
 from codemie.core.routing_info import RoutingInfo
-from codemie.enterprise.litellm.litellm_router_meta import LITELLM_ROUTER_HEADERS
+from codemie.core.routing_costs import with_counterfactual_costs
+from codemie.enterprise.litellm.router import routing_info_from_headers
+from codemie.enterprise.litellm.routing_headers import resolve_counterfactual_model
 
 
 LITELLM_CUSTOMER_ID_HEADER = "x-litellm-customer-id"
@@ -157,7 +159,8 @@ PROXY_RESPONSE_HOP_BY_HOP_HEADERS = {
 }
 
 # Individual x-litellm-* headers forwarded to clients for observability.
-# x-litellm-router-* headers are forwarded via prefix (see filter in _proxy_to_llm_proxy).
+# x-litellm-router-* headers are never forwarded — the canonical x-codemie-routing-*
+# vocabulary (see _routing_info_to_headers in enterprise/switchyard/proxy.py) replaces them.
 LITELLM_FORWARDED_HEADERS = frozenset(
     {
         "x-litellm-model-name",
@@ -184,7 +187,7 @@ class _HeaderExposurePolicy:
 
 
 _HEADER_EXPOSURE_POLICIES: tuple[_HeaderExposurePolicy, ...] = (
-    _HeaderExposurePolicy(prefix="x-litellm-", exposed=LITELLM_ROUTER_HEADERS | LITELLM_FORWARDED_HEADERS),
+    _HeaderExposurePolicy(prefix="x-litellm-", exposed=LITELLM_FORWARDED_HEADERS),
 )
 
 
@@ -1017,7 +1020,15 @@ async def _parse_usage_with_cost(
         response_headers=response_headers,
     )
     response_headers = response_headers or {}
-    usage_data["cache_hit"] = is_llm_cache_hit(response_content) or bool(
+    # Cache-hit detection is header-only here: ``response_content`` is raw response bytes, so
+    # the ``codemie.core.llm_cache`` helpers used on the agent path (which inspect LangChain
+    # LLMResult / Mapping shapes) cannot match and would be dead code.
+    #
+    # ``x-litellm-cache-hit`` is emitted by AutorouterCallback off the logging object's
+    # ``caching_details``, which is the only reliable signal for /v1/messages: those responses
+    # are TypedDicts, so LiteLLM never populates ``_hidden_params`` and therefore never sends
+    # its own ``x-litellm-cache-key`` for that endpoint.
+    usage_data["cache_hit"] = bool(
         response_headers.get(LITELLM_CACHE_KEY_HEADER)
         or response_headers.get(CODEMIE_CACHE_HIT_HEADER, "").lower() == "true"
         or response_headers.get("x-litellm-cache-hit", "").lower() == "true"
@@ -1077,6 +1088,196 @@ def emit_llm_error_log(
         logger.warning(f"Failed to emit LLM error log metric: {log_exc}")
 
 
+def _resolve_routed_model(
+    response_headers: dict,
+    llm_model: str,
+    request_info: dict,
+    session_id: str | None,
+    request_id: str | None,
+) -> str:
+    """Return the actually-billed model, patching request_info in place if LiteLLM re-routed.
+
+    LiteLLM's own complexity router can re-route past CodeMie's proxy-side Switchyard alias to
+    a different concrete model. When it does, use the actually-billed model for cost
+    calculation and usage metrics instead of the pre-request alias, so money_spent reflects
+    the real spend.
+    """
+    routed_model = response_headers.get(ROUTED_MODEL_HEADER)
+    if not routed_model or routed_model == llm_model:
+        return llm_model
+    logger.debug(
+        f"[USAGE-ROUTED-MODEL] session={session_id}, request={request_id}, "
+        f"requested={llm_model}, routed={routed_model}"
+    )
+    # Switchyard can rewrite request_info[LLM_MODEL] up front (the routed model is
+    # known before the call), so its metrics all agree. The complexity router only
+    # reveals its choice in the response headers, so patch request_info here too:
+    # track_proxy_metrics / the Langfuse trace are background tasks that run after
+    # this generator finishes and read request_info lazily, so they would otherwise
+    # keep reporting the pre-request alias while usage reports the routed model.
+    request_info[LLM_MODEL] = routed_model
+    return routed_model
+
+
+def _queue_usage_tracking(
+    *,
+    usage_data: dict,
+    user: "User",
+    endpoint: str,
+    request_info: dict,
+    llm_model: str,
+    background_tasks: BackgroundTasks,
+    downstream_response: httpx.Response,
+    session_id: str | None,
+    request_id: str | None,
+) -> None:
+    """Queue the usage-tracking background task, unless this was a cache hit or empty."""
+    if usage_data.get("cache_hit"):
+        logger.debug(
+            f"[USAGE-SKIP-CACHE-HIT] session={session_id}, request={request_id}, model={llm_model}, "
+            f"input={usage_data['input_tokens']}, output={usage_data['output_tokens']}, "
+            f"cached={usage_data['cached_tokens']}, cost=${usage_data['money_spent']:.6f}"
+        )
+        return
+    if usage_data["input_tokens"] <= 0 and usage_data["output_tokens"] <= 0:
+        logger.debug(f"[USAGE-SKIP] session={session_id}, request={request_id}, no tokens")
+        return
+
+    logger.debug(f"[USAGE-TRACK] session={session_id}, request={request_id}, queuing task")
+    background_tasks.add_task(
+        LLMProxyMonitoringService.track_usage,
+        user=user,
+        endpoint=endpoint,
+        request_info=request_info,
+        llm_model=llm_model,
+        input_tokens=usage_data["input_tokens"],
+        output_tokens=usage_data["output_tokens"],
+        cached_tokens=usage_data["cached_tokens"],
+        cache_creation_tokens=usage_data.get("cache_creation_tokens", 0),
+        money_spent=usage_data["money_spent"],
+        cached_tokens_money_spent=usage_data["cached_tokens_money_spent"],
+        status_code=downstream_response.status_code,
+    )
+
+
+def _build_proxy_routing(routing_info: RoutingInfo | None, response_headers: dict, usage_data: dict) -> RoutingInfo:
+    """Merge the decide()-time RoutingInfo with LiteLLM's own header-reported routing.
+
+    The decide()-time RoutingInfo is already canonical (Router.routing_info /
+    SwitchyardRouter.routing_info populate the typed dimensions), so it is overlaid directly —
+    no header round-trip. LiteLLM's own complexity router only reveals its choice in response
+    headers, so that half is still read off the response.
+
+    Classifier cost/tokens: use LiteLLM header data only when the deciding router has NOT
+    already reported it. Both layers may describe the same classifier invocation; summing both
+    via merged_over (which is additive for these fields) would double-count overhead.
+    """
+    decided_routing = routing_info if routing_info is not None else RoutingInfo()
+    litellm_routing = routing_info_from_headers(response_headers)
+    if routing_info is not None and not routing_info.is_empty():
+        litellm_routing = litellm_routing.model_copy(
+            update={
+                "classifier_cost_usd": None,
+                "classifier_input_tokens": None,
+                "classifier_output_tokens": None,
+                "classifier_cached_tokens": None,
+                "classifier_cache_creation_tokens": None,
+                "classifier_total_tokens": None,
+                "routing_cost_known": None,
+            }
+        )
+    proxy_routing = decided_routing.merged_over(litellm_routing)
+    if proxy_routing.is_empty():
+        return proxy_routing
+    return proxy_routing.model_copy(
+        update={
+            "routed_input_tokens": usage_data["input_tokens"],
+            "routed_output_tokens": usage_data["output_tokens"],
+            "routed_cached_tokens": usage_data["cached_tokens"],
+            "routed_cache_creation_tokens": usage_data.get("cache_creation_tokens", 0),
+            "routed_total_tokens": usage_data["input_tokens"] + usage_data["output_tokens"],
+            "routed_cache_hit": bool(usage_data.get("cache_hit")),
+        }
+    )
+
+
+def _resolve_proxy_counterfactual_model(proxy_routing: RoutingInfo) -> RoutingInfo:
+    """Populate counterfactual_model if the router didn't already declare it.
+
+    LiteLLM reports the selected deployment as routed_model, while the configured
+    counterfactual anchor belongs to the auto-router alias in router_model_name.
+    """
+    if not proxy_routing.routed_model or proxy_routing.counterfactual_model:
+        return proxy_routing
+    counterfactual_model = resolve_counterfactual_model(proxy_routing.requested_model or proxy_routing.routed_model)
+    if not counterfactual_model:
+        return proxy_routing
+    return proxy_routing.model_copy(update={"counterfactual_model": counterfactual_model})
+
+
+def _apply_proxy_counterfactual_costs(proxy_routing: RoutingInfo, usage_data: dict) -> RoutingInfo:
+    """Re-price tokens at counterfactual_model and stamp actual-vs-counterfactual savings.
+
+    Original cost includes both the routed model call and the classifier call.
+    """
+    if not (proxy_routing.counterfactual_model and proxy_routing.routed_model):
+        return proxy_routing
+    if usage_data.get("money_spent") is None:
+        return proxy_routing
+    try:
+        cache_hit = usage_data.get("cache_hit")
+        if cache_hit:
+            proxy_routing = proxy_routing.model_copy(update={"classifier_cost_usd": 0.0})
+            estimated_max_usd = 0.0
+        elif proxy_routing.tier == "complex":
+            # Already at top tier; use actual spend, not re-pricing, to avoid
+            # catalog-vs-proxy rounding showing up as fake savings.
+            estimated_max_usd = usage_data["money_spent"]
+        else:
+            # Re-price tokens at counterfactual_model.
+            estimated_max_usd, _, _ = calculate_token_cost(
+                llm_model=proxy_routing.counterfactual_model,
+                cost_config=llm_service.get_model_cost(proxy_routing.counterfactual_model),
+                input_tokens=usage_data["input_tokens"],
+                output_tokens=usage_data["output_tokens"],
+                cached_tokens=usage_data["cached_tokens"],
+                cache_creation_tokens=usage_data.get("cache_creation_tokens", 0),
+            )
+        actual_cost_usd = (0.0 if cache_hit else usage_data["money_spent"]) + (proxy_routing.classifier_cost_usd or 0.0)
+        return with_counterfactual_costs(
+            proxy_routing,
+            actual_cost_usd=actual_cost_usd,
+            estimated_max_cost_usd=estimated_max_usd,
+        )
+    except Exception:
+        logger.debug(f"Could not compute counterfactual costs for {proxy_routing.counterfactual_model}")
+        return proxy_routing
+
+
+def _queue_routing_metric(
+    *,
+    proxy_routing: RoutingInfo,
+    user: "User",
+    session_id: str | None,
+    request_info: dict,
+    request_id: str | None,
+    endpoint: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    if proxy_routing.is_empty():
+        return
+    background_tasks.add_task(
+        RoutingMonitoringService.send_routing_metric,
+        user=user,
+        routing=proxy_routing,
+        conversation_id=session_id,
+        assistant_id=request_info.get("assistant_id"),
+        project=request_info.get("project", ""),
+        request_id=request_id,
+        endpoint=endpoint,
+    )
+
+
 async def _finalize_stream_usage_tracking(
     *,
     downstream_response: httpx.Response,
@@ -1088,6 +1289,7 @@ async def _finalize_stream_usage_tracking(
     buffer: bytearray,
     session_id: str | None,
     request_id: str | None,
+    routing_info: RoutingInfo | None = None,
 ) -> None:
     """Parse usage from a completed stream buffer and queue the usage-tracking background task.
 
@@ -1101,24 +1303,7 @@ async def _finalize_stream_usage_tracking(
     # usage parser only reads x-litellm-response-cost for non-streaming responses.
     response_headers = dict(downstream_response.headers)
 
-    # LiteLLM's own complexity router can re-route past CodeMie's proxy-side
-    # Switchyard alias to a different concrete model. When it does, use the
-    # actually-billed model for cost calculation and usage metrics instead of
-    # the pre-request alias, so money_spent reflects the real spend.
-    routed_model = response_headers.get(ROUTED_MODEL_HEADER)
-    if routed_model and routed_model != llm_model:
-        logger.debug(
-            f"[USAGE-ROUTED-MODEL] session={session_id}, request={request_id}, "
-            f"requested={llm_model}, routed={routed_model}"
-        )
-        llm_model = routed_model
-        # Switchyard can rewrite request_info[LLM_MODEL] up front (the routed model is
-        # known before the call), so its metrics all agree. The complexity router only
-        # reveals its choice in the response headers, so patch request_info here too:
-        # track_proxy_metrics / the Langfuse trace are background tasks that run after
-        # this generator finishes and read request_info lazily, so they would otherwise
-        # keep reporting the pre-request alias while usage reports the routed model.
-        request_info[LLM_MODEL] = routed_model
+    llm_model = _resolve_routed_model(response_headers, llm_model, request_info, session_id, request_id)
 
     logger.debug(
         f"[USAGE-PARSE-START] session={session_id}, request={request_id}, "
@@ -1139,31 +1324,31 @@ async def _finalize_stream_usage_tracking(
         f"cached={usage_data['cached_tokens']}, cost=${usage_data['money_spent']:.6f}"
     )
 
-    # Track usage if valid
-    if not usage_data.get("cache_hit") and (usage_data["input_tokens"] > 0 or usage_data["output_tokens"] > 0):
-        logger.debug(f"[USAGE-TRACK] session={session_id}, request={request_id}, queuing task")
-        background_tasks.add_task(
-            LLMProxyMonitoringService.track_usage,
-            user=user,
-            endpoint=endpoint,
-            request_info=request_info,
-            llm_model=llm_model,
-            input_tokens=usage_data["input_tokens"],
-            output_tokens=usage_data["output_tokens"],
-            cached_tokens=usage_data["cached_tokens"],
-            cache_creation_tokens=usage_data.get("cache_creation_tokens", 0),
-            money_spent=usage_data["money_spent"],
-            cached_tokens_money_spent=usage_data["cached_tokens_money_spent"],
-            status_code=downstream_response.status_code,
-        )
-    elif usage_data.get("cache_hit"):
-        logger.debug(
-            f"[USAGE-SKIP-CACHE-HIT] session={session_id}, request={request_id}, model={llm_model}, "
-            f"input={usage_data['input_tokens']}, output={usage_data['output_tokens']}, "
-            f"cached={usage_data['cached_tokens']}, cost=${usage_data['money_spent']:.6f}"
-        )
-    else:
-        logger.debug(f"[USAGE-SKIP] session={session_id}, request={request_id}, no tokens")
+    _queue_usage_tracking(
+        usage_data=usage_data,
+        user=user,
+        endpoint=endpoint,
+        request_info=request_info,
+        llm_model=llm_model,
+        background_tasks=background_tasks,
+        downstream_response=downstream_response,
+        session_id=session_id,
+        request_id=request_id,
+    )
+
+    proxy_routing = _build_proxy_routing(routing_info, response_headers, usage_data)
+    proxy_routing = _resolve_proxy_counterfactual_model(proxy_routing)
+    proxy_routing = _apply_proxy_counterfactual_costs(proxy_routing, usage_data)
+
+    _queue_routing_metric(
+        proxy_routing=proxy_routing,
+        user=user,
+        session_id=session_id,
+        request_info=request_info,
+        request_id=request_id,
+        endpoint=endpoint,
+        background_tasks=background_tasks,
+    )
 
 
 async def _streaming_response_with_usage_tracking(
@@ -1203,10 +1388,11 @@ async def _streaming_response_with_usage_tracking(
     )
 
     try:
-        chunk_source = (
-            with_routing_metadata_stream(downstream_response.aiter_raw(), _routing_info_to_headers(routing_info))
-            if routing_info
-            else downstream_response.aiter_raw()
+        client_routing = (
+            routing_info if routing_info is not None else routing_info_from_headers(downstream_response.headers)
+        )
+        chunk_source = with_routing_metadata_stream(
+            downstream_response.aiter_raw(), _routing_info_to_headers(client_routing)
         )
         async for chunk in chunk_source:
             chunks_received += 1
@@ -1254,6 +1440,7 @@ async def _streaming_response_with_usage_tracking(
             buffer=buffer,
             session_id=session_id,
             request_id=request_id,
+            routing_info=routing_info,
         )
 
 
@@ -1415,6 +1602,152 @@ async def _handle_error_response(
     )
 
 
+async def _send_downstream_request(
+    *,
+    request: Request,
+    url: httpx.URL,
+    headers: dict,
+    body_stream,
+    user: User,
+    endpoint: str,
+    request_info: dict,
+    request_body: dict,
+    background_tasks: BackgroundTasks,
+    start_time: datetime,
+    session_id: str | None,
+    request_id: str | None,
+) -> httpx.Response | Response:
+    """Send the proxied request downstream and queue proxy-metrics tracking.
+
+    Returns the downstream httpx.Response on success, or a FastAPI Response (503) if the
+    downstream connection itself failed (as opposed to the downstream returning an error
+    status, which the caller handles separately).
+    """
+    llm_proxy_client = get_llm_proxy_client()
+    try:
+        downstream_request = llm_proxy_client.build_request(
+            method=request.method,
+            url=url,
+            headers=headers,
+            content=body_stream,
+            timeout=config.LLM_PROXY_TIMEOUT,
+        )
+
+        logger.debug(
+            f"[REQUEST-SENT] session={session_id}, request={request_id}, method={request.method}, "
+            f"endpoint={endpoint}, timeout={config.LLM_PROXY_TIMEOUT}"
+        )
+
+        downstream_response = await llm_proxy_client.send(downstream_request, stream=True)
+
+        end_time = datetime.now()
+        response_status = downstream_response.status_code
+        duration_ms = (end_time - start_time).total_seconds() * 1000
+
+        logger.debug(
+            f"[RESPONSE-RECEIVED] session={session_id}, request={request_id}, status={response_status}, "
+            f"duration_ms={duration_ms:.1f}, content_type={downstream_response.headers.get('content-type', 'unknown')}"
+        )
+
+        background_tasks.add_task(
+            LLMProxyMonitoringService.track_proxy_metrics,
+            user=user,
+            endpoint=endpoint,
+            request_info=request_info,
+            response_status=response_status,
+            start_time=start_time,
+            end_time=end_time,
+            request_body=request_body,
+        )
+        return downstream_response
+
+    except httpx.RequestError as e:
+        end_time = datetime.now()
+
+        logger.error(
+            f"[PROXY-ERROR] Request error: session={session_id}, request={request_id}, "
+            f"endpoint={endpoint}, exception={type(e).__name__}, error={str(e)}",
+            exc_info=True,
+        )
+
+        background_tasks.add_task(
+            LLMProxyMonitoringService.track_proxy_metrics,
+            user=user,
+            endpoint=endpoint,
+            request_info=request_info,
+            request_body=request_body,
+            response_status=503,
+            start_time=start_time,
+            end_time=end_time,
+            error_message=str(e),
+        )
+
+        return Response(content=f"Error connecting to downstream service: {e}", status_code=503)
+
+
+async def _build_proxy_response(
+    *,
+    downstream_response: httpx.Response,
+    response_headers: dict,
+    response_status: int,
+    endpoint: str,
+    user: User,
+    request_info: dict,
+    llm_model: str,
+    background_tasks: BackgroundTasks,
+    routing_info: RoutingInfo | None,
+    session_id: str | None,
+    request_id: str | None,
+) -> Response | StreamingResponse:
+    """Dispatch the downstream response into the appropriate client-facing response shape."""
+    # GET /v1/models is a plain pass-through to LiteLLM, which lists only concrete
+    # deployments. Switchyard routers are virtual models resolved inside this proxy,
+    # so they never appear here — and clients that validate a selected model against
+    # /v1/models (e.g. Claude Code) reject a router alias as unknown. Augment the
+    # list so routers advertised on /llm_models are recognized here too. The body is
+    # small, so read it fully, rewrite it, and return a non-streaming response.
+    if response_status == 200 and _is_models_list_endpoint(endpoint):
+        raw_models_body = await downstream_response.aread()
+        await downstream_response.aclose()
+        return Response(
+            content=_augment_models_list_response(raw_models_body),
+            status_code=200,
+            headers=_sanitize_local_response_headers(response_headers),
+            media_type=downstream_response.headers.get("content-type"),
+        )
+
+    if config.LLM_PROXY_TRACK_USAGE and response_status == 200:
+        logger.debug(f"[STREAMING-PATH] session={session_id}, request={request_id}, using usage_tracking path")
+        return StreamingResponse(
+            _streaming_response_with_usage_tracking(
+                downstream_response=downstream_response,
+                user=user,
+                endpoint=endpoint,
+                request_info=request_info,
+                llm_model=llm_model,
+                background_tasks=background_tasks,
+                routing_info=routing_info,
+            ),
+            status_code=downstream_response.status_code,
+            headers=response_headers,
+            media_type=downstream_response.headers.get("content-type"),
+        )
+
+    logger.debug(
+        f"[STREAMING-PATH] session={session_id}, request={request_id}, using passthrough "
+        f"(track_usage={config.LLM_PROXY_TRACK_USAGE}, status={response_status})"
+    )
+    # Error responses are small — read them fully so we can inspect / replace the body.
+    if response_status >= 400:
+        return await _handle_error_response(downstream_response, response_headers)
+    return StreamingResponse(
+        _passthrough_stream(downstream_response, request_info),
+        status_code=downstream_response.status_code,
+        headers=response_headers,
+        media_type=downstream_response.headers.get("content-type"),
+    )
+
+
 async def _proxy_to_llm_proxy(
     request: Request,
     user: User,
@@ -1503,127 +1836,60 @@ async def _proxy_to_llm_proxy(
     else:
         url = httpx.URL(path=endpoint)
 
-    try:
-        llm_proxy_client = get_llm_proxy_client()
-
-        downstream_request = llm_proxy_client.build_request(
-            method=request.method,
-            url=url,
-            headers=headers,
-            content=body_stream,
-            timeout=config.LLM_PROXY_TIMEOUT,
-        )
-
-        logger.debug(
-            f"[REQUEST-SENT] session={session_id}, request={request_id}, method={request.method}, "
-            f"endpoint={endpoint}, timeout={config.LLM_PROXY_TIMEOUT}"
-        )
-
-        downstream_response = await llm_proxy_client.send(downstream_request, stream=True)
-
-        end_time = datetime.now()
-        response_status = downstream_response.status_code
-        duration_ms = (end_time - start_time).total_seconds() * 1000
-
-        logger.debug(
-            f"[RESPONSE-RECEIVED] session={session_id}, request={request_id}, status={response_status}, "
-            f"duration_ms={duration_ms:.1f}, content_type={downstream_response.headers.get('content-type', 'unknown')}"
-        )
-
-        # Track metrics
-        background_tasks.add_task(
-            LLMProxyMonitoringService.track_proxy_metrics,
-            user=user,
-            endpoint=endpoint,
-            request_info=request_info,
-            response_status=response_status,
-            start_time=start_time,
-            end_time=end_time,
-            request_body=request_body,
-        )
-
-    except httpx.RequestError as e:
-        end_time = datetime.now()
-
-        logger.error(
-            f"[PROXY-ERROR] Request error: session={session_id}, request={request_id}, "
-            f"endpoint={endpoint}, exception={type(e).__name__}, error={str(e)}",
-            exc_info=True,
-        )
-
-        # Track error metrics
-        background_tasks.add_task(
-            LLMProxyMonitoringService.track_proxy_metrics,
-            user=user,
-            endpoint=endpoint,
-            request_info=request_info,
-            request_body=request_body,
-            response_status=503,
-            start_time=start_time,
-            end_time=end_time,
-            error_message=str(e),
-        )
-
-        return Response(content=f"Error connecting to downstream service: {e}", status_code=503)
+    downstream_result = await _send_downstream_request(
+        request=request,
+        url=url,
+        headers=headers,
+        body_stream=body_stream,
+        user=user,
+        endpoint=endpoint,
+        request_info=request_info,
+        request_body=request_body,
+        background_tasks=background_tasks,
+        start_time=start_time,
+        session_id=session_id,
+        request_id=request_id,
+    )
+    if isinstance(downstream_result, Response):
+        return downstream_result
+    downstream_response = downstream_result
+    response_status = downstream_response.status_code
 
     # Strip hop-by-hop headers and LiteLLM internal headers before forwarding the upstream response.
     # Starlette's StreamingResponse manages its own transfer framing, so
     # forwarding headers like transfer-encoding or connection from the upstream
     # would create protocol conflicts with the client.
     # LiteLLM internal headers (x-litellm-*) should not be exposed to clients.
-    # Exception: LiteLLM router headers (explicit allowlist via LITELLM_ROUTER_HEADERS)
-    # and LITELLM_FORWARDED_HEADERS are explicitly forwarded for client observability.
+    # Exception: LITELLM_FORWARDED_HEADERS is explicitly forwarded for client observability.
+    # The raw x-litellm-router-* vocabulary is no longer forwarded at all — the canonical
+    # x-codemie-routing-* vocabulary (assembled below) replaces it entirely.
     response_headers = {k: v for k, v in downstream_response.headers.items() if _should_forward_response_header(k)}
-    if routing_info is not None:
-        response_headers.update(_routing_info_to_headers(routing_info))
+    if downstream_response.headers.get("x-litellm-cache-hit", "").lower() == "true":
+        response_headers[CODEMIE_CACHE_HIT_HEADER] = "true"
+    # Always determine a canonical RoutingInfo, regardless of which mechanism routed: Switchyard
+    # decided synchronously (routing_info already set), or only LiteLLM's own auto-router did —
+    # in which case parse it back from the raw (unfiltered) downstream headers, same as
+    # _finalize_stream_usage_tracking already does for the ES analytics event. Either way, emit
+    # the one x-codemie-routing-* vocabulary — never the raw x-litellm-router-* one (already
+    # stripped above by _should_forward_response_header).
+    client_routing = (
+        routing_info if routing_info is not None else routing_info_from_headers(downstream_response.headers)
+    )
+    response_headers.update(_routing_info_to_headers(client_routing))
 
-    # GET /v1/models is a plain pass-through to LiteLLM, which lists only concrete
-    # deployments. Switchyard routers are virtual models resolved inside this proxy,
-    # so they never appear here — and clients that validate a selected model against
-    # /v1/models (e.g. Claude Code) reject a router alias as unknown. Augment the
-    # list so routers advertised on /llm_models are recognized here too. The body is
-    # small, so read it fully, rewrite it, and return a non-streaming response.
-    if response_status == 200 and _is_models_list_endpoint(endpoint):
-        raw_models_body = await downstream_response.aread()
-        await downstream_response.aclose()
-        return Response(
-            content=_augment_models_list_response(raw_models_body),
-            status_code=200,
-            headers=_sanitize_local_response_headers(response_headers),
-            media_type=downstream_response.headers.get("content-type"),
-        )
-
-    # Return streaming response with optional usage tracking
-    if config.LLM_PROXY_TRACK_USAGE and response_status == 200:
-        logger.debug(f"[STREAMING-PATH] session={session_id}, request={request_id}, using usage_tracking path")
-        return StreamingResponse(
-            _streaming_response_with_usage_tracking(
-                downstream_response=downstream_response,
-                user=user,
-                endpoint=endpoint,
-                request_info=request_info,
-                llm_model=llm_model,
-                background_tasks=background_tasks,
-                routing_info=routing_info,
-            ),
-            status_code=downstream_response.status_code,
-            headers=response_headers,
-            media_type=downstream_response.headers.get("content-type"),
-        )
-    else:
-        logger.debug(
-            f"[STREAMING-PATH] session={session_id}, request={request_id}, using passthrough "
-            f"(track_usage={config.LLM_PROXY_TRACK_USAGE}, status={response_status})"
-        )
-        # Error responses are small — read them fully so we can inspect / replace the body.
-        if response_status >= 400:
-            return await _handle_error_response(downstream_response, response_headers)
-        return StreamingResponse(
-            _passthrough_stream(downstream_response, request_info),
-            status_code=downstream_response.status_code,
-            headers=response_headers,
-            media_type=downstream_response.headers.get("content-type"),
-        )
+    return await _build_proxy_response(
+        downstream_response=downstream_response,
+        response_headers=response_headers,
+        response_status=response_status,
+        endpoint=endpoint,
+        user=user,
+        request_info=request_info,
+        llm_model=llm_model,
+        background_tasks=background_tasks,
+        routing_info=routing_info,
+        session_id=session_id,
+        request_id=request_id,
+    )
 
 
 def _create_proxy_endpoint(endpoint: str):

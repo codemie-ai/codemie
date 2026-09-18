@@ -1,0 +1,279 @@
+{
+  "decision": "request-changes",
+  "rationale": "Two critical spec failures confirmed in code: the merged_over reduce lambda is inverted (first-run model wins instead of last) and get_model_switches lacks the required date-histogram for ordered timeline. Nine additional major findings cover request_count always 0 via hits.total with track_total_hits:False, classifier_cached_tokens absent from overhead aggregation, classifier_total_tokens not forwarded to RoutingInfo, two uncertain double-counting paths (proxy layers and extractor header maps), empty-string session_id filter bypass, _sum_or_none zero mis-handling, and missing direct-path routing metric test coverage; one standards finding (bare dict[str,Any]) is blocking. Five candidates dismissed as false-positives or pre-existing guards; no deferred findings.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "RoutingInfo carries 7 new fields; is_empty and merged_over handle them",
+      "status": "partial",
+      "notes": "All 7 fields added; is_empty covers them; merged_over semantically correct. calculate() reduce lambda inverted: first-non-None wins, not last; spec and old code required last-non-None. See CR-011."
+    },
+    {
+      "kind": "spec",
+      "item": "SwitchyardRoutingExtractor and LiteLLMRouterExtractor populate all new RoutingInfo fields",
+      "status": "partial",
+      "notes": "Both extractors updated with most new fields. x-litellm-classifier-total-tokens (LiteLLMRouterMeta.classifier_total_tokens) is never forwarded to RoutingInfo in either extractor or proxy direct construction. See CR-004."
+    },
+    {
+      "kind": "spec",
+      "item": "routing_call_usage ES event emitted for each conversation/agent request where routing was active",
+      "status": "pass",
+      "notes": "conversation_service.py emits routing metric when routing is non-empty; conversation_id, assistant_id, project, request_id all populated."
+    },
+    {
+      "kind": "spec",
+      "item": "routing_call_usage ES event emitted for each proxy-endpoint request where routing was active",
+      "status": "pass",
+      "notes": "proxy_router.py emits routing metric as background task when not empty; gated by LLM_PROXY_TRACK_USAGE; endpoint and request_id forwarded."
+    },
+    {
+      "kind": "spec",
+      "item": "conversation_assistant_usage documents unchanged — no routing fields added to that event type",
+      "status": "pass",
+      "notes": "send_conversation_metric call unmodified; routing event is a separate downstream call."
+    },
+    {
+      "kind": "spec",
+      "item": "Requests from either path with no routing metadata produce no routing_call_usage event",
+      "status": "pass",
+      "notes": "is_empty() guard present in RoutingMonitoringService and proxy path; confirmed by test."
+    },
+    {
+      "kind": "spec",
+      "item": "MetricName.ROUTING_CALL_USAGE = 'routing_call_usage' added to MetricName enum",
+      "status": "pass",
+      "notes": "metric_names.py diff adds ROUTING_CALL_USAGE = 'routing_call_usage' in the Routing metrics section."
+    },
+    {
+      "kind": "spec",
+      "item": "RoutingMonitoringService(BaseMonitoringService) with send_routing_metric; no-op when routing.is_empty()",
+      "status": "pass",
+      "notes": "New file; inherits BaseMonitoringService; is_empty guard present; all routing dimensions and correlation fields emitted via send_count_metric."
+    },
+    {
+      "kind": "spec",
+      "item": "RequestSummary.calculate() routing rollup replaced with merged_over reduce across all per-run RoutingInfo values",
+      "status": "partial",
+      "notes": "Manual logic replaced with functools.reduce. Lambda a.merged_over(b) makes earlier runs win for scalars; spec requires last-non-None wins. Old code used reversed() for this reason. See CR-011."
+    },
+    {
+      "kind": "spec",
+      "item": "RoutingHandler wired into AnalyticsService as lazy _routing_handler property; uses MetricsElasticRepository and AnalyticsQueryPipeline",
+      "status": "pass",
+      "notes": "analytics_service.py adds lazy property; RoutingHandler(self._user, self._repository) constructed; AnalyticsQueryPipeline used."
+    },
+    {
+      "kind": "spec",
+      "item": "get_routing_summary: session count, request count, total classifier overhead cost",
+      "status": "pass",
+      "notes": "Cardinality for session_count, sum for classifier cost present. request_count uses hits.total.value which is always 0 with track_total_hits:False — see CR-006 for the runtime defect."
+    },
+    {
+      "kind": "spec",
+      "item": "get_model_switches: ordered timeline for a single session by conversation_id (terms + date-histogram)",
+      "status": "partial",
+      "notes": "Terms agg on routed_model present and session_id filter applied. Date-histogram for ordered timeline absent; endpoint returns count-by-model distribution, not chronological sequence. See CR-007."
+    },
+    {
+      "kind": "spec",
+      "item": "get_tier_distribution: count per tier value (terms aggregation)",
+      "status": "pass",
+      "notes": "routing_handler.py uses _build_terms_agg on TIER_KEYWORD; REST endpoint GET /analytics/routing/tier-distribution present."
+    },
+    {
+      "kind": "spec",
+      "item": "get_decision_source_distribution: count per decision_source value (terms aggregation)",
+      "status": "pass",
+      "notes": "Uses _build_terms_agg on DECISION_SOURCE_KEYWORD; REST endpoint GET /analytics/routing/decision-source-distribution present."
+    },
+    {
+      "kind": "spec",
+      "item": "get_classifier_overhead: classifier cost and tokens broken out from primary cost; does not double-count primary model cost",
+      "status": "pass",
+      "notes": "Sums classifier_cost_usd, classifier_input_tokens, classifier_output_tokens only; routing events separate from conversation events. classifier_cached_tokens omitted from agg — see CR-009 for the gap."
+    },
+    {
+      "kind": "spec",
+      "item": "REST endpoints GET /routing/summary, /sessions, /sessions/{session_id}/switches, /tier-distribution, /decision-source-distribution, /classifier-overhead all present",
+      "status": "pass",
+      "notes": "All 6 routes added to analytics.py with standard period/scope/pagination params."
+    },
+    {
+      "kind": "spec",
+      "item": "All new endpoints return empty/zero results on deployments where LLM_PROXY_ENABLED=False",
+      "status": "pending-stage-7",
+      "notes": "Code handles 0-hit ES responses gracefully. Runtime verification needed to confirm zero-result behaviour across all endpoints."
+    },
+    {
+      "kind": "spec",
+      "item": "Slice 3 — Savings formula: counterfactual cost minus actual routed cost including classifier overhead",
+      "status": "na",
+      "notes": "Hard-blocked on EPMCDME-13429; not implemented."
+    },
+    {
+      "kind": "spec",
+      "item": "Slice 3 — Aggregate savings do not exceed aggregate counterfactual baseline",
+      "status": "na",
+      "notes": "Hard-blocked on EPMCDME-13429; not implemented."
+    },
+    {
+      "kind": "spec",
+      "item": "Slice 3 — GET /analytics/routing/savings endpoint returns reconciled figure",
+      "status": "na",
+      "notes": "Hard-blocked on EPMCDME-13429; not implemented."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 6 subjects follow the documented EPMCDME-####: Description format exactly (all under ticket EPMCDME-14888)."
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "Violation: all 5 public methods in routing_handler.py and 5 new methods in analytics_service.py use bare dict instead of required dict[str, Any]. License headers and from __future__ annotations present on all new files."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "All 6 new REST endpoints use Depends(authenticate). No hardcoded credentials. session_id passed to structured ES term query with no string interpolation."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/routing_info.py",
+      "line": 113,
+      "title": "_sum_or_none treats explicit 0 as None",
+      "problem": "The expression (a or 0) + (b or 0) coerces 0.0 or 0 to 0 via Python truthiness, making a genuine zero-cost classifier run indistinguishable from no classifier having run.",
+      "impact": "is_empty() returns True when classifier_cost_usd is exactly 0.0 (e.g. a free-tier classifier); the routing metric is silently dropped and downstream zero-cost filtering produces wrong results for that edge case.",
+      "recommendation": "Replace (a or 0) with (a if a is not None else 0) and the same for b: return (a if a is not None else 0) + (b if b is not None else 0)."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/enterprise/litellm/proxy_router.py",
+      "line": 1148,
+      "title": "Classifier cost may be double-counted from both proxy routing layers",
+      "problem": "_switchyard_routing is built from routing_meta (Switchyard classifier cost) and _litellm_routing from response_headers (LiteLLM x-litellm-classifier-cost). merged_over sums classifier_cost_usd and token counts additively. If both layers surface the same classifier invocation, cost and tokens are doubled. Reachability unconfirmed from static analysis.",
+      "impact": "routing_call_usage events would carry 2x classifier cost for requests where Switchyard metadata and LiteLLM headers both report the same classification, overstating overhead metrics in routing analytics.",
+      "recommendation": "Document which layer is the authoritative source for classifier cost in the proxy path and zero out or skip the other before calling merged_over. Add a test asserting combined cost equals per-layer cost when both sources carry matching values."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/enterprise/litellm/routing_headers.py",
+      "line": 56,
+      "title": "Classifier cost doubled via duplicate header maps in LiteLLMRouterExtractor",
+      "problem": "_iter_header_maps yields both gen.generation_info and gen.message.response_metadata for the same LLMResult generation. merged_over sums additive fields; if both dicts carry the same x-litellm-classifier-cost the cost is counted twice. Whether LangChain populates both for a given model depends on the runtime response shape.",
+      "impact": "LiteLLMRouterExtractor.extract() returns 2x classifier cost for any response where LangChain duplicates router headers across generation_info and response_metadata, corrupting the routing_call_usage metric on the conversation path.",
+      "recommendation": "Deduplicate header maps by object identity before accumulating: track id(headers) in a seen set and skip duplicates. Alternatively yield only one authoritative source per generation (generation_info when present, else response_metadata)."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/enterprise/litellm/routing_headers.py",
+      "line": 60,
+      "title": "classifier_total_tokens header parsed but not forwarded to RoutingInfo",
+      "problem": "LiteLLMRouterMeta.classifier_total_tokens is populated from x-litellm-classifier-total-tokens, but neither LiteLLMRouterExtractor.extract() nor the direct RoutingInfo construction in proxy_router.py maps it to any RoutingInfo field. The test for new routing fields also omits coverage of this header.",
+      "impact": "The spec requires mapping x-litellm-classifier-{prompt,completion,total}_tokens; the total-tokens header is silently discarded, leaving RoutingInfo incomplete and the spec criterion partially unmet.",
+      "recommendation": "Add a classifier_total_tokens field to RoutingInfo (or map it to an existing derived-total field if one is intended) and forward meta.classifier_total_tokens in both the LiteLLMRouterExtractor and the direct construction in proxy_router.py. Add a test case for the x-litellm-classifier-total-tokens header."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/routing_handler.py",
+      "line": 43,
+      "title": "Bare dict annotations instead of dict[str, Any] in public methods",
+      "problem": "All 5 public methods in routing_handler.py and their private _build_*/_parse_* helpers annotate parameters and return types as bare dict. The 5 new routing methods in analytics_service.py carry the same bare dict return types. code-quality.md forbids bare dict and requires dict[str, Any].",
+      "impact": "Unparameterized dict in new public code violates the explicitly documented blocking code-quality standard; mypy/pyright cannot type-narrow dict values without the type parameter.",
+      "recommendation": "Add from typing import Any to routing_handler.py and replace every bare dict with dict[str, Any] in all method signatures and helpers. Apply the same fix to the 5 new routing method signatures in analytics_service.py (Any is likely already imported there)."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/routing_handler.py",
+      "line": 80,
+      "title": "request_count always 0: hits.total unreliable with track_total_hits:False",
+      "problem": "_parse_routing_summary reads request_count from result['hits']['total']['value']. MetricsElasticRepository.execute_aggregation_query always injects track_total_hits:False into every query body, which disables hit-count tracking. No other analytics handler in the codebase uses hits.total; all others count via dedicated aggregations.",
+      "impact": "The routing summary endpoint always returns request_count: 0 in production, rendering the primary volume metric of the routing analytics surface permanently broken.",
+      "recommendation": "Add a value_count aggregation on a required field (e.g. attributes.request_id.keyword) to _build_routing_summary_agg and read it in _parse_routing_summary instead of hits.total.value."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/routing_handler.py",
+      "line": 96,
+      "title": "Model-switches endpoint missing required date-histogram for ordered timeline",
+      "problem": "_build_model_switches_agg builds only a terms aggregation on routed_model; the spec requires a terms + date-histogram for an ordered session timeline. The endpoint returns a count-by-model distribution, not a chronological sequence of model selections.",
+      "impact": "GET /routing/sessions/{session_id}/switches returns the wrong data shape; a caller expecting a timeline of when each model was selected for a session receives model counts instead, making the switch-timeline feature non-functional per spec.",
+      "recommendation": "Add a date-histogram aggregation (e.g. by @timestamp with calendar_interval:day) nested under or alongside the terms agg in _build_model_switches_agg, and update _parse_model_switches to emit the time-ordered sequence of model selections."
+    },
+    {
+      "id": "CR-008",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/routing_handler.py",
+      "line": 128,
+      "title": "Empty-string session_id bypasses ES term filter",
+      "problem": "_build_model_switches_agg uses 'if session_id:' to decide whether to apply the conversation_id term filter. An empty-string session_id is falsy in Python, so the filter is silently omitted and all sessions are returned.",
+      "impact": "A caller passing session_id='' receives aggregated data for all sessions instead of an empty result set, unintentionally leaking cross-session data for that edge input.",
+      "recommendation": "Change the guard to 'if session_id is not None:' so an explicit empty string is treated as a valid filter value that triggers the term query."
+    },
+    {
+      "id": "CR-009",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/analytics/handlers/routing_handler.py",
+      "line": 237,
+      "title": "classifier_cached_tokens omitted from classifier-overhead aggregation",
+      "problem": "_build_classifier_overhead_agg sums classifier_cost_usd, classifier_input_tokens, and classifier_output_tokens but omits classifier_cached_tokens. RoutingInfo carries and emits the field in every routing_call_usage event; the aggregation and _parse_classifier_overhead never include it.",
+      "impact": "GET /routing/classifier-overhead silently under-reports classifier token usage; callers expecting a complete prompt/completion/cached breakdown always receive 0 for cached tokens regardless of actual classifier cache consumption.",
+      "recommendation": "Add {\"total_cached_tokens\": {\"sum\": {\"field\": \"attributes.classifier_cached_tokens\"}}} to _build_classifier_overhead_agg and surface the result in _parse_classifier_overhead."
+    },
+    {
+      "id": "CR-010",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/conversation_service.py",
+      "line": 307,
+      "title": "No test coverage for direct-path routing metric emission",
+      "problem": "The RoutingMonitoringService.send_routing_metric call at conversation_service.py:308 is never exercised by any test. All callers of upsert_chat_history in the test suite pass TokensUsage with no routing field (defaults None), so the guarded branch is never entered. The isolated routing monitoring service tests do not call through ConversationService.",
+      "impact": "Any regression on the direct conversation path — wrong arguments, removed call, incorrect guard condition — is invisible in CI, making the routing metric silently non-functional for agent-path requests.",
+      "recommendation": "Add a test for upsert_chat_history that supplies a TokensUsage with a non-empty RoutingInfo and asserts RoutingMonitoringService.send_routing_metric is called with the correct conversation_id, assistant_id, project, routing, and request_id arguments."
+    },
+    {
+      "id": "CR-011",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/service/request_summary_manager.py",
+      "line": 57,
+      "title": "Reduce lambda inverted: first-run model wins instead of last",
+      "problem": "functools.reduce(lambda a, b: a.merged_over(b), per_run_routings, RoutingInfo()) makes the accumulator (earlier runs) win for scalar fields because merged_over makes self win over base. The spec and the original code (which used reversed()) require last-non-None wins so routed_model reflects the most-recent final response. The test was updated to expect the first run's model ('sonnet' from r1 instead of 'haiku' from r2), confirming the inversion is present.",
+      "impact": "Multi-run sessions report the first run's routed_model instead of the last, causing all routing analytics to attribute traffic to the wrong model; routing decisions informed by this data are based on incorrect model attribution.",
+      "recommendation": "Swap the lambda to 'lambda a, b: b.merged_over(a)' so later runs override earlier ones, or reverse the source list: functools.reduce(lambda a, b: a.merged_over(b), reversed(per_run_routings), RoutingInfo()). Update the test to expect the last run's model."
+    }
+  ]
+}

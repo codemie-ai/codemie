@@ -136,6 +136,7 @@ class LiteLLMRouterConfig(BaseModel):
     # place to add fields later without a breaking type change. Does
     # NOT reuse LLMModel.enabled, which already means something
     # different (this model's own enabled/disabled state).
+    counterfactual_model: str | None = None  # Model used as the counterfactual pricing baseline
 
 
 class LLMRouter(BaseModel):

@@ -1,4 +1,4 @@
-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,9 +15,7 @@
 from __future__ import annotations
 
 import dataclasses
-import json
-from collections.abc import Mapping
-from typing import ClassVar, Final, cast
+from typing import ClassVar, Final
 
 from codemie.core.routing_info import RoutingHeaderCodec
 
@@ -47,7 +45,17 @@ _FLOAT_FIELDS: Final[frozenset[str]] = frozenset({"score", "classifier_cost_usd"
 
 
 @dataclasses.dataclass
-class LiteLLMRouterMeta(RoutingHeaderCodec):
+class LiteLLMRouterHeaders(RoutingHeaderCodec):
+    """Typed parser for LiteLLM's own external x-litellm-router-*/x-litellm-classifier-*
+    response headers — mirrors that foreign wire vocabulary exactly (field names like ``cause``,
+    ``router_model_name``, ``score`` are LiteLLM's own, not ours). Used exclusively by
+    enterprise/litellm/router.py's routing_info_from_headers()/extract_classifier_usage() to
+    translate this wire shape into RoutingInfo's own domain fields (different names on purpose:
+    cause->decision_source, router_model_name->requested_model, score->confidence/router_score).
+    Read-only in practice: this codebase never builds outgoing x-litellm-router-* headers (those
+    are emitted by the external LiteLLM proxy fork's own callback code), so only from_headers()
+    (inherited from RoutingHeaderCodec) is exercised in production."""
+
     FIELD_TO_HEADER: ClassVar[dict[str, str]] = LITELLM_ROUTER_FIELD_TO_HEADER
     INT_FIELDS: ClassVar[frozenset[str]] = _INT_FIELDS
     FLOAT_FIELDS: ClassVar[frozenset[str]] = _FLOAT_FIELDS
@@ -66,28 +74,3 @@ class LiteLLMRouterMeta(RoutingHeaderCodec):
     classifier_completion_tokens: int | None = None
     classifier_total_tokens: int | None = None
     classifier_cost_usd: float | None = None
-
-    @classmethod
-    def from_routing_decision(cls, decision: Mapping[str, object]) -> LiteLLMRouterMeta:
-        """Populate from LiteLLM routing_decision dict (used in AutorouterCallback).
-
-        Each value is narrowed to the type its field actually declares (str, int, or
-        float) before being handed to the constructor, mirroring SwitchyardMeta.from_dict.
-        """
-        known = {f.name for f in dataclasses.fields(cls)}
-        kwargs: dict[str, int | float | str] = {}
-        for field_name in known:
-            value = decision.get(field_name)
-            if value is None:
-                continue
-            if field_name == "signals":
-                kwargs[field_name] = json.dumps(value)
-            elif field_name in cls.INT_FIELDS:
-                if isinstance(value, int):
-                    kwargs[field_name] = value
-            elif field_name in cls.FLOAT_FIELDS:
-                if isinstance(value, (int, float)):
-                    kwargs[field_name] = float(value)
-            elif isinstance(value, str):
-                kwargs[field_name] = value
-        return cast(LiteLLMRouterMeta, dataclasses.replace(cls(), **kwargs))

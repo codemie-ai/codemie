@@ -1138,3 +1138,224 @@ def test_upsert_chat_history_without_background_tasks_still_sets_legacy_name(
     )
 
     mock_conv_save.assert_called_once()
+
+
+@patch("codemie.service.monitoring.routing_monitoring_service.RoutingMonitoringService.send_routing_metric")
+@patch(
+    "codemie.service.monitoring.conversation_monitoring_service.ConversationMonitoringService.send_conversation_metric"
+)
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.save")
+@patch("codemie.rest_api.models.conversation.Conversation.save")
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id")
+@patch("codemie.service.conversation_service.AgentWorkspaceService.sync_uploaded_files")
+def test_upsert_chat_history_emits_routing_metric_when_routing_present(
+    mock_sync_uploaded_files,
+    mock_metrics_get,
+    mock_conv_find,
+    mock_conv_save,
+    mock_metrics_save,
+    mock_calculate_metrics,
+    _mock_send_conversation_metric,
+    mock_send_routing_metric,
+    mock_request,
+    mock_assistant,
+    mock_admin_user,
+):
+    """upsert_chat_history must call RoutingMonitoringService.send_routing_metric when routing is non-empty."""
+    from codemie.core.routing_info import RoutingInfo
+
+    mock_conv_find.return_value = None
+    mock_metrics_get.side_effect = KeyError("not found")
+    mock_conv_save.return_value = True
+
+    routing = RoutingInfo(routed_model="haiku", tier="efficient", classifier_cost_usd=0.0001)
+    tokens = TokensUsage(output_tokens=10, input_tokens=5, money_spent=0.01, routing=routing)
+
+    ConversationService.upsert_chat_history(
+        assistant_response="response",
+        user=mock_admin_user,
+        thoughts=[],
+        time_elapsed=0,
+        tokens_usage=tokens,
+        assistant=mock_assistant,
+        request=mock_request,
+    )
+
+    mock_send_routing_metric.assert_called_once()
+    call_kwargs = mock_send_routing_metric.call_args.kwargs
+    assert call_kwargs["routing"] is routing
+    assert call_kwargs["user"] is mock_admin_user
+    assert call_kwargs["request_id"] is None
+
+
+@patch("codemie.service.monitoring.routing_monitoring_service.RoutingMonitoringService.send_routing_metric")
+@patch(
+    "codemie.service.monitoring.conversation_monitoring_service.ConversationMonitoringService.send_conversation_metric"
+)
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.save")
+@patch("codemie.rest_api.models.conversation.Conversation.save")
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id")
+@patch("codemie.service.conversation_service.AgentWorkspaceService.sync_uploaded_files")
+def test_upsert_chat_history_skips_routing_metric_when_routing_empty(
+    mock_sync_uploaded_files,
+    mock_metrics_get,
+    mock_conv_find,
+    mock_conv_save,
+    mock_metrics_save,
+    mock_calculate_metrics,
+    _mock_send_conversation_metric,
+    mock_send_routing_metric,
+    mock_request,
+    mock_assistant,
+    mock_admin_user,
+):
+    """upsert_chat_history must NOT call RoutingMonitoringService when routing is empty/None."""
+    mock_conv_find.return_value = None
+    mock_metrics_get.side_effect = KeyError("not found")
+    mock_conv_save.return_value = True
+
+    tokens = TokensUsage(output_tokens=10, input_tokens=5, money_spent=0.01)
+
+    ConversationService.upsert_chat_history(
+        assistant_response="response",
+        user=mock_admin_user,
+        thoughts=[],
+        time_elapsed=0,
+        tokens_usage=tokens,
+        assistant=mock_assistant,
+        request=mock_request,
+    )
+
+    mock_send_routing_metric.assert_not_called()
+
+
+@patch("codemie.service.monitoring.routing_monitoring_service.RoutingMonitoringService.send_routing_metric")
+@patch(
+    "codemie.service.monitoring.conversation_monitoring_service.ConversationMonitoringService.send_conversation_metric"
+)
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.save")
+@patch("codemie.rest_api.models.conversation.Conversation.save")
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id")
+@patch("codemie.service.conversation_service.AgentWorkspaceService.sync_uploaded_files")
+def test_upsert_chat_history_emits_one_routing_metric_per_llm_run(
+    mock_sync_uploaded_files,
+    mock_metrics_get,
+    mock_conv_find,
+    mock_conv_save,
+    mock_metrics_save,
+    mock_calculate_metrics,
+    _mock_send_conversation_metric,
+    mock_send_routing_metric,
+    mock_request,
+    mock_assistant,
+    mock_admin_user,
+):
+    """upsert_chat_history must emit one routing_call_usage event per LLM run with routing,
+    not a single event from the merged tokens_usage.routing — a /model generation can involve
+    multiple LLM runs (tool-calling loop, fallback) each with its own routing decision."""
+    from codemie.core.routing_info import RoutingInfo
+    from codemie.service.request_summary_manager import LLMRun
+
+    mock_conv_find.return_value = None
+    mock_metrics_get.side_effect = KeyError("not found")
+    mock_conv_save.return_value = True
+
+    routing_simple = RoutingInfo(routed_model="haiku", tier="simple")
+    routing_complex = RoutingInfo(routed_model="opus", tier="complex")
+    llm_runs = [
+        LLMRun(
+            run_id="run-1",
+            input_tokens=5,
+            output_tokens=10,
+            money_spent=0.001,
+            llm_model="haiku",
+            routing=routing_simple,
+        ),
+        LLMRun(
+            run_id="run-2",
+            input_tokens=7,
+            output_tokens=20,
+            money_spent=0.02,
+            llm_model="opus",
+            routing=routing_complex,
+        ),
+        # A run with no routing info must be skipped, not raise.
+        LLMRun(run_id="run-3", input_tokens=1, output_tokens=1, money_spent=0.0001, llm_model="haiku", routing=None),
+    ]
+    tokens = TokensUsage(output_tokens=31, input_tokens=13, money_spent=0.0211, routing=routing_complex)
+
+    ConversationService.upsert_chat_history(
+        assistant_response="response",
+        user=mock_admin_user,
+        thoughts=[],
+        time_elapsed=0,
+        tokens_usage=tokens,
+        llm_runs=llm_runs,
+        assistant=mock_assistant,
+        request=mock_request,
+    )
+
+    assert mock_send_routing_metric.call_count == 2
+    call_kwargs_list = [call.kwargs for call in mock_send_routing_metric.call_args_list]
+    assert call_kwargs_list[0]["routing"] is routing_simple
+    assert call_kwargs_list[0]["llm_run_id"] == "run-1"
+    assert call_kwargs_list[1]["routing"] is routing_complex
+    assert call_kwargs_list[1]["llm_run_id"] == "run-2"
+
+
+@patch("codemie.service.monitoring.routing_monitoring_service.RoutingMonitoringService.send_routing_metric")
+@patch(
+    "codemie.service.monitoring.conversation_monitoring_service.ConversationMonitoringService.send_conversation_metric"
+)
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.save")
+@patch("codemie.rest_api.models.conversation.Conversation.save")
+@patch("codemie.rest_api.models.conversation.Conversation.find_by_id")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id")
+@patch("codemie.service.conversation_service.AgentWorkspaceService.sync_uploaded_files")
+def test_upsert_chat_history_falls_back_to_merged_routing_when_llm_runs_empty(
+    mock_sync_uploaded_files,
+    mock_metrics_get,
+    mock_conv_find,
+    mock_conv_save,
+    mock_metrics_save,
+    mock_calculate_metrics,
+    _mock_send_conversation_metric,
+    mock_send_routing_metric,
+    mock_request,
+    mock_assistant,
+    mock_admin_user,
+):
+    """When llm_runs is an empty list (or None), upsert_chat_history must fall back to
+    emitting a single event from the merged tokens_usage.routing, preserving legacy behavior
+    for callers that don't pass llm_runs."""
+    from codemie.core.routing_info import RoutingInfo
+
+    mock_conv_find.return_value = None
+    mock_metrics_get.side_effect = KeyError("not found")
+    mock_conv_save.return_value = True
+
+    routing = RoutingInfo(routed_model="haiku", tier="simple")
+    tokens = TokensUsage(output_tokens=10, input_tokens=5, money_spent=0.01, routing=routing)
+
+    ConversationService.upsert_chat_history(
+        assistant_response="response",
+        user=mock_admin_user,
+        thoughts=[],
+        time_elapsed=0,
+        tokens_usage=tokens,
+        llm_runs=[],
+        assistant=mock_assistant,
+        request=mock_request,
+    )
+
+    mock_send_routing_metric.assert_called_once()
+    call_kwargs = mock_send_routing_metric.call_args.kwargs
+    assert call_kwargs["routing"] is routing
+    assert call_kwargs.get("llm_run_id") is None

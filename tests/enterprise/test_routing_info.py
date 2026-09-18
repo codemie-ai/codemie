@@ -15,7 +15,26 @@
 import dataclasses
 from typing import ClassVar
 
-from codemie.core.routing_info import ClassifierUsage, RoutingHeaderCodec, RoutingInfo
+import pytest
+
+from codemie.core.routing_info import (
+    ClassifierUsage,
+    RoutingHeaderCodec,
+    RoutingInfo,
+    normalize_decision_source,
+)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(" llm_classifier ", "llm-classifier"), ("HEURISTIC_SCORER", "heuristic-scorer"), (None, None)],
+)
+def test_normalize_decision_source(raw, expected):
+    assert normalize_decision_source(raw) == expected
+
+
+def test_routing_info_has_no_meta_field():
+    assert not hasattr(RoutingInfo(), "meta")
 
 
 def test_merged_over_prefers_self_non_none_fields():
@@ -32,23 +51,9 @@ def test_merged_over_keeps_base_when_self_empty():
     assert merged == base
 
 
-def test_merged_over_unions_meta_with_self_winning_on_collision():
-    base = RoutingInfo(meta={"x-codemie-routing-tier": "capable", "x-codemie-routing-confidence": "0.9"})
-    top = RoutingInfo(meta={"x-codemie-routing-tier": "efficient"})
-    merged = top.merged_over(base)
-    assert merged.meta == {"x-codemie-routing-tier": "efficient", "x-codemie-routing-confidence": "0.9"}
-
-
 def test_is_empty():
     assert RoutingInfo().is_empty()
     assert not RoutingInfo(routed_model="x").is_empty()
-
-
-def test_is_empty_ignores_meta():
-    """meta is a bonus passthrough, not part of the "did we route" signal used by
-    request_summary_manager.py / conversation.py / assistant_handlers.py to decide whether to
-    attach routing info at all."""
-    assert RoutingInfo(meta={"x-codemie-routing-tier": "capable"}).is_empty()
 
 
 @dataclasses.dataclass
@@ -106,3 +111,95 @@ def test_classifier_usage_is_a_plain_dataclass_with_defaults():
     assert usage.output_tokens == 5
     assert usage.cost_usd is None
     assert usage.model is None
+
+
+def test_merged_over_sums_additive_fields():
+    """merged_over sums classifier tokens and cost across multiple RoutingInfo instances."""
+    import functools
+
+    a = RoutingInfo(
+        classifier_cost_usd=0.001, classifier_input_tokens=100, classifier_output_tokens=50, classifier_cached_tokens=20
+    )
+    b = RoutingInfo(
+        classifier_cost_usd=0.002, classifier_input_tokens=200, classifier_output_tokens=80, classifier_cached_tokens=0
+    )
+    c = RoutingInfo(classifier_cost_usd=0.003, classifier_input_tokens=150, classifier_output_tokens=30)
+    merged = functools.reduce(lambda acc, x: acc.merged_over(x), [a, b, c], RoutingInfo())
+    assert merged.classifier_cost_usd == pytest.approx(0.006)
+    assert merged.classifier_input_tokens == 450
+    assert merged.classifier_output_tokens == 160
+    assert merged.classifier_cached_tokens == 20  # 20 + 0 + None(=0)
+
+
+def test_merged_over_sums_additive_with_none():
+    """None is treated as 0 for additive fields; result is None only when both sides are None."""
+    a = RoutingInfo(classifier_input_tokens=100)
+    b = RoutingInfo(classifier_input_tokens=None)
+    merged = a.merged_over(b)
+    assert merged.classifier_input_tokens == 100
+    merged2 = RoutingInfo().merged_over(RoutingInfo())
+    assert merged2.classifier_input_tokens is None  # both None → None
+
+
+def test_is_empty_covers_all_fields():
+    assert RoutingInfo().is_empty()
+    assert not RoutingInfo(requested_model="opus").is_empty()
+    assert not RoutingInfo(tier="haiku").is_empty()
+    assert not RoutingInfo(decision_source="classifier").is_empty()
+    assert not RoutingInfo(confidence=0.9).is_empty()
+    assert not RoutingInfo(classifier_input_tokens=10).is_empty()
+    assert not RoutingInfo(classifier_output_tokens=5).is_empty()
+    assert not RoutingInfo(classifier_cached_tokens=3).is_empty()
+    assert not RoutingInfo(classifier_total_tokens=15).is_empty()
+
+
+def test_is_empty_covers_parity_fields():
+    assert not RoutingInfo(routing_family="litellm").is_empty()
+    assert not RoutingInfo(routing_cost_known=False).is_empty()
+    assert not RoutingInfo(routing_tier_raw="efficient").is_empty()
+    assert not RoutingInfo(classifier_model="haiku").is_empty()
+    assert not RoutingInfo(router_type="complexity").is_empty()
+    assert not RoutingInfo(router_score=0.8).is_empty()
+    assert not RoutingInfo(classifier_cache_creation_tokens=4).is_empty()
+
+
+def test_merged_over_sums_classifier_cache_creation_tokens_and_keeps_latest_metadata():
+    base = RoutingInfo(
+        routing_family="litellm",
+        routing_cost_known=False,
+        classifier_cache_creation_tokens=10,
+        tier="middle",
+    )
+    top = RoutingInfo(
+        routing_family="switchyard",
+        routing_cost_known=True,
+        classifier_cache_creation_tokens=4,
+        tier="complex",
+    )
+
+    merged = top.merged_over(base)
+
+    assert merged.routing_family == "switchyard"
+    assert merged.routing_cost_known is True
+    assert merged.classifier_cache_creation_tokens == 14
+    assert merged.tier == "complex"
+
+
+def test_classifier_total_tokens_is_additive():
+    """classifier_total_tokens is summed like other classifier token fields."""
+    a = RoutingInfo(classifier_total_tokens=125)
+    b = RoutingInfo(classifier_total_tokens=200)
+    merged = a.merged_over(b)
+    assert merged.classifier_total_tokens == 325
+
+
+def test_sum_or_none_treats_zero_as_valid_not_none():
+    """_sum_or_none must not coerce explicit 0 to absent; (0 + None) == 0, not None."""
+    a = RoutingInfo(classifier_input_tokens=0)
+    b = RoutingInfo(classifier_input_tokens=None)
+    merged = a.merged_over(b)
+    # both not None for a, b is None → result is 0, not None
+    assert merged.classifier_input_tokens == 0
+    # (None, None) → None
+    merged2 = RoutingInfo().merged_over(RoutingInfo())
+    assert merged2.classifier_input_tokens is None

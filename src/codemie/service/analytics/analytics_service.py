@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from typing import Any
 
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
@@ -37,6 +38,7 @@ from codemie.service.analytics.handlers.project_handler import ProjectHandler
 from codemie.service.analytics.handlers.summary_handler import SummaryHandler
 from codemie.service.analytics.handlers.tools_handler import ToolsHandler
 from codemie.service.analytics.handlers.user_handler import UserHandler
+from codemie.service.analytics.handlers.routing_handler import RoutingHandler
 from codemie.service.analytics.handlers.webhook_handler import WebhookHandler
 from codemie.service.analytics.handlers.workflow_handler import WorkflowHandler
 from codemie.service.analytics.queries.ai_adoption_framework.config import AIAdoptionConfig
@@ -74,6 +76,7 @@ class AnalyticsService:
         self._embeddings_handler_instance: EmbeddingsHandler | None = None
         self._engagement_handler_instance: EngagementHandler | None = None
         self._leaderboard_handler_instance: LeaderboardHandler | None = None
+        self._routing_handler_instance: RoutingHandler | None = None
 
     @property
     def _adoption_handler(self) -> AIAdoptionHandler:
@@ -186,6 +189,13 @@ class AnalyticsService:
         if self._leaderboard_handler_instance is None:
             self._leaderboard_handler_instance = LeaderboardHandler(self._user)
         return self._leaderboard_handler_instance
+
+    @property
+    def _routing_handler(self) -> RoutingHandler:
+        """Lazy-load routing handler."""
+        if self._routing_handler_instance is None:
+            self._routing_handler_instance = RoutingHandler(self._user, self._repository)
+        return self._routing_handler_instance
 
     # Leaderboard endpoints
     async def get_leaderboard_summary(
@@ -1522,4 +1532,201 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+        )
+
+    # Routing endpoints
+
+    async def get_routing_summary(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Get routing analytics summary: session count, request count, classifier cost."""
+        return await self._routing_handler.get_routing_summary(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+        )
+
+    async def get_model_switches(
+        self,
+        session_id: str | None = None,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict[str, Any]:
+        """Get model switches across sessions."""
+        return await self._routing_handler.get_model_switches(
+            session_id=session_id,
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_decision_timeline(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 50,
+    ) -> dict[str, Any]:
+        return await self._routing_handler.get_decision_timeline(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_routing_activity(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return await self._routing_handler.get_routing_activity(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+        )
+
+    async def get_routing_paths(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict[str, Any]:
+        return await self._routing_handler.get_routing_paths(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_routed_model_distribution(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict[str, Any]:
+        return await self._routing_handler.get_routed_model_distribution(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_requested_model_distribution(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict[str, Any]:
+        return await self._routing_handler.get_requested_model_distribution(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_tier_distribution(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict[str, Any]:
+        """Get routing tier distribution."""
+        return await self._routing_handler.get_tier_distribution(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_decision_source_distribution(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict[str, Any]:
+        """Get routing decision source distribution."""
+        return await self._routing_handler.get_decision_source_distribution(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
+            page=page,
+            per_page=per_page,
+        )
+
+    async def get_classifier_overhead(
+        self,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Get routing classifier overhead: cost and token totals."""
+        return await self._routing_handler.get_classifier_overhead(
+            time_period=time_period,
+            start_date=start_date,
+            end_date=end_date,
+            users=users,
+            projects=projects,
         )

@@ -16,10 +16,92 @@ from __future__ import annotations
 
 import dataclasses
 
-from codemie.enterprise.litellm.litellm_router_meta import (
+import pytest
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, LLMResult
+
+from codemie.enterprise.litellm.litellm_router_headers import (
     LITELLM_ROUTER_FIELD_TO_HEADER,
-    LiteLLMRouterMeta,
+    LiteLLMRouterHeaders,
 )
+from codemie.enterprise.litellm.router import LiteLLMRouter, normalize_litellm_tier
+
+
+def _llm_result_with_headers(headers: dict) -> LLMResult:
+    msg = AIMessage(content="", response_metadata={"headers": headers})
+    gen = ChatGeneration(message=msg, generation_info={"headers": headers})
+    return LLMResult(generations=[[gen]])
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("simple", "simple"),
+        ("efficient", "efficient"),
+        ("medium", "medium"),
+        ("middle", "middle"),
+        ("complex", "complex"),
+        ("capable", "capable"),
+        ("reasoning", "reasoning"),
+        (" NewTier ", "newtier"),
+        (None, None),
+    ],
+)
+def test_normalize_litellm_tier_uses_litellm_vocabulary(raw, expected):
+    assert normalize_litellm_tier(raw) == expected
+
+
+def test_extracts_routed_model_and_classifier_cost_from_headers():
+    # _llm_result_with_headers places the SAME dict in both generation_info and
+    # response_metadata. After deduplication by object identity, same-dict is
+    # counted once: classifier_cost_usd should be 0.0009, not 0.0018.
+    result = _llm_result_with_headers(
+        {
+            "x-litellm-router-routed-model": "claude-4-5-haiku",
+            "x-litellm-classifier-cost": "0.0009",
+        }
+    )
+    router = LiteLLMRouter(name="test")
+    info = router.extract(result)
+    assert info.routed_model == "claude-4-5-haiku"
+    assert info.classifier_cost_usd == pytest.approx(0.0009)
+
+
+def test_extract_prefers_generation_info_over_corrupted_response_metadata():
+    """Assistant responses must not merge duplicated/corrupted header copies."""
+    clean_headers = {
+        "x-litellm-router-routed-model": "gpt-5.6-luna-2026-07-09",
+        "x-litellm-classifier-prompt-tokens": "700",
+        "x-litellm-classifier-completion-tokens": "14",
+        "x-litellm-classifier-total-tokens": "714",
+    }
+    corrupted_headers = {
+        "x-litellm-router-routed-model": "gpt-5.6-luna-2026-07-09gpt-5.6-luna-2026-07-09",
+        "x-litellm-classifier-prompt-tokens": "700700",
+        "x-litellm-classifier-completion-tokens": "1414",
+        "x-litellm-classifier-total-tokens": "714714",
+    }
+    result = LLMResult(
+        generations=[
+            [
+                ChatGeneration(
+                    message=AIMessage(content="", response_metadata={"headers": corrupted_headers}),
+                    generation_info={"headers": clean_headers},
+                )
+            ]
+        ]
+    )
+
+    info = LiteLLMRouter(name="test").extract(result)
+
+    assert info.routed_model == "gpt-5.6-luna-2026-07-09"
+    assert info.classifier_input_tokens == 700
+    assert info.classifier_output_tokens == 14
+    assert info.classifier_total_tokens == 714
+
+
+def test_empty_when_no_router_headers():
+    assert LiteLLMRouter(name="test").extract(_llm_result_with_headers({})).is_empty()
 
 
 def test_litellm_router_meta_from_headers_reads_known_fields():
@@ -30,7 +112,7 @@ def test_litellm_router_meta_from_headers_reads_known_fields():
         "x-litellm-classifier-prompt-tokens": "120",
         "x-litellm-classifier-completion-tokens": "5",
     }
-    meta = LiteLLMRouterMeta.from_headers(headers)
+    meta = LiteLLMRouterHeaders.from_headers(headers)
     assert meta.routed_model == "claude-haiku-4-5"
     assert meta.tier == "efficient"
     assert meta.classifier_cost_usd == 0.0009
@@ -39,7 +121,7 @@ def test_litellm_router_meta_from_headers_reads_known_fields():
 
 
 def test_litellm_router_meta_from_headers_returns_empty_for_unknown():
-    meta = LiteLLMRouterMeta.from_headers({})
+    meta = LiteLLMRouterHeaders.from_headers({})
     assert meta.routed_model is None
     assert meta.classifier_cost_usd is None
 
@@ -49,28 +131,90 @@ def test_litellm_router_meta_from_headers_invalid_values_become_none():
         "x-litellm-classifier-prompt-tokens": "not-a-number",
         "x-litellm-classifier-cost": "invalid",
     }
-    meta = LiteLLMRouterMeta.from_headers(headers)
+    meta = LiteLLMRouterHeaders.from_headers(headers)
     assert meta.classifier_prompt_tokens is None
     assert meta.classifier_cost_usd is None
 
 
 def test_field_to_header_keys_match_dataclass_fields():
-    field_names = {f.name for f in dataclasses.fields(LiteLLMRouterMeta)}
+    field_names = {f.name for f in dataclasses.fields(LiteLLMRouterHeaders)}
     assert set(LITELLM_ROUTER_FIELD_TO_HEADER.keys()) == field_names
 
 
-def test_litellm_router_meta_to_headers_serialises_non_none_fields():
-    meta = LiteLLMRouterMeta(tier="efficient", routed_model="claude-haiku-4-5", classifier_cost_usd=0.0009)
-    headers = meta.to_headers()
-    assert headers["x-litellm-router-tier"] == "efficient"
-    assert headers["x-litellm-router-routed-model"] == "claude-haiku-4-5"
-    assert headers["x-litellm-classifier-cost"] == "0.0009"
-    assert "x-litellm-router-cause" not in headers  # None field omitted
+def test_extracts_new_routing_fields_from_litellm_headers():
+    """LiteLLMRouter.extract maps tier, cause→decision_source, score→confidence, tokens.
+
+    Uses AIMessage (single header source) so additive fields are not doubled.
+    """
+    msg = AIMessage(
+        content="",
+        response_metadata={
+            "headers": {
+                "x-litellm-router-tier": "medium",
+                "x-litellm-router-cause": "llm_classifier",
+                "x-litellm-router-score": "0.87",
+                "x-litellm-router-type": "complexity",
+                "x-litellm-router-classifier-model": "claude-4-5-haiku",
+                "x-litellm-classifier-prompt-tokens": "150",
+                "x-litellm-classifier-completion-tokens": "45",
+                "x-litellm-classifier-total-tokens": "195",
+                "x-litellm-classifier-cost": "0.0",
+            }
+        },
+    )
+    info = LiteLLMRouter(name="test").extract(msg)
+    assert info.tier == "medium"
+    assert info.routing_tier_raw == "medium"
+    assert info.decision_source == "llm-classifier"
+    assert info.routing_source == "judge"
+    assert info.routing_family == "litellm"
+    assert info.routing_cost_known is True
+    assert info.confidence == pytest.approx(0.87)
+    assert info.router_type == "complexity"
+    assert info.classifier_model == "claude-4-5-haiku"
+    assert info.classifier_input_tokens == 150
+    assert info.classifier_output_tokens == 45
+    assert info.classifier_total_tokens == 195
 
 
-def test_litellm_router_meta_from_routing_decision():
-    decision = {"tier": "capable", "routed_model": "claude-sonnet-5", "cause": "high_complexity"}
-    meta = LiteLLMRouterMeta.from_routing_decision(decision)
-    assert meta.tier == "capable"
-    assert meta.routed_model == "claude-sonnet-5"
-    assert meta.cause == "high_complexity"
+def test_litellm_routing_cost_is_unknown_when_classifier_cost_is_missing():
+    msg = AIMessage(
+        content="",
+        response_metadata={"headers": {"x-litellm-router-tier": "capable"}},
+    )
+
+    info = LiteLLMRouter(name="test").extract(msg)
+
+    assert info.routing_family == "litellm"
+    assert info.tier == "capable"
+    assert info.routing_cost_known is False
+
+
+def test_litellm_classifier_only_header_still_identifies_routing():
+    msg = AIMessage(
+        content="",
+        response_metadata={"headers": {"x-litellm-classifier-cost": "0.001"}},
+    )
+
+    info = LiteLLMRouter(name="test").extract(msg)
+
+    assert info.routing_family == "litellm"
+    assert info.routing_cost_known is True
+
+
+def test_extracts_router_alias_as_requested_model():
+    """The agent path needs the auto-router alias to resolve its counterfactual model."""
+    msg = AIMessage(
+        content="",
+        response_metadata={
+            "headers": {
+                "x-litellm-router-routed-model": "gpt-5.6-luna-2026-07-09",
+                "x-litellm-router-model-name": "gpt-smart-router",
+            }
+        },
+    )
+
+    info = LiteLLMRouter(name="test").extract(msg)
+
+    assert info.routed_model == "gpt-5.6-luna-2026-07-09"
+    assert info.requested_model == "gpt-smart-router"

@@ -18,23 +18,34 @@ from unittest.mock import AsyncMock, MagicMock
 from codemie.core.routing_info import _ROUTING_INFO_KEY
 from codemie.core.router import CallContext, ClassifierCall, RoutingDecision
 from codemie.enterprise.switchyard.engine import RoutingTier
-from codemie.enterprise.switchyard.router import SwitchyardRouter, build_switchyard_routing_meta
+from codemie.enterprise.switchyard.router import SwitchyardRouter, normalize_switchyard_tier
 
 
-def _make_engine(**decide_kwargs):
+def _make_engine(*, routing_mode="signal", **decide_kwargs):
     engine = MagicMock()
     engine.capable_model = "claude-4-6-sonnet"
     engine.efficient_model = "claude-4-5-haiku"
     engine.capable_model_deployment_name = "us.anthropic.claude-4-6-sonnet"
     engine.efficient_model_deployment_name = "us.anthropic.claude-4-5-haiku"
+    engine.routing_mode = routing_mode
     engine.pick_model = AsyncMock(
         return_value=RoutingDecision(
             model="us.anthropic.claude-4-5-haiku",
             tier=RoutingTier.EFFICIENT,
+            decision_source="heuristic",
+            routing_family="switchyard",
             **decide_kwargs,
         )
     )
     return engine
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("efficient", "simple"), ("capable", "complex"), (" NewTier ", "newtier"), (None, None)],
+)
+def test_normalize_switchyard_tier_uses_switchyard_vocabulary(raw, expected):
+    assert normalize_switchyard_tier(raw) == expected
 
 
 @pytest.mark.asyncio
@@ -103,6 +114,8 @@ def test_extract_classifier_usage_reads_decision_from_context():
     decision = RoutingDecision(
         model="claude-4-5-haiku",
         tier=RoutingTier.EFFICIENT,
+        decision_source="llm_classifier",
+        routing_family="switchyard",
         classifier=ClassifierCall(model="gpt-5.6-luna", input_tokens=120, output_tokens=40, cost_usd=0.0009),
     )
     ctx = CallContext(run_id="r1", decision=decision)
@@ -120,6 +133,8 @@ def test_extract_classifier_usage_none_when_classifier_not_used():
     decision = RoutingDecision(
         model="claude-4-5-haiku",
         tier=RoutingTier.EFFICIENT,
+        decision_source="heuristic",
+        routing_family="switchyard",
         classifier=None,
     )
     ctx = CallContext(run_id="r1", decision=decision)
@@ -131,30 +146,78 @@ def test_extract_classifier_usage_none_when_no_decision_in_context():
     assert router.extract_classifier_usage(CallContext(run_id="r1")) is None
 
 
-def test_build_switchyard_routing_meta_maps_decision_fields_to_headers():
-    decision = RoutingDecision(
-        model="claude-4-5-haiku",
-        tier=RoutingTier.EFFICIENT,
-        classifier=ClassifierCall(model="gpt-5.6-luna", cost_usd=0.0009),
-    )
-    meta = build_switchyard_routing_meta(decision, capable_model="claude-4-6-sonnet")
-    headers = meta.to_headers()
-    assert headers["x-codemie-routed-model"] == "claude-4-5-haiku"
-    assert headers["x-codemie-requested-model"] == "claude-4-6-sonnet"
-    assert headers["x-codemie-routing-tier"] == "efficient"
-    assert headers["x-codemie-routing-classifier-model"] == "gpt-5.6-luna"
-    assert headers["x-codemie-routing-classifier-cost-usd"] == "0.0009"
+def test_router_routing_family_is_switchyard():
+    assert SwitchyardRouter(_make_engine()).routing_family == "switchyard"
 
 
-def test_build_routing_meta_returns_full_header_set():
-    """SwitchyardRouter.build_routing_meta reads capable_model off its own engine — the
-    proxy path never needs to know that field exists on the engine, not on RoutingDecision."""
+def test_routing_info_populates_typed_routing_dimensions():
+    """The typed routing dimensions consumed by routing analytics (requested_model, tier,
+    classifier token counts) must be on RoutingInfo itself — routing_call_usage reads the
+    typed fields directly, and the client-facing headers (see enterprise/switchyard/proxy.py)
+    are built from these same typed fields, not a separate passthrough bag."""
     router = SwitchyardRouter(_make_engine())
     decision = RoutingDecision(
         model="claude-4-5-haiku",
         tier=RoutingTier.EFFICIENT,
-        classifier=ClassifierCall(cost_usd=0.0009),
+        decision_source="llm_classifier",
+        routing_family="switchyard",
+        classifier=ClassifierCall(
+            model="gpt-5.6-luna", input_tokens=120, output_tokens=40, cached_tokens=15, cost_usd=0.0009
+        ),
     )
-    headers = router.build_routing_meta(decision)
-    assert headers["x-codemie-requested-model"] == "claude-4-6-sonnet"
-    assert headers["x-codemie-routing-tier"] == "efficient"
+
+    info = router.routing_info(decision)
+
+    assert info.routed_model == "claude-4-5-haiku"
+    assert info.requested_model == "claude-4-6-sonnet"
+    assert info.tier == "simple"
+    assert info.routing_tier_raw == RoutingTier.EFFICIENT
+    assert info.classifier_input_tokens == 120
+    assert info.classifier_output_tokens == 40
+    assert info.classifier_cached_tokens == 15
+    assert info.classifier_cost_usd == 0.0009
+    assert info.decision_source == "llm-classifier"
+    assert info.routing_family == "switchyard"
+    assert info.router_type == "stage"  # _make_engine defaults to signal mode
+    assert info.classifier_model == "gpt-5.6-luna"
+
+
+def test_routing_info_router_type_is_composite_in_classifier_mode():
+    """router_type reflects the engine's own routing_mode config ("stage" vs "composite"),
+    independent of decision_source (which reflects whether the classifier fired for THIS
+    call) — a classifier-mode engine reports "composite" even on a decision it settled via
+    signals alone."""
+    router = SwitchyardRouter(_make_engine(routing_mode="classifier"))
+    decision = RoutingDecision(
+        model="claude-4-5-haiku",
+        tier=RoutingTier.EFFICIENT,
+        decision_source="heuristic",
+        routing_family="switchyard",
+        classifier=None,
+    )
+
+    info = router.routing_info(decision)
+
+    assert info.router_type == "composite"
+
+
+def test_routing_info_without_classifier_leaves_token_fields_none():
+    router = SwitchyardRouter(_make_engine())
+    decision = RoutingDecision(
+        model="claude-4-5-haiku",
+        tier=RoutingTier.EFFICIENT,
+        decision_source="heuristic",
+        routing_family="switchyard",
+        classifier=None,
+    )
+
+    info = router.routing_info(decision)
+
+    assert info.tier == "simple"
+    assert info.routing_tier_raw == RoutingTier.EFFICIENT
+    assert info.classifier_input_tokens is None
+    assert info.classifier_output_tokens is None
+    assert info.classifier_cached_tokens is None
+    assert info.classifier_cost_usd is None
+    assert info.decision_source == "heuristic"
+    assert info.routing_family == "switchyard"

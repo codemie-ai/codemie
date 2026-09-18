@@ -62,6 +62,14 @@ class RoutingTier(StrEnum):
     EFFICIENT = "efficient"
 
 
+def _decision_source_for(classifier_call: ClassifierCall | None) -> str:
+    """Which mechanism decided a non-fallback RoutingDecision: the LLM classifier sub-call, or
+    signal-based heuristics alone. Single source of truth for this, set at decide()-time —
+    SwitchyardRouter.routing_info() used to recompute the same thing locally from
+    decision.classifier; now it just reads decision.decision_source instead."""
+    return "llm_classifier" if classifier_call is not None else "heuristic"
+
+
 class ProxySwitchyardRouter:
     """Stateless Switchyard routing backed by libsy.algorithms.stage_router.
 
@@ -93,14 +101,15 @@ class ProxySwitchyardRouter:
     def _fallback_decision(self, reason: str) -> RoutingDecision:
         """Escalate to capable when routing can't run to completion (compaction/error/no-decision).
 
-        *reason* is logged (not stored — RoutingDecision carries no decision-source field)
-        so the "no_decision" case, which has no other log line at its call site, still shows
-        up in observability.
+        *reason* becomes RoutingDecision.decision_source, so the "no_decision" case — which has
+        no other log line at its call site — now shows up in routing metadata, not just logs.
         """
         logger.info("[SWITCHYARD-PROXY] Fallback to capable: reason=%s", reason)
         return RoutingDecision(
             model=self.capable_model,
             tier=RoutingTier.CAPABLE,
+            decision_source=reason,
+            routing_family="switchyard",
         )
 
     def _build_classifier(self) -> tuple[_ClassifierLlmClient | None, libsy.LlmFallback | None]:
@@ -281,6 +290,8 @@ class ProxySwitchyardRouter:
         return RoutingDecision(
             model=chosen,
             tier=tier,
+            decision_source=_decision_source_for(classifier_call),
+            routing_family="switchyard",
             classifier=classifier_call,
         )
 

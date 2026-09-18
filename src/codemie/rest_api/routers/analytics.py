@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from functools import wraps
 from typing import Any, Literal
 
-from fastapi import APIRouter, Body, Depends, Query, status
+from fastapi import APIRouter, Body, Depends, Path, Query, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
@@ -2602,7 +2602,7 @@ async def post_ai_adoption_assistant_reusability_detail(
     ```
     """
     # Validate user has access to project
-    if not (user.is_admin or getattr(user, "is_auditor", False)):
+    if not (user.is_admin_or_maintainer or getattr(user, "is_auditor", False)):
         accessible_projects = set(user.project_names or []) | set(user.admin_project_names or [])
         if request.project not in accessible_projects:
             raise ExtendedHTTPException(
@@ -2688,7 +2688,7 @@ async def post_ai_adoption_workflow_reusability_detail(
     ```
     """
     # Validate user has access to project
-    if not (user.is_admin or getattr(user, "is_auditor", False)):
+    if not (user.is_admin_or_maintainer or getattr(user, "is_auditor", False)):
         accessible_projects = set(user.project_names or []) | set(user.admin_project_names or [])
         if request.project not in accessible_projects:
             raise ExtendedHTTPException(
@@ -2776,7 +2776,7 @@ async def post_ai_adoption_datasource_reusability_detail(
     ```
     """
     # Validate user has access to project
-    if not (user.is_admin or getattr(user, "is_auditor", False)):
+    if not (user.is_admin_or_maintainer or getattr(user, "is_auditor", False)):
         accessible_projects = set(user.project_names or []) | set(user.admin_project_names or [])
         if request.project not in accessible_projects:
             raise ExtendedHTTPException(
@@ -3409,7 +3409,7 @@ async def get_leaderboard_user_detail(
     season_key: str | None = Query(None, description=LEADERBOARD_SEASON_KEY_DESC),
 ) -> JSONResponse:
     """Get detailed leaderboard data for a specific user."""
-    if not (user.is_admin or getattr(user, "is_auditor", False)):
+    if not (user.is_admin_or_maintainer or getattr(user, "is_auditor", False)):
         raise ExtendedHTTPException(
             code=status.HTTP_403_FORBIDDEN,
             message=ERROR_MSG_ACCESS_DENIED,
@@ -3609,3 +3609,290 @@ async def get_leaderboard_framework(
     service = AnalyticsService(user)
     data = await service.get_leaderboard_framework()
     return _create_response(data, AnalyticsDetailResponse)
+
+
+@router.get(
+    "/routing/summary",
+    status_code=status.HTTP_200_OK,
+    response_model=SummariesResponse,
+    response_model_by_alias=True,
+    summary="Get routing analytics summary",
+    description="Retrieve routing analytics summary: session count, request count, and classifier cost.",
+)
+@handle_analytics_errors("routing summary analytics")
+async def get_routing_summary(
+    user: User = Depends(authenticate),
+    params: AnalyticsFilterParams = Depends(),
+) -> JSONResponse:
+    """Get routing analytics summary: session count, request count, classifier cost."""
+    service = AnalyticsService(user)
+    data = await service.get_routing_summary(
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+    )
+    return _create_response(data, SummariesResponse)
+
+
+@router.get(
+    "/routing/sessions",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get routing sessions",
+    description="Retrieve model switches across all sessions.",
+)
+@handle_analytics_errors("routing sessions analytics")
+async def get_routing_sessions(
+    user: User = Depends(authenticate),
+    params: AnalyticsQueryParams = Depends(),
+) -> JSONResponse:
+    """Get model switches across all sessions."""
+    service = AnalyticsService(user)
+    data = await service.get_model_switches(
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/routing/decisions",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get routing decision timeline",
+    description="Retrieve individual routing decisions for routing analytics visualizations.",
+)
+@handle_analytics_errors("routing decision timeline analytics")
+async def get_routing_decisions(
+    user: User = Depends(authenticate),
+    params: AnalyticsQueryParams = Depends(),
+) -> JSONResponse:
+    """Get individual routing decisions for the routing timeline chart."""
+    service = AnalyticsService(user)
+    data = await service.get_decision_timeline(
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/routing/activity",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get routing activity over time",
+)
+@handle_analytics_errors("routing activity analytics")
+async def get_routing_activity(
+    user: User = Depends(authenticate),
+    params: AnalyticsQueryParams = Depends(),
+) -> JSONResponse:
+    """Get routing request volume over time, grouped by routing tier."""
+    service = AnalyticsService(user)
+    data = await service.get_routing_activity(
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/routing/paths",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get grouped routing paths",
+)
+@handle_analytics_errors("routing paths analytics")
+async def get_routing_paths(
+    user: User = Depends(authenticate),
+    params: AnalyticsQueryParams = Depends(),
+) -> JSONResponse:
+    """Get router, routed-model, and tier path metrics."""
+    service = AnalyticsService(user)
+    data = await service.get_routing_paths(
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/routing/routed-model-distribution",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get routed model distribution",
+)
+@handle_analytics_errors("routed model distribution analytics")
+async def get_routed_model_distribution(
+    user: User = Depends(authenticate),
+    params: AnalyticsQueryParams = Depends(),
+) -> JSONResponse:
+    service = AnalyticsService(user)
+    data = await service.get_routed_model_distribution(
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/routing/requested-model-distribution",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get router distribution",
+)
+@handle_analytics_errors("router distribution analytics")
+async def get_requested_model_distribution(
+    user: User = Depends(authenticate),
+    params: AnalyticsQueryParams = Depends(),
+) -> JSONResponse:
+    service = AnalyticsService(user)
+    data = await service.get_requested_model_distribution(
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/routing/sessions/{session_id}/switches",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get model switches for a session",
+    description="Retrieve model switches for a specific session.",
+)
+@handle_analytics_errors("routing session switches analytics")
+async def get_routing_session_switches(
+    session_id: str = Path(..., description="Session identifier"),
+    user: User = Depends(authenticate),
+    params: AnalyticsQueryParams = Depends(),
+) -> JSONResponse:
+    """Get model switches for a specific session."""
+    service = AnalyticsService(user)
+    data = await service.get_model_switches(
+        session_id=session_id,
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/routing/tier-distribution",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get routing tier distribution",
+    description="Retrieve routing tier distribution analytics.",
+)
+@handle_analytics_errors("routing tier distribution analytics")
+async def get_routing_tier_distribution(
+    user: User = Depends(authenticate),
+    params: AnalyticsQueryParams = Depends(),
+) -> JSONResponse:
+    """Get routing tier distribution."""
+    service = AnalyticsService(user)
+    data = await service.get_tier_distribution(
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/routing/decision-source-distribution",
+    status_code=status.HTTP_200_OK,
+    response_model=TabularResponse,
+    response_model_by_alias=True,
+    summary="Get routing decision source distribution",
+    description="Retrieve routing decision source distribution analytics.",
+)
+@handle_analytics_errors("routing decision source distribution analytics")
+async def get_routing_decision_source_distribution(
+    user: User = Depends(authenticate),
+    params: AnalyticsQueryParams = Depends(),
+) -> JSONResponse:
+    """Get routing decision source distribution."""
+    service = AnalyticsService(user)
+    data = await service.get_decision_source_distribution(
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+        page=params.page,
+        per_page=params.per_page,
+    )
+    return _create_response(data, TabularResponse)
+
+
+@router.get(
+    "/routing/classifier-overhead",
+    status_code=status.HTTP_200_OK,
+    response_model=SummariesResponse,
+    response_model_by_alias=True,
+    summary="Get routing classifier overhead",
+    description="Retrieve routing classifier overhead: cost and token totals.",
+)
+@handle_analytics_errors("routing classifier overhead analytics")
+async def get_routing_classifier_overhead(
+    user: User = Depends(authenticate),
+    params: AnalyticsFilterParams = Depends(),
+) -> JSONResponse:
+    """Get routing classifier overhead: cost and token totals."""
+    service = AnalyticsService(user)
+    data = await service.get_classifier_overhead(
+        time_period=params.time_period,
+        start_date=params.start_date,
+        end_date=params.end_date,
+        users=params.users_list,
+        projects=params.projects_list,
+    )
+    return _create_response(data, SummariesResponse)

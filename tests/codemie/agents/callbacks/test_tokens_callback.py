@@ -654,6 +654,8 @@ def _make_switchyard_decision(**overrides: object):
     base = RoutingDecision(
         model="claude-haiku-4-5-20251001",
         tier="efficient",
+        decision_source="llm_classifier",
+        routing_family="switchyard",
     )
     return dataclasses.replace(base, **overrides)
 
@@ -793,6 +795,8 @@ async def test_on_llm_end_uses_stashed_router_when_present():
     decision = RoutingDecision(
         model="claude-4-5-haiku",
         tier="efficient",
+        decision_source="llm_classifier",
+        routing_family="switchyard",
     )
     run_id = uuid4()
     callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={"_routing_ctx": (router, decision)})
@@ -805,7 +809,15 @@ async def test_on_llm_end_uses_stashed_router_when_present():
     router.extract_classifier_usage.assert_called_once()
     mock_update.assert_called_once()
     llm_run = mock_update.call_args.kwargs["llm_run"]
-    assert llm_run.routing == RoutingInfo(routed_model="claude-4-5-haiku")
+    assert llm_run.routing == RoutingInfo(
+        routed_model="claude-4-5-haiku",
+        routed_input_tokens=10,
+        routed_output_tokens=5,
+        routed_cached_tokens=0,
+        routed_cache_creation_tokens=0,
+        routed_total_tokens=15,
+        routed_cache_hit=False,
+    )
 
 
 @pytest.mark.asyncio
@@ -825,3 +837,80 @@ async def test_on_llm_end_falls_back_to_create_router_when_nothing_stashed():
 
     mock_create.assert_called_once_with("gpt-4.1")
     fallback_router.extract.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_on_llm_end_resolves_counterfactual_from_router_alias():
+    """Agent usage tracking resolves counterfactual pricing from requested router alias."""
+    callback = TokensCalculationCallback(request_id="req-1", llm_model="gpt-smart-router")
+    router = MagicMock()
+    router.extract.return_value = RoutingInfo(
+        routed_model="gpt-5.6-luna-2026-07-09",
+        requested_model="gpt-smart-router",
+        tier="SIMPLE",
+        decision_source="llm_classifier",
+        classifier_cost_usd=0.0005,
+    )
+    router.extract_classifier_usage.return_value = None
+    run_id = uuid4()
+    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={"_routing_ctx": (router, None)})
+
+    with (
+        patch(
+            "codemie.enterprise.litellm.routing_headers.resolve_counterfactual_model",
+            return_value="gpt-5.6-terra-2026-07-09",
+        ) as resolve_counterfactual,
+        patch("codemie.agents.callbacks.tokens_callback.calculate_token_cost", return_value=(0.002, 0.0, 0.0)),
+        patch("codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost"),
+        patch("codemie.service.request_summary_manager.request_summary_manager.update_llm_run") as mock_update,
+    ):
+        await callback.on_llm_end(_llm_result(), run_id=run_id)
+
+    resolve_counterfactual.assert_called_once_with("gpt-smart-router")
+    routing = mock_update.call_args.kwargs["llm_run"].routing
+    assert routing.requested_model == "gpt-smart-router"
+    assert routing.counterfactual_model == "gpt-5.6-terra-2026-07-09"
+    assert routing.routed_input_tokens == 10
+    assert routing.routed_output_tokens == 5
+    assert routing.routed_cached_tokens == 0
+    assert routing.routed_cache_creation_tokens == 0
+    assert routing.routed_total_tokens == 15
+    assert routing.original_cost_usd == 0.0025
+    assert routing.estimated_max_cost_usd == 0.002
+    assert routing.potential_savings_usd == -0.0005
+
+
+@pytest.mark.asyncio
+async def test_on_llm_end_records_routed_cache_hit_without_model_cost():
+    """A routed whole-response cache hit remains observable but costs no model spend."""
+    callback = TokensCalculationCallback(request_id="req-1", llm_model="gpt-smart-router")
+    router = MagicMock()
+    router.extract.return_value = RoutingInfo(
+        routed_model="gpt-5.6-luna-2026-07-09",
+        requested_model="gpt-smart-router",
+        tier="SIMPLE",
+    )
+    router.extract_classifier_usage.return_value = None
+    run_id = uuid4()
+    callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={"_routing_ctx": (router, None)})
+    message = AIMessage(
+        content="Cached response",
+        usage_metadata={"input_tokens": 11, "output_tokens": 5, "total_tokens": 16},
+        response_metadata={"cache_hit": True},
+    )
+
+    with (
+        patch("codemie.agents.callbacks.tokens_callback.calculate_token_cost", return_value=(0.00902, 0.0, 0.0)),
+        patch("codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost"),
+        patch("codemie.service.request_summary_manager.request_summary_manager.update_llm_run") as mock_update,
+    ):
+        await callback.on_llm_end(
+            response=LLMResult(generations=[[ChatGeneration(message=message)]]),
+            run_id=run_id,
+        )
+
+    llm_run = mock_update.call_args.kwargs["llm_run"]
+    assert llm_run.money_spent == 0.0
+    assert llm_run.routing.routed_cache_hit is True
+    assert llm_run.routing.routed_input_tokens == 11
+    assert llm_run.routing.routed_output_tokens == 5

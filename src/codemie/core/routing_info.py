@@ -15,8 +15,9 @@
 """Canonical routing metadata value-object and header-codec mixin.
 
 Pure DTOs, zero business logic: ``RoutingInfo`` (the router-agnostic value carried on domain
-models), ``ClassifierUsage``, and ``RoutingHeaderCodec`` (shared by ``SwitchyardMeta`` and
-``LiteLLMRouterMeta`` for HTTP-header (de)serialization). No import-time OR runtime
+models), ``ClassifierUsage``, and ``RoutingHeaderCodec`` (the generic to_headers/from_headers
+mixin used by ``LiteLLMRouterHeaders`` to parse LiteLLM's own wire vocabulary — see
+``enterprise/litellm/litellm_router_headers.py``). No import-time OR runtime
 dependency on switchyard/litellm/service — genuinely a leaf module. This includes
 ``_ROUTING_INFO_KEY``/``stamp_routing_info``: they live here, next to ``RoutingInfo`` itself,
 rather than in ``core/router_chat_model.py`` (which stamps them onto a response) — the
@@ -39,7 +40,7 @@ from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast
 from urllib.parse import quote
 
 from langchain_core.messages import AIMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # Key under which the canonical RoutingInfo (not a router-specific dataclass) is stamped onto
 # an AIMessage's response_metadata after a routed call returns, by RouterChatModel._agenerate
@@ -89,9 +90,10 @@ else:
 class RoutingHeaderCodec:
     """Mixin giving a routing-metadata dataclass ``to_headers``/``from_headers``.
 
-    Shared by ``SwitchyardMeta`` and ``LiteLLMRouterMeta`` so the two independent routing
-    backends serialise metadata to HTTP headers identically, instead of each maintaining its
-    own copy of the encoding/parsing logic. Subclasses declare:
+    Generic (de)serialization logic for a wire-format dataclass, kept independent of any one
+    routing backend's field set. ``LiteLLMRouterHeaders`` (enterprise/litellm) is the sole
+    production subclass today, using ``from_headers`` to parse LiteLLM's own external
+    x-litellm-router-*/x-litellm-classifier-* response headers. Subclasses declare:
       - ``FIELD_TO_HEADER``: dataclass field name -> header name (required)
       - ``INT_FIELDS`` / ``FLOAT_FIELDS``: field names that need numeric parsing in
         ``from_headers`` (header values otherwise arrive as strings)
@@ -132,46 +134,110 @@ class RoutingHeaderCodec:
         return cast(T, dataclasses.replace(cls(), **kwargs))
 
 
+def _sum_or_none(a: float | int | None, b: float | int | None) -> float | int | None:
+    """Return a + b, treating None as 0.  Returns None only when BOTH are None."""
+    if a is None and b is None:
+        return None
+    return (a if a is not None else 0) + (b if b is not None else 0)
+
+
+def normalize_decision_source(raw: str | None) -> str | None:
+    """Normalize routing decision sources to lower-case kebab-case."""
+    if raw is None:
+        return None
+    return str(raw).strip().lower().replace("_", "-")
+
+
 class RoutingInfo(BaseModel):
     """Routing metadata carried on domain models and produced by extractors.
 
     Extractors populate only what they read from the response (``routed_model``,
     ``classifier_cost_usd``). ``routed_model_label`` is filled by the label layer
     after composition.
-
-    ``meta`` is an opaque, mechanism-specific passthrough bag (header-name -> already
-    -formatted string value). It exists purely for forwarding: the router that produces it
-    is the only code allowed to populate or read specific keys out of it (e.g.
-    SwitchyardRouter/apply_router_routing stash the full x-codemie-routing-* header set
-    there so the proxy can re-emit it). Generic consumers (callbacks, RouterChatModel) must
-    never branch on its contents — that would just move the RoutingDecision-leak problem
-    from typed attributes into stringly-typed dict keys.
     """
 
     routed_model: str | None = None
     routed_model_label: str | None = None
     classifier_cost_usd: float | None = None
-    meta: dict[str, str] = Field(default_factory=dict)
+    requested_model: str | None = None
+    tier: str | None = None
+    routing_tier_raw: str | None = None
+    decision_source: str | None = None
+    routing_source: str | None = None
+    confidence: float | None = None
+    # Plain str, not a closed Literal: inversion of control — each concrete Router
+    # self-declares its own identity (see Router.routing_family in core/router.py), so this
+    # leaf module never needs to know the full set of mechanisms that will ever exist.
+    routing_family: str | None = None
+    routing_cost_known: bool | None = None
+    classifier_model: str | None = None
+    router_type: str | None = None
+    router_score: float | None = None
+    classifier_input_tokens: int | None = None
+    classifier_output_tokens: int | None = None
+    classifier_cached_tokens: int | None = None
+    classifier_cache_creation_tokens: int | None = None
+    classifier_total_tokens: int | None = None
+    routed_input_tokens: int | None = None
+    routed_output_tokens: int | None = None
+    routed_cached_tokens: int | None = None
+    routed_cache_creation_tokens: int | None = None
+    routed_total_tokens: int | None = None
+    routed_cache_hit: bool | None = None
+    counterfactual_model: str | None = None
+    original_cost_usd: float | None = None
+    estimated_max_cost_usd: float | None = None
+    potential_savings_usd: float | None = None
+
+    # Fields that accumulate across multiple LLM runs in one request (None treated as 0;
+    # result is None only when both sides are None) instead of using last-non-None semantics.
+    # Everything else declared above is a last-non-None scalar (a name/id/label/flag, not a
+    # quantity to sum) and is handled generically in merged_over() without needing to be listed
+    # here. Kept as the single explicit list so adding a field to the model above never
+    # silently changes is_empty()/merged_over() behaviour for it — is_empty() derives from
+    # model_fields directly, and merged_over() only needs this one set to know which of those
+    # fields to sum rather than overlay.
+    _ADDITIVE_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "classifier_cost_usd",
+            "classifier_input_tokens",
+            "classifier_output_tokens",
+            "classifier_cached_tokens",
+            "classifier_cache_creation_tokens",
+            "classifier_total_tokens",
+            "routed_input_tokens",
+            "routed_output_tokens",
+            "routed_cached_tokens",
+            "routed_cache_creation_tokens",
+            "routed_total_tokens",
+            "original_cost_usd",
+            "estimated_max_cost_usd",
+            "potential_savings_usd",
+        }
+    )
 
     def is_empty(self) -> bool:
-        return self.routed_model is None and self.routed_model_label is None and self.classifier_cost_usd is None
+        return all(value is None for value in self.__dict__.values())
 
     def merged_over(self, base: "RoutingInfo") -> "RoutingInfo":
-        """Field-wise overlay: this instance's non-None fields win over ``base``.
+        """Field-wise overlay: non-None scalar fields from ``self`` win over ``base``.
 
-        ``meta`` merges as a dict union with this instance's keys winning on collision,
-        consistent with how every other field resolves.
+        Additive fields (see ``_ADDITIVE_FIELDS`` — classifier_cost_usd, classifier_*_tokens,
+        routed_*_tokens, and the three USD savings fields) are summed: None is treated as 0;
+        result is None only when both sides are None. This ensures that multi-LLM-run requests
+        correctly accumulate total costs and savings across all calls. Every other field
+        (including ``counterfactual_model``, a name rather than a quantity) uses last-non-None
+        semantics.
         """
-        return RoutingInfo(
-            routed_model=self.routed_model if self.routed_model is not None else base.routed_model,
-            routed_model_label=(
-                self.routed_model_label if self.routed_model_label is not None else base.routed_model_label
-            ),
-            classifier_cost_usd=(
-                self.classifier_cost_usd if self.classifier_cost_usd is not None else base.classifier_cost_usd
-            ),
-            meta={**base.meta, **self.meta},
-        )
+        merged: dict[str, object] = {}
+        for field_name in type(self).model_fields:
+            self_value = getattr(self, field_name)
+            base_value = getattr(base, field_name)
+            if field_name in self._ADDITIVE_FIELDS:
+                merged[field_name] = _sum_or_none(self_value, base_value)
+            else:
+                merged[field_name] = self_value if self_value is not None else base_value
+        return RoutingInfo(**merged)
 
     @classmethod
     def from_response(cls, response: object) -> "RoutingInfo":

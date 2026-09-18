@@ -50,6 +50,7 @@ from codemie.enterprise.litellm.proxy_router import (
     _check_cli_version,
     _extract_model,
     _extract_request_info,
+    _finalize_stream_usage_tracking,
     _get_integration_api_key,
     _handle_error_response,
     _is_models_list_endpoint,
@@ -1552,6 +1553,181 @@ class TestStreamingResponseWithUsageTracking:
         # Should not track usage when no tokens
         mock_background_tasks.add_task.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_routing_metric_added_when_routing_info_provided(self):
+        """RoutingMonitoringService.send_routing_metric is added to background_tasks when the
+        decide()-time RoutingInfo is threaded through the streaming path."""
+        from codemie.core.routing_info import RoutingInfo
+        from codemie.enterprise.litellm.proxy_router import _streaming_response_with_usage_tracking
+        from codemie.service.monitoring.routing_monitoring_service import RoutingMonitoringService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = httpx.Headers({"content-type": "text/event-stream"})
+
+        async def mock_iter():
+            yield b'data: {"choices": [{"delta": {"content": "Hi"}}]}\n\n'
+            yield b'data: [DONE]\n\n'
+
+        mock_response.aiter_raw = mock_iter
+        mock_response.aclose = AsyncMock()
+
+        mock_user = MagicMock()
+        routing_info = RoutingInfo(routed_model="haiku", tier="efficient", classifier_cost_usd=0.0001)
+        mock_background_tasks = MagicMock()
+
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.LLM_PROXY_TRACK_USAGE = True
+            with patch("codemie.enterprise.litellm.proxy_router._parse_usage_with_cost") as mock_parse:
+                mock_parse.return_value = {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cached_tokens": 0,
+                    "money_spent": 0.001,
+                    "cached_tokens_money_spent": 0.0,
+                }
+                async for _ in _streaming_response_with_usage_tracking(
+                    downstream_response=mock_response,
+                    user=mock_user,
+                    endpoint="/v1/chat/completions",
+                    request_info={"session_id": "s1", "request_id": "r1"},
+                    llm_model="haiku",
+                    background_tasks=mock_background_tasks,
+                    routing_info=routing_info,
+                ):
+                    pass
+
+        # find add_task calls for send_routing_metric
+        routing_calls = [
+            c
+            for c in mock_background_tasks.add_task.call_args_list
+            if c.args and c.args[0] == RoutingMonitoringService.send_routing_metric
+        ]
+        assert len(routing_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_routing_metric_not_added_when_no_routing_info(self):
+        """No routing metric background task when routing_info is None and no LiteLLM router headers."""
+        from codemie.enterprise.litellm.proxy_router import _streaming_response_with_usage_tracking
+        from codemie.service.monitoring.routing_monitoring_service import RoutingMonitoringService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = httpx.Headers({"content-type": "text/event-stream"})
+
+        async def mock_iter():
+            yield b'data: [DONE]\n\n'
+
+        mock_response.aiter_raw = mock_iter
+        mock_response.aclose = AsyncMock()
+        mock_user = MagicMock()
+        mock_background_tasks = MagicMock()
+
+        with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
+            mock_config.LLM_PROXY_TRACK_USAGE = True
+            with patch("codemie.enterprise.litellm.proxy_router._parse_usage_with_cost") as mock_parse:
+                mock_parse.return_value = {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "cached_tokens": 0,
+                    "money_spent": 0.001,
+                    "cached_tokens_money_spent": 0.0,
+                }
+                async for _ in _streaming_response_with_usage_tracking(
+                    downstream_response=mock_response,
+                    user=mock_user,
+                    endpoint="/v1/chat/completions",
+                    request_info={},
+                    llm_model="gpt-4",
+                    background_tasks=mock_background_tasks,
+                    routing_info=None,
+                ):
+                    pass
+
+        routing_calls = [
+            c
+            for c in mock_background_tasks.add_task.call_args_list
+            if c.args and c.args[0] == RoutingMonitoringService.send_routing_metric
+        ]
+        assert len(routing_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_counterfactual_uses_litellm_router_alias(self):
+        """Counterfactual lookup uses the auto-router alias, not its selected model."""
+        from codemie.service.monitoring.routing_monitoring_service import RoutingMonitoringService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.headers = httpx.Headers(
+            {
+                "content-type": "text/event-stream",
+                "x-litellm-router-tier": "SIMPLE",
+                "x-litellm-router-routed-model": "gpt-5.6-luna-2026-07-09",
+                "x-litellm-router-model-name": "gpt-smart-router",
+                "x-litellm-classifier-cost": "0.0005",
+                "x-litellm-cache-hit": "true",
+            }
+        )
+        mock_background_tasks = MagicMock()
+
+        with (
+            patch(
+                "codemie.enterprise.litellm.proxy_router._parse_usage_with_cost", new_callable=AsyncMock
+            ) as mock_parse,
+            patch(
+                "codemie.enterprise.litellm.proxy_router.resolve_counterfactual_model",
+                side_effect=lambda model: "gpt-5.6-terra-2026-07-09" if model == "gpt-smart-router" else None,
+            ) as resolve_counterfactual,
+            patch(
+                "codemie.enterprise.litellm.proxy_router.calculate_token_cost",
+                return_value=(0.002, 0.0, 0.0),
+            ),
+        ):
+            mock_parse.return_value = {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cached_tokens": 0,
+                "money_spent": 0.001,
+                "cached_tokens_money_spent": 0.0,
+                "cache_hit": True,
+            }
+            await _finalize_stream_usage_tracking(
+                downstream_response=mock_response,
+                user=MagicMock(),
+                endpoint="/v1/chat/completions",
+                request_info={},
+                llm_model="gpt-smart-router",
+                background_tasks=mock_background_tasks,
+                buffer=bytearray(),
+                session_id="s1",
+                request_id="r1",
+            )
+
+        resolve_counterfactual.assert_called_once_with("gpt-smart-router")
+        routing_calls = [
+            call
+            for call in mock_background_tasks.add_task.call_args_list
+            if call.args and call.args[0] == RoutingMonitoringService.send_routing_metric
+        ]
+        assert len(routing_calls) == 1
+        routing = routing_calls[0].kwargs["routing"]
+        assert routing.requested_model == "gpt-smart-router"
+        assert routing.routing_family == "litellm"
+        assert routing.tier == "simple"
+        assert routing.routing_tier_raw == "SIMPLE"
+        assert routing.routing_cost_known is True
+        assert routing.counterfactual_model == "gpt-5.6-terra-2026-07-09"
+        assert routing.routed_input_tokens == 10
+        assert routing.routed_output_tokens == 5
+        assert routing.routed_cached_tokens == 0
+        assert routing.routed_cache_creation_tokens == 0
+        assert routing.routed_total_tokens == 15
+        assert routing.routed_cache_hit is True
+        assert routing.classifier_cost_usd == 0.0
+        assert routing.original_cost_usd == 0.0
+        assert routing.estimated_max_cost_usd == 0.0
+        assert routing.potential_savings_usd == 0.0
+
 
 class TestProxyToLLMProxy:
     """Test _proxy_to_llm_proxy main orchestrator."""
@@ -2308,11 +2484,12 @@ class TestProxyResponseHeaderFiltering:
         assert "x-custom-header" in response_headers
         assert response_headers["x-custom-header"] == "should-keep"
 
-    def test_router_headers_pass_through_filter(self):
-        from codemie.enterprise.litellm.litellm_router_meta import LITELLM_ROUTER_HEADERS
+    def test_router_headers_no_longer_pass_through_filter(self):
+        """Raw x-litellm-router-* headers are no longer forwarded to clients at all — the
+        canonical x-codemie-routing-* vocabulary replaces them entirely (see
+        docs/superpowers/specs/2026-09-17-unified-routing-proxy-headers-design.md)."""
         from codemie.enterprise.litellm.proxy_router import (
-            LITELLM_FORWARDED_HEADERS,
-            PROXY_RESPONSE_HOP_BY_HOP_HEADERS,
+            _should_forward_response_header,
         )
 
         downstream_headers = httpx.Headers(
@@ -2331,33 +2508,25 @@ class TestProxyResponseHeaderFiltering:
             }
         )
 
-        response_headers = {
-            k: v
-            for k, v in downstream_headers.items()
-            if (
-                k.lower() not in PROXY_RESPONSE_HOP_BY_HOP_HEADERS
-                and (
-                    not k.lower().startswith("x-litellm-")
-                    or k.lower() in LITELLM_ROUTER_HEADERS
-                    or k.lower() in LITELLM_FORWARDED_HEADERS
-                )
-            )
-        }
+        response_headers = {k: v for k, v in downstream_headers.items() if _should_forward_response_header(k)}
 
-        assert response_headers["x-litellm-router-tier"] == "COMPLEX"
-        assert response_headers["x-litellm-router-cause"] == "llm_classifier"
-        assert response_headers["x-litellm-router-score"] == "0.75"
-        assert response_headers["x-litellm-router-routed-model"] == "claude-sonnet-5"
-        assert response_headers["x-litellm-router-classifier-model"] == "claude-haiku-4-5-20251001"
-        assert response_headers["x-litellm-router-model-name"] == "claude-only-simple-no-aff"
-        assert response_headers["x-litellm-router-type"] == "complexity"
-        assert response_headers["x-litellm-router-signals"] == '["llm-classifier:COMPLEX"]'
+        for header in (
+            "x-litellm-router-tier",
+            "x-litellm-router-cause",
+            "x-litellm-router-score",
+            "x-litellm-router-routed-model",
+            "x-litellm-router-classifier-model",
+            "x-litellm-router-model-name",
+            "x-litellm-router-type",
+            "x-litellm-router-signals",
+        ):
+            assert header not in response_headers
+        # x-litellm-model-name is NOT a router header — LITELLM_FORWARDED_HEADERS, unaffected.
         assert response_headers["x-litellm-model-name"] == "claude-sonnet-5"
-        assert "x-litellm-response-cost" not in response_headers
         assert response_headers["content-type"] == "application/json"
+        assert "x-litellm-response-cost" not in response_headers
 
     def test_non_router_litellm_headers_still_stripped(self):
-        from codemie.enterprise.litellm.litellm_router_meta import LITELLM_ROUTER_HEADERS
         from codemie.enterprise.litellm.proxy_router import (
             LITELLM_FORWARDED_HEADERS,
             PROXY_RESPONSE_HOP_BY_HOP_HEADERS,
@@ -2377,11 +2546,7 @@ class TestProxyResponseHeaderFiltering:
             for k, v in downstream_headers.items()
             if (
                 k.lower() not in PROXY_RESPONSE_HOP_BY_HOP_HEADERS
-                and (
-                    not k.lower().startswith("x-litellm-")
-                    or k.lower() in LITELLM_ROUTER_HEADERS
-                    or k.lower() in LITELLM_FORWARDED_HEADERS
-                )
+                and (not k.lower().startswith("x-litellm-") or k.lower() in LITELLM_FORWARDED_HEADERS)
             )
         }
 
@@ -2389,6 +2554,32 @@ class TestProxyResponseHeaderFiltering:
         assert "x-litellm-version" not in response_headers
         assert "x-litellm-model-id" not in response_headers
         assert "x-litellm-key-spend" not in response_headers
+
+    def test_response_headers_carry_canonical_routing_when_only_litellm_decided(self):
+        """Even when Switchyard never ran (routing_info is None) and only LiteLLM's own
+        auto-router decided, the client must still receive x-codemie-routing-* headers, built by
+        parsing LiteLLM's raw response headers — not the raw x-litellm-router-* vocabulary."""
+        from codemie.enterprise.litellm.proxy_router import _should_forward_response_header
+        from codemie.enterprise.litellm.router import routing_info_from_headers
+        from codemie.enterprise.switchyard.proxy import _routing_info_to_headers
+
+        downstream_headers = httpx.Headers(
+            {
+                "content-type": "application/json",
+                "x-litellm-router-tier": "COMPLEX",
+                "x-litellm-router-cause": "llm_classifier",
+                "x-litellm-router-routed-model": "claude-sonnet-5",
+            }
+        )
+        response_headers = {k: v for k, v in downstream_headers.items() if _should_forward_response_header(k)}
+        client_routing = routing_info_from_headers(downstream_headers)
+        response_headers.update(_routing_info_to_headers(client_routing))
+
+        assert response_headers["x-codemie-routing-tier"] == "complex"
+        assert response_headers["x-codemie-routing-decision-source"] == "llm-classifier"
+        assert response_headers["x-codemie-routed-model"] == "claude-sonnet-5"
+        assert response_headers["x-codemie-routing-family"] == "litellm"
+        assert "x-litellm-router-tier" not in response_headers
 
     def test_should_forward_response_header_directly(self):
         """Exercise the actual production predicate (the tests above re-implement its logic
@@ -2409,9 +2600,12 @@ class TestProxyResponseHeaderFiltering:
         # x-litellm-* internal headers: hidden by default...
         assert _should_forward_response_header("x-litellm-call-id") is False
         assert _should_forward_response_header("x-litellm-key-spend") is False
-        # ...except the explicit allowlist (router headers + LITELLM_FORWARDED_HEADERS).
-        assert _should_forward_response_header("x-litellm-router-tier") is True
-        assert _should_forward_response_header("X-LITELLM-ROUTER-TIER") is True  # case-insensitive
+        # ...router headers are no longer allowlisted — the canonical x-codemie-routing-*
+        # vocabulary replaces them entirely (see docs/superpowers/specs/
+        # 2026-09-17-unified-routing-proxy-headers-design.md).
+        assert _should_forward_response_header("x-litellm-router-tier") is False
+        assert _should_forward_response_header("X-LITELLM-ROUTER-TIER") is False  # case-insensitive
+        # ...except LITELLM_FORWARDED_HEADERS, which is unaffected.
         assert _should_forward_response_header("x-litellm-model-name") is True
 
     def test_header_exposure_policy_is_per_prefix_and_allowlist(self):

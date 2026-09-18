@@ -27,7 +27,6 @@ def _make_router(decision):
     router = MagicMock()
     router.name = "switchyard"
     router.decide = AsyncMock(return_value=decision)
-    router.build_routing_meta = MagicMock(return_value={})
     # Mirrors Router.routing_info's real default (see core/router.py) so RouterChatModel's own
     # stamping behavior can be asserted without re-testing that formula here — it's covered on
     # its own in tests/codemie/core/test_router.py.
@@ -35,7 +34,7 @@ def _make_router(decision):
         side_effect=lambda d: RoutingInfo(
             routed_model=d.model,
             classifier_cost_usd=d.classifier.cost_usd if d.classifier else None,
-            meta=dict(router.build_routing_meta(d)),
+            routing_family=d.routing_family,
         )
     )
     # Default: no post-hoc signal in the response either (the decide()-capable-router case —
@@ -60,6 +59,8 @@ async def test_agenerate_dispatches_to_decided_model():
     decision = RoutingDecision(
         model="claude-4-5-haiku",
         tier="efficient",
+        decision_source="llm_classifier",
+        routing_family="switchyard",
     )
     router = _make_router(decision)
     haiku = _make_candidate("claude-4-5-haiku", "efficient reply")
@@ -98,6 +99,8 @@ async def test_agenerate_stashes_router_and_decision_in_config_metadata():
     decision = RoutingDecision(
         model="claude-4-5-haiku",
         tier="efficient",
+        decision_source="llm_classifier",
+        routing_family="switchyard",
     )
     router = _make_router(decision)
     haiku = _make_candidate("claude-4-5-haiku", "reply")
@@ -117,6 +120,8 @@ async def test_agenerate_stamps_canonical_routing_info_on_response():
     decision = RoutingDecision(
         model="claude-4-5-haiku",
         tier="efficient",
+        decision_source="llm_classifier",
+        routing_family="switchyard",
         classifier=ClassifierCall(cost_usd=0.001),
     )
     router = _make_router(decision)
@@ -128,7 +133,12 @@ async def test_agenerate_stamps_canonical_routing_info_on_response():
     result = await chat_model._agenerate([AIMessage(content="hi")])
 
     stamped = result.generations[0].message.response_metadata[_ROUTING_INFO_KEY]
-    assert stamped == RoutingInfo(routed_model="claude-4-5-haiku", classifier_cost_usd=0.001).model_dump()
+    assert (
+        stamped
+        == RoutingInfo(
+            routed_model="claude-4-5-haiku", classifier_cost_usd=0.001, routing_family="switchyard"
+        ).model_dump()
+    )
 
 
 @pytest.mark.asyncio
@@ -191,7 +201,9 @@ async def test_agenerate_does_not_attach_capture_callback_when_decision_present(
     """The capture callback exists purely to feed extract() for decide()-less routers — a
     decision-bearing call (Switchyard) never calls extract() at all, so attaching it would be
     pure overhead."""
-    decision = RoutingDecision(model="claude-4-5-haiku", tier="efficient")
+    decision = RoutingDecision(
+        model="claude-4-5-haiku", tier="efficient", decision_source="llm_classifier", routing_family="switchyard"
+    )
     router = _make_router(decision)
     haiku = _make_candidate("claude-4-5-haiku", "reply")
     chat_model = RouterChatModel(

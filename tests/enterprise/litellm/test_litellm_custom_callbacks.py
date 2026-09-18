@@ -24,6 +24,7 @@ from cachetools import TTLCache
 from codemie.enterprise.litellm.litellm_custom_callbacks import (
     AutorouterCallback,
     _PROXY_CALL_ID_METADATA_KEY,
+    _routing_decision_headers,
 )
 
 
@@ -33,6 +34,15 @@ def _make_reasoning_item(encrypted_content="ZmFrZQ==", rs_id="rs_abc123"):
 
 def _make_user_item(content="follow up"):
     return {"role": "user", "content": content}
+
+
+def test_default_classifier_cache_expires_entries():
+    from codemie.enterprise.litellm.litellm_custom_callbacks import _ExpiringBoundedCache
+
+    cache = _ExpiringBoundedCache(maxsize=1, ttl=0)
+    cache["call-1"] = {"usage": {}}
+
+    assert "call-1" not in cache
 
 
 @pytest.fixture()
@@ -205,6 +215,15 @@ def full_routing_decision():
 
 
 class TestComplexityRouterHeaders:
+    def test_serializes_routing_decision_headers_without_domain_types(self):
+        headers = _routing_decision_headers({"tier": "COMPLEX", "score": 0.75, "signals": ["llm-classifier:COMPLEX"]})
+
+        assert headers == {
+            "x-litellm-router-tier": "COMPLEX",
+            "x-litellm-router-score": "0.75",
+            "x-litellm-router-signals": '["llm-classifier:COMPLEX"]',
+        }
+
     @pytest.mark.asyncio
     async def test_returns_all_headers_for_full_routing_decision(self, callback, full_routing_decision):
         data = {"metadata": {"routing_decision": full_routing_decision}}
@@ -219,6 +238,35 @@ class TestComplexityRouterHeaders:
         assert headers["x-litellm-router-model-name"] == "claude-only-simple-no-aff"
         assert headers["x-litellm-router-type"] == "complexity"
         assert headers["x-litellm-router-signals"] == json.dumps(["llm-classifier:COMPLEX"])
+
+    @pytest.mark.asyncio
+    async def test_propagates_response_cache_hit(self, callback, full_routing_decision):
+        # Cache hits are read off the logging object's ``caching_details``, which LiteLLM
+        # populates before returning the cached result. The response object cannot be used:
+        # /v1/messages returns a TypedDict with no ``id``/``_hidden_params``.
+        data = {
+            "metadata": {"routing_decision": full_routing_decision},
+            "litellm_logging_obj": MagicMock(caching_details={"cache_hit": True, "cache_duration_ms": 0.1}),
+        }
+
+        headers = await callback.async_post_call_response_headers_hook(
+            data=data, user_api_key_dict=MagicMock(), response={"type": "message", "id": "msg_1"}
+        )
+
+        assert headers["x-litellm-cache-hit"] == "true"
+
+    @pytest.mark.asyncio
+    async def test_omits_cache_hit_header_when_not_cached(self, callback, full_routing_decision):
+        data = {
+            "metadata": {"routing_decision": full_routing_decision},
+            "litellm_logging_obj": MagicMock(caching_details=None),
+        }
+
+        headers = await callback.async_post_call_response_headers_hook(
+            data=data, user_api_key_dict=MagicMock(), response={"type": "message", "id": "msg_1"}
+        )
+
+        assert "x-litellm-cache-hit" not in headers
 
     @pytest.mark.asyncio
     async def test_prefers_litellm_metadata_over_metadata(self, callback, full_routing_decision):

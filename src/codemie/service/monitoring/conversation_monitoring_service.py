@@ -69,7 +69,10 @@ class ConversationMonitoringService(BaseMonitoringService):
             MetricsAttributes.CACHED_TOKENS_MONEY_SPENT: tokens_usage.cached_tokens_money_spent,
             MetricsAttributes.PROJECT: get_current_project(fallback=assistant.project),
             MetricsAttributes.EXECUTION_TIME: time_elapsed,
-            MetricsAttributes.LLM_MODEL: llm_model,
+            # Report the model that actually served the request; the explicit argument may be
+            # an auto-router alias such as gpt-smart-router.
+            MetricsAttributes.LLM_MODEL: (tokens_usage.routing.routed_model if tokens_usage.routing else None)
+            or llm_model,
             MetricsAttributes.CONVERSATION_ID: conversation_id,
             MetricsAttributes.STATUS: status.value,
             **(({MetricsAttributes.REQUEST_ID: request_id}) if request_id else {}),

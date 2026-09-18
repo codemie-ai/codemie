@@ -29,7 +29,7 @@ from codemie.configs.llm_config import (
     SwitchyardConfig,
     SwitchyardTuning,
 )
-from codemie.enterprise.switchyard.engine import get_proxy_switchyard_router
+from codemie.enterprise.switchyard.engine import ProxySwitchyardRouter, RoutingTier, get_proxy_switchyard_router
 
 _ROUTER_NAME = "cap-switchyard-eff-signal"
 
@@ -119,3 +119,48 @@ def test_get_proxy_switchyard_router_returns_none_when_not_configured():
         mock_service.get_llm_routers.return_value = []
         result = get_proxy_switchyard_router(_ROUTER_NAME)
     assert result is None
+
+
+def _make_switchyard_router() -> ProxySwitchyardRouter:
+    return ProxySwitchyardRouter(
+        capable_model="cap",
+        efficient_model="eff",
+        routing_mode="signal",
+        capable_model_deployment_name="cap-dep",
+        efficient_model_deployment_name="eff-dep",
+        tuning=SwitchyardTuning(),
+    )
+
+
+def test_decision_source_for_returns_llm_classifier_when_classifier_used():
+    from codemie.core.router import ClassifierCall
+    from codemie.enterprise.switchyard.engine import _decision_source_for
+
+    assert _decision_source_for(ClassifierCall(model="gpt-5.6-luna")) == "llm_classifier"
+
+
+def test_decision_source_for_returns_heuristic_when_no_classifier():
+    from codemie.enterprise.switchyard.engine import _decision_source_for
+
+    assert _decision_source_for(None) == "heuristic"
+
+
+def test_fallback_decision_sets_decision_source_to_reason():
+    router = _make_switchyard_router()
+    decision = router._fallback_decision("compaction")
+    assert decision.model == "cap"
+    assert decision.tier == RoutingTier.CAPABLE
+    assert decision.decision_source == "compaction"
+    assert decision.routing_family == "switchyard"
+
+
+def test_fallback_decision_router_error_reason():
+    router = _make_switchyard_router()
+    decision = router._fallback_decision("router_error")
+    assert decision.decision_source == "router_error"
+
+
+def test_fallback_decision_no_decision_reason():
+    router = _make_switchyard_router()
+    decision = router._fallback_decision("no_decision")
+    assert decision.decision_source == "no_decision"

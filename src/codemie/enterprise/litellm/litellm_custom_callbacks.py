@@ -60,7 +60,7 @@ is enqueued to GLOBAL_LOGGING_WORKER first.  The worker runs those tasks concurr
 the main model's long HTTP await, ensuring ``_pending_classifier_usage`` is populated before
 the headers hook fires.
 
-``_pending_classifier_usage`` is a process-local ``cachetools.TTLCache`` (bounded size AND
+``_pending_classifier_usage`` is a process-local bounded, expiring cache (bounded size AND
 time-based expiry), not a plain dict. A plain dict with only a size cap silently stops
 recording ANY new classifier usage forever once it fills up with entries that are never popped
 (e.g. requests that error out before ``async_post_call_response_headers_hook`` runs) — those
@@ -84,20 +84,69 @@ process, or move to a shared store, if that ever needs to change.
 import contextlib
 import datetime
 import json
+import time
+from collections import OrderedDict
 from typing import Any, AsyncGenerator, Dict, Optional
+from urllib.parse import quote
 
-from cachetools import TTLCache
 from litellm.caching.dual_cache import DualCache
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.utils import CallTypes
 
-from codemie.enterprise.litellm.litellm_router_meta import LiteLLMRouterMeta
-
 # Key injected into the outer request's metadata by async_pre_call_hook so that
 # the complexity router's _classifier_call_metadata() copies it into the classifier
 # sub-call.  Used to correlate classifier usage with the outer request in callbacks.
 _PROXY_CALL_ID_METADATA_KEY = "codemie_proxy_call_id"
+
+_ROUTER_FIELD_TO_HEADER = {
+    "tier": "x-litellm-router-tier",
+    "cause": "x-litellm-router-cause",
+    "score": "x-litellm-router-score",
+    "routed_model": "x-litellm-router-routed-model",
+    "classifier_model": "x-litellm-router-classifier-model",
+    "router_model_name": "x-litellm-router-model-name",
+    "router_type": "x-litellm-router-type",
+    "signals": "x-litellm-router-signals",
+    "escalated": "x-litellm-router-escalated",
+    "escalation_keyword": "x-litellm-router-escalation-keyword",
+    "classifier_prompt_tokens": "x-litellm-classifier-prompt-tokens",
+    "classifier_completion_tokens": "x-litellm-classifier-completion-tokens",
+    "classifier_total_tokens": "x-litellm-classifier-total-tokens",
+    "classifier_cost_usd": "x-litellm-classifier-cost",
+}
+_ROUTER_INT_FIELDS = {"classifier_prompt_tokens", "classifier_completion_tokens", "classifier_total_tokens"}
+_ROUTER_FLOAT_FIELDS = {"score", "classifier_cost_usd"}
+# Deliberately duplicated from codemie.core.routing_info._HEADER_SAFE_CHARS/encode_header_value
+# rather than imported: this module is loaded directly by the LiteLLM proxy process as a
+# CustomLogger config target (see litellm_config.yaml), so it must have zero import-time or
+# runtime dependency on CodeMie's own source tree. Keep both charsets in sync if either changes.
+_HEADER_SAFE_CHARS = " " + "".join(chr(code) for code in range(0x21, 0x7F) if chr(code) != "%")
+
+
+def _routing_decision_headers(decision: dict[str, object]) -> dict[str, str]:
+    """Serialize routing decisions without importing CodeMie-only domain modules."""
+    headers: dict[str, str] = {}
+    for field_name, header_name in _ROUTER_FIELD_TO_HEADER.items():
+        value = decision.get(field_name)
+        if value is None:
+            continue
+        if field_name == "signals":
+            raw = json.dumps(value)
+        elif field_name in _ROUTER_INT_FIELDS:
+            if not isinstance(value, int):
+                continue
+            raw = str(value)
+        elif field_name in _ROUTER_FLOAT_FIELDS:
+            if not isinstance(value, (int, float)):
+                continue
+            raw = f"{float(value):.6g}"
+        elif isinstance(value, str):
+            raw = value
+        else:
+            continue
+        headers[header_name] = quote(raw, safe=_HEADER_SAFE_CHARS)
+    return headers
 
 
 class BedrockCostModelFixLogger(CustomLogger):
@@ -182,11 +231,40 @@ def _extract_usage(response_obj: object) -> Optional[dict]:
 # orphans (e.g. requests that errored before that hook ran) so they don't permanently occupy
 # a slot in the bounded cache. See the module docstring for the correlation flow and the
 # known limitation (process-local, does not survive multi-replica LiteLLM deployments).
+class _ExpiringBoundedCache:
+    def __init__(self, maxsize: int, ttl: float) -> None:
+        self._maxsize = maxsize
+        self._ttl = ttl
+        self._entries: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+
+    def _purge_expired(self) -> None:
+        now = time.monotonic()
+        while self._entries:
+            key, (expires_at, _) = next(iter(self._entries.items()))
+            if expires_at > now:
+                break
+            del self._entries[key]
+
+    def __setitem__(self, key: str, value: dict) -> None:
+        self._purge_expired()
+        self._entries.pop(key, None)
+        while len(self._entries) >= self._maxsize:
+            self._entries.popitem(last=False)
+        self._entries[key] = (time.monotonic() + self._ttl, value)
+
+    def pop(self, key: str, default: dict | None = None) -> dict | None:
+        self._purge_expired()
+        entry = self._entries.pop(key, None)
+        return default if entry is None else entry[1]
+
+    def __contains__(self, key: object) -> bool:
+        self._purge_expired()
+        return key in self._entries
+
+
 _CLASSIFIER_USAGE_MAX_SIZE = 200
 _CLASSIFIER_USAGE_TTL_SECONDS = 120
-_pending_classifier_usage: TTLCache[str, dict] = TTLCache(
-    maxsize=_CLASSIFIER_USAGE_MAX_SIZE, ttl=_CLASSIFIER_USAGE_TTL_SECONDS
-)
+_pending_classifier_usage = _ExpiringBoundedCache(maxsize=_CLASSIFIER_USAGE_MAX_SIZE, ttl=_CLASSIFIER_USAGE_TTL_SECONDS)
 
 
 def _build_pending_classifier_headers(call_id: str) -> dict[str, str]:
@@ -274,12 +352,11 @@ class AutorouterCallback(CustomLogger):
         end_time: datetime.datetime,
     ) -> None:
         with contextlib.suppress(Exception):
+            proxy_call_id = AutorouterCallback._read_kwargs_metadata(kwargs, _PROXY_CALL_ID_METADATA_KEY)
             if AutorouterCallback._read_kwargs_metadata(kwargs, "internal_call_origin") != "autorouter_classifier":
                 return
-            proxy_call_id = AutorouterCallback._read_kwargs_metadata(kwargs, _PROXY_CALL_ID_METADATA_KEY)
             if isinstance(proxy_call_id, str):
-                # TTLCache enforces maxsize itself (LRU-evicts the oldest entry rather than
-                # dropping the new one), so no manual capacity check is needed here.
+                # The bounded cache evicts the oldest entry rather than dropping the new one.
                 _pending_classifier_usage[proxy_call_id] = {
                     "usage": _extract_usage(response_obj),
                     "cost": kwargs.get("response_cost"),
@@ -297,13 +374,28 @@ class AutorouterCallback(CustomLogger):
 
         decision = self._extract_routing_decision(data)
         if decision:
-            meta = LiteLLMRouterMeta.from_routing_decision(decision)
-            headers.update(meta.to_headers())
+            headers.update(_routing_decision_headers(decision))
 
         with contextlib.suppress(Exception):
             call_id = data.get("litellm_call_id")
             if call_id:
                 headers.update(_build_pending_classifier_headers(call_id))
+
+        # Whole-response cache hits are read off the logging object's ``caching_details``,
+        # which ``LLMCachingHandler._update_litellm_logging_obj_environment`` populates
+        # synchronously *before* the cached result is returned — so it is already set by the
+        # time this hook builds headers.
+        #
+        # The response object itself cannot be used: /v1/messages returns an
+        # ``AnthropicMessagesResponse``, a TypedDict, so it carries neither an ``id``
+        # attribute nor ``_hidden_params``.  That is also why LiteLLM never emits
+        # ``x-litellm-cache-key`` for this endpoint (see caching_handler's
+        # ``hasattr(cached_result, "_hidden_params")`` guard), leaving the downstream
+        # CodeMie proxy with no header to key off.
+        with contextlib.suppress(Exception):
+            caching_details = getattr(data.get("litellm_logging_obj"), "caching_details", None)
+            if caching_details and caching_details.get("cache_hit") is True:
+                headers["x-litellm-cache-hit"] = "true"
 
         return headers or None
 

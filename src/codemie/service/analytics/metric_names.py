@@ -100,6 +100,9 @@ class MetricName(str, Enum):
     LLM_PROXY_REQUESTS_TOTAL = "llm_proxy_requests_total"
     LLM_PROXY_ERRORS_TOTAL = "llm_proxy_errors_total"
 
+    # Routing metrics
+    ROUTING_CALL_USAGE = "routing_call_usage"
+
     @classmethod
     def to_list(cls, *metrics: MetricName) -> list[str]:
         """Convert metric enum values to list of strings.

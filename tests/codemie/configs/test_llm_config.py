@@ -334,3 +334,11 @@ def test_llm_model_litellm_router_declared():
     )
     assert model.litellm_router is not None
     assert model.litellm_router.is_router is True
+
+
+def test_litellm_router_counterfactual_model_parses():
+    from codemie.configs.llm_config import LiteLLMRouterConfig
+
+    router = LiteLLMRouterConfig(counterfactual_model="claude-opus-5")
+
+    assert router.counterfactual_model == "claude-opus-5"

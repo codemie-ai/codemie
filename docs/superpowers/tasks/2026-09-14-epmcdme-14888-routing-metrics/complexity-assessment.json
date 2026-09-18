@@ -1,0 +1,89 @@
+{
+  "schema": 1,
+  "task": "Add routing analytics dimensions, savings calculation, and CLI parity to the platform analytics stack, carrying routing fields from RoutingInfo through the monitoring ingestion path to Elasticsearch and ClickHouse, and implementing counterfactual savings against LiteLLM consolidated spend data.",
+  "generated": "2026-09-14T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 6, "label": "XXL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 28,
+  "size": "XL",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "split-required",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Eight or more components must change across distinct subsystems: RoutingInfo value object (core shared contract), SwitchyardRoutingExtractor and LiteLLMRouterExtractor (both strip needed fields today), TokensCalculationCallback and RequestSummaryManager (callback/instrumentation), ConversationMonitoringService and MetricsAttributes (monitoring ingestion), MetricsElasticRepository and the new RoutingHandler (analytics read path), AnalyticsService (new lazy property), analytics.py and cli_analytics.py routers, and a new savings calculation module. RoutingInfo is the shared core utility that all downstream subsystems consume; changing it requires coordinated updates across every layer it crosses."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Core acceptance criteria are defined (routed sessions, model-switch timeline, tier and decision-source distributions, classifier overhead, savings formula) but several design gaps remain open: EPMCDME-13429 (LiteLLM as per-call authoritative cost source) is a stated prerequisite not yet on main; the pricing-lookup mechanism for the counterfactual model is unspecified; whether ES request_id matches LiteLLM spend-log IDs is marked speculative in the analysis; the CLI ClickHouse parity implementation path is not detailed. Rework risk is real if the prerequisite shape changes."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "The counterfactual savings calculation (actual routed cost minus what the more-expensive model would have cost) is novel logic with no prior implementation in the codebase — no pricing-lookup infrastructure, no reconciliation guardrail, no cost-delta domain model. The prerequisite (EPMCDME-13429) is incomplete on main, so the authoritative spend source cannot be integrated yet. Two auto-bumps apply: (1) AC explicitly enumerates edge and error cases — missing routing metadata must be excluded or flagged, savings must never exceed actual spend plus counterfactual baseline — and no existing test template covers savings boundary-value assertions or routing-exclusion patterns; (2) the existing pattern (partial RoutingInfo with only routed_model and classifier_cost_usd) does not cover the new dimensions, so all extractors diverge from the existing pattern rather than extending it."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Thirteen or more source files require modification: routing_info.py, both extractors, tokens_callback.py, request_summary_manager.py, conversation_monitoring_service.py, metrics_constants.py, analytics_service.py, metric_names.py, analytics.py router, cli_analytics.py router, cli_analytics_repository.py, metrics_elastic_repository.py, and at minimum five existing test files. Three to five new files are needed: routing_handler.py, a savings calculation module, and new test suites. The change spans five directories (core, enterprise, service, rest_api, repository)."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Four distinct layers from the taxonomy are touched: API (analytics.py and cli_analytics.py routers adding routing endpoints), Service (RoutingHandler, savings calculation service, ConversationMonitoringService write-path extension), DB-Persistence (Elasticsearch new field writes on the codemie_metrics_logs index, ClickHouse codemie_analytics extension for CLI path, PostgreSQL project_spend_tracking read for spend attribution), and External (LiteLLM consolidated spend data — new backend-side retrieval pattern for per-call cost not currently implemented)."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL (5) to XXL (6): RoutingInfo is the core shared routing value object consumed by every downstream subsystem; changing its contract triggers coordinated updates across six layers — qualifies as touching core shared utilities.",
+    "Technical Risk bumped from XL (5) to XXL (6): acceptance criteria enumerate specific edge and error cases (missing-routing-metadata exclusion/flagging, savings-reconciliation guardrail that savings never exceed actual routed spend plus counterfactual baseline) and no existing test template in the codebase covers savings boundary-value validation or routing-exclusion assertion patterns."
+  ],
+  "split_recommendation": {
+    "strategy": "by-dependency",
+    "secondary_strategy": "by-feature",
+    "ordering_note": "routing-foundation must land first to make routing fields available in Elasticsearch; routing-analytics and routing-cli can be worked in parallel once foundation is merged; routing-savings is last and is hard-blocked on EPMCDME-13429 reaching main.",
+    "slices": [
+      {
+        "title": "Extend RoutingInfo and populate routing fields in Elasticsearch ingestion path",
+        "slice_slug": "routing-foundation",
+        "component": "codemie",
+        "feature": null,
+        "scope": "Add requested_model, tier, decision_source, confidence, and classifier token fields to RoutingInfo; update SwitchyardRoutingExtractor and LiteLLMRouterExtractor to stop stripping these fields; propagate them through TokensCalculationCallback, RequestSummaryManager, ConversationMonitoringService, and MetricsAttributes so routing dimensions are written to Elasticsearch conversation_assistant_usage events.",
+        "depends_on": null
+      },
+      {
+        "title": "RoutingHandler, analytics service wiring, and routing REST endpoints",
+        "slice_slug": "routing-analytics",
+        "component": "codemie",
+        "feature": null,
+        "scope": "Create RoutingHandler with Elasticsearch aggregations for routed session counts, model-switch timelines, tier and decision-source distributions, and classifier overhead cost reported separately; wire it into AnalyticsService as a lazy property; expose routing analytics endpoints in analytics.py.",
+        "depends_on": "Extend RoutingInfo and populate routing fields in Elasticsearch ingestion path"
+      },
+      {
+        "title": "Counterfactual savings calculation and savings endpoint",
+        "slice_slug": "routing-savings",
+        "component": "codemie",
+        "feature": null,
+        "scope": "Implement savings = actual routed cost (from consolidated LiteLLM spend) minus counterfactual cost of the more-expensive model for the same token count, including routing overhead; add pricing-lookup for counterfactual model; enforce reconciliation guardrail (savings never exceed actual routed spend plus counterfactual baseline); expose savings endpoint. This slice is hard-blocked on EPMCDME-13429 landing on main.",
+        "depends_on": "RoutingHandler, analytics service wiring, and routing REST endpoints"
+      },
+      {
+        "title": "CLI analytics routing parity via ClickHouse",
+        "slice_slug": "routing-cli",
+        "component": "codemie",
+        "feature": null,
+        "scope": "Extend the ClickHouse codemie_analytics write path to carry routing dimensions; add routing aggregation queries to cli_analytics_repository.py; update cli_analytics.py endpoints so the CLI report surfaces the same routing metrics and savings figures as the platform UI.",
+        "depends_on": "Extend RoutingInfo and populate routing fields in Elasticsearch ingestion path"
+      }
+    ]
+  }
+}

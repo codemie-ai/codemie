@@ -24,8 +24,8 @@ to this shared contract — see ``enterprise/switchyard/engine.py::RoutingTier``
 router that currently has tiers at all. For the same reason ``RoutingDecision`` carries no
 ``capable_model`` field: that was Switchyard's own "what tier would have run absent
 downgrade" bookkeeping, not something every decide-capable router has an equivalent of.
-Switchyard forwards it (and its tier) into ``RoutingInfo.meta`` instead, via
-``Router.build_routing_meta`` — see ``SwitchyardRouter.build_routing_meta``.
+Switchyard forwards it (and its tier) into ``RoutingInfo``'s own typed ``requested_model``/
+``tier`` fields instead — see ``SwitchyardRouter.routing_info``.
 
 Also hosts ``NullRouter``/``NULL_ROUTER`` — the trivial "no routing at all" identity. It
 lives here rather than in an enterprise package because it is genuinely mechanism-agnostic:
@@ -106,10 +106,17 @@ class RoutingDecision:
 
     ``tier`` is a bare ``str`` deliberately, not an enum owned by this module: which tier
     names exist (and what they mean) is entirely up to the producing router — see the module
-    docstring."""
+    docstring. ``decision_source``/``routing_family`` are required for the same reason
+    ``tier`` isn't optional: every producer of a RoutingDecision knows both by construction
+    time (which mechanism it is, and why this particular decision was reached), so allowing
+    either to silently default to None would only reintroduce the data loss this field exists
+    to prevent — see enterprise/switchyard/engine.py's ``_fallback_decision``, which used to
+    drop its own fallback reason for exactly this reason."""
 
     model: str
     tier: str
+    decision_source: str
+    routing_family: str
     classifier: ClassifierCall | None = None
 
 
@@ -138,6 +145,7 @@ class Router(ABC):
     construct directly."""
 
     name: str
+    routing_family: str
 
     @abstractmethod
     async def decide(self, messages: list[dict[str, object]]) -> RoutingDecision | None:
@@ -172,16 +180,6 @@ class Router(ABC):
         LangChain client per candidate). Empty for routers whose decide() is always None."""
         return ()
 
-    def build_routing_meta(self, decision: RoutingDecision) -> Mapping[str, str]:
-        """Proxy-path only: this router's own opaque contribution to RoutingInfo.meta (see
-        that field's docstring — only the producing router may populate or interpret these
-        keys; generic callers must treat the result as an opaque bag to forward, never branch
-        on it). Default: nothing beyond RoutingInfo's own canonical fields (routed_model,
-        classifier_cost_usd) already covers. Override where a router's wire format carries
-        more per-call detail than those two fields (see SwitchyardRouter, the only router
-        whose decide() returns a populated RoutingDecision today)."""
-        return {}
-
     def routing_info(self, decision: RoutingDecision) -> RoutingInfo:
         """Canonical RoutingInfo built directly from a decision — no response needed, so it's
         usable synchronously the moment decide() returns, unlike extract() (which needs a
@@ -189,11 +187,16 @@ class Router(ABC):
         stamped it — see extract()'s docstring). Prefer this over extract() at every call site
         that already has a RoutingDecision in hand (RouterChatModel._agenerate,
         apply_router_routing, TokensCalculationCallback when a decision was stashed); fall back
-        to extract() only where no decision was ever available synchronously."""
+        to extract() only where no decision was ever available synchronously.
+
+        ``routing_family`` is read from the decision, not from ``self.routing_family`` —
+        the decision is the single source of truth once one exists (see RoutingDecision's own
+        docstring); ``self.routing_family`` exists only for routers whose decide() can return
+        None (LiteLLMRouter), which never reach this method with a real decision anyway."""
         return RoutingInfo(
             routed_model=decision.model,
             classifier_cost_usd=decision.classifier.cost_usd if decision.classifier else None,
-            meta=dict(self.build_routing_meta(decision)),
+            routing_family=decision.routing_family,
         )
 
     def build_chat_model(self, *, model_name: str, request_id: str, llm_params: "LLMParams") -> BaseChatModel:
@@ -253,6 +256,7 @@ class NullRouter(Router):
     per request — see the Router docstring."""
 
     name = "none"
+    routing_family = "none"
 
     async def decide(self, messages: list[dict[str, object]]) -> RoutingDecision | None:
         return None

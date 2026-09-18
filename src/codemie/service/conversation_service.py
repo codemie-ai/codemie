@@ -59,9 +59,11 @@ from codemie.service.chat_naming_service import ChatNamingService
 from codemie.service.conversation.history_materializer import materialize_workflow_conversation
 from codemie.service.llm_service.llm_service import LLMService
 from codemie.service.monitoring.conversation_monitoring_service import ConversationMonitoringService
+from codemie.service.monitoring.routing_monitoring_service import RoutingMonitoringService
 
 if TYPE_CHECKING:
     from codemie.rest_api.models.assistant import Assistant
+    from codemie.service.request_summary_manager import LLMRun
 else:
     Assistant = Any
 
@@ -244,6 +246,50 @@ class ConversationService:
         )
 
     @classmethod
+    def _emit_routing_metrics(
+        cls,
+        *,
+        user: User,
+        assistant: Assistant,
+        conversation,
+        tokens_usage: TokensUsage,
+        llm_runs: Optional[List["LLMRun"]],
+        request_id: Optional[str],
+    ) -> None:
+        """Emit one routing metric per LLM run, or a single collapsed one as a fallback.
+
+        Per-run emission: a single /model generation may involve multiple LLM runs
+        (tool-calling loop, fallback/retry, classifier + routed call), each carrying
+        its own routing decision. Emitting one event per run (instead of collapsing
+        them into RequestSummary.calculate()'s merged RoutingInfo) preserves visibility
+        into every routing decision made during the turn, not just the last one.
+        """
+        if llm_runs:
+            for run in llm_runs:
+                if run.routing is None or run.routing.is_empty():
+                    continue
+                RoutingMonitoringService.send_routing_metric(
+                    user=user,
+                    routing=run.routing,
+                    conversation_id=conversation.conversation_id,
+                    assistant_id=str(assistant.id),
+                    project=str(assistant.project or ""),
+                    request_id=request_id,
+                    llm_run_id=run.run_id,
+                )
+            return
+
+        if tokens_usage.routing and not tokens_usage.routing.is_empty():
+            RoutingMonitoringService.send_routing_metric(
+                user=user,
+                routing=tokens_usage.routing,
+                conversation_id=conversation.conversation_id,
+                assistant_id=str(assistant.id),
+                project=str(assistant.project or ""),
+                request_id=request_id,
+            )
+
+    @classmethod
     def upsert_chat_history(
         cls,
         assistant_response: str,
@@ -258,6 +304,7 @@ class ConversationService:
         a2ui_envelopes: list[dict] | None = None,
         request_id: Optional[str] = None,
         background_tasks: BackgroundTasks | None = None,
+        llm_runs: Optional[List["LLMRun"]] = None,
     ):
         llm_model = request.llm_model if request.llm_model else assistant.llm_model_type
 
@@ -315,6 +362,14 @@ class ConversationService:
             conversation.conversation_id,
             llm_model,
             status,
+            request_id=request_id,
+        )
+        cls._emit_routing_metrics(
+            user=user,
+            assistant=assistant,
+            conversation=conversation,
+            tokens_usage=tokens_usage,
+            llm_runs=llm_runs,
             request_id=request_id,
         )
         cls._upsert_conversation_metrics(

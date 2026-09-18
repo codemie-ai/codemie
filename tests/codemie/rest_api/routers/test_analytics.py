@@ -2203,3 +2203,106 @@ class TestAuthorizeAdminBudgetView:
             _authorize_admin_budget_view(caller, {"any-project"})
 
         assert exc_info.value.code == status.HTTP_403_FORBIDDEN
+
+
+class TestRoutingEndpoints:
+    """Tests for routing analytics endpoints."""
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    async def test_routing_summary_returns_200(self, mock_service_class, mock_user, sample_summaries_response_data):
+        from codemie.rest_api.routers.analytics import AnalyticsFilterParams, get_routing_summary
+
+        mock_service = AsyncMock()
+        mock_service_class.return_value = mock_service
+        mock_service.get_routing_summary = AsyncMock(return_value=sample_summaries_response_data)
+        response = await get_routing_summary(user=mock_user, params=AnalyticsFilterParams())
+        assert response.status_code == status.HTTP_200_OK
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    async def test_routing_sessions_returns_200(self, mock_service_class, mock_user, sample_tabular_response_data):
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_routing_sessions
+
+        mock_service = AsyncMock()
+        mock_service_class.return_value = mock_service
+        mock_service.get_model_switches = AsyncMock(return_value=sample_tabular_response_data)
+        params = AnalyticsQueryParams()
+        response = await get_routing_sessions(user=mock_user, params=params)
+        assert response.status_code == status.HTTP_200_OK
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    async def test_routing_session_switches_returns_200(
+        self, mock_service_class, mock_user, sample_tabular_response_data
+    ):
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_routing_session_switches
+
+        mock_service = AsyncMock()
+        mock_service_class.return_value = mock_service
+        mock_service.get_model_switches = AsyncMock(return_value=sample_tabular_response_data)
+        params = AnalyticsQueryParams()
+        response = await get_routing_session_switches(session_id="sess-1", user=mock_user, params=params)
+        assert response.status_code == status.HTTP_200_OK
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    async def test_routing_tier_distribution_returns_200(
+        self, mock_service_class, mock_user, sample_tabular_response_data
+    ):
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_routing_tier_distribution
+
+        mock_service = AsyncMock()
+        mock_service_class.return_value = mock_service
+        mock_service.get_tier_distribution = AsyncMock(return_value=sample_tabular_response_data)
+        params = AnalyticsQueryParams()
+        response = await get_routing_tier_distribution(user=mock_user, params=params)
+        assert response.status_code == status.HTTP_200_OK
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    async def test_routing_decision_source_distribution_returns_200(
+        self, mock_service_class, mock_user, sample_tabular_response_data
+    ):
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams, get_routing_decision_source_distribution
+
+        mock_service = AsyncMock()
+        mock_service_class.return_value = mock_service
+        mock_service.get_decision_source_distribution = AsyncMock(return_value=sample_tabular_response_data)
+        params = AnalyticsQueryParams()
+        response = await get_routing_decision_source_distribution(user=mock_user, params=params)
+        assert response.status_code == status.HTTP_200_OK
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    async def test_routing_classifier_overhead_returns_200(
+        self, mock_service_class, mock_user, sample_summaries_response_data
+    ):
+        from codemie.rest_api.routers.analytics import AnalyticsFilterParams, get_routing_classifier_overhead
+
+        mock_service = AsyncMock()
+        mock_service_class.return_value = mock_service
+        mock_service.get_classifier_overhead = AsyncMock(return_value=sample_summaries_response_data)
+        response = await get_routing_classifier_overhead(user=mock_user, params=AnalyticsFilterParams())
+        assert response.status_code == status.HTTP_200_OK
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    async def test_routing_summary_empty_result_is_200(self, mock_service_class, mock_user):
+        from codemie.rest_api.routers.analytics import AnalyticsFilterParams, get_routing_summary
+
+        mock_service = AsyncMock()
+        mock_service_class.return_value = mock_service
+        mock_service.get_routing_summary = AsyncMock(
+            return_value={
+                "data": {"metrics": []},
+                "metadata": {
+                    "timestamp": "2025-01-15T10:00:00Z",
+                    "data_as_of": "2025-01-15T09:55:00Z",
+                    "filters_applied": {},
+                    "execution_time_ms": 0.0,
+                },
+            }
+        )
+        response = await get_routing_summary(user=mock_user, params=AnalyticsFilterParams())
+        assert response.status_code == status.HTTP_200_OK

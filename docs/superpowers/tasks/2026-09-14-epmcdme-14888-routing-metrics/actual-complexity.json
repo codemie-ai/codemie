@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "generated": "2026-09-14T12:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 6, "label": "XXL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 25,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 20,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "New shared core abstraction layer in core/ (RoutingInfo value object, RoutingHeaderCodec mixin, RoutingMetadataExtractor Protocol, compose_routing_info, default_routing_extractors) imported by both enterprise packages to avoid import cycles; two new extractors (SwitchyardRoutingExtractor, LiteLLMRouterExtractor); new RoutingMonitoringService; new RoutingHandler with 5 analytics operations; AnalyticsService facade extended; proxy_router, conversation_service, and request_summary_manager all modified — 4+ components across core, enterprise/litellm, enterprise/switchyard, service/monitoring, service/analytics, and rest_api subsystems with new shared abstractions."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Novel multi-backend extractor protocol and RoutingHeaderCodec mixin with additive merge semantics (merged_over sums classifier_cost_usd and token fields, treating None as 0) are new to this codebase. Proxy_router (high-traffic path for every LLM proxy request) is modified to extract and emit routing metrics as background tasks. Closest pattern is BaseMonitoringService / existing analytics handlers, which covers the emission and aggregation shapes but not the cross-backend extractor protocol. No external reliability risk; background-task emission path is non-blocking."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "20 files changed (diffstat: 20 files changed, 1548 insertions, 27 deletions). 10 new files: routing_info.py, routing_headers.py, extractor.py, routing_monitoring_service.py, routing_handler.py, and 5 new test modules. 10 modified files: proxy_router, analytics router, analytics_service, metric_names, conversation_service, request_summary_manager, and 4 extended test files. Spans 10+ directories across core/, enterprise/litellm/, enterprise/switchyard/, service/monitoring/, service/analytics/handlers/, rest_api/routers/, and corresponding test trees."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "API (new routing analytics REST endpoints in analytics.py), Service (RoutingHandler, AnalyticsService facade extension, conversation_service routing propagation, request_summary_manager LLMRun.routing field), Infrastructure (RoutingMonitoringService → BaseMonitoringService → OTel/Elasticsearch emission), and External integration (LiteLLM proxy router reading x-litellm-* headers, Switchyard metadata extraction) — 4 distinct layers with no DB-persistence schema change."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from XL (5) to XXL (6): routing_info.py introduced as a new shared utility in core/ imported by both enterprise packages (litellm and switchyard), satisfying the 'touches core shared utilities' red flag."
+  ],
+  "split_recommendation": null
+}

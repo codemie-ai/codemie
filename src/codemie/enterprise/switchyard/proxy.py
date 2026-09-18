@@ -30,9 +30,24 @@ from typing import TYPE_CHECKING
 
 from codemie.configs import logger
 from codemie.core.router import RoutingDecision
+from codemie.core.routing_info import encode_header_value
 
 if TYPE_CHECKING:
     from codemie.core.routing_info import RoutingInfo
+
+_ROUTING_HEADER_FIELDS: dict[str, str] = {
+    "requested_model": "x-codemie-requested-model",
+    "tier": "x-codemie-routing-tier",
+    "decision_source": "x-codemie-routing-decision-source",
+    "routing_source": "x-codemie-routing-source",
+    "router_type": "x-codemie-routing-router-type",
+    "routing_family": "x-codemie-routing-family",
+    "classifier_model": "x-codemie-routing-classifier-model",
+    "classifier_input_tokens": "x-codemie-routing-classifier-input-tokens",
+    "classifier_output_tokens": "x-codemie-routing-classifier-output-tokens",
+    "classifier_cached_tokens": "x-codemie-routing-classifier-cached-tokens",
+    "classifier_cache_creation_tokens": "x-codemie-routing-classifier-cache-creation-tokens",
+}
 
 
 def _inject_routing_into_message_start(
@@ -83,11 +98,19 @@ def _process_buffered_sse_events(
 
 
 def _routing_info_to_headers(info: RoutingInfo) -> dict[str, str]:
-    """Canonical fields plus the opaque meta passthrough. Canonical fields are applied last
-    so they stay authoritative if a meta key happens to collide with one of them."""
-    headers: dict[str, str] = dict(info.meta)
+    """Build the canonical x-codemie-routing-* header set directly from RoutingInfo's typed
+    fields — one vocabulary regardless of which Router produced the info (Switchyard decided
+    synchronously, or LiteLLM's own external auto-router, parsed back from its response
+    headers via routing_info_from_headers()). routed_model/classifier_cost_usd get their own
+    headers unconditionally when present — they're RoutingInfo's two always-canonical fields
+    (see that field's docstring)."""
+    headers: dict[str, str] = {}
+    for field_name, header_name in _ROUTING_HEADER_FIELDS.items():
+        value = getattr(info, field_name)
+        if value is not None:
+            headers[header_name] = encode_header_value(str(value))
     if info.routed_model is not None:
-        headers["x-codemie-routed-model"] = info.routed_model
+        headers["x-codemie-routed-model"] = encode_header_value(info.routed_model)
     if info.classifier_cost_usd is not None:
         headers["x-codemie-routing-classifier-cost-usd"] = f"{info.classifier_cost_usd:.6g}"
     return headers

@@ -57,6 +57,38 @@ class AnalyticsQueryPipeline:
         self._user = user
         self._repository = repository
 
+    async def execute_search_rows(
+        self,
+        result_parser: Callable[[dict], list[dict]],
+        columns: list[dict],
+        metric_filters: list[str] | None = None,
+        time_period: str | None = None,
+        start_date: datetime | None = None,
+        end_date: datetime | None = None,
+        users: list[str] | None = None,
+        projects: list[str] | None = None,
+        page: int = 0,
+        per_page: int = 20,
+    ) -> dict:
+        """Return paginated raw metric documents using the shared secure filters."""
+        start_time = time.time()
+        start_dt, end_dt = TimeParser.parse(time_period, start_date, end_date)
+        query = self._build_query(start_dt, end_dt, users, projects, metric_filters)
+        result = await self._repository.execute_search_query(query, size=per_page, from_=page * per_page)
+        rows = result_parser(result)
+        total = result.get("hits", {}).get("total", 0)
+        total_count = total.get("value", 0) if isinstance(total, dict) else total
+
+        return ResponseFormatter.format_tabular_response(
+            rows=rows,
+            columns=columns,
+            filters_applied=self._build_filters_applied(time_period, start_dt, end_dt, users, projects),
+            execution_time_ms=(time.time() - start_time) * 1000,
+            page=page,
+            per_page=per_page,
+            total_count=int(total_count),
+        )
+
     async def execute_tabular_query(
         self,
         agg_builder: Callable[[dict, int], dict],

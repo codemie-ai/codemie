@@ -28,44 +28,35 @@ correct, not a gap.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import LLMResult
 
 from codemie.core.router import CallContext, Router
-from codemie.core.routing_info import ClassifierUsage, RoutingInfo
-from codemie.enterprise.switchyard.routing_meta import SwitchyardMeta
+from codemie.core.routing_info import (
+    ClassifierUsage,
+    RoutingInfo,
+    normalize_decision_source,
+)
 
 if TYPE_CHECKING:
     from codemie.core.router import RoutingDecision
     from codemie.enterprise.switchyard.engine import ProxySwitchyardRouter
 
 
-def build_switchyard_routing_meta(decision: "RoutingDecision", *, capable_model: str) -> SwitchyardMeta:
-    """Build the SwitchyardMeta (tier, requested/routed model, classifier cache-token detail)
-    from a RoutingDecision plus the capable-model name this router's engine was configured
-    with. ``capable_model`` is a separate parameter, not a RoutingDecision field: it's
-    Switchyard's own "what tier would have run absent downgrade" bookkeeping, not part of the
-    shared decision contract (see core/router.py's module docstring). Used only to populate
-    RoutingInfo.meta — nothing outside this package needs to know these field/header names."""
-    c = decision.classifier
-    return SwitchyardMeta(
-        requested_model=capable_model,
-        tier=decision.tier,
-        classifier_model=c.model if c else None,
-        classifier_input_tokens=c.input_tokens if c else None,
-        classifier_output_tokens=c.output_tokens if c else None,
-        classifier_cached_tokens=c.cached_tokens if c else None,
-        classifier_cache_creation_tokens=c.cache_creation_tokens if c else None,
-        classifier_cost_usd=c.cost_usd if c else None,
-        routed_model=decision.model,
-    )
+def normalize_switchyard_tier(raw: str | None) -> str | None:
+    """Translate Switchyard's tier names into the canonical routing vocabulary."""
+    if raw is None:
+        return None
+    normalized = str(raw).strip().lower()
+    return {"efficient": "simple", "capable": "complex"}.get(normalized, normalized)
 
 
 class SwitchyardRouter(Router):
     name = "switchyard"
+    routing_family = "switchyard"
 
     def __init__(self, engine: "ProxySwitchyardRouter") -> None:
         self._engine = engine
@@ -76,12 +67,32 @@ class SwitchyardRouter(Router):
     def candidate_models(self) -> Sequence[str]:
         return (self._engine.capable_model_deployment_name, self._engine.efficient_model_deployment_name)
 
-    def build_routing_meta(self, decision: "RoutingDecision") -> Mapping[str, str]:
-        """Proxy-path only: the full x-codemie-routing-* header set (tier, requested/routed
-        model, classifier cache-token detail) — see build_switchyard_routing_meta. Overrides
-        the Router default ({}) because Switchyard's RoutingInfo has more per-call detail than
-        the two canonical fields (routed_model, classifier_cost_usd) carry on their own."""
-        return build_switchyard_routing_meta(decision, capable_model=self._engine.capable_model).to_headers()
+    def routing_info(self, decision: "RoutingDecision") -> RoutingInfo:
+        """Override Router default to populate every typed routing dimension directly — no
+        intermediate wire object. ``requested_model`` comes from the engine's capable-model
+        name (the tier that would have served absent downgrade) — not part of RoutingDecision,
+        which is router-agnostic. Classifier fields come from the ClassifierCall nested on the
+        decision. ``decision_source``/``routing_family`` are read straight off the decision —
+        it is the single source of truth for both (see RoutingDecision's own docstring).
+        ``router_type`` ("stage"/"composite") comes from the engine's own routing_mode config."""
+        c = decision.classifier
+        return RoutingInfo(
+            routed_model=decision.model,
+            classifier_cost_usd=c.cost_usd if c else None,
+            requested_model=self._engine.capable_model,
+            tier=normalize_switchyard_tier(decision.tier),
+            routing_tier_raw=decision.tier,
+            decision_source=normalize_decision_source(decision.decision_source),
+            routing_source="judge" if c else "stage_router",
+            routing_family=decision.routing_family,
+            routing_cost_known=True,
+            classifier_model=c.model if c else None,
+            router_type="composite" if self._engine.routing_mode == "classifier" else "stage",
+            classifier_input_tokens=c.input_tokens if c else None,
+            classifier_output_tokens=c.output_tokens if c else None,
+            classifier_cached_tokens=c.cached_tokens if c else None,
+            classifier_cache_creation_tokens=c.cache_creation_tokens if c else None,
+        )
 
     def extract(self, response: LLMResult | AIMessage) -> RoutingInfo:
         """Read the canonical RoutingInfo that RouterChatModel._agenerate stamped onto the

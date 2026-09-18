@@ -21,7 +21,6 @@ from codemie.core.router import ClassifierCall, RoutingDecision
 from codemie.core.routing_info import RoutingInfo
 from codemie.enterprise.switchyard.engine import RoutingTier
 from codemie.enterprise.switchyard.proxy import _routing_info_to_headers, apply_router_routing
-from codemie.enterprise.switchyard.router import build_switchyard_routing_meta
 
 
 @pytest.mark.asyncio
@@ -29,23 +28,30 @@ async def test_apply_router_routing_rewrites_body_when_router_decides():
     decision = RoutingDecision(
         model="claude-4-5-haiku",
         tier=RoutingTier.EFFICIENT,
+        decision_source="llm_classifier",
+        routing_family="switchyard",
         classifier=ClassifierCall(cached_tokens=30, cache_creation_tokens=10),
-    )
-    # apply_router_routing() no longer builds RoutingInfo itself (see Router.routing_info) —
-    # it just forwards whatever the router returns, so the double stubs that method directly
-    # with the same construction Router.routing_info's real default would produce.
-    expected_routing_info = RoutingInfo(
-        routed_model=decision.model,
-        classifier_cost_usd=None,
-        meta=build_switchyard_routing_meta(decision, capable_model="claude-4-6-sonnet").to_headers(),
     )
     router = MagicMock()
     router.decide = AsyncMock(return_value=decision)
-    router.routing_info = MagicMock(return_value=expected_routing_info)
     request_body = {"model": "claude-4-6-sonnet-switchyard-claude-4-5-haiku-signal", "messages": []}
     body_bytes = json.dumps(request_body).encode("utf-8")
 
     with patch("codemie.service.llm_service.router_factory.create_router", return_value=router):
+        # Exercise the REAL SwitchyardRouter.routing_info() formula via a real engine double,
+        # rather than a hand-built expected RoutingInfo — build_switchyard_routing_meta no
+        # longer exists, so there's no shortcut object to construct the expectation from.
+        from types import SimpleNamespace
+
+        real_engine = SimpleNamespace(
+            capable_model="claude-4-6-sonnet",
+            efficient_model="claude-4-5-haiku",
+            routing_mode="signal",
+        )
+        from codemie.enterprise.switchyard.router import SwitchyardRouter
+
+        router.routing_info = MagicMock(side_effect=SwitchyardRouter(real_engine).routing_info)
+
         new_bytes, new_body, returned_decision, routing_info = await apply_router_routing(
             endpoint="v1/messages",
             router_name="claude-4-6-sonnet-switchyard-claude-4-5-haiku-signal",
@@ -59,31 +65,67 @@ async def test_apply_router_routing_rewrites_body_when_router_decides():
     assert returned_decision is decision
     assert routing_info is not None
     assert routing_info.routed_model == "claude-4-5-haiku"
-    # P0 regression coverage: the decision detail RoutingInfo's canonical fields don't carry
-    # (tier, requested model, classifier cache-token detail) must still reach the proxy
-    # response headers via RoutingInfo.meta.
-    assert routing_info.meta["x-codemie-routing-tier"] == "efficient"
-    assert routing_info.meta["x-codemie-requested-model"] == "claude-4-6-sonnet"
-    assert routing_info.meta["x-codemie-routing-classifier-cached-tokens"] == "30"
-    assert routing_info.meta["x-codemie-routing-classifier-cache-creation-tokens"] == "10"
+    assert routing_info.tier == "simple"
+    assert routing_info.requested_model == "claude-4-6-sonnet"
+    assert routing_info.classifier_cached_tokens == 30
+    assert routing_info.classifier_cache_creation_tokens == 10
+    assert routing_info.decision_source == "llm-classifier"
+    assert routing_info.router_type == "stage"
 
 
-def test_routing_info_to_headers_forwards_meta_and_canonical_fields_win_on_collision():
+def test_routing_info_to_headers_serialises_typed_fields():
     info = RoutingInfo(
         routed_model="claude-4-5-haiku",
-        classifier_cost_usd=0.001,
-        meta={
-            "x-codemie-routing-tier": "efficient",
-            # Deliberately stale/conflicting values for the two canonical headers — the
-            # canonical RoutingInfo fields must win, not whatever happens to be in meta.
-            "x-codemie-routed-model": "stale-value",
-            "x-codemie-routing-classifier-cost-usd": "stale-value",
-        },
+        requested_model="claude-4-6-sonnet",
+        tier="simple",
+        decision_source="llm-classifier",
+        routing_source="judge",
+        router_type="composite",
+        routing_family="switchyard",
+        classifier_model="gpt-5.6-luna",
+        classifier_input_tokens=120,
+        classifier_output_tokens=40,
+        classifier_cached_tokens=15,
+        classifier_cache_creation_tokens=5,
+        classifier_cost_usd=0.0009,
     )
     headers = _routing_info_to_headers(info)
-    assert headers["x-codemie-routing-tier"] == "efficient"
     assert headers["x-codemie-routed-model"] == "claude-4-5-haiku"
-    assert headers["x-codemie-routing-classifier-cost-usd"] == "0.001"
+    assert headers["x-codemie-requested-model"] == "claude-4-6-sonnet"
+    assert headers["x-codemie-routing-tier"] == "simple"
+    assert headers["x-codemie-routing-decision-source"] == "llm-classifier"
+    assert headers["x-codemie-routing-source"] == "judge"
+    assert headers["x-codemie-routing-router-type"] == "composite"
+    assert headers["x-codemie-routing-family"] == "switchyard"
+    assert headers["x-codemie-routing-classifier-model"] == "gpt-5.6-luna"
+    assert headers["x-codemie-routing-classifier-input-tokens"] == "120"
+    assert headers["x-codemie-routing-classifier-output-tokens"] == "40"
+    assert headers["x-codemie-routing-classifier-cached-tokens"] == "15"
+    assert headers["x-codemie-routing-classifier-cache-creation-tokens"] == "5"
+    assert headers["x-codemie-routing-classifier-cost-usd"] == "0.0009"
+
+
+def test_routing_info_to_headers_omits_none_fields():
+    headers = _routing_info_to_headers(RoutingInfo())
+    assert headers == {}
+
+
+def test_routing_info_to_headers_works_for_a_litellm_shaped_routing_info():
+    """The same codec must serialise a RoutingInfo built from LiteLLM's own headers
+    identically to one built from a Switchyard decision — no field is Switchyard-specific."""
+    info = RoutingInfo(
+        routed_model="claude-sonnet-5",
+        tier="complex",
+        decision_source="llm-classifier",
+        routing_family="litellm",
+        router_type="complexity",
+    )
+    headers = _routing_info_to_headers(info)
+    assert headers["x-codemie-routed-model"] == "claude-sonnet-5"
+    assert headers["x-codemie-routing-tier"] == "complex"
+    assert headers["x-codemie-routing-decision-source"] == "llm-classifier"
+    assert headers["x-codemie-routing-family"] == "litellm"
+    assert headers["x-codemie-routing-router-type"] == "complexity"
 
 
 @pytest.mark.asyncio

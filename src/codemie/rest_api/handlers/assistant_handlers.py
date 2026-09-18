@@ -438,6 +438,7 @@ class AssistantRequestHandler(ABC):
             assistant_response=data.response,
             time_elapsed=time() - data.execution_start,
             tokens_usage=tokens_usage,
+            llm_runs=summary.llm_runs if summary else None,
             assistant=self.assistant,
             thoughts=self._filter_thoughts(data.thoughts),
             status=data.status,

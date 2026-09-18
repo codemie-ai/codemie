@@ -27,12 +27,14 @@ from langchain_core.outputs import LLMResult
 from codemie.configs import config, logger
 from codemie.core.llm_cache import is_litellm_proxy_cache_hit, is_llm_cache_hit
 from codemie.core.router import CallContext
+from codemie.core.routing_costs import with_counterfactual_costs
 from codemie.core.utils import calculate_token_cost
 from codemie.service.request_summary_manager import request_summary_manager, LLMRun
 from codemie.service.llm_service.llm_service import llm_service
 
 if TYPE_CHECKING:
     from codemie.core.router import Router, RoutingDecision
+    from codemie.core.routing_info import RoutingInfo
 
 
 class TokensCalculationCallback(AsyncCallbackHandler):
@@ -230,6 +232,102 @@ class TokensCalculationCallback(AsyncCallbackHandler):
             ),
         )
 
+    @staticmethod
+    def _apply_usage_to_routing(
+        display_routing: "RoutingInfo",
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int,
+        cache_creation_tokens: int,
+        cache_hit: bool,
+    ) -> "RoutingInfo":
+        """Stamp actual token usage onto an already-decided routing record."""
+        if display_routing.is_empty():
+            return display_routing
+        return display_routing.model_copy(
+            update={
+                "routed_input_tokens": input_tokens,
+                "routed_output_tokens": output_tokens,
+                "routed_cached_tokens": cached_tokens,
+                "routed_cache_creation_tokens": cache_creation_tokens,
+                "routed_total_tokens": input_tokens + output_tokens,
+                "routed_cache_hit": cache_hit,
+            }
+        )
+
+    def _resolve_counterfactual_model(self, display_routing: "RoutingInfo") -> "RoutingInfo":
+        """Populate counterfactual_model if the router didn't already declare it."""
+        if not display_routing.routed_model or display_routing.counterfactual_model:
+            return display_routing
+        from codemie.enterprise.litellm.routing_headers import resolve_counterfactual_model
+
+        counterfactual_model = resolve_counterfactual_model(
+            display_routing.requested_model or display_routing.routed_model or self.llm_model
+        )
+        if not counterfactual_model:
+            return display_routing
+        return display_routing.model_copy(update={"counterfactual_model": counterfactual_model})
+
+    def _apply_counterfactual_costs(
+        self,
+        display_routing: "RoutingInfo",
+        money_spent: float,
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int,
+        cache_creation_tokens: int,
+    ) -> "RoutingInfo":
+        """Re-price tokens at counterfactual_model and stamp actual-vs-counterfactual savings.
+
+        On the agent path, actual_cost_usd includes the classifier fee (it books the
+        classifier as its own LLMRun), unlike the proxy path.
+        """
+        if not (display_routing.counterfactual_model and display_routing.routed_model):
+            return display_routing
+        try:
+            if display_routing.tier == "complex":
+                # Already at top tier; use actual spend, not re-pricing, to avoid
+                # catalog-vs-agent-path rounding showing up as fake savings.
+                estimated_max_usd = money_spent
+            else:
+                estimated_max_usd, _, _ = self._calculate_cost(
+                    proxy_cost=None,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cached_tokens=cached_tokens,
+                    cache_creation_tokens=cache_creation_tokens,
+                    cost_model=display_routing.counterfactual_model,
+                )
+            return with_counterfactual_costs(
+                display_routing,
+                actual_cost_usd=money_spent + (display_routing.classifier_cost_usd or 0.0),
+                estimated_max_cost_usd=estimated_max_usd,
+            )
+        except Exception:
+            logger.debug(f"Could not compute counterfactual costs for {display_routing.counterfactual_model}")
+            return display_routing
+
+    def _cost_for_usage(
+        self,
+        billed_model: str,
+        proxy_cost: float | None,
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int,
+        cache_creation_tokens: int,
+        cache_hit: bool,
+    ) -> tuple[float, float, float]:
+        """Compute (money_spent, cached_tokens_money_spent, cached_tokens_creation_cost).
+
+        Cache hits are billed at zero: LiteLLM served the whole response from cache, so no
+        upstream tokens were actually spent regardless of what usage the provider reported.
+        """
+        if cache_hit:
+            return 0.0, 0.0, 0.0
+        return self._calculate_cost(
+            proxy_cost, input_tokens, output_tokens, cached_tokens, cache_creation_tokens, cost_model=billed_model
+        )
+
     async def on_llm_end(
         self,
         response: LLMResult,
@@ -244,12 +342,12 @@ class TokensCalculationCallback(AsyncCallbackHandler):
             if router is None:
                 router = self._resolve_fallback_router()
 
-            if is_llm_cache_hit(response):
+            cache_hit = is_llm_cache_hit(response)
+            if cache_hit:
                 logger.debug(
                     "Skipping LangGraph usage tracking for LiteLLM cache hit: "
                     f"request_id={self.request_id} model={self.llm_model} estimated_spend_skipped=unknown"
                 )
-                return
 
             (
                 input_tokens,
@@ -273,10 +371,19 @@ class TokensCalculationCallback(AsyncCallbackHandler):
             # decision exists at all (LiteLLMRouter's decide() always returns None — see
             # Router.extract()'s docstring on core/router.py).
             display_routing = router.routing_info(decision) if decision is not None else router.extract(response)
+            if cache_hit and display_routing.is_empty():
+                return
 
             billed_model = billed_model or display_routing.routed_model or self.llm_model
-            money_spent, cached_tokens_money_spent, cached_tokens_creation_cost = self._calculate_cost(
-                proxy_cost, input_tokens, output_tokens, cached_tokens, cache_creation_tokens, cost_model=billed_model
+            money_spent, cached_tokens_money_spent, cached_tokens_creation_cost = self._cost_for_usage(
+                billed_model, proxy_cost, input_tokens, output_tokens, cached_tokens, cache_creation_tokens, cache_hit
+            )
+            display_routing = self._apply_usage_to_routing(
+                display_routing, input_tokens, output_tokens, cached_tokens, cache_creation_tokens, cache_hit
+            )
+            display_routing = self._resolve_counterfactual_model(display_routing)
+            display_routing = self._apply_counterfactual_costs(
+                display_routing, money_spent, input_tokens, output_tokens, cached_tokens, cache_creation_tokens
             )
 
             llm_run = LLMRun(

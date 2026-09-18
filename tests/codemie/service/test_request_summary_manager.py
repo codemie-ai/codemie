@@ -289,5 +289,61 @@ def test_calculate_aggregates_routing_from_runs():
     )
     summary.calculate()
     tu = summary.tokens_usage
+    # merged_over reduce: last-non-None wins for scalars, so r2's "haiku" wins over r1's "sonnet"
     assert tu.routing.routed_model == "haiku"
     assert abs(tu.routing.classifier_cost_usd - 0.003) < 1e-9
+
+
+def test_calculate_merges_routing_via_merged_over():
+    """calculate() uses merged_over to roll up routing across runs: sums tokens, last-non-None tier."""
+    summary = RequestSummary(
+        request_id="req-1",
+        llm_runs=[
+            LLMRun(
+                run_id="r1",
+                input_tokens=100,
+                output_tokens=50,
+                money_spent=0.01,
+                llm_model="haiku",
+                routing=RoutingInfo(
+                    routed_model="haiku", tier="efficient", classifier_input_tokens=100, classifier_output_tokens=10
+                ),
+            ),
+            LLMRun(
+                run_id="r2",
+                input_tokens=200,
+                output_tokens=80,
+                money_spent=0.02,
+                llm_model="haiku",
+                routing=RoutingInfo(
+                    routed_model="haiku", tier="capable", classifier_input_tokens=150, classifier_output_tokens=20
+                ),
+            ),
+            LLMRun(
+                run_id="r3",
+                input_tokens=50,
+                output_tokens=20,
+                money_spent=0.005,
+                llm_model="haiku",
+                routing=RoutingInfo(routed_model="haiku", classifier_input_tokens=80),
+            ),
+        ],
+    )
+    summary.calculate()
+    assert summary.tokens_usage is not None
+    assert summary.tokens_usage.routing is not None
+    ri = summary.tokens_usage.routing
+    # tier: last-non-None wins — r3 has no tier, r2 has "capable", so "capable" is the last-non-None
+    # reduce with lambda a, b: b.merged_over(a):
+    #   step1: r1.merged_over(empty) = r1  → tier="efficient"
+    #   step2: r2.merged_over(r1_result)   → tier="capable" (r2 wins as self)
+    #   step3: r3.merged_over(r2_result)   → r3 has no tier, so falls through to base="capable"
+    assert ri.tier == "capable"  # last non-None tier in list order
+    assert ri.classifier_input_tokens == 330  # 100 + 150 + 80
+    assert ri.classifier_output_tokens == 30  # 10 + 20 + None(=0)
+
+
+def test_routing_call_usage_metric_name():
+    from codemie.service.analytics.metric_names import MetricName
+
+    assert MetricName.ROUTING_CALL_USAGE.value == "routing_call_usage"

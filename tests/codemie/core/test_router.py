@@ -46,6 +46,7 @@ class _StubRouter(Router):
     test_router_chat_model.py — it needs RouterChatModel."""
 
     name = "stub"
+    routing_family = "stub"
 
     async def decide(self, messages):
         return None
@@ -63,32 +64,30 @@ def test_router_default_extract_classifier_usage_is_none():
     assert _StubRouter().extract_classifier_usage(ctx) is None
 
 
-def test_router_default_routing_info_combines_canonical_fields_and_meta():
+def test_router_default_routing_info_combines_canonical_fields():
     """routing_info() is the decision-only counterpart to extract() (no response needed) —
     used wherever a RoutingDecision is already in hand (RouterChatModel, apply_router_routing,
-    TokensCalculationCallback). Combines routed_model/classifier cost with whatever
-    build_routing_meta() contributes."""
-
-    class _RouterWithMeta(_StubRouter):
-        def build_routing_meta(self, decision):
-            return {"x-custom-header": "value"}
-
+    TokensCalculationCallback)."""
     decision = RoutingDecision(
         model="claude-4-5-haiku",
         tier="capable",
+        decision_source="llm_classifier",
+        routing_family="stub",
         classifier=ClassifierCall(cost_usd=0.001),
     )
-    info = _RouterWithMeta().routing_info(decision)
+    info = _StubRouter().routing_info(decision)
     assert info.routed_model == "claude-4-5-haiku"
     assert info.classifier_cost_usd == 0.001
-    assert info.meta == {"x-custom-header": "value"}
+    assert info.routing_family == "stub"
 
 
 def test_router_default_routing_info_classifier_cost_none_when_no_classifier():
-    decision = RoutingDecision(model="claude-4-5-haiku", tier="capable")
+    decision = RoutingDecision(
+        model="claude-4-5-haiku", tier="capable", decision_source="heuristic", routing_family="stub"
+    )
     info = _StubRouter().routing_info(decision)
     assert info.classifier_cost_usd is None
-    assert info.meta == {}
+    assert info.routing_family == "stub"
 
 
 @pytest.mark.parametrize(
@@ -124,6 +123,9 @@ class TestNullRouter:
 
     def test_candidate_models_is_empty(self):
         assert NullRouter().candidate_models() == ()
+
+    def test_routing_family_is_none(self):
+        assert NullRouter().routing_family == "none"
 
     def test_build_chat_model_returns_raw_client(self, monkeypatch):
         """Empty candidate_models() routes through Router.build_chat_model's raw-client
