@@ -58,7 +58,7 @@ gitleaks:
 verify: ruff license gitleaks test
 
 coverage:
-	poetry run coverage run -m pytest tests/ -W ignore::DeprecationWarning --cov --cov-report=html
+	poetry run pytest tests/ -W ignore::DeprecationWarning --cov --cov-report=html
 
 import-katas:
 	@echo "Importing AI Katas from GitHub..."

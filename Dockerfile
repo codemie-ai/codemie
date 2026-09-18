@@ -34,7 +34,8 @@ RUN --mount=type=secret,id=google_credentials,dst=/kaniko/google_credentials.jso
     else \
     echo "Installing base dependencies only..."; \
     poetry install --only main --no-root; \
-    fi
+    fi; \
+    chmod 555 "$VIRTUAL_ENV"
 
 # Copy source code and configuration
 COPY ./src /app/src
@@ -49,9 +50,9 @@ FROM codemie/codemie-base-python:${PYTHON_VERSION}-debian-runtime AS production
 # Set working directory
 WORKDIR /app
 
-# Copy virtual environment from builder
+# Copy virtual environment from builder (chmod 555 applied in builder stage, before
+# this COPY, so Kaniko preserves the read-only mode without a separate RUN/snapshot)
 COPY --from=builder --chown=codemie:codemie $VIRTUAL_ENV $VIRTUAL_ENV
-RUN chmod 555 "$VIRTUAL_ENV"
 
 # Copy application code
 COPY --from=builder --chown=codemie:codemie /app /app

@@ -1,0 +1,61 @@
+{
+  "decision": "request-changes",
+  "rationale": "Edge-case lens ran clean; acceptance did not run because no story/spec ArtifactRef exists for this branch (genuine no-spec, forces confidence low). 2 of 4 edge-case candidates verified as dismissible (pytest-cov auto-combines coverage data under xdist; breakpoint/debugger friction under -n is a dev-convenience concern below the blocking floor), 2 kept as patch findings after reading the real files. Standards audit ran with no coverage gap but reported 1 blocking commit-format violation (4/8 commits in range carry no EPMCDME ticket prefix), confirmed against git log. 0 findings deferred, 2 dismissed as noise.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "fail",
+      "notes": "4 of 8 commit subjects in range carry no ticket prefix; other 4 use placeholder ticket EPMCDME-0000."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "No Python source changed; Ruff/typing rules and license-header check do not apply to Dockerfile/Makefile/pytest.ini/poetry.lock."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No auth/secrets/untrusted-input surface touched; Dockerfile chmod reorder and nemo-switchyard PyPI switch are security-neutral-to-positive."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "Dockerfile",
+      "line": 38,
+      "title": "Venv read-only mode not re-verified after COPY",
+      "problem": "chmod 555 is applied to $VIRTUAL_ENV once in the builder stage (line 38); production (line 55) relies solely on COPY --from=builder to carry that mode forward, per the rationale comment at lines 53-54, with no explicit check that the mode survived the cross-stage copy.",
+      "impact": "If the build backend ever fails to preserve source mode bits on a cross-stage COPY, the production image's virtualenv silently loses its read-only defense-in-depth with no build-time signal; this repo has no way to execute Docker to confirm COPY --from mode-preservation on the actual build path, so the risk is real but unconfirmed rather than dismissed.",
+      "recommendation": "Add a build-time assertion in the production stage (e.g. `RUN test \"$(stat -c %a \\\"$VIRTUAL_ENV\\\")\" = \"555\"`) or reapply `chmod 555` in the production stage as defense-in-depth so a silent permission regression fails the build instead of shipping."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "commit messages (branch history)",
+      "title": "Commit subjects missing ticket prefix",
+      "problem": "git-workflow.md requires commit subjects in the form 'EPMCDME-####: Description'; 4 of the 8 commits in this range (f3b2750a4, c7424561d, 19d20ecd9, dd7daf443) carry no ticket prefix at all, confirmed against `git log main..HEAD`.",
+      "impact": "git-workflow.md is a documented blocking standard for this repo; non-conforming commit subjects fail the repo's own commit-format gate.",
+      "recommendation": "Reword the affected commits (or the squash-merge commit message) to lead with the ticket prefix, e.g. 'EPMCDME-0000: Drop redundant -n auto --maxprocesses=6 from Makefile test/coverage targets'."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "pytest.ini",
+      "line": 4,
+      "title": "No xdist fallback for restricted CI runners",
+      "problem": "addopts now hardcodes `-n 2` for every pytest invocation (confirmed: no env-var override or `-p no:xdist` fallback exists anywhere in pytest.ini, Makefile, or .gitlab-ci.yml, which has no pytest step at all — the external CI job referenced in commit c7424561d lives outside this repo).",
+      "impact": "In a restricted runner that cannot spawn xdist worker subprocesses, the entire pytest invocation would error out rather than degrade to serial execution; whether the external CI job actually imposes such a restriction could not be confirmed from this repo, so this is an ambiguous, newly-introduced risk rather than a confirmed break.",
+      "recommendation": "Document (and ideally wire, e.g. via a supported `PYTEST_ADDOPTS=\"-p no:xdist\"` override) a way to disable xdist for restricted runners and local interactive debugging, so the `-n 2` default degrades gracefully instead of hard-failing."
+    }
+  ]
+}

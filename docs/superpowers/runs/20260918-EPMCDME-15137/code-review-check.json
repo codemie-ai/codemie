@@ -1,0 +1,42 @@
+{
+  "decision": "approve",
+  "rationale": "All 3 blocking findings from code-review-final.json dismissed after manual follow-up investigation in conversation (not an automated review-triage re-dispatch — no code changed, so this is a re-triage of the original findings' validity, not a fix-up verification). CR-001 empirically disproven against the pinned Kaniko version. CR-002 dismissed per squash-merge policy. CR-003 downgraded from major to non-blocking as genuinely unconfirmed speculative risk. No-spec gap from the final round is unchanged (acceptance lens never ran) and still caps confidence.",
+  "confidence": "medium",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "na",
+      "notes": "Superseded by CR-002 dismissal below: branch merges to main via squash, so individual non-prefixed commit subjects in branch history do not survive to master — the squash-merge commit message carries the ticket reference. Downgraded from the final round's 'fail'."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "Carried forward unchanged from code-review-final.json — no Python source changed."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "Carried forward unchanged from code-review-final.json — no auth/secrets/untrusted-input surface touched."
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "superseded",
+      "notes": "Empirically disproven, not just argued. Built a minimal reproduction of the exact pattern (chmod 555 on a directory in a builder stage, plain `COPY --from=builder --chown=...` with no `--chmod` in the next stage) through `gcr.io/kaniko-project/executor:v1.24.0-debug` via podman — the same tag as this project's pinned private-ECR Kaniko image (093899590031.dkr.ecr.eu-central-1.amazonaws.com/kaniko-project/executor:v1.24.0-debug), since the private registry itself needs AWS auth this session doesn't have. Result, read directly from the output layer tarball: `venv/` came out `dr-xr-xr-x` (555) — the chmod bit survived the cross-stage COPY exactly. The Kaniko permission-loss bugs found during research (GoogleContainerTools/kaniko#647, #2240) were reported on v1.8.1/v1.9.0 and are fixed by v1.24.0. The Dockerfile:53-54 comment's assumption is correct for the pinned version. Also noted in the same conversation: a `RUN test ... = \"555\"` build-time assertion (the alternative fix the original review proposed) would itself trigger a full Kaniko filesystem snapshot on every RUN, i.e. the same cost the branch's revert commit (0efd67b5a) was specifically trying to avoid — so it wasn't a free mitigation even if CR-001 had held up."
+    },
+    {
+      "id": "CR-002",
+      "status": "superseded",
+      "notes": "Branch owner confirmed this branch merges to main via squash — individual commit subjects inside the feature branch (including the 4 missing an EPMCDME prefix) never land in master history; only the squash-merge commit message does, and that carries the ticket reference. git-workflow.md's commit-format gate is evaluated against what actually reaches main, so the per-commit violations inside this branch are moot."
+    },
+    {
+      "id": "CR-003",
+      "status": "superseded",
+      "notes": "Downgraded, not proven safe — the underlying uncertainty is unchanged, only the severity assessment. Confirmed pytest-xdist is a direct pyproject.toml dependency (`pytest-xdist = \"^3.6.1\"`), so the original finding's 'entire pytest invocation would error out' framing is not about the package being absent — it can only be triggered by an execution environment that blocks OS-level subprocess spawning (fork/exec), e.g. a restrictive seccomp profile, gVisor sandbox, or a container with pids_limit=1. No evidence was found (or exists in this repo) that the 'external CI job' referenced in commit c7424561d is such an environment; ordinary GitLab shared/docker/k8s executors allow subprocess spawning by default. Given the original finding already called this 'ambiguous... rather than a confirmed break,' treating it as blocking overstated the risk. Non-blocking until there's an actual report of it failing somewhere. If it ever does, the correct fallback is `PYTEST_ADDOPTS=\"-n 0\"` (keeps the xdist plugin loaded so `-n 2` in addopts stays a recognized argument, just runs 0 workers) — not `PYTEST_ADDOPTS=\"-p no:xdist\"`, which conflicts with the hardcoded `-n 2` in addopts and produces its own 'unrecognized arguments' failure."
+    }
+  ]
+}
