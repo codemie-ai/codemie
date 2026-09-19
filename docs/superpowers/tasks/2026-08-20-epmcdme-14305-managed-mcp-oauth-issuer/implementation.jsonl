@@ -1,2 +1,0 @@
-{"task_id":"1","status":"done","commit":"6fdf21d3d","test_command":".venv/bin/python -m pytest tests/codemie/rest_api/routers/test_mcp_managed.py tests/codemie/configs/test_managed_mcp_config.py"}
-{"task_id":"2","status":"done","commit":"c65fd3da1","test_command":".venv/bin/python -m pytest tests/codemie/configs/test_managed_mcp_config.py"}

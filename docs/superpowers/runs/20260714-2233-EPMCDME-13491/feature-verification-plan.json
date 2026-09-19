@@ -1,8 +1,0 @@
-{
-  "schema": 1,
-  "required": false,
-  "tool": "none",
-  "reason": "Diff touches only backend auth provider (persistent.py) and its unit tests; no UI globs matched, no browser-verifiable surface. Behavior covered by 3 new provider tests + 146 green auth-area tests. End-to-end repro (local login + Bearer request) requires local service stack restart — out of scope for autonomous run; noted for manual sanity via codemie-test-harness --sanity-ui which this fix unblocks.",
-  "results": [],
-  "blocking": false
-}

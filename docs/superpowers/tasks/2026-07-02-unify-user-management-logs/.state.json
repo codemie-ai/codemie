@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "slug": "unify-user-management-logs",
-  "branch": "EPMCDME-13273_unify-user-management-logs",
-  "phase": "maintenance",
-  "started_at": "2026-07-02T00:00:00Z",
-  "completed_at": "2026-07-02T09:00:00Z",
-  "last_sync_commit": "291fea9bcc12d03790bf928d666814cd3a4b0e59"
-}

@@ -1,0 +1,133 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15146_prune-disposable-sdlc-run-artifacts",
+  "head": "a157b834ffc371f75f5e33237a2d9da7754b266d",
+  "merge_base": "987b0d102c994e2cbad09d18cde23371412d28b5",
+  "runner": "poetry",
+  "started_at": "2026-09-19T09:14:38Z",
+  "completed_at": "2026-09-19T09:22:32Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "rerun_of": "2026-09-19T09:01:27Z run, which was BLOCKED on the unit gate. 'make install' (poetry install) installed pytest-xdist 3.8.0 into the venv; every gate below was executed again from scratch at the same HEAD.",
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1100,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "ruff format: 2577 files left unchanged; 'ruff check --fix' and final 'ruff check' both report 'All checks passed!'. Also covers the ruff half of the codemie-pre-commit hook chain."
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2315,
+      "command": "make build",
+      "exit_code": 0,
+      "notes": "poetry build produced codemie-0.8.0.tar.gz and codemie-0.8.0-py3-none-any.whl."
+    },
+    {
+      "id": "license-headers",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 601,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2294 files, 0 missing license headers. Also covers the license half of the codemie-pre-commit hook chain."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 108930,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "RESOLVED vs previous run. Executed for real, not skipped: '16869 passed, 172 skipped, 229 warnings in 104.64s'. pytest.ini addopts '-n 2' now resolves because pytest-xdist 3.8.0 is installed; parallelism confirmed by pytest-benchmark emitting 'Benchmarks are automatically disabled because xdist plugin is active' from the worker processes. Same 16869 passed count as the previous run's manual addopts-override workaround, so the earlier failure was confirmed environment-only."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 36722,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Real scan, not a self-skip: Docker daemon up, gitleaks v8.30.1 scanned ~120.13 MB in 36.2s with --config=/workspace/.gitleaks.toml, 'no leaks found'."
+    },
+    {
+      "id": "sonar",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 256401,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Run verbatim this time (no SONAR_SKIP_TESTS override), so the script regenerated coverage.xml itself: 'Generating coverage.xml...' then '16869 passed, 172 skipped in 190.67s'. QUALITY GATE STATUS: PASSED on first attempt for branch EPMCDME-15146_prune-disposable-sdlc-run-artifacts against https://sonar.core.kuberocketci.io (SCM revision a157b834, merge base 987b0d10). SONAR_TOKEN was present; no self-skip line in the output. The previous run's spurious 'coverage: actual=0.0' failure from a stale Aug 28 coverage.xml did not recur."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 150,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msg-file> (per commit in merge_base..HEAD)",
+      "exit_code": 0,
+      "notes": "Both branch commits exit 0: 'EPMCDME-15146: Untrack disposable SDLC run artifacts under tasks/ and runs/' and 'EPMCDME-15146: Reshape .gitignore SDLC block for disposable run artifacts'."
+    },
+    {
+      "id": "secrets-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": null,
+      "notes": "Working tree has 0 staged files, so 'gitleaks protect --staged' has no diff to scan. Superseded by the full-tree 'make gitleaks' gate above, which passed on the same content. Would run on any 'git commit' with staged content; Docker is up, so there is no container-engine gap to fix."
+    },
+    {
+      "id": "prepush-pytest",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 190670,
+      "command": "poetry run pytest tests/ --ignore=tests/enterprise/ -W ignore::DeprecationWarning --cov --cov-report=xml:coverage.xml (codemie-pre-push chain, step 1)",
+      "exit_code": 0,
+      "notes": "The pre-push hook chains pytest then sonar-local; recorded separately because a chain aborts at its first failure. Equivalent run executed inside 'make sonar-local' above: 16869 passed, 172 skipped. The 'unit' gate ('make test') is a superset since it does not exclude tests/enterprise/. NOTE: the hook is configured in .pre-commit-config.yaml but not currently installed in .git/hooks (no non-sample hooks present), so it does not actually fire locally until 'make install-hooks' is run."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make coverage",
+      "exit_code": null,
+      "notes": "Guide: 'Skip if the user did not request coverage.' The verbatim target (HTML report) was not run, but 'make sonar-local' performed the equivalent XML coverage run at this HEAD and the server-side coverage condition passed. Enable locally with 'make coverage' if an HTML report is wanted."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "SKIPPED",
+      "duration_ms": 0,
+      "command": "make test-harness",
+      "exit_code": null,
+      "notes": "Guide: 'Skip if you are not opening a merge request.' MR creation is out of scope for this runner. STILL OWED BEFORE MR: the auto_epm-cdme_vcs bot fails checks 3.1/3.2 unless the MR description carries a '## Test harness' section with the copy-pasted terminal summary. Enabling it locally requires 'docker compose up -d', superadmin fixtures, and ~/.codemie/test-harness.json."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "make verify",
+      "exit_code": null,
+      "notes": "Aggregate of ruff + license + gitleaks + test. All four constituents were run individually above and all passed, so the aggregate target would now pass; not re-run to avoid duplicating a 2.5-minute test suite."
+    },
+    {
+      "id": "ci-pre-ci-guard",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": "wait-ci-init (.gitlab-ci.yml, EXPECTED_CONTEXTS: ci-pipeline, compliance-report)",
+      "exit_code": null,
+      "notes": "Not runnable locally: needs a GitLab merge_request_event and waits on external contexts 'ci-pipeline' and 'compliance-report' from epm-cdme/codemie-gitlab-templates. Only CI can settle this. GUIDE MISMATCH (unchanged from previous run): .ai-run/guides/quality-gates.md section 'After merge' tells the reader to run 'ls .gitlab-ci.yml .github/workflows' and claims no pipeline config exists, but .gitlab-ci.yml IS present at repo root (.github/workflows genuinely is not). The file runs no gate commands itself, so the guide's substantive point still holds; the file-existence claim is stale."
+    }
+  ],
+  "failures": {},
+  "notes": "Diff vs merge_base is 541 files: .gitignore plus docs/superpowers run artifacts. 0 files under src/ or tests/ changed, and 0 paths matched ui_globs, so no UI gate was recorded (green outcome). PASSED means nothing local blocks this branch; it does not mean CI will be green - ci-pre-ci-guard and the test-harness MR-compliance section remain owed and only CI / the MR bot can settle them."
+}

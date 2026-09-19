@@ -1,9 +1,0 @@
-{
-  "standards_review": [
-    {"kind": "commit-format", "status": "pass", "notes": "All 5 commit subjects across both repos (4 in codemie, 1 in codemie-enterprise) follow the documented 'EPMCDME-####: Description' format from git-workflow.md."},
-    {"kind": "code-quality", "status": "pass", "notes": "codemie: user_management.py and user_type_validator.py changes are docstring/comment updates plus a one-token VALID_USER_TYPES set literal expansion; no new untyped public functions, no Optional/bare-generic style introduced, no new source files needing license headers. codemie-enterprise: idp/user_type.py change is the same shape (docstring + VALID_USER_TYPES literal). Test-file additions in both repos (test_user.py, test_user_type_validator.py, test_authentication_service.py, test_keycloak_idp.py, test_keycloak_admin_user.py) only add cases, no style deviations visible in the changed hunks."},
-    {"kind": "security", "status": "pass", "notes": "Diff hunks in both repos touch only docstrings and the VALID_USER_TYPES set literal; the validate_user_type function bodies (normalize/lowercase, default-to-'regular', fail-closed rejection) are unchanged. codemie's validator still raises ExtendedHTTPException 401 on invalid values; codemie-enterprise's still raises InvalidUserTypeError(ValueError). VALID_USER_TYPES is now {'regular','external','service_account'} identically in both repos (duplication is documented intentional design per the enterprise module's own docstring, not a violation). No credentials, tokens, or secrets are logged or touched by this change; no untrusted-input parsing path was made lossier."}
-  ],
-  "blocking_findings": [],
-  "coverage_gap": false
-}

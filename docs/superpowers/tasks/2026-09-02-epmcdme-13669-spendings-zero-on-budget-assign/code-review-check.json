@@ -1,9 +1,0 @@
-{
-  "verdict": "approve",
-  "decision": "approve",
-  "confidence": "high",
-  "summary": "F1 is a false positive. _compute_spend_delta (budget_usage_service.py:48-49) has an explicit prev_row is None guard that returns (fresh_spend, fresh_spend) immediately, so no attribute access occurs. The test_seeds_zero_row_for_new_budget_with_no_prior_spend test covers exactly this path and passes.",
-  "prior_verdict_ref": "code-review-final.json",
-  "findings_resolved": ["F1"],
-  "findings": []
-}

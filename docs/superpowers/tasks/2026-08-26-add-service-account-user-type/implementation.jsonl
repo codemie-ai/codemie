@@ -1,5 +1,0 @@
-{"task_id":"1","status":"done","commit":"496aba76e","test_command":"poetry run pytest tests/codemie/rest_api/security/test_user_type_validator.py"}
-{"task_id":"2","status":"done","commit":"b2a865e12","test_command":"poetry run pytest tests/codemie/rest_api/security/test_user.py -k service_account"}
-{"task_id":"3","status":"done","commit":"c763e0c2b","test_command":"poetry run pytest tests/codemie/service/user/test_authentication_service.py -k service_account"}
-{"task_id":"4","status":"done","commit":"4acff547b","test_command":"n/a (comment-only change)"}
-{"task_id":"5","status":"done","commit":"dd8b26b","test_command":"poetry run pytest tests/idp/test_keycloak_idp.py tests/migration/test_keycloak_admin_user.py (repo: codemie-enterprise)"}

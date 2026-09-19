@@ -1,6 +1,0 @@
-{"task_id":"1","status":"done","commit":"8a3144adf","test_command":"python -c \"import codemie.rest_api.main\""}
-{"task_id":"2","status":"done","commit":"3ae9a201f","test_command":"python -c \"import codemie.rest_api.main\""}
-{"task_id":"3","status":"done","commit":"c174cfd42","test_command":"grep -rn AssistantProjectMappingService src/"}
-{"task_id":"4","status":"done","commit":"5e0945fd0","test_command":"grep -rn AssistantProjectMappingRepository src/"}
-{"task_id":"5","status":"done","commit":"9b87fdd14","test_command":"python -c \"import codemie.rest_api.main\""}
-{"task_id":"6","status":"done","commit":"990a03c99","test_command":"pytest tests/codemie/service/assistant/ tests/codemie/repository/assistants/ -v"}

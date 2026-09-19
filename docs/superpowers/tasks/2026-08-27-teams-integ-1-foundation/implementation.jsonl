@@ -1,3 +1,0 @@
-{"task_id":"1","status":"done","commit":"a8ff186a0","test_command":"poetry run pytest tests/codemie_tools/base/test_models.py::test_ms_teams_credential_type_exists -v"}
-{"task_id":"2","status":"done","commit":"24389efba","test_command":"poetry run pytest tests/codemie/service/settings/test_settings_request_validator.py -v"}
-{"task_id":"3","status":"done","commit":"8af6e509c","test_command":"poetry run pytest tests/codemie/rest_api/routers/test_project_settings.py -v"}

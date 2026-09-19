@@ -1,2 +1,0 @@
-{"task_id":"task-1","status":"done","commit":"d4e85f844","test_command":"poetry run pytest tests/codemie/service/budget/test_budget_service.py -k assign_budget -v"}
-{"task_id":"task-2","status":"done","commit":"b183b1ed4","test_command":"poetry run pytest tests/codemie/service/budget/test_budget_service.py -v"}

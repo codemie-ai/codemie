@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "slug": "fix-glob-semantics-and-checksum-exclusion",
-  "branch": "subagents-and-tools-fixes",
-  "phase": "maintenance",
-  "started_at": "2026-07-23T00:00:00Z",
-  "completed_at": "2026-07-23T16:05:00Z",
-  "last_sync_commit": "09d73cdecd662e93e4aab4313737ed230f2a23a7"
-}

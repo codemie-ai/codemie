@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "flow": "sdlc-standard",
-  "slug": "marketplace-clone-counter-backend",
-  "branch": "EPMCDME-10889_marketplace-clone-counter",
-  "phase": "maintenance",
-  "started_at": "2026-07-27T00:00:00Z",
-  "completed_at": "2026-07-27T18:22:00Z"
-}

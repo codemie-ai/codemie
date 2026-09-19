@@ -1,5 +1,0 @@
-{"task_id":"1","status":"done","commit":"a8fd36ae6","test_command":"n/a - Test-first: no"}
-{"task_id":"2","status":"done","commit":"812985dc2","test_command":"pytest tests/codemie/rest_api/routers/test_assistant.py::test_get_teams_sender_email_reads_header tests/codemie/rest_api/routers/test_assistant.py::test_get_teams_sender_email_absent_header_returns_none"}
-{"task_id":"3","status":"done","commit":"1cc9beb71","test_command":"pytest tests/codemie/service/user/test_billing_user_resolver.py"}
-{"task_id":"4","status":"done","commit":"bd4d7cfb5","test_command":"pytest tests/codemie/rest_api/routers/test_assistant.py"}
-{"task_id":"5","status":"done","commit":"38b3fe300","test_command":"pytest tests/codemie/rest_api/routers/test_assistant.py"}

@@ -1,3 +1,0 @@
-{"task_id":"task-1","status":"done","commit":"84e898f37","test_command":"n/a"}
-{"task_id":"task-2","status":"done","commit":"5f7bd95bc","test_command":"n/a"}
-{"task_id":"task-3","status":"done","commit":"0d954686e","test_command":"poetry run pytest tests/codemie/service/budget/test_project_budget_service.py::test_reset_project_budget_resets_member_spend_for_each_member tests/codemie/service/budget/test_project_budget_service_lifecycle.py::test_reset_project_budget_member_spend_failure_marks_sync_status_failed tests/codemie/service/budget/test_project_budget_service_lifecycle.py::test_reset_project_budget_skips_spend_reset_when_no_provider_ref -v"}

@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "slug": "workflow-generator-service",
-  "branch": "EPMCDME-10037_natural-language-workflow-generation",
-  "phase": "maintenance",
-  "started_at": "2026-06-30T00:00:00Z",
-  "completed_at": "2026-06-30T00:00:00Z",
-  "last_sync_commit": "435b45c671c59c2753ea06d011961c7f49fa9f6e"
-}

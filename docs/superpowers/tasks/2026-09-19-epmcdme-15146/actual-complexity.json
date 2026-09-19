@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-09-19T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 1, "label": "XS" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 14,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 541,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 541 files changed, which maps mechanically to XXL. The count is dominated by churn, not authorship: exactly one file (.gitignore, 29 insertions) was edited, and the other 540 paths are `git rm --cached` untrackings under docs/superpowers/tasks/ (418) and docs/superpowers/runs/ (122) with no content authored. The XXL descriptor is still defensible on its second clause — the sweep changes what the repository tracks — but this dimension alone accounts for 6 of the 14 points and is the sole reason the total clears the S floor." },
+    { "dimension": "technical_risk", "reason": "Base risk is S: the same .gitignore already carries a keep-list block (`.codemie/*` plus `!` re-inclusion rows), so the pattern was copied rather than invented, and `git rm --cached` is fully reversible with files left on disk and no history rewrite. Bumped to M because gitignore negation semantics are subtle (directory re-inclusion needs its own `!docs/superpowers/*/` and `*/**/` depth rows or the keep-list silently fails) and no repository gate covers docs/ — verification was manual git-evidence commands, with no test template asserting that a keep-listed artifact stays tracked while a disposable sibling stays ignored." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "flow": "sdlc-standard",
-  "slug": "epmcdme-13967-ado-work-item-reparenting",
-  "branch": "EPMCDME-13967_ado_enable_move_workitems",
-  "phase": "done",
-  "started_at": "2026-08-18T00:00:00Z",
-  "completed_at": "2026-08-18T13:16:30Z"
-}

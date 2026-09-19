@@ -1,1 +1,0 @@
-{"task_id":"1","status":"done","commit":"b6b17f170","test_command":"poetry run pytest tests/codemie/service/budget/test_project_budget_service_group_creation.py -v"}

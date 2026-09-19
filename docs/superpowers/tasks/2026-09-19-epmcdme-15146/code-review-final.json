@@ -1,0 +1,25 @@
+{
+  "decision": "approve",
+  "rationale": "Approve: all six ticket acceptance criteria were verified directly from the git index rather than from the diff text - 540 disposable files untracked across tasks/ (418) and runs/ (122), all 907 durable keep-list files still tracked and unmodified at both base and head, zero tracked files outside the ten-name keep-list, all 139 legacy documents intact, no deletion outside tasks//runs/, all 540 files still present on disk (index-only removal, no bare git rm), and base 987b0d102 still an ancestor of head (forward-only, no rewrite); .gitignore semantics confirmed via check-ignore, including nested re-inclusion (tasks/*/enterprise-gates/gate-run.json is trackable, so git's excluded-parent-directory trap is avoided by the !*/ and !*/**/ rows) and *.local.* suppression of state.local.json and code-review.local.diff. Confidence is floored at low for two reasons: the diff is oversized (~28k deleted lines), so the removed payload was never read file-by-file and coverage rests on git set-arithmetic over the index instead of per-file inspection; and the acceptance lens was skipped because no spec ArtifactRef was supplied, so business_review is empty and the criteria above were graded by this agent from the ticket text. 0 deferred; 15 candidates dismissed, the three most substantive being that 20 surviving legacy documents now carry dangling links into untracked run paths (explicitly out-of-scope trees, content retrievable from history), that docs/superpowers/qa-tasks/ receives only the *.local.* shape rule with no blanket-ignore plus keep-list counterpart (forward-looking only; that root does not yet exist), and that no repository gate or test evaluates ignore semantics, so a future mistyped '!' row would untrack a durable artifact with every check still green.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "git-workflow.md requires 'EPMCDME-####: Description'; both subjects in the range conform. Branch EPMCDME-15146_prune-disposable-sdlc-run-artifacts matches the documented <TICKET-ID>_short-description form."
+    },
+    {
+      "kind": "code-quality",
+      "status": "na",
+      "notes": "Range is 540 deletions under docs/superpowers plus one .gitignore edit; no source file added or modified, so Ruff style, typing and license-header rules have no surface. The only .py paths in the range are deletions."
+    },
+    {
+      "kind": "security",
+      "status": "na",
+      "notes": "No application source changed, so the authenticate dependency, secret-handling and untrusted-input rules do not apply. Removed content of all 540 deleted artifacts scanned for credential material; no values found. The reshape narrows rather than widens what gets committed."
+    }
+  ],
+  "findings": []
+}

@@ -1,1 +1,0 @@
-{"task_id":"task-1","status":"done","commit":"634d1b93a","test_command":"manual: poetry run alembic -c src/external/alembic/alembic.ini upgrade head && downgrade -1 against local Postgres (docker: postgres container) with seeded assistant_project_mapping rows"}

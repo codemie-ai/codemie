@@ -1,9 +1,0 @@
-{
-  "schema": 1,
-  "flow": "sdlc-light",
-  "slug": "epmcdme-13415-env-example-workflow",
-  "branch": "EPMCDME-13415_env-example-workflow",
-  "phase": "maintenance",
-  "started_at": "2026-07-10T00:00:00Z",
-  "last_sync_commit": "dff2aa9706cced8366ad496f5b1be192dc61b99b"
-}

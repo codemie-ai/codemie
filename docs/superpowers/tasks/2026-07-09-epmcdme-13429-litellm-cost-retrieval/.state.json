@@ -1,8 +1,0 @@
-{
-  "schema": 1,
-  "flow": "sdlc-standard",
-  "slug": "epmcdme-13429-litellm-cost-retrieval",
-  "branch": "EPMCDME-13429_litellm-cost-retrieval",
-  "phase": "main",
-  "started_at": "2026-07-09T00:00:00Z"
-}

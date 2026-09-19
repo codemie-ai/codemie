@@ -1,8 +1,0 @@
-{
-  "schema": 1,
-  "flow": "sdlc-standard",
-  "slug": "oauth-library-and-indexservice-cleanup",
-  "branch": "EPMCDME-13222_google-docs-oauth",
-  "phase": "main",
-  "started_at": "2026-07-03T00:00:00Z"
-}

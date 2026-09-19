@@ -1,8 +1,0 @@
-{
-  "schema": 1,
-  "flow": "sdlc-standard",
-  "slug": "epmcdme-13175-oidc-extra-attributes-passthrough",
-  "branch": "EPMCDME-13175_oidc-extra-attributes-passthrough",
-  "phase": "main",
-  "started_at": "2026-08-11T00:00:00Z"
-}

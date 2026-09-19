@@ -1,5 +1,0 @@
-{"task_id":"task-1","status":"done","commit":"09eac7a08","test_command":"cd src/external/alembic && poetry run alembic upgrade head && poetry run alembic downgrade -1"}
-{"task_id":"task-2","status":"done","commit":"7ab811dc0","test_command":"poetry run pytest tests/codemie/service/project/test_project_service_chargeback.py -v"}
-{"task_id":"task-3","status":"done","commit":"e5ac025d6","test_command":"poetry run pytest tests/codemie/service/project/test_project_service_chargeback.py tests/codemie/service/project/test_project_service_delete_update.py -v"}
-{"task_id":"task-4","status":"done","commit":"6a8e6f37a","test_command":"poetry run pytest tests/codemie/service/project/test_project_service_chargeback.py -v"}
-{"task_id":"task-5","status":"done","commit":"3725510f7","test_command":"poetry run pytest tests/codemie/rest_api/routers/test_projects_router.py tests/codemie/service/project/test_project_service_chargeback.py tests/codemie/service/project/test_project_service_delete_update.py tests/codemie/service/project/test_project_visibility_service.py -v"}

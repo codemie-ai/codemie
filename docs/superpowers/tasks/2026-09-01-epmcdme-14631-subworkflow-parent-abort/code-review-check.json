@@ -1,9 +1,0 @@
-{
-  "verdict": "approve",
-  "decision": "approve",
-  "confidence": "high",
-  "summary": "All four findings from the final round are resolved: FAILED terminal-status test added (F1), successful cascade now logs at INFO (F2), complexity-assessment annotated (F3), terminal-status set hoisted to module-level constant _TERMINAL_STATUSES (F4).",
-  "prior_verdict_ref": "code-review-final.json",
-  "findings_resolved": ["F1", "F2", "F3", "F4"],
-  "findings": []
-}
