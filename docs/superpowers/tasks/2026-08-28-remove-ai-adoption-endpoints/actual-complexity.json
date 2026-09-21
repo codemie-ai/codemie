@@ -1,0 +1,69 @@
+{
+  "task": "Delete the entire AI/Run Adoption backend vertical slice (router endpoints, service facade methods, handler module, and query package) plus all associated tests.",
+  "generated": "2026-08-31T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 5,
+      "label": "XL",
+      "affected": "analytics router (FastAPI endpoints), AnalyticsService facade, AIAdoptionHandler, ai_adoption_framework query package",
+      "layers": "API, Service, Repository"
+    },
+    "requirements_clarity": {
+      "score": 1,
+      "label": "XS",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 2,
+      "label": "S",
+      "risk_factors": "large diff footprint spanning 23 files; risk of dangling imports/references across two parallel test trees",
+      "mitigation": "top-down layered deletion order (router -> service facade -> handler -> query package), test suite re-run green after each of the 4 commits, repo-wide grep verification for leftover references, code review approved with 0 findings"
+    },
+    "file_change_estimate": {
+      "score": 6,
+      "label": "XXL",
+      "modified_files": 5,
+      "modified_file_list": [
+        "src/codemie/rest_api/routers/analytics.py",
+        "tests/codemie/rest_api/routers/test_analytics.py",
+        "tests/codemie/rest_api/routers/test_analytics_auditor.py",
+        "src/codemie/service/analytics/analytics_service.py",
+        "tests/codemie/service/analytics/test_analytics_service.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": [
+        "src/codemie/rest_api/routers",
+        "src/codemie/service/analytics",
+        "tests/codemie/rest_api/routers",
+        "tests/codemie/service/analytics",
+        "tests/unit/service/analytics"
+      ]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 3,
+      "label": "M",
+      "layers_changed": ["API", "Service", "Repository"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 18,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 23,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Deletion cuts across 4 distinct components/layers of a vertical slice: the FastAPI router (11 routes plus request models/helpers), the AnalyticsService facade (11 delegate methods and a lazy-loaded handler property), the AIAdoptionHandler module, and the entire ai_adoption_framework query package — each requiring its own coordinated, order-dependent removal step." },
+    { "dimension": "file_change_estimate", "reason": "Diffstat shows 23 files changed across 4 commits (net +31/-13560 lines) spanning src/ and two parallel test trees (tests/codemie/... and tests/unit/...), which maps to the 16+ files XXL tier even though almost all changes are pure deletions rather than new logic." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

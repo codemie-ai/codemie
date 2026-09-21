@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "evidence_type": "test_harness",
+  "ticket": "EPMCDME-14467",
+  "branch": "epmcdme-14467",
+  "commit": "82278642a0e78c675dfb63448a8107b39bc40d3f",
+  "date": "2026-09-02",
+  "command": "make test-harness",
+  "expands_to": "uvx codemie-test-harness --sanity-api",
+  "actual_invocation": "uvx codemie-test-harness run sanity-api -n 2 --reruns 2",
+  "invocation_note": "Used reduced xdist workers (-n 2) from the start, following the pattern from the prior sub-task's evidence (EPMCDME-14465), which found -n 8 overloaded the local Docker stack. Local stack was limited to elasticsearch, postgres, and the codemie backend container (docker compose up -d elasticsearch postgres codemie) rather than the full compose file, since the other services (langfuse, litellm, clickhouse, minio, kibana, nats, ui) are not needed for the sanity-api suite.",
+  "suite": "sanity-api — API sanity suite, stable API tests without external service credentials",
+  "backend_url": "http://localhost:8080",
+  "backend_flags": {
+    "ENABLE_USER_MANAGEMENT": "true",
+    "IDP_PROVIDER": "local",
+    "SUPERADMIN_EMAIL": "admin@codemie.ai"
+  },
+  "environment_notes": "First attempt at bringing up the codemie backend container hung indefinitely in a disk-sleep (D) state during startup, never becoming reachable — likely Docker Desktop's Windows bind-mount I/O being extremely slow with uvicorn --reload watching the whole mounted repo tree. User deleted all containers and a fresh docker compose up succeeded cleanly.",
+  "result": {
+    "exit_code": 0,
+    "passed": 189,
+    "skipped": 4,
+    "failed": 0,
+    "errors": 0,
+    "reruns": 5,
+    "duration_seconds": 2286.55,
+    "summary": "189 passed, 4 skipped, 5 rerun in 2286.55s (0:38:06)"
+  },
+  "verdict": "PASS — no regressions introduced by EPMCDME-14467 changes"
+}

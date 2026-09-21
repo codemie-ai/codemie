@@ -1,0 +1,61 @@
+{
+  "task": "Retire the aiAdoption customer feature flag from customer-config.yaml, add a regression test proving a lingering aiAdoption:true entry loads inertly, and add a retirement banner to the ai-adoption-framework doc.",
+  "generated": "2026-09-02T00:00:00Z",
+  "dimensions": {
+    "component_scope": {
+      "score": 2,
+      "label": "S",
+      "affected": "customer-config.yaml (feature flag removal), ai-adoption-framework.md (retirement banner), test_customer_config.py (regression test)",
+      "layers": "Configuration"
+    },
+    "requirements_clarity": {
+      "score": 1,
+      "label": "XS",
+      "status": "Clear",
+      "gaps": null
+    },
+    "technical_risk": {
+      "score": 2,
+      "label": "S",
+      "risk_factors": "None significant; config-driven Component/ComponentSetting model already tolerates unknown/extra fields, so a lingering aiAdoption entry in a customer's own config loads inertly by design",
+      "mitigation": "Added regression test (test_load_config_tolerates_retired_ai_adoption_component) proving the inert-load behavior"
+    },
+    "file_change_estimate": {
+      "score": 2,
+      "label": "S",
+      "modified_files": 3,
+      "modified_file_list": [
+        "config/customer/customer-config.yaml",
+        "docs/ai-adoption-framework.md",
+        "tests/codemie/configs/test_customer_config.py"
+      ],
+      "new_files": 0,
+      "new_file_list": [],
+      "affected_dirs": ["config", "docs", "tests"]
+    },
+    "dependencies": {
+      "score": 1,
+      "label": "XS",
+      "new_packages": [],
+      "version_changes": []
+    },
+    "affected_layers": {
+      "score": 1,
+      "label": "XS",
+      "layers_changed": ["Configuration"],
+      "schema_migration": false,
+      "cross_system": false
+    }
+  },
+  "total": 9,
+  "size": "XS",
+  "band_range": "6-9",
+  "files_changed": 3,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "file_change_estimate", "reason": "3 files touched but each edit is small and localized (YAML entry removal, banner insertion, one new test method); spread across config/docs/tests is incidental to the retirement, not architectural coupling" },
+    { "dimension": "technical_risk", "reason": "Removal relies on the existing pydantic Component/ComponentSetting model's tolerance for unrecognized ids and extra fields, which is now proven by an explicit regression test rather than assumed" }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

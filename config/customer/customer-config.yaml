@@ -107,12 +107,6 @@ components:
       url: "http://localhost:4173/assets/AngularUpgradeAppRemote.js"
       type: "module"
       description: ""
-  - id: "aiAdoption"
-    settings:
-      enabled: true
-      name: "AI Adoption Analytics"
-      description: "AI Adoption Framework analytics for measuring and tracking AI maturity across dimensions"
-      availableForExternal: false
   - id: "aiChampionsLeaderboard"
     settings:
       enabled: true

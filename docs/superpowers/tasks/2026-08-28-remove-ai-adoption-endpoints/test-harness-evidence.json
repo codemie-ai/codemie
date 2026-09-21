@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "evidence_type": "test_harness",
+  "ticket": "EPMCDME-14465",
+  "branch": "epmcdme-14465",
+  "commit": "cf6c2b71c4bd01915af119c3fc420056184214d2",
+  "date": "2026-09-01",
+  "command": "make test-harness",
+  "expands_to": "uvx codemie-test-harness --sanity-api",
+  "actual_invocation": "uvx codemie-test-harness run sanity-api -n 2 --reruns 2",
+  "invocation_note": "Reduced xdist workers from the suite default (8) to 2 for this local run because an earlier -n 8 attempt overloaded the local Docker stack and crashed the backend/postgres/elasticsearch containers mid-run. -n 2 completed cleanly with the stack stable throughout.",
+  "suite": "sanity-api — API sanity suite, stable API tests without external service credentials",
+  "backend_url": "http://localhost:8080",
+  "backend_flags": {
+    "ENABLE_USER_MANAGEMENT": "true",
+    "IDP_PROVIDER": "local"
+  },
+  "result": {
+    "exit_code": 0,
+    "passed": 189,
+    "skipped": 4,
+    "failed": 0,
+    "errors": 0,
+    "reruns": 2,
+    "duration_seconds": 1897.99,
+    "summary": "189 passed, 4 skipped, 2 rerun in 1897.99s (0:31:37)"
+  },
+  "verdict": "PASS — no regressions introduced by EPMCDME-14465 changes"
+}

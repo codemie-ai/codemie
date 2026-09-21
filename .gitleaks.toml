@@ -15,6 +15,8 @@ paths = [
   '''.env\.local''',                   # Local environment variables (gitignored, never committed)
   '''(^|/)\.env$''',                   # Local environment variables (gitignored, never committed)
   '''htmlcov/.*''',                    # Coverage HTML output (gitignored, renders test source as HTML)
+  '''.venv/.*''',
+  '''.vscode/.*''',
   '''tests/codemie/datasource/loader/fixtures/xlsb/.*\.xlsb$''',  # Binary Excel test fixtures; password-protected workbook stores encryption key material (encryptedHmacKey/encryptedKeyValue), not real secrets
 ]
 

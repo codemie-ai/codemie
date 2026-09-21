@@ -43,7 +43,7 @@ GET_RAW_CONVERSATIONS_TOOL = ToolMetadata(
     Use full_mode=True to include detailed tool invocation information (tool names and inputs) from conversation
     thoughts. IMPORTANT: use 'full_mode=true' ONLY if user directly asked full or detailed info.
     Note: Tool results are never included to avoid large response payloads.
-    Useful for analyzing conversation content and understanding tool usage patterns, user's AI adoption and
+    Useful for analyzing conversation content and understanding tool usage patterns,
     the maturity of talking to AI agents in general.""",
 )
 

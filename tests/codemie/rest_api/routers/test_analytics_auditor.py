@@ -63,82 +63,9 @@ class TestAnalyticsAuditorGuards:
 
 
 class TestAnalyticsAuditorCrossProjectAccess:
-    """EPMCDME-10930 spec 5.2: auditor must reach the service call (no 403) for the
-    remaining five inline guards (593 is covered above), even for a project the
-    auditor has no explicit membership in.
+    """EPMCDME-10930 spec 5.2: auditor must reach the service call (no 403), even for
+    a project the auditor has no explicit membership in.
     """
-
-    @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
-    async def test_user_engagement_users_allows_auditor_for_unowned_project(self, mock_service_class):
-        from codemie.rest_api.routers.analytics import post_ai_adoption_user_engagement_users
-
-        mock_service = AsyncMock()
-        mock_service.get_user_engagement_users.return_value = {}
-        mock_service_class.return_value = mock_service
-
-        request_data = MagicMock()
-        request_data.project = "unowned_project"
-        request_data.config = None
-
-        with patch("codemie.rest_api.routers.analytics._create_response", return_value=MagicMock()):
-            await post_ai_adoption_user_engagement_users(request=request_data, user=_make_auditor())
-
-        mock_service.get_user_engagement_users.assert_called_once()
-
-    @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
-    async def test_assistant_reusability_detail_allows_auditor_for_unowned_project(self, mock_service_class):
-        from codemie.rest_api.routers.analytics import post_ai_adoption_assistant_reusability_detail
-
-        mock_service = AsyncMock()
-        mock_service.get_assistant_reusability_detail.return_value = {}
-        mock_service_class.return_value = mock_service
-
-        request_data = MagicMock()
-        request_data.project = "unowned_project"
-        request_data.config = None
-
-        with patch("codemie.rest_api.routers.analytics._create_response", return_value=MagicMock()):
-            await post_ai_adoption_assistant_reusability_detail(request=request_data, user=_make_auditor())
-
-        mock_service.get_assistant_reusability_detail.assert_called_once()
-
-    @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
-    async def test_workflow_reusability_detail_allows_auditor_for_unowned_project(self, mock_service_class):
-        from codemie.rest_api.routers.analytics import post_ai_adoption_workflow_reusability_detail
-
-        mock_service = AsyncMock()
-        mock_service.get_workflow_reusability_detail.return_value = {}
-        mock_service_class.return_value = mock_service
-
-        request_data = MagicMock()
-        request_data.project = "unowned_project"
-        request_data.config = None
-
-        with patch("codemie.rest_api.routers.analytics._create_response", return_value=MagicMock()):
-            await post_ai_adoption_workflow_reusability_detail(request=request_data, user=_make_auditor())
-
-        mock_service.get_workflow_reusability_detail.assert_called_once()
-
-    @pytest.mark.asyncio
-    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
-    async def test_datasource_reusability_detail_allows_auditor_for_unowned_project(self, mock_service_class):
-        from codemie.rest_api.routers.analytics import post_ai_adoption_datasource_reusability_detail
-
-        mock_service = AsyncMock()
-        mock_service.get_datasource_reusability_detail.return_value = {}
-        mock_service_class.return_value = mock_service
-
-        request_data = MagicMock()
-        request_data.project = "unowned_project"
-        request_data.config = None
-
-        with patch("codemie.rest_api.routers.analytics._create_response", return_value=MagicMock()):
-            await post_ai_adoption_datasource_reusability_detail(request=request_data, user=_make_auditor())
-
-        mock_service.get_datasource_reusability_detail.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("codemie.rest_api.routers.analytics.AnalyticsService")

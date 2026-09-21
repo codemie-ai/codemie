@@ -30,6 +30,7 @@ node_modules/
 .sonar/
 devbox.*
 codemie-storage/
+.codemie-storage/
 codemie-repos/
 swebench/output/
 .dapr
@@ -61,6 +62,7 @@ bmad/*
 /CLAUDE.local.md
 /.superpowers/
 /docs/stories
+/docs/codemie/analytics/
 /.codex/config.toml
 /opencode.json
 /run_claude.sh
