@@ -39,6 +39,7 @@ from codemie.rest_api.models.analytics import SummariesResponse, TabularResponse
 from codemie.rest_api.routers.analytics import _create_response, handle_analytics_errors
 from codemie.rest_api.security.user import User
 from codemie.configs import config
+from codemie.configs.customer_config import CustomerConfig
 
 
 @pytest.fixture
@@ -2207,6 +2208,64 @@ class TestAuthorizeAdminBudgetView:
 
 class TestRoutingEndpoints:
     """Tests for routing analytics endpoints."""
+
+    @pytest.fixture(autouse=True)
+    def routing_analytics_enabled(self, monkeypatch):
+        monkeypatch.setattr(
+            CustomerConfig,
+            "is_feature_enabled",
+            lambda self, feature_key: feature_key == "routingAnalytics",
+        )
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch.object(CustomerConfig, "is_feature_enabled", return_value=False)
+    async def test_routing_summary_returns_404_when_feature_flag_disabled(
+        self, mock_feature_enabled, mock_service_class, mock_user, sample_summaries_response_data
+    ):
+        from codemie.rest_api.routers.analytics import AnalyticsFilterParams, get_routing_summary
+
+        mock_service = AsyncMock()
+        mock_service_class.return_value = mock_service
+        mock_service.get_routing_summary = AsyncMock(return_value=sample_summaries_response_data)
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await get_routing_summary(user=mock_user, params=AnalyticsFilterParams())
+
+        assert exc_info.value.code == status.HTTP_404_NOT_FOUND
+        mock_service_class.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("handler_name", "service_method"),
+        [
+            ("get_routed_model_distribution", "get_routed_model_distribution"),
+            ("get_requested_model_distribution", "get_requested_model_distribution"),
+        ],
+    )
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.analytics.AnalyticsService")
+    @patch.object(CustomerConfig, "is_feature_enabled", return_value=False)
+    async def test_routing_model_distribution_returns_404_when_feature_flag_disabled(
+        self,
+        mock_feature_enabled,
+        mock_service_class,
+        mock_user,
+        sample_tabular_response_data,
+        handler_name,
+        service_method,
+    ):
+        from codemie.rest_api.routers.analytics import AnalyticsQueryParams
+        import codemie.rest_api.routers.analytics as analytics_router
+
+        mock_service = AsyncMock()
+        mock_service_class.return_value = mock_service
+        setattr(mock_service, service_method, AsyncMock(return_value=sample_tabular_response_data))
+
+        with pytest.raises(ExtendedHTTPException) as exc_info:
+            await getattr(analytics_router, handler_name)(user=mock_user, params=AnalyticsQueryParams())
+
+        assert exc_info.value.code == status.HTTP_404_NOT_FOUND
+        mock_service_class.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("codemie.rest_api.routers.analytics.AnalyticsService")

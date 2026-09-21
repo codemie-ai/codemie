@@ -70,6 +70,7 @@ LEADERBOARD_SNAPSHOT_ID_DESC = "Specific snapshot ID (defaults to latest)"
 LEADERBOARD_VIEW_PATTERN = "^(current|monthly|quarterly)$"
 LEADERBOARD_VIEW_DESC = "Leaderboard view: current, monthly, quarterly"
 LEADERBOARD_SEASON_KEY_DESC = "Optional season key for seasonal views, e.g. 2026-03 or 2026-Q1"
+ROUTING_ANALYTICS_FEATURE = "routingAnalytics"
 
 
 # Request models for AI Adoption Framework queries
@@ -338,6 +339,16 @@ def handle_analytics_errors(endpoint_name: str) -> Callable:
         return wrapper
 
     return decorator
+
+
+def _ensure_routing_analytics_enabled() -> None:
+    if not customer_config.is_feature_enabled(ROUTING_ANALYTICS_FEATURE):
+        raise ExtendedHTTPException(
+            code=status.HTTP_404_NOT_FOUND,
+            message="Routing Analytics feature is not available",
+            details="The routingAnalytics feature flag is disabled on this instance.",
+            help="Contact your administrator to enable the Routing Analytics feature.",
+        )
 
 
 router = APIRouter(tags=["Dashboard Analytics"], prefix="/v1/analytics", dependencies=[Depends(authenticate)])
@@ -3625,6 +3636,7 @@ async def get_routing_summary(
     params: AnalyticsFilterParams = Depends(),
 ) -> JSONResponse:
     """Get routing analytics summary: session count, request count, classifier cost."""
+    _ensure_routing_analytics_enabled()
     service = AnalyticsService(user)
     data = await service.get_routing_summary(
         time_period=params.time_period,
@@ -3650,6 +3662,7 @@ async def get_routing_sessions(
     params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get model switches across all sessions."""
+    _ensure_routing_analytics_enabled()
     service = AnalyticsService(user)
     data = await service.get_model_switches(
         time_period=params.time_period,
@@ -3677,6 +3690,7 @@ async def get_routing_decisions(
     params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get individual routing decisions for the routing timeline chart."""
+    _ensure_routing_analytics_enabled()
     service = AnalyticsService(user)
     data = await service.get_decision_timeline(
         time_period=params.time_period,
@@ -3703,6 +3717,7 @@ async def get_routing_activity(
     params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get routing request volume over time, grouped by routing tier."""
+    _ensure_routing_analytics_enabled()
     service = AnalyticsService(user)
     data = await service.get_routing_activity(
         time_period=params.time_period,
@@ -3727,6 +3742,7 @@ async def get_routing_paths(
     params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get router, routed-model, and tier path metrics."""
+    _ensure_routing_analytics_enabled()
     service = AnalyticsService(user)
     data = await service.get_routing_paths(
         time_period=params.time_period,
@@ -3752,6 +3768,7 @@ async def get_routed_model_distribution(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
+    _ensure_routing_analytics_enabled()
     service = AnalyticsService(user)
     data = await service.get_routed_model_distribution(
         time_period=params.time_period,
@@ -3777,6 +3794,7 @@ async def get_requested_model_distribution(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
+    _ensure_routing_analytics_enabled()
     service = AnalyticsService(user)
     data = await service.get_requested_model_distribution(
         time_period=params.time_period,
@@ -3805,6 +3823,7 @@ async def get_routing_session_switches(
     params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get model switches for a specific session."""
+    _ensure_routing_analytics_enabled()
     service = AnalyticsService(user)
     data = await service.get_model_switches(
         session_id=session_id,
@@ -3833,6 +3852,7 @@ async def get_routing_tier_distribution(
     params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get routing tier distribution."""
+    _ensure_routing_analytics_enabled()
     service = AnalyticsService(user)
     data = await service.get_tier_distribution(
         time_period=params.time_period,
@@ -3860,6 +3880,7 @@ async def get_routing_decision_source_distribution(
     params: AnalyticsQueryParams = Depends(),
 ) -> JSONResponse:
     """Get routing decision source distribution."""
+    _ensure_routing_analytics_enabled()
     service = AnalyticsService(user)
     data = await service.get_decision_source_distribution(
         time_period=params.time_period,
@@ -3887,6 +3908,7 @@ async def get_routing_classifier_overhead(
     params: AnalyticsFilterParams = Depends(),
 ) -> JSONResponse:
     """Get routing classifier overhead: cost and token totals."""
+    _ensure_routing_analytics_enabled()
     service = AnalyticsService(user)
     data = await service.get_classifier_overhead(
         time_period=params.time_period,

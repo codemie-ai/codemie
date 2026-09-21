@@ -141,6 +141,12 @@ components:
           - regex: "^speckit\\."
             label: "Spec Kit"
         fallbackLabel: "Pure chat"
+  - id: "features:routingAnalytics"
+    settings:
+      enabled: false
+      name: "Routing Analytics"
+      description: "Routing request volume, model distribution, tiers, paths, and classifier overhead analytics"
+      availableForExternal: false
   - id: "features:schedulersView"
     settings:
       enabled: true

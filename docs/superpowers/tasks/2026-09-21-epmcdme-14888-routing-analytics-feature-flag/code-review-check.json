@@ -1,0 +1,48 @@
+{
+  "decision": "approve",
+  "rationale": "All routing analytics endpoints, including routed-model and requested-model distributions, call the shared routingAnalytics guard. Disabled-flag coverage asserts 404 and prevents AnalyticsService construction. The prior review finding is resolved.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "criterion": "Routing analytics is disabled by default in customer configuration",
+      "status": "pass",
+      "notes": "features:routingAnalytics is present in the shipped customer config with enabled: false."
+    },
+    {
+      "criterion": "All routing analytics endpoints are unavailable when the flag is disabled",
+      "status": "pass",
+      "notes": "All 11 routing handlers call _ensure_routing_analytics_enabled and disabled-path tests cover summary plus both model-distribution endpoints."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "code-quality",
+      "status": "pass",
+      "notes": "Uses the existing CustomerConfig feature check and ExtendedHTTPException convention."
+    },
+    {
+      "standard": "tests",
+      "status": "pass",
+      "notes": "Focused routing endpoint tests pass: 10 passed with pytest addopts disabled for the local missing xdist plugin."
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "Added guards and parameterized disabled-flag tests for get_routed_model_distribution and get_requested_model_distribution."
+    }
+  ],
+  "reviewed_range": {
+    "base_sha": "8fe414f96296d77871d80eb96eced7005dc7bfe6",
+    "head_sha": "b7ca29f6d"
+  },
+  "verification": {
+    "tests": "poetry run pytest -o addopts='' tests/codemie/rest_api/routers/test_analytics.py::TestRoutingEndpoints -q - 10 passed",
+    "ruff": "passed",
+    "license_headers": "passed",
+    "gitleaks": "passed"
+  }
+}
