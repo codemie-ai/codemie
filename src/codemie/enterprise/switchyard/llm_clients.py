@@ -88,7 +88,10 @@ class _RoutingLlmClient:
     the client always returns _DUMMY_RESPONSE regardless of the request.
     """
 
-    async def call(self, _request: Mapping[str, object]) -> Mapping[str, object]:
+    async def call(self, request: Mapping[str, object]) -> Mapping[str, object]:  # noqa: ARG002  # NOSONAR: S1172
+        # `request` is unused but must keep this exact name: libsy.LlmClient is a Protocol whose
+        # `call` parameter is not positional-only, so Pyright's structural check on this Protocol
+        # requires matching parameter names, not just types (renaming to `_request` breaks it).
         return _DUMMY_RESPONSE
 
 

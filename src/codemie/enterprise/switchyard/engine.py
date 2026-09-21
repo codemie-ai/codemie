@@ -83,7 +83,7 @@ class ProxySwitchyardRouter:
         self,
         capable_model: str,
         efficient_model: str,
-        routing_mode: str,
+        routing_mode: str | None,
         *,
         capable_model_deployment_name: str,
         efficient_model_deployment_name: str,
@@ -116,60 +116,35 @@ class ProxySwitchyardRouter:
         if self.routing_mode != "classifier" or not self.tuning.classifier_model:
             return None, None
         classifier_client = _ClassifierLlmClient(self.tuning.classifier_model)
+        judge_target = libsy.LlmTarget(self.tuning.classifier_model, classifier_client)
         classifier = libsy.LlmFallback(
+            judge_target,
             config=libsy.TaskClassifierConfig(
                 base_threshold=self.tuning.classifier_base_threshold,
                 threshold_step=self.tuning.classifier_threshold_step,
-                response_format_type="json_object",
             ),
         )
         return classifier_client, classifier
 
-    async def _dispatch_call(self, call: libsy.ModelCall, classifier_client: _ClassifierLlmClient | None) -> None:
-        """Answer one algorithm-issued model call. call.models carries the literal model ID(s)
-        this call targets (drawn from the `models` mapping passed to run_stream) — the judge's
-        classifier_model when the algorithm is invoking the classifier, or capable_model/
-        efficient_model when it's probing a routing candidate (e.g. for context-window fit)."""
-        target = call.models[0] if call.models else self.efficient_model
-        try:
-            if classifier_client is not None and target == self.tuning.classifier_model:
-                response = await classifier_client.call(call.request)
-            else:
-                response = await self._routing_client.call(call.request)
-            # The native bindings require an LlmResponse wrapper, not a raw dict.
-            llm_response = libsy.LlmResponse.Agg(response)
-            try:
-                call.respond(llm_response)
-            except Exception as respond_exc:
-                logger.warning("[SWITCHYARD-PROXY] call.respond failed for target=%s: %s", target, respond_exc)
-                call.fail(respond_exc)
-        except Exception as call_exc:
-            logger.warning("[SWITCHYARD-PROXY] call failed for target=%s: %s", target, call_exc)
-            call.fail(call_exc)
-
-    async def _consume_algorithm(
-        self,
-        algorithm: libsy.Algorithm,
-        routing_request: dict[str, object],
-        models: dict[str, list[str]],
-        classifier_client: _ClassifierLlmClient | None,
-    ) -> libsy.RoutingOutcome | None:
-        """Drive the algorithm's step stream to completion, returning its final outcome."""
-        outcome: libsy.RoutingOutcome | None = None
-        async for step in algorithm.run_stream(routing_request, models):
-            match step:
-                case libsy.Step.CallModel(call=call):
-                    await self._dispatch_call(call, classifier_client)
-                case libsy.Step.Done(outcome=done_outcome):
-                    outcome = done_outcome
-        return outcome
+    @staticmethod
+    def _extract_selected_model(trace: list[dict[str, object]]) -> str | None:
+        """The FallThrough cascade always terminates with a DefaultTarget (FallOpen), so
+        trace[-1]['selected_model'] carries the final decision whenever algorithm.run()
+        returns without raising — mirrors the old outcome.selected_model_ids[0] guarantee.
+        Guards against a non-dict trace element or an empty selection, either of which
+        should be treated as "no decision" rather than crashing or silently escalating."""
+        if not trace:
+            return None
+        last = trace[-1]
+        selected = last.get("selected_model") if isinstance(last, dict) else None
+        return selected if isinstance(selected, str) and selected else None
 
     def _resolve_tier_and_model(self, selected_model_id: str) -> tuple[RoutingTier, str]:
         # Trust the algorithm's selection — it already applied the configured
         # confidence_threshold internally.  The FallThrough cascade always terminates
-        # with a DefaultTarget (FallOpen) so outcome.selected_model_ids always carries a
-        # selection. selected_model_id is one of the literal capable_model/efficient_model
-        # strings passed via the `models` mapping in run_stream — not a role name.
+        # with a DefaultTarget (FallOpen) so the run() trace always carries a selection.
+        # selected_model_id is one of the literal capable_model/efficient_model strings
+        # passed as the `name` of the corresponding LlmTarget — not a role name.
         if selected_model_id == self.efficient_model:
             return RoutingTier.EFFICIENT, self.efficient_model_deployment_name
         return RoutingTier.CAPABLE, self.capable_model_deployment_name
@@ -258,23 +233,20 @@ class ProxySwitchyardRouter:
             threshold,
         )
 
-        classifier_client, classifier = self._build_classifier()
-        algorithm: libsy.Algorithm = libsy.algorithms.stage_router(
-            picker="efficient_first",
-            confidence_threshold=threshold,
-            recent_window=self.tuning.recent_window,
-            classifier=classifier,
-        )
-        models: dict[str, list[str]] = {
-            "capable": [self.capable_model],
-            "efficient": [self.efficient_model],
-            "any": [self.capable_model, self.efficient_model],
-        }
-        if classifier_client is not None and self.tuning.classifier_model:
-            models["judge"] = [self.tuning.classifier_model]
-
+        classifier_client: _ClassifierLlmClient | None = None
         try:
-            outcome = await self._consume_algorithm(algorithm, routing_request, models, classifier_client)
+            classifier_client, classifier = self._build_classifier()
+            capable_target = libsy.LlmTarget(self.capable_model, self._routing_client)
+            efficient_target = libsy.LlmTarget(self.efficient_model, self._routing_client)
+            algorithm: libsy.Algorithm = libsy.algorithms.stage_router(
+                capable_target,
+                efficient_target,
+                picker="efficient_first",
+                confidence_threshold=threshold,
+                recent_window=self.tuning.recent_window,
+                classifier=classifier,
+            )
+            trace, _response = await algorithm.run(routing_request)
         except Exception as exc:
             logger.warning("[SWITCHYARD-PROXY] Algorithm routing failed: %s", exc)
             return self._fallback_decision("router_error")
@@ -282,10 +254,11 @@ class ProxySwitchyardRouter:
         usage, classifier_used = self._resolve_classifier_usage(classifier_client)
         classifier_call = self._build_classifier_call(usage) if classifier_used else None
 
-        if outcome is None or not outcome.selected_model_ids:
+        selected_model_id = self._extract_selected_model(trace)
+        if selected_model_id is None:
             return self._fallback_decision("no_decision")
 
-        tier, chosen = self._resolve_tier_and_model(outcome.selected_model_ids[0])
+        tier, chosen = self._resolve_tier_and_model(selected_model_id)
         self._log_decision(tier, chosen, threshold, classifier_call)
         return RoutingDecision(
             model=chosen,

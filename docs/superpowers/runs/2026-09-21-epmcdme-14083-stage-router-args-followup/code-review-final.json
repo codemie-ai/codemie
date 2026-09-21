@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case lens ran cleanly with one candidate (unrecognized selected_model_id in _resolve_tier_and_model falling through to CAPABLE); traced against the installed libsy/switchyard Rust source and confirmed stage_router's FallThrough cascade can only terminate on one of the two named LlmTargets passed to it (capable_model/efficient_model), so the flagged branch is unreachable and was dismissed as noise (1 dismissed, 0 deferred). No spec/story artifact was supplied this round, so acceptance is genuine no-spec (business_review empty) and confidence is capped low; review_profile=balanced's standards check was intentionally not run this round (standards_expected=false), recorded as na with no coverage gap.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards lens not dispatched this round (review_profile=balanced, standards_expected=false)." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards lens not dispatched this round (review_profile=balanced, standards_expected=false)." },
+    { "kind": "security", "status": "na", "notes": "Standards lens not dispatched this round (review_profile=balanced, standards_expected=false)." }
+  ],
+  "findings": []
+}

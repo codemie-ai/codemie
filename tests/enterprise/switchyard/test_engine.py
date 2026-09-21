@@ -19,7 +19,10 @@ test_switchyard_efficient_is_litellm_router_skipped tests in tests/codemie/confi
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from collections.abc import Mapping, Sequence
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from codemie.configs.llm_config import (
     LiteLLMRouterConfig,
@@ -30,6 +33,7 @@ from codemie.configs.llm_config import (
     SwitchyardTuning,
 )
 from codemie.enterprise.switchyard.engine import ProxySwitchyardRouter, RoutingTier, get_proxy_switchyard_router
+from codemie.enterprise.switchyard.llm_clients import _ClassifierUsage
 
 _ROUTER_NAME = "cap-switchyard-eff-signal"
 
@@ -164,3 +168,226 @@ def test_fallback_decision_no_decision_reason():
     router = _make_switchyard_router()
     decision = router._fallback_decision("no_decision")
     assert decision.decision_source == "no_decision"
+
+
+# --- pick_model ------------------------------------------------------------
+#
+# algorithm.run() (libsy.algorithms.stage_router's return value) is mocked at the
+# `libsy.algorithms.stage_router` seam per Service Isolation testing policy: pick_model's own
+# branch logic (compaction/error/no-decision fallbacks, tier resolution, classifier bookkeeping)
+# is what's under test here, not the native routing heuristics themselves — those are exercised
+# for real in ai-run/codemie's manual verification, not in this unit suite.
+
+
+def _make_pick_model_router(
+    *, routing_mode: str | None = "signal", classifier_model: str | None = None
+) -> ProxySwitchyardRouter:
+    return ProxySwitchyardRouter(
+        capable_model="capable-model",
+        efficient_model="efficient-model",
+        routing_mode=routing_mode,
+        capable_model_deployment_name="capable-dep",
+        efficient_model_deployment_name="efficient-dep",
+        tuning=SwitchyardTuning(classifier_model=classifier_model),
+    )
+
+
+def _user_message(text: str = "hi") -> list[dict[str, object]]:
+    return [{"role": "user", "content": text}]
+
+
+def _mock_algorithm(trace: Sequence[Mapping[str, object]], response: Mapping[str, object] | None = None) -> MagicMock:
+    """A stand-in for the libsy.Algorithm that stage_router() would normally return."""
+    algorithm = MagicMock()
+    algorithm.run = AsyncMock(return_value=(trace, response or {}))
+    return algorithm
+
+
+def _stage_router_patch():
+    return patch("codemie.enterprise.switchyard.engine.libsy.algorithms.stage_router")
+
+
+@pytest.mark.asyncio
+async def test_pick_model_returns_none_when_routing_mode_is_none():
+    router = _make_pick_model_router(routing_mode=None)
+    with _stage_router_patch() as mock_stage_router:
+        decision = await router.pick_model(_user_message())
+    assert decision is None
+    mock_stage_router.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pick_model_escalates_to_capable_on_recent_compaction():
+    router = _make_pick_model_router()
+    messages = _user_message("session is being continued from a previous conversation")
+    with _stage_router_patch() as mock_stage_router:
+        decision = await router.pick_model(messages)
+    assert decision is not None
+    assert decision.model == "capable-model"
+    assert decision.tier == RoutingTier.CAPABLE
+    assert decision.decision_source == "compaction"
+    mock_stage_router.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pick_model_falls_back_to_router_error_when_algorithm_run_raises():
+    router = _make_pick_model_router()
+    algorithm = MagicMock()
+    algorithm.run = AsyncMock(side_effect=RuntimeError("native routing failure"))
+    with _stage_router_patch() as mock_stage_router:
+        mock_stage_router.return_value = algorithm
+        decision = await router.pick_model(_user_message())
+    assert decision is not None
+    assert decision.model == "capable-model"
+    assert decision.tier == RoutingTier.CAPABLE
+    assert decision.decision_source == "router_error"
+
+
+@pytest.mark.parametrize(
+    "trace",
+    [
+        pytest.param([], id="empty_trace"),
+        pytest.param([{"reasoning": "no selection recorded"}], id="missing_selected_model_key"),
+        pytest.param([{"selected_model": 123}], id="non_string_selected_model"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_pick_model_falls_back_to_no_decision_when_trace_has_no_selection(
+    trace: Sequence[Mapping[str, object]],
+):
+    router = _make_pick_model_router()
+    with _stage_router_patch() as mock_stage_router:
+        mock_stage_router.return_value = _mock_algorithm(trace)
+        decision = await router.pick_model(_user_message())
+    assert decision is not None
+    assert decision.model == "capable-model"
+    assert decision.tier == RoutingTier.CAPABLE
+    assert decision.decision_source == "no_decision"
+
+
+@pytest.mark.asyncio
+async def test_pick_model_signal_mode_selects_efficient():
+    router = _make_pick_model_router(routing_mode="signal")
+    trace: list[dict[str, object]] = [
+        {"reasoning": "fall-through selected efficient-model (confidence 0.000)", "selected_model": "efficient-model"}
+    ]
+    with _stage_router_patch() as mock_stage_router:
+        mock_stage_router.return_value = _mock_algorithm(trace)
+        decision = await router.pick_model(_user_message())
+    assert decision is not None
+    assert decision.model == "efficient-dep"
+    assert decision.tier == RoutingTier.EFFICIENT
+    assert decision.decision_source == "heuristic"
+    assert decision.classifier is None
+
+
+@pytest.mark.asyncio
+async def test_pick_model_signal_mode_selects_capable():
+    router = _make_pick_model_router(routing_mode="signal")
+    trace: list[dict[str, object]] = [{"reasoning": "escalated to capable-model", "selected_model": "capable-model"}]
+    with _stage_router_patch() as mock_stage_router:
+        mock_stage_router.return_value = _mock_algorithm(trace)
+        decision = await router.pick_model(_user_message())
+    assert decision is not None
+    assert decision.model == "capable-dep"
+    assert decision.tier == RoutingTier.CAPABLE
+    assert decision.decision_source == "heuristic"
+    assert decision.classifier is None
+
+
+@pytest.mark.asyncio
+async def test_pick_model_invokes_stage_router_with_positional_llm_targets():
+    """Regression test for EPMCDME-14083: nemo-switchyard 0.2.0's stage_router() requires
+    capable_target/efficient_target as positional LlmTarget arguments (a TypeError otherwise)."""
+    router = _make_pick_model_router(routing_mode="signal")
+    trace: list[dict[str, object]] = [{"selected_model": "efficient-model"}]
+    with _stage_router_patch() as mock_stage_router:
+        mock_stage_router.return_value = _mock_algorithm(trace)
+        await router.pick_model(_user_message())
+
+    args, kwargs = mock_stage_router.call_args
+    assert len(args) == 2, "capable_target/efficient_target must be positional, not keyword"
+    assert args[0].name == "capable-model"
+    assert args[1].name == "efficient-model"
+    assert kwargs["picker"] == "efficient_first"
+    assert kwargs["confidence_threshold"] == router.tuning.signal_threshold
+    assert kwargs["recent_window"] == router.tuning.recent_window
+    assert kwargs["classifier"] is None
+
+
+@pytest.mark.asyncio
+async def test_pick_model_classifier_mode_reports_llm_classifier_when_classifier_used():
+    router = _make_pick_model_router(routing_mode="classifier", classifier_model="judge-model")
+    trace: list[dict[str, object]] = [{"selected_model": "efficient-model"}]
+
+    mock_classifier_client = MagicMock()
+    mock_classifier_client.usage = _ClassifierUsage(
+        called=True,
+        classifier_used=True,
+        input_tokens=120,
+        output_tokens=40,
+        cached_tokens=10,
+        cache_creation_tokens=5,
+        cost_usd=0.0021,
+    )
+
+    with (
+        _stage_router_patch() as mock_stage_router,
+        patch.object(router, "_build_classifier", return_value=(mock_classifier_client, MagicMock())),
+    ):
+        mock_stage_router.return_value = _mock_algorithm(trace)
+        decision = await router.pick_model(_user_message())
+
+    assert decision is not None
+    assert decision.model == "efficient-dep"
+    assert decision.decision_source == "llm_classifier"
+    assert decision.classifier is not None
+    assert decision.classifier.model == "judge-model"
+    assert decision.classifier.input_tokens == 120
+    assert decision.classifier.output_tokens == 40
+    assert decision.classifier.cached_tokens == 10
+    assert decision.classifier.cache_creation_tokens == 5
+    assert decision.classifier.cost_usd == 0.0021
+
+
+@pytest.mark.asyncio
+async def test_pick_model_classifier_mode_reports_heuristic_when_classifier_not_invoked():
+    """routing_mode == "classifier" attaches a classifier fallback, but stage_router's own
+    signal scoring can still settle the decision without ever calling the judge — decision_source
+    must reflect what actually happened for THIS call, not the router's static configuration."""
+    router = _make_pick_model_router(routing_mode="classifier", classifier_model="judge-model")
+    trace: list[dict[str, object]] = [{"selected_model": "capable-model"}]
+
+    mock_classifier_client = MagicMock()
+    mock_classifier_client.usage = _ClassifierUsage(called=False, classifier_used=False)
+
+    with (
+        _stage_router_patch() as mock_stage_router,
+        patch.object(router, "_build_classifier", return_value=(mock_classifier_client, MagicMock())),
+    ):
+        mock_stage_router.return_value = _mock_algorithm(trace)
+        decision = await router.pick_model(_user_message())
+
+    assert decision is not None
+    assert decision.model == "capable-dep"
+    assert decision.decision_source == "heuristic"
+    assert decision.classifier is None
+
+
+@pytest.mark.asyncio
+async def test_pick_model_classifier_mode_without_classifier_model_configured():
+    """RoutingMode.CLASSIFIER with no tuning.classifier_model can never invoke a classifier
+    (see test_llm_config.py's static counterpart) — _build_classifier must degrade to (None,
+    None) so stage_router runs signal-only, not crash on a missing judge target."""
+    router = _make_pick_model_router(routing_mode="classifier", classifier_model=None)
+    trace: list[dict[str, object]] = [{"selected_model": "efficient-model"}]
+
+    with _stage_router_patch() as mock_stage_router:
+        mock_stage_router.return_value = _mock_algorithm(trace)
+        decision = await router.pick_model(_user_message())
+
+    _, kwargs = mock_stage_router.call_args
+    assert kwargs["classifier"] is None
+    assert decision is not None
+    assert decision.decision_source == "heuristic"
+    assert decision.classifier is None
