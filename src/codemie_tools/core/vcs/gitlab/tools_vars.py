@@ -39,7 +39,7 @@ GITLAB_TOOL = ToolMetadata(
         - The entire query must be valid JSON that passes json.loads() validation
 
         FEATURES:
-        - Automatic request parameter handling (GET uses query params, others use request body)
+        - Automatic request parameter handling (GET uses query params; POST/PUT/PATCH use JSON request bodies; DELETE retains its existing request-body behavior)
         - Built-in authentication using configured GitLab Personal Access Token
         - Custom header support for specialized API calls
         - Detailed HTTP response logging with status codes and response bodies

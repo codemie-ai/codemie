@@ -174,7 +174,7 @@ class TestGitlabToolAdvanced:
         assert headers["Content-Type"] == "application/json"
 
         # Check that the method arguments were passed correctly
-        data = mock_request.call_args[1]["data"]
-        assert "name" in data
-        assert "description" in data
-        assert "visibility" in data
+        json_body = mock_request.call_args.kwargs["json"]
+        assert "name" in json_body
+        assert "description" in json_body
+        assert "visibility" in json_body

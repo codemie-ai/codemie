@@ -39,28 +39,29 @@ class GitlabInput(BaseModel):
         {
             "method": "GET|POST|PUT|DELETE|PATCH",
             "url": "/api/v4/...",
-            "method_arguments": {request_parameters_or_body_data}
+            "method_arguments": {method_dependent_request_data}
         }
 
         Optional with custom headers:
         {
             "method": "GET|POST|PUT|DELETE|PATCH",
             "url": "/api/v4/...",
-            "method_arguments": {request_parameters_or_body_data},
+            "method_arguments": {method_dependent_request_data},
             "custom_headers": {additional_http_headers}
         }
 
         Field Requirements:
         - method: HTTP method (GET, POST, PUT, DELETE, PATCH) - REQUIRED
         - url: GitLab API endpoint starting with "/api/v4/" (relative to GitLab server) - REQUIRED
-        - method_arguments: Object with request data - REQUIRED (can be empty {})
+        - method_arguments: Object with method-dependent request data - REQUIRED (can be empty {})
         - custom_headers: Optional dictionary of additional HTTP headers - OPTIONAL
 
         Important Notes:
         - GitLab Personal Access Token is automatically added to Authorization header
         - custom_headers cannot override authorization headers (protected for security)
         - GET requests: method_arguments sent as query parameters
-        - POST/PUT/DELETE/PATCH requests: method_arguments sent as request body data
+        - POST/PUT/PATCH requests: method_arguments sent as JSON request body
+        - DELETE requests: method_arguments sent using the existing request-body behavior
         - Response is formatted string: "HTTP: {method} {url} -> {status} {reason} {body}"
         - The entire query must pass json.loads() validation
 
@@ -107,8 +108,9 @@ class GitlabTool(CodeMieTool):
         """
         if method == "GET":
             return requests.request(method=method, url=url, headers=headers, params=method_arguments)
-        else:
-            return requests.request(method=method, url=url, headers=headers, data=method_arguments)
+        if method in {"POST", "PUT", "PATCH"}:
+            return requests.request(method=method, url=url, headers=headers, json=method_arguments)
+        return requests.request(method=method, url=url, headers=headers, data=method_arguments)
 
     def _validate_config(self) -> None:
         """Require `token` for PAT auth, but waive it for OAuth-backed configs.

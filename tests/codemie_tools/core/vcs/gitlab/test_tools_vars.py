@@ -45,6 +45,9 @@ class TestGitlabToolVars:
         assert "custom_headers" in description
         assert "/api/v4/" in description
         assert "Authorization headers are automatically managed" in description
+        assert "GET uses query params" in description
+        assert "POST/PUT/PATCH use JSON request bodies" in description
+        assert "DELETE retains its existing request-body behavior" in description
 
     def test_gitlab_tool_user_description_content(self):
         """Test that the GitLab tool user description contains important information."""

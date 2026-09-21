@@ -18,7 +18,7 @@ from unittest.mock import patch, Mock
 import pytest
 
 from codemie_tools.core.vcs.gitlab.models import GitlabConfig
-from codemie_tools.core.vcs.gitlab.tools import GitlabTool
+from codemie_tools.core.vcs.gitlab.tools import GitlabInput, GitlabTool
 from codemie_tools.core.vcs.gitlab.tools_vars import GITLAB_TOOL
 
 
@@ -45,6 +45,12 @@ class TestGitlabTool:
         assert isinstance(gitlab_tool.config, GitlabConfig)
         assert gitlab_tool.config.url == "https://gitlab.example.com"
         assert gitlab_tool.config.token == "test_token"
+
+    def test_gitlab_input_request_encoding_description(self):
+        description = GitlabInput.model_fields["query"].description
+
+        assert "POST/PUT/PATCH requests: method_arguments sent as JSON request body" in description
+        assert "GET requests: method_arguments sent as query parameters" in description
 
     @patch("requests.request")
     def test_execute_get_request(self, mock_request, gitlab_tool, mock_response):
@@ -166,6 +172,8 @@ class TestGitlabTool:
         mock_request.assert_called_with(
             method="GET", url="https://gitlab.example.com/api/v4/projects", headers=headers, params=method_arguments
         )
+        assert "json" not in mock_request.call_args.kwargs
+        assert "data" not in mock_request.call_args.kwargs
         assert response == mock_response
 
     @patch("requests.request")
@@ -181,6 +189,64 @@ class TestGitlabTool:
         )
 
         mock_request.assert_called_with(
-            method="POST", url="https://gitlab.example.com/api/v4/projects", headers=headers, data=method_arguments
+            method="POST", url="https://gitlab.example.com/api/v4/projects", headers=headers, json=method_arguments
         )
+        assert response == mock_response
+
+    @pytest.mark.parametrize(
+        ("method", "extra_fields"),
+        [
+            ("POST", {"body": "Inline review comment"}),
+            ("PUT", {"description": "Updated description"}),
+            ("PATCH", {"labels": ["reviewed", "security"]}),
+        ],
+    )
+    @patch("requests.request")
+    def test_make_request_json_body_preserves_nested_payload(
+        self, mock_request, gitlab_tool, mock_response, method, extra_fields
+    ):
+        mock_request.return_value = mock_response
+        headers = {"Authorization": "Bearer test_token"}
+        position = {
+            "base_sha": "base-sha",
+            "start_sha": "start-sha",
+            "head_sha": "head-sha",
+            "position_type": "text",
+            "new_path": "src/example.py",
+            "new_line": 42,
+        }
+        method_arguments = {**extra_fields, "position": position}
+        url = "https://gitlab.example.com/api/v4/projects/123/merge_requests/7/discussions"
+
+        response = gitlab_tool._make_request(method, url, headers, method_arguments)
+
+        mock_request.assert_called_once_with(
+            method=method,
+            url=url,
+            headers=headers,
+            json=method_arguments,
+        )
+        assert mock_request.call_args.kwargs["json"] == method_arguments
+        assert mock_request.call_args.kwargs["json"]["position"] == position
+        assert "data" not in mock_request.call_args.kwargs
+        assert "params" not in mock_request.call_args.kwargs
+        assert response == mock_response
+
+    @patch("requests.request")
+    def test_make_request_delete_keeps_existing_data_body(self, mock_request, gitlab_tool, mock_response):
+        mock_request.return_value = mock_response
+        headers = {"Authorization": "Bearer test_token"}
+        method_arguments = {"discussion_id": 9}
+        url = "https://gitlab.example.com/api/v4/projects/123/discussions/9"
+
+        response = gitlab_tool._make_request("DELETE", url, headers, method_arguments)
+
+        mock_request.assert_called_once_with(
+            method="DELETE",
+            url=url,
+            headers=headers,
+            data=method_arguments,
+        )
+        assert "json" not in mock_request.call_args.kwargs
+        assert "params" not in mock_request.call_args.kwargs
         assert response == mock_response

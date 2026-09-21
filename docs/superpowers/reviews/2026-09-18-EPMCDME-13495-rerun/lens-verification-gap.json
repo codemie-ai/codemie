@@ -1,0 +1,11 @@
+[
+  {
+    "location": "tests/codemie_tools/core/vcs/gitlab/test_tools.py:205",
+    "trigger_condition": "GitLab rejects nested position despite mocked JSON kwargs passing",
+    "guard_snippet": "Add an executable DiffNote contract test or validation guide with a real inline-discussion scenario",
+    "potential_consequence": "The wire-level fix may still fail to create an inline discussion",
+    "gap_shape": "regression-gap",
+    "consumer": "GitLab merge-request discussion creation at /api/v4/projects/:project/merge_requests/:iid/discussions",
+    "evidence": "The new parameterized test asserts only mock_request.call_args.kwargs['json']; no test or changed documentation creates or validates a DiffNote"
+  }
+]

@@ -1,0 +1,21 @@
+{
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "The review-range commit subjects use the documented EPMCDME-####: Description format."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "The changed Python follows the existing Ruff-oriented structure and retains Apache license headers."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "The change does not add credentials, authorization parsing, sensitive logging, or lossy input handling."
+    }
+  ],
+  "blocking_findings": [],
+  "coverage_gap": false
+}
