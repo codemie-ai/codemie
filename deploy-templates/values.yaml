@@ -197,6 +197,14 @@ customEnv:
         name: codemie-nats-secrets
         key: CODEMIE_PASSWORD
 
+  # Tolerations for Code Executor sandbox Job pods (sandbox-jobs mode only).
+  # Independent from the top-level `tolerations` value below, which applies only to the
+  # AI/Run API pod itself, not to executor Job pods created at runtime.
+  # - name: CODE_EXECUTOR_RUNTIME_CLASS_NAME
+  #   value: "kata-vm-isolation"
+  # - name: CODE_EXECUTOR_TOLERATIONS
+  #   value: '[{"key":"runtime","operator":"Equal","value":"kata-vm-isolation","effect":"NoSchedule"}]'
+
 features:
   tools:
     code_executor:
@@ -613,7 +621,9 @@ enableServiceLinks: false
 # -- Node selector to be added to the AI/Run API pods
 nodeSelector: {}
 
-# -- Node selector to be added to the AI/Run API pods
+# -- Tolerations to be added to the AI/Run API pods. Applies only to the API Deployment/Rollout;
+# does not affect Code Executor sandbox Job pods, which are configured separately via
+# CODE_EXECUTOR_TOLERATIONS (see the `customEnv` example above)
 tolerations: []
 
 # -- Assign affinity rules to the deployment

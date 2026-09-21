@@ -19,6 +19,7 @@ This module defines the configuration schema for executing Python code
 in a secure, isolated Kubernetes environment.
 """
 
+import json
 import os
 from enum import Enum
 from typing import Optional
@@ -64,6 +65,14 @@ class CodeExecutorConfig(CodeMieToolConfig):
         "Set to 'none' or empty to omit runtimeClassName from the Job manifest and use the cluster default. "
         "Security risk: omitting runtimeClassName disables sandbox isolation (e.g. gVisor); "
         "use only in environments where the cluster default runtime provides equivalent isolation guarantees.",
+    )
+
+    tolerations: list[dict] | None = Field(
+        default=None,
+        description="Kubernetes tolerations applied to executor Job pods, allowing scheduling onto tainted nodes "
+        "(e.g. a dedicated node pool). Accepts a list of toleration dicts "
+        "({key, operator, value, effect}) or an equivalent JSON string. "
+        "Leave unset to omit tolerations from the Job manifest.",
     )
 
     docker_image: str = Field(
@@ -272,6 +281,24 @@ class CodeExecutorConfig(CodeMieToolConfig):
             return None
         return v
 
+    @field_validator("tolerations", mode="before")
+    @classmethod
+    def validate_tolerations(cls, v) -> list[dict] | None:
+        if v is None:
+            return None
+        if isinstance(v, str):
+            if v.strip() == "":
+                return None
+            try:
+                v = json.loads(v)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid tolerations JSON: {e}") from e
+        if not isinstance(v, list):
+            raise ValueError(f"Invalid tolerations type: {type(v)}. Must be a list of toleration dicts")
+        if not v:
+            return None
+        return v
+
     @field_validator("security_threshold", mode="before")
     @classmethod
     def validate_security_threshold(cls, v) -> Optional[SecurityIssueSeverity]:
@@ -318,6 +345,8 @@ class CodeExecutorConfig(CodeMieToolConfig):
             CODE_EXECUTOR_WORKDIR_BASE: Base working directory
             CODE_EXECUTOR_NAMESPACE: Kubernetes namespace
             CODE_EXECUTOR_RUNTIME_CLASS_NAME: Kubernetes runtimeClassName (default: gvisor)
+            CODE_EXECUTOR_TOLERATIONS: Kubernetes tolerations for executor pods, as a JSON list of
+                toleration dicts (optional, default: none)
             CODE_EXECUTOR_DOCKER_IMAGE: Docker image
             CODE_EXECUTOR_EXECUTION_TIMEOUT: Execution timeout in seconds
             CODE_EXECUTOR_SESSION_TIMEOUT: Session timeout in seconds
@@ -356,6 +385,7 @@ class CodeExecutorConfig(CodeMieToolConfig):
             workdir_base=os.getenv("CODE_EXECUTOR_WORKDIR_BASE", "/home/codemie"),
             namespace=os.getenv("CODE_EXECUTOR_NAMESPACE", "codemie-runtime"),
             runtime_class_name=os.getenv("CODE_EXECUTOR_RUNTIME_CLASS_NAME", "gvisor"),
+            tolerations=os.getenv("CODE_EXECUTOR_TOLERATIONS", ""),
             docker_image=os.getenv("CODE_EXECUTOR_DOCKER_IMAGE", "codemie/codemie-python:2.41.0"),
             execution_timeout=float(os.getenv("CODE_EXECUTOR_EXECUTION_TIMEOUT", "30.0")),
             session_timeout=float(os.getenv("CODE_EXECUTOR_SESSION_TIMEOUT", "300.0")),

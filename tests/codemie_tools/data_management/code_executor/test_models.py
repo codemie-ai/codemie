@@ -515,6 +515,64 @@ class TestRuntimeClassNameValidator(unittest.TestCase):
         assert config.runtime_class_name is None
 
 
+class TestTolerationsValidator(unittest.TestCase):
+    """Test suite for tolerations field validator."""
+
+    def test_tolerations_none_normalised_to_none(self):
+        config = CodeExecutorConfig(tolerations=None)
+        assert config.tolerations is None
+
+    def test_tolerations_empty_string_normalised_to_none(self):
+        config = CodeExecutorConfig(tolerations="")
+        assert config.tolerations is None
+
+    def test_tolerations_empty_list_normalised_to_none(self):
+        config = CodeExecutorConfig(tolerations=[])
+        assert config.tolerations is None
+
+    def test_tolerations_default_is_none(self):
+        config = CodeExecutorConfig()
+        assert config.tolerations is None
+
+    def test_tolerations_list_of_dicts_preserved(self):
+        tolerations = [{"key": "dedicated", "operator": "Equal", "value": "codemie", "effect": "NoSchedule"}]
+        config = CodeExecutorConfig(tolerations=tolerations)
+        assert config.tolerations == tolerations
+
+    def test_tolerations_json_string_parsed(self):
+        json_tolerations = '[{"key": "dedicated", "operator": "Equal", "value": "codemie", "effect": "NoSchedule"}]'
+        config = CodeExecutorConfig(tolerations=json_tolerations)
+        assert config.tolerations == [
+            {"key": "dedicated", "operator": "Equal", "value": "codemie", "effect": "NoSchedule"}
+        ]
+
+    def test_tolerations_invalid_json_string_raises(self):
+        with pytest.raises(ValueError):
+            CodeExecutorConfig(tolerations="not-json")
+
+    def test_tolerations_non_list_json_raises(self):
+        with pytest.raises(ValueError):
+            CodeExecutorConfig(tolerations='{"key": "dedicated"}')
+
+    def test_from_env_tolerations_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            config = CodeExecutorConfig.from_env()
+        assert config.tolerations is None
+
+    def test_from_env_tolerations_json_string(self):
+        json_tolerations = '[{"key": "dedicated", "operator": "Equal", "value": "codemie", "effect": "NoSchedule"}]'
+        with patch.dict(os.environ, {"CODE_EXECUTOR_TOLERATIONS": json_tolerations}, clear=False):
+            config = CodeExecutorConfig.from_env()
+        assert config.tolerations == [
+            {"key": "dedicated", "operator": "Equal", "value": "codemie", "effect": "NoSchedule"}
+        ]
+
+    def test_from_env_tolerations_empty_string(self):
+        with patch.dict(os.environ, {"CODE_EXECUTOR_TOLERATIONS": ""}, clear=False):
+            config = CodeExecutorConfig.from_env()
+        assert config.tolerations is None
+
+
 class TestSandboxMode(unittest.TestCase):
     """Test suite for SandboxMode enum."""
 

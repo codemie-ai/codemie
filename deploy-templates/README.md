@@ -159,4 +159,4 @@ A Helm chart for AI/Run API
 | startupProbe.httpGet.port | int | `8080` |  |
 | startupProbe.initialDelaySeconds | int | `20` | Number of seconds after the container has started before probe is initiated |
 | startupProbe.periodSeconds | int | `10` | How often (in seconds) to perform the probe |
-| tolerations | list | `[]` | Node selector to be added to the AI/Run API pods |
+| tolerations | list | `[]` | Tolerations to be added to the AI/Run API pods. Applies only to the API Deployment/Rollout; does not affect Code Executor sandbox Job pods, which are configured separately via CODE_EXECUTOR_TOLERATIONS (see the `customEnv` example above) |
