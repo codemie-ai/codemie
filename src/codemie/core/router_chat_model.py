@@ -12,7 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""RouterChatModel — the one generic LangChain wrapper for any decide-capable Router.
+"""RouterChatModel — the one generic LangChain wrapper for any decide-capable Router, plus
+build_chat_model_for() — the inverted Router.build_chat_model(): consumes a Router via
+candidate_models() to decide whether/how to build one, instead of the router constructing its
+own LangChain wrapper. Router itself imports nothing from this module or from LangChain.
+
+Also hosts _headers_of()/_iter_header_maps() — pure LangChain-response unwrapping (checking
+AIMessage.response_metadata / LLMResult.generations[].message.response_metadata /
+.generation_info for a nested "headers" key). Not owned by any one routing mechanism: every
+router's routing_info() takes header_maps as a plain Iterable[Mapping[str, object]], and
+turning a LangChain response into that shape is exactly this module's job (the agent path's
+own data-shape problem), used by both RouterChatModel._agenerate and
+TokensCalculationCallback.on_llm_end (a separate callback that fires earlier in the LangChain
+callback chain and cannot reuse _agenerate's own code path).
 
 Replaces enterprise/switchyard/agent.py::SwitchyardRoutingChatModel. No router-specific
 LangChain plumbing is written per mechanism: any future Router that implements decide() and
@@ -24,7 +36,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import dataclasses
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Annotated, Any, cast
 
 from langchain_core.callbacks import AsyncCallbackHandler, AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
@@ -65,9 +77,41 @@ def read_routing_ctx(metadata: dict[str, Any] | None) -> "tuple[Router, RoutingD
     return metadata.get(_ROUTING_CTX_KEY)
 
 
+def _headers_of(container: object) -> Mapping[str, object] | None:
+    if isinstance(container, Mapping):
+        h = container.get("headers")
+        if isinstance(h, Mapping):
+            return h
+    return None
+
+
+def _iter_header_maps(response: LLMResult | AIMessage) -> Iterator[Mapping[str, object]]:
+    """Yield every "headers" mapping findable on *response*, deduplicated by construction:
+    for an LLMResult, generation_info is captured directly from the underlying LLM's own
+    LLMResult before LangChain assembles response_metadata — the latter may contain a
+    corrupted duplicate of the same x-litellm-* values on assistant calls, so it's never
+    merged with the authoritative generation_info copy, only used as a fallback when
+    generation_info carries no headers at all."""
+    if isinstance(response, AIMessage):
+        h = _headers_of(getattr(response, "response_metadata", None))
+        if h:
+            yield h
+        return
+    for gen_list in getattr(response, "generations", []):
+        for gen in gen_list:
+            generation_headers = _headers_of(getattr(gen, "generation_info", None))
+            if generation_headers is not None:
+                yield generation_headers
+                continue
+
+            response_headers = _headers_of(getattr(getattr(gen, "message", None), "response_metadata", None))
+            if response_headers is not None:
+                yield response_headers
+
+
 class _CleanGenerationInfoCapture(AsyncCallbackHandler):
     """Captures generation_info exactly as the candidate model's own on_llm_end reports it —
-    read by _agenerate to build Router.extract()'s input for decide()-less routers (LiteLLM).
+    read by _agenerate to build header_maps for decide()-less routers (LiteLLM).
 
     Why this exists: for a streamed response, the AIMessage.response_metadata that
     selected.ainvoke() hands back can end up with a custom header value duplicated
@@ -99,7 +143,7 @@ class LLMParams:
 class RouterChatModel(BaseChatModel):
     """LangChain chat model that routes each call through a Router.decide() call.
 
-    `router` is resolved ONCE, at construction (see Router.build_chat_model), and held for the
+    `router` is resolved ONCE, at construction (see build_chat_model_for()), and held for the
     object's entire lifetime — not re-resolved by name on every call. RouterChatModel lives
     across an agent's whole multi-turn session; re-resolving by name on every _agenerate call
     would let the object silently start talking to a different kind of router mid-session if
@@ -171,14 +215,14 @@ class RouterChatModel(BaseChatModel):
         # Pre-call: always stash the router (and decision, which may be None if this router's
         # decide() returned None — e.g. routing_mode=None). The router is unconditionally real
         # here: RouterChatModel is only ever built when candidate_models() is non-empty (see
-        # Router.build_chat_model), so self.router is never NullRouter inside _agenerate.
+        # build_chat_model_for), so self.router is never NullRouter inside _agenerate.
         config = stash_routing_ctx(kwargs.pop("config", None), self.router, decision)
 
-        # Only decide()-less routers (LiteLLM) need extract() at all — Switchyard already
-        # knows what it picked (routing_info(decision) below). Attach the capture callback
-        # only then: it's how extract() gets an uncorrupted generation_info to read (see
-        # _CleanGenerationInfoCapture's docstring), and there's no reason to pay for it
-        # otherwise.
+        # Only decide()-less routers (LiteLLM) ever consume header_maps at all — Switchyard's
+        # routing_info() never iterates it (see that class's own docstring). Attach the
+        # capture callback only when decision is None: it's how header_maps gets an
+        # uncorrupted generation_info to read (see _CleanGenerationInfoCapture's docstring),
+        # and there's no reason to pay for it when it will never be consumed.
         capture = _CleanGenerationInfoCapture() if decision is None else None
         if capture is not None:
             config = {**config, "callbacks": [*(config.get("callbacks") or []), capture]}
@@ -188,30 +232,27 @@ class RouterChatModel(BaseChatModel):
         if not isinstance(response, AIMessage):
             raise ValueError(f"Router target returned {type(response).__name__} instead of AIMessage")
 
+        # Prefer the clean generation_info the capture callback caught over the bare
+        # response: response.response_metadata can end up with a corrupted copy of the
+        # same data by this point (see _CleanGenerationInfoCapture's docstring) — wrapping
+        # response in a minimal LLMResult carrying the clean generation_info lets
+        # _iter_header_maps read the good copy via the exact same code path it already
+        # uses for a real LLMResult (TokensCalculationCallback.on_llm_end's call).
+        header_source: LLMResult | AIMessage = response
+        if capture is not None and capture.generation_info:
+            header_source = LLMResult(
+                generations=[[ChatGeneration(message=response, generation_info=capture.generation_info)]]
+            )
+
         # Post-call: stamp the CANONICAL RoutingInfo (not a router-specific dataclass) so
         # response-level consumers (AgentInvokeCallback/AgentStreamingCallback) can read it
-        # self-describingly, without needing a Router reference at all. decision-based routers
-        # (Switchyard) already know what they picked; decide-less routers (LiteLLM's own
-        # auto-router, always None here — see Router.decide()'s docstring) only learn it from
-        # the response itself, via this same router's own extract() — the one method every
-        # Router implements for exactly this "no decision was ever in hand" case.
-        if decision is not None:
-            stamp_routing_info(response, self.router.routing_info(decision))
-        else:
-            # Prefer the clean generation_info the capture callback caught over the bare
-            # response: response.response_metadata can end up with a corrupted copy of the
-            # same data by this point (see _CleanGenerationInfoCapture's docstring) — wrapping
-            # response in a minimal LLMResult carrying the clean generation_info lets
-            # Router.extract() read the good copy via the exact same code path it already
-            # uses for a real LLMResult (TokensCalculationCallback.on_llm_end's call).
-            extract_source: LLMResult | AIMessage = response
-            if capture is not None and capture.generation_info:
-                extract_source = LLMResult(
-                    generations=[[ChatGeneration(message=response, generation_info=capture.generation_info)]]
-                )
-            extracted = self.router.extract(extract_source)
-            if not extracted.is_empty():
-                stamp_routing_info(response, extracted)
+        # self-describingly, without needing a Router reference at all. Called unconditionally
+        # — decision-based routers (Switchyard) never even look at header_maps; decide-less
+        # routers (LiteLLM) never look at decision — each router's own routing_info()
+        # implementation decides internally which input it needs (see core/router.py).
+        routing = self.router.routing_info(decision, _iter_header_maps(header_source))
+        if not routing.is_empty():
+            stamp_routing_info(response, routing)
         return ChatResult(generations=[ChatGeneration(message=response)])
 
     def _generate(
@@ -232,3 +273,39 @@ class RouterChatModel(BaseChatModel):
         raise RuntimeError(
             "synchronous Router routing cannot run inside an active event loop; use await agent.ainvoke(...) instead"
         )
+
+
+def build_chat_model_for(router: Router, *, model_name: str, request_id: str, llm_params: LLMParams) -> BaseChatModel:
+    """Build the LangChain chat model for *router* — the inverted `Router.build_chat_model()`:
+    this function consumes a Router via candidate_models() instead of the router constructing
+    its own wrapper, so Router itself never needs to import LangChain.
+
+    candidate_models() is the signal for whether this router's decide() can ever produce a
+    genuine choice: empty means it can't and there's nothing to wrap in RouterChatModel — the
+    raw client for model_name is returned directly, which also keeps with_structured_output()
+    working for callers across the codebase that need the raw provider client. Non-empty means
+    every candidate gets pre-built and wrapped in RouterChatModel — this covers both
+    SwitchyardRouter (two OTHER concrete deployments, model_name itself is the router's own
+    alias and never a candidate) and LiteLLMRouter (exactly one candidate: its own resolved
+    alias, which IS model_name — see LiteLLMRouter.candidate_models()'s own docstring for why
+    it still needs wrapping despite having no other option to choose between).
+
+    default_model is the first candidate: for Switchyard that's the higher-quality/fail-open
+    deployment by convention (see SwitchyardRouter.candidate_models()'s ordering); for LiteLLM
+    it's simply its own sole candidate.
+    """
+    from codemie.core.dependecies import get_llm_by_credentials
+
+    candidates = router.candidate_models()
+    if not candidates:
+        return get_llm_by_credentials(
+            llm_model=model_name, request_id=request_id, temperature=llm_params.temperature, top_p=llm_params.top_p
+        )
+
+    llms: dict[str, BaseChatModel | Runnable[LanguageModelInput, AIMessage]] = {
+        m: get_llm_by_credentials(
+            llm_model=m, request_id=request_id, temperature=llm_params.temperature, top_p=llm_params.top_p
+        )
+        for m in candidates
+    }
+    return RouterChatModel(router=router, candidates=llms, default_model=candidates[0])

@@ -12,14 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Proxy-side Router entry point plus routing-metadata SSE injection.
+"""Routing-metadata header codec plus SSE injection for the proxy path — the client-facing
+counterpart to `RouterProxySession` (`core/router_proxy_session.py`). Shared by any
+Router-routed proxy response (`enterprise/litellm/proxy_router.py`) regardless of which
+mechanism produced the RoutingInfo: building the routing decision itself (resolving a Router,
+running decide(), rewriting the request body) is `RouterProxySession`'s job, not this module's
+— this module only ever turns an already-built RoutingInfo into wire-visible HTTP headers or
+SSE metadata.
 
-This module sits between the LiteLLM HTTP proxy (`proxy_router.py`) and whichever concrete
-Router `create_router()` resolves for a given request. It is Switchyard-owned only by
-location, not by content: `apply_router_routing()` below runs any decide()-capable Router
-(SwitchyardRouter today; any future one for free), mutates the request body when a different
-model is chosen, and builds the RoutingInfo injected into response headers/SSE
-`message_start`.
+Lives in `core` rather than under either `enterprise/switchyard` or `enterprise/litellm`
+because it is genuinely mechanism-agnostic: it has never imported anything from either
+enterprise package, and moving it out of `enterprise/switchyard/proxy.py` (its original
+location, a placement accident predating the Router mechanism-unification effort — see
+docs/superpowers/specs/2026-09-21-router-path-decoupling-design.md) removes the last
+proxy-path artifact that lived under a mechanism-specific package for no content reason.
 """
 
 from __future__ import annotations
@@ -28,8 +34,6 @@ import json
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from codemie.configs import logger
-from codemie.core.router import RoutingDecision
 from codemie.core.routing_info import encode_header_value
 
 if TYPE_CHECKING:
@@ -47,6 +51,7 @@ _ROUTING_HEADER_FIELDS: dict[str, str] = {
     "classifier_output_tokens": "x-codemie-routing-classifier-output-tokens",
     "classifier_cached_tokens": "x-codemie-routing-classifier-cached-tokens",
     "classifier_cache_creation_tokens": "x-codemie-routing-classifier-cache-creation-tokens",
+    "counterfactual_model": "x-codemie-routing-counterfactual-model",
 }
 
 
@@ -64,10 +69,11 @@ def _inject_routing_into_message_start(
         data_idx = next((i for i, ln in enumerate(lines) if ln.startswith("data: ")), None)
         if data_idx is None:
             return event_bytes
-        event_data: dict = json.loads(lines[data_idx][6:])
-        if not isinstance(event_data.get("message"), dict):
+        event_data: dict[str, object] = json.loads(lines[data_idx][6:])
+        message = event_data.get("message")
+        if not isinstance(message, dict):
             return event_bytes
-        event_data["message"].update(routing_meta)
+        message.update(routing_meta)
         lines[data_idx] = "data: " + json.dumps(event_data, separators=(",", ":"))
         return "\n".join(lines).encode("utf-8")
     except Exception:
@@ -99,11 +105,9 @@ def _process_buffered_sse_events(
 
 def _routing_info_to_headers(info: RoutingInfo) -> dict[str, str]:
     """Build the canonical x-codemie-routing-* header set directly from RoutingInfo's typed
-    fields — one vocabulary regardless of which Router produced the info (Switchyard decided
-    synchronously, or LiteLLM's own external auto-router, parsed back from its response
-    headers via routing_info_from_headers()). routed_model/classifier_cost_usd get their own
-    headers unconditionally when present — they're RoutingInfo's two always-canonical fields
-    (see that field's docstring)."""
+    fields — one vocabulary regardless of which Router produced the info. routed_model/
+    classifier_cost_usd get their own headers unconditionally when present — they're
+    RoutingInfo's two always-canonical fields (see that field's docstring)."""
     headers: dict[str, str] = {}
     for field_name, header_name in _ROUTING_HEADER_FIELDS.items():
         value = getattr(info, field_name)
@@ -141,48 +145,3 @@ async def with_routing_metadata_stream(
             buf = bytearray()
     if not injected and buf:
         yield bytes(buf)
-
-
-async def apply_router_routing(
-    endpoint: str,
-    router_name: str,
-    request_body: dict[str, object] | None,
-    body_bytes: bytes,
-) -> tuple[bytes, dict[str, object] | None, RoutingDecision | None, RoutingInfo | None]:
-    """Apply Router-based model routing to a proxy request.
-
-    Resolves a Router via create_router(), runs it when the requested endpoint is routable,
-    rewrites the request body model if a different tier is chosen, and builds the RoutingInfo
-    directly from the decision (NOT via Router.extract() — that method is agent-path-only; the
-    proxy path already has the decision in hand and never needs to read it back out of a
-    response).
-
-    Returns:
-        (updated_body_bytes, updated_request_body, routing_decision, routing_info).
-        routing_decision and routing_info are None when routing was not performed.
-    """
-    from codemie.core.router import is_routable_endpoint
-    from codemie.service.llm_service.router_factory import create_router
-
-    if not is_routable_endpoint(endpoint) or not request_body:
-        return body_bytes, request_body, None, None
-
-    router = create_router(router_name)
-    raw_messages = request_body.get("messages", [])
-    messages: list[dict[str, object]] = (
-        [m for m in raw_messages if isinstance(m, dict)] if isinstance(raw_messages, list) else []
-    )
-    decision = await router.decide(messages)
-    if decision is None:
-        return body_bytes, request_body, None, None
-
-    chosen_model = decision.model
-    if chosen_model != router_name:
-        request_body["model"] = chosen_model
-        body_bytes = json.dumps(request_body).encode("utf-8")
-        logger.debug("[ROUTING-PROXY] Override %r -> %r", router_name, chosen_model)
-    else:
-        logger.debug("[ROUTING-PROXY] Keeping %r", chosen_model)
-
-    routing_info = router.routing_info(decision)
-    return body_bytes, request_body, decision, routing_info

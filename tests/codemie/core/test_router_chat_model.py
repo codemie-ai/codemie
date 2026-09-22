@@ -18,7 +18,14 @@ from unittest.mock import AsyncMock, MagicMock
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
-from codemie.core.router_chat_model import RouterChatModel, _CleanGenerationInfoCapture, _ROUTING_CTX_KEY
+from codemie.core.router_chat_model import (
+    RouterChatModel,
+    _CleanGenerationInfoCapture,
+    _headers_of,
+    _iter_header_maps,
+    _ROUTING_CTX_KEY,
+    build_chat_model_for,
+)
 from codemie.core.router import ClassifierCall, RoutingDecision
 from codemie.core.routing_info import RoutingInfo, _ROUTING_INFO_KEY
 
@@ -29,17 +36,17 @@ def _make_router(decision):
     router.decide = AsyncMock(return_value=decision)
     # Mirrors Router.routing_info's real default (see core/router.py) so RouterChatModel's own
     # stamping behavior can be asserted without re-testing that formula here — it's covered on
-    # its own in tests/codemie/core/test_router.py.
+    # its own in tests/codemie/core/test_router.py. Accepts (and ignores) header_maps, matching
+    # the real interface's unconditional-both-args call shape.
     router.routing_info = MagicMock(
-        side_effect=lambda d: RoutingInfo(
+        side_effect=lambda d, header_maps: RoutingInfo(
             routed_model=d.model,
             classifier_cost_usd=d.classifier.cost_usd if d.classifier else None,
             routing_family=d.routing_family,
         )
+        if d is not None
+        else RoutingInfo()
     )
-    # Default: no post-hoc signal in the response either (the decide()-capable-router case —
-    # a real LiteLLMRouter-style router that overrides this is exercised in its own test below).
-    router.extract = MagicMock(return_value=RoutingInfo())
     return router
 
 
@@ -160,7 +167,7 @@ async def test_agenerate_stashes_router_even_when_decide_returns_none():
 
 
 @pytest.mark.asyncio
-async def test_agenerate_does_not_stamp_routing_info_when_no_decision_and_extract_empty():
+async def test_agenerate_does_not_stamp_routing_info_when_no_decision_and_headers_empty():
     router = _make_router(decision=None)
     sonnet = _make_candidate("claude-4-6-sonnet", "default reply")
     chat_model = RouterChatModel(
@@ -171,18 +178,23 @@ async def test_agenerate_does_not_stamp_routing_info_when_no_decision_and_extrac
 
     result = await chat_model._agenerate([AIMessage(content="hi")])
 
-    router.extract.assert_called_once_with(result.generations[0].message)
+    router.routing_info.assert_called_once()
+    call_args = router.routing_info.call_args.args
+    assert call_args[0] is None
+    assert list(call_args[1]) == []  # response_metadata has no "headers" key
     assert _ROUTING_INFO_KEY not in result.generations[0].message.response_metadata
 
 
 @pytest.mark.asyncio
-async def test_agenerate_stamps_extracted_routing_info_when_no_decision():
+async def test_agenerate_stamps_routing_info_read_from_response_headers_when_no_decision():
     """decide()-less routers (LiteLLMRouter) never produce a RoutingDecision — their only
-    channel for the routed model is reading it back out of the response itself, via their own
-    extract(). RouterChatModel must stamp whatever extract() finds, the same as it would stamp
-    a decision-based routing_info()."""
-    router = _make_router(decision=None)
-    router.extract = MagicMock(return_value=RoutingInfo(routed_model="claude-haiku-4-5"))
+    channel for the routed model is reading it back out of the response itself, via
+    header_maps built from the response. RouterChatModel must stamp whatever routing_info()
+    returns from those headers, the same as it would stamp a decision-based routing_info()."""
+    router = MagicMock()
+    router.name = "litellm_complexity"
+    router.decide = AsyncMock(return_value=None)
+    router.routing_info = MagicMock(return_value=RoutingInfo(routed_model="claude-haiku-4-5"))
     sonnet = _make_candidate("claude-4-6-sonnet", "default reply")
     chat_model = RouterChatModel(
         router=router,
@@ -198,9 +210,9 @@ async def test_agenerate_stamps_extracted_routing_info_when_no_decision():
 
 @pytest.mark.asyncio
 async def test_agenerate_does_not_attach_capture_callback_when_decision_present():
-    """The capture callback exists purely to feed extract() for decide()-less routers — a
-    decision-bearing call (Switchyard) never calls extract() at all, so attaching it would be
-    pure overhead."""
+    """The capture callback exists purely to feed header_maps for decide()-less routers — a
+    decision-bearing call (Switchyard) never needs it, so attaching it would be pure
+    overhead; SwitchyardRouter.routing_info() never even iterates header_maps."""
     decision = RoutingDecision(
         model="claude-4-5-haiku", tier="efficient", decision_source="llm_classifier", routing_family="switchyard"
     )
@@ -228,14 +240,17 @@ async def test_clean_generation_info_capture_reads_generation_info_from_llm_resu
 
 
 @pytest.mark.asyncio
-async def test_agenerate_extracts_from_clean_generation_info_when_response_metadata_corrupted():
+async def test_agenerate_reads_header_maps_from_clean_generation_info_when_response_metadata_corrupted():
     """Regression test: a streamed response's response_metadata['headers'] can end up with a
     custom header value duplicated string-wise (e.g. "modelmodel" instead of "model") by the
     time selected.ainvoke() returns, while the LLMResult.generation_info the same call reports
     at on_llm_end (captured via the callback attached in config) stays clean — see
-    _CleanGenerationInfoCapture's docstring. extract() must see the clean copy."""
-    router = _make_router(decision=None)
-    router.extract = MagicMock(return_value=RoutingInfo(routed_model="claude-haiku-4-5"))
+    _CleanGenerationInfoCapture's docstring. router.routing_info() must see the clean copy via
+    header_maps."""
+    router = MagicMock()
+    router.name = "litellm_complexity"
+    router.decide = AsyncMock(return_value=None)
+    router.routing_info = MagicMock(return_value=RoutingInfo(routed_model="claude-haiku-4-5"))
 
     clean_generation_info = {"headers": {"x-litellm-router-routed-model": "claude-haiku-4-5"}}
     corrupted_response_metadata = {"headers": {"x-litellm-router-routed-model": "claude-haiku-4-5claude-haiku-4-5"}}
@@ -258,9 +273,8 @@ async def test_agenerate_extracts_from_clean_generation_info_when_response_metad
 
     await chat_model._agenerate([AIMessage(content="hi")])
 
-    extract_arg = router.extract.call_args.args[0]
-    assert isinstance(extract_arg, LLMResult)
-    assert extract_arg.generations[0][0].generation_info == clean_generation_info
+    header_maps_arg = list(router.routing_info.call_args.args[1])
+    assert header_maps_arg == [clean_generation_info["headers"]]
 
 
 def test_bind_tools_returns_new_router_chat_model_with_tools_bound_on_every_candidate():
@@ -276,3 +290,115 @@ def test_bind_tools_returns_new_router_chat_model_with_tools_bound_on_every_cand
     assert result.router is router
     assert result.default_model == "m"
     candidate.bind_tools.assert_called_once_with(tools=[])
+
+
+class TestHeaderMapExtraction:
+    """_headers_of/_iter_header_maps unwrap a LangChain response's various shapes into flat
+    header mappings — used by RouterChatModel._agenerate and directly by
+    TokensCalculationCallback.on_llm_end (a separate callback that fires earlier in the
+    LangChain callback chain and can't reuse _agenerate's own code path)."""
+
+    def test_iter_header_maps_reads_ai_message_response_metadata(self):
+        message = AIMessage(content="hi", response_metadata={"headers": {"x-litellm-router-routed-model": "haiku"}})
+        assert list(_iter_header_maps(message)) == [{"x-litellm-router-routed-model": "haiku"}]
+
+    def test_iter_header_maps_empty_when_ai_message_has_no_headers(self):
+        message = AIMessage(content="hi", response_metadata={})
+        assert list(_iter_header_maps(message)) == []
+
+    def test_iter_header_maps_prefers_generation_info_over_response_metadata(self):
+        """generation_info is captured directly from the LLM's own LLMResult before LangChain
+        assembles response_metadata, which may contain a corrupted duplicate — never merge
+        the two, always prefer the generation_info copy when both are present."""
+        message = AIMessage(content="hi", response_metadata={"headers": {"a": "corrupted-a"}})
+        result = LLMResult(
+            generations=[[ChatGeneration(message=message, generation_info={"headers": {"a": "clean-a"}})]]
+        )
+        assert list(_iter_header_maps(result)) == [{"a": "clean-a"}]
+
+    def test_iter_header_maps_falls_back_to_response_metadata_when_no_generation_info(self):
+        message = AIMessage(content="hi", response_metadata={"headers": {"a": "b"}})
+        result = LLMResult(generations=[[ChatGeneration(message=message, generation_info=None)]])
+        assert list(_iter_header_maps(result)) == [{"a": "b"}]
+
+    def test_headers_of_returns_none_for_non_mapping_container(self):
+        assert _headers_of(None) is None
+        assert _headers_of("not a mapping") is None
+        assert _headers_of({"headers": "not a mapping either"}) is None
+
+
+class TestBuildChatModelFor:
+    """The inverted Router.build_chat_model(): consumes a Router via candidate_models()
+    instead of the router constructing its own LangChain wrapper."""
+
+    def test_returns_raw_client_when_no_candidates(self, monkeypatch):
+        sentinel = object()
+        called_with = {}
+
+        def fake_get_llm_by_credentials(**kwargs):
+            called_with.update(kwargs)
+            return sentinel
+
+        monkeypatch.setattr("codemie.core.dependecies.get_llm_by_credentials", fake_get_llm_by_credentials)
+        from codemie.core.router import NULL_ROUTER
+        from codemie.core.router_chat_model import LLMParams
+
+        result = build_chat_model_for(
+            NULL_ROUTER, model_name="gpt-4.1", request_id="req-1", llm_params=LLMParams(temperature=0.2, top_p=None)
+        )
+
+        assert result is sentinel
+        assert called_with == {
+            "llm_model": "gpt-4.1",
+            "request_id": "req-1",
+            "temperature": 0.2,
+            "top_p": None,
+        }
+
+    def test_wraps_multiple_candidates_in_router_chat_model(self, monkeypatch):
+        router = MagicMock()
+        router.candidate_models.return_value = ("claude-4-6-sonnet", "claude-4-5-haiku")
+
+        def fake_get_llm_by_credentials(*, llm_model, **kwargs):
+            return f"client-{llm_model}"
+
+        monkeypatch.setattr("codemie.core.dependecies.get_llm_by_credentials", fake_get_llm_by_credentials)
+        from codemie.core.router_chat_model import LLMParams
+
+        result = build_chat_model_for(
+            router,
+            model_name="claude-4-6-sonnet-switchyard-claude-4-5-haiku-signal",
+            request_id="req-1",
+            llm_params=LLMParams(temperature=None, top_p=None),
+        )
+
+        assert isinstance(result, RouterChatModel)
+        assert result.router is router
+        assert result.candidates == {
+            "claude-4-6-sonnet": "client-claude-4-6-sonnet",
+            "claude-4-5-haiku": "client-claude-4-5-haiku",
+        }
+        assert result.default_model == "claude-4-6-sonnet"
+
+    def test_wraps_self_referential_single_candidate_for_litellm_router(self, monkeypatch):
+        """LiteLLMRouter.candidate_models() returns (self.name,) — its own alias, the one
+        deployable model. build_chat_model_for must still wrap it in RouterChatModel (not
+        return a raw client) so the post-call routing_info() stamp runs."""
+        from codemie.enterprise.litellm.router import LiteLLMRouter
+
+        router = LiteLLMRouter("gpt-smart-router", counterfactual_model="gpt-5.6-terra-2026-07-09")
+
+        def fake_get_llm_by_credentials(*, llm_model, **kwargs):
+            return f"client-{llm_model}"
+
+        monkeypatch.setattr("codemie.core.dependecies.get_llm_by_credentials", fake_get_llm_by_credentials)
+        from codemie.core.router_chat_model import LLMParams
+
+        result = build_chat_model_for(
+            router, model_name="gpt-smart-router", request_id="req-1", llm_params=LLMParams(temperature=0.2, top_p=None)
+        )
+
+        assert isinstance(result, RouterChatModel)
+        assert result.router is router
+        assert result.candidates == {"gpt-smart-router": "client-gpt-smart-router"}
+        assert result.default_model == "gpt-smart-router"

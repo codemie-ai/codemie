@@ -12,20 +12,36 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The ``Router`` interface — the shared abstraction that decides, extracts, and (agent
-path) constructs chat models across routing mechanisms — plus the value types its contract
-is built on: ``RoutingDecision`` (the result of a single decide() call, genuinely shared by
-both the proxy and agent paths — not owned by any one mechanism) and ``CallContext``
-(per-call correlation state passed to extract_classifier_usage()).
+"""The ``Router`` interface — the shared abstraction that decides and declares routing
+metadata across routing mechanisms — plus the value types its contract is built on:
+``RoutingDecision`` (the result of a single decide() call, genuinely shared by both the proxy
+and agent paths — not owned by any one mechanism) and ``CallContext`` (per-call correlation
+state passed to extract_classifier_usage()).
 
-``RoutingDecision.tier`` is a plain ``str``, not an enum: "tier" naming (e.g. Switchyard's
-"capable"/"efficient") is meaningful only to the router that produced a given decision, not
-to this shared contract — see ``enterprise/switchyard/engine.py::RoutingTier`` for the one
-router that currently has tiers at all. For the same reason ``RoutingDecision`` carries no
+``Router`` knows nothing about HTTP or LangChain. ``routing_info(decision, header_maps)`` is
+its one and only way to report what it knows: each concrete implementation decides internally
+which of the two inputs it actually needs, deterministically, based on its own ``decide()``
+contract — LiteLLM's ``decide()`` always returns ``None`` (see its own docstring), so its
+``routing_info()`` never reads ``decision``; Switchyard's ``decide()`` returns a real decision
+except on failure, and LiteLLM never echoes anything Switchyard-specific back in response
+headers, so its ``routing_info()`` never reads ``header_maps``. There is no dispatcher outside
+the router deciding which input "wins" — callers always pass both, unconditionally and lazily
+(``header_maps`` is an ``Iterable``, typically a generator — a router implementation that never
+consumes it costs its caller nothing).
+
+Building a LangChain chat model for a resolved Router is not this module's job either — see
+``build_chat_model_for()`` in ``core/router_chat_model.py``, which consumes a ``Router`` via
+``candidate_models()`` instead of the router constructing its own LangChain wrapper.
+
+``RoutingDecision.tier`` is a plain ``str``, not an enum owned by this module: "tier" naming
+(e.g. Switchyard's "capable"/"efficient") is meaningful only to the router that produced a
+given decision — see ``enterprise/switchyard/engine.py::RoutingTier`` for the one router that
+currently has tiers at all. For the same reason ``RoutingDecision`` carries no
 ``capable_model`` field: that was Switchyard's own "what tier would have run absent
 downgrade" bookkeeping, not something every decide-capable router has an equivalent of.
-Switchyard forwards it (and its tier) into ``RoutingInfo``'s own typed ``requested_model``/
-``tier`` fields instead — see ``SwitchyardRouter.routing_info``.
+Switchyard forwards its tier into ``RoutingInfo``'s own typed ``tier`` field instead —
+see ``SwitchyardRouter.routing_info``. ``RoutingInfo.requested_model`` itself always comes
+from ``Router.router_name`` (see that attribute's own docstring), not from tier bookkeeping.
 
 Also hosts ``NullRouter``/``NULL_ROUTER`` — the trivial "no routing at all" identity. It
 lives here rather than in an enterprise package because it is genuinely mechanism-agnostic:
@@ -34,38 +50,25 @@ zero LiteLLM or Switchyard knowledge, just the Null Object for this interface.
 The other concrete routers (``SwitchyardRouter``, ``LiteLLMRouter``) live in their owning
 enterprise packages and are resolved via ``create_router()``
 (``codemie.service.llm_service.router_factory``) — that factory, not this module, is where
-catalog/service-layer lookups happen. This module stays a leaf: the only same-package
-reference is a single lazy import of ``RouterChatModel`` inside ``build_chat_model``'s
-default, needed because ``core/router_chat_model.py`` itself imports ``Router`` from here.
-Unlike the ``PassiveRouter`` this replaces, nothing here ever imports anything under
-``codemie.enterprise`` — not even lazily.
+catalog/service-layer lookups happen. This module stays a leaf: nothing here imports anything
+under ``codemie.enterprise``, and — since ``build_chat_model()`` moved to
+``core/router_chat_model.py`` — nothing here imports LangChain at all.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import LLMResult
 
 from codemie.core.routing_info import ClassifierUsage, RoutingInfo
-
-if TYPE_CHECKING:
-    from langchain_core.language_models import LanguageModelInput
-    from langchain_core.runnables import Runnable
-
-    from codemie.core.router_chat_model import LLMParams
 
 
 # Endpoints whose request body carries a routable `messages` array — true for any
 # decide()-capable Router, not just Switchyard (moved out of enterprise/switchyard/engine.py,
 # which never had anything mechanism-specific in this set to begin with). Consulted by
-# apply_router_routing() (enterprise/switchyard/proxy.py) before running create_router() at
-# all, so a request to an unrelated endpoint never pays for a router resolution it can't use.
+# RouterProxySession (core/router_proxy_session.py) before running decide() at all, so a
+# request to an unrelated endpoint never pays for a decide() call it can't use.
 _ROUTABLE_ENDPOINTS: frozenset[str] = frozenset(
     {
         "v1/messages",
@@ -135,17 +138,22 @@ class CallContext:
 class Router(ABC):
     """One instance per routing context (once per proxy request; once per agent LLM
     construction) for the routers that actually carry per-call state — threaded through the
-    whole flow: decide, extract, classifier usage, billed model, and (agent path) chat-model
-    construction. The ONLY concrete implementations are SwitchyardRouter
+    whole flow by two dedicated per-path orchestrators, ``RouterChatModel`` (agent path,
+    ``core/router_chat_model.py``) and ``RouterProxySession`` (proxy path,
+    ``core/router_proxy_session.py``). Neither orchestrator is this module's concern: ``Router``
+    itself never imports either. The ONLY concrete implementations are SwitchyardRouter
     (enterprise/switchyard/router.py), LiteLLMRouter (enterprise/litellm/router.py), and
-    NullRouter (below) — never subclassed anywhere else. NullRouter and LiteLLMRouter are
-    stateless, so their instances (NULL_ROUTER / the LiteLLM singletons) are shared across
-    requests rather than freshly constructed — safe only because they hold no per-call state.
-    Resolve one via create_router() (codemie.service.llm_service.router_factory), never
-    construct directly."""
+    NullRouter (below) — never subclassed anywhere else. Resolve one via create_router()
+    (codemie.service.llm_service.router_factory), never construct directly."""
 
     name: str
     routing_family: str
+    # The catalog alias this router was resolved for (the model_name create_router() was
+    # called with) — every router's own identity, independent of decide()/routing_info(). The
+    # single source for RoutingInfo.requested_model, so every mechanism reports the same kind
+    # of "what did the caller ask for" value instead of each inventing its own stand-in.
+    router_name: str
+    counterfactual_model: str | None = None
 
     @abstractmethod
     async def decide(self, messages: list[dict[str, object]]) -> RoutingDecision | None:
@@ -153,22 +161,32 @@ class Router(ABC):
         None means "I cannot decide up front" — always the case for LiteLLM's auto-router,
         whose algorithm runs inside the external LiteLLM process, after the request is sent."""
 
-    @abstractmethod
-    def extract(self, response: LLMResult | AIMessage) -> RoutingInfo:
-        """The no-synchronous-decision-available path: read this router's own routing
-        fingerprint back out of a LangChain response, after the fact. Used only where no
-        RoutingDecision was ever in hand at the call site — AgentInvokeCallback/
-        AgentStreamingCallback (which only ever see the final response, never a decision) and
-        LiteLLMRouter (whose decide() always returns None, see its own docstring, so this is
-        its only channel). NOT a general-purpose "get routing info from anywhere a response is
-        available" call: SwitchyardRouter.extract() only returns non-empty once
-        RouterChatModel._agenerate has stamped the canonical RoutingInfo onto the response
-        (core/routing_info.py::stamp_routing_info) — a callback attached directly to the
-        underlying candidate model (e.g. TokensCalculationCallback, see
-        core/dependecies.py:get_llm_by_credentials) fires *before* that stamp exists, so it
-        must prefer routing_info(decision) below whenever it already has a decision in hand,
-        and fall back to this method only when it doesn't. The proxy path never calls this
-        either — it already has the decision object and calls routing_info() directly."""
+    def routing_info(
+        self, decision: RoutingDecision | None, header_maps: Iterable[Mapping[str, object]]
+    ) -> RoutingInfo:
+        """Report whatever this router knows about one call's routing, from whichever of the
+        two inputs it actually needs — a synchronous decide()-time decision, post-call
+        response headers, or (for every router today) only ever one of the two, never both.
+        Each concrete override decides internally which input to read, deterministically,
+        based on its own ``decide()`` contract (see the module docstring); callers always pass
+        both, unconditionally.
+
+        This default — available to any future minimal decide()-capable router that doesn't
+        need bespoke field population (NullRouter overrides it instead, since it must stay
+        empty even when a decision is present) — builds a RoutingInfo directly from
+        ``decision`` when one exists (no response needed, so it's usable synchronously the
+        moment decide() returns), and never reads ``header_maps``.
+        ``routing_family`` is read from the decision, not from ``self.routing_family`` — the
+        decision is the single source of truth once one exists (see RoutingDecision's own
+        docstring)."""
+        if decision is None:
+            return RoutingInfo()
+        return RoutingInfo(
+            routed_model=decision.model,
+            requested_model=self.router_name,
+            classifier_cost_usd=decision.classifier.cost_usd if decision.classifier else None,
+            routing_family=decision.routing_family,
+        )
 
     def extract_classifier_usage(self, ctx: CallContext) -> ClassifierUsage | None:
         """Read this router's own classifier sub-call usage, tagged with this router's own
@@ -177,91 +195,33 @@ class Router(ABC):
 
     def candidate_models(self) -> Sequence[str]:
         """Concrete models this router might select between (agent path pre-builds a
-        LangChain client per candidate). Empty for routers whose decide() is always None."""
+        LangChain client per candidate via build_chat_model_for). Empty for routers whose
+        decide() is always None and which have no self-referential single candidate either
+        (e.g. NullRouter). See LiteLLMRouter.candidate_models() for the one exception where a
+        decide()-less router still reports a (single) candidate: itself."""
         return ()
-
-    def routing_info(self, decision: RoutingDecision) -> RoutingInfo:
-        """Canonical RoutingInfo built directly from a decision — no response needed, so it's
-        usable synchronously the moment decide() returns, unlike extract() (which needs a
-        response object and, for SwitchyardRouter, needs RouterChatModel to have already
-        stamped it — see extract()'s docstring). Prefer this over extract() at every call site
-        that already has a RoutingDecision in hand (RouterChatModel._agenerate,
-        apply_router_routing, TokensCalculationCallback when a decision was stashed); fall back
-        to extract() only where no decision was ever available synchronously.
-
-        ``routing_family`` is read from the decision, not from ``self.routing_family`` —
-        the decision is the single source of truth once one exists (see RoutingDecision's own
-        docstring); ``self.routing_family`` exists only for routers whose decide() can return
-        None (LiteLLMRouter), which never reach this method with a real decision anyway."""
-        return RoutingInfo(
-            routed_model=decision.model,
-            classifier_cost_usd=decision.classifier.cost_usd if decision.classifier else None,
-            routing_family=decision.routing_family,
-        )
-
-    def build_chat_model(self, *, model_name: str, request_id: str, llm_params: "LLMParams") -> BaseChatModel:
-        """Agent-path entry point.
-
-        candidate_models() is the signal for whether this router's decide() can ever return
-        something other than None (see that method's docstring): empty means it can't, so
-        wrapping in RouterChatModel would be pure overhead and would break
-        with_structured_output() for the raw provider client (used across a wide swath of the
-        codebase — assistant_agent.py, structured_tool_agent.py, every workflow_generator
-        node). Non-empty means decide() can genuinely pick between candidates, so every
-        candidate is pre-built and wrapped in RouterChatModel.
-
-        LiteLLMRouter overrides this default entirely (see its own build_chat_model): its
-        decide() is always None, but it still wraps in RouterChatModel — with exactly one
-        candidate, model_name itself — purely so the post-call extract() stamp in
-        RouterChatModel._agenerate runs, instead of needing a bespoke metadata channel.
-
-        ``model_name`` itself is never one of the built candidates: whenever candidate_models()
-        is non-empty, ``model_name`` is the router's own alias (e.g. a Switchyard
-        "<capable>-switchyard-<efficient>-<mode>" name — see create_router()/is_router_model()),
-        not a deployable model. Building/exposing a client for it would only add a redundant,
-        self-referential entry to RouterChatModel.candidates (and to its "[ROUTING] ...
-        candidates=" log line) that decide() can never actually select — its RoutingDecision.model
-        is always one of candidate_models()'s own entries. default_model is set to the first
-        candidate instead, so the decide()-returned-None fallback path picks a real target
-        (by convention the higher-quality/fail-open one — see SwitchyardRouter.candidate_models(),
-        which orders capable before efficient).
-        """
-        from codemie.core.dependecies import get_llm_by_credentials
-
-        candidates = self.candidate_models()
-        if not candidates:
-            return get_llm_by_credentials(
-                llm_model=model_name, request_id=request_id, temperature=llm_params.temperature, top_p=llm_params.top_p
-            )
-
-        from codemie.core.router_chat_model import RouterChatModel
-
-        llms: dict[str, BaseChatModel | Runnable[LanguageModelInput, AIMessage]] = {
-            m: get_llm_by_credentials(
-                llm_model=m, request_id=request_id, temperature=llm_params.temperature, top_p=llm_params.top_p
-            )
-            for m in candidates
-        }
-        return RouterChatModel(router=self, candidates=llms, default_model=candidates[0])
 
 
 class NullRouter(Router):
     """The "no routing at all" identity — used whenever create_router() finds no Switchyard
     or LiteLLM-auto-router declaration for a model. Genuinely mechanism-agnostic: unlike the
-    old PassiveRouter this replaces, it carries zero enterprise knowledge, not even a lazy
-    import — decide() never has anything to decide, and extract() never has any
-    router-specific signal to read back out of a response.
-
-    Stateless, so shared as a module-level singleton (NULL_ROUTER) rather than constructed
-    per request — see the Router docstring."""
+    old PassiveRouter this replaces, it carries zero enterprise knowledge — decide() never has
+    anything to decide, and routing_info() never has anything to report, regardless of what
+    is passed in: overridden (rather than inheriting the base default) so that even a
+    RoutingDecision-shaped value handed to it by a confused caller is still reported as
+    empty — "no routing at all" is an identity, not merely a consequence of decide() always
+    returning None."""
 
     name = "none"
     routing_family = "none"
+    router_name = "none"
 
     async def decide(self, messages: list[dict[str, object]]) -> RoutingDecision | None:
         return None
 
-    def extract(self, response: LLMResult | AIMessage) -> RoutingInfo:
+    def routing_info(
+        self, decision: RoutingDecision | None, header_maps: Iterable[Mapping[str, object]]
+    ) -> RoutingInfo:
         return RoutingInfo()
 
 

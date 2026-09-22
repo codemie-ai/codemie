@@ -95,15 +95,13 @@ from codemie.repository.project_budget_repository import project_budget_assignme
 
 # Import proxy utils from loader (with enterprise package availability check)
 from ..loader import inject_user_into_body, parse_usage_from_response
-from codemie.enterprise.switchyard.proxy import (
-    apply_router_routing,
+from codemie.core.proxy_routing_headers import (
     with_routing_metadata_stream,
     _routing_info_to_headers,
 )
 from codemie.core.routing_info import RoutingInfo
 from codemie.core.routing_costs import with_counterfactual_costs
-from codemie.enterprise.litellm.router import routing_info_from_headers
-from codemie.enterprise.litellm.routing_headers import resolve_counterfactual_model
+from codemie.core.router_proxy_session import RouterProxySession
 
 
 LITELLM_CUSTOMER_ID_HEADER = "x-litellm-customer-id"
@@ -160,7 +158,7 @@ PROXY_RESPONSE_HOP_BY_HOP_HEADERS = {
 
 # Individual x-litellm-* headers forwarded to clients for observability.
 # x-litellm-router-* headers are never forwarded — the canonical x-codemie-routing-*
-# vocabulary (see _routing_info_to_headers in enterprise/switchyard/proxy.py) replaces them.
+# vocabulary (see _routing_info_to_headers in core/proxy_routing_headers.py) replaces them.
 LITELLM_FORWARDED_HEADERS = frozenset(
     {
         "x-litellm-model-name",
@@ -1160,33 +1158,11 @@ def _queue_usage_tracking(
     )
 
 
-def _build_proxy_routing(routing_info: RoutingInfo | None, response_headers: dict, usage_data: dict) -> RoutingInfo:
-    """Merge the decide()-time RoutingInfo with LiteLLM's own header-reported routing.
-
-    The decide()-time RoutingInfo is already canonical (Router.routing_info /
-    SwitchyardRouter.routing_info populate the typed dimensions), so it is overlaid directly —
-    no header round-trip. LiteLLM's own complexity router only reveals its choice in response
-    headers, so that half is still read off the response.
-
-    Classifier cost/tokens: use LiteLLM header data only when the deciding router has NOT
-    already reported it. Both layers may describe the same classifier invocation; summing both
-    via merged_over (which is additive for these fields) would double-count overhead.
-    """
-    decided_routing = routing_info if routing_info is not None else RoutingInfo()
-    litellm_routing = routing_info_from_headers(response_headers)
-    if routing_info is not None and not routing_info.is_empty():
-        litellm_routing = litellm_routing.model_copy(
-            update={
-                "classifier_cost_usd": None,
-                "classifier_input_tokens": None,
-                "classifier_output_tokens": None,
-                "classifier_cached_tokens": None,
-                "classifier_cache_creation_tokens": None,
-                "classifier_total_tokens": None,
-                "routing_cost_known": None,
-            }
-        )
-    proxy_routing = decided_routing.merged_over(litellm_routing)
+def _stamp_usage_onto_routing(proxy_routing: RoutingInfo, usage_data: dict) -> RoutingInfo:
+    """Stamp this call's actual token usage onto an already-assembled RoutingInfo — unrelated
+    to how proxy_routing was built (router_session.routing_info() already resolved the
+    decision-vs-headers question, including counterfactual_model), so kept as its own small
+    step rather than folded into that call."""
     if proxy_routing.is_empty():
         return proxy_routing
     return proxy_routing.model_copy(
@@ -1199,20 +1175,6 @@ def _build_proxy_routing(routing_info: RoutingInfo | None, response_headers: dic
             "routed_cache_hit": bool(usage_data.get("cache_hit")),
         }
     )
-
-
-def _resolve_proxy_counterfactual_model(proxy_routing: RoutingInfo) -> RoutingInfo:
-    """Populate counterfactual_model if the router didn't already declare it.
-
-    LiteLLM reports the selected deployment as routed_model, while the configured
-    counterfactual anchor belongs to the auto-router alias in router_model_name.
-    """
-    if not proxy_routing.routed_model or proxy_routing.counterfactual_model:
-        return proxy_routing
-    counterfactual_model = resolve_counterfactual_model(proxy_routing.requested_model or proxy_routing.routed_model)
-    if not counterfactual_model:
-        return proxy_routing
-    return proxy_routing.model_copy(update={"counterfactual_model": counterfactual_model})
 
 
 def _apply_proxy_counterfactual_costs(proxy_routing: RoutingInfo, usage_data: dict) -> RoutingInfo:
@@ -1289,7 +1251,7 @@ async def _finalize_stream_usage_tracking(
     buffer: bytearray,
     session_id: str | None,
     request_id: str | None,
-    routing_info: RoutingInfo | None = None,
+    router_session: RouterProxySession,
 ) -> None:
     """Parse usage from a completed stream buffer and queue the usage-tracking background task.
 
@@ -1336,8 +1298,8 @@ async def _finalize_stream_usage_tracking(
         request_id=request_id,
     )
 
-    proxy_routing = _build_proxy_routing(routing_info, response_headers, usage_data)
-    proxy_routing = _resolve_proxy_counterfactual_model(proxy_routing)
+    proxy_routing = router_session.routing_info(response_headers)
+    proxy_routing = _stamp_usage_onto_routing(proxy_routing, usage_data)
     proxy_routing = _apply_proxy_counterfactual_costs(proxy_routing, usage_data)
 
     _queue_routing_metric(
@@ -1358,7 +1320,7 @@ async def _streaming_response_with_usage_tracking(
     request_info: dict,
     llm_model: str,
     background_tasks: BackgroundTasks,
-    routing_info: RoutingInfo | None = None,
+    router_session: RouterProxySession,
 ):
     """
     Stream response with usage tracking (uses codemie services).
@@ -1388,9 +1350,7 @@ async def _streaming_response_with_usage_tracking(
     )
 
     try:
-        client_routing = (
-            routing_info if routing_info is not None else routing_info_from_headers(downstream_response.headers)
-        )
+        client_routing = router_session.routing_info(downstream_response.headers)
         chunk_source = with_routing_metadata_stream(
             downstream_response.aiter_raw(), _routing_info_to_headers(client_routing)
         )
@@ -1440,7 +1400,7 @@ async def _streaming_response_with_usage_tracking(
             buffer=buffer,
             session_id=session_id,
             request_id=request_id,
-            routing_info=routing_info,
+            router_session=router_session,
         )
 
 
@@ -1695,7 +1655,7 @@ async def _build_proxy_response(
     request_info: dict,
     llm_model: str,
     background_tasks: BackgroundTasks,
-    routing_info: RoutingInfo | None,
+    router_session: RouterProxySession,
     session_id: str | None,
     request_id: str | None,
 ) -> Response | StreamingResponse:
@@ -1726,7 +1686,7 @@ async def _build_proxy_response(
                 request_info=request_info,
                 llm_model=llm_model,
                 background_tasks=background_tasks,
-                routing_info=routing_info,
+                router_session=router_session,
             ),
             status_code=downstream_response.status_code,
             headers=response_headers,
@@ -1782,14 +1742,10 @@ async def _proxy_to_llm_proxy(
     request_info[LLM_MODEL] = _extract_model(request_body, request_info, path_params) or UNKNOWN
 
     # Router-based model routing: score conversation history and pick model tier.
-    body_bytes, request_body, routing_decision, routing_info = await apply_router_routing(
-        endpoint=endpoint,
-        router_name=request_info.get(LLM_MODEL, UNKNOWN),
-        request_body=request_body,
-        body_bytes=body_bytes,
-    )
-    if routing_decision is not None:
-        request_info[LLM_MODEL] = routing_decision.model
+    router_session = RouterProxySession.for_request(request_info.get(LLM_MODEL, UNKNOWN))
+    body_bytes, request_body = await router_session.decide_and_rewrite(endpoint, request_body, body_bytes)
+    if router_session.decision is not None:
+        request_info[LLM_MODEL] = router_session.decision.model
 
     # Check if proxy enabled
     if not is_litellm_enabled():
@@ -1867,15 +1823,14 @@ async def _proxy_to_llm_proxy(
     if downstream_response.headers.get("x-litellm-cache-hit", "").lower() == "true":
         response_headers[CODEMIE_CACHE_HIT_HEADER] = "true"
     # Always determine a canonical RoutingInfo, regardless of which mechanism routed: Switchyard
-    # decided synchronously (routing_info already set), or only LiteLLM's own auto-router did —
-    # in which case parse it back from the raw (unfiltered) downstream headers, same as
-    # _finalize_stream_usage_tracking already does for the ES analytics event. Either way, emit
-    # the one x-codemie-routing-* vocabulary — never the raw x-litellm-router-* one (already
-    # stripped above by _should_forward_response_header).
-    client_routing = (
-        routing_info if routing_info is not None else routing_info_from_headers(downstream_response.headers)
-    )
-    response_headers.update(_routing_info_to_headers(client_routing))
+    # decided synchronously, or only LiteLLM's own auto-router did — in which case
+    # router_session.routing_info() parses it back from the raw (unfiltered) downstream
+    # headers, same as _finalize_stream_usage_tracking already does for the ES analytics
+    # event, including counterfactual_model (router-owned state by construction — see
+    # core/router.py — no separate resolution step). Either way, emit the one
+    # x-codemie-routing-* vocabulary — never the raw x-litellm-router-* one (already stripped
+    # above by _should_forward_response_header).
+    response_headers.update(_routing_info_to_headers(router_session.routing_info(downstream_response.headers)))
 
     return await _build_proxy_response(
         downstream_response=downstream_response,
@@ -1886,7 +1841,7 @@ async def _proxy_to_llm_proxy(
         request_info=request_info,
         llm_model=llm_model,
         background_tasks=background_tasks,
-        routing_info=routing_info,
+        router_session=router_session,
         session_id=session_id,
         request_id=request_id,
     )

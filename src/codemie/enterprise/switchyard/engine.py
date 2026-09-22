@@ -85,6 +85,7 @@ class ProxySwitchyardRouter:
         efficient_model: str,
         routing_mode: str | None,
         *,
+        router_name: str,
         capable_model_deployment_name: str,
         efficient_model_deployment_name: str,
         tuning: SwitchyardTuning,
@@ -92,6 +93,7 @@ class ProxySwitchyardRouter:
         self.capable_model = capable_model
         self.efficient_model = efficient_model
         self.routing_mode = routing_mode
+        self.router_name = router_name
         self.capable_model_deployment_name = capable_model_deployment_name
         self.efficient_model_deployment_name = efficient_model_deployment_name
         self.tuning = tuning
@@ -341,6 +343,7 @@ def get_proxy_switchyard_router(
         capable_model=sw_config.capable_model,
         efficient_model=sw_config.efficient_model,
         routing_mode=sw_config.mode,
+        router_name=router_name,
         capable_model_deployment_name=capable_deployment,
         efficient_model_deployment_name=efficient_deployment,
         tuning=sw_config.tuning,

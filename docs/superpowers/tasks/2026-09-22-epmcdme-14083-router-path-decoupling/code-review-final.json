@@ -1,0 +1,224 @@
+{
+  "decision": "approve",
+  "rationale": "Follow-up disposition pass by the ticket owner on 2026-09-22, after code-review.final. All 7 findings resolved: CR-002 and CR-005 fixed directly (Optional[X] -> X | None cleanup in tokens_callback.py incl. dropping the unused Optional import; dict -> dict[str, object] in proxy_routing_headers.py, plus a pyright-narrowing fix binding event_data.get(\"message\") to a local before the isinstance check); CR-001 dismissed; CR-003, CR-004, CR-006, CR-007 are recorded human decisions to accept the current behavior as designed/acceptable risk. See finding_status below.",
+  "confidence": "high",
+  "risk_flags": [
+    "security",
+    "public-api",
+    "breaking-change"
+  ],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "LLMRouter.to_llm_model() deleted as a concept",
+      "status": "pass",
+      "notes": "Verified absent from current codebase; already removed by prior work, not part of this diff."
+    },
+    {
+      "kind": "spec",
+      "item": "Coercion to selectable shape happens in one place (REST boundary, LlmRouterOption)",
+      "status": "pass",
+      "notes": "LlmRouterOption + GET /v1/llm_models response_model already exist in rest_api/routers/llm_models.py; pre-existing, unchanged by this diff."
+    },
+    {
+      "kind": "spec",
+      "item": "Frontend (codemie-ui) not touched by this ticket",
+      "status": "pass",
+      "notes": "No codemie-ui files in the diff."
+    },
+    {
+      "kind": "spec",
+      "item": "Router matrix generated from a compact per-model switchyard declaration",
+      "status": "fail",
+      "notes": "ModelSwitchyard requires an explicit base_name per entry by design; pre-existing (llm_config.py untouched), deferred - see code-review-deferred.md."
+    },
+    {
+      "kind": "spec",
+      "item": "A router base_name reaching an execution path hard-fails (get_llm_by_credentials)",
+      "status": "fail",
+      "notes": "Confirmed absent from get_llm_by_credentials in current codebase; raised as CR-003 decision_needed."
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: no change to the routing algorithm (ProxySwitchyardRouter)",
+      "status": "pass",
+      "notes": "engine.py only threads router_name through; decide/pick_model logic unchanged."
+    },
+    {
+      "kind": "spec",
+      "item": "Non-goal: router base_name scheme kept 1:1, unchanged",
+      "status": "fail",
+      "notes": "This diff renames switchyard base_name values in llm-dial-config.yaml; see CR-001."
+    },
+    {
+      "kind": "spec",
+      "item": "Domain model: RoutingMode, ModelSwitchyard, SwitchyardConfig, LLMModel.switchyard, llm_routers validator",
+      "status": "pass",
+      "notes": "All present in current src/codemie/configs/llm_config.py; pre-existing, not part of this diff."
+    },
+    {
+      "kind": "spec",
+      "item": "Service layer: get_all_routers, get_allowed_router_options, single _find_router helper",
+      "status": "pass",
+      "notes": "get_allowed_router_options exists in llm_service.py; pre-existing, not part of this diff."
+    },
+    {
+      "kind": "spec",
+      "item": "REST boundary: LlmRouterOption, updated response_model, AND/OR flags",
+      "status": "pass",
+      "notes": "Already implemented in rest_api/routers/llm_models.py; pre-existing, not part of this diff."
+    },
+    {
+      "kind": "spec",
+      "item": "Agent path: capable_llm/efficient_llm built from resolved switchyard tiers, not router alias",
+      "status": "pass",
+      "notes": "SwitchyardRouter.candidate_models()/build_chat_model_for build from explicit capable/efficient deployments."
+    },
+    {
+      "kind": "spec",
+      "item": "Regression: existing router/switchyard/proxy tests still pass",
+      "status": "pending-stage-7",
+      "notes": "Test files updated for the new signature; full-suite pass is Stage 7 execution evidence."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "Commit subject 'EPMCDME-14083: Decouple Router from agent/proxy call paths' matches the documented format."
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "Core router modules mostly follow code-quality.md; two deviations: proxy_routing_headers.py:72 bare 'dict'; tokens_callback.py mixes Optional[X] with X | None (see CR-002, CR-005)."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No hardcoded credentials; pre-existing fingerprint-only key logging untouched; new RouterProxySession/proxy_routing_headers integration carries only routing metadata, no tokens/keys logged."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "config/llms/llm-dial-config.yaml",
+      "line": 203,
+      "title": "Switchyard base_name rename breaks compat",
+      "problem": "The switchyard base_name values for two Claude models were renamed from the long descriptive form (e.g. 'claude-sonnet-4-6-switchyard-claude-4-5-haiku-signal') to short opaque aliases (e.g. 'sy-signal-claude'), but tests/codemie/configs/test_llm_config.py's _DIAL_EXPECTED_ROUTER_NAMES frozenset still holds the old names, and test_dial_config_generates_expected_router_names is not skipped since the DIAL config file exists.",
+      "impact": "test_dial_config_generates_expected_router_names will fail on the next test run; this also contradicts the spec's explicit non-goal that the base_name scheme stay 1:1 so already-stored assistant.llm_model references keep resolving, risking broken resolution for any existing assistants configured against the old alias names.",
+      "recommendation": "Either revert to the original base_name values, or update _DIAL_EXPECTED_ROUTER_NAMES to the new aliases and confirm/migrate any persisted assistant.llm_model references before shipping the rename."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/agents/callbacks/tokens_callback.py",
+      "line": 72,
+      "title": "Optional[X] mixed with X | None unions",
+      "problem": "This file mixes typing.Optional[float]/Optional[UUID]/Optional[LLMResult]/Optional[dict[str, Any]] (lines 72, 91, 150, 152, 168, 178, 324, 397, 406, 467) with modern 'X | None' unions used elsewhere in the same file.",
+      "impact": "Violates the documented code-quality.md Types And Imports standard (blocking per the standards audit); inconsistent typing style diverges from the modern-union convention the rest of this diff follows.",
+      "recommendation": "Replace the remaining Optional[X] annotations with X | None and drop the now-unused Optional import."
+    },
+    {
+      "id": "CR-003",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/core/dependecies.py",
+      "line": 221,
+      "title": "No hard-fail when a router base_name reaches execution",
+      "problem": "get_llm_by_credentials() has no check rejecting a router base_name (Switchyard or LiteLLM-auto-router alias) that reaches it directly instead of a concrete deployment; the acceptance criterion requiring this hard-fail is unmet anywhere in the current codebase, not just in this diff.",
+      "impact": "If a router alias ever reaches this function (misconfiguration, a future caller bypassing build_chat_model_for/RouterProxySession), the failure mode is whatever get_model_details/get_litellm_chat_model does with an alias it wasn't built for, instead of a clear, intentional rejection.",
+      "recommendation": "Confirm with the ticket owner whether this guard belongs to this decoupling ticket or a separate one. Note: most of this acceptance run's other 'fail' criteria (to_llm_model removal, LlmRouterOption/get_allowed_router_options, the llm_config.py domain-model additions) are already satisfied by code this diff doesn't touch, suggesting the acceptance lens's spec document describes a broader/different-phase scope than this diff - worth confirming the correct spec artifact is attached to this ticket."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/proxy_routing_headers.py",
+      "line": 54,
+      "title": "counterfactual_model now always disclosed to clients",
+      "problem": "counterfactual_model was newly added to _ROUTING_HEADER_FIELDS (it was never in this header set before the move from enterprise/switchyard/proxy.py), and combined with LiteLLMRouter.routing_info() now setting requested_model/counterfactual_model unconditionally (see CR-007), every proxy response for a model declared as a LiteLLM auto-router now unconditionally carries x-codemie-requested-model and x-codemie-routing-counterfactual-model, even when no routing actually occurred for that call.",
+      "impact": "A new, always-on external disclosure of internal pricing-baseline/model-alias information to every API client for these models, where previously this only existed internally.",
+      "recommendation": "Only emit these two headers when real routing signal is present (e.g. gate on routed_model is not None), or confirm this disclosure is an intended, reviewed API surface change."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/proxy_routing_headers.py",
+      "line": 72,
+      "title": "Unparameterized dict annotation",
+      "problem": "event_data: dict = json.loads(...) uses a bare, unparameterized dict annotation.",
+      "impact": "Violates the documented code-quality.md Types And Imports standard (blocking per the standards audit), which prefers parameterized generics over bare dict/list.",
+      "recommendation": "Annotate as event_data: dict[str, object] = json.loads(...)."
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/core/router_proxy_session.py",
+      "line": 80,
+      "title": "Body-rewrite check compares against wrong baseline",
+      "problem": "decide_and_rewrite() compares chosen_model != requested_model, where requested_model = request_body.get('model'); the replaced apply_router_routing compared chosen_model != router_name, the resolved alias actually passed in, not the raw body field.",
+      "impact": "When a routable request body lacks a top-level 'model' key (_extract_model falls back to URL path params or the CLI header), requested_model is None, so the comparison is always true: decide_and_rewrite always takes the override branch, unconditionally injecting a 'model' field and logging a misleading '[ROUTING-PROXY] Override None -> X' even when the decision matched the originally resolved alias exactly. Reachability of this input shape on a live request path was not fully confirmed (v1/chat/completions and v1/messages normally carry 'model' in the body per the OpenAI/Anthropic contract).",
+      "recommendation": "Compare chosen_model against the originally resolved router_name (pass it into decide_and_rewrite or store it on the session) instead of request_body.get('model')."
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/enterprise/litellm/router.py",
+      "line": 162,
+      "title": "LiteLLMRouter.routing_info() never reports empty",
+      "problem": "routing_info() now builds RoutingInfo(counterfactual_model=self.counterfactual_model, requested_model=self.router_name) unconditionally from router-owned state, instead of only from actual response headers as the previous extract() did (requested_model used to come from meta.router_model_name, an actual x-litellm-router-model-name response header). RoutingInfo.is_empty() checks 'all fields None', so it can now never be True for any LiteLLM-router-declared model.",
+      "impact": "Defeats two downstream guards that rely on is_empty() to detect 'no real routing signal': TokensCalculationCallback.on_llm_end's cache-hit skip (tokens_callback.py:361, 'if cache_hit and display_routing.is_empty(): return') no longer fires, so a cache hit with no real x-litellm-router-* headers now always records a near-empty llm_run.routing instead of being skipped; and proxy_router.py's _queue_routing_metric (line 1229, 'if proxy_routing.is_empty(): return') now always queues a routing analytics metric for every declared LiteLLM router alias even with zero real routing signal, polluting routing/cost analytics.",
+      "recommendation": "Only set requested_model/counterfactual_model when real routing headers are present, or change both downstream guards to check routed_model is None instead of is_empty()."
+    }
+  ],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "dismissed",
+      "notes": "Dismissed by the ticket owner on 2026-09-22; no code change made."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "Fixed: replaced remaining Optional[X] annotations with X | None in src/codemie/agents/callbacks/tokens_callback.py (float | None, UUID | None, LLMResult | None, dict[str, Any] | None) and dropped the now-unused Optional import. ruff check clean."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "Recorded decision by the ticket owner on 2026-09-22: accepted as-is, no hard-fail guard added in this diff; no code change requested."
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "Recorded decision by the ticket owner on 2026-09-22: accepted — x-codemie-requested-model / x-codemie-routing-counterfactual-model disclosure to clients for LiteLLM-auto-router-declared models is intentional; no code change requested."
+    },
+    {
+      "id": "CR-005",
+      "status": "resolved",
+      "notes": "Fixed: annotated event_data as dict[str, object] in src/codemie/core/proxy_routing_headers.py. Also bound event_data.get(\"message\") to a local `message` variable before the isinstance narrowing so pyright can resolve message.update(...) (a `dict[str, object]`-typed `.get()` result loses narrowing on a second dict-item access). ruff check clean."
+    },
+    {
+      "id": "CR-006",
+      "status": "resolved",
+      "notes": "Recorded decision by the ticket owner on 2026-09-22: accepted as-is; no code change requested."
+    },
+    {
+      "id": "CR-007",
+      "status": "resolved",
+      "notes": "Recorded decision by the ticket owner on 2026-09-22: accepted as-is. Per the ticket owner, LiteLLM's proxy contract guarantees x-litellm-router-routed-model on every response for a router-declared model, including cache hits (routing decision made before the cache lookup), so is_empty() correctly stays non-empty here rather than regressing — the routed_model-is-None alternative discussed would be equally always-false under this contract, so it was not adopted either. If that header were ever actually absent it would indicate an upstream LiteLLM/proxy failure worth investigating directly, not a case to silently skip. No code change requested."
+    }
+  ]
+}

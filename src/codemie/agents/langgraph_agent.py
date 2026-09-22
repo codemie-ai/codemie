@@ -582,13 +582,14 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         )
 
     def _initialize_llm(self) -> BaseChatModel:
-        from codemie.core.router_chat_model import LLMParams
+        from codemie.core.router_chat_model import LLMParams, build_chat_model_for
         from codemie.service.llm_service.router_factory import create_router
 
         router = create_router(self.llm_model)
         if router.candidate_models():
             logger.info(f"[ROUTING] Per-call routing active for {self.llm_model!r} via router={router.name!r}")
-        return router.build_chat_model(
+        return build_chat_model_for(
+            router,
             model_name=self.llm_model,
             request_id=self.request_uuid,
             llm_params=LLMParams(temperature=self.temperature, top_p=self.top_p),

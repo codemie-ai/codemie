@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import uuid
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from langchain_core.callbacks import AsyncCallbackHandler
@@ -27,6 +27,7 @@ from langchain_core.outputs import LLMResult
 from codemie.configs import config, logger
 from codemie.core.llm_cache import is_litellm_proxy_cache_hit, is_llm_cache_hit
 from codemie.core.router import CallContext
+from codemie.core.router_chat_model import _iter_header_maps
 from codemie.core.routing_costs import with_counterfactual_costs
 from codemie.core.utils import calculate_token_cost
 from codemie.service.request_summary_manager import request_summary_manager, LLMRun
@@ -68,7 +69,7 @@ class TokensCalculationCallback(AsyncCallbackHandler):
         return self._fallback_router
 
     @staticmethod
-    def _extract_proxy_cost(generation_info: dict) -> Optional[float]:
+    def _extract_proxy_cost(generation_info: dict) -> float | None:
         """Return the pre-calculated cost from LiteLLM proxy generation_info, or None."""
         streaming_cost = generation_info.get("litellm_cost")
         if streaming_cost is not None:
@@ -87,7 +88,7 @@ class TokensCalculationCallback(AsyncCallbackHandler):
 
     def _calculate_cost(
         self,
-        proxy_cost: Optional[float],
+        proxy_cost: float | None,
         input_tokens: int,
         output_tokens: int,
         cached_tokens: int,
@@ -146,9 +147,9 @@ class TokensCalculationCallback(AsyncCallbackHandler):
         self,
         gen_result: Any,
         billed_model: str | None,
-        proxy_cost: Optional[float],
+        proxy_cost: float | None,
         headers: dict[str, str],
-    ) -> tuple[str | None, Optional[float], dict[str, str]]:
+    ) -> tuple[str | None, float | None, dict[str, str]]:
         """Update billed_model/proxy_cost/headers from one generation's generation_info,
         falling back to the served model embedded in response_metadata when generation_info
         never carried one."""
@@ -164,7 +165,7 @@ class TokensCalculationCallback(AsyncCallbackHandler):
 
     def _accumulate_generation_usage(
         self, response: LLMResult
-    ) -> tuple[int, int, int, int, Optional[float], str | None, dict[str, str], bool]:
+    ) -> tuple[int, int, int, int, float | None, str | None, dict[str, str], bool]:
         """Aggregate token/cost/header data across every non-cache-hit generation in *response*.
 
         Returns (input_tokens, output_tokens, cached_tokens, cache_creation_tokens, proxy_cost,
@@ -174,7 +175,7 @@ class TokensCalculationCallback(AsyncCallbackHandler):
         output_tokens = 0
         cached_tokens = 0
         cache_creation_tokens = 0
-        proxy_cost: Optional[float] = None
+        proxy_cost: float | None = None
         billed_model: str | None = None
         headers: dict[str, str] = {}
         any_processed = False
@@ -255,19 +256,6 @@ class TokensCalculationCallback(AsyncCallbackHandler):
             }
         )
 
-    def _resolve_counterfactual_model(self, display_routing: "RoutingInfo") -> "RoutingInfo":
-        """Populate counterfactual_model if the router didn't already declare it."""
-        if not display_routing.routed_model or display_routing.counterfactual_model:
-            return display_routing
-        from codemie.enterprise.litellm.routing_headers import resolve_counterfactual_model
-
-        counterfactual_model = resolve_counterfactual_model(
-            display_routing.requested_model or display_routing.routed_model or self.llm_model
-        )
-        if not counterfactual_model:
-            return display_routing
-        return display_routing.model_copy(update={"counterfactual_model": counterfactual_model})
-
     def _apply_counterfactual_costs(
         self,
         display_routing: "RoutingInfo",
@@ -333,7 +321,7 @@ class TokensCalculationCallback(AsyncCallbackHandler):
         response: LLMResult,
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
+        parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when LLM ends running."""
@@ -362,15 +350,14 @@ class TokensCalculationCallback(AsyncCallbackHandler):
             if not any_processed:
                 return
 
-            # Prefer the decision already in hand over extract(response): for SwitchyardRouter,
-            # extract() reads a stamp RouterChatModel._agenerate only applies *after* this
-            # callback's own on_llm_end fires (it's attached directly to the candidate model —
-            # see get_llm_by_credentials — so it runs inside selected.ainvoke(), strictly
-            # before the post-call stamp). decision, when present, was already stashed
-            # pre-call and is always correct; extract() is only the right channel when no
-            # decision exists at all (LiteLLMRouter's decide() always returns None — see
-            # Router.extract()'s docstring on core/router.py).
-            display_routing = router.routing_info(decision) if decision is not None else router.extract(response)
+            # header_maps is passed unconditionally — this callback fires strictly before
+            # RouterChatModel._agenerate's own post-call stamp (it's attached directly to the
+            # candidate model, see get_llm_by_credentials, so it runs inside
+            # selected.ainvoke()). Each router's own routing_info() picks the right input
+            # internally: a decision-bearing router (Switchyard) uses decision and never reads
+            # header_maps; a decide()-less router (LiteLLM) reads header_maps instead (see
+            # core/router.py's module docstring).
+            display_routing = router.routing_info(decision, _iter_header_maps(response))
             if cache_hit and display_routing.is_empty():
                 return
 
@@ -381,7 +368,6 @@ class TokensCalculationCallback(AsyncCallbackHandler):
             display_routing = self._apply_usage_to_routing(
                 display_routing, input_tokens, output_tokens, cached_tokens, cache_creation_tokens, cache_hit
             )
-            display_routing = self._resolve_counterfactual_model(display_routing)
             display_routing = self._apply_counterfactual_costs(
                 display_routing, money_spent, input_tokens, output_tokens, cached_tokens, cache_creation_tokens
             )
@@ -408,7 +394,7 @@ class TokensCalculationCallback(AsyncCallbackHandler):
         error: BaseException,
         *,
         run_id: UUID,
-        parent_run_id: Optional[UUID] = None,
+        parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when LLM errors. Capture partial token usage if the provider returns it."""
@@ -417,7 +403,7 @@ class TokensCalculationCallback(AsyncCallbackHandler):
         self._pending.pop(run_id, None)
         try:
             logger.warning(f"LLM error for run {run_id}, model {self.llm_model}: {error}")
-            response: Optional[LLMResult] = kwargs.get("response")
+            response: LLMResult | None = kwargs.get("response")
             if response is None:
                 return
             if is_llm_cache_hit(response):
@@ -478,17 +464,17 @@ class TokensCalculationCallback(AsyncCallbackHandler):
         messages: list[list[BaseMessage]],
         *,
         run_id: UUID,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
         """Run when LLM starts running.
 
         Stashes a (router, decision) pair passed through the call's config metadata (see
         core/router_chat_model.py::RouterChatModel._agenerate), keyed by run_id, so on_llm_end
-        can call that same router's extract()/extract_classifier_usage() — the only channel
-        available, since response_metadata for this call doesn't exist yet at on_llm_end time
-        (this callback fires on the concretely selected model itself, before _agenerate gets a
-        chance to touch the response).
+        can call that same router's routing_info()/extract_classifier_usage() with the decision
+        already in hand — this callback fires on the concretely selected model itself, before
+        _agenerate gets a chance to stamp anything on the response, so decision is the only
+        reliable channel for a decision-bearing router (Switchyard).
         """
         from codemie.core.router_chat_model import read_routing_ctx
 

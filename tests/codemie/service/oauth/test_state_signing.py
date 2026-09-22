@@ -54,8 +54,16 @@ def test_round_trip():
 
 def test_rejects_tamper():
     body, sig = _sign().split(".")
+    # Flip the FIRST character, not the last: this is a 43-char (32-byte HMAC-SHA256,
+    # base64url, no padding) signature, and 43 % 4 == 3 means the last character only
+    # carries 4 of its 6 bits (the other 2 are padding) — a differing last character can
+    # still decode to the identical byte, leaving the signature valid and making the test
+    # flaky rather than a real tamper. The first character sits in a full 4-char group with
+    # no padding ambiguity, so a different character there is guaranteed to change the
+    # decoded bytes.
+    tampered_char = "a" if sig[0] != "a" else "b"
     with pytest.raises(ToolStateError):
-        verify_tool_state(f"{body}.{sig[:-2]}xy", signing_key=KEY, expected_providers={"jira"})
+        verify_tool_state(f"{body}.{tampered_char}{sig[1:]}", signing_key=KEY, expected_providers={"jira"})
 
 
 def test_rejects_wrong_key():

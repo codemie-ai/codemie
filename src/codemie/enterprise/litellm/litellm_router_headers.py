@@ -51,8 +51,11 @@ class LiteLLMRouterHeaders(RoutingHeaderCodec):
     ``router_model_name``, ``score`` are LiteLLM's own, not ours). Used exclusively by
     enterprise/litellm/router.py's routing_info_from_headers()/extract_classifier_usage() to
     translate this wire shape into RoutingInfo's own domain fields (different names on purpose:
-    cause->decision_source, router_model_name->requested_model, score->confidence/router_score).
-    Read-only in practice: this codebase never builds outgoing x-litellm-router-* headers (those
+    cause->decision_source, score->confidence/router_score). ``router_model_name`` is read only
+    as one of several presence signals for ``has_routing_metadata`` — RoutingInfo.requested_model
+    itself always comes from ``Router.router_name`` (router-owned state, not this header) — see
+    LiteLLMRouter.routing_info()'s own docstring. Read-only in practice: this codebase never
+    builds outgoing x-litellm-router-* headers (those
     are emitted by the external LiteLLM proxy fork's own callback code), so only from_headers()
     (inherited from RoutingHeaderCodec) is exercised in production."""
 

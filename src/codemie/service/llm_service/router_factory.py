@@ -58,18 +58,23 @@ def _resolve_switchyard_router(model_name: str) -> Router | None:
 
 def _resolve_litellm_router(model_name: str) -> Router | None:
     """Resolve *model_name* as a declared LiteLLM auto-router — return None if its catalog
-    entry doesn't say so."""
-    from codemie.enterprise.litellm.router import _LITELLM_COMPLEXITY_ROUTER
+    entry doesn't say so. Constructs a fresh LiteLLMRouter every call (never cached/shared —
+    see that class's own docstring): counterfactual_model is read from the same catalog
+    lookup already needed to check is_declared_litellm_router(), and varies per alias, so a
+    shared singleton would leak one alias's declared baseline onto every other."""
     from codemie.service.llm_service.llm_service import llm_service
 
     details = llm_service.get_model_details(model_name)
-    if (
-        details is not None
-        and (details.base_name == model_name or details.deployment_name == model_name)
-        and details.is_declared_litellm_router()
-    ):
-        return _LITELLM_COMPLEXITY_ROUTER
-    return None
+    if details is None or (details.base_name != model_name and details.deployment_name != model_name):
+        return None
+    if not details.is_declared_litellm_router():
+        return None
+    litellm_router_config = details.litellm_router
+    assert litellm_router_config is not None  # guaranteed by is_declared_litellm_router()
+
+    from codemie.enterprise.litellm.router import LiteLLMRouter
+
+    return LiteLLMRouter(model_name, counterfactual_model=litellm_router_config.counterfactual_model)
 
 
 # Tried in order; the first non-None result wins. See the module docstring for why this is a

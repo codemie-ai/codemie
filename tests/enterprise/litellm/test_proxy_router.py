@@ -1456,6 +1456,7 @@ class TestStreamingResponseWithUsageTracking:
     @pytest.mark.asyncio
     async def test_streaming_with_usage_tracking(self):
         """Test streaming response with usage tracking."""
+        from codemie.core.routing_info import RoutingInfo
         from codemie.enterprise.litellm.proxy_router import _streaming_response_with_usage_tracking
 
         # Create mock response
@@ -1481,6 +1482,8 @@ class TestStreamingResponseWithUsageTracking:
         }
 
         mock_background_tasks = MagicMock()
+        router_session = MagicMock()
+        router_session.routing_info.return_value = RoutingInfo()
 
         with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
             mock_config.LLM_PROXY_TRACK_USAGE = True
@@ -1501,6 +1504,7 @@ class TestStreamingResponseWithUsageTracking:
                     request_info=request_info,
                     llm_model="gpt-4",
                     background_tasks=mock_background_tasks,
+                    router_session=router_session,
                 ):
                     chunks.append(chunk)
 
@@ -1512,6 +1516,7 @@ class TestStreamingResponseWithUsageTracking:
     @pytest.mark.asyncio
     async def test_streaming_no_usage_when_zero_tokens(self):
         """Test streaming doesn't track usage when no tokens used."""
+        from codemie.core.routing_info import RoutingInfo
         from codemie.enterprise.litellm.proxy_router import _streaming_response_with_usage_tracking
 
         mock_response = MagicMock()
@@ -1527,6 +1532,8 @@ class TestStreamingResponseWithUsageTracking:
         mock_user = MagicMock()
         request_info = {}
         mock_background_tasks = MagicMock()
+        router_session = MagicMock()
+        router_session.routing_info.return_value = RoutingInfo()
 
         with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
             mock_config.LLM_PROXY_TRACK_USAGE = True
@@ -1547,6 +1554,7 @@ class TestStreamingResponseWithUsageTracking:
                     request_info=request_info,
                     llm_model="gpt-4",
                     background_tasks=mock_background_tasks,
+                    router_session=router_session,
                 ):
                     chunks.append(chunk)
 
@@ -1573,7 +1581,10 @@ class TestStreamingResponseWithUsageTracking:
         mock_response.aclose = AsyncMock()
 
         mock_user = MagicMock()
-        routing_info = RoutingInfo(routed_model="haiku", tier="efficient", classifier_cost_usd=0.0001)
+        router_session = MagicMock()
+        router_session.routing_info.return_value = RoutingInfo(
+            routed_model="haiku", tier="efficient", classifier_cost_usd=0.0001
+        )
         mock_background_tasks = MagicMock()
 
         with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
@@ -1593,7 +1604,7 @@ class TestStreamingResponseWithUsageTracking:
                     request_info={"session_id": "s1", "request_id": "r1"},
                     llm_model="haiku",
                     background_tasks=mock_background_tasks,
-                    routing_info=routing_info,
+                    router_session=router_session,
                 ):
                     pass
 
@@ -1608,6 +1619,7 @@ class TestStreamingResponseWithUsageTracking:
     @pytest.mark.asyncio
     async def test_routing_metric_not_added_when_no_routing_info(self):
         """No routing metric background task when routing_info is None and no LiteLLM router headers."""
+        from codemie.core.routing_info import RoutingInfo
         from codemie.enterprise.litellm.proxy_router import _streaming_response_with_usage_tracking
         from codemie.service.monitoring.routing_monitoring_service import RoutingMonitoringService
 
@@ -1621,6 +1633,8 @@ class TestStreamingResponseWithUsageTracking:
         mock_response.aiter_raw = mock_iter
         mock_response.aclose = AsyncMock()
         mock_user = MagicMock()
+        router_session = MagicMock()
+        router_session.routing_info.return_value = RoutingInfo()
         mock_background_tasks = MagicMock()
 
         with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
@@ -1640,7 +1654,7 @@ class TestStreamingResponseWithUsageTracking:
                     request_info={},
                     llm_model="gpt-4",
                     background_tasks=mock_background_tasks,
-                    routing_info=None,
+                    router_session=router_session,
                 ):
                     pass
 
@@ -1652,32 +1666,33 @@ class TestStreamingResponseWithUsageTracking:
         assert len(routing_calls) == 0
 
     @pytest.mark.asyncio
-    async def test_counterfactual_uses_litellm_router_alias(self):
-        """Counterfactual lookup uses the auto-router alias, not its selected model."""
+    async def test_finalize_stream_usage_tracking_uses_router_session_routing_info(self):
+        """_finalize_stream_usage_tracking builds the analytics routing record entirely from
+        router_session.routing_info(response_headers) — including counterfactual_model,
+        which is router-owned state by the time routing_info() runs, not resolved here."""
+        from codemie.core.routing_info import RoutingInfo
         from codemie.service.monitoring.routing_monitoring_service import RoutingMonitoringService
 
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.headers = httpx.Headers(
-            {
-                "content-type": "text/event-stream",
-                "x-litellm-router-tier": "SIMPLE",
-                "x-litellm-router-routed-model": "gpt-5.6-luna-2026-07-09",
-                "x-litellm-router-model-name": "gpt-smart-router",
-                "x-litellm-classifier-cost": "0.0005",
-                "x-litellm-cache-hit": "true",
-            }
-        )
+        mock_response.headers = httpx.Headers({"content-type": "text/event-stream", "x-litellm-cache-hit": "true"})
         mock_background_tasks = MagicMock()
+        router_session = MagicMock()
+        router_session.routing_info.return_value = RoutingInfo(
+            routed_model="gpt-5.6-luna-2026-07-09",
+            requested_model="gpt-smart-router",
+            routing_family="litellm",
+            tier="simple",
+            routing_tier_raw="SIMPLE",
+            routing_cost_known=True,
+            counterfactual_model="gpt-5.6-terra-2026-07-09",
+            classifier_cost_usd=0.0005,
+        )
 
         with (
             patch(
                 "codemie.enterprise.litellm.proxy_router._parse_usage_with_cost", new_callable=AsyncMock
             ) as mock_parse,
-            patch(
-                "codemie.enterprise.litellm.proxy_router.resolve_counterfactual_model",
-                side_effect=lambda model: "gpt-5.6-terra-2026-07-09" if model == "gpt-smart-router" else None,
-            ) as resolve_counterfactual,
             patch(
                 "codemie.enterprise.litellm.proxy_router.calculate_token_cost",
                 return_value=(0.002, 0.0, 0.0),
@@ -1701,9 +1716,10 @@ class TestStreamingResponseWithUsageTracking:
                 buffer=bytearray(),
                 session_id="s1",
                 request_id="r1",
+                router_session=router_session,
             )
 
-        resolve_counterfactual.assert_called_once_with("gpt-smart-router")
+        router_session.routing_info.assert_called_once()
         routing_calls = [
             call
             for call in mock_background_tasks.add_task.call_args_list
@@ -1714,8 +1730,6 @@ class TestStreamingResponseWithUsageTracking:
         assert routing.requested_model == "gpt-smart-router"
         assert routing.routing_family == "litellm"
         assert routing.tier == "simple"
-        assert routing.routing_tier_raw == "SIMPLE"
-        assert routing.routing_cost_known is True
         assert routing.counterfactual_model == "gpt-5.6-terra-2026-07-09"
         assert routing.routed_input_tokens == 10
         assert routing.routed_output_tokens == 5
@@ -1723,6 +1737,8 @@ class TestStreamingResponseWithUsageTracking:
         assert routing.routed_cache_creation_tokens == 0
         assert routing.routed_total_tokens == 15
         assert routing.routed_cache_hit is True
+        # cache hit: classifier_cost_usd is zeroed and re-pricing is skipped (see
+        # _apply_proxy_counterfactual_costs)
         assert routing.classifier_cost_usd == 0.0
         assert routing.original_cost_usd == 0.0
         assert routing.estimated_max_cost_usd == 0.0
@@ -1869,6 +1885,80 @@ class TestProxyToLLMProxy:
         assert mock_body.call_args.kwargs["user_credentials"] is user_credentials
         mock_headers.assert_called_once()
         assert mock_headers.call_args.kwargs["user_credentials"] is user_credentials
+
+    @pytest.mark.asyncio
+    async def test_proxy_response_headers_include_counterfactual_for_litellm_auto_router(self):
+        """A LiteLLM auto-router response (CodeMie's own decide() never ran — LiteLLMRouter.decide
+        always returns None) must still carry x-codemie-routing-counterfactual-model on the
+        client-facing HTTP headers, read from the resolved LiteLLMRouter's own router-owned
+        counterfactual_model — not just on the internal analytics event
+        (_finalize_stream_usage_tracking already covers that path)."""
+        from codemie.configs.llm_config import LiteLLMRouterConfig, LLMModel
+
+        mock_request = MagicMock()
+        mock_request.method = "POST"
+        mock_request.headers = Headers({HEADER_CODEMIE_CLIENT: "cli", HEADER_CODEMIE_CLI_MODEL: "gpt-smart-router"})
+        mock_request.body = AsyncMock(return_value=b'{"messages": [], "model": "gpt-smart-router"}')
+        mock_user = MagicMock()
+        mock_user.id = "user-123"
+        mock_user.username = "testuser"
+        mock_background_tasks = MagicMock()
+
+        downstream = MagicMock()
+        downstream.status_code = 200
+        downstream.headers = httpx.Headers(
+            {
+                "content-type": "application/json",
+                "x-litellm-router-tier": "SIMPLE",
+                "x-litellm-router-routed-model": "gpt-5.6-luna-2026-07-09",
+                "x-litellm-router-model-name": "gpt-smart-router",
+            }
+        )
+
+        async def mock_iter():
+            yield b'{"choices": []}'
+
+        downstream.aiter_raw = mock_iter
+
+        with (
+            patch("codemie.enterprise.litellm.proxy_router.is_litellm_enabled", return_value=True),
+            patch(
+                "codemie.enterprise.litellm.proxy_router._create_body_stream_with_optional_injection",
+                new_callable=AsyncMock,
+            ) as mock_body,
+            patch("codemie.enterprise.litellm.proxy_router._prepare_proxy_headers") as mock_prepare,
+            patch("codemie.enterprise.litellm.proxy_router.get_llm_proxy_client") as mock_get_client,
+            patch("codemie.enterprise.litellm.proxy_router.config") as mock_config,
+            patch("codemie.service.llm_service.llm_service.llm_service") as mock_llm_service,
+        ):
+
+            async def body_stream():
+                yield b"{}"
+
+            mock_body.return_value = body_stream()
+            mock_prepare.return_value = {"Authorization": "Bearer test"}
+            mock_client = MagicMock()
+            mock_client.build_request.return_value = MagicMock()
+            mock_client.send = AsyncMock(return_value=downstream)
+            mock_get_client.return_value = mock_client
+            mock_config.LLM_PROXY_TIMEOUT = 300
+            mock_config.LLM_PROXY_TRACK_USAGE = False
+            mock_llm_service.is_router_model.return_value = False
+            mock_llm_service.get_model_details.return_value = LLMModel(
+                base_name="gpt-smart-router",
+                deployment_name="gpt-smart-router",
+                enabled=True,
+                litellm_router=LiteLLMRouterConfig(counterfactual_model="gpt-5.6-terra-2026-07-09"),
+            )
+
+            result = await _proxy_to_llm_proxy(
+                request=mock_request,
+                user=mock_user,
+                endpoint="/v1/chat/completions",
+                background_tasks=mock_background_tasks,
+            )
+
+        assert result.headers["x-codemie-routing-counterfactual-model"] == "gpt-5.6-terra-2026-07-09"
 
     @pytest.mark.asyncio
     async def test_proxy_disabled(self):
@@ -2559,9 +2649,9 @@ class TestProxyResponseHeaderFiltering:
         """Even when Switchyard never ran (routing_info is None) and only LiteLLM's own
         auto-router decided, the client must still receive x-codemie-routing-* headers, built by
         parsing LiteLLM's raw response headers — not the raw x-litellm-router-* vocabulary."""
+        from codemie.core.proxy_routing_headers import _routing_info_to_headers
         from codemie.enterprise.litellm.proxy_router import _should_forward_response_header
         from codemie.enterprise.litellm.router import routing_info_from_headers
-        from codemie.enterprise.switchyard.proxy import _routing_info_to_headers
 
         downstream_headers = httpx.Headers(
             {
@@ -2620,8 +2710,8 @@ class TestProxyResponseHeaderFiltering:
         assert policy.hides("x-litellm-router-tier") is False  # different prefix entirely
 
     def test_switchyard_headers_injected_into_response_headers(self):
+        from codemie.core.proxy_routing_headers import _routing_info_to_headers
         from codemie.core.routing_info import RoutingInfo
-        from codemie.enterprise.switchyard.proxy import _routing_info_to_headers
 
         routing_info = RoutingInfo(
             routed_model="claude-haiku-4-5-20251001",
@@ -2640,6 +2730,7 @@ class TestLiteLLMCacheHitUsageTracking:
 
     @pytest.mark.asyncio
     async def test_streaming_cache_hit_does_not_queue_usage_tracking(self):
+        from codemie.core.routing_info import RoutingInfo
         from codemie.enterprise.litellm.proxy_router import _streaming_response_with_usage_tracking
 
         mock_response = MagicMock()
@@ -2653,6 +2744,8 @@ class TestLiteLLMCacheHitUsageTracking:
         mock_response.aiter_raw = mock_iter
         mock_response.aclose = AsyncMock()
         mock_background_tasks = MagicMock()
+        router_session = MagicMock()
+        router_session.routing_info.return_value = RoutingInfo()
 
         with patch("codemie.enterprise.litellm.proxy_router.logger.debug") as mock_logger_debug:
             with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
@@ -2677,6 +2770,7 @@ class TestLiteLLMCacheHitUsageTracking:
                             request_info={},
                             llm_model="gpt-4",
                             background_tasks=mock_background_tasks,
+                            router_session=router_session,
                         )
                     ]
 
@@ -2690,6 +2784,7 @@ class TestLiteLLMCacheHitUsageTracking:
 
     @pytest.mark.asyncio
     async def test_streaming_cache_miss_queues_usage_tracking(self):
+        from codemie.core.routing_info import RoutingInfo
         from codemie.enterprise.litellm.proxy_router import _streaming_response_with_usage_tracking
 
         mock_response = MagicMock()
@@ -2703,6 +2798,8 @@ class TestLiteLLMCacheHitUsageTracking:
         mock_response.aiter_raw = mock_iter
         mock_response.aclose = AsyncMock()
         mock_background_tasks = MagicMock()
+        router_session = MagicMock()
+        router_session.routing_info.return_value = RoutingInfo()
 
         with patch("codemie.enterprise.litellm.proxy_router.config") as mock_config:
             mock_config.LLM_PROXY_TRACK_USAGE = True
@@ -2725,6 +2822,7 @@ class TestLiteLLMCacheHitUsageTracking:
                         request_info={},
                         llm_model="gpt-4",
                         background_tasks=mock_background_tasks,
+                        router_session=router_session,
                     )
                 ]
 

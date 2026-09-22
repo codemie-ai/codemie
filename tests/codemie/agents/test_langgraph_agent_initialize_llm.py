@@ -15,7 +15,7 @@
 """Tests for LangGraphAgent._initialize_llm() — router-abstraction migration.
 
 These tests verify that _initialize_llm() delegates to create_router() and
-router.build_chat_model() and forwards LLMParams correctly, without any
+build_chat_model_for() and forwards LLMParams correctly, without any
 Switchyard-specific code inside the method.
 """
 
@@ -46,33 +46,36 @@ def _make_agent(
 
 
 class TestInitializeLLMUsesRouter:
-    """_initialize_llm() must delegate to create_router() / router.build_chat_model()."""
+    """_initialize_llm() must delegate to create_router() / build_chat_model_for()."""
 
     def test_create_router_called_with_model_name(self) -> None:
         """create_router is called with self.llm_model."""
         fake_llm = MagicMock(spec=BaseChatModel)
         mock_router = MagicMock()
-        mock_router.build_chat_model.return_value = fake_llm
-
         agent = _make_agent(llm_model="gpt-4o")
 
-        with patch("codemie.service.llm_service.router_factory.create_router", return_value=mock_router) as mock_create:
+        with (
+            patch("codemie.service.llm_service.router_factory.create_router", return_value=mock_router) as mock_create,
+            patch("codemie.core.router_chat_model.build_chat_model_for", return_value=fake_llm),
+        ):
             agent._initialize_llm()
 
         mock_create.assert_called_once_with("gpt-4o")
 
-    def test_build_chat_model_called_on_router(self) -> None:
-        """router.build_chat_model is always called — never bypassed."""
+    def test_build_chat_model_for_called_with_router(self) -> None:
+        """build_chat_model_for is always called — never bypassed."""
         fake_llm = MagicMock(spec=BaseChatModel)
         mock_router = MagicMock()
-        mock_router.build_chat_model.return_value = fake_llm
-
         agent = _make_agent(llm_model="gpt-4o", request_uuid="req-abc", temperature=0.5, top_p=0.8)
 
-        with patch("codemie.service.llm_service.router_factory.create_router", return_value=mock_router):
+        with (
+            patch("codemie.service.llm_service.router_factory.create_router", return_value=mock_router),
+            patch("codemie.core.router_chat_model.build_chat_model_for", return_value=fake_llm) as mock_build,
+        ):
             result = agent._initialize_llm()
 
-        mock_router.build_chat_model.assert_called_once_with(
+        mock_build.assert_called_once_with(
+            mock_router,
             model_name="gpt-4o",
             request_id="req-abc",
             llm_params=LLMParams(temperature=0.5, top_p=0.8),
@@ -83,29 +86,34 @@ class TestInitializeLLMUsesRouter:
         """temperature and top_p from agent config reach LLMParams unchanged."""
         fake_llm = MagicMock(spec=BaseChatModel)
         mock_router = MagicMock()
-        mock_router.build_chat_model.return_value = fake_llm
-
         agent = _make_agent(temperature=0.0, top_p=None)
 
-        with patch("codemie.service.llm_service.router_factory.create_router", return_value=mock_router):
+        with (
+            patch("codemie.service.llm_service.router_factory.create_router", return_value=mock_router),
+            patch("codemie.core.router_chat_model.build_chat_model_for", return_value=fake_llm) as mock_build,
+        ):
             agent._initialize_llm()
 
-        (_, kwargs) = mock_router.build_chat_model.call_args
+        (_, kwargs) = mock_build.call_args
         assert kwargs["llm_params"].temperature == 0.0
         assert kwargs["llm_params"].top_p is None
 
-    def test_null_router_build_chat_model_still_called(self) -> None:
-        """Even when create_router returns NULL_ROUTER, build_chat_model is called on it."""
+    def test_null_router_build_chat_model_for_still_called(self) -> None:
+        """Even when create_router returns NULL_ROUTER, build_chat_model_for is called on it —
+        NULL_ROUTER.candidate_models() is empty, so build_chat_model_for's own raw-client
+        branch fires (covered directly in test_router_chat_model.py); this test only checks
+        _initialize_llm's own delegation, not that branch's internals."""
         fake_llm = MagicMock(spec=BaseChatModel)
-
         agent = _make_agent(llm_model="plain-model", request_uuid="req-xyz", temperature=None, top_p=None)
 
-        # Patch Router.build_chat_model (inherited by NullRouter) so we don't need real credentials.
-        with patch.object(NULL_ROUTER.__class__, "build_chat_model", return_value=fake_llm) as mock_bcm:
-            with patch("codemie.service.llm_service.router_factory.create_router", return_value=NULL_ROUTER):
-                result = agent._initialize_llm()
+        with (
+            patch("codemie.service.llm_service.router_factory.create_router", return_value=NULL_ROUTER),
+            patch("codemie.core.router_chat_model.build_chat_model_for", return_value=fake_llm) as mock_build,
+        ):
+            result = agent._initialize_llm()
 
-        mock_bcm.assert_called_once_with(
+        mock_build.assert_called_once_with(
+            NULL_ROUTER,
             model_name="plain-model",
             request_id="req-xyz",
             llm_params=LLMParams(temperature=None, top_p=None),
@@ -114,39 +122,43 @@ class TestInitializeLLMUsesRouter:
 
     def test_routing_log_only_fires_when_router_has_candidate_models(self) -> None:
         """The '[ROUTING] Per-call routing active' log must reflect real per-call routing —
-        gated on candidate_models() being non-empty, not merely 'router is not NULL_ROUTER'.
-        Both NULL_ROUTER (NullRouter) and the LiteLLM-router singleton (LiteLLMRouter) never
-        decide synchronously and always report an empty candidate_models(), so logging
-        "per-call routing active" for them would misrepresent what actually happens."""
+        gated on candidate_models() being non-empty. NULL_ROUTER's candidate_models() is
+        always empty, so logging "per-call routing active" for it would misrepresent what
+        actually happens."""
         fake_llm = MagicMock(spec=BaseChatModel)
 
         passive_like_router = MagicMock()
         passive_like_router.name = "litellm_complexity"
         passive_like_router.candidate_models.return_value = ()
-        passive_like_router.build_chat_model.return_value = fake_llm
 
         agent = _make_agent(llm_model="smart-router")
 
-        with patch("codemie.agents.langgraph_agent.logger") as mock_logger:
-            with patch("codemie.service.llm_service.router_factory.create_router", return_value=passive_like_router):
-                agent._initialize_llm()
+        with (
+            patch("codemie.agents.langgraph_agent.logger") as mock_logger,
+            patch("codemie.service.llm_service.router_factory.create_router", return_value=passive_like_router),
+            patch("codemie.core.router_chat_model.build_chat_model_for", return_value=fake_llm),
+        ):
+            agent._initialize_llm()
 
         mock_logger.info.assert_not_called()
 
     def test_routing_log_fires_when_router_has_candidate_models(self) -> None:
-        """A router that actually offers candidate models (e.g. SwitchyardRouter) does log."""
+        """A router that actually offers candidate models (e.g. SwitchyardRouter, or
+        LiteLLMRouter reporting itself as the sole candidate) does log."""
         fake_llm = MagicMock(spec=BaseChatModel)
 
         active_router = MagicMock()
         active_router.name = "switchyard"
         active_router.candidate_models.return_value = ("claude-4-6-sonnet", "claude-4-5-haiku")
-        active_router.build_chat_model.return_value = fake_llm
 
         agent = _make_agent(llm_model="claude-4-6-sonnet-switchyard-claude-4-5-haiku-signal")
 
-        with patch("codemie.agents.langgraph_agent.logger") as mock_logger:
-            with patch("codemie.service.llm_service.router_factory.create_router", return_value=active_router):
-                agent._initialize_llm()
+        with (
+            patch("codemie.agents.langgraph_agent.logger") as mock_logger,
+            patch("codemie.service.llm_service.router_factory.create_router", return_value=active_router),
+            patch("codemie.core.router_chat_model.build_chat_model_for", return_value=fake_llm),
+        ):
+            agent._initialize_llm()
 
         mock_logger.info.assert_called_once()
         assert "Per-call routing active" in mock_logger.info.call_args.args[0]
@@ -170,5 +182,5 @@ class TestInitializeLLMUsesRouter:
         ]
         assert not switchyard_imports, (
             "_initialize_llm still imports from enterprise.switchyard.agent; "
-            "migrate to create_router()/router.build_chat_model() instead"
+            "migrate to create_router()/build_chat_model_for() instead"
         )

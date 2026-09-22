@@ -28,11 +28,8 @@ correct, not a gap.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING
-
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import LLMResult
 
 from codemie.core.router import CallContext, Router
 from codemie.core.routing_info import (
@@ -60,6 +57,8 @@ class SwitchyardRouter(Router):
 
     def __init__(self, engine: "ProxySwitchyardRouter") -> None:
         self._engine = engine
+        self.router_name = engine.router_name
+        self.counterfactual_model = engine.capable_model
 
     async def decide(self, messages: list[dict[str, object]]) -> "RoutingDecision | None":
         return await self._engine.pick_model(messages)
@@ -67,19 +66,34 @@ class SwitchyardRouter(Router):
     def candidate_models(self) -> Sequence[str]:
         return (self._engine.capable_model_deployment_name, self._engine.efficient_model_deployment_name)
 
-    def routing_info(self, decision: "RoutingDecision") -> RoutingInfo:
-        """Override Router default to populate every typed routing dimension directly — no
-        intermediate wire object. ``requested_model`` comes from the engine's capable-model
-        name (the tier that would have served absent downgrade) — not part of RoutingDecision,
-        which is router-agnostic. Classifier fields come from the ClassifierCall nested on the
-        decision. ``decision_source``/``routing_family`` are read straight off the decision —
-        it is the single source of truth for both (see RoutingDecision's own docstring).
-        ``router_type`` ("stage"/"composite") comes from the engine's own routing_mode config."""
+    def routing_info(
+        self, decision: "RoutingDecision | None", header_maps: Iterable[Mapping[str, object]]
+    ) -> RoutingInfo:
+        """Populate every typed routing dimension directly from ``decision`` — no
+        intermediate wire object, and ``header_maps`` is never touched: LiteLLM has no
+        visibility into Switchyard's own routing (Switchyard rewrites the request body to a
+        concrete deployment before the request ever reaches LiteLLM), so there is nothing
+        for Switchyard to read back out of a response even on the decide()-failure edge case
+        where ``decision`` is ``None``.
+
+        ``requested_model`` is ``self.router_name`` — the catalog alias this router was
+        resolved for (see ``Router.router_name``'s own docstring) — not part of
+        RoutingDecision, which is router-agnostic. ``counterfactual_model`` is
+        ``self.counterfactual_model`` (the engine's capable-model name, set once at
+        construction): for Switchyard, the capable tier is always the pricing baseline a
+        downgrade is measured against. Classifier fields come from the ClassifierCall nested
+        on the decision. ``decision_source``/``routing_family`` are read straight off the
+        decision — it is the single source of truth for both (see RoutingDecision's own
+        docstring). ``router_type`` ("stage"/"composite") comes from the engine's own
+        routing_mode config."""
+        if decision is None:
+            return RoutingInfo()
         c = decision.classifier
         return RoutingInfo(
             routed_model=decision.model,
             classifier_cost_usd=c.cost_usd if c else None,
-            requested_model=self._engine.capable_model,
+            requested_model=self.router_name,
+            counterfactual_model=self.counterfactual_model,
             tier=normalize_switchyard_tier(decision.tier),
             routing_tier_raw=decision.tier,
             decision_source=normalize_decision_source(decision.decision_source),
@@ -93,13 +107,6 @@ class SwitchyardRouter(Router):
             classifier_cached_tokens=c.cached_tokens if c else None,
             classifier_cache_creation_tokens=c.cache_creation_tokens if c else None,
         )
-
-    def extract(self, response: LLMResult | AIMessage) -> RoutingInfo:
-        """Read the canonical RoutingInfo that RouterChatModel._agenerate stamped onto the
-        response after this router's own decide() ran — the only channel that's actually
-        populated for the agent path (SwitchyardRouter.build_chat_model is the Router
-        default, which always wraps in RouterChatModel)."""
-        return RoutingInfo.from_response(response)
 
     def extract_classifier_usage(self, ctx: CallContext) -> ClassifierUsage | None:
         decision = ctx.decision

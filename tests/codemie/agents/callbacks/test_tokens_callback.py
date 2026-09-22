@@ -665,15 +665,12 @@ def _make_router(
     routing_info: RoutingInfo | None = None,
     classifier_usage: ClassifierUsage | None = None,
 ) -> MagicMock:
-    """A duck-typed Router double exposing the methods on_llm_end relies on. Both
-    routing_info() and extract() are stubbed identically: on_llm_end picks whichever one
-    applies (routing_info() when a decision was stashed, extract() otherwise — see
-    TokensCalculationCallback.on_llm_end), and these tests don't care which, only what
-    display_routing ends up being."""
+    """A duck-typed Router double exposing the methods on_llm_end relies on.
+    router.routing_info(decision, header_maps) is stubbed to return the same value regardless
+    of its two arguments — these tests don't care which of decision/header_maps a real router
+    would read, only what display_routing ends up being."""
     router = MagicMock()
-    resolved = routing_info if routing_info is not None else RoutingInfo()
-    router.extract.return_value = resolved
-    router.routing_info.return_value = resolved
+    router.routing_info.return_value = routing_info if routing_info is not None else RoutingInfo()
     router.extract_classifier_usage.return_value = classifier_usage
     return router
 
@@ -780,14 +777,14 @@ def test_on_llm_error_clears_pending_routing_ctx():
 
 
 @pytest.mark.asyncio
-async def test_on_llm_end_uses_stashed_router_when_present():
+async def test_on_llm_end_uses_stashed_router_and_decision():
     """When a decision was stashed pre-call, display_routing must come from
-    router.routing_info(decision), NOT router.extract(response) — extract() reads a stamp
-    that RouterChatModel._agenerate only applies *after* this callback's own on_llm_end fires
-    (see Router.extract()'s docstring on core/router.py), so for a SwitchyardRouter-style
-    decision-bearing call, extract() would see this unstamped _llm_result() and return empty.
-    routing_info(decision) has no such ordering dependency — this is the regression test for
-    that fix."""
+    router.routing_info(decision, header_maps) with the stashed decision, not from anything
+    stamped on the response — this callback fires strictly before RouterChatModel._agenerate's
+    own post-call stamp (it's attached directly to the candidate model, running inside
+    selected.ainvoke()), so for a SwitchyardRouter-style decision-bearing call, a header/stamp
+    based read would see this unstamped _llm_result() and find nothing. Passing the decision
+    straight through has no such ordering dependency — this is the regression test for that."""
     callback = TokensCalculationCallback(request_id="req-1", llm_model="claude-4-5-haiku")
     router = MagicMock()
     router.routing_info.return_value = RoutingInfo(routed_model="claude-4-5-haiku")
@@ -804,8 +801,9 @@ async def test_on_llm_end_uses_stashed_router_when_present():
     with patch("codemie.service.request_summary_manager.request_summary_manager.update_llm_run") as mock_update:
         await callback.on_llm_end(_llm_result(), run_id=run_id)
 
-    router.routing_info.assert_called_once_with(decision)
-    router.extract.assert_not_called()
+    router.routing_info.assert_called_once()
+    assert len(router.routing_info.call_args.args) == 2
+    assert router.routing_info.call_args.args[0] is decision
     router.extract_classifier_usage.assert_called_once()
     mock_update.assert_called_once()
     llm_run = mock_update.call_args.kwargs["llm_run"]
@@ -824,7 +822,7 @@ async def test_on_llm_end_uses_stashed_router_when_present():
 async def test_on_llm_end_falls_back_to_create_router_when_nothing_stashed():
     callback = TokensCalculationCallback(request_id="req-1", llm_model="gpt-4.1")
     fallback_router = MagicMock()
-    fallback_router.extract.return_value = RoutingInfo()
+    fallback_router.routing_info.return_value = RoutingInfo()
     fallback_router.extract_classifier_usage.return_value = None
     run_id = uuid4()
     # No on_chat_model_start call at all — nothing stashed for this run_id.
@@ -836,17 +834,21 @@ async def test_on_llm_end_falls_back_to_create_router_when_nothing_stashed():
         await callback.on_llm_end(_llm_result(), run_id=run_id)
 
     mock_create.assert_called_once_with("gpt-4.1")
-    fallback_router.extract.assert_called_once()
+    fallback_router.routing_info.assert_called_once()
+    assert fallback_router.routing_info.call_args.args[0] is None
 
 
 @pytest.mark.asyncio
-async def test_on_llm_end_resolves_counterfactual_from_router_alias():
-    """Agent usage tracking resolves counterfactual pricing from requested router alias."""
+async def test_on_llm_end_applies_counterfactual_costs_from_router_reported_baseline():
+    """Agent usage tracking re-prices against whatever counterfactual_model the router's own
+    routing_info() already reported — router-owned state (set at construction, see
+    core/router.py), not a separately resolved value."""
     callback = TokensCalculationCallback(request_id="req-1", llm_model="gpt-smart-router")
     router = MagicMock()
-    router.extract.return_value = RoutingInfo(
+    router.routing_info.return_value = RoutingInfo(
         routed_model="gpt-5.6-luna-2026-07-09",
         requested_model="gpt-smart-router",
+        counterfactual_model="gpt-5.6-terra-2026-07-09",
         tier="SIMPLE",
         decision_source="llm_classifier",
         classifier_cost_usd=0.0005,
@@ -856,17 +858,12 @@ async def test_on_llm_end_resolves_counterfactual_from_router_alias():
     callback.on_chat_model_start({}, [[]], run_id=run_id, metadata={"_routing_ctx": (router, None)})
 
     with (
-        patch(
-            "codemie.enterprise.litellm.routing_headers.resolve_counterfactual_model",
-            return_value="gpt-5.6-terra-2026-07-09",
-        ) as resolve_counterfactual,
         patch("codemie.agents.callbacks.tokens_callback.calculate_token_cost", return_value=(0.002, 0.0, 0.0)),
         patch("codemie.agents.callbacks.tokens_callback.llm_service.get_model_cost"),
         patch("codemie.service.request_summary_manager.request_summary_manager.update_llm_run") as mock_update,
     ):
         await callback.on_llm_end(_llm_result(), run_id=run_id)
 
-    resolve_counterfactual.assert_called_once_with("gpt-smart-router")
     routing = mock_update.call_args.kwargs["llm_run"].routing
     assert routing.requested_model == "gpt-smart-router"
     assert routing.counterfactual_model == "gpt-5.6-terra-2026-07-09"
@@ -885,7 +882,7 @@ async def test_on_llm_end_records_routed_cache_hit_without_model_cost():
     """A routed whole-response cache hit remains observable but costs no model spend."""
     callback = TokensCalculationCallback(request_id="req-1", llm_model="gpt-smart-router")
     router = MagicMock()
-    router.extract.return_value = RoutingInfo(
+    router.routing_info.return_value = RoutingInfo(
         routed_model="gpt-5.6-luna-2026-07-09",
         requested_model="gpt-smart-router",
         tier="SIMPLE",

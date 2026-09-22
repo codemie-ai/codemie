@@ -43,6 +43,7 @@ async def test_pick_model_signal_mode_end_to_end_against_real_stage_router():
         capable_model="capable-model",
         efficient_model="efficient-model",
         routing_mode="signal",
+        router_name="switchyard-auto",
         capable_model_deployment_name="capable-dep",
         efficient_model_deployment_name="efficient-dep",
         tuning=SwitchyardTuning(),
@@ -68,6 +69,7 @@ async def test_pick_model_classifier_mode_end_to_end_against_real_stage_router()
         capable_model="capable-model",
         efficient_model="efficient-model",
         routing_mode="classifier",
+        router_name="switchyard-auto",
         capable_model_deployment_name="capable-dep",
         efficient_model_deployment_name="efficient-dep",
         tuning=SwitchyardTuning(

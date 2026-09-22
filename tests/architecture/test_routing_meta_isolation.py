@@ -23,7 +23,7 @@ canonical domain fields (``decision_source``, ``requested_model``, ``confidence`
 ...) inside enterprise/litellm/router.py's ``routing_info_from_headers()``. Nothing outside that
 one translation function needs to know LiteLLM's raw field names at all — every other consumer
 (callbacks, RouterChatModel, the proxy's own client-facing header codec in
-enterprise/switchyard/proxy.py) works exclusively off the already-translated RoutingInfo. This
+core/proxy_routing_headers.py) works exclusively off the already-translated RoutingInfo. This
 test makes "some other module starts reading LiteLLM's raw wire vocabulary directly, instead of
 going through the one translator" a CI failure instead of a silent architectural drift.
 

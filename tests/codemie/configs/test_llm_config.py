@@ -24,10 +24,10 @@ _DIAL_CONFIG = _CONFIGS_DIR / "llm-dial-config.yaml"
 
 _DIAL_EXPECTED_ROUTER_NAMES: frozenset[str] = frozenset(
     {
-        "claude-opus-4-6-20260205-switchyard-claude-sonnet-4-6-signal",
-        "claude-opus-4-6-20260205-switchyard-claude-sonnet-4-6-classifier",
-        "claude-sonnet-4-6-switchyard-claude-4-5-haiku-signal",
-        "claude-sonnet-4-6-switchyard-claude-4-5-haiku-classifier",
+        "sy-signal-claude-opus",
+        "sy-classifier-claude-opus",
+        "sy-signal-claude",
+        "sy-classifier-claude",
     }
 )
 

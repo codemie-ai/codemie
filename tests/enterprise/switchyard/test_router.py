@@ -15,7 +15,6 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from codemie.core.routing_info import _ROUTING_INFO_KEY
 from codemie.core.router import CallContext, ClassifierCall, RoutingDecision
 from codemie.enterprise.switchyard.engine import RoutingTier
 from codemie.enterprise.switchyard.router import SwitchyardRouter, normalize_switchyard_tier
@@ -23,6 +22,7 @@ from codemie.enterprise.switchyard.router import SwitchyardRouter, normalize_swi
 
 def _make_engine(*, routing_mode="signal", **decide_kwargs):
     engine = MagicMock()
+    engine.router_name = "switchyard-auto"
     engine.capable_model = "claude-4-6-sonnet"
     engine.efficient_model = "claude-4-5-haiku"
     engine.capable_model_deployment_name = "us.anthropic.claude-4-6-sonnet"
@@ -63,50 +63,18 @@ def test_candidate_models_returns_deployment_names():
     assert set(router.candidate_models()) == {"us.anthropic.claude-4-6-sonnet", "us.anthropic.claude-4-5-haiku"}
 
 
-def test_extract_reads_stamped_response_metadata():
+def test_counterfactual_model_is_capable_model_set_at_construction():
     router = SwitchyardRouter(_make_engine())
-    message = MagicMock()
-    message.response_metadata = {_ROUTING_INFO_KEY: {"routed_model": "claude-4-5-haiku", "classifier_cost_usd": 0.002}}
-    info = router.extract(message)
-    assert info.routed_model == "claude-4-5-haiku"
-    assert info.classifier_cost_usd == 0.002
+    assert router.counterfactual_model == "claude-4-6-sonnet"
 
 
-def test_extract_empty_when_not_stamped():
+def test_routing_info_returns_empty_when_no_decision():
+    """The decide()-failure edge case: nothing is ever reflected in LiteLLM's response
+    headers for Switchyard, so header_maps is correctly never even inspected."""
     router = SwitchyardRouter(_make_engine())
-    message = MagicMock()
-    message.response_metadata = {}
-    assert router.extract(message).is_empty()
-
-
-def test_extract_reads_stamped_response_metadata_from_llm_result():
-    """TokensCalculationCallback.on_llm_end (a real LangChain AsyncCallbackHandler hook) is
-    always invoked with the LLMResult wrapper, not a bare message — extract() must unwrap it,
-    not just handle the agent path's bare-message shape."""
-    from langchain_core.messages import AIMessage
-    from langchain_core.outputs import ChatGeneration, LLMResult
-
-    router = SwitchyardRouter(_make_engine())
-    message = AIMessage(
-        content="hi",
-        response_metadata={_ROUTING_INFO_KEY: {"routed_model": "claude-4-5-haiku", "classifier_cost_usd": 0.002}},
-    )
-    result = LLMResult(generations=[[ChatGeneration(message=message)]])
-
-    info = router.extract(result)
-
-    assert info.routed_model == "claude-4-5-haiku"
-    assert info.classifier_cost_usd == 0.002
-
-
-def test_extract_empty_when_llm_result_not_stamped():
-    from langchain_core.messages import AIMessage
-    from langchain_core.outputs import ChatGeneration, LLMResult
-
-    router = SwitchyardRouter(_make_engine())
-    result = LLMResult(generations=[[ChatGeneration(message=AIMessage(content="hi", response_metadata={}))]])
-
-    assert router.extract(result).is_empty()
+    header_maps_spy = MagicMock()
+    header_maps_spy.__iter__ = MagicMock(side_effect=AssertionError("header_maps must not be iterated"))
+    assert router.routing_info(None, header_maps_spy).is_empty()
 
 
 def test_extract_classifier_usage_reads_decision_from_context():
@@ -153,8 +121,12 @@ def test_router_routing_family_is_switchyard():
 def test_routing_info_populates_typed_routing_dimensions():
     """The typed routing dimensions consumed by routing analytics (requested_model, tier,
     classifier token counts) must be on RoutingInfo itself — routing_call_usage reads the
-    typed fields directly, and the client-facing headers (see enterprise/switchyard/proxy.py)
-    are built from these same typed fields, not a separate passthrough bag."""
+    typed fields directly, and the client-facing headers (see core/proxy_routing_headers.py)
+    are built from these same typed fields, not a separate passthrough bag.
+
+    requested_model reports the router's own alias (router_name) — the same kind of value
+    LiteLLMRouter reports — not the capable-model name, which is a distinct pricing-baseline
+    concept surfaced separately as counterfactual_model."""
     router = SwitchyardRouter(_make_engine())
     decision = RoutingDecision(
         model="claude-4-5-haiku",
@@ -166,10 +138,11 @@ def test_routing_info_populates_typed_routing_dimensions():
         ),
     )
 
-    info = router.routing_info(decision)
+    info = router.routing_info(decision, ())
 
     assert info.routed_model == "claude-4-5-haiku"
-    assert info.requested_model == "claude-4-6-sonnet"
+    assert info.requested_model == "switchyard-auto"
+    assert info.counterfactual_model == "claude-4-6-sonnet"
     assert info.tier == "simple"
     assert info.routing_tier_raw == RoutingTier.EFFICIENT
     assert info.classifier_input_tokens == 120
@@ -196,7 +169,7 @@ def test_routing_info_router_type_is_composite_in_classifier_mode():
         classifier=None,
     )
 
-    info = router.routing_info(decision)
+    info = router.routing_info(decision, ())
 
     assert info.router_type == "composite"
 
@@ -211,10 +184,11 @@ def test_routing_info_without_classifier_leaves_token_fields_none():
         classifier=None,
     )
 
-    info = router.routing_info(decision)
+    info = router.routing_info(decision, ())
 
     assert info.tier == "simple"
     assert info.routing_tier_raw == RoutingTier.EFFICIENT
+    assert info.counterfactual_model == "claude-4-6-sonnet"
     assert info.classifier_input_tokens is None
     assert info.classifier_output_tokens is None
     assert info.classifier_cached_tokens is None

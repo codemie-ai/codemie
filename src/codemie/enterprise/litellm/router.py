@@ -15,24 +15,20 @@
 """LiteLLMRouter — the Router-protocol adapter for LiteLLM's own (externally configured)
 auto-routing signals.
 
-Lives here, not in core/router.py, because every method that does real work (extract,
-extract_classifier_usage) reads LiteLLM-specific x-litellm-* headers via
-LiteLLMRouterHeaders/_iter_header_maps — this is enterprise/litellm logic, not core. Mirrors
-SwitchyardRouter's placement in enterprise/switchyard/router.py: core/router.py hosts only the
-Router interface, its provider-neutral defaults, and NullRouter (which needs none of this);
-create_router() lazily imports this module the same way it lazily imports SwitchyardRouter, so
-core keeps its documented zero import-time (or runtime) dependency on either concrete package.
+Lives here, not in core/router.py, because routing_info() and extract_classifier_usage() both
+read LiteLLM-specific x-litellm-* headers via LiteLLMRouterHeaders — this is enterprise/litellm
+logic, not core. Mirrors SwitchyardRouter's placement in enterprise/switchyard/router.py:
+core/router.py hosts only the Router interface, its provider-neutral defaults, and NullRouter
+(which needs none of this); create_router() lazily imports this module the same way it lazily
+imports SwitchyardRouter, so core keeps its documented zero import-time (or runtime)
+dependency on either concrete package.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
-
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import LLMResult
 
 from codemie.core.router import CallContext, Router
 from codemie.core.routing_info import (
@@ -43,7 +39,6 @@ from codemie.core.routing_info import (
 
 if TYPE_CHECKING:
     from codemie.core.router import RoutingDecision
-    from codemie.core.router_chat_model import LLMParams
 
 
 def normalize_litellm_tier(raw: str | None) -> str | None:
@@ -104,7 +99,6 @@ def routing_info_from_headers(headers: Mapping[str, object]) -> RoutingInfo:
         routing_source = None
     return RoutingInfo(
         routed_model=meta.routed_model,
-        requested_model=meta.router_model_name,
         classifier_cost_usd=meta.classifier_cost_usd,
         tier=normalize_litellm_tier(raw_tier),
         routing_tier_raw=raw_tier,
@@ -124,36 +118,56 @@ def routing_info_from_headers(headers: Mapping[str, object]) -> RoutingInfo:
 
 class LiteLLMRouter(Router):
     """Never decides synchronously. Recognizes LiteLLM's own routing signals whenever they
-    appear in a response, which happens identically whether or not this model_name carries a
-    litellm_router declaration — LiteLLM's server-side behavior doesn't care about CodeMie's
-    catalog. `name` exists only to distinguish future catalog-display purposes, not to change
-    runtime behavior."""
+    appear in a response headers map, which happens identically whether or not this
+    model_name carries a litellm_router declaration — LiteLLM's server-side behavior doesn't
+    care about CodeMie's catalog.
+
+    Resolved fresh per alias by create_router() (never cached/shared — see router_factory.py):
+    ``name``/``router_name`` and ``counterfactual_model`` all vary per resolved alias, so a
+    single shared instance would leak one alias's identity/pricing baseline onto every other."""
 
     routing_family = "litellm"
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, counterfactual_model: str | None = None) -> None:
         self.name = name
+        self.router_name = name
+        self.counterfactual_model = counterfactual_model
 
-    async def decide(self, messages: list[dict[str, object]]) -> RoutingDecision | None:
+    async def decide(self, messages: list[dict[str, object]]) -> "RoutingDecision | None":
         return None
 
-    def extract(self, response: LLMResult | AIMessage) -> RoutingInfo:
-        from codemie.enterprise.litellm.routing_headers import _iter_header_maps
+    def candidate_models(self) -> tuple[str]:
+        """LiteLLM's auto-router alias IS the deployable model_name — the proxy's own
+        server-side fan-out is keyed on this exact name, so there is exactly one real
+        candidate, and it's this router's own resolved alias (self.name). Unlike
+        SwitchyardRouter, whose candidates are two OTHER concrete deployments, this router's
+        sole "candidate" is itself — build_chat_model_for's generic logic (see
+        core/router_chat_model.py) still wraps it in RouterChatModel with exactly this one
+        candidate, so the post-call routing_info() stamp runs through the one canonical path
+        every router uses."""
+        return (self.name,)
 
-        info = RoutingInfo()
-        # _iter_header_maps already deduplicates by object identity, so a headers dict that
-        # LangChain stashed in both generation_info and response_metadata is yielded once —
-        # important because merged_over sums the additive classifier fields.
-        for headers in _iter_header_maps(response):
+    def routing_info(
+        self, decision: "RoutingDecision | None", header_maps: Iterable[Mapping[str, object]]
+    ) -> RoutingInfo:
+        """``decision`` is never read — this router's decide() always returns None (see
+        decide()'s own docstring), so a real decision is never in hand for it to consult; the
+        caller passes it anyway, unconditionally, for interface uniformity with
+        SwitchyardRouter. ``counterfactual_model`` and ``requested_model`` both come from
+        ``self`` (router-owned state, set once at construction — see router_factory.py) rather
+        than being resolved here — same as SwitchyardRouter, and unconditionally: every call to
+        a declared LiteLLM auto-router alias is routed by LiteLLM and comes back with routing
+        headers, so there is no "was this even routed" case to guard for here. Every other field
+        comes from merging ``routing_info_from_headers()`` over each map in ``header_maps``."""
+        info = RoutingInfo(counterfactual_model=self.counterfactual_model, requested_model=self.router_name)
+        for headers in header_maps:
             info = info.merged_over(routing_info_from_headers(headers))
         return info
 
     def extract_classifier_usage(self, ctx: CallContext) -> ClassifierUsage | None:
         """Read LiteLLM's own classifier sub-call usage off response headers (ctx.headers) —
         the proxy-path/agent-path-agnostic counterpart to SwitchyardRouter's decision-based
-        override. LiteLLM's classifier headers (x-litellm-classifier-*) appear identically
-        whether or not this model_name carries a litellm_router declaration, matching this
-        class's own extract() behavior above."""
+        override."""
         if not ctx.headers:
             return None
         from codemie.enterprise.litellm.litellm_router_headers import LiteLLMRouterHeaders
@@ -170,22 +184,3 @@ class LiteLLMRouter(Router):
             cost_usd=meta.classifier_cost_usd,
             model=meta.classifier_model,
         )
-
-    def build_chat_model(self, *, model_name: str, request_id: str, llm_params: "LLMParams") -> BaseChatModel:
-        """Override the Router default: unlike Switchyard's synthetic base_name, LiteLLM's
-        auto-router alias IS the deployable model_name — the proxy's own server-side fan-out is
-        keyed on this exact name, so there is exactly one real candidate to build, and it's
-        model_name itself. Still wrapped in RouterChatModel (not returned as a raw client) so
-        the post-call extract() stamp (see RouterChatModel._agenerate) runs through the one
-        canonical path every router uses, instead of a bespoke metadata channel for just this
-        mechanism."""
-        from codemie.core.dependecies import get_llm_by_credentials
-        from codemie.core.router_chat_model import RouterChatModel
-
-        llm = get_llm_by_credentials(
-            llm_model=model_name, request_id=request_id, temperature=llm_params.temperature, top_p=llm_params.top_p
-        )
-        return RouterChatModel(router=self, candidates={model_name: llm}, default_model=model_name)
-
-
-_LITELLM_COMPLEXITY_ROUTER = LiteLLMRouter(name="litellm_complexity")
