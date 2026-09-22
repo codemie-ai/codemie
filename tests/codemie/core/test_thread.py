@@ -105,3 +105,38 @@ def test_close(generator):
     with patch.object(generator, 'queue'):
         generator.close()
         assert generator.closed
+
+
+def test_subscribe_replays_history_and_receives_live_chunks(generator):
+    generator.send('chunk_1')
+    generator.send('chunk_2')
+
+    history, sub_q, is_closed = generator.subscribe()
+    assert history == ['chunk_1', 'chunk_2']
+    assert not is_closed
+
+    generator.send('chunk_3')
+    assert sub_q.get_nowait() == 'chunk_3'
+
+    generator.close()
+    assert sub_q.get_nowait() is StopIteration
+
+
+def test_subscribe_on_closed_generator(generator):
+    generator.send('chunk_1')
+    generator.close()
+
+    history, sub_q, is_closed = generator.subscribe()
+    assert history == ['chunk_1']
+    assert is_closed is True
+
+
+def test_unsubscribe(generator):
+    history, sub_q, is_closed = generator.subscribe()
+    assert sub_q in generator._subscribers
+
+    generator.unsubscribe(sub_q)
+    assert sub_q not in generator._subscribers
+
+    generator.send('chunk_after_unsub')
+    assert sub_q.empty()

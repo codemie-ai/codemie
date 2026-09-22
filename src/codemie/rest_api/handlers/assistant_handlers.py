@@ -17,7 +17,7 @@ import json
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 from time import time
 from types import SimpleNamespace
@@ -48,7 +48,7 @@ from codemie.core.models import (
     ToolCallAction,
 )
 from codemie.core.routing_info import RoutingInfo
-from codemie.core.thread import ThreadedGenerator, finalize_thoughts
+from codemie.core.thread import CancellationReason, ThreadedGenerator, finalize_thoughts
 from codemie.rest_api.a2a.client.remote_agent_connection import RemoteAgentConnections, TaskCallbackArg
 from codemie.rest_api.a2a.types import Task, SendTaskRequest, SendTaskStreamingRequest, AgentCard, TaskState
 from codemie.rest_api.a2a.utils import convert_to_task_request, convert_to_base_model_response
@@ -73,7 +73,7 @@ from codemie.service.background_tasks_service import BackgroundTasksService
 from codemie.service.constants import AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY
 from codemie.service.agent_workspace_service import AgentWorkspaceService
 from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
-from codemie.service.conversation_service import ChatCompletionOutcome, ConversationService, _guard_finished
+from codemie.service.conversation_service import ConversationService, UpsertChatHistoryParams, _guard_finished
 from codemie.service.dynamic_config_service import DynamicConfigService
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.request_summary_manager import request_summary_manager
@@ -95,6 +95,7 @@ class ChatHistoryData:
     status: ConversationStatus = ConversationStatus.SUCCESS
     user_message_received_at: datetime | None = None
     a2ui_envelopes: List[dict] | None = None
+    in_progress: bool = False
 
 
 class AssistantRequestHandler(ABC):
@@ -435,24 +436,26 @@ class AssistantRequestHandler(ABC):
             input_tokens=0, output_tokens=0, money_spent=0
         )
         ConversationService.upsert_chat_history(
-            outcome=ChatCompletionOutcome(
+            UpsertChatHistoryParams(
+                request=data.request,
+                user=self.user,
                 assistant_response=data.response,
                 time_elapsed=time() - data.execution_start,
                 tokens_usage=tokens_usage,
                 llm_runs=summary.llm_runs if summary else None,
+                assistant=self.assistant,
                 thoughts=self._filter_thoughts(data.thoughts),
                 status=data.status,
                 user_message_received_at=data.user_message_received_at,
                 a2ui_envelopes=data.a2ui_envelopes,
-            ),
-            request=data.request,
-            user=self.user,
-            assistant=self.assistant,
-            request_id=self.request_uuid,
-            background_tasks=self.background_tasks,
-            client_source=self.client_source,
+                request_id=self.request_uuid,
+                background_tasks=self.background_tasks,
+                in_progress=data.in_progress,
+                client_source=self.client_source,
+            )
         )
-        request_summary_manager.clear_summary(self.request_uuid)
+        if not data.in_progress:
+            request_summary_manager.clear_summary(self.request_uuid)
 
     @staticmethod
     def _build_routing(thought: dict) -> RoutingInfo | None:
@@ -558,7 +561,7 @@ class StandardAssistantHandler(AssistantRequestHandler):
         self._populate_conversation_history(request)
 
         execution_start = time()
-        user_message_received_at = datetime.now()
+        user_message_received_at = datetime.now(timezone.utc)
         if request.stream:
             return self._handle_stream(
                 request, raw_request, execution_start, user_message_received_at, include_tool_errors, error_detail_level
@@ -593,9 +596,36 @@ class StandardAssistantHandler(AssistantRequestHandler):
         Supports error handling via include_tool_errors and error_detail_level parameters.
         Errors are included in the final streamed chunk when last=True.
         """
+        import uuid
+
+        if not request.conversation_id:
+            request.conversation_id = str(uuid.uuid4())
+
         generator_queue = ThreadedGenerator(
             request_uuid=self.request_uuid, user_id=self.user.id, conversation_id=request.conversation_id
         )
+
+        from codemie.service.generation_manager import GenerationManager
+
+        GenerationManager().register(request.conversation_id, generator_queue)
+
+        try:
+            self.save_chat_history(
+                ChatHistoryData(
+                    execution_start=execution_start,
+                    request=request,
+                    response="",
+                    thoughts=[],
+                    status=ConversationStatus.SUCCESS,
+                    user_message_received_at=user_message_received_at,
+                    in_progress=True,
+                )
+            )
+            logger.debug(
+                f"Initial prompt persisted with in_progress=True for conversation_id={request.conversation_id}"
+            )
+        except Exception as persist_exc:
+            logger.error(f"Error persisting initial prompt in_progress: {str(persist_exc)}")
 
         raw_request.state.on_disconnect(
             lambda: self._handle_client_disconnect(
@@ -637,6 +667,10 @@ class StandardAssistantHandler(AssistantRequestHandler):
                 media_type=NDJSON_MEDIA_TYPE,
             )
         except Exception as e:
+            from codemie.service.generation_manager import GenerationManager
+
+            GenerationManager().unregister(request.conversation_id, generator_queue)
+
             from codemie.core.template_security import TemplateSecurityError
 
             if isinstance(e, TemplateSecurityError):  # Return security error as a thought without calling LLM
@@ -645,6 +679,20 @@ class StandardAssistantHandler(AssistantRequestHandler):
                 )
 
             generator_queue.close()
+            try:
+                self.save_chat_history(
+                    ChatHistoryData(
+                        execution_start=execution_start,
+                        request=request,
+                        response="",
+                        thoughts=generator_queue.thoughts,
+                        status=ConversationStatus.ERROR,
+                        user_message_received_at=user_message_received_at,
+                        in_progress=False,
+                    )
+                )
+            except Exception as save_err:
+                logger.error(f"Error persisting failure in _handle_stream: {str(save_err)}")
             raise
 
     def _handle_client_disconnect(
@@ -655,51 +703,10 @@ class StandardAssistantHandler(AssistantRequestHandler):
         user_message_received_at: datetime | None = None,
     ):
         """
-        Stop thread generator queue on client disconnect
+        Passive client disconnect handler. We don't close the generator here as
+        page refresh and temporary network fluctuations should continue generating in the background.
         """
-        if not threaded_generator.is_closed():
-            self._save_history_for_disconnect(
-                request=request,
-                execution_start=execution_start,
-                threaded_generator=threaded_generator,
-                user_message_received_at=user_message_received_at,
-            )
-            logger.debug("Client disconnected")
-            threaded_generator.close()
-
-    def _save_history_for_disconnect(
-        self,
-        request: AssistantChatRequest,
-        threaded_generator: ThreadedGenerator,
-        execution_start,
-        user_message_received_at: datetime | None = None,
-    ):
-        try:
-            thoughts = threaded_generator.thoughts
-
-            # Check if there's already a security error thought - don't overwrite it
-            has_security_error = any(
-                t.get('author_name') == 'Security Validator' and t.get('error') is True for t in thoughts
-            )
-
-            if has_security_error:
-                # Security error already saved, don't overwrite
-                logger.debug("Security error already saved, skipping disconnect handler save")
-                return
-
-            response = "Agent has been interrupted by client"
-            self.save_chat_history(
-                ChatHistoryData(
-                    execution_start=execution_start,
-                    request=request,
-                    response=response,
-                    thoughts=thoughts,
-                    status=ConversationStatus.INTERRUPTED,
-                    user_message_received_at=user_message_received_at,
-                )
-            )
-        except Exception as e:
-            logger.error(f"Error while saving history for disconnected client: {str(e)}")
+        logger.debug(f"Client transport disconnected (passive) for conversation_id={request.conversation_id}")
 
     def _build_final_chunk(
         self,
@@ -746,6 +753,66 @@ class StandardAssistantHandler(AssistantRequestHandler):
     def _start_stream(self, stream, generator_queue: ThreadedGenerator) -> None:
         run_assistant_in_thread_pool(partial(self._run_stream, stream, generator_queue))
 
+    def _handle_serve_error(
+        self,
+        execution_start: float,
+        request,
+        response: StreamedGenerationResult,
+        a2ui_envelopes: List[dict],
+        user_message_received_at: datetime | None,
+        generator_queue: ThreadedGenerator,
+    ) -> None:
+        generator_queue.queue.task_done()
+        try:
+            self.save_chat_history(
+                ChatHistoryData(
+                    execution_start=execution_start,
+                    request=request,
+                    response=response.generated,
+                    thoughts=generator_queue.thoughts,
+                    status=ConversationStatus.ERROR,
+                    user_message_received_at=user_message_received_at,
+                    a2ui_envelopes=a2ui_envelopes or None,
+                    in_progress=False,
+                )
+            )
+        except Exception as save_err:
+            logger.error(f"Error saving failure state in _serve_data: {str(save_err)}")
+
+    def _handle_serve_success(
+        self,
+        execution_start: float,
+        request,
+        response: StreamedGenerationResult,
+        a2ui_envelopes: List[dict],
+        user_message_received_at: datetime | None,
+        generator_queue: ThreadedGenerator,
+        agent,
+    ) -> None:
+        status = (
+            ConversationStatus.INTERRUPTED
+            if generator_queue.cancellation_reason == CancellationReason.ABORTED_BY_USER
+            else ConversationStatus.SUCCESS
+        )
+        self.save_chat_history(
+            ChatHistoryData(
+                execution_start=execution_start,
+                request=request,
+                response=response.generated if response else "",
+                thoughts=finalize_thoughts(generator_queue.thoughts),
+                status=status,
+                user_message_received_at=user_message_received_at,
+                a2ui_envelopes=a2ui_envelopes or None,
+                in_progress=False,
+            )
+        )
+        if getattr(agent, "_pending_tool_confirmation", False):
+            ConversationCheckpointService().save_interrupt_context(
+                request.conversation_id,
+                request.history_index,
+                request.text or "",
+            )
+
     def _serve_data(
         self,
         stream,
@@ -766,25 +833,146 @@ class StandardAssistantHandler(AssistantRequestHandler):
         # One interactive surface streams as 2-3 A2UI envelopes (createSurface →
         # updateComponents → [updateDataModel]); accumulate the whole ordered turn.
         a2ui_envelopes: List[dict] = []
+        is_draining = False
+        try:
+            while True:
+                value = generator_queue.queue.get()
+                if isinstance(value, BaseException):
+                    self._handle_serve_error(
+                        execution_start,
+                        request,
+                        response,
+                        a2ui_envelopes,
+                        user_message_received_at,
+                        generator_queue,
+                    )
+                    raise value
+                if value is not StopIteration:
+                    response = self._read_streamed_chunk(value, response, a2ui_envelopes)
+                    yield value
+                    generator_queue.queue.task_done()
+                    continue
+
+                self._handle_serve_success(
+                    execution_start,
+                    request,
+                    response,
+                    a2ui_envelopes,
+                    user_message_received_at,
+                    generator_queue,
+                    agent,
+                )
+                final_chunk = self._build_final_chunk(agent, execution_start, include_tool_errors, error_detail_level)
+                if final_chunk:
+                    yield final_chunk.model_dump_json() + "\n"
+                generator_queue.queue.task_done()
+                break
+        except GeneratorExit:
+            # Client disconnected (passive refresh/network issue). Hand off to background drainer.
+            is_draining = True
+            logger.debug(
+                f"GeneratorExit caught in _serve_data. Starting background drainer "
+                f"for conversation_id={request.conversation_id}"
+            )
+            run_assistant_in_thread_pool(
+                self._drain_and_save_chat_history,
+                generator_queue,
+                request,
+                execution_start,
+                response,
+                a2ui_envelopes,
+                user_message_received_at,
+                agent,
+            )
+            raise
+        finally:
+            if not is_draining:
+                from codemie.service.generation_manager import GenerationManager
+
+                GenerationManager().unregister(request.conversation_id, generator_queue)
+
+    def _drain_queue_items(
+        self,
+        generator_queue: ThreadedGenerator,
+        last_response: StreamedGenerationResult,
+        a2ui_envelopes: List[dict],
+    ) -> StreamedGenerationResult:
+        response = last_response
         while True:
             value = generator_queue.queue.get()
             if isinstance(value, BaseException):
                 generator_queue.queue.task_done()
                 raise value
-            if value is not StopIteration:
-                response = self._read_streamed_chunk(value, response, a2ui_envelopes)
-                yield value
+            if value is StopIteration:
                 generator_queue.queue.task_done()
-                continue
+                break
+            response = self._read_streamed_chunk(value, response, a2ui_envelopes)
+            generator_queue.queue.task_done()
+        return response
 
+    def _handle_drain_error(
+        self,
+        exc: Exception,
+        generator_queue: ThreadedGenerator,
+        request,
+        execution_start,
+        response: StreamedGenerationResult,
+        a2ui_envelopes: List[dict],
+        user_message_received_at: datetime | None,
+    ) -> None:
+        logger.error(f"Error in background drainer for conversation_id={request.conversation_id}: {str(exc)}")
+        try:
             self.save_chat_history(
                 ChatHistoryData(
                     execution_start=execution_start,
                     request=request,
-                    response=response.generated,
-                    thoughts=finalize_thoughts(generator_queue.thoughts),
+                    response=response.generated if response else "",
+                    thoughts=generator_queue.thoughts,
+                    status=ConversationStatus.ERROR,
                     user_message_received_at=user_message_received_at,
                     a2ui_envelopes=a2ui_envelopes or None,
+                    in_progress=False,
+                )
+            )
+        except Exception as save_err:
+            logger.error(
+                f"Failed to persist error status in drainer for conversation_id={request.conversation_id}: "
+                f"{str(save_err)}"
+            )
+
+    def _drain_and_save_chat_history(
+        self,
+        generator_queue: ThreadedGenerator,
+        request,
+        execution_start,
+        last_response,
+        a2ui_envelopes,
+        user_message_received_at: datetime | None = None,
+        agent=None,
+    ):
+        try:
+            logger.debug(f"Background drainer started for conversation_id={request.conversation_id}")
+            if a2ui_envelopes is None:
+                a2ui_envelopes = []
+
+            response = self._drain_queue_items(generator_queue, last_response, a2ui_envelopes)
+
+            logger.debug(f"Background drainer completed for conversation_id={request.conversation_id}, saving history.")
+            status = (
+                ConversationStatus.INTERRUPTED
+                if generator_queue.cancellation_reason == CancellationReason.ABORTED_BY_USER
+                else ConversationStatus.SUCCESS
+            )
+            self.save_chat_history(
+                ChatHistoryData(
+                    execution_start=execution_start,
+                    request=request,
+                    response=response.generated if response else "",
+                    thoughts=finalize_thoughts(generator_queue.thoughts),
+                    status=status,
+                    user_message_received_at=user_message_received_at,
+                    a2ui_envelopes=a2ui_envelopes or None,
+                    in_progress=False,
                 )
             )
             if getattr(agent, "_pending_tool_confirmation", False):
@@ -793,10 +981,20 @@ class StandardAssistantHandler(AssistantRequestHandler):
                     request.history_index,
                     request.text or "",
                 )
-            final_chunk = self._build_final_chunk(agent, execution_start, include_tool_errors, error_detail_level)
-            if final_chunk:
-                yield final_chunk.model_dump_json() + "\n"
-            break
+        except Exception as e:
+            self._handle_drain_error(
+                e,
+                generator_queue,
+                request,
+                execution_start,
+                last_response,
+                a2ui_envelopes,
+                user_message_received_at,
+            )
+        finally:
+            from codemie.service.generation_manager import GenerationManager
+
+            GenerationManager().unregister(request.conversation_id, generator_queue)
 
     def _return_security_error_response(
         self,

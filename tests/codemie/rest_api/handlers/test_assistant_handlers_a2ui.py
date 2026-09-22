@@ -129,7 +129,10 @@ def test_save_chat_history_forwards_a2ui_envelopes(mock_assistant, mock_user):
                 a2ui_envelopes=envelopes,
             )
         )
-    assert upsert_mock.call_args.kwargs["outcome"].a2ui_envelopes == envelopes
+    call = upsert_mock.call_args
+    params = call.kwargs.get("params") or (call.args[0] if call.args else None)
+    assert params is not None
+    assert params.a2ui_envelopes == envelopes
 
 
 def _action_envelope(surface_id="s1"):

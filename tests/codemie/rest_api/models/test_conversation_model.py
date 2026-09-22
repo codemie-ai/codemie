@@ -403,3 +403,34 @@ def test_get_existing_ids_returns_matching_set():
 def test_get_existing_ids_returns_empty_set_for_empty_input():
     result = Conversation.get_existing_ids([])
     assert result == set()
+
+
+def test_build_chat_history_messages_utc_timezone():
+    from datetime import timezone
+    from codemie.rest_api.models.conversation import ChatTurnData
+
+    turn = ChatTurnData(
+        user_query="Hi",
+        user_query_raw="Hi",
+        assistant_id="asst-1",
+        assistant_response="Hello",
+        thoughts=[],
+        history_index=0,
+        time_elapsed=1.5,
+        input_tokens=10,
+        output_tokens=20,
+        file_names=[],
+        money_spent=0.01,
+        in_progress=True,
+    )
+    user_msg, assistant_msg = Conversation._build_chat_history_messages(turn)
+    assert user_msg.date.tzinfo is not None
+    assert user_msg.date.tzinfo == timezone.utc
+    assert assistant_msg.date.tzinfo is not None
+    assert assistant_msg.date.tzinfo == timezone.utc
+
+    # Verify JSON serialization contains UTC indicator
+    user_json = user_msg.model_dump_json()
+    assert "Z" in user_json or "+00:00" in user_json
+    assistant_json = assistant_msg.model_dump_json()
+    assert "Z" in assistant_json or "+00:00" in assistant_json

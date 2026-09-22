@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from codemie_tools.base.models import Tool
@@ -36,6 +36,7 @@ from codemie.rest_api.models.base import (
     PaginationData,
     PydanticListType,
     PydanticType,
+    ConversationStatus,
 )
 from codemie.rest_api.models.feedback import MarkEnum
 from codemie.rest_api.security.user import User
@@ -69,6 +70,8 @@ class ChatTurnData:
     a2ui_envelopes: Optional[list[dict]] = None
     a2ui_action: Optional[dict] = None
     a2ui_data_model: Optional[dict] = None
+    in_progress: bool = False
+    status: ConversationStatus = ConversationStatus.SUCCESS
 
 
 class Operator(BaseModel):
@@ -131,6 +134,8 @@ class GeneratedMessage(ChatMessage):
     assistant_id: Optional[str] = None
     thoughts: Optional[List[Thought]] = None
     routing: Optional[RoutingInfo] = None
+    in_progress: Optional[bool] = None
+    status: Optional[str] = None
     ## Workflow execution reference fields
     workflow_execution_ref: Optional[bool] = None  # Marker that this is a reference to workflow execution
     execution_id: Optional[str] = None  # Reference to WorkflowExecution.execution_id
@@ -386,9 +391,12 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
 
     @staticmethod
     def _build_chat_history_messages(turn: ChatTurnData) -> tuple[GeneratedMessage, GeneratedMessage]:
-        assistant_responded_at = datetime.now()
+        assistant_responded_at = datetime.now(timezone.utc)
+        user_date = turn.user_message_received_at or assistant_responded_at
+        if user_date.tzinfo is None:
+            user_date = user_date.replace(tzinfo=timezone.utc)
         user_message = GeneratedMessage(
-            date=turn.user_message_received_at or assistant_responded_at,
+            date=user_date,
             role=ChatRole.USER,
             message_raw=turn.user_query_raw,
             file_names=turn.file_names,
@@ -415,12 +423,14 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             input_tokens=turn.input_tokens,
             output_tokens=turn.output_tokens,
             money_spent=turn.money_spent,
-            response_time=turn.time_elapsed,
+            response_time=turn.time_elapsed if not turn.in_progress else None,
             history_index=turn.history_index,
             thoughts=turn.thoughts,
             assistant_id=turn.assistant_id,
             a2ui_envelopes=turn.a2ui_envelopes,
             routing=Conversation._routing_from_thoughts(turn.thoughts),
+            in_progress=turn.in_progress,
+            status=turn.status.value if turn.status else None,
         )
         return user_message, assistant_message
 

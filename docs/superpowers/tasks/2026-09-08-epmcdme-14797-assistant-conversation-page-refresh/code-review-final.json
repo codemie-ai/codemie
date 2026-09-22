@@ -1,0 +1,53 @@
+{
+  "gate_id": "code-review.final",
+  "ticket": "EPMCDME-14797",
+  "reviewer": "CodeMie Senior Staff Software Engineer & Technical Lead",
+  "approved": true,
+  "verdict": "approve",
+  "decision": "approve",
+  "confidence": "high",
+  "risk_flags": [],
+  "checklist": {
+    "no_secrets_exposed": "passed",
+    "thread_safety_generation_manager": "passed",
+    "proper_error_handling_generator_exit": "passed",
+    "exception_recovery_anti_hang": "passed",
+    "abort_idempotency": "passed"
+  },
+  "business_review": [
+    {
+      "criterion": "Suppress response_time metadata on active turns during page refresh",
+      "status": "pass",
+      "notes": "GeneratedMessage in rest_api/models/conversation.py suppresses response_time if turn.in_progress is True."
+    },
+    {
+      "criterion": "Draining passive disconnections on conversation refresh",
+      "status": "pass",
+      "notes": "FastAPI stream handles client-side disconnects safely, cleaning up threads and resources."
+    },
+    {
+      "criterion": "Backend unit test coverage",
+      "status": "pass",
+      "notes": "Added test_build_chat_history_messages_response_time_null_when_in_progress and test_build_chat_history_messages_response_time_preserved_when_finished to verify suppression."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "git-workflow (commit-format)",
+      "status": "pass",
+      "notes": "Commit messages prefixed with EPMCDME-14797: description."
+    },
+    {
+      "standard": "code-quality typing and linting",
+      "status": "pass",
+      "notes": "SQLModel/Pydantic schemas fully annotated and Mypy/Ruff verified."
+    },
+    {
+      "standard": "security-patterns",
+      "status": "pass",
+      "notes": "No hardcoded credentials, logs, or secrets exposed."
+    }
+  ],
+  "findings": [],
+  "rationale": "The backend implementation for EPMCDME-14797 perfectly preserves conversation state on page refresh. Active, in-progress assistant turns have their response_time suppressed to allow the frontend to detect the active state and correctly display the ThinkingLoader instead of rendering an empty message with a static time indicator. Thorough unit testing has been integrated and validated successfully."
+}

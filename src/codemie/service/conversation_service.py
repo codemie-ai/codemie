@@ -18,7 +18,7 @@ import contextvars
 import copy
 import html
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, List, TYPE_CHECKING, Optional, NoReturn
 
@@ -93,20 +93,6 @@ def _raise_conversation_not_found(conversation_id: str) -> NoReturn:
     )
 
 
-@dataclass
-class ChatCompletionOutcome:
-    """Result of running an assistant chat turn, as recorded by upsert_chat_history."""
-
-    assistant_response: str
-    time_elapsed: float
-    tokens_usage: TokensUsage
-    thoughts: List[Thought]
-    status: ConversationStatus = ConversationStatus.SUCCESS
-    user_message_received_at: datetime | None = None
-    a2ui_envelopes: list[dict] | None = None
-    llm_runs: Optional[List["LLMRun"]] = None
-
-
 class SpendingGroupBreakdown(BaseModel):
     """Spending breakdown by dimension."""
 
@@ -147,6 +133,33 @@ class ConversationMetricsResult(BaseModel):
 
 USER_FIELD_KEY = "user_id.keyword"
 CATEGORY_FIELD_KEY = "folder.keyword"
+
+
+@dataclass
+class UpsertChatHistoryParams:
+    """Parameters for upserting chat history and recording conversation metrics."""
+
+    request: AssistantChatRequest
+    assistant: Assistant
+    user: User
+    assistant_response: str = ""
+    time_elapsed: float = 0.0
+    tokens_usage: Optional[TokensUsage] = None
+    thoughts: List[Thought] = field(default_factory=list)
+    status: ConversationStatus = ConversationStatus.SUCCESS
+    user_message_received_at: datetime | None = None
+    a2ui_envelopes: list[dict] | None = None
+    request_id: Optional[str] = None
+    background_tasks: BackgroundTasks | None = None
+    llm_runs: Optional[List["LLMRun"]] = None
+    in_progress: bool = False
+    client_source: ClientSource | None = None
+
+    def __post_init__(self) -> None:
+        if self.tokens_usage is None:
+            self.tokens_usage = TokensUsage(input_tokens=0, output_tokens=0, money_spent=0.0)
+        if self.thoughts is None:
+            self.thoughts = []
 
 
 class ConversationService:
@@ -194,7 +207,10 @@ class ConversationService:
             )
             return conversation, True, True
 
-        if not conversation.history and conversation.conversation_name in (
+        is_first_turn = not conversation.history or all(
+            getattr(msg, "history_index", None) in (None, 0) for msg in conversation.history
+        )
+        if is_first_turn and conversation.conversation_name in (
             None,
             "",
             cls._truncate_name(request.text),
@@ -305,18 +321,89 @@ class ConversationService:
                 request_id=request_id,
             )
 
+    @staticmethod
+    def _resolve_upsert_params(
+        params: Optional[UpsertChatHistoryParams],
+        kwargs: dict,
+    ) -> UpsertChatHistoryParams:
+        if params is None:
+            return UpsertChatHistoryParams(**kwargs)
+        if kwargs:
+            raise TypeError("Cannot specify both params and individual keyword arguments to upsert_chat_history")
+        return params
+
+    @staticmethod
+    def _resolve_turn_status(
+        conversation: Conversation,
+        status: ConversationStatus,
+        in_progress: bool,
+    ) -> ConversationStatus:
+        if in_progress or not conversation.history:
+            return status
+        last_msg = conversation.history[-1]
+        if getattr(last_msg, "status", None) == ConversationStatus.INTERRUPTED.value:
+            return ConversationStatus.INTERRUPTED
+        return status
+
+    @classmethod
+    def _handle_turn_completion(
+        cls,
+        *,
+        params: UpsertChatHistoryParams,
+        conversation: Conversation,
+        llm_model: str,
+        status: ConversationStatus,
+        schedule_naming: bool,
+    ) -> None:
+        ConversationMonitoringService.send_conversation_metric(
+            params.user,
+            params.assistant,
+            params.tokens_usage,
+            params.time_elapsed,
+            conversation.conversation_id,
+            llm_model,
+            status,
+            request_id=params.request_id,
+            client_source=params.client_source,
+        )
+        cls._emit_routing_metrics(
+            user=params.user,
+            assistant=params.assistant,
+            conversation=conversation,
+            tokens_usage=params.tokens_usage,
+            llm_runs=params.llm_runs,
+            request_id=params.request_id,
+        )
+        cls._upsert_conversation_metrics(
+            conversation_id=params.request.conversation_id,
+            user=params.user,
+            assistant_id=params.assistant.id,
+            conversation=conversation,
+            project=params.assistant.project,
+        )
+        if schedule_naming:
+            cls._schedule_naming_background_task(
+                params.background_tasks,
+                params.request,
+                params.assistant_response,
+                params.request_id,
+            )
+
     @classmethod
     def upsert_chat_history(
         cls,
-        outcome: "ChatCompletionOutcome",
-        request: AssistantChatRequest,
-        assistant: Assistant,
-        user: User,
-        request_id: Optional[str] = None,
-        background_tasks: BackgroundTasks | None = None,
-        client_source: ClientSource | None = None,
-    ):
-        llm_model = request.llm_model if request.llm_model else assistant.llm_model_type
+        params: Optional[UpsertChatHistoryParams] = None,
+        **kwargs,
+    ) -> None:
+        """Upsert chat history for a completed or in-progress turn."""
+        params = cls._resolve_upsert_params(params, kwargs)
+
+        request = params.request
+        assistant = params.assistant
+        user = params.user
+        in_progress = params.in_progress
+
+        llm_model = request.llm_model or assistant.llm_model_type
 
         conversation, should_create_conversation, schedule_naming = cls._find_or_create_conversation(
             request, assistant, user
@@ -328,26 +415,29 @@ class ConversationService:
         history_index = request.history_index
 
         replace_latest_variant = request.has_persisted_history_variant()
+        status = cls._resolve_turn_status(conversation, params.status, in_progress)
 
         conversation.update_chat_history(
             ChatTurnData(
                 user_query=request.text,
                 user_query_raw=request.content_raw or html.escape(request.text or ""),
                 assistant_id=assistant.id,
-                assistant_response=outcome.assistant_response,
-                thoughts=outcome.thoughts,
+                assistant_response=params.assistant_response,
+                thoughts=params.thoughts,
                 history_index=history_index,
                 file_names=request.file_names,
-                time_elapsed=outcome.time_elapsed,
-                input_tokens=outcome.tokens_usage.input_tokens,
-                output_tokens=outcome.tokens_usage.output_tokens,
-                money_spent=outcome.tokens_usage.money_spent,
-                user_message_received_at=outcome.user_message_received_at,
-                a2ui_envelopes=outcome.a2ui_envelopes,
+                time_elapsed=params.time_elapsed,
+                input_tokens=params.tokens_usage.input_tokens,
+                output_tokens=params.tokens_usage.output_tokens,
+                money_spent=params.tokens_usage.money_spent,
+                user_message_received_at=params.user_message_received_at,
+                a2ui_envelopes=params.a2ui_envelopes,
                 # getattr: the request-side A2UI intake fields arrive with the
                 # separate intake task; persistence stays additive until then.
                 a2ui_action=getattr(request, "a2ui_action", None),
                 a2ui_data_model=getattr(request, "a2ui_data_model", None),
+                in_progress=in_progress,
+                status=status,
             ),
             project=assistant.project,
             replace_latest_variant=replace_latest_variant,
@@ -364,35 +454,15 @@ class ConversationService:
             file_urls=request.file_names or [],
             user=user,
         )
-        ConversationMonitoringService.send_conversation_metric(
-            user,
-            assistant,
-            outcome.tokens_usage,
-            outcome.time_elapsed,
-            conversation.conversation_id,
-            llm_model,
-            outcome.status,
-            request_id=request_id,
-            client_source=client_source,
-        )
-        cls._emit_routing_metrics(
-            user=user,
-            assistant=assistant,
-            conversation=conversation,
-            tokens_usage=outcome.tokens_usage,
-            llm_runs=outcome.llm_runs,
-            request_id=request_id,
-        )
-        cls._upsert_conversation_metrics(
-            conversation_id=request.conversation_id,
-            user=user,
-            assistant_id=assistant.id,
-            conversation=conversation,
-            project=assistant.project,
-        )
 
-        if schedule_naming:
-            cls._schedule_naming_background_task(background_tasks, request, outcome.assistant_response, request_id)
+        if not in_progress:
+            cls._handle_turn_completion(
+                params=params,
+                conversation=conversation,
+                llm_model=llm_model,
+                status=status,
+                schedule_naming=schedule_naming,
+            )
 
         request.mark_history_variant_persisted()
 

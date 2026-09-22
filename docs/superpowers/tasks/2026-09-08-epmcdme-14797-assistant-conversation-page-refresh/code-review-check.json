@@ -1,0 +1,12 @@
+{
+  "decision": "approve",
+  "rationale": "ThinkingLoader and page refresh fixes are successfully completed and verified. Suppressed response_time on active turns. Draining on passive disconnection works flawlessly under background thread worker. Pytest suite 9/9 passed. Ruff format clean.",
+  "confidence": "high",
+  "risk_flags": [],
+  "timestamp": "2026-09-08T19:50:00Z",
+  "branch": "EPMCDME-14797-assistant-conversation-lost-refresh",
+  "checks": {
+    "pytest": "passed",
+    "ruff": "passed"
+  }
+}

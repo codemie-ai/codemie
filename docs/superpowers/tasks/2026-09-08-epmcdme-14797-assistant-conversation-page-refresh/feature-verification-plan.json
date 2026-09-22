@@ -1,0 +1,29 @@
+{
+  "ticket": "EPMCDME-14797",
+  "verification_steps": [
+    {
+      "step": 1,
+      "description": "Verify thread-safe generator registration and abort signalling via GenerationManager."
+    },
+    {
+      "step": 2,
+      "description": "Verify DB entries contain initial prompt and in_progress=True upon stream start."
+    },
+    {
+      "step": 3,
+      "description": "Simulate client disconnect (GeneratorExit) and verify thread pool executes background queue draining to completion."
+    },
+    {
+      "step": 4,
+      "description": "Call POST /v1/conversations/{conversation_id}/abort on active generation, and verify thread is cancelled immediately and status is set to INTERRUPTED."
+    },
+    {
+      "step": 5,
+      "description": "Verify exception recovery guarantees in_progress=False and status=ERROR when generator yields exceptions."
+    },
+    {
+      "step": 6,
+      "description": "Verify abort idempotency in ConversationService preserves INTERRUPTED status against late drain completion."
+    }
+  ]
+}

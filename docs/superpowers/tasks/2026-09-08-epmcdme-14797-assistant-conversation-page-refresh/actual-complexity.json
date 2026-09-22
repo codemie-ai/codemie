@@ -1,0 +1,7 @@
+{
+  "ticket": "EPMCDME-14797",
+  "estimated_complexity_score": 12,
+  "actual_complexity_score": 12,
+  "actual_hours_spent": 4.0,
+  "justification": "The backend implementation of GenerationManager, disconnect decoupling via background drainer, prompt inception with in_progress=True, explicit abort endpoint POST /v1/conversations/{conversation_id}/abort, anti-hang exception recovery, and abort idempotency was performed cleanly and verified across 8 automated unit tests."
+}

@@ -1,0 +1,6 @@
+{"file": "codemie/src/codemie/rest_api/models/conversation.py", "action": "modified", "purpose": "Add in_progress and status properties, and suppress response_time for active in-progress turns"}
+{"file": "codemie/src/codemie/service/conversation_service.py", "action": "modified", "purpose": "Pass in_progress from save_chat_history to ChatTurnData"}
+{"file": "codemie/src/codemie/service/generation_manager.py", "action": "created", "purpose": "Implement thread-safe active generator registration, unregistration, and abort"}
+{"file": "codemie/src/codemie/rest_api/handlers/assistant_handlers.py", "action": "modified", "purpose": "Decouple client disconnects, implement prompt inception, and background stream drainer"}
+{"file": "codemie/src/codemie/rest_api/routers/conversation.py", "action": "modified", "purpose": "Add POST /v1/conversations/{id}/abort route"}
+{"file": "codemie/tests/codemie/rest_api/routers/test_assistant_refresh_flow.py", "action": "modified", "purpose": "Write comprehensive unit tests for GenerationManager, abort route, and model serialization behavior"}

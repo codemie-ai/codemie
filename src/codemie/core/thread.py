@@ -14,10 +14,10 @@
 
 import json
 import queue
+import threading
 from typing import Protocol, Any
 
 from codemie.core.constants import UniqueThoughtParentIds
-from codemie.core.thought_queue import ThoughtContext
 
 
 def _merge_routing(target: dict, source: dict) -> None:
@@ -54,14 +54,21 @@ class MessageQueue(Protocol):
     def is_closed(self): ...
 
 
-class HedgingCancellationReason:
+class CancellationReason:
     """Known cancellation reasons for ThreadedGenerator.close()."""
 
     FAST_PATH_WON = "hedging_fast_path_won"
+    ABORTED_BY_USER = "aborted_by_user"
+
+
+# Alias for backward compatibility
+HedgingCancellationReason = CancellationReason
 
 
 class ThreadedGenerator:
     def __init__(self, request_uuid: str = '', user_id: str = '', conversation_id: str = ''):
+        from codemie.core.thought_queue import ThoughtContext
+
         self.queue = queue.Queue()
         self.closed = False
         self.cancellation_reason: str | None = None
@@ -70,6 +77,9 @@ class ThreadedGenerator:
         self.conversation_id = conversation_id
         self.thoughts = []
         self.context = ThoughtContext(user_id=user_id, request_uuid=request_uuid)
+        self._history_chunks: list[str] = []
+        self._subscribers: list[queue.Queue] = []
+        self._sub_lock = threading.Lock()
 
     def __iter__(self):
         return self
@@ -83,6 +93,11 @@ class ThreadedGenerator:
         return item
 
     def send(self, data):
+        with self._sub_lock:
+            self._history_chunks.append(data)
+            for sub in self._subscribers:
+                sub.put(data)
+
         try:
             parsed = json.loads(data)
         except Exception:
@@ -159,9 +174,34 @@ class ThreadedGenerator:
             return
         self.closed = True
         self.cancellation_reason = reason
+        with self._sub_lock:
+            for sub in self._subscribers:
+                if error is not None:
+                    sub.put(error)
+                sub.put(StopIteration)
         if error is not None:
             self.queue.put(error)
         self.queue.put(StopIteration)
+
+    def subscribe(self) -> tuple[list[str], queue.Queue, bool]:
+        """Register a subscriber queue for real-time chunk multi-casting.
+
+        Returns:
+            (history_snapshot, sub_queue, is_closed)
+        """
+        with self._sub_lock:
+            history_snapshot = list(self._history_chunks)
+            if self.closed:
+                return history_snapshot, queue.Queue(), True
+            sub_queue = queue.Queue()
+            self._subscribers.append(sub_queue)
+            return history_snapshot, sub_queue, False
+
+    def unsubscribe(self, sub: queue.Queue) -> None:
+        """Unregister a subscriber queue."""
+        with self._sub_lock:
+            if sub in self._subscribers:
+                self._subscribers.remove(sub)
 
     def is_closed(self):
         return self.closed

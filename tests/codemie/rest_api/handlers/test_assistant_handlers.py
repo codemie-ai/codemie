@@ -556,8 +556,10 @@ class TestSaveChatHistory:
 
             handler.save_chat_history(chat_history_data_save_true)
 
-            _, call_kwargs = mock_service.upsert_chat_history.call_args
-            assert call_kwargs["background_tasks"] is sentinel_background_tasks
+            call = mock_service.upsert_chat_history.call_args
+            params = call.kwargs.get("params") or (call.args[0] if call.args else None)
+            assert params is not None
+            assert params.background_tasks is sentinel_background_tasks
 
     def test_background_tasks_defaults_to_none_before_process_request(self, handler):
         """Handler instances start with no background_tasks until process_request sets it"""
@@ -593,8 +595,10 @@ class TestSaveChatHistory:
 
             fresh_handler.save_chat_history(chat_history_data_save_true)
 
-            _, call_kwargs = mock_service.upsert_chat_history.call_args
-            assert call_kwargs["client_source"] is source
+            call = mock_service.upsert_chat_history.call_args
+            params = call.kwargs.get("params") or (call.args[0] if call.args else None)
+            assert params is not None
+            assert params.client_source is source
 
 
 def test_populate_conversation_history_uses_legacy_chat_history_when_feature_flag_disabled():
