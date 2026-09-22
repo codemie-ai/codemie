@@ -430,6 +430,17 @@ model_list:
       base_model: bedrock/moonshotai.kimi-k2.5
       label: "Bedrock MoonshotAI Kimi K2.5"
 
+  # Bedrock MoonshotAI Kimi K3
+  - model_name: moonshotai.kimi-k3
+    litellm_params:
+      model: bedrock/global.moonshotai.kimi-k3
+      litellm_credential_name: default_aws_bedrock_credential
+      aws_region_name: us-east-1
+    model_info:
+      id: moonshotai-kimi-k3-global-us-east-1
+      base_model: bedrock/global.moonshotai.kimi-k3
+      label: "Bedrock MoonshotAI Kimi K3"
+
   - model_name: deepseek-v4-pro
     litellm_params:
       model: azure_ai/deepseek-v4-pro-2026-04-23
