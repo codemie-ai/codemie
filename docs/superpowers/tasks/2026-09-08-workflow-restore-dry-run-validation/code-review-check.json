@@ -1,0 +1,30 @@
+{
+  "decision": "approve",
+  "confidence": "high",
+  "rationale": "All 3 major findings resolved. CR-001: ExtendedHTTPException from guardrail sync in the update endpoint's inner block now falls through to `except Exception as e` (workflow.py:479-490), which re-wraps it as HTTP 400 — the 403/404 propagation is gone. CR-002: `proposed.id = workflow_id` is assigned at workflow.py:530 after WorkflowConfig construction, before _run_pre_persist_update_validation, so the self-reference guard compares the real UUID. CR-003: validate endpoint calls `_consumer_slot_warnings(proposed, user)` at workflow.py:558 and returns a ValidateWorkflowResponse with warnings at line 559. Test harness: 41 passed, 3 skipped (tests/codemie/rest_api/routers/test_workflow.py). Standards: 9 commits follow EPMCDME-####: Capital form; make ruff clean.",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All commits on main..HEAD follow EPMCDME-14482: Capital description form as required by .ai-run/guides/standards/git-workflow.md."},
+    {"kind": "code-quality", "status": "pass", "notes": "make ruff clean; Sonar quality gate passed with 0 new issues (see MR !4214 SonarQube bot comment)."},
+    {"kind": "security", "status": "na", "notes": "No auth, secret handling, or untrusted-input changes introduced by the fix-up commits."}
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "ExtendedHTTPException from GuardrailService.sync_guardrail_assignments_for_entity in the update endpoint's inner try block now falls through to `except Exception as e` (workflow.py:479), which re-wraps it as HTTP 400 — no 403/404 propagates to callers. Verified in current source: only (ValidationException, NotFoundException) are explicitly re-raised at line 477. Test: test_update_workflow_guardrail_sync_403_wrapped_as_400."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "`proposed.id = workflow_id` is now set at workflow.py:530, immediately after WorkflowConfig construction and before `_run_pre_persist_update_validation` is called. The self-reference guard in _validate_sub_workflow_availability now receives the real path-param UUID rather than 'None'. Test: test_validate_workflow_proposed_id_set_from_path_param."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "validate_workflow now calls `warnings = await _consumer_slot_warnings(proposed, user)` at workflow.py:558 and returns `ValidateWorkflowResponse(message='Workflow configuration is valid', warnings=warnings)` at line 559. Response model updated from BaseResponse to ValidateWorkflowResponse (line 497) which exposes the warnings field via FastAPI. Test: test_validate_workflow_returns_consumer_slot_warnings."
+    }
+  ]
+}

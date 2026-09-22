@@ -544,6 +544,96 @@ async def test_update_workflow_not_found(mock_get_wf, workflow_config, update_wo
 @pytest.mark.asyncio
 @patch("codemie.core.ability.Ability.can")
 @patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_update_workflow_pins_id_from_path_param(
+    mock_get_guardrail_assignments,
+    mock_get_wf,
+    mock_ability,
+    update_workflow_request,
+    request_header,
+):
+    """updated_config.id must equal the path workflow_id so the self-reference check is not bypassed."""
+    mock_get_guardrail_assignments.return_value = None
+    mock_get_wf.return_value = workflow_config_data
+    mock_ability.return_value = True
+
+    captured: list = []
+
+    async def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
+        captured.append(proposed)
+
+    with (
+        patch(
+            "codemie.rest_api.routers.workflow._run_pre_persist_update_validation",
+            side_effect=capture_validation,
+        ),
+        patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            request_body = update_workflow_request.model_dump()
+            request_body.pop("id", None)
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config_data.id}",
+                json=request_body,
+                headers=request_header,
+            )
+    assert response.status_code == 200
+    assert len(captured) == 1
+    assert str(captured[0].id) == workflow_config_data.id
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+@patch("codemie.service.guardrail.guardrail_service.GuardrailService.get_entity_guardrail_assignments")
+async def test_update_workflow_ignores_mismatched_body_id(
+    mock_get_guardrail_assignments,
+    mock_get_wf,
+    mock_ability,
+    update_workflow_request,
+    request_header,
+):
+    """A client-supplied body id must not replace the path-authorized workflow identity on PUT."""
+    mock_get_guardrail_assignments.return_value = None
+    mock_get_wf.return_value = workflow_config_data
+    mock_ability.return_value = True
+
+    captured: list = []
+
+    async def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
+        captured.append(proposed)
+
+    with (
+        patch(
+            "codemie.rest_api.routers.workflow._run_pre_persist_update_validation",
+            side_effect=capture_validation,
+        ),
+        patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+        patch("codemie.service.workflow_service.WorkflowService.save_workflow_schema"),
+        patch("codemie.workflows.workflow.WorkflowExecutor.validate_workflow_and_draw"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            request_body = update_workflow_request.model_dump()
+            request_body["id"] = "attacker-supplied-id"
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config_data.id}",
+                json=request_body,
+                headers=request_header,
+            )
+    assert response.status_code == 200
+    assert len(captured) == 1
+    assert str(captured[0].id) == workflow_config_data.id
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
 async def test_update_workflow_exception(mock_get_wf, mock_ability, update_workflow_request, request_header):
     from unittest.mock import AsyncMock
 
@@ -1177,6 +1267,552 @@ async def test_refine_workflow_not_found(request_header):
                 headers=request_header,
             )
         assert response.status_code == 404
+
+
+# ---- POST /v1/workflows/{workflow_id}/validate tests ----
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_validate_workflow_valid_config(mock_get_wf, mock_ability, update_workflow_request, request_header):
+    from unittest.mock import AsyncMock
+
+    mock_get_wf.return_value = workflow_config_data
+    mock_ability.return_value = True
+
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            new_callable=AsyncMock,
+        ) as mock_validate,
+        patch("codemie.service.workflow_service.WorkflowService.update_workflow") as mock_update,
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                f"/v1/workflows/{workflow_config_data.id}/validate",
+                json=update_workflow_request.model_dump(),
+                headers=request_header,
+            )
+    assert response.status_code == 200
+    assert response.json()["message"] == "Workflow configuration is valid"
+    mock_validate.assert_called_once()
+    mock_update.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_validate_workflow_missing_assistant(mock_get_wf, mock_ability, update_workflow_request, request_header):
+    from unittest.mock import AsyncMock
+    from codemie.core.exceptions import ValidationException
+
+    mock_get_wf.return_value = workflow_config_data
+    mock_ability.return_value = True
+
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            new_callable=AsyncMock,
+            side_effect=ValidationException("Assistant 'missing-id' does not exist"),
+        ),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                f"/v1/workflows/{workflow_config_data.id}/validate",
+                json=update_workflow_request.model_dump(),
+                headers=request_header,
+            )
+    assert response.status_code == 400
+    assert "Assistant 'missing-id' does not exist" in response.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_validate_workflow_no_permissions(mock_get_wf, mock_ability, update_workflow_request, request_header):
+    mock_get_wf.return_value = workflow_config_data
+    mock_ability.return_value = False
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            f"/v1/workflows/{workflow_config_data.id}/validate",
+            json=update_workflow_request.model_dump(),
+            headers=request_header,
+        )
+    assert response.status_code == 401
+    assert response.json()["error"]["message"] == "Access denied"
+
+
+@pytest.mark.asyncio
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_validate_workflow_not_found(mock_get_wf, update_workflow_request, request_header):
+    mock_get_wf.side_effect = KeyError()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            "/v1/workflows/nonexistent_id/validate",
+            json=update_workflow_request.model_dump(),
+            headers=request_header,
+        )
+    assert response.status_code == 404
+    assert response.json()["error"]["message"] == "Workflow not found"
+
+
+@pytest.mark.asyncio
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_validate_workflow_load_error_not_mapped_to_404(
+    mock_get_wf, update_workflow_request, request_header, monkeypatch
+):
+    """Corrupt yaml / DB failures from get_workflow must not be reported as workflow not found.
+
+    Non-local ENV (as in CI) converts unhandled errors to HTTP 500 instead of bubbling
+    the original exception through ASGITransport.
+    """
+    mock_get_wf.side_effect = ValueError("corrupt stored yaml")
+    monkeypatch.setattr("codemie.rest_api.main.config.ENV", "prod")
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(
+            f"/v1/workflows/{workflow_config_data.id}/validate",
+            json=update_workflow_request.model_dump(),
+            headers=request_header,
+        )
+    assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert response.json()["error"]["message"] != "Workflow not found"
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_validate_global_workflow_calls_validate_for_update(
+    mock_get_wf, mock_ability, update_workflow_request, request_header
+):
+    from unittest.mock import AsyncMock
+
+    published_workflow = WorkflowConfig(
+        id="workflow_123",
+        name="Published Workflow",
+        description="A published workflow",
+        yaml_config=test_yaml_config,
+        project="demo",
+        is_global=True,
+    )
+    mock_get_wf.return_value = published_workflow
+    mock_ability.return_value = True
+
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            new_callable=AsyncMock,
+        ) as mock_validate,
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                f"/v1/workflows/{published_workflow.id}/validate",
+                json=update_workflow_request.model_dump(),
+                headers=request_header,
+            )
+    assert response.status_code == 200
+    mock_validate.assert_called_once()
+
+
+# ---- CR-001: guardrail sync ExtendedHTTPException must not propagate as-is ----
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_update_workflow_guardrail_sync_403_wrapped_as_400(
+    mock_get_wf,
+    mock_ability,
+    update_workflow_request,
+    request_header,
+):
+    """GuardrailService 403/404 during sync must be wrapped as HTTP 400 (preserved update contract)."""
+    from unittest.mock import AsyncMock
+    from fastapi import status as http_status
+
+    mock_get_wf.return_value = workflow_config_data
+    mock_ability.return_value = True
+
+    guardrail_403 = ExtendedHTTPException(
+        code=http_status.HTTP_403_FORBIDDEN,
+        message="Guardrail permission denied",
+        details="Not allowed",
+        help="",
+    )
+
+    with (
+        patch("codemie.service.workflow_service.WorkflowService.update_workflow", return_value=workflow_config_data),
+        patch(
+            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "codemie.service.guardrail.guardrail_service.GuardrailService.sync_guardrail_assignments_for_entity",
+            side_effect=guardrail_403,
+        ),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config_data.id}",
+                json=update_workflow_request.model_dump(),
+                headers=request_header,
+            )
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+# ---- CR-003: guardrail dry-run must block DB write ----
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_update_workflow_guardrail_dry_run_blocks_persist(
+    mock_get_wf,
+    mock_ability,
+    update_workflow_request,
+    request_header,
+):
+    """Guardrail dry-run failure must prevent update_workflow from being called."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_get_wf.return_value = workflow_config_data
+    mock_ability.return_value = True
+
+    guardrail_error = ExtendedHTTPException(
+        code=status.HTTP_400_BAD_REQUEST,
+        message="Guardrail validation failed",
+        details="Cross-project assignment not allowed",
+        help="",
+    )
+    mock_update_workflow = MagicMock()
+
+    with (
+        patch(
+            "codemie.service.guardrail.guardrail_service.GuardrailService.sync_guardrail_assignments_for_entity",
+            side_effect=guardrail_error,
+        ),
+        patch(
+            "codemie.service.workflow_service.WorkflowService.update_workflow",
+            mock_update_workflow,
+        ),
+        patch(
+            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            new_callable=AsyncMock,
+        ),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.put(
+                f"/v1/workflows/{workflow_config_data.id}",
+                json=update_workflow_request.model_dump(),
+                headers=request_header,
+            )
+
+    mock_update_workflow.assert_not_called()
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+# ---- CR-002: validate endpoint must assign proposed.id from path param ----
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_validate_workflow_proposed_id_set_from_path_param(
+    mock_get_wf,
+    mock_ability,
+    update_workflow_request,
+    request_header,
+):
+    """proposed.id must equal the path workflow_id so the self-reference check is not bypassed."""
+
+    mock_get_wf.return_value = workflow_config_data
+    mock_ability.return_value = True
+
+    captured: list = []
+
+    async def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
+        captured.append(proposed)
+
+    with (
+        patch(
+            "codemie.rest_api.routers.workflow._run_pre_persist_update_validation",
+            side_effect=capture_validation,
+        ),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            # request body has no id field (default None) — path param is the authoritative id
+            request_body = update_workflow_request.model_dump()
+            request_body.pop("id", None)
+            response = await ac.post(
+                f"/v1/workflows/{workflow_config_data.id}/validate",
+                json=request_body,
+                headers=request_header,
+            )
+    assert response.status_code == 200
+    assert len(captured) == 1
+    assert str(captured[0].id) == workflow_config_data.id
+
+
+# ---- CR-003: validate endpoint must include consumer slot warnings ----
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_validate_workflow_returns_consumer_slot_warnings(
+    mock_get_wf,
+    mock_ability,
+    update_workflow_request,
+    request_header,
+):
+    """Validate endpoint must include advisory warnings so it is a faithful dry-run of update."""
+    from unittest.mock import AsyncMock
+
+    mock_get_wf.return_value = workflow_config_data
+    mock_ability.return_value = True
+
+    expected_warnings = [{"type": "slot_warning", "message": "Consumer slot near capacity"}]
+
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "codemie.rest_api.routers.workflow._consumer_slot_warnings",
+            new_callable=AsyncMock,
+            return_value=expected_warnings,
+        ),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                f"/v1/workflows/{workflow_config_data.id}/validate",
+                json=update_workflow_request.model_dump(),
+                headers=request_header,
+            )
+    assert response.status_code == 200
+    assert response.json()["message"] == "Workflow configuration is valid"
+    assert response.json()["warnings"] == expected_warnings
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_validate_workflow_ignores_mismatched_body_id(
+    mock_get_wf,
+    mock_ability,
+    update_workflow_request,
+    request_header,
+):
+    """A client-supplied body id must not replace the path-authorized workflow identity."""
+    mock_get_wf.return_value = workflow_config_data
+    mock_ability.return_value = True
+
+    captured: list = []
+
+    async def capture_validation(workflow, proposed, user, error_format, guardrail_assignments=None):
+        captured.append(proposed)
+
+    with (
+        patch(
+            "codemie.rest_api.routers.workflow._run_pre_persist_update_validation",
+            side_effect=capture_validation,
+        ),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            request_body = update_workflow_request.model_dump()
+            request_body["id"] = "attacker-supplied-id"
+            response = await ac.post(
+                f"/v1/workflows/{workflow_config_data.id}/validate",
+                json=request_body,
+                headers=request_header,
+            )
+    assert response.status_code == 200
+    assert len(captured) == 1
+    assert str(captured[0].id) == workflow_config_data.id
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_validate_workflow_dry_runs_guardrail_assignment_checks(
+    mock_get_wf,
+    mock_ability,
+    update_workflow_request,
+    request_header,
+):
+    """Validate must run the same assignment checks as update without persisting them."""
+    from unittest.mock import AsyncMock
+
+    mock_get_wf.return_value = workflow_config_data
+    mock_ability.return_value = True
+
+    request_body = update_workflow_request.model_dump()
+    request_body["guardrail_assignments"] = [
+        {"guardrail_id": "guardrail-1", "source": "input", "mode": "filtered"},
+    ]
+
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            new_callable=AsyncMock,
+        ),
+        patch("codemie.service.workflow_service.WorkflowService.update_workflow") as mock_update,
+        patch(
+            "codemie.rest_api.routers.workflow.GuardrailService.sync_guardrail_assignments_for_entity",
+        ) as mock_sync,
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                f"/v1/workflows/{workflow_config_data.id}/validate",
+                json=request_body,
+                headers=request_header,
+            )
+    assert response.status_code == 200
+    mock_update.assert_not_called()
+    mock_sync.assert_called_once()
+    sync_kwargs = mock_sync.call_args.kwargs
+    assert sync_kwargs["dry_run"] is True
+    assert sync_kwargs["entity_id"] == workflow_config_data.id
+    assert sync_kwargs["entity_type"].value == "workflow"
+    assert sync_kwargs["entity_project_name"] == "demo"
+    assert len(sync_kwargs["guardrail_assignments"]) == 1
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_validate_workflow_guardrail_403_wrapped_as_400(
+    mock_get_wf,
+    mock_ability,
+    update_workflow_request,
+    request_header,
+):
+    """Guardrail dry-run 403/404 must fail validate the same way update wraps sync errors."""
+    from unittest.mock import AsyncMock
+    from fastapi import status as http_status
+
+    mock_get_wf.return_value = workflow_config_data
+    mock_ability.return_value = True
+
+    request_body = update_workflow_request.model_dump()
+    request_body["guardrail_assignments"] = [
+        {"guardrail_id": "guardrail-1", "source": "input", "mode": "filtered"},
+    ]
+
+    guardrail_403 = ExtendedHTTPException(
+        code=http_status.HTTP_403_FORBIDDEN,
+        message="Permission denied",
+        details="You must own this guardrail or be an admin to write or delete.",
+        help="",
+    )
+
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "codemie.rest_api.routers.workflow.GuardrailService.sync_guardrail_assignments_for_entity",
+            side_effect=guardrail_403,
+        ),
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                f"/v1/workflows/{workflow_config_data.id}/validate",
+                json=request_body,
+                headers=request_header,
+            )
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+@pytest.mark.asyncio
+@patch("codemie.core.ability.Ability.can")
+@patch("codemie.service.workflow_service.WorkflowService.get_workflow")
+async def test_pre_persist_guardrail_dry_run_uses_proposed_project_on_cross_project_move(
+    mock_get_wf,
+    mock_ability,
+    request_header,
+):
+    """Pre-persist dry-run must validate guardrails against proposed.project, not the stored workflow.project.
+
+    CR-001: When the request moves a workflow to a new project, the dry-run previously checked
+    guardrail permissions against the old project (workflow.project), allowing assignments that
+    violate the new project's policy to pass the pre-persist check and reach the DB commit.
+    """
+    from unittest.mock import AsyncMock
+
+    new_project = "new-project"
+    cross_project_request = UpdateWorkflowRequest(
+        name="Cross-project Workflow",
+        description="Moving to a different project",
+        project=new_project,
+        mode=WorkflowMode.SEQUENTIAL,
+    )
+
+    mock_get_wf.return_value = workflow_config_data  # project="demo"
+    mock_ability.return_value = True
+
+    request_body = cross_project_request.model_dump()
+    request_body["guardrail_assignments"] = [
+        {"guardrail_id": "guardrail-1", "source": "input", "mode": "filtered"},
+    ]
+
+    with (
+        patch(
+            "codemie.service.workflow_service.WorkflowService.validate_for_update",
+            new_callable=AsyncMock,
+        ),
+        patch("codemie.service.workflow_service.WorkflowService.update_workflow") as mock_update,
+        patch(
+            "codemie.rest_api.routers.workflow.GuardrailService.sync_guardrail_assignments_for_entity",
+        ) as mock_sync,
+        patch("codemie.rest_api.routers.workflow.project_access_check"),
+    ):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+            response = await ac.post(
+                f"/v1/workflows/{workflow_config_data.id}/validate",
+                json=request_body,
+                headers=request_header,
+            )
+
+    assert response.status_code == 200
+    mock_update.assert_not_called()
+    mock_sync.assert_called_once()
+    sync_kwargs = mock_sync.call_args.kwargs
+    assert sync_kwargs["dry_run"] is True
+    # Must use the new (proposed) project, not the old stored project "demo"
+    assert sync_kwargs["entity_project_name"] == new_project, (
+        f"Expected entity_project_name={new_project!r} (proposed.project) "
+        f"but got {sync_kwargs['entity_project_name']!r} (workflow.project)"
+    )
 
 
 @patch.object(WorkflowService, '_cached_prebuilt_workflows', new_callable=list)

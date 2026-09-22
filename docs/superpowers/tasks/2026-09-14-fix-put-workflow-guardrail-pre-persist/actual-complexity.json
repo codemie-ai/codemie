@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "generated": "2026-09-14T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 17,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 6,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Four production components across three subsystems: guardrail_service (service layer), workflow router (API layer), dependecies.py (core/infrastructure), and llm_factory.py (enterprise/LiteLLM) — the latter two touched for Sonar cognitive-complexity and duplicated-literal fixes alongside the primary guardrail dry-run work."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Core change is an authorization enforcement fix: sync_guardrail_assignments_for_entity now runs with dry_run=True as a pre-persist gate on PUT /workflows/{id} and POST /workflows/{id}/validate, preventing DB writes when guardrail permission checks fail. Authz red flag applied (bump M→L). The dry_run pattern had no pre-existing template in the codebase — new control path."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped M→L: fix enforces guardrail authz checks (permission, cross-project validation) as a pre-persist dry-run gate — directly affects authorization enforcement path."
+  ],
+  "split_recommendation": null
+}

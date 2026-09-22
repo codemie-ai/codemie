@@ -1,0 +1,26 @@
+{
+  "decision": "request-changes",
+  "rationale": "CR-001 (critical/patch): the added pre-persist dry-run validates guardrail assignments against workflow.project (old project) instead of proposed.project, so a cross-project move can commit to DB while guardrail policy for the new project is never enforced pre-persist — the exact scenario the task was fixing. 1 candidate dismissed (llm_factory.py:320, deployment_name always equals base_name at construction; trigger condition unreachable). Confidence low: no acceptance criteria (no-spec).",
+  "confidence": "low",
+  "risk_flags": ["security"],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not applicable for this review profile (standards_expected: false)." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not applicable for this review profile (standards_expected: false)." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not applicable for this review profile (standards_expected: false)." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/workflow.py",
+      "line": 114,
+      "title": "Dry-run guardrail check uses old project on cross-project move",
+      "problem": "_run_pre_persist_update_validation passes entity_project_name=workflow.project (the stored/old project) to GuardrailService.sync_guardrail_assignments_for_entity with dry_run=True. When request.project differs from workflow.project, the pre-persist check tests guardrail permissions against the old project context while workflow_service.update_workflow at line 479 and the real sync at lines 481-486 both execute against the new project (updated_workflow.project).",
+      "impact": "A guardrail assignment that violates the new project's policy can pass the dry-run (old project permits it) and reach the DB commit before enforcement against the new project fires — the scenario the task was explicitly introduced to prevent. Conversely, a valid assignment for the new project is incorrectly rejected during dry-run because the old project is checked, blocking legitimate cross-project moves.",
+      "recommendation": "Change entity_project_name=workflow.project to entity_project_name=proposed.project if proposed.project else workflow.project on line 114 of _run_pre_persist_update_validation, so the dry-run validates the same project context that will be written to the DB."
+    }
+  ]
+}

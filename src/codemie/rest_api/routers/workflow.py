@@ -47,7 +47,7 @@ from codemie.core.workflow_models import (
     WorkflowErrorFormat,
 )
 from codemie.core.workflow_models.workflow_config import WorkflowMode
-from codemie.rest_api.models.guardrail import GuardrailEntity
+from codemie.rest_api.models.guardrail import GuardrailAssignmentItem, GuardrailEntity
 from codemie.rest_api.routers.utils import raise_access_denied, raise_forbidden, run_in_thread_pool, raise_not_found
 from codemie.workflows.validation.resources import collect_consumer_slot_integration_warnings
 from codemie.rest_api.security.authentication import authenticate, project_access_check
@@ -76,6 +76,7 @@ workflow_monitoring_service = WorkflowMonitoringService()
 
 WORKFLOW_STARTED_BG_MSG = "Workflow has been triggered in the background"
 WORKFLOW_CONFIGURATION_ERROR = "Workflow Configuration error"
+WORKFLOW_ERROR_FORMAT_DESCRIPTION = "Error format: 'string' or 'json'"
 
 
 def _collect_workflow_mcp_servers(workflow_config: WorkflowConfig) -> list[MCPServerDetails]:
@@ -99,7 +100,57 @@ def _strip_workflow_mcp_servers(workflow_config: WorkflowConfig) -> None:
             tool.mcp_server = MCPAccessControlService._strip_one(tool.mcp_server)
 
 
-def _consumer_slot_warnings_sync(workflow_config: WorkflowConfig, user: User) -> list[dict]:
+async def _run_pre_persist_update_validation(
+    workflow: WorkflowConfig,
+    proposed: WorkflowConfig,
+    user: User,
+    error_format: WorkflowErrorFormat,
+    guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None,
+) -> None:
+    """MCP, autonomous-mode, executor, and guardrail validation without persisting."""
+    try:
+        GuardrailService.sync_guardrail_assignments_for_entity(
+            user=user,
+            entity_type=GuardrailEntity.WORKFLOW,
+            entity_id=str(workflow.id),
+            entity_project_name=proposed.project if proposed.project else workflow.project,
+            guardrail_assignments=guardrail_assignments,
+            dry_run=True,
+        )
+    except (ValidationException, NotFoundException):
+        raise
+    except Exception as guardrail_exc:
+        details = (
+            guardrail_exc.message if isinstance(guardrail_exc, ExtendedHTTPException) else str(guardrail_exc).strip()
+        )
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST, message=WORKFLOW_CONFIGURATION_ERROR, details=details, help=""
+        ) from guardrail_exc
+    try:
+        MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(proposed))
+        _strip_workflow_mcp_servers(proposed)
+        if proposed.mode == WorkflowMode.AUTONOMOUS:
+            raise ExtendedHTTPException(
+                code=status.HTTP_403_FORBIDDEN,
+                message="Autonomous workflows are disabled",
+                details="Updating workflows to autonomous mode is not allowed. Only sequential workflows can be used.",
+                help="Please set the workflow mode to 'SEQUENTIAL' instead.",
+            )
+        await workflow_service.validate_for_update(workflow, proposed, user, error_format)
+    except (ValidationException, NotFoundException, ExtendedHTTPException):
+        raise
+    except Exception as e:
+        details = (
+            e.args[0]
+            if error_format == WorkflowErrorFormat.JSON and e.args and isinstance(e.args[0], dict)
+            else str(e).strip()
+        )
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST, message=WORKFLOW_CONFIGURATION_ERROR, details=details, help=""
+        ) from e
+
+
+def _consumer_slot_warnings_sync(workflow_config: WorkflowConfig, user: User) -> list[dict[str, object]]:
     """Collect the advisory slot warnings for an already-saved workflow.
 
     Failures stay here: the workflow is already stored at this point, so a broken advisory must
@@ -112,7 +163,7 @@ def _consumer_slot_warnings_sync(workflow_config: WorkflowConfig, user: User) ->
         return []
 
 
-async def _consumer_slot_warnings(workflow_config: WorkflowConfig, user: User) -> list[dict]:
+async def _consumer_slot_warnings(workflow_config: WorkflowConfig, user: User) -> list[dict[str, object]]:
     """Same, for async handlers: collecting reads assistants and integrations, so keep it off the
     event loop."""
     return await asyncio.to_thread(_consumer_slot_warnings_sync, workflow_config, user)
@@ -365,7 +416,13 @@ def get_workflow(workflow_id: str, user: User = Depends(authenticate)):
 class WorkflowSaveResponse(BaseResponseWithData):
     """Save response that can carry non-blocking notes about the saved configuration."""
 
-    warnings: list[dict] = []
+    warnings: list[dict[str, object]] = []
+
+
+class ValidateWorkflowResponse(BaseResponse):
+    """Dry-run validation response; mirrors the advisory warnings surface of the update endpoint."""
+
+    warnings: list[dict[str, object]] = []
 
 
 @router.post(
@@ -379,7 +436,7 @@ def create_workflow(
     background_tasks: BackgroundTasks,
     user: User = Depends(authenticate),
     error_format: WorkflowErrorFormat = Query(
-        WorkflowErrorFormat.STRING, description="Error format: 'string' or 'json'"
+        WorkflowErrorFormat.STRING, description=WORKFLOW_ERROR_FORMAT_DESCRIPTION
     ),
 ):
     workflow_config = WorkflowConfig(**request.model_dump())
@@ -446,7 +503,7 @@ async def update_workflow(
     background_tasks: BackgroundTasks,
     user: User = Depends(authenticate),
     error_format: WorkflowErrorFormat = Query(
-        WorkflowErrorFormat.STRING, description="Error format: 'string' or 'json'"
+        WorkflowErrorFormat.STRING, description=WORKFLOW_ERROR_FORMAT_DESCRIPTION
     ),
 ):
     try:
@@ -470,19 +527,12 @@ async def update_workflow(
             help="",
         ) from e
 
+    updated_config.id = workflow_id
+    logger.debug(f"Update workflow. Request: {request}")
+    await _run_pre_persist_update_validation(
+        workflow, updated_config, user, error_format, request.guardrail_assignments
+    )
     try:
-        MCPAccessControlService.validate_on_save(_collect_workflow_mcp_servers(updated_config))
-        _strip_workflow_mcp_servers(updated_config)
-        logger.debug(f"Update workflow. Request: {request}")
-
-        if updated_config.mode == WorkflowMode.AUTONOMOUS:
-            raise ExtendedHTTPException(
-                code=status.HTTP_403_FORBIDDEN,
-                message="Autonomous workflows are disabled",
-                details="Updating workflows to autonomous mode is not allowed. Only sequential workflows can be used.",
-                help="Please set the workflow mode to 'SEQUENTIAL' instead.",
-            )
-        await workflow_service.validate_for_update(workflow, updated_config, user, error_format)
         updated_workflow = workflow_service.update_workflow(workflow, updated_config, user)
 
         GuardrailService.sync_guardrail_assignments_for_entity(
@@ -505,12 +555,10 @@ async def update_workflow(
             "data": updated_workflow,
             "warnings": await _consumer_slot_warnings(updated_config, user),
         }
-    except ValidationException:
-        raise
-    except NotFoundException:
+    except (ValidationException, NotFoundException):
         raise
     except Exception as e:
-        formatted_exception = str(e).strip()
+        formatted_exception = e.message if isinstance(e, ExtendedHTTPException) else str(e).strip()
         details = (
             e.args[0]
             if error_format == WorkflowErrorFormat.JSON and e.args and isinstance(e.args[0], dict)
@@ -522,6 +570,50 @@ async def update_workflow(
             details=details,
             help="",
         ) from e
+
+
+@router.post(
+    "/workflows/{workflow_id}/validate",
+    status_code=status.HTTP_200_OK,
+    response_model=ValidateWorkflowResponse,
+    response_model_by_alias=True,
+)
+async def validate_workflow(
+    workflow_id: str,
+    request: UpdateWorkflowRequest,
+    user: User = Depends(authenticate),
+    error_format: WorkflowErrorFormat = Query(
+        WorkflowErrorFormat.STRING, description=WORKFLOW_ERROR_FORMAT_DESCRIPTION
+    ),
+) -> ValidateWorkflowResponse:
+    try:
+        workflow = workflow_service.get_workflow(workflow_id=workflow_id)
+    except KeyError as e:
+        logger.error(str(e).strip())
+        raise_not_found(resource_id=workflow_id, resource_type="Workflow")
+
+    project_access_check(user, request.project)
+
+    if not Ability(user).can(Action.WRITE, workflow):
+        raise_access_denied("validate")
+
+    try:
+        proposed = WorkflowConfig(**request.model_dump())
+        proposed.parse_execution_config()
+    except Exception as e:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message=WORKFLOW_CONFIGURATION_ERROR,
+            details=str(e).strip(),
+            help="",
+        ) from e
+
+    proposed.id = workflow_id
+
+    await _run_pre_persist_update_validation(workflow, proposed, user, error_format, request.guardrail_assignments)
+
+    warnings = await _consumer_slot_warnings(proposed, user)
+    return ValidateWorkflowResponse(message="Workflow configuration is valid", warnings=warnings)
 
 
 @router.delete(

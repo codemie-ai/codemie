@@ -632,6 +632,35 @@ class TestSyncGuardrailAssignmentsForEntity:
             guardrail_assignments=[new_assignment],
         )
 
+    @patch(
+        "codemie.service.guardrail.guardrail_service.GuardrailService._validate_guardrail_user_and_project_permissions"
+    )
+    @patch("codemie.service.guardrail.guardrail_service.GuardrailRepository")
+    def test_dry_run_validates_without_writing(self, mock_repo_class, mock_validate, mock_user):
+        """dry_run must run permission checks and leave assignments unchanged."""
+        mock_repo = Mock()
+        mock_repo_class.return_value = mock_repo
+        mock_repo.get_guardrail_assignments_for_entity.return_value = []
+
+        new_assignment = GuardrailAssignmentItem(
+            guardrail_id="guardrail-1",
+            source=GuardrailSource.INPUT,
+            mode=GuardrailMode.FILTERED,
+        )
+
+        GuardrailService.sync_guardrail_assignments_for_entity(
+            user=mock_user,
+            entity_type=GuardrailEntity.ASSISTANT,
+            entity_id="assistant-123",
+            entity_project_name="test-project",
+            guardrail_assignments=[new_assignment],
+            dry_run=True,
+        )
+
+        mock_validate.assert_called_once_with(user=mock_user, guardrail_id="guardrail-1", project_name="test-project")
+        mock_repo.assign_guardrail_to_entity.assert_not_called()
+        mock_repo.remove_guardrails_assignments_by_ids.assert_not_called()
+
 
 class TestSyncGuardrailBulkAssignments:
     """Tests for sync_guardrail_bulk_assignments method."""

@@ -1,0 +1,50 @@
+{
+  "decision": "request-changes",
+  "rationale": "No acceptance spec; confidence low. All 3 findings confirmed reachable: the update endpoint now propagates ExtendedHTTPException (403/404) from guardrail sync, breaking its previous always-400 contract (CR-001); the validate endpoint does not set proposed.id from the path param, silently bypassing the sub-workflow self-reference check (CR-002); and the validate endpoint omits consumer slot warnings that the update endpoint surfaces (CR-003). 0 deferred, 0 dismissed.",
+  "confidence": "low",
+  "risk_flags": ["breaking-change"],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "na", "notes": "Standards review not applicable for this profile (standards_expected: false)."},
+    {"kind": "code-quality", "status": "na", "notes": "Standards review not applicable for this profile (standards_expected: false)."},
+    {"kind": "security", "status": "na", "notes": "Standards review not applicable for this profile (standards_expected: false)."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/workflow.py",
+      "line": 469,
+      "title": "Update endpoint propagates guardrail 403/404, breaking contract",
+      "problem": "The inner try block of the update endpoint now explicitly re-raises ExtendedHTTPException (line 469), including HTTP 404 and HTTP 403 raised by GuardrailService._validate_guardrail_user_and_project_permissions during sync_guardrail_assignments_for_entity. Previously these fell through to the generic except Exception handler and were wrapped as HTTP 400.",
+      "impact": "Clients that rely on HTTP 400 for all update-endpoint errors will receive unexpected HTTP 403 (permission denied) or HTTP 404 (guardrail not found) when guardrail_assignments are changed, breaking error-handling code in consumers of PUT /v1/workflows/{workflow_id}.",
+      "recommendation": "Either re-wrap guardrail-sourced ExtendedHTTPException as HTTP 400 in the inner except to preserve the existing client contract, or explicitly document this as an intentional breaking change, bump the API version or changelog, and update all consumers."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/workflow.py",
+      "line": 511,
+      "title": "proposed.id unset from path param; self-reference check bypassed",
+      "problem": "WorkflowConfig(**request.model_dump()) at line 511 creates proposed with id=None when the request body omits id (the default for UpdateWorkflowRequest.id: Optional[str] = None). The self-reference check in _validate_sub_workflow_availability (resources.py:708) compares workflow_id == str(workflow_config.id), which evaluates to workflow_id == 'None' and never matches any real UUID.",
+      "impact": "A caller can POST to /validate with a workflow body that has sub-workflow states referencing the path workflow_id and receive a clean HTTP 200, whereas the actual update would correctly reject this self-referential cycle if proposed.id were set to the stored workflow's id.",
+      "recommendation": "After constructing proposed, add: proposed.id = proposed.id or workflow_id — ensuring the self-reference guard has the correct workflow identity to compare against."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/workflow.py",
+      "line": 521,
+      "title": "Validate endpoint omits consumer slot warnings from success response",
+      "problem": "After _run_pre_persist_update_validation succeeds at line 521, the validate endpoint returns only {\"message\": \"Workflow configuration is valid\"} without calling _consumer_slot_warnings. The update endpoint (line 467) includes an advisory warnings array in its response payload using the same proposed config.",
+      "impact": "Callers using POST /validate as a pre-flight check before PUT /update will observe a clean 200 with no warnings, then receive advisory warnings on the actual update. The dry-run result is an incomplete picture of the update outcome and will mislead callers that rely on it to decide whether to proceed.",
+      "recommendation": "Decide explicitly whether the validate endpoint should surface advisory warnings. If yes, add: warnings = await _consumer_slot_warnings(proposed, user) and return {\"message\": \"Workflow configuration is valid\", \"warnings\": warnings}. If intentionally omitted, document the omission in the endpoint docstring and align the feature spec."
+    }
+  ]
+}

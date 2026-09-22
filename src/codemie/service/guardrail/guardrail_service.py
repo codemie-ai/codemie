@@ -178,6 +178,7 @@ class GuardrailService:
         entity_id: str,
         entity_project_name: str,
         guardrail_assignments: Optional[List[GuardrailAssignmentItem]] = None,
+        dry_run: bool = False,
     ):
         """
         Sync guardrail assignments for a specific entity by comparing existing vs requested assignments.
@@ -203,6 +204,7 @@ class GuardrailService:
         - Keeps existing assignments that match the request
         - Deletes assignments that are no longer in the request
         - Only validates permissions for guardrails that will actually change (optimization)
+        - If dry_run is True: run existence, project, and permission checks without writing
         """
         if guardrail_assignments is None:
             # None means "don't touch existing assignments"
@@ -231,9 +233,8 @@ class GuardrailService:
             # If assignment belongs to a different project, mark for deletion
             if assignment.project_name != entity_project_name:
                 keys_to_delete.add(key)
-            else:
-                # Only add to existing_keys if it matches the current project
-                existing_keys.add(key)
+                continue
+            existing_keys.add(key)
 
         # Step 3: Build a set of "desired" assignment keys from the request
         # Key format: (guardrail_id, source, mode, scope)
@@ -279,6 +280,9 @@ class GuardrailService:
                 guardrail_id=guardrail_id_to_validate,
                 project_name=entity_project_name,
             )
+
+        if dry_run:
+            return
 
         # Step 6: Create new assignments
         for key in keys_to_create:
