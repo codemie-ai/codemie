@@ -129,7 +129,7 @@ def test_save_chat_history_forwards_a2ui_envelopes(mock_assistant, mock_user):
                 a2ui_envelopes=envelopes,
             )
         )
-    assert upsert_mock.call_args.kwargs["a2ui_envelopes"] == envelopes
+    assert upsert_mock.call_args.kwargs["outcome"].a2ui_envelopes == envelopes
 
 
 def _action_envelope(surface_id="s1"):

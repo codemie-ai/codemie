@@ -32,7 +32,7 @@ from codemie.repository.metrics_elastic_repository import MetricsElasticReposito
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.field_constants import PLACEHOLDER_USER_IDS
 from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
 from codemie.service.analytics.response_formatter import ResponseFormatter
 
 logger = logging.getLogger(__name__)
@@ -85,10 +85,12 @@ class EngagementHandler:
         return await self._pipeline.execute_summary_query(
             agg_builder=self._build_dau_aggregation,
             metrics_builder=self._parse_dau_result,
-            metric_filters=None,
-            time_period="last_24_hours",
-            users=users,
-            projects=projects,
+            filters=AnalyticsQueryFilters(
+                metric_filters=None,
+                time_period="last_24_hours",
+                users=users,
+                projects=projects,
+            ),
         )
 
     def _build_dau_aggregation(self, query: dict) -> dict:
@@ -156,10 +158,12 @@ class EngagementHandler:
         return await self._pipeline.execute_summary_query(
             agg_builder=self._build_mau_aggregation,
             metrics_builder=self._parse_mau_result,
-            metric_filters=None,
-            time_period="last_30_days",
-            users=users,
-            projects=projects,
+            filters=AnalyticsQueryFilters(
+                metric_filters=None,
+                time_period="last_30_days",
+                users=users,
+                projects=projects,
+            ),
         )
 
     def _build_mau_aggregation(self, query: dict) -> dict:
@@ -208,6 +212,7 @@ class EngagementHandler:
         self,
         users: list[str] | None = None,
         projects: list[str] | None = None,
+        client_source: str | None = None,
     ) -> dict:
         """Get weekly spending histogram broken down by source.
 
@@ -250,10 +255,13 @@ class EngagementHandler:
         return await self._pipeline.execute_composite_query(
             agg_builder=agg_builder,
             result_parser=parse_result,
-            metric_filters=None,
-            time_period="last_7_days",
-            users=users,
-            projects=projects,
+            filters=AnalyticsQueryFilters(
+                metric_filters=None,
+                time_period="last_7_days",
+                users=users,
+                projects=projects,
+                client_source=client_source,
+            ),
         )
 
     @staticmethod

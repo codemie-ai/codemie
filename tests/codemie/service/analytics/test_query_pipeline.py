@@ -29,7 +29,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
 
 
 class TestAnalyticsQueryPipeline:
@@ -136,9 +136,7 @@ class TestAnalyticsQueryPipeline:
             result_parser=mock_result_parser,
             columns=columns,
             group_by_field="test.field.keyword",
-            time_period="last_30_days",
-            page=0,
-            per_page=20,
+            filters=AnalyticsQueryFilters(time_period="last_30_days", page=0, per_page=20),
         )
 
         # Assert - Verify call order and arguments
@@ -280,7 +278,7 @@ class TestAnalyticsQueryPipeline:
             result_parser=mock_result_parser,
             columns=columns,
             group_by_field="test.field.keyword",
-            metric_filters=metric_filters,
+            filters=AnalyticsQueryFilters(metric_filters=metric_filters),
         )
 
         # Assert
@@ -327,7 +325,7 @@ class TestAnalyticsQueryPipeline:
             result_parser=mock_result_parser,
             columns=columns,
             group_by_field="test.field.keyword",
-            metric_filters=None,
+            filters=AnalyticsQueryFilters(metric_filters=None),
         )
 
         # Assert
@@ -374,8 +372,7 @@ class TestAnalyticsQueryPipeline:
             result_parser=mock_result_parser,
             columns=columns,
             group_by_field="test.field.keyword",
-            page=2,
-            per_page=50,
+            filters=AnalyticsQueryFilters(page=2, per_page=50),
         )
 
         # Assert - Parallel queries: agg_builder called TWICE (data + totals)
@@ -513,7 +510,7 @@ class TestAnalyticsQueryPipeline:
         result = await pipeline.execute_summary_query(
             agg_builder=mock_agg_builder,
             metrics_builder=mock_metrics_builder,
-            time_period="last_7_days",
+            filters=AnalyticsQueryFilters(time_period="last_7_days"),
         )
 
         # Assert - Verify call order
@@ -673,9 +670,7 @@ class TestAnalyticsQueryPipeline:
             esql_query=esql_query,
             result_parser=mock_result_parser,
             columns=columns,
-            users=["user1"],
-            projects=["proj1"],
-            metric_filters=["metric1"],
+            filters=AnalyticsQueryFilters(users=["user1"], projects=["proj1"], metric_filters=["metric1"]),
         )
 
         # Assert - Verify all filters were added
@@ -740,7 +735,7 @@ class TestAnalyticsQueryPipeline:
         mock_query_builder_class.return_value = mock_builder
 
         # Act
-        query = pipeline._build_query(sample_start_dt, sample_end_dt, None, None, None)
+        query = pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters())
 
         # Assert
         mock_query_builder_class.assert_called_once_with(pipeline._user)
@@ -755,7 +750,7 @@ class TestAnalyticsQueryPipeline:
         mock_query_builder_class.return_value = mock_builder
 
         # Act
-        pipeline._build_query(sample_start_dt, sample_end_dt, None, None, None)
+        pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters())
 
         # Assert
         mock_builder.add_time_range.assert_called_once_with(sample_start_dt, sample_end_dt, "@timestamp")
@@ -774,9 +769,7 @@ class TestAnalyticsQueryPipeline:
         pipeline._build_query(
             sample_start_dt,
             sample_end_dt,
-            users=["u1"],
-            projects=["p1"],
-            metric_filters=["m1"],
+            AnalyticsQueryFilters(users=["u1"], projects=["p1"], metric_filters=["m1"]),
         )
 
         # Assert
@@ -793,7 +786,9 @@ class TestAnalyticsQueryPipeline:
         mock_query_builder_class.return_value = mock_builder
 
         # Act
-        pipeline._build_query(sample_start_dt, sample_end_dt, users=None, projects=None, metric_filters=None)
+        pipeline._build_query(
+            sample_start_dt, sample_end_dt, AnalyticsQueryFilters(users=None, projects=None, metric_filters=None)
+        )
 
         # Assert - Only time_range should be called
         mock_builder.add_time_range.assert_called_once()
@@ -811,7 +806,7 @@ class TestAnalyticsQueryPipeline:
         mock_query_builder_class.return_value = mock_builder
 
         # Act
-        result = pipeline._build_query(sample_start_dt, sample_end_dt, None, None, None)
+        result = pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters())
 
         # Assert
         assert result == expected_query
@@ -822,11 +817,9 @@ class TestAnalyticsQueryPipeline:
         """Verify filters_applied structure for predefined period."""
         # Act
         filters = pipeline._build_filters_applied(
-            time_period="last_30_days",
-            start_dt=sample_start_dt,
-            end_dt=sample_end_dt,
-            users=["user1", "user2"],
-            projects=["project1"],
+            AnalyticsQueryFilters(time_period="last_30_days", users=["user1", "user2"], projects=["project1"]),
+            sample_start_dt,
+            sample_end_dt,
         )
 
         # Assert
@@ -840,11 +833,9 @@ class TestAnalyticsQueryPipeline:
         """Verify filters_applied structure for custom date range."""
         # Act
         filters = pipeline._build_filters_applied(
-            time_period=None,
-            start_dt=sample_start_dt,
-            end_dt=sample_end_dt,
-            users=["user1"],
-            projects=["project1"],
+            AnalyticsQueryFilters(time_period=None, users=["user1"], projects=["project1"]),
+            sample_start_dt,
+            sample_end_dt,
         )
 
         # Assert
@@ -858,17 +849,73 @@ class TestAnalyticsQueryPipeline:
         """Verify None values are preserved."""
         # Act
         filters = pipeline._build_filters_applied(
-            time_period="last_7_days",
-            start_dt=sample_start_dt,
-            end_dt=sample_end_dt,
-            users=None,
-            projects=None,
+            AnalyticsQueryFilters(time_period="last_7_days", users=None, projects=None),
+            sample_start_dt,
+            sample_end_dt,
         )
 
         # Assert
         assert filters["users"] is None
         assert filters["projects"] is None
         assert filters["time_period"] == "last_7_days"
+
+    # ===== client_source Tests =====
+
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    def test_build_query_adds_client_source_filter_when_set(
+        self, mock_query_builder_class, pipeline, sample_start_dt, sample_end_dt
+    ):
+        """Verify add_client_source_filter is called when client_source is provided."""
+        # Arrange
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = {"query": "built"}
+        mock_query_builder_class.return_value = mock_builder
+
+        # Act
+        pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters(client_source="teams"))
+
+        # Assert
+        mock_builder.add_client_source_filter.assert_called_once_with("teams")
+
+    @patch("codemie.service.analytics.query_pipeline.SecureQueryBuilder")
+    def test_build_query_skips_client_source_filter_when_none(
+        self, mock_query_builder_class, pipeline, sample_start_dt, sample_end_dt
+    ):
+        """Verify add_client_source_filter is not called when client_source is not provided."""
+        # Arrange
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = {"query": "built"}
+        mock_query_builder_class.return_value = mock_builder
+
+        # Act
+        pipeline._build_query(sample_start_dt, sample_end_dt, AnalyticsQueryFilters())
+
+        # Assert
+        mock_builder.add_client_source_filter.assert_not_called()
+
+    def test_build_filters_applied_includes_client_source_when_set(self, pipeline, sample_start_dt, sample_end_dt):
+        """Verify filters_applied includes client_source when provided."""
+        # Act
+        filters = pipeline._build_filters_applied(
+            AnalyticsQueryFilters(time_period="last_30_days", users=None, projects=None, client_source="platform"),
+            sample_start_dt,
+            sample_end_dt,
+        )
+
+        # Assert
+        assert filters["client_source"] == "platform"
+
+    def test_build_filters_applied_client_source_defaults_to_none(self, pipeline, sample_start_dt, sample_end_dt):
+        """Verify filters_applied has client_source=None when not provided (preserves existing behavior)."""
+        # Act
+        filters = pipeline._build_filters_applied(
+            AnalyticsQueryFilters(time_period="last_30_days", users=None, projects=None),
+            sample_start_dt,
+            sample_end_dt,
+        )
+
+        # Assert
+        assert filters["client_source"] is None
 
     @patch("codemie.service.analytics.query_pipeline.TotalsCalculator")
     @patch("codemie.service.analytics.query_pipeline.ResponseFormatter")
@@ -911,8 +958,7 @@ class TestAnalyticsQueryPipeline:
             result_parser=mock_result_parser,
             columns=[],
             group_by_field="test.keyword",
-            page=0,
-            per_page=20,
+            filters=AnalyticsQueryFilters(page=0, per_page=20),
             use_bucket_selector=True,
         )
 

@@ -263,3 +263,48 @@ class TestSecureQueryBuilder:
 
         # No filters should be injected (projects ignored)
         assert len(query["bool"]["must"]) == 0
+
+    # =========================================================================
+    # 4. add_client_source_filter() TESTS
+    # =========================================================================
+
+    def test_add_client_source_filter_adds_term_clause(self):
+        """Verify add_client_source_filter appends a term filter on the keyword sub-field."""
+
+        user = Mock(id="user-10", project_names=["proj-a"], admin_project_names=[])
+        user.is_admin = False
+        user.is_auditor = False
+
+        builder = SecureQueryBuilder(user)
+        builder.add_client_source_filter("teams")
+        query = builder.build()
+
+        assert {"term": {"attributes.client_source.keyword": "teams"}} in query["bool"]["filter"]
+
+    def test_add_client_source_filter_none_does_nothing(self):
+        """Verify add_client_source_filter with falsy value adds no filter clause."""
+
+        user = Mock(id="user-11", project_names=["proj-a"], admin_project_names=[])
+        user.is_admin = False
+        user.is_auditor = False
+
+        builder = SecureQueryBuilder(user)
+        query_before = builder.build()
+
+        builder.add_client_source_filter(None)
+        query_after = builder.build()
+
+        assert query_before == query_after
+        assert not any("attributes.client_source.keyword" in str(clause) for clause in query_after["bool"]["filter"])
+
+    def test_add_client_source_filter_returns_builder_for_chaining(self):
+        """Verify add_client_source_filter returns self to support fluent chaining."""
+
+        user = Mock(id="user-12", project_names=["proj-a"], admin_project_names=[])
+        user.is_admin = False
+        user.is_auditor = False
+
+        builder = SecureQueryBuilder(user)
+        result = builder.add_client_source_filter("platform")
+
+        assert result is builder

@@ -192,6 +192,7 @@ class TestAnalyticsServiceDelegation:
             end_date=None,
             users=["user1", "user2"],
             projects=["project1"],
+            client_source=None,
         )
         # Result contains base metrics + DAU + MAU
         assert "data" in result
@@ -240,6 +241,7 @@ class TestAnalyticsServiceDelegation:
             projects=None,
             page=2,
             per_page=50,
+            client_source=None,
         )
         assert result == expected_result
 
@@ -377,6 +379,7 @@ class TestAnalyticsServiceDelegation:
             projects=None,
             page=1,
             per_page=10,
+            client_source=None,
         )
         assert result == expected_result
 
@@ -440,6 +443,7 @@ class TestAnalyticsServiceDelegation:
             projects=None,
             page=0,
             per_page=20,
+            client_source=None,
         )
         assert result == {"llms": []}
 
@@ -525,6 +529,7 @@ class TestAnalyticsServiceDelegation:
             projects=None,
             page=0,
             per_page=20,
+            client_source=None,
         )
         assert result == expected_result
 

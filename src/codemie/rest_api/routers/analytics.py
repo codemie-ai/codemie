@@ -47,6 +47,7 @@ from codemie.rest_api.security.authentication import (
     admin_or_maintainer_or_auditor_access,
     authenticate,
 )
+from codemie.rest_api.utils.client_context import ClientSource
 from codemie.rest_api.security.user import User
 from codemie.clients.postgres import get_async_session
 from codemie.service.analytics.analytics_service import AnalyticsService
@@ -60,6 +61,7 @@ logger = logging.getLogger(__name__)
 PROJECTS_FILTER_ADMIN_DESC = "Filter by projects (comma-separated, admin only)"
 USERS_FILTER_DESC = "Filter by users (comma-separated user IDs)"
 PROJECTS_FILTER_DESC = "Filter by projects (comma-separated project names)"
+CLIENT_SOURCE_FILTER_DESC = "Filter by client source (platform, teams, cli, sdk, chrome_extension, or other)"
 
 ERROR_MSG_PROJECT_EMPTY = "project field cannot be empty or whitespace-only"
 ERROR_MSG_ACCESS_DENIED = "Access denied"
@@ -496,6 +498,7 @@ async def get_summaries(
     ),
     users: str | None = Query(None, description=USERS_FILTER_DESC),
     projects: str | None = Query(None, description=PROJECTS_FILTER_DESC, examples=["codemie,project-alpha"]),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get summary metrics: total input/output tokens, cached tokens, money spent.
 
@@ -540,6 +543,7 @@ async def get_summaries(
         end_date=end_date,
         users=[u.strip() for u in users.split(",")] if users else None,
         projects=[p.strip() for p in projects.split(",")] if projects else None,
+        client_source=client_source.value if client_source else None,
     )
 
     return _create_response(response_data, SummariesResponse)
@@ -555,6 +559,7 @@ async def get_summaries(
 async def get_assistants_chats(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get assistants chats analytics."""
     service = AnalyticsService(user)
@@ -566,6 +571,7 @@ async def get_assistants_chats(
         params.projects_list,
         params.page,
         params.per_page,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(data, TabularResponse)
 
@@ -575,6 +581,7 @@ async def get_assistants_chats(
 async def get_workflows(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get workflows analytics."""
     service = AnalyticsService(user)
@@ -586,6 +593,7 @@ async def get_workflows(
         params.projects_list,
         params.page,
         params.per_page,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(data, TabularResponse)
 
@@ -641,6 +649,7 @@ async def get_agents_usage(
 async def get_power_users(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get power users analytics."""
     service = AnalyticsService(user)
@@ -652,6 +661,7 @@ async def get_power_users(
         params.projects_list,
         params.page,
         params.per_page,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(data, TabularResponse)
 
@@ -685,6 +695,7 @@ async def get_knowledge_sharing(
 async def get_top_agents_usage(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get top agents usage analytics."""
     service = AnalyticsService(user)
@@ -696,6 +707,7 @@ async def get_top_agents_usage(
         params.projects_list,
         params.page,
         params.per_page,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(data, TabularResponse)
 
@@ -710,6 +722,7 @@ async def get_top_agents_usage(
 async def get_top_workflow_usage(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get top workflow usage analytics."""
     service = AnalyticsService(user)
@@ -721,6 +734,7 @@ async def get_top_workflow_usage(
         params.projects_list,
         params.page,
         params.per_page,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(data, TabularResponse)
 
@@ -735,6 +749,7 @@ async def get_top_workflow_usage(
 async def get_published_to_marketplace(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get published to marketplace analytics."""
     service = AnalyticsService(user)
@@ -746,6 +761,7 @@ async def get_published_to_marketplace(
         params.projects_list,
         params.page,
         params.per_page,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(data, TabularResponse)
 
@@ -757,6 +773,7 @@ async def get_published_to_marketplace(
 async def get_webhooks_invocation(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get webhooks invocation analytics."""
     service = AnalyticsService(user)
@@ -768,6 +785,7 @@ async def get_webhooks_invocation(
         params.projects_list,
         params.page,
         params.per_page,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(data, TabularResponse)
 
@@ -826,6 +844,7 @@ async def get_mcp_servers_by_users(
 async def get_projects_spending(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get projects spending analytics."""
     service = AnalyticsService(user)
@@ -837,6 +856,7 @@ async def get_projects_spending(
         params.projects_list,
         params.page,
         params.per_page,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(data, TabularResponse)
 
@@ -846,6 +866,7 @@ async def get_projects_spending(
 async def get_llms_usage(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get LLMs usage analytics."""
     service = AnalyticsService(user)
@@ -857,6 +878,7 @@ async def get_llms_usage(
         params.projects_list,
         params.page,
         params.per_page,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(data, TabularResponse)
 
@@ -890,6 +912,7 @@ async def get_embeddings_usage(
 async def get_users_spending(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get users spending analytics."""
     service = AnalyticsService(user)
@@ -901,6 +924,7 @@ async def get_users_spending(
         params.projects_list,
         params.page,
         params.per_page,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(data, TabularResponse)
 
@@ -1237,6 +1261,7 @@ async def get_cli_agents(
 async def get_cli_llms(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get CLI LLMs analytics."""
     service = AnalyticsService(user)
@@ -1248,6 +1273,7 @@ async def get_cli_llms(
         params.projects_list,
         params.page,
         params.per_page,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(data, TabularResponse)
 
@@ -2300,6 +2326,7 @@ async def get_engagement_weekly_histogram(
     user: User = Depends(authenticate),
     users: str | None = Query(None, description=USERS_FILTER_DESC),
     projects: str | None = Query(None, description=PROJECTS_FILTER_DESC, examples=["codemie"]),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get weekly spending histogram — 3h intervals, always last 7 days."""
     logger.info(f"User {user.id} requesting weekly spending histogram")
@@ -2307,6 +2334,7 @@ async def get_engagement_weekly_histogram(
     response_data = await service.get_weekly_spending(
         users=[u.strip() for u in users.split(",")] if users else None,
         projects=[p.strip() for p in projects.split(",")] if projects else None,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(response_data, TabularResponse)
 
@@ -2328,6 +2356,7 @@ async def get_engagement_weekly_histogram(
 async def get_spending_by_users_platform(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get platform spending per user (Assistants + Workflows + Datasources)."""
     service = AnalyticsService(user)
@@ -2339,6 +2368,7 @@ async def get_spending_by_users_platform(
         params.projects_list,
         params.page,
         params.per_page,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(data, TabularResponse)
 
@@ -2355,6 +2385,7 @@ async def get_spending_by_users_platform(
 async def get_spending_by_users_cli(
     user: User = Depends(authenticate),
     params: AnalyticsQueryParams = Depends(),
+    client_source: ClientSource | None = Query(None, description=CLIENT_SOURCE_FILTER_DESC),
 ) -> JSONResponse:
     """Get CLI-only spending per user grouped by user_name."""
     service = AnalyticsService(user)
@@ -2366,6 +2397,7 @@ async def get_spending_by_users_cli(
         params.projects_list,
         params.page,
         params.per_page,
+        client_source=client_source.value if client_source else None,
     )
     return _create_response(data, TabularResponse)
 

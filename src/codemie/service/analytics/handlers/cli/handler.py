@@ -31,6 +31,7 @@ from codemie.service.analytics.handlers.llm_handler import _combine_model_names
 from codemie.service.analytics.handlers.query_filters import build_error_filtering_query
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
+from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters
 from codemie.service.analytics.time_parser import TimeParser
 
 from .base_handler import CLIBaseHandler
@@ -83,12 +84,14 @@ class CLIHandler(CLIBaseHandler):
             self._pipeline.execute_summary_query(
                 agg_builder=self._build_cli_summary_aggregation,
                 metrics_builder=self._parse_cli_summary_result,
-                metric_filters=None,
-                time_period=time_period,
-                start_date=start_date,
-                end_date=end_date,
-                users=users,
-                projects=projects,
+                filters=AnalyticsQueryFilters(
+                    metric_filters=None,
+                    time_period=time_period,
+                    start_date=start_date,
+                    end_date=end_date,
+                    users=users,
+                    projects=projects,
+                ),
             ),
             self.get_cli_costs_with_adjustment(
                 start_date=start_dt,
@@ -320,10 +323,12 @@ class CLIHandler(CLIBaseHandler):
                 label=label,
                 fixed_timeframe=fixed_timeframe,
             ),
-            metric_filters=None,
-            time_period=time_period,
-            users=users,
-            projects=projects,
+            filters=AnalyticsQueryFilters(
+                metric_filters=None,
+                time_period=time_period,
+                users=users,
+                projects=projects,
+            ),
         )
         return response["data"]["metrics"]
 
@@ -395,14 +400,16 @@ class CLIHandler(CLIBaseHandler):
             result_parser=self._parse_cli_agents_result,
             columns=self._get_cli_agents_columns(),
             group_by_field="attributes.codemie_client.keyword",
-            metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
 
     def _build_cli_agents_aggregation(self, query: dict, fetch_size: int) -> dict:
@@ -455,6 +462,7 @@ class CLIHandler(CLIBaseHandler):
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get top CLI LLMs usage analytics with model name combining."""
         logger.info("Requesting cli-llms analytics with model name aggregation")
@@ -465,17 +473,20 @@ class CLIHandler(CLIBaseHandler):
             result_parser=self._parse_cli_llms_result,
             columns=self._get_cli_llms_columns(),
             group_by_field="attributes.llm_model.keyword",
-            metric_filters=[
-                MetricName.CLI_TOOL_USAGE_TOTAL.value,
-                MetricName.LLM_PROXY_REQUESTS_TOTAL.value,
-            ],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[
+                    MetricName.CLI_TOOL_USAGE_TOTAL.value,
+                    MetricName.LLM_PROXY_REQUESTS_TOTAL.value,
+                ],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+                client_source=client_source,
+            ),
         )
 
         # Apply model name combining to rows before returning to frontend
@@ -542,14 +553,16 @@ class CLIHandler(CLIBaseHandler):
             result_parser=self._parse_cli_users_result,
             columns=self._get_cli_users_columns(),
             group_by_field=USER_ID_KEYWORD_FIELD,
-            metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_name", target="name")
         return result
@@ -670,14 +683,16 @@ class CLIHandler(CLIBaseHandler):
             result_parser=self._parse_cli_errors_result,
             columns=self._get_cli_errors_columns(),
             group_by_field=RESPONSE_STATUS_FIELD,
-            metric_filters=[MetricName.LLM_PROXY_ERRORS_TOTAL.value],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.LLM_PROXY_ERRORS_TOTAL.value],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
 
     def _build_cli_errors_aggregation(self, query: dict, fetch_size: int) -> dict:
@@ -748,17 +763,19 @@ class CLIHandler(CLIBaseHandler):
                 ("branch", False),  # Secondary: Alphabetical (ASC)
                 ("user_name", False),  # Tertiary: Alphabetical (ASC)
             ],
-            metric_filters=[
-                MetricName.CLI_TOOL_USAGE_TOTAL.value,  # New CLI session metric
-                MetricName.CLI_LLM_USAGE_TOTAL.value,  # For token data
-            ],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[
+                    MetricName.CLI_TOOL_USAGE_TOTAL.value,  # New CLI session metric
+                    MetricName.CLI_LLM_USAGE_TOTAL.value,  # For token data
+                ],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_name", target="name")
         return result
@@ -935,14 +952,16 @@ class CLIHandler(CLIBaseHandler):
             result_parser=self._parse_cli_top_performers_result,
             columns=self._get_cli_top_performers_columns(),
             group_by_field=USER_ID_KEYWORD_FIELD,
-            metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_name", target="name")
         return result
@@ -1038,14 +1057,16 @@ class CLIHandler(CLIBaseHandler):
             result_parser=self._parse_cli_top_versions_result,
             columns=self._get_cli_top_versions_columns(),
             group_by_field="attributes.codemie_cli.keyword",
-            metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
 
     def _build_cli_top_versions_aggregation(self, query: dict, fetch_size: int) -> dict:
@@ -1107,14 +1128,16 @@ class CLIHandler(CLIBaseHandler):
             result_parser=self._parse_cli_top_proxy_endpoints_result,
             columns=self._get_cli_top_proxy_endpoints_columns(),
             group_by_field="attributes.endpoint.keyword",
-            metric_filters=[MetricName.LLM_PROXY_REQUESTS_TOTAL.value],  # Only count requests for traffic volume
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.LLM_PROXY_REQUESTS_TOTAL.value],  # Only count requests for traffic volume
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
 
     def _build_cli_top_proxy_endpoints_aggregation(self, query: dict, fetch_size: int) -> dict:
@@ -1178,14 +1201,16 @@ class CLIHandler(CLIBaseHandler):
             result_parser=self._parse_cli_tools_usage_result,
             columns=self._get_cli_tools_usage_columns(),
             group_by_field=f"{TOOL_NAMES_FIELD}.keyword",
-            metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.CLI_TOOL_USAGE_TOTAL.value],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
 
     def _build_cli_tools_usage_aggregation(self, query: dict, fetch_size: int) -> dict:

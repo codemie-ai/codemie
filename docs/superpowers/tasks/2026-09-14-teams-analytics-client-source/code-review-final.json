@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case lens ran cleanly (1/1 for the compact roster); acceptance was legitimately skipped (no spec/story artifact, no-spec round) and standards were not expected for this profile, so both are recorded as na/n-a rather than gaps. All 3 edge-case candidates were verified against current source, not the diff: 2 are dismissed as false positives (unrecognized-client and missing-client-source both correctly fall through to the spec's own platform/other defaults, exactly as the closed three-value design requires); 1 is deferred as pre-existing (main.py's un-split multi-value X-CodeMie-Client header handling, introduced by the already-merged production commit cb20fe61d, which this test-only round (d1ea5612f, 22983571e, c847da4b5) does not touch). No decision_needed items, no blocking standards or acceptance failures.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not expected for the compact profile on this round." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not expected for the compact profile on this round." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not expected for the compact profile on this round." }
+  ],
+  "findings": []
+}

@@ -56,6 +56,7 @@ from codemie.rest_api.models.assistant import Assistant, AssistantType
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.conversation import Conversation
 from codemie.rest_api.routers.utils import run_assistant_in_thread_pool
+from codemie.rest_api.utils.client_context import get_client_source
 from codemie.rest_api.security.user import User
 from codemie.rest_api.utils.request_utils import extract_custom_headers
 from codemie.service.assistant_service import AssistantService
@@ -72,7 +73,7 @@ from codemie.service.background_tasks_service import BackgroundTasksService
 from codemie.service.constants import AI_AGENT_CONVERSATION_REPLAY_V2_ENABLED_KEY
 from codemie.service.agent_workspace_service import AgentWorkspaceService
 from codemie.service.conversation_checkpoint_service import ConversationCheckpointService
-from codemie.service.conversation_service import ConversationService, _guard_finished
+from codemie.service.conversation_service import ChatCompletionOutcome, ConversationService, _guard_finished
 from codemie.service.dynamic_config_service import DynamicConfigService
 from codemie.service.llm_service.llm_service import llm_service
 from codemie.service.request_summary_manager import request_summary_manager
@@ -102,6 +103,7 @@ class AssistantRequestHandler(ABC):
         self.user = user
         self.request_uuid = request_uuid
         self.background_tasks: BackgroundTasks | None = None
+        self.client_source = get_client_source()
 
     @abstractmethod
     def process_request(
@@ -433,19 +435,22 @@ class AssistantRequestHandler(ABC):
             input_tokens=0, output_tokens=0, money_spent=0
         )
         ConversationService.upsert_chat_history(
+            outcome=ChatCompletionOutcome(
+                assistant_response=data.response,
+                time_elapsed=time() - data.execution_start,
+                tokens_usage=tokens_usage,
+                llm_runs=summary.llm_runs if summary else None,
+                thoughts=self._filter_thoughts(data.thoughts),
+                status=data.status,
+                user_message_received_at=data.user_message_received_at,
+                a2ui_envelopes=data.a2ui_envelopes,
+            ),
             request=data.request,
             user=self.user,
-            assistant_response=data.response,
-            time_elapsed=time() - data.execution_start,
-            tokens_usage=tokens_usage,
-            llm_runs=summary.llm_runs if summary else None,
             assistant=self.assistant,
-            thoughts=self._filter_thoughts(data.thoughts),
-            status=data.status,
-            user_message_received_at=data.user_message_received_at,
-            a2ui_envelopes=data.a2ui_envelopes,
             request_id=self.request_uuid,
             background_tasks=self.background_tasks,
+            client_source=self.client_source,
         )
         request_summary_manager.clear_summary(self.request_uuid)
 

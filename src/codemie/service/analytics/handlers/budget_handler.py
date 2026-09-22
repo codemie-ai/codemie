@@ -24,7 +24,7 @@ from codemie.rest_api.security.user import User
 from codemie.service.analytics.handlers.field_constants import PLACEHOLDER_USER_IDS, USER_ID_KEYWORD_FIELD
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -54,14 +54,16 @@ class BudgetHandler:
             result_parser=self._parse_budget_limit_result,
             columns=self._get_budget_limit_columns(),
             group_by_field=USER_ID_KEYWORD_FIELD,
-            metric_filters=[MetricName.BUDGET_SOFT_LIMIT_WARNING.value],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.BUDGET_SOFT_LIMIT_WARNING.value],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_email")
         return result
@@ -117,14 +119,16 @@ class BudgetHandler:
             result_parser=self._parse_budget_limit_result,
             columns=self._get_budget_limit_columns(),
             group_by_field=USER_ID_KEYWORD_FIELD,
-            metric_filters=[MetricName.BUDGET_HARD_LIMIT_VIOLATION.value],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.BUDGET_HARD_LIMIT_VIOLATION.value],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
         await UserIdentityResolver.resolve_rows(result.get("data", {}).get("rows", []), "user_email")
         return result

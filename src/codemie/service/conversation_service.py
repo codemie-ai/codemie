@@ -18,6 +18,7 @@ import contextvars
 import copy
 import html
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, List, TYPE_CHECKING, Optional, NoReturn
 
@@ -34,6 +35,7 @@ from codemie.core.dependecies import get_stt_openai_client
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import AssistantChatRequest, UpdateConversationRequest, UpdateAiMessageRequest, TokensUsage
 from codemie.core.utils import safe_divide
+from codemie.rest_api.utils.client_context import ClientSource
 from codemie.rest_api.models.base import ConversationStatus
 from codemie.rest_api.models.conversation import (
     ChatTurnData,
@@ -89,6 +91,20 @@ def _raise_conversation_not_found(conversation_id: str) -> NoReturn:
         details=f"The conversation with ID [{conversation_id}] could not be found in the system.",
         help="Please verify the conversation ID and try again. If you believe this is an error, contact support.",
     )
+
+
+@dataclass
+class ChatCompletionOutcome:
+    """Result of running an assistant chat turn, as recorded by upsert_chat_history."""
+
+    assistant_response: str
+    time_elapsed: float
+    tokens_usage: TokensUsage
+    thoughts: List[Thought]
+    status: ConversationStatus = ConversationStatus.SUCCESS
+    user_message_received_at: datetime | None = None
+    a2ui_envelopes: list[dict] | None = None
+    llm_runs: Optional[List["LLMRun"]] = None
 
 
 class SpendingGroupBreakdown(BaseModel):
@@ -292,19 +308,13 @@ class ConversationService:
     @classmethod
     def upsert_chat_history(
         cls,
-        assistant_response: str,
-        time_elapsed: float,
-        tokens_usage: TokensUsage,
+        outcome: "ChatCompletionOutcome",
         request: AssistantChatRequest,
         assistant: Assistant,
         user: User,
-        thoughts: List[Thought],
-        status: ConversationStatus = ConversationStatus.SUCCESS,
-        user_message_received_at: datetime | None = None,
-        a2ui_envelopes: list[dict] | None = None,
         request_id: Optional[str] = None,
         background_tasks: BackgroundTasks | None = None,
-        llm_runs: Optional[List["LLMRun"]] = None,
+        client_source: ClientSource | None = None,
     ):
         llm_model = request.llm_model if request.llm_model else assistant.llm_model_type
 
@@ -324,16 +334,16 @@ class ConversationService:
                 user_query=request.text,
                 user_query_raw=request.content_raw or html.escape(request.text or ""),
                 assistant_id=assistant.id,
-                assistant_response=assistant_response,
-                thoughts=thoughts,
+                assistant_response=outcome.assistant_response,
+                thoughts=outcome.thoughts,
                 history_index=history_index,
                 file_names=request.file_names,
-                time_elapsed=time_elapsed,
-                input_tokens=tokens_usage.input_tokens,
-                output_tokens=tokens_usage.output_tokens,
-                money_spent=tokens_usage.money_spent,
-                user_message_received_at=user_message_received_at,
-                a2ui_envelopes=a2ui_envelopes,
+                time_elapsed=outcome.time_elapsed,
+                input_tokens=outcome.tokens_usage.input_tokens,
+                output_tokens=outcome.tokens_usage.output_tokens,
+                money_spent=outcome.tokens_usage.money_spent,
+                user_message_received_at=outcome.user_message_received_at,
+                a2ui_envelopes=outcome.a2ui_envelopes,
                 # getattr: the request-side A2UI intake fields arrive with the
                 # separate intake task; persistence stays additive until then.
                 a2ui_action=getattr(request, "a2ui_action", None),
@@ -357,19 +367,20 @@ class ConversationService:
         ConversationMonitoringService.send_conversation_metric(
             user,
             assistant,
-            tokens_usage,
-            time_elapsed,
+            outcome.tokens_usage,
+            outcome.time_elapsed,
             conversation.conversation_id,
             llm_model,
-            status,
+            outcome.status,
             request_id=request_id,
+            client_source=client_source,
         )
         cls._emit_routing_metrics(
             user=user,
             assistant=assistant,
             conversation=conversation,
-            tokens_usage=tokens_usage,
-            llm_runs=llm_runs,
+            tokens_usage=outcome.tokens_usage,
+            llm_runs=outcome.llm_runs,
             request_id=request_id,
         )
         cls._upsert_conversation_metrics(
@@ -381,7 +392,7 @@ class ConversationService:
         )
 
         if schedule_naming:
-            cls._schedule_naming_background_task(background_tasks, request, assistant_response, request_id)
+            cls._schedule_naming_background_task(background_tasks, request, outcome.assistant_response, request_id)
 
         request.mark_history_variant_persisted()
 

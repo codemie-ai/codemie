@@ -28,7 +28,7 @@ from codemie.service.analytics.handlers.field_constants import (
 )
 from codemie.service.analytics.handlers.user_identity_resolver import UserIdentityResolver
 from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,7 @@ class WebhookHandler:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get webhooks invocation analytics grouped by user.
 
@@ -75,14 +76,17 @@ class WebhookHandler:
             result_parser=self._parse_webhooks_invocation_result,
             columns=self._get_webhooks_invocation_columns(),
             group_by_field=USER_ID_KEYWORD_FIELD,
-            metric_filters=[MetricName.WEBHOOK_INVOCATION_TOTAL.value],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[MetricName.WEBHOOK_INVOCATION_TOTAL.value],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+                client_source=client_source,
+            ),
         )
         rows = result.get("data", {}).get("rows", [])
         for row in rows:

@@ -24,7 +24,7 @@ from codemie.core.routing_info import normalize_decision_source
 from codemie.repository.metrics_elastic_repository import MetricsElasticRepository
 from codemie.rest_api.security.user import User
 from codemie.service.analytics.metric_names import MetricName
-from codemie.service.analytics.query_pipeline import AnalyticsQueryPipeline
+from codemie.service.analytics.query_pipeline import AnalyticsQueryFilters, AnalyticsQueryPipeline
 from codemie.service.analytics.response_formatter import ResponseFormatter
 
 logger = logging.getLogger(__name__)
@@ -73,14 +73,16 @@ class RoutingHandler:
                 {"id": "boundary", "label": "Boundary", "type": "string"},
                 {"id": "crux", "label": "Crux", "type": "string"},
             ],
-            metric_filters=[ROUTING_METRIC],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[ROUTING_METRIC],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
 
     @staticmethod
@@ -114,12 +116,14 @@ class RoutingHandler:
         return await self._pipeline.execute_summary_query(
             agg_builder=self._build_routing_summary_agg,
             metrics_builder=self._parse_routing_summary,
-            metric_filters=[ROUTING_METRIC],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[ROUTING_METRIC],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+            ),
         )
 
     async def get_routing_activity(
@@ -159,12 +163,14 @@ class RoutingHandler:
         return await self._pipeline.execute_composite_query(
             agg_builder=self._build_routing_activity_agg,
             result_parser=result_parser,
-            metric_filters=[ROUTING_METRIC],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[ROUTING_METRIC],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+            ),
         )
 
     def _build_routing_activity_agg(self, query: dict[str, Any]) -> dict[str, Any]:
@@ -245,14 +251,16 @@ class RoutingHandler:
             ],
             flattening_multiplier=10,
             sort_keys=[("request_count", True), ("router", False), ("routed_model", False)],
-            metric_filters=[ROUTING_METRIC],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[ROUTING_METRIC],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
 
     @staticmethod
@@ -414,14 +422,16 @@ class RoutingHandler:
                 {"id": "request_count", "label": "Requests", "type": "number"},
             ],
             group_by_field=ROUTED_MODEL_KEYWORD,
-            metric_filters=[ROUTING_METRIC],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[ROUTING_METRIC],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
 
     def _build_model_switches_agg(
@@ -484,14 +494,16 @@ class RoutingHandler:
                 {"id": "request_count", "label": "Requests", "type": "number"},
             ],
             group_by_field=TIER_KEYWORD,
-            metric_filters=[ROUTING_METRIC],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[ROUTING_METRIC],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
 
     async def get_routed_model_distribution(
@@ -564,14 +576,16 @@ class RoutingHandler:
                 {"id": "request_count", "label": "Requests", "type": "number"},
             ],
             group_by_field=field,
-            metric_filters=[ROUTING_METRIC],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[ROUTING_METRIC],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
 
     async def get_decision_source_distribution(
@@ -593,14 +607,16 @@ class RoutingHandler:
                 {"id": "request_count", "label": "Requests", "type": "number"},
             ],
             group_by_field=DECISION_SOURCE_KEYWORD,
-            metric_filters=[ROUTING_METRIC],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
-            page=page,
-            per_page=per_page,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[ROUTING_METRIC],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+                page=page,
+                per_page=per_page,
+            ),
         )
 
     def _build_terms_agg(self, query: dict[str, Any], fetch_size: int, field: str) -> dict[str, Any]:
@@ -639,12 +655,14 @@ class RoutingHandler:
         return await self._pipeline.execute_summary_query(
             agg_builder=self._build_classifier_overhead_agg,
             metrics_builder=self._parse_classifier_overhead,
-            metric_filters=[ROUTING_METRIC],
-            time_period=time_period,
-            start_date=start_date,
-            end_date=end_date,
-            users=users,
-            projects=projects,
+            filters=AnalyticsQueryFilters(
+                metric_filters=[ROUTING_METRIC],
+                time_period=time_period,
+                start_date=start_date,
+                end_date=end_date,
+                users=users,
+                projects=projects,
+            ),
         )
 
     def _build_classifier_overhead_agg(self, query: dict[str, Any]) -> dict[str, Any]:

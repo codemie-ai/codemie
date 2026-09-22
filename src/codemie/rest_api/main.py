@@ -44,7 +44,8 @@ from codemie.enterprise.plugin import (
 from codemie.enterprise.mcp_auth.router import get_mcp_auth_router, get_cimd_router
 from codemie.enterprise.mcp_auth.dependencies import initialize_mcp_auth, shutdown_mcp_auth
 from codemie.configs.logger import set_logging_info, logger
-from codemie.core.constants import APP_DESCRIPTION
+from codemie.core.constants import APP_DESCRIPTION, HEADER_CODEMIE_CLIENT
+from codemie.rest_api.utils.client_context import set_client_source
 from codemie.core.exceptions import (
     ConfluenceAuthRequiredException,
     ExtendedHTTPException,
@@ -1060,6 +1061,7 @@ async def configure_logging(request: Request, call_next):
 
     request.state.uuid = uuid_str
     set_logging_info(uuid=uuid_str, user_id="", conversation_id="-")
+    set_client_source(request.headers.get(HEADER_CODEMIE_CLIENT))
 
     # Attach the Codemie request ID to the active OTel span (created by
     # FastAPIInstrumentor before this middleware runs) so traces can be

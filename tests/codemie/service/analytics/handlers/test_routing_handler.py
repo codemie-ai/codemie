@@ -60,7 +60,7 @@ class TestGetRoutingSummary:
         handler._pipeline.execute_summary_query = AsyncMock(return_value={"data": {"metrics": []}, "metadata": {}})
         await handler.get_routing_summary()
         call_kwargs = handler._pipeline.execute_summary_query.call_args.kwargs
-        assert MetricName.ROUTING_CALL_USAGE.value in call_kwargs.get("metric_filters", [])
+        assert MetricName.ROUTING_CALL_USAGE.value in (call_kwargs["filters"].metric_filters or [])
 
     @pytest.mark.asyncio
     async def test_empty_result_returns_zero_metrics(self, handler):
@@ -85,7 +85,7 @@ class TestGetModelSwitches:
         )
         await handler.get_model_switches()
         call_kwargs = handler._pipeline.execute_tabular_query.call_args.kwargs
-        assert MetricName.ROUTING_CALL_USAGE.value in call_kwargs.get("metric_filters", [])
+        assert MetricName.ROUTING_CALL_USAGE.value in (call_kwargs["filters"].metric_filters or [])
 
     @pytest.mark.asyncio
     async def test_accepts_session_id(self, handler):
@@ -112,7 +112,7 @@ class TestGetTierDistribution:
         )
         await handler.get_tier_distribution()
         call_kwargs = handler._pipeline.execute_tabular_query.call_args.kwargs
-        assert MetricName.ROUTING_CALL_USAGE.value in call_kwargs.get("metric_filters", [])
+        assert MetricName.ROUTING_CALL_USAGE.value in (call_kwargs["filters"].metric_filters or [])
 
 
 class TestGetModelDistributions:
@@ -126,7 +126,7 @@ class TestGetModelDistributions:
 
         assert "data" in result
         call_kwargs = handler._pipeline.execute_tabular_query.call_args.kwargs
-        assert MetricName.ROUTING_CALL_USAGE.value in call_kwargs.get("metric_filters", [])
+        assert MetricName.ROUTING_CALL_USAGE.value in (call_kwargs["filters"].metric_filters or [])
 
 
 class TestRoutingComposition:
@@ -141,7 +141,7 @@ class TestRoutingComposition:
 
         assert "data" in result
         call_kwargs = handler._pipeline.execute_composite_query.call_args.kwargs
-        assert MetricName.ROUTING_CALL_USAGE.value in call_kwargs.get("metric_filters", [])
+        assert MetricName.ROUTING_CALL_USAGE.value in (call_kwargs["filters"].metric_filters or [])
         assert [column["id"] for column in result["data"]["columns"]] == [
             "time",
             "simple_requests",
@@ -160,7 +160,7 @@ class TestRoutingComposition:
 
         assert "data" in result
         call_kwargs = handler._pipeline.execute_tabular_query_with_flattened_rows.call_args.kwargs
-        assert MetricName.ROUTING_CALL_USAGE.value in call_kwargs.get("metric_filters", [])
+        assert MetricName.ROUTING_CALL_USAGE.value in (call_kwargs["filters"].metric_filters or [])
 
     def test_builds_routing_activity_as_time_histogram_with_tier_buckets(self, handler):
         aggregation = handler._build_routing_activity_agg({"match_all": {}})
@@ -337,7 +337,7 @@ class TestRoutingComposition:
 
         assert "data" in result
         call_kwargs = handler._pipeline.execute_tabular_query.call_args.kwargs
-        assert MetricName.ROUTING_CALL_USAGE.value in call_kwargs.get("metric_filters", [])
+        assert MetricName.ROUTING_CALL_USAGE.value in (call_kwargs["filters"].metric_filters or [])
 
 
 class TestGetDecisionSourceDistribution:
@@ -356,7 +356,7 @@ class TestGetDecisionSourceDistribution:
         )
         await handler.get_decision_source_distribution()
         call_kwargs = handler._pipeline.execute_tabular_query.call_args.kwargs
-        assert MetricName.ROUTING_CALL_USAGE.value in call_kwargs.get("metric_filters", [])
+        assert MetricName.ROUTING_CALL_USAGE.value in (call_kwargs["filters"].metric_filters or [])
 
 
 class TestGetDecisionTimeline:
@@ -415,7 +415,7 @@ class TestGetClassifierOverhead:
         handler._pipeline.execute_summary_query = AsyncMock(return_value={"data": {"metrics": []}, "metadata": {}})
         await handler.get_classifier_overhead()
         call_kwargs = handler._pipeline.execute_summary_query.call_args.kwargs
-        assert MetricName.ROUTING_CALL_USAGE.value in call_kwargs.get("metric_filters", [])
+        assert MetricName.ROUTING_CALL_USAGE.value in (call_kwargs["filters"].metric_filters or [])
 
 
 class TestRoutingHandlerAggBuilders:

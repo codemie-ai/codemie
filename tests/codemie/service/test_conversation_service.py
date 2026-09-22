@@ -25,7 +25,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import AssistantChatRequest, UpdateConversationRequest, UpdateAiMessageRequest, TokensUsage
 from codemie.rest_api.models.assistant import Assistant
 from codemie.service.chat_naming_service import ChatNamingService
-from codemie.service.conversation_service import ConversationService
+from codemie.service.conversation_service import ChatCompletionOutcome, ConversationService
 from codemie.service.llm_service.llm_service import LLMService
 from codemie.rest_api.models.conversation import (
     Conversation,
@@ -218,13 +218,15 @@ def test_upsert_chat_history_raises_409_when_finished(
 
     with pytest.raises(ExtendedHTTPException) as exc_info:
         ConversationService.upsert_chat_history(
-            assistant_response="hi",
-            time_elapsed=1.0,
-            tokens_usage=TokensUsage(input_tokens=1, output_tokens=1, money_spent=0.0),
+            outcome=ChatCompletionOutcome(
+                assistant_response="hi",
+                time_elapsed=1.0,
+                tokens_usage=TokensUsage(input_tokens=1, output_tokens=1, money_spent=0.0),
+                thoughts=[],
+            ),
             request=request,
             assistant=mock_assistant,
             user=mock_user,
-            thoughts=[],
         )
     assert exc_info.value.code == 409
 
@@ -491,11 +493,13 @@ def test_index_service_run_visible_to_admin_user(
     mock_metrics_get.return_value = mock_conversation_metrics
 
     ConversationService.upsert_chat_history(
-        assistant_response="",
+        outcome=ChatCompletionOutcome(
+            assistant_response="",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
+        ),
         user=mock_admin_user,
-        thoughts=[],
-        time_elapsed=0,
-        tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
         assistant=mock_assistant,
         request=mock_request,
     )
@@ -565,14 +569,16 @@ def test_upsert_chat_history_with_missing_history_index(
 
     # Call the method
     ConversationService.upsert_chat_history(
-        assistant_response="It's sunny today!",
+        outcome=ChatCompletionOutcome(
+            assistant_response="It's sunny today!",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
+            status=None,
+        ),
         user=mock_admin_user,
-        thoughts=[],
-        time_elapsed=0,
-        tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
         assistant=mock_assistant,
         request=request,
-        status=None,
     )
 
     # Verify that update_chat_history was called with history_index=2
@@ -690,14 +696,16 @@ def test_upsert_chat_history_reuses_history_index_and_replaces_existing_turn_on_
     )
 
     ConversationService.upsert_chat_history(
-        assistant_response="Agent has been interrupted by client",
+        outcome=ChatCompletionOutcome(
+            assistant_response="Agent has been interrupted by client",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
+            status=None,
+        ),
         user=mock_user,
-        thoughts=[],
-        time_elapsed=0,
-        tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
         assistant=mock_assistant,
         request=request,
-        status=None,
     )
 
     assert request.history_index == 0
@@ -707,14 +715,16 @@ def test_upsert_chat_history_reuses_history_index_and_replaces_existing_turn_on_
     assert conversation.history[1].message == "Agent has been interrupted by client"
 
     ConversationService.upsert_chat_history(
-        assistant_response="Presentation build completed successfully",
+        outcome=ChatCompletionOutcome(
+            assistant_response="Presentation build completed successfully",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
+            status=None,
+        ),
         user=mock_user,
-        thoughts=[],
-        time_elapsed=0,
-        tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
         assistant=mock_assistant,
         request=request,
-        status=None,
     )
 
     assert request.history_index == 0
@@ -779,14 +789,16 @@ def test_upsert_chat_history_appends_variants_for_explicit_history_index(
     )
 
     ConversationService.upsert_chat_history(
-        assistant_response="Presentation build completed successfully",
+        outcome=ChatCompletionOutcome(
+            assistant_response="Presentation build completed successfully",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
+            status=None,
+        ),
         user=mock_user,
-        thoughts=[],
-        time_elapsed=0,
-        tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
         assistant=mock_assistant,
         request=first_request,
-        status=None,
     )
 
     second_request = AssistantChatRequest(
@@ -798,14 +810,16 @@ def test_upsert_chat_history_appends_variants_for_explicit_history_index(
     )
 
     ConversationService.upsert_chat_history(
-        assistant_response="Presentation build completed with alternate layout",
+        outcome=ChatCompletionOutcome(
+            assistant_response="Presentation build completed with alternate layout",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
+            status=None,
+        ),
         user=mock_user,
-        thoughts=[],
-        time_elapsed=0,
-        tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
         assistant=mock_assistant,
         request=second_request,
-        status=None,
     )
 
     assert [message.history_index for message in conversation.history] == [0, 0, 0, 0, 0, 0]
@@ -931,11 +945,13 @@ def test_upsert_chat_history_content_raw_fallback(
     )
 
     ConversationService.upsert_chat_history(
-        assistant_response="response",
+        outcome=ChatCompletionOutcome(
+            assistant_response="response",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
+        ),
         user=mock_user,
-        thoughts=[],
-        time_elapsed=0,
-        tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
         assistant=mock_assistant,
         request=request,
     )
@@ -974,11 +990,13 @@ def test_upsert_chat_history_schedules_naming_task_for_new_conversation(
     background_tasks = MagicMock(spec=BackgroundTasks)
 
     ConversationService.upsert_chat_history(
-        assistant_response="Hi there!",
+        outcome=ChatCompletionOutcome(
+            assistant_response="Hi there!",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
+        ),
         user=mock_admin_user,
-        thoughts=[],
-        time_elapsed=0,
-        tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
         assistant=mock_assistant,
         request=mock_request,
         background_tasks=background_tasks,
@@ -1041,11 +1059,13 @@ def test_upsert_chat_history_schedules_naming_when_only_optimistic_client_name_s
 
     with patch("codemie.rest_api.models.conversation.Conversation.find_by_id", return_value=pre_named_conversation):
         ConversationService.upsert_chat_history(
-            assistant_response="Hi there!",
+            outcome=ChatCompletionOutcome(
+                assistant_response="Hi there!",
+                thoughts=[],
+                time_elapsed=0,
+                tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
+            ),
             user=mock_admin_user,
-            thoughts=[],
-            time_elapsed=0,
-            tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
             assistant=mock_assistant,
             request=mock_request,
             background_tasks=background_tasks,
@@ -1087,11 +1107,13 @@ def test_upsert_chat_history_does_not_schedule_naming_for_existing_named_convers
 
     with patch("codemie.rest_api.models.conversation.Conversation.find_by_id", return_value=mock_conversation):
         ConversationService.upsert_chat_history(
-            assistant_response="Hi there!",
+            outcome=ChatCompletionOutcome(
+                assistant_response="Hi there!",
+                thoughts=[],
+                time_elapsed=0,
+                tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
+            ),
             user=mock_admin_user,
-            thoughts=[],
-            time_elapsed=0,
-            tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
             assistant=mock_assistant,
             request=mock_request,
             background_tasks=background_tasks,
@@ -1128,11 +1150,13 @@ def test_upsert_chat_history_without_background_tasks_still_sets_legacy_name(
     mock_conv_save.return_value = True
 
     ConversationService.upsert_chat_history(
-        assistant_response="Hi there!",
+        outcome=ChatCompletionOutcome(
+            assistant_response="Hi there!",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
+        ),
         user=mock_admin_user,
-        thoughts=[],
-        time_elapsed=0,
-        tokens_usage=TokensUsage(output_tokens=0, input_tokens=0, money_spent=0.0),
         assistant=mock_assistant,
         request=mock_request,
     )
@@ -1174,11 +1198,13 @@ def test_upsert_chat_history_emits_routing_metric_when_routing_present(
     tokens = TokensUsage(output_tokens=10, input_tokens=5, money_spent=0.01, routing=routing)
 
     ConversationService.upsert_chat_history(
-        assistant_response="response",
+        outcome=ChatCompletionOutcome(
+            assistant_response="response",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=tokens,
+        ),
         user=mock_admin_user,
-        thoughts=[],
-        time_elapsed=0,
-        tokens_usage=tokens,
         assistant=mock_assistant,
         request=mock_request,
     )
@@ -1221,11 +1247,13 @@ def test_upsert_chat_history_skips_routing_metric_when_routing_empty(
     tokens = TokensUsage(output_tokens=10, input_tokens=5, money_spent=0.01)
 
     ConversationService.upsert_chat_history(
-        assistant_response="response",
+        outcome=ChatCompletionOutcome(
+            assistant_response="response",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=tokens,
+        ),
         user=mock_admin_user,
-        thoughts=[],
-        time_elapsed=0,
-        tokens_usage=tokens,
         assistant=mock_assistant,
         request=mock_request,
     )
@@ -1291,12 +1319,14 @@ def test_upsert_chat_history_emits_one_routing_metric_per_llm_run(
     tokens = TokensUsage(output_tokens=31, input_tokens=13, money_spent=0.0211, routing=routing_complex)
 
     ConversationService.upsert_chat_history(
-        assistant_response="response",
+        outcome=ChatCompletionOutcome(
+            assistant_response="response",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=tokens,
+            llm_runs=llm_runs,
+        ),
         user=mock_admin_user,
-        thoughts=[],
-        time_elapsed=0,
-        tokens_usage=tokens,
-        llm_runs=llm_runs,
         assistant=mock_assistant,
         request=mock_request,
     )
@@ -1345,12 +1375,14 @@ def test_upsert_chat_history_falls_back_to_merged_routing_when_llm_runs_empty(
     tokens = TokensUsage(output_tokens=10, input_tokens=5, money_spent=0.01, routing=routing)
 
     ConversationService.upsert_chat_history(
-        assistant_response="response",
+        outcome=ChatCompletionOutcome(
+            assistant_response="response",
+            thoughts=[],
+            time_elapsed=0,
+            tokens_usage=tokens,
+            llm_runs=[],
+        ),
         user=mock_admin_user,
-        thoughts=[],
-        time_elapsed=0,
-        tokens_usage=tokens,
-        llm_runs=[],
         assistant=mock_assistant,
         request=mock_request,
     )

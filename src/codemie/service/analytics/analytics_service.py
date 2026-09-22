@@ -328,6 +328,7 @@ class AnalyticsService:
         end_date: datetime | None = None,
         users: list[str] | None = None,
         projects: list[str] | None = None,
+        client_source: str | None = None,
     ) -> dict:
         """Get summary metrics: tokens, costs, usage statistics, DAU and MAU.
 
@@ -341,6 +342,7 @@ class AnalyticsService:
                 end_date=end_date,
                 users=users,
                 projects=projects,
+                client_source=client_source,
             ),
             self._engagement_handler.get_dau(users=users, projects=projects),
             self._engagement_handler.get_mau(users=users, projects=projects),
@@ -359,6 +361,7 @@ class AnalyticsService:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get assistants/chats analytics with performance metrics."""
         return await self._assistant_handler.get_assistants_chats(
@@ -369,6 +372,7 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+            client_source=client_source,
         )
 
     async def get_agents_usage(
@@ -402,6 +406,7 @@ class AnalyticsService:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get workflow execution analytics."""
         return await self._workflow_handler.get_workflows(
@@ -412,6 +417,7 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+            client_source=client_source,
         )
 
     # Tools endpoints
@@ -446,6 +452,7 @@ class AnalyticsService:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get users spending analytics."""
         return await self._user_handler.get_users_spending(
@@ -456,6 +463,7 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+            client_source=client_source,
         )
 
     async def get_users_platform_spending(
@@ -467,6 +475,7 @@ class AnalyticsService:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get platform spending per user (Assistants + Workflows + Datasources, no CLI)."""
         return await self._user_handler.get_users_platform_spending(
@@ -477,6 +486,7 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+            client_source=client_source,
         )
 
     async def get_users_cli_spending(
@@ -488,6 +498,7 @@ class AnalyticsService:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get CLI-only spending per user (grouped by user_name)."""
         return await self._user_handler.get_users_cli_spending(
@@ -498,6 +509,7 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+            client_source=client_source,
         )
 
     async def get_users_activity(
@@ -567,6 +579,7 @@ class AnalyticsService:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get projects spending analytics."""
         return await self._project_handler.get_projects_spending(
@@ -577,6 +590,7 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+            client_source=client_source,
         )
 
     async def get_projects_activity(
@@ -665,6 +679,7 @@ class AnalyticsService:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get CLI LLMs usage analytics."""
         return await self._cli_handler.get_cli_llms(
@@ -675,6 +690,7 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+            client_source=client_source,
         )
 
     async def get_cli_users(
@@ -949,6 +965,7 @@ class AnalyticsService:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get power users analytics."""
         return await self._user_handler.get_power_users(
@@ -959,6 +976,7 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+            client_source=client_source,
         )
 
     async def get_knowledge_sharing(
@@ -991,6 +1009,7 @@ class AnalyticsService:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get top agents usage analytics."""
         return await self._assistant_handler.get_top_agents_usage(
@@ -1001,6 +1020,7 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+            client_source=client_source,
         )
 
     async def get_top_workflow_usage(
@@ -1012,6 +1032,7 @@ class AnalyticsService:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get top workflow usage analytics."""
         return await self._workflow_handler.get_top_workflow_usage(
@@ -1022,6 +1043,7 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+            client_source=client_source,
         )
 
     async def get_published_to_marketplace(
@@ -1033,6 +1055,7 @@ class AnalyticsService:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get published to marketplace analytics."""
         return await self._assistant_handler.get_published_to_marketplace(
@@ -1043,6 +1066,7 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+            client_source=client_source,
         )
 
     # Webhook endpoints
@@ -1055,6 +1079,7 @@ class AnalyticsService:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get webhooks invocation analytics."""
         return await self._webhook_handler.get_webhooks_invocation(
@@ -1065,6 +1090,7 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+            client_source=client_source,
         )
 
     # MCP endpoints
@@ -1120,6 +1146,7 @@ class AnalyticsService:
         projects: list[str] | None = None,
         page: int = 0,
         per_page: int = 20,
+        client_source: str | None = None,
     ) -> dict:
         """Get LLMs usage analytics."""
         return await self._llm_handler.get_llms_usage(
@@ -1130,6 +1157,7 @@ class AnalyticsService:
             projects=projects,
             page=page,
             per_page=per_page,
+            client_source=client_source,
         )
 
     # Embeddings endpoints
@@ -1160,11 +1188,13 @@ class AnalyticsService:
         self,
         users: list[str] | None = None,
         projects: list[str] | None = None,
+        client_source: str | None = None,
     ) -> dict:
         """Get weekly spending histogram in 3h intervals, broken down by source — ignores dashboard time filter."""
         return await self._engagement_handler.get_weekly_spending(
             users=users,
             projects=projects,
+            client_source=client_source,
         )
 
     # Money-spent drill-down endpoints
