@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "task": "Remove the assistant_folders Postgres table and replace with a derived/stateless implementation using Conversation.initial_assistant_id, updating service methods, router, migration, and tests.",
+  "generated": "2026-09-22T12:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 4, "label": "L" }
+  },
+  "total": 19,
+  "size": "M",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Five components across four layers: AssistantFolder model (ORM removal, keep Pydantic response models), ConversationService (rewrite get_assistant_folders and delete_assistant_folder, remove three ensure_registered call sites), conversation router (endpoint signature changes, remove delete_by_user call at line 314), core models (AssistantFolderDeleteAction enum removal), and new Alembic drop migration chained off the merge head 5bba1414c0ca."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Alembic chain risk: new migration must set down_revision='5bba1414c0ca' (merge head), not the feature migration directly — wrong parent creates a parallel head and breaks alembic upgrade head. Residual AssistantFolder.delete_by_user call at router line 314 (inside delete_conversation_by_user) is not covered by any test and will fail silently at runtime if missed. SELECT FOR UPDATE lock strategy on AssistantFolder registration row must be redesigned for the stateless derived path. Five existing tests are tightly coupled to ORM classmethods (ensure_registered, get_by_user, delete_registration) and require full rewrite to patch derived Conversation queries instead. Drop migration is irreversible in production."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Four distinct layers: API (conversation router endpoint changes), Service (conversation_service method rewrites), DB-Persistence (AssistantFolder ORM class removal, new derived GROUP BY queries on Conversation), and Infrastructure/Migration (drop migration requiring correct merge-head chaining). Schema change (table drop) is included, placing this at L per the rubric."
+    }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

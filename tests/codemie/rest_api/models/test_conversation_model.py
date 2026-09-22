@@ -204,6 +204,7 @@ def _make_row(conversation_id, conversation_name, folder, update_date, finished_
     row.date = update_date
     row.update_date = update_date
     row.is_workflow_conversation = False
+    row.import_source = None
     row.finished_at = finished_at
     return row
 

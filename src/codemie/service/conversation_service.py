@@ -25,8 +25,9 @@ from typing import Any, List, TYPE_CHECKING, Optional, NoReturn
 from codemie_tools.base.utils import get_encoding
 from fastapi import BackgroundTasks, status
 from pydantic import BaseModel
+from sqlalchemy import bindparam
 from sqlalchemy import update as sa_update
-from sqlmodel import select, and_, func, or_, text, Session
+from sqlmodel import select, and_, delete, func, or_, text, Session
 
 from codemie.chains.base import Thought
 from codemie.clients.postgres import get_session
@@ -52,11 +53,16 @@ from codemie.rest_api.models.conversation import (
 )
 from codemie.rest_api.models.index import SortOrder
 from codemie.rest_api.models.conversation_folder import ConversationFolder
+from codemie.rest_api.models.assistant_folder import (
+    AssistantFolderDeleteResponse,
+    AssistantFolderListItem,
+)
 from codemie.rest_api.models.feedback import FeedbackRequest, FeedbackDeleteRequest
 from codemie.rest_api.models.share.shared_conversation import SharedConversation
 from codemie.rest_api.models.standard import AuthorEnum
 from codemie.rest_api.security.user import User
 from codemie.service.agent_workspace_service import AgentWorkspaceService
+from codemie.service.assistant.assistant_repository import AssistantRepository, AssistantScope
 from codemie.service.chat_naming_service import ChatNamingService
 from codemie.service.conversation.history_materializer import materialize_workflow_conversation
 from codemie.service.llm_service.llm_service import LLMService
@@ -91,6 +97,20 @@ def _raise_conversation_not_found(conversation_id: str) -> NoReturn:
         details=f"The conversation with ID [{conversation_id}] could not be found in the system.",
         help="Please verify the conversation ID and try again. If you believe this is an error, contact support.",
     )
+
+
+_CLIENT_TYPE_TO_IMPORT_SOURCE: dict[str, str] = {
+    "codemie-claude": "claude_cli",
+    "codemie-claude-acp": "claude_cli",
+    "claude-desktop": "claude_desktop",
+    "codemie-codex": "codex",
+    "codemie-gemini": "gemini",
+    "codemie-copilot": "copilot_cli",
+    "codemie-opencode": "opencode",
+    "codemie-pi": "pi",
+    "codemie-kimi": "kimi",
+    "codemie-kimi-acp": "kimi",
+}
 
 
 class SpendingGroupBreakdown(BaseModel):
@@ -467,8 +487,14 @@ class ConversationService:
         request.mark_history_variant_persisted()
 
     @classmethod
+    def resolve_chat_import_source(cls, client_type: Optional[str], cli_header: Optional[str]) -> Optional[str]:
+        if client_type:
+            return _CLIENT_TYPE_TO_IMPORT_SOURCE.get(client_type) or ("claude_code" if cli_header else None)
+        return "claude_code" if cli_header else None
+
+    @classmethod
     def upsert_conversation_with_history(
-        cls, conversation_id: str, request: UpsertHistoryRequest, user: User
+        cls, conversation_id: str, request: UpsertHistoryRequest, user: User, import_source: Optional[str] = None
     ) -> dict[str, Any]:
         """
         Upsert conversation with history (idempotent operation).
@@ -511,7 +537,7 @@ class ConversationService:
         else:
             # CREATE NEW - with all history
             conversation = cls._create_conversation_with_history(
-                conversation_id=conversation_id, user=user, request=request
+                conversation_id=conversation_id, user=user, request=request, import_source=import_source
             )
             conversation.save()
             new_messages = request.history
@@ -524,6 +550,11 @@ class ConversationService:
         # Handle folder (DRY helper)
         if request.folder:
             cls._handle_conversation_folder(request.folder, user.id)
+
+        # Write-once import_source: set only when the conversation has no existing value
+        if import_source and conversation.import_source is None:
+            conversation.import_source = import_source
+            conversation.update()
 
         return {
             "conversation_id": conversation_id,
@@ -633,7 +664,7 @@ class ConversationService:
 
     @classmethod
     def _create_conversation_with_history(
-        cls, conversation_id: str, user: User, request: UpsertHistoryRequest
+        cls, conversation_id: str, user: User, request: UpsertHistoryRequest, import_source: Optional[str] = None
     ) -> Conversation:
         """
         Create a new conversation with provided history.
@@ -657,6 +688,7 @@ class ConversationService:
             assistant_ids=[request.assistant_id],
             initial_assistant_id=request.assistant_id,
             folder=request.folder,
+            import_source=import_source,
             conversation_name=conversation_name,
         )
 
@@ -925,6 +957,94 @@ class ConversationService:
         return conversation
 
     @classmethod
+    def get_assistant_folders(cls, user: User) -> list[AssistantFolderListItem]:
+        with get_session() as session:
+            assistant_ids = list(
+                session.exec(
+                    select(Conversation.initial_assistant_id)
+                    .where(
+                        Conversation.user_id == user.id,
+                        Conversation.initial_assistant_id.is_not(None),
+                        Conversation.import_source.is_(None),
+                        or_(
+                            Conversation.is_workflow_conversation.is_(None),
+                            Conversation.is_workflow_conversation.is_(False),
+                        ),
+                    )
+                    .distinct()
+                ).all()
+            )
+
+        if not assistant_ids:
+            return []
+
+        from codemie.rest_api.models.assistant import Assistant
+
+        assistants = Assistant.get_by_ids(user=user, ids=assistant_ids)
+        assistants_by_id = {assistant.id: assistant for assistant in assistants}
+        return [
+            AssistantFolderListItem(
+                assistant_id=asst_id,
+                name=assistants_by_id[asst_id].name,
+                icon_url=assistants_by_id[asst_id].icon_url,
+            )
+            for asst_id in assistant_ids
+            if asst_id in assistants_by_id
+        ]
+
+    @classmethod
+    def delete_assistant_folder(
+        cls,
+        user: User,
+        assistant_id: str,
+        remove_conversations: bool,
+    ) -> AssistantFolderDeleteResponse:
+        if not remove_conversations:
+            return AssistantFolderDeleteResponse(deleted_conversation_ids=[], folder_deleted=False)
+
+        with get_session() as session:
+            conversations_to_delete = list(
+                session.exec(
+                    select(Conversation.id, Conversation.conversation_id).where(
+                        Conversation.user_id == user.id,
+                        Conversation.initial_assistant_id == assistant_id,
+                        or_(Conversation.folder.is_(None), Conversation.folder == ""),
+                        Conversation.import_source.is_(None),
+                        Conversation.pinned.is_not(True),
+                        or_(
+                            Conversation.is_workflow_conversation.is_(None),
+                            Conversation.is_workflow_conversation.is_(False),
+                        ),
+                    )
+                ).all()
+            )
+            conversation_ids = [row[0] for row in conversations_to_delete]
+            conversation_business_ids = [row[1] for row in conversations_to_delete]
+
+            if conversation_ids:
+                from codemie.core.workflow_models.workflow_execution import WorkflowExecution
+
+                WorkflowExecution.delete_by_conversation_ids(session, conversation_ids)
+                session.exec(
+                    delete(SharedConversation).where(SharedConversation.conversation_id.in_(conversation_business_ids))
+                )
+                session.exec(
+                    delete(ConversationMetrics).where(
+                        ConversationMetrics.conversation_id.in_(conversation_business_ids)
+                    )
+                )
+                # Scoped by the PK, not conversation_id (which carries no unique constraint),
+                # so this can only ever remove exactly the rows the SELECT above identified.
+                session.exec(delete(Conversation).where(Conversation.id.in_(conversation_ids)))
+
+            session.commit()
+
+        return AssistantFolderDeleteResponse(
+            deleted_conversation_ids=conversation_business_ids,
+            folder_deleted=bool(conversation_ids),
+        )
+
+    @classmethod
     def build_new_conversation(
         cls,
         user: User,
@@ -1034,9 +1154,15 @@ class ConversationService:
     @classmethod
     def update_conversation_folder(cls, user: User, folder: str, new_folder: str):
         """Rename a conversation folder."""
-        ConversationFolder.delete_by_folder(folder, user.id)
-        # Create new folder using model method
-        ConversationFolder.create_folder(new_folder, user.id)
+        # Rename in place rather than delete+recreate: a rename must not bump the folder's own
+        # update_date (EPMCDME-15009 reopened AC) and must not lose the folder's id/date to a
+        # transient delete if a later step in this method were to fail.
+        existing_folder = ConversationFolder.get_by_folder(folder, user.id)
+        if existing_folder:
+            existing_folder.folder_name = new_folder
+            existing_folder.update(touch_timestamp=False)
+        else:
+            ConversationFolder.create_folder(new_folder, user.id)
 
         # Update all conversations in the old folder
         folder_conversations = (
@@ -1051,11 +1177,62 @@ class ConversationService:
 
         for conversation in folder_conversations:
             conversation.folder = new_folder
-            conversation.update(refresh=True)
+            # A folder rename is not usage for its member conversations either.
+            conversation.update(refresh=True, touch_timestamp=False)
+
+    @classmethod
+    def move_conversations_to_folder(cls, user: User, conversation_ids: List[str], target_folder: str) -> int:
+        """Atomically move user-owned, non-import conversations to an existing Custom Folder."""
+        unique_ids = list(dict.fromkeys(conversation_id.strip() for conversation_id in conversation_ids))
+        if not unique_ids or any(not conversation_id for conversation_id in unique_ids):
+            raise ValueError("At least one valid conversation ID is required")
+        if not target_folder.strip():
+            raise ValueError("Target folder is required")
+
+        with get_session() as session:
+            folder_stmt = text("""
+                SELECT id
+                FROM conversation_folders
+                WHERE user_id = :uid AND folder_name = :folder
+                FOR UPDATE
+            """).bindparams(uid=user.id, folder=target_folder)
+            if session.exec(folder_stmt).first() is None:
+                raise ValueError("Target folder does not exist")
+
+            conversations_stmt = (
+                text("""
+                    SELECT conversation_id, import_source
+                    FROM conversations
+                    WHERE user_id = :uid AND conversation_id IN :conversation_ids
+                    FOR UPDATE
+                """)
+                .bindparams(bindparam("conversation_ids", expanding=True))
+                .bindparams(uid=user.id, conversation_ids=unique_ids)
+            )
+            conversations = list(session.exec(conversations_stmt).all())
+            if len(conversations) != len(unique_ids):
+                raise ValueError("One or more conversations were not found")
+            if any(conversation.import_source is not None for conversation in conversations):
+                raise ValueError("Imported conversations cannot be moved to Custom Folders")
+
+            # A move is not usage and not folder activity (EPMCDME-15009 reopened AC): update
+            # only `folder`, never `update_date` on the moved conversations or the target folder.
+            update_stmt = (
+                text("""
+                    UPDATE conversations
+                    SET folder = :folder
+                    WHERE user_id = :uid AND conversation_id IN :conversation_ids
+                """)
+                .bindparams(bindparam("conversation_ids", expanding=True))
+                .bindparams(uid=user.id, folder=target_folder, conversation_ids=unique_ids)
+            )
+            session.exec(update_stmt)
+            session.commit()
+
+        return len(unique_ids)
 
     @classmethod
     def update_conversation(cls, conversation: Conversation, request: UpdateConversationRequest):
-        old_folder = conversation.folder
         fields_set = request.model_fields_set
 
         if request.name:
@@ -1078,12 +1255,11 @@ class ConversationService:
             assistant_ids.insert(0, assistant_ids.pop(assistant_ids.index(request.active_assistant_id)))
             conversation.assistant_ids = assistant_ids
 
-        conversation.update()
-
-        # Update folder timestamps when conversation is moved between folders
-        if request.folder is not None and old_folder != request.folder and request.folder:
-            # Update new folder timestamp
-            ConversationFolder.touch_folder(request.folder, conversation.user_id)
+        # None of the fields this method sets are "usage" (rename, pin/unpin, folder move,
+        # model/tool-call-policy config) — real usage is recorded separately when a message is
+        # sent/received. Do not bump update_date here, and do not touch the target folder's own
+        # update_date on move: neither should reorder the sidebar's recency-based sort.
+        conversation.update(touch_timestamp=False)
 
         return conversation
 
@@ -1678,11 +1854,12 @@ class ConversationService:
                         JOIN assistants linked_assistant ON linked_assistant.id = linked_assistant_id.id
                         ORDER BY linked_assistant.name
                     ) AS assistant_names,
+                    c.import_source,
                     {timestamp_sql}
                 FROM conversations c
                 LEFT JOIN assistants a ON a.id = c.initial_assistant_id
                 WHERE c.user_id = :uid{is_finished_clause}
-                ORDER BY COALESCE(c.update_date, c.date) DESC NULLS LAST
+                ORDER BY COALESCE(c.update_date, c.date) DESC NULLS LAST, c.conversation_id DESC
                 OFFSET :off LIMIT :lim
             """).bindparams(uid=user_id, off=offset, lim=per_page)
             rows = list(session.exec(stmt).all())
@@ -1707,6 +1884,7 @@ class ConversationService:
                     very_last_msg_at=row.very_last_msg_at,
                     assistant_icon=row.assistant_icon,
                     assistant_names=row.assistant_names,
+                    import_source=row.import_source,
                     finished_at=row.finished_at,
                 )
             )
@@ -1796,34 +1974,52 @@ class ConversationService:
         )
 
     @staticmethod
-    def search_conversations(user_id: str, query: str, limit: int = 20) -> ConversationSearchResponse:
+    def search_conversations(user: User, query: str, limit: int = 20) -> ConversationSearchResponse:
         """
-        Search conversations and folders by name for a specific user.
+        Search visible assistants plus conversations and folders by name for a specific user.
 
         Args:
-            user_id: User ID to filter by
+            user: Authenticated user used for ownership and assistant visibility filters
             query: Search string (case-insensitive partial match)
-            limit: Max results to return
+            limit: Max results to return per entity type
 
         Returns:
-            ConversationSearchResponse with combined results sorted by update_date DESC
+            ConversationSearchResponse with typed assistant, chat, and folder results
         """
         # Search chats
         chat_results = Conversation.search_by_name_and_user(
-            user_id=user_id,
+            user_id=user.id,
             query=query,
             limit=limit,
         )
 
         # Search folders
         folder_results = ConversationFolder.search_by_name_and_user(
-            user_id=user_id,
+            user_id=user.id,
             query=query,
             limit=limit,
         )
 
-        # Combine and convert to SearchResultItem
+        assistant_results = AssistantRepository().query(
+            user=user,
+            scope=AssistantScope.VISIBLE_TO_USER,
+            filters={'search': query},
+            page=0,
+            per_page=limit,
+            minimal_response=True,
+        )['data']
+
         combined = []
+
+        for assistant in assistant_results:
+            combined.append(
+                SearchResultItem(
+                    id=assistant.id,
+                    name=assistant.name,
+                    type='assistant',
+                    icon_url=assistant.icon_url,
+                )
+            )
 
         for chat in chat_results:
             combined.append(
@@ -1846,11 +2042,5 @@ class ConversationService:
                     type='folder',
                 )
             )
-
-        # Sort combined results by updated_at descending
-        combined.sort(key=lambda x: x.updated_at, reverse=True)
-
-        # Limit to 20 total results
-        combined = combined[:limit]
 
         return ConversationSearchResponse(items=combined)

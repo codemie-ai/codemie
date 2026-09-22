@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "generated": "2026-09-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 23,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 32,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "technical_risk",
+      "reason": "Table drop is irreversible: downgrade() is a no-op (no reconstruction path). Replaces persisted assistant_folder rows with derived queries on Conversation.initial_assistant_id — a pattern with no prior counterpart in the codebase. Bumped L→XL by 'changes database schema significantly' red flag."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Diffstat reports 32 files changed (2293 insertions, 109 deletions). Includes 11 src files, 6 alembic migration files, 8 test files, and 7 task-artifact docs files — all counted per the diffstat rule. 32 files maps to XXL (16+)."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "API layer (conversation router, REST API models), Service layer (conversation_service, 4 analytics handlers, query_pipeline), and DB-Persistence layer (drop_assistant_folders migration). Three-plus distinct layers with a hard schema change. Bumped L→XL by 'changes database schema significantly' red flag."
+    },
+    {
+      "dimension": "component_scope",
+      "reason": "Changes span: conversation_service (core service rewrite of get_assistant_folders/delete_assistant_folder), conversation router, assistant_folder and conversation REST models, 4 analytics handlers (embeddings/project/user/workflow) plus query_pipeline, and 1 new migration. Four-plus components across 3 layers with shared model utilities involved."
+    }
+  ],
+  "red_flags_applied": [
+    "Changes database schema significantly (irreversible table drop, no downgrade path) → bumped Technical Risk L→XL and Affected Layers L→XL"
+  ],
+  "split_recommendation": null
+}

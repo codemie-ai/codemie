@@ -1,0 +1,158 @@
+{
+  "decision": "request-changes",
+  "rationale": "Seven blocking findings: one critical ImportError in alembic/env.py:90 that prevents all migrations (the change's central deliverable cannot run), three service-layer correctness bugs (touch_timestamp violation at line 387, NULL ids passed to get_by_ids at line 794, unconditional folder_deleted=True at line 871), one undocumented search_conversations behavior change that silently expands results from 20 to 60 and drops recency ordering, and two blocking code-quality standard violations in new code. Three pre-existing items deferred (empty migration downgrade by design, analytics filter inconsistency, move-folder count check); one false-positive dismissed (SQLModel scalar return from single-column select).",
+  "confidence": "high",
+  "risk_flags": ["breaking-change"],
+  "business_review": [
+    {
+      "kind": "spec",
+      "item": "alembic upgrade head succeeds from 5bba1414c0ca; assistant_folders table no longer exists afterwards",
+      "status": "fail",
+      "notes": "env.py:90 imports AssistantFolder which no longer exists in assistant_folder.py → ImportError on any alembic command; drop migration cannot be applied"
+    },
+    {
+      "kind": "spec",
+      "item": "GET /v1/assistant-folders returns derived list from Conversation.initial_assistant_id with import_source IS NULL and is_workflow_conversation=FALSE",
+      "status": "pass",
+      "notes": "query and filters confirmed; NULL initial_assistant_id not excluded (CR-004) but list logic otherwise correct"
+    },
+    {
+      "kind": "spec",
+      "item": "DELETE /v1/assistant-folders/{assistant_id}?remove_conversations=true deletes exactly the conversations the old action deleted, including cascade deletes",
+      "status": "pass",
+      "notes": "cascade deletes confirmed; folder_deleted=True returned unconditionally even on zero matches (CR-005)"
+    },
+    {
+      "kind": "spec",
+      "item": "DELETE /v1/assistant-folders/{assistant_id}?remove_conversations=false returns HTTP 200 with deleted_conversation_ids=[] and folder_deleted=false; no database writes",
+      "status": "pass",
+      "notes": "returns early before session; mock_get_session.assert_not_called() confirmed in test"
+    },
+    {
+      "kind": "spec",
+      "item": "DELETE /conversations completes without error after AssistantFolder.delete_by_user call is removed",
+      "status": "pass",
+      "notes": "no AssistantFolder.delete_by_user reference in non-test source"
+    },
+    {
+      "kind": "spec",
+      "item": "No reference to AssistantFolder ORM class or AssistantFolderDeleteAction remains in non-test application code",
+      "status": "fail",
+      "notes": "env.py:90 imports AssistantFolder by name in non-test application code"
+    },
+    {
+      "kind": "spec",
+      "item": "All five rewritten service tests pass",
+      "status": "pending-stage-7",
+      "notes": "all five tests present in diff; pass/fail requires execution"
+    },
+    {
+      "kind": "spec",
+      "item": "make ruff passes with no new violations",
+      "status": "pending-stage-7",
+      "notes": "execution claim; no lint output available in static review"
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "All 41 commit subjects in range follow the documented EPMCDME-####: Description format; two Jira tickets referenced (EPMCDME-13270, EPMCDME-15009, EPMCDME-15006) with colon-space separator throughout"
+    },
+    {
+      "kind": "code-quality",
+      "status": "partial",
+      "notes": "guide requires X | None unions and list[T] parameterized generics instead of typing.Optional and typing.List; new file src/codemie/rest_api/models/assistant_folder.py:24 uses Optional[str] for icon_url; new endpoints in src/codemie/rest_api/routers/conversation.py annotate return types as List[AssistantFolderListItem]; other new code correctly uses list[str] and list[AssistantFolderListItem]; license headers present"
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "both new endpoints use Depends(authenticate); no credentials logged; user input (assistant_id: str, remove_conversations: bool) is typed and bound via ORM parameters, no raw SQL from user-supplied strings; no lossy input normalization found"
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/models/assistant_folder.py",
+      "line": 25,
+      "title": "Optional[str] annotation violates code-quality standard",
+      "problem": "icon_url is annotated Optional[str] instead of str | None; the file already has from __future__ import annotations making the modern union form safe",
+      "impact": "New source code uses the explicitly-deprecated annotation style the guide lists as a blocking Avoid; will trigger ruff rule UP007",
+      "recommendation": "Replace Optional[str] with str | None on line 25 and remove the typing.Optional import if it becomes unused"
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/conversation.py",
+      "title": "List[T] annotations in new endpoint return types",
+      "problem": "get_assistant_folders (line 322) and its response_model decorator (line 320) both use typing.List[AssistantFolderListItem] instead of list[AssistantFolderListItem]",
+      "impact": "New code uses the explicitly-deprecated parameterized-generic form the guide lists as a blocking Avoid; will trigger ruff rule UP006",
+      "recommendation": "Replace List[AssistantFolderListItem] with list[AssistantFolderListItem] in the response_model decorator and function return annotation; remove List from the typing import if it becomes unused"
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/conversation_service.py",
+      "line": 387,
+      "title": "import_source write-once backfill bumps update_date",
+      "problem": "When import_source is set for the first time on an existing conversation (line 385–387), conversation.update() is called without touch_timestamp=False, using the default touch_timestamp=True",
+      "impact": "Bumps update_date on the first CLI sync of an existing chat, reordering the conversation in the sidebar and violating the explicit EPMCDME-15009 invariant that non-usage writes must not update timestamps",
+      "recommendation": "Change conversation.update() to conversation.update(touch_timestamp=False) on line 387, consistent with other non-usage writes in the same file"
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/conversation_service.py",
+      "line": 794,
+      "title": "get_assistant_folders passes NULL ids to Assistant.get_by_ids",
+      "problem": "select(Conversation.initial_assistant_id) at line 794 does not exclude NULL values; conversations where initial_assistant_id IS NULL contribute None to assistant_ids, which is then passed directly to Assistant.get_by_ids at line 812",
+      "impact": "None in the ids list may cause a DB query error or silently return unexpected rows; any user who has plain conversations (no initial_assistant_id set) will trigger this path on every GET /v1/assistant-folders call",
+      "recommendation": "Add .where(Conversation.initial_assistant_id.is_not(None)) to the select statement before .distinct()"
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/conversation_service.py",
+      "line": 871,
+      "title": "delete_assistant_folder returns folder_deleted=True when nothing deleted",
+      "problem": "folder_deleted=True is set unconditionally at line 873 in the return statement, even when conversation_ids is empty and the if conversation_ids: block (line 853) was skipped",
+      "impact": "Client receives deleted_conversation_ids=[] with folder_deleted=True — contradictory information causing incorrect UI state: the folder appears deleted when no row was actually removed (e.g. all conversations are pinned, imported, or in custom folders)",
+      "recommendation": "Set folder_deleted based on whether any conversations were found: folder_deleted=bool(conversation_business_ids)"
+    },
+    {
+      "id": "CR-006",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/conversation_service.py",
+      "line": 1819,
+      "title": "search_conversations ordering and result count silently changed",
+      "problem": "The method now returns type-ordered results (assistants first, then chats, then folders) with up to limit items per type, replacing the previous unified recency-sorted list capped at limit total; SearchResultItem.updated_at is Optional[datetime] and None for assistants, so they always appear first regardless of recency",
+      "impact": "Clients expecting a recency-sorted 20-item list silently receive up to 60 items in type-grouped order; the API contract change is not versioned and no documentation update accompanies it",
+      "recommendation": "Either restore the combined recency sort and single cap to preserve existing client behavior, or introduce an API version bump and document the new per-type response contract explicitly"
+    },
+    {
+      "id": "CR-007",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/external/alembic/env.py",
+      "line": 90,
+      "title": "ImportError in alembic env.py blocks all migrations",
+      "problem": "env.py:90 contains `from codemie.rest_api.models.assistant_folder import AssistantFolder`, but the rewritten assistant_folder.py defines only AssistantFolderListItem and AssistantFolderDeleteResponse; no AssistantFolder class exists in that module",
+      "impact": "Every alembic upgrade, downgrade, and autogenerate command fails with ImportError before any migration logic runs; the central deliverable of this change (w2x3y4z5a6b7_drop_assistant_folders) cannot be applied to any environment",
+      "recommendation": "Remove line 90 from src/external/alembic/env.py — the ORM class is gone and the table is dropped by migration w2x3y4z5a6b7, not by SQLAlchemy metadata autogenerate"
+    }
+  ]
+}

@@ -297,6 +297,7 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
     # Remove this after the migration is done
     is_folder_migrated: Optional[bool] = False
     category: Optional[str] = None
+    import_source: Optional[str] = None
 
     pending_checkpoint: Optional[dict] = SQLField(default=None, sa_column=Column(JSONB))
     pending_tool_call: Optional[dict] = SQLField(default=None, sa_column=Column(JSONB))
@@ -629,6 +630,7 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
                 c.is_workflow_conversation,
                 c.finished_at,
                 a.icon_url AS assistant_icon,
+                c.import_source,
                 ARRAY(
                     SELECT linked_assistant.name
                     FROM jsonb_array_elements_text(COALESCE(c.assistant_ids, '[]'::jsonb))
@@ -640,7 +642,7 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
             FROM conversations c
             LEFT JOIN assistants a ON a.id = c.initial_assistant_id
             WHERE c.user_id = :uid{filter_clauses}
-            ORDER BY COALESCE(c.update_date, c.date) DESC NULLS LAST
+            ORDER BY COALESCE(c.update_date, c.date) DESC NULLS LAST, c.conversation_id DESC
         """).bindparams(**params)
 
         with get_session() as session:
@@ -666,6 +668,7 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
                     very_last_msg_at=row.very_last_msg_at,
                     assistant_icon=row.assistant_icon,
                     assistant_names=row.assistant_names,
+                    import_source=row.import_source,
                     finished_at=row.finished_at,
                 )
             )
@@ -831,6 +834,7 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
                 date,
                 update_date,
                 is_workflow_conversation,
+                import_source,
                 finished_at
             FROM conversations
             WHERE user_id = :uid
@@ -863,6 +867,7 @@ class Conversation(BaseModelWithSQLSupport, Owned, table=True):
                     is_workflow=is_workflow,
                     workflow_id=row.initial_assistant_id if is_workflow else None,
                     conversation_id=row.conversation_id if is_workflow else None,
+                    import_source=row.import_source,
                     finished_at=row.finished_at,
                 )
             )
@@ -932,6 +937,7 @@ class ConversationListItem(BaseModel):
     # Assistant display fields
     assistant_icon: Optional[str] = None
     assistant_names: Optional[List[str]] = Field(default_factory=list)
+    import_source: Optional[str] = None
 
     finished_at: Optional[datetime] = None
 
@@ -970,6 +976,7 @@ class ConversationResponse(BaseModel):
     user_abilities: Optional[List[Action]] = None
     is_folder_migrated: Optional[bool] = False
     category: Optional[str] = None
+    import_source: Optional[str] = None
     tool_call_policy: Optional[ToolCallPolicy] = None
     pending_tool_call: Optional[ToolCallPendingEvent] = None
     date: Optional[datetime] = None
@@ -1030,17 +1037,18 @@ class ConversationHistoryPaginationData(PaginationData):
 
 
 class SearchResultItem(BaseModel):
-    """Single search result item (chat or folder)"""
+    """Single assistant, chat, or folder search result."""
 
-    id: str  # Chat ID or Folder ID
-    name: str  # Chat or folder name
-    updated_at: datetime  # Last update timestamp
-    type: Literal['chat', 'folder']  # Discriminator
+    id: str
+    name: str
+    updated_at: Optional[datetime] = None
+    type: Literal['assistant', 'chat', 'folder']
     folder: Optional[str] = None  # Parent folder (for chats only)
+    icon_url: Optional[str] = None  # Assistant avatar (for assistant results only)
     finished_at: Optional[datetime] = None  # Chat only; folders leave this unset
 
 
 class ConversationSearchResponse(BaseModel):
     """Response for conversation search endpoint"""
 
-    items: List[SearchResultItem]  # Combined chats + folders, sorted by updated_at DESC
+    items: List[SearchResultItem]

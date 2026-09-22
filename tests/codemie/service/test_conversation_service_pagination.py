@@ -50,6 +50,7 @@ class TestGetUserConversationsPaginated:
         row.very_last_msg_at = kwargs.get("very_last_msg_at")
         row.assistant_icon = kwargs.get("assistant_icon")
         row.assistant_names = kwargs.get("assistant_names", [])
+        row.import_source = kwargs.get("import_source")
         row.finished_at = kwargs.get("finished_at")
         return row
 

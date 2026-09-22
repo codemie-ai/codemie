@@ -19,7 +19,7 @@ import queue
 from typing import List, Optional
 
 from codemie_tools.base.models import Tool
-from fastapi import APIRouter, Depends, status, UploadFile, Response, Query
+from fastapi import APIRouter, Depends, status, UploadFile, Response, Query, Request
 from fastapi.encoders import jsonable_encoder
 from starlette.responses import StreamingResponse
 
@@ -32,6 +32,7 @@ from codemie.core.models import (
     UpdateConversationRequest,
     UpdateAiMessageRequest,
     UpdateConversationFolderRequest,
+    MoveConversationsToFolderRequest,
 )
 from codemie.rest_api.models.assistant import Assistant
 from codemie.rest_api.models.base import BaseModelWithSQLSupport, PaginatedListResponse, PaginationData
@@ -53,6 +54,10 @@ from codemie.rest_api.models.conversation import (
 )
 from codemie.rest_api.models.index import SortOrder
 from codemie.rest_api.models.conversation_folder import ConversationFolder
+from codemie.rest_api.models.assistant_folder import (
+    AssistantFolderDeleteResponse,
+    AssistantFolderListItem,
+)
 from codemie.rest_api.models.share.shared_conversation import SharedConversation
 from codemie.rest_api.routers.feedback import CONVERSATION_NOT_FOUND_MESSAGE, CONVERSATION_NOT_FOUND_HELP
 from codemie.rest_api.routers.utils import raise_access_denied, raise_forbidden, remove_nulls, NDJSON_MEDIA_TYPE
@@ -69,6 +74,7 @@ from codemie.service.constants import (
     MAX_HISTORY_ITEMS_PER_PAGE,
     DEFAULT_PAGE,
 )
+from codemie.core.constants import HEADER_CODEMIE_CLI, HEADER_CODEMIE_CLIENT
 from codemie.service.monitoring.conversation_monitoring_service import ConversationMonitoringService
 
 
@@ -97,14 +103,13 @@ def search_conversations(
     user: User = Depends(authenticate),
 ) -> ConversationSearchResponse:
     """
-    Search user's conversations and folders by name.
+    Search assistants visible to the user plus the user's conversations and folders by name.
 
-    Returns combined results sorted by update_date DESC.
     Case-insensitive partial matching on name/folder_name fields.
-    Limit: 20 results total.
+    Limit: 20 results per entity type.
     """
     try:
-        return ConversationService.search_conversations(user.id, query)
+        return ConversationService.search_conversations(user, query)
 
     except ExtendedHTTPException:
         raise
@@ -424,6 +429,30 @@ def delete_conversation_by_user(user: User = Depends(authenticate)) -> BaseRespo
     return BaseResponse(message="Conversation history cleared")
 
 
+@router.get(
+    "/assistant-folders",
+    response_model=list[AssistantFolderListItem],
+)
+def get_assistant_folders(user: User = Depends(authenticate)) -> list[AssistantFolderListItem]:
+    return ConversationService.get_assistant_folders(user)
+
+
+@router.delete(
+    "/assistant-folders/{assistant_id}",
+    response_model=AssistantFolderDeleteResponse,
+)
+def delete_assistant_folder(
+    assistant_id: str,
+    remove_conversations: bool = False,
+    user: User = Depends(authenticate),
+) -> AssistantFolderDeleteResponse:
+    return ConversationService.delete_assistant_folder(
+        user=user,
+        assistant_id=assistant_id,
+        remove_conversations=remove_conversations,
+    )
+
+
 @router.delete(
     "/conversations/{conversation_id}",
     response_model=BaseResponse,
@@ -596,6 +625,7 @@ def upsert_conversation_history(
     conversation_id: str,
     request: UpsertHistoryRequest,
     response: Response,
+    http_request: Request,
     user: User = Depends(authenticate),
 ) -> UpsertHistoryResponse:
     """
@@ -635,8 +665,12 @@ def upsert_conversation_history(
         f"messages_in_request={len(request.history)}"
     )
 
+    import_source = ConversationService.resolve_chat_import_source(
+        http_request.headers.get(HEADER_CODEMIE_CLIENT),
+        http_request.headers.get(HEADER_CODEMIE_CLI),
+    )
     result = ConversationService.upsert_conversation_with_history(
-        conversation_id=conversation_id, request=request, user=user
+        conversation_id=conversation_id, request=request, user=user, import_source=import_source
     )
 
     # Set appropriate status code based on whether conversation was created
@@ -813,6 +847,30 @@ def get_conversation_folder_list(user: User = Depends(authenticate)) -> List[Bas
     Get a list if all user folders
     """
     return ConversationFolder.get_all_by_fields({"user_id.keyword": user.id})
+
+
+@router.put(
+    "/conversations/folders/move",
+    response_model=BaseResponse,
+)
+def move_conversations_to_folder(
+    request: MoveConversationsToFolderRequest,
+    user: User = Depends(authenticate),
+) -> BaseResponse:
+    """Atomically move existing conversations into one user-owned Custom Folder."""
+    try:
+        moved_count = ConversationService.move_conversations_to_folder(
+            user=user,
+            conversation_ids=request.conversation_ids,
+            target_folder=request.target_folder,
+        )
+    except ValueError as error:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message=str(error),
+        )
+
+    return BaseResponse(message=f"Moved {moved_count} conversations")
 
 
 @router.delete(

@@ -185,3 +185,23 @@ def test_sql_update(mock_get_engine, mock_session_class):
     assert model.update_date != old_update_date
     mock_session.merge.assert_called_once_with(model)
     mock_session.commit.assert_called_once()
+
+
+@patch("codemie.rest_api.models.base.Session")
+@patch("codemie.clients.postgres.PostgresClient.get_engine")
+def test_sql_update_with_touch_timestamp_false_leaves_update_date_unchanged(mock_get_engine, mock_session_class):
+    # Given: a caller that persists a non-usage field change (e.g. rename/pin/folder move) and
+    # must not bump update_date, so it does not disturb any recency-based sort (EPMCDME-15009).
+    model = TestSQLModel(id="test-id", name="test")
+    mock_session = MagicMock()
+    mock_session_class.return_value.__enter__.return_value = mock_session
+    old_update_date = model.update_date
+
+    # When
+    result = model.update(touch_timestamp=False)
+
+    # Then
+    assert isinstance(result, PostResponse)
+    assert model.update_date == old_update_date
+    mock_session.merge.assert_called_once_with(model)
+    mock_session.commit.assert_called_once()

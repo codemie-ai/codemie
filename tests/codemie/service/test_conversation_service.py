@@ -140,8 +140,11 @@ def test_conversation_service_update(
         request=mock_update_request,
     )
 
-    mock_update.assert_called()
-    mock_touch_folder.assert_called_once_with("test", mock_conversation.user_id)
+    # Rename/pin/folder-move are menu actions, not usage (EPMCDME-15009 reopened AC): they must
+    # not bump the conversation's update_date, and a move must not touch the target folder's
+    # update_date either.
+    mock_update.assert_called_once_with(touch_timestamp=False)
+    mock_touch_folder.assert_not_called()
     assert conversation.conversation_name == "New Name"
     assert conversation.llm_model == LLMService.BASE_NAME_GPT_41
     assert conversation.enable_image_generation is True
@@ -166,6 +169,42 @@ def test_conversation_service_update_allows_clearing_image_generation_model(mock
 
     assert conversation.enable_image_generation is False
     assert conversation.image_generation_model is None
+
+
+@patch("codemie.service.conversation_service.Conversation.get_all_by_fields")
+@patch("codemie.service.conversation_service.ConversationFolder.get_by_folder")
+@patch("codemie.service.conversation_service.ConversationFolder.create_folder")
+def test_update_conversation_folder_renames_in_place_without_touching_timestamps(
+    mock_create_folder, mock_get_by_folder, mock_get_all_by_fields, mock_user
+):
+    existing_folder = MagicMock()
+    mock_get_by_folder.return_value = existing_folder
+    member_conversation = MagicMock()
+    mock_get_all_by_fields.return_value = [member_conversation]
+
+    ConversationService.update_conversation_folder(user=mock_user, folder="Old", new_folder="New")
+
+    # A folder rename must not create/delete the folder row, and must not bump update_date on
+    # the folder itself or on any conversation inside it (EPMCDME-15009 reopened AC).
+    mock_create_folder.assert_not_called()
+    assert existing_folder.folder_name == "New"
+    existing_folder.update.assert_called_once_with(touch_timestamp=False)
+    assert member_conversation.folder == "New"
+    member_conversation.update.assert_called_once_with(refresh=True, touch_timestamp=False)
+
+
+@patch("codemie.service.conversation_service.Conversation.get_all_by_fields")
+@patch("codemie.service.conversation_service.ConversationFolder.get_by_folder")
+@patch("codemie.service.conversation_service.ConversationFolder.create_folder")
+def test_update_conversation_folder_creates_when_missing(
+    mock_create_folder, mock_get_by_folder, mock_get_all_by_fields, mock_user
+):
+    mock_get_by_folder.return_value = None
+    mock_get_all_by_fields.return_value = []
+
+    ConversationService.update_conversation_folder(user=mock_user, folder="Old", new_folder="New")
+
+    mock_create_folder.assert_called_once_with("New", mock_user.id)
 
 
 @patch("codemie.service.conversation_service.Conversation.update")
@@ -422,9 +461,11 @@ def test_clear_conversation_history_raises_409_when_finished(mock_conversation):
     assert exc_info.value.code == 409
 
 
+@patch("codemie.service.conversation_service.AssistantRepository")
 @patch("codemie.service.conversation_service.ConversationFolder.search_by_name_and_user", return_value=[])
 @patch("codemie.service.conversation_service.Conversation.search_by_name_and_user")
-def test_search_conversations_includes_finished_state(mock_search_chats, _mock_search_folders):
+def test_search_conversations_includes_finished_state(mock_search_chats, _mock_search_folders, mock_repo_cls):
+    mock_repo_cls.return_value.query.return_value = {"data": []}
     finished_at = datetime(2026, 8, 11, 12, 0, 0)
     mock_search_chats.return_value = [
         ConversationListItem(
@@ -435,7 +476,9 @@ def test_search_conversations_includes_finished_state(mock_search_chats, _mock_s
             finished_at=finished_at,
         )
     ]
-    result = ConversationService.search_conversations("user-1", "done")
+    mock_user = MagicMock()
+    mock_user.id = "user-1"
+    result = ConversationService.search_conversations(mock_user, "done")
     assert len(result.items) == 1
     assert result.items[0].finished_at == finished_at
 
@@ -464,6 +507,63 @@ def test_conversation_service_create(
 
     mock_metrics_save.assert_called()
     mock_conv_save.assert_called()
+
+
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.get_by_conversation_id")
+@patch("codemie.rest_api.models.conversation.ConversationMetrics.save")
+@patch("codemie.rest_api.models.conversation.Conversation.save")
+def test_create_workflow_conversation_saves_conversation_and_metrics(
+    mock_conv_save,
+    mock_metrics_save,
+    mock_metrics_get,
+    mock_calculate_metrics,
+    mock_user,
+):
+    mock_metrics_get.side_effect = KeyError("Metrics not found")
+
+    ConversationService.create_conversation(mock_user, "workflow-123", is_workflow_conversation=True)
+
+    mock_conv_save.assert_called_once()
+    mock_metrics_save.assert_called_once()
+
+
+@patch("codemie.service.conversation_service.get_session")
+def test_delete_assistant_folder_no_op_when_remove_conversations_false(mock_get_session, mock_user):
+    result = ConversationService.delete_assistant_folder(
+        user=mock_user,
+        assistant_id="assistant-1",
+        remove_conversations=False,
+    )
+
+    mock_get_session.assert_not_called()
+    assert result.deleted_conversation_ids == []
+    assert result.folder_deleted is False
+
+
+@patch("codemie.core.workflow_models.workflow_execution.WorkflowExecution.delete_by_conversation_ids")
+@patch("codemie.service.conversation_service.get_session")
+def test_delete_assistant_folder_deletes_conversations_when_remove_conversations_true(
+    mock_get_session,
+    mock_delete_workflow_executions,
+    mock_user,
+):
+    session = MagicMock()
+    conversation_result = MagicMock()
+    conversation_result.all.return_value = [("chat-1", "biz-1"), ("chat-2", "biz-2")]
+    session.exec.side_effect = [conversation_result, MagicMock(), MagicMock(), MagicMock()]
+    mock_get_session.return_value.__enter__.return_value = session
+
+    result = ConversationService.delete_assistant_folder(
+        user=mock_user,
+        assistant_id="assistant-1",
+        remove_conversations=True,
+    )
+
+    assert result.deleted_conversation_ids == ["biz-1", "biz-2"]
+    assert result.folder_deleted is True
+    mock_delete_workflow_executions.assert_called_once_with(session, ["chat-1", "chat-2"])
+    session.commit.assert_called_once()
 
 
 @patch("codemie.rest_api.models.conversation.ConversationMetrics.calculate_metrics")
@@ -1162,6 +1262,119 @@ def test_upsert_chat_history_without_background_tasks_still_sets_legacy_name(
     )
 
     mock_conv_save.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# move_conversations_to_folder
+# ---------------------------------------------------------------------------
+
+
+@patch("codemie.service.conversation_service.get_session")
+def test_move_conversations_to_folder_happy_path(mock_get_session, mock_user):
+    session = MagicMock()
+    folder_row = MagicMock()
+    conv_rows = [
+        MagicMock(conversation_id="conv-1", import_source=None),
+        MagicMock(conversation_id="conv-2", import_source=None),
+    ]
+    session.exec.side_effect = [
+        MagicMock(first=MagicMock(return_value=folder_row)),
+        MagicMock(all=MagicMock(return_value=conv_rows)),
+        MagicMock(),
+    ]
+    mock_get_session.return_value.__enter__.return_value = session
+    mock_user.id = "user-1"
+
+    result = ConversationService.move_conversations_to_folder(
+        user=mock_user,
+        conversation_ids=["conv-1", "conv-2"],
+        target_folder="My Folder",
+    )
+
+    assert result == 2
+    session.commit.assert_called_once()
+
+    # A move is not usage and not folder activity (EPMCDME-15009 reopened AC): exactly 3
+    # statements run (lock folder, lock conversations, update folder column) — no fourth
+    # statement touching conversation_folders.update_date, and the conversations UPDATE itself
+    # never sets update_date.
+    assert session.exec.call_count == 3
+    update_stmt_text = str(session.exec.call_args_list[2].args[0])
+    assert "update_date" not in update_stmt_text
+    assert "conversation_folders" not in update_stmt_text
+
+
+@patch("codemie.service.conversation_service.get_session")
+def test_move_conversations_to_folder_rejects_imported_chat(mock_get_session, mock_user):
+    session = MagicMock()
+    folder_row = MagicMock()
+    conv_rows = [
+        MagicMock(conversation_id="conv-1", import_source="claude_code"),
+    ]
+    session.exec.side_effect = [
+        MagicMock(first=MagicMock(return_value=folder_row)),
+        MagicMock(all=MagicMock(return_value=conv_rows)),
+    ]
+    mock_get_session.return_value.__enter__.return_value = session
+    mock_user.id = "user-1"
+
+    with pytest.raises(ValueError, match="Imported conversations"):
+        ConversationService.move_conversations_to_folder(
+            user=mock_user,
+            conversation_ids=["conv-1"],
+            target_folder="My Folder",
+        )
+
+
+def test_move_conversations_to_folder_raises_on_empty_ids(mock_user):
+    with pytest.raises(ValueError, match="At least one valid"):
+        ConversationService.move_conversations_to_folder(
+            user=mock_user,
+            conversation_ids=[],
+            target_folder="My Folder",
+        )
+
+
+# ---------------------------------------------------------------------------
+# get_assistant_folders
+# ---------------------------------------------------------------------------
+
+
+@patch("codemie.service.conversation_service.get_session")
+def test_get_assistant_folders_returns_empty_list_when_no_registrations(mock_get_session, mock_user):
+    session = MagicMock()
+    query_result = MagicMock()
+    query_result.all.return_value = []
+    session.exec.return_value = query_result
+    mock_get_session.return_value.__enter__.return_value = session
+
+    result = ConversationService.get_assistant_folders(user=mock_user)
+
+    assert result == []
+
+
+@patch("codemie.service.conversation_service.get_session")
+def test_get_assistant_folders_returns_mapped_items(mock_get_session, mock_user):
+    session = MagicMock()
+    query_result = MagicMock()
+    query_result.all.return_value = ["asst-1"]
+    session.exec.return_value = query_result
+    mock_get_session.return_value.__enter__.return_value = session
+
+    mock_assistant = MagicMock()
+    mock_assistant.id = "asst-1"
+    mock_assistant.name = "My Assistant"
+    mock_assistant.icon_url = "https://example.com/icon.png"
+
+    mock_user.id = "user-1"
+
+    with patch("codemie.rest_api.models.assistant.Assistant.get_by_ids", return_value=[mock_assistant]):
+        result = ConversationService.get_assistant_folders(user=mock_user)
+
+    assert len(result) == 1
+    assert result[0].assistant_id == "asst-1"
+    assert result[0].name == "My Assistant"
+    assert result[0].icon_url == "https://example.com/icon.png"
 
 
 @patch("codemie.service.monitoring.routing_monitoring_service.RoutingMonitoringService.send_routing_metric")

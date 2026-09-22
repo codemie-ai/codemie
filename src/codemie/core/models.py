@@ -801,6 +801,11 @@ class UpdateConversationFolderRequest(ConfiguredModel):
     folder: str
 
 
+class MoveConversationsToFolderRequest(ConfiguredModel):
+    conversation_ids: list[str]
+    target_folder: str
+
+
 class UpdateConversationRequest(ConfiguredModel):
     folder: Optional[str] = None
     pinned: Optional[bool] = None

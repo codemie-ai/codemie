@@ -515,8 +515,9 @@ class BaseModelWithSQLSupport(CommonBaseModel):
             session.refresh(self)
         return PostResponse(id=str(self.id))
 
-    def update(self, refresh=False, validate=True):
-        self.update_date = datetime.now()
+    def update(self, refresh=False, validate=True, touch_timestamp=True):
+        if touch_timestamp:
+            self.update_date = datetime.now()
         if validate:
             validation_message = self.validate_fields()
             if validation_message:
