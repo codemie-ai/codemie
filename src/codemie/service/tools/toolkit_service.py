@@ -1173,6 +1173,7 @@ class ToolkitService:
             List of context-based tools
         """
         tools = []
+        has_code_context = False
 
         for context in assistant.context:
             if context.context_type == ContextType.KNOWLEDGE_BASE:
@@ -1190,6 +1191,7 @@ class ToolkitService:
                     history_index=request.history_index if request else None,
                 )
             elif context.context_type == ContextType.CODE:
+                has_code_context = True
                 cls._add_code_tools(tools, context, assistant, request, is_react, exclude_extra_context_tools)
 
                 cls._add_git_related_tools(
@@ -1201,6 +1203,14 @@ class ToolkitService:
                     is_react=is_react,
                     request_uuid=request_uuid,
                 )
+
+        if not has_code_context and any(tk.toolkit == ToolSet.GIT and tk.tools for tk in assistant.toolkits):
+            logger.warning(
+                f"Assistant '{assistant.name}' (id={assistant.id}) has Git tools enabled "
+                f"but no Git datasource (CODE context) attached. "
+                f"Git tools cannot function without a Git datasource — "
+                f"attach one in Context & Data Sources."
+            )
 
         return tools
 

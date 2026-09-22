@@ -1,0 +1,45 @@
+{
+  "gate_id": "code-review.final",
+  "decision": "request-changes",
+  "confidence": "low",
+  "rationale": "Critical dead-code bug: the new warning block in _add_git_related_tools (toolkit_service.py:1567-1574) is unreachable. The sole production caller (add_context_tools:1187) invokes _add_git_related_tools exclusively inside the elif context.context_type == ContextType.CODE branch, so the guard `if context.context_type != ContextType.CODE` inside the callee is always False in production. The entire MR delivers zero functional change — every affected assistant continues to run without diagnostic output. The new tests pass but exercise the unreachable branch by calling the private helper directly with a non-CODE context, so they do not guard against the intended regression. Also, the warning is scoped only to ToolSet.GIT even though the message itself says 'Attach a Git datasource under VCS tools' and ToolSet.VCS (Github/Gitlab/AzureDevOps) is a separate toolkit that the UI treats as a peer of Git. No spec artifact was supplied — acceptance lens skipped (no-spec), confidence forced to low. Blind lens returned 4 test-fixture nits (folded into CR-002). Dismissed 2 low-confidence findings (per-context cardinality EC-4 — moot until CR-001 is fixed; MagicMock name repr EC-5 — subsumed by CR-002).",
+  "risk_flags": ["dead-code", "test-coverage"],
+  "business_review": [],
+  "standards_review": [
+    {"standard": "code-quality", "status": "na", "notes": "No code-quality standards guide passed; nothing to check against."},
+    {"standard": "security", "status": "pass", "notes": "No secrets, injection, or unsafe I/O in the diff. Warning message includes assistant name/id which are not credentials."},
+    {"standard": "commit-format", "status": "na", "notes": "No git-workflow guide passed."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "triage": "patch",
+      "severity": "critical",
+      "title": "Warning block is unreachable dead code — production behavior unchanged",
+      "file": "src/codemie/service/tools/toolkit_service.py:1567",
+      "problem": "The new lines 1567-1574 are guarded by `if context.context_type != ContextType.CODE:` inside `_add_git_related_tools`. The only production caller, `add_context_tools` at line 1187, invokes this method exclusively from the `elif context.context_type == ContextType.CODE:` branch (line 1184). Therefore the guard is always False in production and the warning never fires.",
+      "impact": "Operators who misconfigure an assistant with Git tools but no Git (CODE) datasource receive no diagnostic — the MR delivers zero user-facing change. This is a false-positive fix: MR description and UI badge both promise a warning that never appears in the backend log.",
+      "recommendation": "Move the warning to `add_context_tools`. After the `for context in assistant.context` loop, if the assistant has any `ToolSet.GIT` toolkit with `tools` and no CODE context was iterated, emit the warning once. Then rewrite tests at that level (see CR-002)."
+    },
+    {
+      "id": "CR-002",
+      "triage": "patch",
+      "severity": "major",
+      "title": "New tests exercise the unreachable branch and do not cover the real regression",
+      "file": "tests/codemie/service/test_assistant_service_add_git_tools_with_non_code_context.py:180",
+      "problem": "Both new tests call the private `_add_git_related_tools` directly with a non-CODE `mock_kb_context`, exercising the dead code path (see CR-001). They pass by construction. The real scenario the MR claims to cover — `add_context_tools` invoked on an assistant whose `context` list contains no CODE entry while `toolkits` includes a GIT toolkit with tools — has zero coverage.",
+      "impact": "Green CI gives false confidence that the misconfiguration warning works. After CR-001 is fixed by moving the warning, these tests continue to pass but still do not cover the new location — the regression they were written to guard against remains uncovered.",
+      "recommendation": "Rewrite the tests against `add_context_tools`: construct an assistant with `context = [kb_or_provider_context]` and `toolkits = [ToolKitDetails(toolkit=ToolSet.GIT, tools=[...])]`, invoke `add_context_tools`, assert the warning fires exactly once. Keep a single narrow test on the direct helper if you want the guard tested in isolation; drop the other."
+    },
+    {
+      "id": "CR-003",
+      "triage": "decision_needed",
+      "severity": "major",
+      "title": "VCS toolkits (Github/Gitlab/AzureDevOps) are excluded from the check, but the warning message says 'VCS tools'",
+      "file": "src/codemie/service/tools/toolkit_service.py:1567",
+      "problem": "The check filters on `tk.toolkit == ToolSet.GIT` only. `ToolSet.VCS` is a separate enum value covering the Github/Gitlab/AzureDevOps integrations (visible as its own group in the UI, distinct from Git). The warning message itself instructs 'Attach a Git datasource under VCS tools to enable Git tools' — implying VCS toolkits are the intended scope. If the intended behavior is to warn for both GIT and VCS, the current implementation is under-scoped. If VCS is intentionally excluded (because it does not need a CODE datasource), the warning message is misleading.",
+      "impact": "Depending on intent: either half the misconfiguration cases go undetected (VCS-only assistants with no CODE datasource), or the warning message misdirects operators to the wrong section of the UI.",
+      "recommendation": "Confirm intent with the story owner. Either (a) extend the filter to `tk.toolkit in (ToolSet.GIT, ToolSet.VCS)` and update tests to cover both, or (b) rewrite the warning message to name only 'Git tools' and remove the 'under VCS tools' clause. Do not ship the current combination."
+    }
+  ]
+}

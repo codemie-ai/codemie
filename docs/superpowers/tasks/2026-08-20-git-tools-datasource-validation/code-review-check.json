@@ -1,0 +1,19 @@
+{
+  "gate_id": "code-review.check",
+  "decision": "approve",
+  "confidence": "medium",
+  "rationale": "Fix-up diff cleanly addresses all three prior findings and introduces no new high-risk issues. CR-001 (dead code): the warning block was removed from `_add_git_related_tools` and re-implemented in `add_context_tools` after the context loop, guarded by `not has_code_context and any(tk.toolkit == ToolSet.GIT and tk.tools ...)` — now reachable from the sole production caller. CR-002 (test gap): the two dead-branch tests were removed and replaced by five new tests in `test_toolkit_service_git_datasource_warning.py` that drive `add_context_tools` end-to-end, covering the positive case, the negative case with a CODE context, the empty-tools case, the no-toolkit case, and cardinality (single warning across multiple non-CODE contexts). Manual test run passed 12/12 including the pre-existing suite. CR-003 (VCS scope + misleading message): the warning message was rewritten to say 'attach one in Context & Data Sources' — the misleading 'under VCS tools' clause is gone. Scope remains `ToolSet.GIT` only, aligned with the frontend badge which also filters on TOOLKITS.Git per the MR description. Whether VCS toolkits (Github/Gitlab/AzureDevOps) should also trigger the warning is a product decision resolved by keeping the current backend/frontend contract consistent; the misleading-message half of CR-003 is fixed and the scope half is a conscious cross-repo alignment. business_review and standards_review carried forward from prior verdict.",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    {"standard": "code-quality", "status": "na", "notes": "No code-quality standards guide passed; nothing to check against."},
+    {"standard": "security", "status": "pass", "notes": "No secrets, injection, or unsafe I/O in the diff. Warning message includes assistant name/id which are not credentials."},
+    {"standard": "commit-format", "status": "na", "notes": "No git-workflow guide passed."}
+  ],
+  "findings": [],
+  "finding_status": {
+    "CR-001": "resolved",
+    "CR-002": "resolved",
+    "CR-003": "resolved"
+  }
+}
