@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "gate_id": "code-review.final",
+  "reviewed_at": "2026-09-23T15:55:00Z",
+  "decision": "approve",
+  "confidence": "high",
+  "risk_flags": [],
+  "rationale": "The MR implementation matches the intended LiteLLM routing_decision contract. The maintainer confirmed that BedrockCostModelFixLogger is dead code and does not need restoration, and that LiteLLM supplies the correct savings-baseline model group; those review findings are dismissed. The callback behavior is approved for merge.",
+  "business_review": [
+    {
+      "kind": "feature",
+      "item": "Read routing metadata from routing_decision",
+      "status": "pass",
+      "notes": "Routing fields are extracted and emitted through the CodeMie-consumed headers."
+    },
+    {
+      "kind": "feature",
+      "item": "Classifier cost and token accounting",
+      "status": "pass",
+      "notes": "Classifier cost is delegated to LiteLLM's native header and classifier token attributes are not emitted for LiteLLM."
+    },
+    {
+      "kind": "feature",
+      "item": "Savings baseline resolution",
+      "status": "pass",
+      "notes": "LiteLLM supplies the correct baseline model group used by CodeMie for counterfactual pricing."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "pass",
+      "notes": "The reviewed commit uses the documented EPMCDME-14888: Description format."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "The implementation is scoped to the LiteLLM routing contract and preserves callback failure isolation."
+    },
+    {
+      "kind": "verification",
+      "status": "pass",
+      "notes": "The MR reports 475 targeted tests passed and clean Ruff checks; the focused verification suite was rerun locally."
+    }
+  ],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "MR4313-001",
+      "status": "accepted",
+      "notes": "Maintainer accepted the callback registration state for this MR review."
+    },
+    {
+      "id": "MR4313-002",
+      "status": "dismissed",
+      "notes": "BedrockCostModelFixLogger is dead code and does not need restoration."
+    },
+    {
+      "id": "MR4313-003",
+      "status": "dismissed",
+      "notes": "LiteLLM returns the correct savings-baseline model group; an additional CodeMie fallback is not required."
+    }
+  ],
+  "reviewed_range": {
+    "base_sha": "6424c51e8b44b000f53cae63ea46866769456193",
+    "head_sha": "1e5884e37c415356c3a8ff4e95441e964658159e"
+  }
+}

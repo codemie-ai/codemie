@@ -74,15 +74,11 @@ def test_routing_info_prefers_generation_info_over_corrupted_response_metadata()
     """Assistant responses must not merge duplicated/corrupted header copies."""
     clean_headers = {
         "x-litellm-router-routed-model": "gpt-5.6-luna-2026-07-09",
-        "x-litellm-classifier-prompt-tokens": "700",
-        "x-litellm-classifier-completion-tokens": "14",
-        "x-litellm-classifier-total-tokens": "714",
+        "x-litellm-classifier-cost": "0.0009",
     }
     corrupted_headers = {
         "x-litellm-router-routed-model": "gpt-5.6-luna-2026-07-09gpt-5.6-luna-2026-07-09",
-        "x-litellm-classifier-prompt-tokens": "700700",
-        "x-litellm-classifier-completion-tokens": "1414",
-        "x-litellm-classifier-total-tokens": "714714",
+        "x-litellm-classifier-cost": "0.0018",
     }
     result = LLMResult(
         generations=[
@@ -98,9 +94,7 @@ def test_routing_info_prefers_generation_info_over_corrupted_response_metadata()
     info = LiteLLMRouter(name="test").routing_info(None, _iter_header_maps(result))
 
     assert info.routed_model == "gpt-5.6-luna-2026-07-09"
-    assert info.classifier_input_tokens == 700
-    assert info.classifier_output_tokens == 14
-    assert info.classifier_total_tokens == 714
+    assert info.classifier_cost_usd == pytest.approx(0.0009)
 
 
 def test_routing_info_from_headers_empty_when_no_router_headers():
@@ -126,15 +120,13 @@ def test_litellm_router_meta_from_headers_reads_known_fields():
         "x-litellm-router-routed-model": "claude-haiku-4-5",
         "x-litellm-router-tier": "efficient",
         "x-litellm-classifier-cost": "0.0009",
-        "x-litellm-classifier-prompt-tokens": "120",
-        "x-litellm-classifier-completion-tokens": "5",
+        "x-litellm-router-savings-baseline-model-group": "claude-opus-5",
     }
     meta = LiteLLMRouterHeaders.from_headers(headers)
     assert meta.routed_model == "claude-haiku-4-5"
     assert meta.tier == "efficient"
     assert meta.classifier_cost_usd == 0.0009
-    assert meta.classifier_prompt_tokens == 120
-    assert meta.classifier_completion_tokens == 5
+    assert meta.savings_baseline_model_group == "claude-opus-5"
 
 
 def test_litellm_router_meta_from_headers_returns_empty_for_unknown():
@@ -145,11 +137,11 @@ def test_litellm_router_meta_from_headers_returns_empty_for_unknown():
 
 def test_litellm_router_meta_from_headers_invalid_values_become_none():
     headers = {
-        "x-litellm-classifier-prompt-tokens": "not-a-number",
+        "x-litellm-router-score": "not-a-number",
         "x-litellm-classifier-cost": "invalid",
     }
     meta = LiteLLMRouterHeaders.from_headers(headers)
-    assert meta.classifier_prompt_tokens is None
+    assert meta.score is None
     assert meta.classifier_cost_usd is None
 
 
@@ -159,7 +151,7 @@ def test_field_to_header_keys_match_dataclass_fields():
 
 
 def test_extracts_new_routing_fields_from_litellm_headers():
-    """LiteLLMRouter.routing_info maps tier, cause→decision_source, score→confidence, tokens.
+    """LiteLLMRouter.routing_info maps tier, cause→decision_source, score→confidence.
 
     Uses AIMessage (single header source) so additive fields are not doubled.
     """
@@ -172,9 +164,6 @@ def test_extracts_new_routing_fields_from_litellm_headers():
                 "x-litellm-router-score": "0.87",
                 "x-litellm-router-type": "complexity",
                 "x-litellm-router-classifier-model": "claude-4-5-haiku",
-                "x-litellm-classifier-prompt-tokens": "150",
-                "x-litellm-classifier-completion-tokens": "45",
-                "x-litellm-classifier-total-tokens": "195",
                 "x-litellm-classifier-cost": "0.0",
             }
         },
@@ -189,9 +178,24 @@ def test_extracts_new_routing_fields_from_litellm_headers():
     assert info.confidence == pytest.approx(0.87)
     assert info.router_type == "complexity"
     assert info.classifier_model == "claude-4-5-haiku"
-    assert info.classifier_input_tokens == 150
-    assert info.classifier_output_tokens == 45
-    assert info.classifier_total_tokens == 195
+
+
+def test_classifier_token_headers_are_not_read():
+    """LiteLLM's routing_decision carries only the classifier's cost; its tokens are not
+    correlated back to the parent response, so stray token headers must not be trusted."""
+    info = routing_info_from_headers(
+        {
+            "x-litellm-classifier-cost": "0.0009",
+            "x-litellm-classifier-prompt-tokens": "150",
+            "x-litellm-classifier-completion-tokens": "45",
+            "x-litellm-classifier-total-tokens": "195",
+        }
+    )
+
+    assert info.classifier_cost_usd == pytest.approx(0.0009)
+    assert info.classifier_input_tokens is None
+    assert info.classifier_output_tokens is None
+    assert info.classifier_total_tokens is None
 
 
 def test_litellm_routing_cost_is_unknown_when_classifier_cost_is_missing():

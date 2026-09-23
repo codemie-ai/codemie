@@ -25,6 +25,15 @@ from codemie.service.monitoring.base_monitoring_service import BaseMonitoringSer
 if TYPE_CHECKING:
     from codemie.rest_api.security.user import User
 
+_LITELLM_ROUTING_FAMILY = "litellm"
+_CLASSIFIER_TOKEN_ATTRIBUTES = (
+    "classifier_input_tokens",
+    "classifier_output_tokens",
+    "classifier_cached_tokens",
+    "classifier_cache_creation_tokens",
+    "classifier_total_tokens",
+)
+
 
 class RoutingMonitoringService(BaseMonitoringService):
     """Emit routing_call_usage events to Elasticsearch via OpenTelemetry log exporter."""
@@ -55,48 +64,50 @@ class RoutingMonitoringService(BaseMonitoringService):
         """
         if routing.is_empty():
             return
-        cls.send_count_metric(
-            name=MetricName.ROUTING_CALL_USAGE.value,
-            attributes={
-                "user_id": str(user.id),
-                "user_email": getattr(user, "email", None) or getattr(user, "username", None),
-                "project": project,
-                "conversation_id": conversation_id,
-                "assistant_id": str(assistant_id) if assistant_id else None,
-                "request_id": request_id,
-                "llm_run_id": llm_run_id,
-                "endpoint": endpoint,
-                # routed_model_label intentionally omitted: it's a UI display label derived
-                # from routed_model for chat rendering, not an analytics dimension. routed_model
-                # itself is already emitted below and is what every routing query groups by.
-                "routed_model": routing.routed_model,
-                "requested_model": routing.requested_model,
-                "tier": routing.tier,
-                "routing_tier_raw": routing.routing_tier_raw,
-                "decision_source": routing.decision_source,
-                "routing_source": routing.routing_source,
-                "confidence": routing.confidence,
-                "routing_family": routing.routing_family,
-                "routing_cost_known": routing.routing_cost_known,
-                "classifier_model": routing.classifier_model,
-                "router_type": routing.router_type,
-                "router_score": routing.router_score,
-                "classifier_cost_usd": routing.classifier_cost_usd,
-                "classifier_input_tokens": routing.classifier_input_tokens,
-                "classifier_output_tokens": routing.classifier_output_tokens,
-                "classifier_cached_tokens": routing.classifier_cached_tokens,
-                "classifier_cache_creation_tokens": routing.classifier_cache_creation_tokens,
-                "classifier_total_tokens": routing.classifier_total_tokens,
-                "routed_input_tokens": routing.routed_input_tokens,
-                "routed_output_tokens": routing.routed_output_tokens,
-                "routed_cached_tokens": routing.routed_cached_tokens,
-                "routed_cache_creation_tokens": routing.routed_cache_creation_tokens,
-                "routed_total_tokens": routing.routed_total_tokens,
-                "routed_cache_hit": routing.routed_cache_hit,
-                # Savings fields (NEW)
-                "counterfactual_model": routing.counterfactual_model,
-                "original_cost_usd": routing.original_cost_usd,
-                "estimated_max_cost_usd": routing.estimated_max_cost_usd,
-                "potential_savings_usd": routing.potential_savings_usd,
-            },
-        )
+        attributes = {
+            "user_id": str(user.id),
+            "user_email": getattr(user, "email", None) or getattr(user, "username", None),
+            "project": project,
+            "conversation_id": conversation_id,
+            "assistant_id": str(assistant_id) if assistant_id else None,
+            "request_id": request_id,
+            "llm_run_id": llm_run_id,
+            "endpoint": endpoint,
+            # routed_model_label intentionally omitted: it's a UI display label derived
+            # from routed_model for chat rendering, not an analytics dimension. routed_model
+            # itself is already emitted below and is what every routing query groups by.
+            "routed_model": routing.routed_model,
+            "requested_model": routing.requested_model,
+            "tier": routing.tier,
+            "routing_tier_raw": routing.routing_tier_raw,
+            "decision_source": routing.decision_source,
+            "routing_source": routing.routing_source,
+            "confidence": routing.confidence,
+            "routing_family": routing.routing_family,
+            "routing_cost_known": routing.routing_cost_known,
+            "classifier_model": routing.classifier_model,
+            "router_type": routing.router_type,
+            "router_score": routing.router_score,
+            "classifier_cost_usd": routing.classifier_cost_usd,
+            "classifier_input_tokens": routing.classifier_input_tokens,
+            "classifier_output_tokens": routing.classifier_output_tokens,
+            "classifier_cached_tokens": routing.classifier_cached_tokens,
+            "classifier_cache_creation_tokens": routing.classifier_cache_creation_tokens,
+            "classifier_total_tokens": routing.classifier_total_tokens,
+            "routed_input_tokens": routing.routed_input_tokens,
+            "routed_output_tokens": routing.routed_output_tokens,
+            "routed_cached_tokens": routing.routed_cached_tokens,
+            "routed_cache_creation_tokens": routing.routed_cache_creation_tokens,
+            "routed_total_tokens": routing.routed_total_tokens,
+            "routed_cache_hit": routing.routed_cache_hit,
+            # Savings fields (NEW)
+            "counterfactual_model": routing.counterfactual_model,
+            "original_cost_usd": routing.original_cost_usd,
+            "estimated_max_cost_usd": routing.estimated_max_cost_usd,
+            "potential_savings_usd": routing.potential_savings_usd,
+        }
+        if routing.routing_family == _LITELLM_ROUTING_FAMILY:
+            # LiteLLM reports only the classifier's cost, never its tokens.
+            for key in _CLASSIFIER_TOKEN_ATTRIBUTES:
+                attributes.pop(key)
+        cls.send_count_metric(name=MetricName.ROUTING_CALL_USAGE.value, attributes=attributes)

@@ -86,7 +86,32 @@ def test_routing_info_counterfactual_present_even_with_no_header_maps():
     assert info.routed_model is None
 
 
-def test_extract_classifier_usage_reads_litellm_headers():
+def test_routing_info_prefers_litellm_savings_baseline_over_catalog_counterfactual():
+    """CodeMie prices the counterfactual LiteLLM's own savings are measured against."""
+    router = _router(name="claude-only-expensive-no-aff", counterfactual_model="claude-sonnet-5")
+    header_maps = [
+        {
+            "x-litellm-router-routed-model": "claude-4-5-haiku",
+            "x-litellm-router-savings-baseline-model-group": "claude-opus-5",
+        }
+    ]
+
+    info = router.routing_info(None, header_maps)
+
+    assert info.counterfactual_model == "claude-opus-5"
+
+
+def test_routing_info_falls_back_to_catalog_counterfactual_without_baseline_header():
+    router = _router(counterfactual_model="gpt-5.6-terra-2026-07-09")
+
+    info = router.routing_info(None, [{"x-litellm-router-routed-model": "gpt-5.6-luna-2026-07-09"}])
+
+    assert info.counterfactual_model == "gpt-5.6-terra-2026-07-09"
+
+
+def test_extract_classifier_usage_reads_cost_and_reports_zero_tokens():
+    """LiteLLM's routing_decision carries only the classifier's cost; token headers, even if
+    present, are not trusted."""
     router = _router()
     ctx = CallContext(
         run_id="r1",
@@ -100,10 +125,17 @@ def test_extract_classifier_usage_reads_litellm_headers():
     usage = router.extract_classifier_usage(ctx)
     assert usage is not None
     assert usage.provider == "gpt-smart-router"
-    assert usage.input_tokens == 120
-    assert usage.output_tokens == 40
+    assert usage.input_tokens == 0
+    assert usage.output_tokens == 0
     assert usage.cost_usd == 0.0009
     assert usage.model == "gpt-5.6-luna"
+
+
+def test_extract_classifier_usage_none_without_classifier_cost():
+    """A decision made without calling the classifier (e.g. a keyword rule) has no cost."""
+    ctx = CallContext(run_id="r1", headers={"x-litellm-router-tier": "SIMPLE"})
+
+    assert _router().extract_classifier_usage(ctx) is None
 
 
 def test_extract_classifier_usage_none_when_no_headers():

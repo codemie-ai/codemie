@@ -151,3 +151,48 @@ def test_emits_with_none_optional_fields(mock_user):
             project="myproject",
         )
         m.assert_called_once()
+
+
+_CLASSIFIER_TOKEN_ATTRIBUTES = {
+    "classifier_input_tokens",
+    "classifier_output_tokens",
+    "classifier_cached_tokens",
+    "classifier_cache_creation_tokens",
+    "classifier_total_tokens",
+}
+
+
+def _emitted_attributes(user, routing: RoutingInfo) -> dict:
+    with patch.object(RoutingMonitoringService, "send_count_metric") as m:
+        RoutingMonitoringService.send_routing_metric(
+            user=user, routing=routing, conversation_id=None, assistant_id=None, project="p"
+        )
+    return m.call_args.kwargs["attributes"]
+
+
+def _routing_with_classifier_usage(routing_family: str) -> RoutingInfo:
+    return RoutingInfo(
+        routing_family=routing_family,
+        classifier_cost_usd=0.0011,
+        classifier_input_tokens=10,
+        classifier_output_tokens=2,
+        classifier_cached_tokens=1,
+        classifier_cache_creation_tokens=1,
+        classifier_total_tokens=12,
+    )
+
+
+def test_litellm_routing_omits_classifier_token_attributes(mock_user):
+    """LiteLLM reports only the classifier's cost, never its tokens."""
+    attrs = _emitted_attributes(mock_user, _routing_with_classifier_usage("litellm"))
+
+    assert _CLASSIFIER_TOKEN_ATTRIBUTES.isdisjoint(attrs)
+    assert attrs["classifier_cost_usd"] == 0.0011
+
+
+def test_switchyard_routing_keeps_classifier_token_attributes(mock_user):
+    attrs = _emitted_attributes(mock_user, _routing_with_classifier_usage("switchyard"))
+
+    assert _CLASSIFIER_TOKEN_ATTRIBUTES.issubset(attrs)
+    assert attrs["classifier_input_tokens"] == 10
+    assert attrs["classifier_total_tokens"] == 12

@@ -85,9 +85,6 @@ def routing_info_from_headers(headers: Mapping[str, object]) -> RoutingInfo:
             meta.router_type,
             meta.signals,
             meta.classifier_model,
-            meta.classifier_prompt_tokens,
-            meta.classifier_completion_tokens,
-            meta.classifier_total_tokens,
             meta.classifier_cost_usd,
         )
     )
@@ -110,9 +107,9 @@ def routing_info_from_headers(headers: Mapping[str, object]) -> RoutingInfo:
         classifier_model=meta.classifier_model,
         router_type=meta.router_type,
         router_score=meta.score,
-        classifier_input_tokens=meta.classifier_prompt_tokens,
-        classifier_output_tokens=meta.classifier_completion_tokens,
-        classifier_total_tokens=meta.classifier_total_tokens,
+        # LiteLLM's own savings baseline wins over the catalog counterfactual_model the
+        # router was built with (None here keeps that one in LiteLLMRouter.routing_info()).
+        counterfactual_model=meta.savings_baseline_model_group,
     )
 
 
@@ -153,34 +150,37 @@ class LiteLLMRouter(Router):
         """``decision`` is never read — this router's decide() always returns None (see
         decide()'s own docstring), so a real decision is never in hand for it to consult; the
         caller passes it anyway, unconditionally, for interface uniformity with
-        SwitchyardRouter. ``counterfactual_model`` and ``requested_model`` both come from
-        ``self`` (router-owned state, set once at construction — see router_factory.py) rather
-        than being resolved here — same as SwitchyardRouter, and unconditionally: every call to
-        a declared LiteLLM auto-router alias is routed by LiteLLM and comes back with routing
-        headers, so there is no "was this even routed" case to guard for here. Every other field
-        comes from merging ``routing_info_from_headers()`` over each map in ``header_maps``."""
-        info = RoutingInfo(counterfactual_model=self.counterfactual_model, requested_model=self.router_name)
+        SwitchyardRouter. ``requested_model`` comes from ``self`` (router-owned state, set once
+        at construction — see router_factory.py) unconditionally: every call to a declared
+        LiteLLM auto-router alias is routed by LiteLLM and comes back with routing headers, so
+        there is no "was this even routed" case to guard for here. ``counterfactual_model`` is
+        LiteLLM's own savings baseline when the headers carry one, so CodeMie prices the same
+        counterfactual LiteLLM's savings dashboard does; ``self.counterfactual_model`` (from the
+        catalog) is only the fallback. Every other field comes from merging
+        ``routing_info_from_headers()`` over each map in ``header_maps``."""
+        info = RoutingInfo(requested_model=self.router_name)
         for headers in header_maps:
             info = info.merged_over(routing_info_from_headers(headers))
+        if info.counterfactual_model is None:
+            info = info.model_copy(update={"counterfactual_model": self.counterfactual_model})
         return info
 
     def extract_classifier_usage(self, ctx: CallContext) -> ClassifierUsage | None:
-        """Read LiteLLM's own classifier sub-call usage off response headers (ctx.headers) —
+        """Read LiteLLM's own classifier sub-call cost off response headers (ctx.headers) —
         the proxy-path/agent-path-agnostic counterpart to SwitchyardRouter's decision-based
-        override."""
+        override. Token counts are always 0: LiteLLM's routing_decision carries only the
+        classifier's cost, and its tokens are not correlated back to the parent response."""
         if not ctx.headers:
             return None
         from codemie.enterprise.litellm.litellm_router_headers import LiteLLMRouterHeaders
 
         meta = LiteLLMRouterHeaders.from_headers(ctx.headers)
-        input_tokens = max(0, meta.classifier_prompt_tokens or 0)
-        output_tokens = max(0, meta.classifier_completion_tokens or 0)
-        if not (input_tokens or output_tokens or meta.classifier_cost_usd is not None):
+        if meta.classifier_cost_usd is None:
             return None
         return ClassifierUsage(
             provider=self.name,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+            input_tokens=0,
+            output_tokens=0,
             cost_usd=meta.classifier_cost_usd,
             model=meta.classifier_model,
         )

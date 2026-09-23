@@ -28,19 +28,12 @@ LITELLM_ROUTER_FIELD_TO_HEADER: Final[dict[str, str]] = {
     "router_model_name": "x-litellm-router-model-name",
     "router_type": "x-litellm-router-type",
     "signals": "x-litellm-router-signals",
-    "escalated": "x-litellm-router-escalated",
-    "escalation_keyword": "x-litellm-router-escalation-keyword",
-    "classifier_prompt_tokens": "x-litellm-classifier-prompt-tokens",
-    "classifier_completion_tokens": "x-litellm-classifier-completion-tokens",
-    "classifier_total_tokens": "x-litellm-classifier-total-tokens",
+    "savings_baseline_model_group": "x-litellm-router-savings-baseline-model-group",
     "classifier_cost_usd": "x-litellm-classifier-cost",
 }
 
 LITELLM_ROUTER_HEADERS: Final[frozenset[str]] = frozenset(LITELLM_ROUTER_FIELD_TO_HEADER.values())
 
-_INT_FIELDS: Final[frozenset[str]] = frozenset(
-    {"classifier_prompt_tokens", "classifier_completion_tokens", "classifier_total_tokens"}
-)
 _FLOAT_FIELDS: Final[frozenset[str]] = frozenset({"score", "classifier_cost_usd"})
 
 
@@ -60,7 +53,6 @@ class LiteLLMRouterHeaders(RoutingHeaderCodec):
     (inherited from RoutingHeaderCodec) is exercised in production."""
 
     FIELD_TO_HEADER: ClassVar[dict[str, str]] = LITELLM_ROUTER_FIELD_TO_HEADER
-    INT_FIELDS: ClassVar[frozenset[str]] = _INT_FIELDS
     FLOAT_FIELDS: ClassVar[frozenset[str]] = _FLOAT_FIELDS
 
     tier: str | None = None
@@ -71,9 +63,5 @@ class LiteLLMRouterHeaders(RoutingHeaderCodec):
     router_model_name: str | None = None
     router_type: str | None = None
     signals: str | None = None
-    escalated: str | None = None
-    escalation_keyword: str | None = None
-    classifier_prompt_tokens: int | None = None
-    classifier_completion_tokens: int | None = None
-    classifier_total_tokens: int | None = None
+    savings_baseline_model_group: str | None = None
     classifier_cost_usd: float | None = None
