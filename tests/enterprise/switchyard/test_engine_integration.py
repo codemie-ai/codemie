@@ -73,10 +73,10 @@ async def test_pick_model_classifier_mode_end_to_end_against_real_stage_router()
         capable_model_deployment_name="capable-dep",
         efficient_model_deployment_name="efficient-dep",
         tuning=SwitchyardTuning(
-            classifier_model="judge-model",
             classifier_threshold=0.99,
             classifier_base_threshold=0.5,
         ),
+        classifier_model="judge-model",
     )
 
     fake_message = AsyncMock(content='{"target":"efficient"}')

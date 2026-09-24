@@ -14,9 +14,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
-from codemie.configs.config import config
 from codemie.configs.llm_config import LLMConfig, SwitchyardTuning
 
 
@@ -27,7 +24,6 @@ def test_defaults_reproduce_previous_constants():
     assert t.classifier_threshold_step == 0.15
     assert t.signal_threshold == 0.0
     assert t.classifier_threshold == 0.5
-    assert t.classifier_model is None
 
 
 def test_partial_override_preserves_other_defaults():
@@ -42,13 +38,12 @@ def test_overlay_expression_keeps_global_for_unset_fields():
     a partial per-router tuning must only override the fields it explicitly set,
     leaving the global default for everything else.
     """
-    global_tuning = SwitchyardTuning(classifier_model="global-classifier")
+    global_tuning = SwitchyardTuning(classifier_base_threshold=0.65)
     partial = SwitchyardTuning(classifier_base_threshold=0.8)
 
     resolved = global_tuning.model_copy(update={f: getattr(partial, f) for f in partial.model_fields_set})
 
     assert resolved.classifier_base_threshold == 0.8  # overridden by the partial
-    assert resolved.classifier_model == "global-classifier"  # preserved from the global
     assert resolved.classifier_threshold_step == 0.15  # untouched default
     assert resolved.recent_window == 3  # untouched default
 
@@ -80,8 +75,7 @@ llm_models:
 embeddings_models: []
 ''',
     )
-    with patch.object(config, "SWITCHYARD_CLASSIFIER_MODEL", None), patch.object(config, "SWITCHYARD_ENABLED", True):
-        cfg = LLMConfig(yaml_file=yaml_file)
+    cfg = LLMConfig(yaml_file=yaml_file)
     router = next(r for r in cfg.llm_routers if r.base_name == 'cap-switchyard-eff-signal')
     assert router.switchyard.tuning.classifier_base_threshold == 0.9  # overridden
     assert router.switchyard.tuning.classifier_threshold_step == 0.15  # untouched default
@@ -107,13 +101,14 @@ llm_models:
 embeddings_models: []
 ''',
     )
-    with patch.object(config, "SWITCHYARD_CLASSIFIER_MODEL", None), patch.object(config, "SWITCHYARD_ENABLED", True):
-        cfg = LLMConfig(yaml_file=yaml_file)
+    cfg = LLMConfig(yaml_file=yaml_file)
     router = next(r for r in cfg.llm_routers if r.base_name == 'cap-switchyard-eff-signal')
     assert router.switchyard.tuning == SwitchyardTuning()
 
 
-def test_global_classifier_model_from_config_is_picked_up_as_default(tmp_path):
+def test_classifier_model_resolved_from_entry_field(tmp_path):
+    """classifier_model lives on the switchyard entry itself (same level as mode), not in
+    tuning — no global default to fall back on."""
     yaml_file = _write_yaml(
         tmp_path,
         '''
@@ -126,16 +121,13 @@ llm_models:
       - base_name: 'cap-switchyard-eff-classifier'
         efficient: 'eff'
         mode: classifier
+        classifier_model: 'eff'
   - base_name: 'eff'
     deployment_name: 'eff'
     enabled: true
 embeddings_models: []
 ''',
     )
-    with (
-        patch.object(config, "SWITCHYARD_CLASSIFIER_MODEL", "global-classifier-model"),
-        patch.object(config, "SWITCHYARD_ENABLED", True),
-    ):
-        cfg = LLMConfig(yaml_file=yaml_file)
+    cfg = LLMConfig(yaml_file=yaml_file)
     router = next(r for r in cfg.llm_routers if r.base_name == 'cap-switchyard-eff-classifier')
-    assert router.switchyard.tuning.classifier_model == "global-classifier-model"
+    assert router.switchyard.classifier_model == "eff"

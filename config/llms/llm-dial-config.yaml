@@ -204,10 +204,13 @@ llm_models:
         label: "SY Signal Sonnet/Haiku"
         efficient: "claude-4-5-haiku"
         mode: signal
+        forbidden_for_web: true
       - base_name: "sy-classifier-claude"
         label: "SY Classifier Sonnet/Haiku"
         efficient: "claude-4-5-haiku"
         mode: classifier
+        classifier_model: "claude-4-5-haiku"
+        forbidden_for_web: true
     cost:
       input: 0.0000033
       output: 0.0000165
@@ -239,10 +242,13 @@ llm_models:
         label: "SY Signal Opus/Sonnet"
         efficient: "claude-sonnet-4-6"
         mode: signal
+        forbidden_for_web: true
       - base_name: "sy-classifier-claude-opus"
         label: "SY Classifier Opus/Sonnet"
         efficient: "claude-sonnet-4-6"
         mode: classifier
+        classifier_model: "claude-sonnet-4-6"
+        forbidden_for_web: true
     cost:
       input: 0.0000055
       output: 0.0000275

@@ -96,7 +96,6 @@ class SwitchyardTuning(BaseModel):
     classifier_threshold_step: float = 0.15
     signal_threshold: float = 0.0  # confidence_threshold for signal mode (was the 0.0 literal)
     classifier_threshold: float = 0.5  # confidence_threshold for classifier mode (was the 0.5 literal)
-    classifier_model: str | None = None
 
 
 class ModelSwitchyard(BaseModel):
@@ -112,7 +111,16 @@ class ModelSwitchyard(BaseModel):
     label: str | None = None  # same optional/fallback semantics as LLMModel.label
     efficient: str  # base_name of the cheaper same-family model this router can fall down to
     mode: RoutingMode
+    # Required (and must resolve to a real model in the catalog) when mode == classifier — same
+    # level as `mode` itself, not a tuning knob. No global fallback: unset or unresolvable is a
+    # hard config error, logged and the router simply isn't generated (see
+    # _try_build_switchyard_router).
+    classifier_model: str | None = None
     tuning: SwitchyardTuning | None = None  # optional partial override of the resolved tuning
+    # Per-router override of the capable model's forbidden_for_web. None (default) means
+    # "inherit the capable model's flag" — set explicitly to hide (or show) this router
+    # independently of the capable model's own web visibility.
+    forbidden_for_web: bool | None = None
 
 
 class SwitchyardConfig(BaseModel):
@@ -121,7 +129,27 @@ class SwitchyardConfig(BaseModel):
     capable_model: str  # base_name of the capable model
     efficient_model: str  # base_name of the efficient model
     mode: RoutingMode
+    classifier_model: str | None = None  # resolved from ModelSwitchyard.classifier_model; set only for classifier mode
     tuning: SwitchyardTuning = Field(default_factory=SwitchyardTuning)
+
+
+class RouterTier(BaseModel):
+    """One tier's target model within a router's `tiers` map."""
+
+    model: str
+    label: str | None = None
+
+
+class RouterTiers(BaseModel):
+    """The platform's fixed 4-tier shape every router option carries, regardless of how many
+    distinct models actually back it (a 2-model switchyard router maps onto all 4 keys — see
+    LLMService._switchyard_tiers — a litellm_auto router's model_info can declare up to 4
+    distinct ones)."""
+
+    simple: RouterTier
+    medium: RouterTier
+    complex: RouterTier
+    reasoning: RouterTier
 
 
 class LiteLLMRouterConfig(BaseModel):
@@ -137,6 +165,12 @@ class LiteLLMRouterConfig(BaseModel):
     # NOT reuse LLMModel.enabled, which already means something
     # different (this model's own enabled/disabled state).
     counterfactual_model: str | None = None  # Model used as the counterfactual pricing baseline
+    # The rest mirror the generated-switchyard-router contract 1:1 (see LlmRouterOption) so a
+    # litellm_auto router presents identically at the REST boundary — hand-authored directly
+    # into this model_name's model_info.litellm_router block in LiteLLM's own proxy config.
+    strategy: RoutingMode | None = None
+    tiers: RouterTiers | None = None
+    classifier_model: str | None = None
 
 
 class LLMRouter(BaseModel):
@@ -146,6 +180,7 @@ class LLMRouter(BaseModel):
     label: str | None = None
     enabled: bool = True
     forbidden_for_web: bool | None = False
+    provider: LLMProvider | None = None  # inherited from the capable model; a router has no deployment of its own
     switchyard: SwitchyardConfig
 
 
@@ -158,9 +193,15 @@ class LlmRouterOption(BaseModel):
     # Always True for enabled routers (get_allowed_router_options only returns enabled ones).
     # Clients (e.g. codemie-code) gate on this field to decide whether to show the model.
     enabled: bool = True
+    provider: LLMProvider | None = None
     multimodal: bool | None = None
     supports_tools: bool | None = None
     is_premium: bool | None = None
+    # "switchyard" | "litellm_auto" — client badge only, never a behavioral branch on the backend.
+    router_type: str
+    strategy: RoutingMode | None = None
+    tiers: RouterTiers | None = None
+    classifier_model: str | None = None
 
 
 class LLMModel(BaseModel):
@@ -281,22 +322,31 @@ def _try_build_switchyard_router(
         if entry.tuning is not None
         else global_tuning
     )
-    if entry.mode == RoutingMode.CLASSIFIER and not resolved_tuning.classifier_model:
-        logger.warning(
-            f"Switchyard router {entry.base_name!r} on {model.base_name!r} declares classifier mode "
-            f"but no classifier_model is configured (SWITCHYARD_CLASSIFIER_MODEL or per-router tuning); "
-            f"skipping router generation."
-        )
-        return None
+    if entry.mode == RoutingMode.CLASSIFIER:
+        if not entry.classifier_model:
+            logger.error(
+                f"Switchyard router {entry.base_name!r} on {model.base_name!r} declares classifier mode "
+                f"but no classifier_model is set; skipping router generation."
+            )
+            return None
+        if entry.classifier_model not in by_name:
+            logger.error(
+                f"Switchyard router {entry.base_name!r} on {model.base_name!r} declares classifier_model "
+                f"{entry.classifier_model!r}, which does not resolve to a known model; skipping router "
+                f"generation."
+            )
+            return None
     return LLMRouter(
         base_name=entry.base_name,
         label=entry.label,
         enabled=model.enabled,
-        forbidden_for_web=model.forbidden_for_web,
+        forbidden_for_web=(entry.forbidden_for_web if entry.forbidden_for_web is not None else model.forbidden_for_web),
+        provider=model.provider,
         switchyard=SwitchyardConfig(
             capable_model=model.base_name,
             efficient_model=efficient.base_name,
             mode=entry.mode,
+            classifier_model=entry.classifier_model if entry.mode == RoutingMode.CLASSIFIER else None,
             tuning=resolved_tuning,
         ),
     )
@@ -309,19 +359,9 @@ def build_switchyard_routers(models: list["LLMModel"]) -> list["LLMRouter"]:
     LLMConfig.generate_switchyard_routers) or the live LiteLLM/DIAL catalog (see
     LLMService.get_llm_routers), so the same generation algorithm can run against
     whichever single model source is currently in effect for a given base_name.
-
-    SWITCHYARD_ENABLED is the master switch. When off, generate no routers so the
-    /llm_models catalog, llm_service.is_router_model, and the proxy engine all agree
-    that no routers exist — otherwise the catalog would advertise routers the engine
-    refuses to route, and clients would select a model that 404s downstream.
-    (engine._get_switchyard_model_config also gates at request time as defense in depth.)
     """
-    if not config.SWITCHYARD_ENABLED:
-        return []
     by_name = {model.base_name: model for model in models}
-    global_tuning = SwitchyardTuning(
-        **({"classifier_model": config.SWITCHYARD_CLASSIFIER_MODEL} if config.SWITCHYARD_CLASSIFIER_MODEL else {})
-    )
+    global_tuning = SwitchyardTuning()
     generated: list[LLMRouter] = []
     generated_names: set[str] = set()
     for model in models:

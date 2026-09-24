@@ -18,7 +18,14 @@ from unittest.mock import Mock, patch
 import pytest
 from pathlib import Path
 from codemie.service.llm_service.llm_service import LLMService, LLMModel, LLMConfig
-from codemie.configs.llm_config import ModelCategory
+from codemie.configs.llm_config import (
+    LiteLLMRouterConfig,
+    LLMProvider,
+    ModelCategory,
+    RouterTier,
+    RouterTiers,
+    RoutingMode,
+)
 
 
 class TestLLMService:
@@ -379,3 +386,152 @@ class TestApplyPremiumFlags:
                 result = llm_service.get_allowed_chat_models(user=Mock())
 
         assert all(m.is_premium is None for m in result)
+
+
+class TestLiteLLMAutoRouterCatalog:
+    """A model declared as a LiteLLM auto-router (litellm_router.is_router=True) is not a real
+    deployment: it must not appear in the plain chat-model catalog, and must surface instead as
+    a router option carrying router_type='litellm_auto' plus whatever strategy/tiers/
+    classifier_model the live LiteLLM catalog declares for it in model_info.litellm_router."""
+
+    @staticmethod
+    def _router_model(**overrides) -> LLMModel:
+        litellm_router = overrides.pop("litellm_router", None) or LiteLLMRouterConfig(
+            strategy=RoutingMode.CLASSIFIER,
+            classifier_model="gpt-5-mini",
+            tiers=RouterTiers(
+                simple=RouterTier(model="gpt-5-mini", label="GPT-5 mini"),
+                medium=RouterTier(model="gpt-5", label="GPT-5"),
+                complex=RouterTier(model="gpt-5", label="GPT-5"),
+                reasoning=RouterTier(model="gpt-5-pro", label="GPT-5 Pro"),
+            ),
+        )
+        defaults: dict = {
+            "base_name": "smart-router",
+            "deployment_name": "smart-router",
+            "label": "Smart Router",
+            "enabled": True,
+            "provider": LLMProvider.AZURE_OPENAI,
+            "litellm_router": litellm_router,
+        }
+        defaults.update(overrides)
+        return LLMModel(**defaults)
+
+    @staticmethod
+    def _config(models: list[LLMModel]) -> LLMConfig:
+        return LLMConfig(yaml_file=Path('tests/service/llm_test_config.yaml'), llm_models=models, embeddings_models=[])
+
+    def test_excluded_from_allowed_chat_models(self):
+        service = LLMService(self._config([self._router_model()]))
+
+        result = service.get_allowed_chat_models(user=Mock(is_external_user=False))
+
+        assert result == []
+
+    def test_appears_in_router_options_with_litellm_auto_type(self):
+        service = LLMService(self._config([self._router_model()]))
+
+        options = service.get_allowed_router_options()
+
+        assert len(options) == 1
+        option = options[0]
+        assert option.base_name == "smart-router"
+        assert option.label == "Smart Router"
+        assert option.is_router is True
+        assert option.router_type == "litellm_auto"
+        assert option.provider == LLMProvider.AZURE_OPENAI
+        assert option.strategy == RoutingMode.CLASSIFIER
+        assert option.classifier_model == "gpt-5-mini"
+        assert option.tiers is not None
+        assert option.tiers.simple.model == "gpt-5-mini"
+        assert option.tiers.reasoning.label == "GPT-5 Pro"
+
+    def test_is_premium_checks_own_base_name_like_a_regular_model(self):
+        """A litellm_auto router's is_premium uses the exact same check as any regular
+        model — is_premium_model(base_name) against LITELLM_PREMIUM_MODELS_ALIASES — applied
+        to the router's OWN base_name. No tier-model inference, no separate router-only flag:
+        a router whose tiers reference a premium-alias-matching model (e.g. opus) but whose
+        own base_name doesn't match must report False; a router whose own base_name matches
+        must report True regardless of what its tiers contain."""
+        from codemie.configs.config import config
+        from codemie.configs.budget_config import budget_config
+        from codemie.configs.config import PredefinedBudgetConfig
+        from codemie.enterprise.litellm.dependencies import is_premium_model, is_premium_models_enabled
+
+        is_premium_models_enabled.cache_clear()
+        is_premium_model.cache_clear()
+        current = [b for b in budget_config.predefined_budgets if b.budget_category != "premium_models"]
+        current.append(
+            PredefinedBudgetConfig(
+                budget_id="premium_models",
+                name="Premium",
+                description=None,
+                soft_budget=0.0,
+                max_budget=0.0,
+                budget_duration="30d",
+                budget_category="premium_models",
+            )
+        )
+        not_premium = self._router_model(
+            base_name="claude-router-standard-v1",
+            litellm_router=LiteLLMRouterConfig(
+                tiers=RouterTiers(
+                    simple=RouterTier(model="claude-haiku"),
+                    medium=RouterTier(model="claude-haiku"),
+                    complex=RouterTier(model="claude-opus-5-5"),
+                    reasoning=RouterTier(model="claude-opus-5-5"),
+                ),
+            ),
+        )
+        premium = self._router_model(base_name="claude-opus-router-v1", litellm_router=LiteLLMRouterConfig())
+        try:
+            with (
+                patch.object(budget_config, "predefined_budgets", current),
+                patch.object(config, "LITELLM_PREMIUM_MODELS_ALIASES", ["opus"]),
+            ):
+                is_premium_models_enabled.cache_clear()
+                is_premium_model.cache_clear()
+                service = LLMService(self._config([not_premium, premium]))
+                options = {o.base_name: o for o in service.get_allowed_router_options()}
+        finally:
+            is_premium_models_enabled.cache_clear()
+            is_premium_model.cache_clear()
+
+        assert options["claude-router-standard-v1"].is_premium is False
+        assert options["claude-opus-router-v1"].is_premium is True
+
+    def test_is_premium_none_when_premium_feature_disabled(self):
+        from codemie.configs.budget_config import budget_config
+        from codemie.enterprise.litellm.dependencies import is_premium_model, is_premium_models_enabled
+
+        is_premium_models_enabled.cache_clear()
+        is_premium_model.cache_clear()
+        no_premium_budget = [b for b in budget_config.predefined_budgets if b.budget_category != "premium_models"]
+        model = self._router_model(base_name="claude-opus-router-v1", litellm_router=LiteLLMRouterConfig())
+        try:
+            with patch.object(budget_config, "predefined_budgets", no_premium_budget):
+                is_premium_models_enabled.cache_clear()
+                is_premium_model.cache_clear()
+                service = LLMService(self._config([model]))
+                options = service.get_allowed_router_options()
+        finally:
+            is_premium_models_enabled.cache_clear()
+            is_premium_model.cache_clear()
+
+        assert options[0].is_premium is None
+
+    def test_respects_forbidden_for_web(self):
+        model = self._router_model(forbidden_for_web=True)
+        service = LLMService(self._config([model]))
+
+        assert service.get_allowed_router_options(include_all=False) == []
+        assert len(service.get_allowed_router_options(include_all=True)) == 1
+
+    def test_plain_model_untouched(self):
+        """A regular model (no litellm_router) must still appear only in the chat-model
+        catalog, never in router options — this test guards against an overbroad filter."""
+        plain = LLMModel(base_name="gpt-4o", deployment_name="gpt-4o", enabled=True)
+        service = LLMService(self._config([plain]))
+
+        assert [m.base_name for m in service.get_allowed_chat_models(user=Mock(is_external_user=False))] == ["gpt-4o"]
+        assert service.get_allowed_router_options() == []

@@ -25,9 +25,6 @@ decision is fully determined by the current conversation context.  A fresh
 ProxySwitchyardRouter is created for every request because the router is
 stateless (the classifier client is per-call, and the routing stub client
 is a dummy).
-
-Configuration:
-    config.SWITCHYARD_ENABLED: master switch (default False); False disables all routing
 """
 
 from __future__ import annotations
@@ -37,7 +34,7 @@ from typing import TYPE_CHECKING
 
 import switchyard.libsy as libsy
 
-from codemie.configs import config, logger
+from codemie.configs import logger
 from codemie.core.router import ClassifierCall, RoutingDecision
 from codemie.enterprise.switchyard.llm_clients import _BASE_REQUEST, _ClassifierLlmClient, _RoutingLlmClient
 from codemie.enterprise.switchyard.message_format import (
@@ -89,6 +86,7 @@ class ProxySwitchyardRouter:
         capable_model_deployment_name: str,
         efficient_model_deployment_name: str,
         tuning: SwitchyardTuning,
+        classifier_model: str | None = None,
     ) -> None:
         self.capable_model = capable_model
         self.efficient_model = efficient_model
@@ -97,6 +95,7 @@ class ProxySwitchyardRouter:
         self.capable_model_deployment_name = capable_model_deployment_name
         self.efficient_model_deployment_name = efficient_model_deployment_name
         self.tuning = tuning
+        self.classifier_model = classifier_model
         # Routing stub used by libsy stage_router when it asks for a dummy completion.
         self._routing_client = _RoutingLlmClient()
 
@@ -115,10 +114,10 @@ class ProxySwitchyardRouter:
         )
 
     def _build_classifier(self) -> tuple[_ClassifierLlmClient | None, libsy.LlmFallback | None]:
-        if self.routing_mode != "classifier" or not self.tuning.classifier_model:
+        if self.routing_mode != "classifier" or not self.classifier_model:
             return None, None
-        classifier_client = _ClassifierLlmClient(self.tuning.classifier_model)
-        judge_target = libsy.LlmTarget(self.tuning.classifier_model, classifier_client)
+        classifier_client = _ClassifierLlmClient(self.classifier_model)
+        judge_target = libsy.LlmTarget(self.classifier_model, classifier_client)
         classifier = libsy.LlmFallback(
             judge_target,
             config=libsy.TaskClassifierConfig(
@@ -166,7 +165,7 @@ class ProxySwitchyardRouter:
         cache_creation_tokens = usage.cache_creation_tokens if usage else None
         cost_usd = usage.cost_usd if usage else None
         return ClassifierCall(
-            model=self.tuning.classifier_model,
+            model=self.classifier_model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cached_tokens=cached_tokens,
@@ -274,16 +273,13 @@ class ProxySwitchyardRouter:
 def _resolve_switchyard_setup(router_name: str) -> tuple[SwitchyardConfig, str, str] | None:
     """Resolve everything get_proxy_switchyard_router needs from the live catalog in one pass:
     the router's SwitchyardConfig, plus its capable/efficient deployment names — or None if
-    Switchyard is disabled, *router_name* has no Switchyard configuration, either target does
-    not resolve to a real model in the live catalog, or either target is itself resolvable as a
-    router (a Switchyard alias, via is_router_model, or a declared LiteLLM auto-router). Both
-    checks run against the live catalog, not just the static YAML build_switchyard_routers
-    already validates against — this is defense in depth against catalog drift, mirroring the
-    `details is not None and ...` guard style already used in router_factory.create_router.
+    *router_name* has no Switchyard configuration, either target does not resolve to a real
+    model in the live catalog, or either target is itself resolvable as a router (a Switchyard
+    alias, via is_router_model, or a declared LiteLLM auto-router). Both checks run against the
+    live catalog, not just the static YAML build_switchyard_routers already validates against —
+    this is defense in depth against catalog drift, mirroring the `details is not None and ...`
+    guard style already used in router_factory.create_router.
     """
-    if not config.SWITCHYARD_ENABLED:
-        return None
-
     from codemie.service.llm_service.llm_service import llm_service  # local import to avoid circular deps
 
     sw_config: SwitchyardConfig | None = None
@@ -347,4 +343,5 @@ def get_proxy_switchyard_router(
         capable_model_deployment_name=capable_deployment,
         efficient_model_deployment_name=efficient_deployment,
         tuning=sw_config.tuning,
+        classifier_model=sw_config.classifier_model,
     )

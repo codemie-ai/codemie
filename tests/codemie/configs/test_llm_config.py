@@ -17,7 +17,7 @@ from __future__ import annotations
 import pathlib
 
 import pytest
-from codemie.configs.llm_config import LLMConfig, RoutingMode
+from codemie.configs.llm_config import LLMConfig, LLMProvider, RoutingMode
 
 _CONFIGS_DIR = pathlib.Path(__file__).parents[3] / "config" / "llms"
 _DIAL_CONFIG = _CONFIGS_DIR / "llm-dial-config.yaml"
@@ -112,10 +112,7 @@ embeddings_models: []
     assert all(e.efficient == 'efficient' for e in capable.switchyard)
 
 
-def test_switchyard_routers_generated(tmp_path, monkeypatch):
-    from codemie.configs.config import config as app_config
-
-    monkeypatch.setattr(app_config, "SWITCHYARD_ENABLED", True)
+def test_switchyard_routers_generated(tmp_path):
     yaml_file = _write_yaml(
         tmp_path,
         '''
@@ -133,6 +130,7 @@ llm_models:
         label: 'SY (Classifier) Cap Model'
         efficient: 'eff'
         mode: classifier
+        classifier_model: 'eff'
   - base_name: 'eff'
     deployment_name: 'eff'
     enabled: true
@@ -149,15 +147,73 @@ embeddings_models: []
     assert signal.enabled is True
 
 
-def test_switchyard_classifier_without_classifier_model_skipped(tmp_path, monkeypatch):
-    """A classifier-mode entry with no classifier_model configured (globally or per-router)
-    must not generate a router at all — it must not silently generate one that claims
-    RoutingMode.CLASSIFIER but can never invoke a classifier (see engine.py::pick_model,
-    which picks its confidence threshold from routing_mode, not from classifier availability)."""
-    from codemie.configs.config import config as app_config
+def test_switchyard_forbidden_for_web_overrides_model(tmp_path):
+    """A switchyard entry's own forbidden_for_web overrides the capable model's flag, so a
+    router can be hidden from web without hiding the capable model itself (and vice versa:
+    a router can stay visible even when the capable model is forbidden_for_web). An entry
+    that leaves forbidden_for_web unset falls back to the capable model's flag."""
+    yaml_file = _write_yaml(
+        tmp_path,
+        '''
+llm_models:
+  - base_name: 'cap'
+    deployment_name: 'cap'
+    enabled: true
+    forbidden_for_web: false
+    switchyard:
+      - base_name: 'cap-switchyard-eff-signal'
+        efficient: 'eff'
+        mode: signal
+        forbidden_for_web: true
+      - base_name: 'cap-switchyard-eff-classifier'
+        efficient: 'eff'
+        mode: classifier
+        classifier_model: 'eff'
+  - base_name: 'eff'
+    deployment_name: 'eff'
+    enabled: true
+embeddings_models: []
+''',
+    )
+    cfg = LLMConfig(yaml_file=yaml_file)
+    routers = {r.base_name: r for r in cfg.llm_routers}
+    assert routers['cap-switchyard-eff-signal'].forbidden_for_web is True
+    assert routers['cap-switchyard-eff-classifier'].forbidden_for_web is False
 
-    monkeypatch.setattr(app_config, "SWITCHYARD_ENABLED", True)
-    monkeypatch.setattr(app_config, "SWITCHYARD_CLASSIFIER_MODEL", None)
+
+def test_switchyard_router_inherits_provider_from_capable_model(tmp_path):
+    """A generated router is never itself executed (execution hard-fails on a router
+    base_name), but it still needs to know its effective provider for metadata/REST
+    consumers — inherited from the capable model, same as label/enabled semantics."""
+    yaml_file = _write_yaml(
+        tmp_path,
+        '''
+llm_models:
+  - base_name: 'cap'
+    deployment_name: 'cap'
+    enabled: true
+    provider: 'aws_bedrock'
+    switchyard:
+      - base_name: 'cap-switchyard-eff-signal'
+        efficient: 'eff'
+        mode: signal
+  - base_name: 'eff'
+    deployment_name: 'eff'
+    enabled: true
+embeddings_models: []
+''',
+    )
+    cfg = LLMConfig(yaml_file=yaml_file)
+    router = next(r for r in cfg.llm_routers if r.base_name == 'cap-switchyard-eff-signal')
+    assert router.provider == LLMProvider.AWS_BEDROCK
+
+
+def test_switchyard_classifier_without_classifier_model_skipped(tmp_path):
+    """A classifier-mode entry with no classifier_model set (it's a required field at the
+    same level as mode, no global fallback) must not generate a router at all — it must not
+    silently generate one that claims RoutingMode.CLASSIFIER but can never invoke a
+    classifier (see engine.py::pick_model, which picks its confidence threshold from
+    routing_mode, not from classifier availability)."""
     yaml_file = _write_yaml(
         tmp_path,
         '''
@@ -180,6 +236,31 @@ embeddings_models: []
     )
     cfg = LLMConfig(yaml_file=yaml_file)
     assert {r.base_name for r in cfg.llm_routers} == {'cap-switchyard-eff-signal'}
+
+
+def test_switchyard_classifier_with_unresolvable_classifier_model_skipped(tmp_path):
+    """A classifier-mode entry whose classifier_model doesn't resolve to any known model in
+    the catalog is just as invalid as a missing one — must not generate a router."""
+    yaml_file = _write_yaml(
+        tmp_path,
+        '''
+llm_models:
+  - base_name: 'cap'
+    deployment_name: 'cap'
+    enabled: true
+    switchyard:
+      - base_name: 'cap-switchyard-eff-classifier'
+        efficient: 'eff'
+        mode: classifier
+        classifier_model: 'does-not-exist'
+  - base_name: 'eff'
+    deployment_name: 'eff'
+    enabled: true
+embeddings_models: []
+''',
+    )
+    cfg = LLMConfig(yaml_file=yaml_file)
+    assert cfg.llm_routers == []
 
 
 def test_switchyard_unknown_efficient_skipped(tmp_path):
@@ -251,36 +332,6 @@ embeddings_models: []
     assert cfg.llm_routers == []
 
 
-def test_switchyard_disabled_generates_no_routers(tmp_path, monkeypatch) -> None:
-    """With SWITCHYARD_ENABLED off, no routers are generated so /llm_models never
-    advertises a model the proxy engine would refuse to route."""
-    from codemie.configs.config import config as app_config
-
-    monkeypatch.setattr(app_config, "SWITCHYARD_ENABLED", False)
-    yaml_file = _write_yaml(
-        tmp_path,
-        '''
-llm_models:
-  - base_name: 'cap'
-    deployment_name: 'cap'
-    enabled: true
-    switchyard:
-      - base_name: 'cap-switchyard-eff-signal'
-        efficient: 'eff'
-        mode: signal
-      - base_name: 'cap-switchyard-eff-classifier'
-        efficient: 'eff'
-        mode: classifier
-  - base_name: 'eff'
-    deployment_name: 'eff'
-    enabled: true
-embeddings_models: []
-''',
-    )
-    cfg = LLMConfig(yaml_file=yaml_file)
-    assert cfg.llm_routers == []
-
-
 def test_switchyard_base_name_collides_with_model_skipped(tmp_path):
     """A switchyard entry whose base_name matches an existing regular model's base_name must
     be rejected — router identities now live in free-form YAML, so nothing else guarantees
@@ -307,10 +358,7 @@ embeddings_models: []
 
 
 @pytest.mark.skipif(not _DIAL_CONFIG.exists(), reason="DIAL config not present")
-def test_dial_config_generates_expected_router_names(monkeypatch) -> None:
-    from codemie.configs.config import config as app_config
-
-    monkeypatch.setattr(app_config, "SWITCHYARD_ENABLED", True)
+def test_dial_config_generates_expected_router_names() -> None:
     cfg = LLMConfig(yaml_file=_DIAL_CONFIG)
     generated = {r.base_name for r in cfg.llm_routers}
     assert generated == _DIAL_EXPECTED_ROUTER_NAMES
@@ -342,3 +390,30 @@ def test_litellm_router_counterfactual_model_parses():
     router = LiteLLMRouterConfig(counterfactual_model="claude-opus-5")
 
     assert router.counterfactual_model == "claude-opus-5"
+
+
+def test_litellm_router_config_parses_strategy_tiers_classifier_model():
+    """A live LiteLLM catalog entry's litellm_router block can declare the same
+    strategy/tiers/classifier_model contract as a generated switchyard router — this is the
+    shape codemie-ops hand-authors directly into LiteLLM's model_info for a litellm_auto
+    router (see LlmRouterOption)."""
+    from codemie.configs.llm_config import LiteLLMRouterConfig, RoutingMode
+
+    router = LiteLLMRouterConfig(
+        strategy="classifier",
+        classifier_model="gpt-5-mini",
+        tiers={
+            "simple": {"model": "gpt-5-mini", "label": "GPT-5 mini"},
+            "medium": {"model": "gpt-5", "label": "GPT-5"},
+            "complex": {"model": "gpt-5", "label": "GPT-5"},
+            "reasoning": {"model": "gpt-5-pro", "label": "GPT-5 Pro"},
+        },
+    )
+
+    assert router.strategy == RoutingMode.CLASSIFIER
+    assert router.classifier_model == "gpt-5-mini"
+    assert router.tiers is not None
+    assert router.tiers.simple.model == "gpt-5-mini"
+    assert router.tiers.simple.label == "GPT-5 mini"
+    assert router.tiers.reasoning.model == "gpt-5-pro"
+    assert router.tiers.reasoning.label == "GPT-5 Pro"

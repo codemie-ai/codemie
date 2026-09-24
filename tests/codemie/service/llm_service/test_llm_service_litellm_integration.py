@@ -196,10 +196,7 @@ llm_models:
 embeddings_models: []
 """
 
-    def test_uses_yaml_switchyard_when_litellm_not_initialized(self, tmp_path, monkeypatch):
-        from codemie.configs.config import config as app_config
-
-        monkeypatch.setattr(app_config, "SWITCHYARD_ENABLED", True)
+    def test_uses_yaml_switchyard_when_litellm_not_initialized(self, tmp_path):
         service = LLMService(self._config(tmp_path, self._YAML_WITH_SWITCHYARD))
 
         routers = service.get_llm_routers()
@@ -211,7 +208,6 @@ embeddings_models: []
         a switchyard block declared in the static YAML for the same base_name must not leak in."""
         from codemie.configs.config import config as app_config
 
-        monkeypatch.setattr(app_config, "SWITCHYARD_ENABLED", True)
         monkeypatch.setattr(app_config, "LLM_PROXY_ENABLED", True)
         service = LLMService(self._config(tmp_path, self._YAML_WITH_SWITCHYARD))
         service.initialize_default_litellm_models(
@@ -230,7 +226,6 @@ embeddings_models: []
     def test_uses_live_catalog_switchyard_when_litellm_enabled(self, tmp_path, monkeypatch):
         from codemie.configs.config import config as app_config
 
-        monkeypatch.setattr(app_config, "SWITCHYARD_ENABLED", True)
         monkeypatch.setattr(app_config, "LLM_PROXY_ENABLED", True)
         yaml_no_switchyard = """
 llm_models:
@@ -261,6 +256,132 @@ embeddings_models: []
         routers = service.get_llm_routers()
 
         assert {r.base_name for r in routers} == {"cap-switchyard-eff-signal"}
+
+    def test_router_option_carries_switchyard_type_strategy_and_tiers(self, tmp_path):
+        """A switchyard router's REST projection must carry router_type='switchyard', the
+        mode as strategy, and the fixed 4-tier map — efficient serving simple/medium, capable
+        serving complex/reasoning (the platform's chosen mapping for a 2-model router)."""
+        yaml_body = """
+llm_models:
+  - base_name: 'cap'
+    deployment_name: 'cap'
+    label: 'Capable'
+    enabled: true
+    switchyard:
+      - base_name: 'cap-switchyard-eff-classifier'
+        efficient: 'eff'
+        mode: classifier
+        classifier_model: 'eff'
+  - base_name: 'eff'
+    deployment_name: 'eff'
+    label: 'Efficient'
+    enabled: true
+embeddings_models: []
+"""
+        service = LLMService(self._config(tmp_path, yaml_body))
+
+        options = service.get_allowed_router_options()
+
+        option = next(o for o in options if o.base_name == "cap-switchyard-eff-classifier")
+        assert option.router_type == "switchyard"
+        assert option.strategy == RoutingMode.CLASSIFIER
+        assert option.classifier_model == "eff"
+        assert option.tiers is not None
+        assert option.tiers.simple.model == "eff"
+        assert option.tiers.simple.label == "Efficient"
+        assert option.tiers.medium.model == "eff"
+        assert option.tiers.complex.model == "cap"
+        assert option.tiers.complex.label == "Capable"
+        assert option.tiers.reasoning.model == "cap"
+
+    def test_router_option_is_premium_checks_own_base_name_not_capable_efficient(self, tmp_path):
+        """A switchyard router's is_premium uses the exact same check as any regular model —
+        is_premium_model(base_name) — applied to the ROUTER's own base_name, not an OR across
+        its capable/efficient pair. A router named without a premium alias must report False
+        even when its capable model is a premium-alias-matching deployment."""
+        from codemie.configs.config import config as app_config
+        from codemie.configs.budget_config import budget_config
+        from codemie.configs.config import PredefinedBudgetConfig
+        from codemie.enterprise.litellm.dependencies import is_premium_model, is_premium_models_enabled
+
+        is_premium_models_enabled.cache_clear()
+        is_premium_model.cache_clear()
+        yaml_body = """
+llm_models:
+  - base_name: 'claude-opus-5'
+    deployment_name: 'claude-opus-5'
+    enabled: true
+    switchyard:
+      - base_name: 'sy-signal-claude'
+        efficient: 'eff'
+        mode: signal
+  - base_name: 'eff'
+    deployment_name: 'eff'
+    enabled: true
+embeddings_models: []
+"""
+        current = [b for b in budget_config.predefined_budgets if b.budget_category != "premium_models"]
+        current.append(
+            PredefinedBudgetConfig(
+                budget_id="premium_models",
+                name="Premium",
+                description=None,
+                soft_budget=0.0,
+                max_budget=0.0,
+                budget_duration="30d",
+                budget_category="premium_models",
+            )
+        )
+        try:
+            with (
+                patch.object(budget_config, "predefined_budgets", current),
+                patch.object(app_config, "LITELLM_PREMIUM_MODELS_ALIASES", ["opus"]),
+            ):
+                is_premium_models_enabled.cache_clear()
+                is_premium_model.cache_clear()
+                service = LLMService(self._config(tmp_path, yaml_body))
+                options = service.get_allowed_router_options()
+        finally:
+            is_premium_models_enabled.cache_clear()
+            is_premium_model.cache_clear()
+
+        option = next(o for o in options if o.base_name == "sy-signal-claude")
+        assert option.is_premium is False
+
+    def test_router_option_classifier_model_none_for_signal_strategy(self, tmp_path):
+        service = LLMService(self._config(tmp_path, self._YAML_WITH_SWITCHYARD))
+
+        options = service.get_allowed_router_options()
+
+        option = next(o for o in options if o.base_name == "cap-switchyard-eff-signal")
+        assert option.router_type == "switchyard"
+        assert option.strategy == RoutingMode.SIGNAL
+        assert option.classifier_model is None
+
+    def test_router_option_inherits_provider_from_capable_model(self, tmp_path):
+        """get_allowed_router_options projects the router's inherited provider through to the
+        REST-facing LlmRouterOption, same as it already does for multimodal/supports_tools."""
+        yaml_with_provider = """
+llm_models:
+  - base_name: 'cap'
+    deployment_name: 'cap'
+    enabled: true
+    provider: 'aws_bedrock'
+    switchyard:
+      - base_name: 'cap-switchyard-eff-signal'
+        efficient: 'eff'
+        mode: signal
+  - base_name: 'eff'
+    deployment_name: 'eff'
+    enabled: true
+embeddings_models: []
+"""
+        service = LLMService(self._config(tmp_path, yaml_with_provider))
+
+        options = service.get_allowed_router_options()
+
+        option = next(o for o in options if o.base_name == "cap-switchyard-eff-signal")
+        assert option.provider == LLMProvider.AWS_BEDROCK
 
 
 class TestLiteLLMDeploymentNames:

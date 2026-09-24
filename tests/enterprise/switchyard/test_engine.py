@@ -51,10 +51,7 @@ def _llm_router(capable_model: str = "cap", efficient_model: str = "eff") -> LLM
 
 
 def test_get_proxy_switchyard_router_rejects_capable_declared_as_litellm_router():
-    with (
-        patch("codemie.enterprise.switchyard.engine.config.SWITCHYARD_ENABLED", True),
-        patch("codemie.service.llm_service.llm_service.llm_service") as mock_service,
-    ):
+    with patch("codemie.service.llm_service.llm_service.llm_service") as mock_service:
         mock_service.get_llm_routers.return_value = [_llm_router()]
         mock_service.is_router_model.return_value = False
         mock_service.get_model_details.return_value = LLMModel(
@@ -65,10 +62,7 @@ def test_get_proxy_switchyard_router_rejects_capable_declared_as_litellm_router(
 
 
 def test_get_proxy_switchyard_router_rejects_efficient_that_is_a_switchyard_alias():
-    with (
-        patch("codemie.enterprise.switchyard.engine.config.SWITCHYARD_ENABLED", True),
-        patch("codemie.service.llm_service.llm_service.llm_service") as mock_service,
-    ):
+    with patch("codemie.service.llm_service.llm_service.llm_service") as mock_service:
         mock_service.get_llm_routers.return_value = [_llm_router()]
         # "cap" resolves cleanly; "eff" is itself a configured Switchyard router base_name.
         mock_service.is_router_model.side_effect = lambda name: name == "eff"
@@ -78,10 +72,7 @@ def test_get_proxy_switchyard_router_rejects_efficient_that_is_a_switchyard_alia
 
 
 def test_get_proxy_switchyard_router_proceeds_when_neither_target_is_a_router():
-    with (
-        patch("codemie.enterprise.switchyard.engine.config.SWITCHYARD_ENABLED", True),
-        patch("codemie.service.llm_service.llm_service.llm_service") as mock_service,
-    ):
+    with patch("codemie.service.llm_service.llm_service.llm_service") as mock_service:
         mock_service.get_llm_routers.return_value = [_llm_router()]
         mock_service.is_router_model.return_value = False
         mock_service.get_model_details.return_value = LLMModel(base_name="cap", deployment_name="cap", enabled=True)
@@ -97,10 +88,7 @@ def test_get_proxy_switchyard_router_rejects_target_not_in_catalog():
     """A capable/efficient model that no longer resolves in the live catalog (renamed, removed,
     or a typo) must reject the setup outright instead of silently falling back to the literal
     base_name as a deployment name."""
-    with (
-        patch("codemie.enterprise.switchyard.engine.config.SWITCHYARD_ENABLED", True),
-        patch("codemie.service.llm_service.llm_service.llm_service") as mock_service,
-    ):
+    with patch("codemie.service.llm_service.llm_service.llm_service") as mock_service:
         mock_service.get_llm_routers.return_value = [_llm_router()]
         mock_service.is_router_model.return_value = False
         mock_service.get_model_details.return_value = LLMModel(base_name="cap", deployment_name="cap", enabled=True)
@@ -109,17 +97,8 @@ def test_get_proxy_switchyard_router_rejects_target_not_in_catalog():
     assert result is None
 
 
-def test_get_proxy_switchyard_router_returns_none_when_disabled():
-    with patch("codemie.enterprise.switchyard.engine.config.SWITCHYARD_ENABLED", False):
-        result = get_proxy_switchyard_router(_ROUTER_NAME)
-    assert result is None
-
-
 def test_get_proxy_switchyard_router_returns_none_when_not_configured():
-    with (
-        patch("codemie.enterprise.switchyard.engine.config.SWITCHYARD_ENABLED", True),
-        patch("codemie.service.llm_service.llm_service.llm_service") as mock_service,
-    ):
+    with patch("codemie.service.llm_service.llm_service.llm_service") as mock_service:
         mock_service.get_llm_routers.return_value = []
         result = get_proxy_switchyard_router(_ROUTER_NAME)
     assert result is None
@@ -190,7 +169,8 @@ def _make_pick_model_router(
         router_name=_ROUTER_NAME,
         capable_model_deployment_name="capable-dep",
         efficient_model_deployment_name="efficient-dep",
-        tuning=SwitchyardTuning(classifier_model=classifier_model),
+        tuning=SwitchyardTuning(),
+        classifier_model=classifier_model,
     )
 
 

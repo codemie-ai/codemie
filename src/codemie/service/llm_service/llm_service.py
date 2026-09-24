@@ -24,6 +24,8 @@ from codemie.configs.llm_config import (
     LLMRouter,
     LlmRouterOption,
     ModelCategory,
+    RouterTier,
+    RouterTiers,
     build_switchyard_routers,
     llm_config,
 )
@@ -91,14 +93,12 @@ class LLMService:
         return [r for r in self.get_llm_routers() if r.enabled]
 
     @staticmethod
-    def _compute_router_capabilities(
-        capable: LLMModel,
-        efficient: LLMModel,
-        premium_enabled: bool,
-    ) -> tuple[bool, bool, bool | None]:
-        """Return (multimodal, supports_tools, is_premium) for a capable/efficient model pair."""
-        from codemie.enterprise.litellm.dependencies import is_premium_model
-
+    def _compute_router_capabilities(capable: LLMModel, efficient: LLMModel) -> tuple[bool, bool]:
+        """Return (multimodal, supports_tools) for a capable/efficient model pair — the AND of
+        both tiers, since a router can only guarantee a capability both tiers have. is_premium
+        is NOT part of this: it's computed uniformly for every router (switchyard or
+        litellm_auto) the same way as for a regular model — is_premium_model(router.base_name)
+        — never inferred from its constituent models (see get_allowed_router_options)."""
         cap_multi = capable.multimodal if capable.multimodal is not None else False
         eff_multi = efficient.multimodal if efficient.multimodal is not None else False
         multimodal = bool(cap_multi and eff_multi)
@@ -107,46 +107,101 @@ class LLMService:
         eff_tools = efficient.features.tools if efficient.features is not None else True
         supports_tools = bool((cap_tools is not False) and (eff_tools is not False))
 
-        is_premium: bool | None = None
-        if premium_enabled:
-            is_premium = is_premium_model(capable.base_name) or is_premium_model(efficient.base_name)
-        return multimodal, supports_tools, is_premium
+        return multimodal, supports_tools
+
+    @staticmethod
+    def _switchyard_tiers(capable: LLMModel, efficient: LLMModel) -> RouterTiers:
+        """Map a switchyard router's 2-model pair onto the platform's fixed 4-tier shape: the
+        efficient model serves the two lower tiers, the capable model the two higher ones."""
+        efficient_tier = RouterTier(model=efficient.base_name, label=efficient.label or efficient.base_name)
+        capable_tier = RouterTier(model=capable.base_name, label=capable.label or capable.base_name)
+        return RouterTiers(simple=efficient_tier, medium=efficient_tier, complex=capable_tier, reasoning=capable_tier)
+
+    def _build_switchyard_router_option(
+        self,
+        router: LLMRouter,
+        by_name: dict[str, LLMModel],
+        include_all: bool,
+        premium_enabled: bool,
+    ) -> LlmRouterOption | None:
+        """Project one switchyard LLMRouter into its REST-facing LlmRouterOption, or None when
+        it's not selectable right now (disabled, or web-hidden and include_all wasn't asked)."""
+        if not router.enabled:
+            return None
+        if not include_all and router.forbidden_for_web:
+            return None
+
+        from codemie.enterprise.litellm.dependencies import is_premium_model
+
+        capable = by_name.get(router.switchyard.capable_model)
+        efficient = by_name.get(router.switchyard.efficient_model)
+
+        multimodal: bool | None = None
+        supports_tools: bool | None = None
+        tiers: RouterTiers | None = None
+        if capable is not None and efficient is not None:
+            multimodal, supports_tools = self._compute_router_capabilities(capable, efficient)
+            tiers = self._switchyard_tiers(capable, efficient)
+
+        return LlmRouterOption(
+            base_name=router.base_name,
+            label=router.label,
+            provider=router.provider,
+            multimodal=multimodal,
+            supports_tools=supports_tools,
+            is_premium=is_premium_model(router.base_name) if premium_enabled else None,
+            router_type="switchyard",
+            strategy=router.switchyard.mode,
+            tiers=tiers,
+            classifier_model=router.switchyard.classifier_model,
+        )
+
+    @staticmethod
+    def _build_litellm_auto_router_option(
+        model: LLMModel, include_all: bool, premium_enabled: bool
+    ) -> LlmRouterOption | None:
+        """Project one live-catalog model declared as a LiteLLM auto-router into its REST-facing
+        LlmRouterOption, or None when it's not a router at all or not selectable right now."""
+        if not model.is_declared_litellm_router():
+            return None
+        if not model.enabled:
+            return None
+        if not include_all and model.forbidden_for_web:
+            return None
+
+        from codemie.enterprise.litellm.dependencies import is_premium_model
+
+        litellm_router = model.litellm_router
+        assert litellm_router is not None  # guaranteed by is_declared_litellm_router()
+
+        return LlmRouterOption(
+            base_name=model.base_name,
+            label=model.label,
+            provider=model.provider,
+            multimodal=model.multimodal,
+            supports_tools=model.features.tools if model.features is not None else None,
+            is_premium=is_premium_model(model.base_name) if premium_enabled else None,
+            router_type="litellm_auto",
+            strategy=litellm_router.strategy,
+            tiers=litellm_router.tiers,
+            classifier_model=litellm_router.classifier_model,
+        )
 
     def get_allowed_router_options(self, include_all: bool = False) -> list[LlmRouterOption]:
         from codemie.enterprise.litellm.dependencies import is_premium_models_enabled
 
-        by_name: dict[str, LLMModel] = {m.base_name: m for m in self.get_all_llm_model_info()}
+        all_models = self.get_all_llm_model_info()
+        by_name: dict[str, LLMModel] = {m.base_name: m for m in all_models}
         premium_enabled = is_premium_models_enabled()
-        options: list[LlmRouterOption] = []
 
-        for router in self.get_llm_routers():
-            if not router.enabled:
-                continue
-            if not include_all and router.forbidden_for_web:
-                continue
-
-            capable = by_name.get(router.switchyard.capable_model)
-            efficient = by_name.get(router.switchyard.efficient_model)
-
-            multimodal: bool | None = None
-            supports_tools: bool | None = None
-            is_premium: bool | None = None
-
-            if capable is not None and efficient is not None:
-                multimodal, supports_tools, is_premium = self._compute_router_capabilities(
-                    capable, efficient, premium_enabled
-                )
-
-            options.append(
-                LlmRouterOption(
-                    base_name=router.base_name,
-                    label=router.label,
-                    multimodal=multimodal,
-                    supports_tools=supports_tools,
-                    is_premium=is_premium,
-                )
-            )
-        return options
+        switchyard_options = (
+            self._build_switchyard_router_option(router, by_name, include_all, premium_enabled)
+            for router in self.get_llm_routers()
+        )
+        litellm_auto_options = (
+            self._build_litellm_auto_router_option(model, include_all, premium_enabled) for model in all_models
+        )
+        return [option for option in (*switchyard_options, *litellm_auto_options) if option is not None]
 
     def is_router_model(self, model_name: str) -> bool:
         """Return True if *model_name* is a configured and enabled Switchyard router."""
@@ -554,7 +609,12 @@ class LLMService:
             List of LLMModel instances accessible to user, filtered by visibility rules
         """
         user_models = self.get_allowed_models(user)
-        models = self._filter_models_by_visibility(user_models.chat_models, include_all)
+        # A model declared as a LiteLLM auto-router (is_declared_litellm_router()) is not a
+        # real deployment — it belongs only in get_allowed_router_options, never in the plain
+        # chat-model catalog (same "routers are not models" principle as switchyard routers,
+        # which are a wholly separate LLMRouter entity and never reach this list at all).
+        chat_models = [m for m in user_models.chat_models if not m.is_declared_litellm_router()]
+        models = self._filter_models_by_visibility(chat_models, include_all)
         return self._apply_premium_flags(models)
 
     @staticmethod
