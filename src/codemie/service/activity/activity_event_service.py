@@ -27,7 +27,8 @@ class ActivityEventService:
     def list_events(
         self,
         *,
-        actor_id: str | None = None,
+        actor_id: list[str] | None = None,
+        include_system: bool = False,
         domain: list[str] | None = None,
         event_type: list[str] | None = None,
         entity_type: list[str] | None = None,
@@ -41,6 +42,7 @@ class ActivityEventService:
         with Session(PostgresClient.get_engine()) as session:
             rows, total = activity_event_repository.find_all(
                 actor_id=actor_id,
+                include_system=include_system,
                 domain=domain,
                 event_type=event_type,
                 entity_type=entity_type,

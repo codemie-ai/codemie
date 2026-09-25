@@ -52,7 +52,8 @@ def get_filter_options(
 
 @router.get("", response_model=PaginatedListResponse[ActivityEventListItem], status_code=status.HTTP_200_OK)
 def list_activity_events(
-    actor_id: str | None = Query(None),
+    actor_id: list[str] | None = Query(None),
+    include_system: bool = Query(False, description="Also include events with no actor (system-reported)"),
     domain: list[str] | None = Query(None),
     event_type: list[str] | None = Query(None),
     entity_type: list[str] | None = Query(None),
@@ -67,6 +68,7 @@ def list_activity_events(
     try:
         items, total = activity_event_service.list_events(
             actor_id=actor_id,
+            include_system=include_system,
             domain=domain,
             event_type=event_type,
             entity_type=entity_type,

@@ -200,11 +200,29 @@ class TestFindAll:
         session.execute.side_effect = [count_result, data_result]
 
         _repo().find_all(
-            actor_id="a-1",
+            actor_id=["a-1"],
             domain=["user_management"],
             event_type=["user.created"],
             entity_type=["user"],
             entity_id="u-1",
+            limit=5,
+            offset=0,
+            session=session,
+        )
+
+        assert session.execute.call_count == 2
+
+    def test_find_all_accepts_multiple_actors_and_system_events(self):
+        session = MagicMock()
+        count_result = MagicMock()
+        count_result.scalar_one.return_value = 0
+        data_result = MagicMock()
+        data_result.all.return_value = []
+        session.execute.side_effect = [count_result, data_result]
+
+        _repo().find_all(
+            actor_id=["a-1", "a-2"],
+            include_system=True,
             limit=5,
             offset=0,
             session=session,

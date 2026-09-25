@@ -25,13 +25,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import asc, delete, desc, func
+from sqlalchemy import asc, delete, desc, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session, select
 
 from codemie.configs import config, logger
 from codemie.rest_api.models.user_management import UserDB
 from codemie.service.activity.activity_models import ActivityEvent, ActivityEventCreate
+
+SYSTEM_ACTOR_ID = "system"
 
 
 @dataclass
@@ -232,7 +234,8 @@ class SQLActivityEventRepository(ActivityEventRepository):
     def find_all(
         self,
         *,
-        actor_id: str | None = None,
+        actor_id: list[str] | None = None,
+        include_system: bool = False,
         domain: list[str] | None = None,
         event_type: list[str] | None = None,
         entity_type: list[str] | None = None,
@@ -245,8 +248,14 @@ class SQLActivityEventRepository(ActivityEventRepository):
         session: Session,
     ) -> tuple[list[ActivityEventRow], int]:
         conditions = []
-        if actor_id is not None:
-            conditions.append(ActivityEvent.actor_id == actor_id)
+        actor_conditions = []
+        if actor_id:
+            actor_conditions.append(ActivityEvent.actor_id.in_(actor_id))
+        if include_system:
+            actor_conditions.append(ActivityEvent.actor_id.is_(None))
+            actor_conditions.append(ActivityEvent.actor_id == SYSTEM_ACTOR_ID)
+        if actor_conditions:
+            conditions.append(or_(*actor_conditions))
         if domain:
             conditions.append(ActivityEvent.domain.in_(domain))
         if event_type:
