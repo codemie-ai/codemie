@@ -32,7 +32,8 @@ from codemie.agents.langgraph_agent import (
 )
 from codemie.agents.supervisor.constants import METADATA_KEY_HANDOFF_BACK, METADATA_KEY_HANDOFF_DESTINATION
 from codemie.chains.base import ThoughtOutputFormat
-from codemie.core.models import AssistantChatRequest
+from codemie.core.exceptions import SubagentToolConfirmationUnsupportedException
+from codemie.core.models import AssistantChatRequest, ToolCallPolicy
 from codemie.core.thread import ThreadedGenerator
 
 
@@ -816,3 +817,133 @@ class TestLangGraphMultiAssistantSupervisor:
 
         result = supervisor_agent.is_finish_reason_tool_calls(message)
         assert result is False
+
+    def test_bakes_interrupt_into_supervisor_node_when_confirmation_required(self, agent_config_with_subagents):
+        agent_config_with_subagents["require_tool_confirmation"] = True
+
+        with patch("codemie.agents.langgraph_agent.create_supervisor") as mock_create_supervisor:
+            mock_builder = MagicMock()
+            mock_node_spec = MagicMock()
+            mock_inner_builder = mock_node_spec.runnable.builder
+            mock_builder.nodes.get.return_value = mock_node_spec
+            mock_create_supervisor.return_value = mock_builder
+
+            with patch("codemie.core.dependecies.get_llm_by_credentials"):
+                LangGraphAgent(**agent_config_with_subagents)
+
+            mock_builder.nodes.get.assert_called_once_with(LangGraphAgent.SUPERVISOR_NODE_NAME)
+            mock_inner_builder.compile.assert_called_once_with(interrupt_before=LangGraphAgent.INTERRUPT_BEFORE_TOOLS)
+            assert mock_node_spec.runnable == mock_inner_builder.compile.return_value
+            mock_builder.compile.assert_called_once()
+
+    def test_does_not_bake_interrupt_when_confirmation_not_required(self, agent_config_with_subagents):
+        with patch("codemie.agents.langgraph_agent.create_supervisor") as mock_create_supervisor:
+            mock_builder = MagicMock()
+            mock_create_supervisor.return_value = mock_builder
+
+            with patch("codemie.core.dependecies.get_llm_by_credentials"):
+                LangGraphAgent(**agent_config_with_subagents)
+
+            mock_builder.nodes.get.assert_not_called()
+            mock_builder.compile.assert_called_once()
+
+    def test_bake_interrupt_warns_when_supervisor_node_missing(self, agent_config_with_subagents):
+        agent_config_with_subagents["require_tool_confirmation"] = True
+
+        with patch("codemie.agents.langgraph_agent.create_supervisor") as mock_create_supervisor:
+            mock_builder = MagicMock()
+            mock_builder.nodes.get.return_value = None
+            mock_create_supervisor.return_value = mock_builder
+
+            with patch("codemie.agents.langgraph_agent.logger") as mock_logger:
+                with patch("codemie.core.dependecies.get_llm_by_credentials"):
+                    LangGraphAgent(**agent_config_with_subagents)
+
+                mock_logger.warning.assert_called_once()
+
+            mock_builder.compile.assert_called_once()
+
+
+class TestSubagentToolConfirmationPolicy:
+    @pytest.fixture
+    def mock_user(self):
+        user = MagicMock()
+        user.id = "test_user_id"
+        user.name = "Test User"
+        user.username = "testuser"
+        return user
+
+    @pytest.fixture
+    def mock_request(self):
+        request = MagicMock(spec=AssistantChatRequest)
+        request.conversation_id = "test_conv_id"
+        request.text = "Test request"
+        request.history = []
+        request.system_prompt = None
+        request.file_names = None
+        request.metadata = {}
+        return request
+
+    @pytest.fixture
+    def mock_regular_tool(self):
+        tool = MagicMock(spec=BaseTool)
+        tool.name = "regular_tool"
+        tool.description = "A regular tool"
+        tool.metadata = {}
+        return tool
+
+    @pytest.fixture
+    def base_config(self, mock_user, mock_request, mock_regular_tool):
+        assistant = MagicMock()
+        assistant.project = "test"
+        return {
+            "agent_name": "SubAgent",
+            "description": "A sub-assistant",
+            "tools": [mock_regular_tool],
+            "request": mock_request,
+            "system_prompt": "You are a sub-assistant.",
+            "request_uuid": "test_uuid",
+            "user": mock_user,
+            "llm_model": "gpt-4",
+            "assistant": assistant,
+        }
+
+    def test_subagent_raises_when_tool_confirmation_required(self, base_config):
+        base_config["is_subagent"] = True
+        base_config["require_tool_confirmation"] = True
+        base_config["tool_call_policy"] = ToolCallPolicy.ASK_FOR_APPROVAL
+
+        with patch("codemie.agents.langgraph_agent.create_smart_react_agent") as mock_create_smart_react:
+            with patch("codemie.core.dependecies.get_llm_by_credentials"):
+                with pytest.raises(SubagentToolConfirmationUnsupportedException) as exc_info:
+                    LangGraphAgent(**base_config)
+
+            mock_create_smart_react.assert_not_called()
+
+        assert exc_info.value.agent_name == "SubAgent"
+        assert exc_info.value.tool_call_policy == ToolCallPolicy.ASK_FOR_APPROVAL
+
+    def test_subagent_does_not_raise_when_confirmation_not_required(self, base_config):
+        base_config["is_subagent"] = True
+        base_config["require_tool_confirmation"] = False
+
+        with patch("codemie.agents.langgraph_agent.create_smart_react_agent") as mock_create_smart_react:
+            mock_create_smart_react.return_value = MagicMock()
+
+            with patch("codemie.core.dependecies.get_llm_by_credentials"):
+                LangGraphAgent(**base_config)
+
+            mock_create_smart_react.assert_called_once()
+
+    def test_top_level_agent_with_confirmation_required_does_not_raise(self, base_config):
+        base_config["is_subagent"] = False
+        base_config["require_tool_confirmation"] = True
+        base_config["tool_call_policy"] = ToolCallPolicy.ASK_FOR_APPROVAL
+
+        with patch("codemie.agents.langgraph_agent.create_smart_react_agent") as mock_create_smart_react:
+            mock_create_smart_react.return_value = MagicMock()
+
+            with patch("codemie.core.dependecies.get_llm_by_credentials"):
+                LangGraphAgent(**base_config)
+
+            mock_create_smart_react.assert_called_once()

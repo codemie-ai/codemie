@@ -51,7 +51,7 @@ class TestResearchToolkit:
         assert any(isinstance(tool, WebScrapperTool) for tool in tools), "WebScrapperTool missing"
 
     def test_get_tavily_tool_uses_official_langchain_tavily_search(self, toolkit):
-        with patch("codemie_tools.research.toolkit.TavilySearch") as mock_tavily_search:
+        with patch("codemie_tools.research.toolkit.TavilySearchTool") as mock_tavily_search:
             toolkit.get_tavily_tool()
 
         mock_tavily_search.assert_called_once_with(

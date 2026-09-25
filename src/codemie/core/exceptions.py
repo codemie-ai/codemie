@@ -33,6 +33,25 @@ class MaterializationFailedException(ValidationException):
     """Raised when a template cannot be materialized into a valid workflow seed."""
 
 
+class SubagentToolConfirmationUnsupportedException(ValidationException):
+    """Raised when a sub-assistant resolves to a tool-call policy that requires confirmation.
+
+    Sub-assistant graphs are wrapped by ``langgraph_supervisor`` in an opaque callable, so an
+    ``interrupt_before`` pause cannot be baked into them (unlike the supervisor's own react loop).
+    Rather than silently running a sub-assistant's tool calls without the confirmation the resolved
+    policy requires, agent construction fails loudly here.
+    """
+
+    def __init__(self, agent_name: str, tool_call_policy: Any):
+        self.agent_name = agent_name
+        self.tool_call_policy = tool_call_policy
+        super().__init__(
+            f"Sub-assistant '{agent_name}' resolved to tool_call_policy={tool_call_policy!r}, which "
+            "requires tool-call confirmation. Confirmation is not supported for sub-assistants' own "
+            "tool calls; set this sub-assistant's tool-call policy to auto_approve."
+        )
+
+
 class NotFoundException(Exception):
     """Raised when a requested resource does not exist."""
 

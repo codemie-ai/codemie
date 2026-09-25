@@ -49,6 +49,7 @@ from codemie.agents.tool_confirmation.tool_call_confirmation_mixin import ToolCa
 from codemie.agents.tools.agent import WorkspaceAwareAgent
 from codemie.core.models import ToolCallPolicy
 from codemie.core.errors import ErrorResponse
+from codemie.core.exceptions import SubagentToolConfirmationUnsupportedException
 from codemie.enterprise.litellm.proxy_router import handle_agent_exception
 from codemie_tools.base.file_object import FileObject
 from langchain_core.callbacks import BaseCallbackHandler
@@ -123,6 +124,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
     SUPERVISOR_HANDOFF_TOOL_PREFIX = SUPERVISOR_HANDOFF_TOOL_PREFIX
     ASSISTANT_NAME_MAX_LENGTH = 64
     INTERRUPT_BEFORE_TOOLS = ["tools"]
+    SUPERVISOR_NODE_NAME = "supervisor"
 
     @staticmethod
     def _is_conversation_replay_v2_enabled() -> bool:
@@ -162,6 +164,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         trace_context=None,
         require_tool_confirmation: bool = False,
         tool_call_policy: Optional[ToolCallPolicy] = None,
+        is_subagent: bool = False,
     ):
         ensure_langgraph_supervisor_compatibility()
 
@@ -212,6 +215,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         self.tool_selection_limit = tool_selection_limit or config.TOOL_SELECTION_LIMIT
         self.require_tool_confirmation = require_tool_confirmation
         self.tool_call_policy = tool_call_policy
+        self.is_subagent = is_subagent
 
         set_logging_info(
             uuid=request_uuid,
@@ -289,7 +293,7 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         handoff_tools = self._create_handoff_tools()
         all_tools = (self.tools or []) + handoff_tools
 
-        return create_supervisor(
+        builder = create_supervisor(
             model=llm,
             agents=self.subagents,
             tools=all_tools,
@@ -301,7 +305,30 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
                 _strip_handoff_back_messages_pre_model_hook,
                 _strip_subagent_task_messages_pre_model_hook,
             ),
-        ).compile()
+        )
+
+        if self.require_tool_confirmation:
+            self._bake_interrupt_into_supervisor_node(builder)
+
+        return builder.compile()
+
+    def _bake_interrupt_into_supervisor_node(self, builder) -> None:
+        """Recompile the supervisor's own react-loop node with interrupt_before=["tools"].
+
+        `create_supervisor` builds the supervisor's tool-calling loop as a genuine compiled
+        subgraph node (unlike sub-assistant nodes, which langgraph_supervisor wraps in an opaque
+        callable), so it's still mutable here, before the outer graph is compiled. This only
+        covers the supervisor's own direct/handoff tool calls, never a sub-assistant's internal
+        tool calls - sub-assistant confirmation is handled separately (see `init_agent`).
+        """
+        spec = builder.nodes.get(self.SUPERVISOR_NODE_NAME)
+        inner_builder = getattr(getattr(spec, "runnable", None), "builder", None)
+
+        if inner_builder is None:
+            logger.warning("Could not locate the supervisor's react-loop node to bake in a tool-confirmation interrupt")
+            return
+
+        spec.runnable = inner_builder.compile(interrupt_before=self.INTERRUPT_BEFORE_TOOLS)
 
     def _build_single_agent(self, llm, system_prompt: str, agent_name: str, parallel_tool_calling: bool):
         return create_smart_react_agent(
@@ -323,6 +350,9 @@ class LangGraphAgent(ToolCallConfirmationMixin, WorkspaceAwareAgent):
         )
 
     def init_agent(self):
+        if self.is_subagent and self.require_tool_confirmation:
+            raise SubagentToolConfirmationUnsupportedException(self.agent_name, self.tool_call_policy)
+
         llm, parallel_tool_calling = self._prepare_llm_for_agent()
 
         self.callbacks = self.configure_callbacks()

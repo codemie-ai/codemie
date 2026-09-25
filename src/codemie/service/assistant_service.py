@@ -506,6 +506,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
         thread_generator: MessageQueue = None,
         tool_callbacks: list[BaseCallbackHandler] = None,
         request_headers: dict[str, str] | None = None,
+        is_subagent: bool = False,
     ):
         cache_disabled = get_disable_prompt_cache()
         logger.info(
@@ -619,6 +620,7 @@ Instead, leverage the schema's data to generate deeper insights and improve tool
                 smart_tool_selection_enabled,
                 allow_tool_confirmation=True,
             )
+            agent_kwargs["is_subagent"] = is_subagent
 
         agent = agent_class(**agent_kwargs)
         logger.info(

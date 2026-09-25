@@ -105,6 +105,28 @@ class TestAssistantFactory:
         assert result == mock_agent_executor
 
     @patch("codemie.service.assistant_service.AssistantService.build_agent")
+    def test_factory_build_passes_is_subagent_true(self, mock_build_agent, mock_assistant, mock_user, mock_request):
+        """factory.build() must always mark the built agent as a sub-assistant."""
+        mock_agent = Mock()
+        mock_agent.agent_executor = Mock()
+        mock_agent.set_thread_context = Mock()
+        mock_build_agent.return_value = mock_agent
+
+        factory = AssistantFactory(
+            assistant=mock_assistant,
+            user=mock_user,
+            request=mock_request,
+            request_uuid="test-uuid",
+            thread_generator=None,
+            llm_model="gpt-4",
+        )
+
+        factory.build()
+
+        call_kwargs = mock_build_agent.call_args[1]
+        assert call_kwargs["is_subagent"] is True
+
+    @patch("codemie.service.assistant_service.AssistantService.build_agent")
     def test_factory_build_with_thread_generator(
         self, mock_build_agent, mock_assistant, mock_user, mock_request, mock_thread_generator
     ):

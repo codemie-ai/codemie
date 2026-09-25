@@ -21,6 +21,7 @@ import requests
 from bs4 import BeautifulSoup
 from langchain_community.utilities import WikipediaAPIWrapper
 from langchain_google_community import GoogleSearchAPIWrapper
+from langchain_tavily import TavilySearch
 from markdownify import markdownify as md
 from pydantic import BaseModel, Field
 
@@ -261,3 +262,15 @@ class WikipediaQueryRun(CodeMieTool):
 
     def execute(self, query: str):
         return self.api_wrapper.run(query)
+
+
+class TavilySearchTool(TavilySearch):
+    """TavilySearch with is_safe support required by tool-call confirmation.
+
+    TavilySearch (langchain_tavily) doesn't extend CodeMieTool, so it lacks
+    is_safe and crashes the confirmation flow with AttributeError. It's a
+    read-only search tool, same as the other research tools above.
+    """
+
+    def is_safe(self, args: dict) -> bool:
+        return True

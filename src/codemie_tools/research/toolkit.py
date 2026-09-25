@@ -14,7 +14,6 @@
 
 from typing import List, Dict, Any, Optional
 
-from langchain_tavily import TavilySearch
 from langchain_community.utilities.wikipedia import WikipediaAPIWrapper
 from langchain_google_community import GoogleSearchAPIWrapper
 from pydantic import BaseModel
@@ -29,6 +28,7 @@ from codemie_tools.research.tools import (
     GoogleSearchResults,
     GooglePlacesTool,
     GooglePlacesFindNearTool,
+    TavilySearchTool,
     ThreadSafeGoogleSearchAPIWrapper,
 )
 from codemie_tools.research.tools_vars import (
@@ -109,7 +109,7 @@ class ResearchToolkit(BaseToolkit):
         )
 
     def get_tavily_tool(self):
-        return TavilySearch(
+        return TavilySearchTool(
             name=TAVILY_SEARCH_TOOL.name,
             description=TAVILY_SEARCH_TOOL.description,
             handle_validation_error=True,

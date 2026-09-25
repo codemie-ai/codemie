@@ -76,6 +76,7 @@ class AssistantFactory:
                 request_uuid=self.request_uuid,
                 thread_generator=self.thread_generator,
                 tool_callbacks=[AgentStreamingCallback(self.thread_generator)],
+                is_subagent=True,
             )
             agent.set_thread_context({}, UniqueThoughtParentIds.LATEST.value)
 
