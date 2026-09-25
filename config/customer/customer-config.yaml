@@ -282,20 +282,12 @@ components:
       enabled: true
       recentReleaseCount: "10"
 
-  - id: "bannerMessage"
+  - id: "banner"
     settings:
       enabled: false
-      value: ""
-
-  - id: "bannerLinkLabel"
-    settings:
-      enabled: false
-      value: ""
-
-  - id: "bannerLinkRoute"
-    settings:
-      enabled: false
-      value: ""
+      message: ""
+      linkLabel: ""
+      linkRoute: ""
   - id: "features:projectChargeback"
     settings:
       enabled: false

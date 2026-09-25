@@ -126,6 +126,40 @@ CHAT_DISCLAIMER = SettingDeclaration(
     ],
 )
 
+BANNER = SettingDeclaration(
+    component_id="banner",
+    label="Banner",
+    description="Notice shown across the top of the application for every user.",
+    fields=[
+        FieldDeclaration(
+            name="enabled",
+            type=FieldType.SWITCH,
+            label="Show banner",
+        ),
+        FieldDeclaration(
+            name="message",
+            type=FieldType.TEXTAREA,
+            label="Banner message",
+            description="Plain text. Line breaks are preserved where the banner is shown.",
+            max_length=1000,
+        ),
+        FieldDeclaration(
+            name="linkLabel",
+            type=FieldType.INPUT,
+            label="Link label",
+            description="Shown after the message. The link appears only when both link fields are filled in.",
+            max_length=100,
+        ),
+        FieldDeclaration(
+            name="linkRoute",
+            type=FieldType.INPUT,
+            label="Link target",
+            description="Path inside the application, such as /settings/profile, or a full URL.",
+            max_length=200,
+        ),
+    ],
+)
+
 RELEASE_NOTES_RECENT_COUNT = SettingDeclaration(
     component_id="releaseNotesRecentCount",
     label="Release Notes: Recent releases count",
@@ -168,7 +202,13 @@ SCHEDULERS = SettingDeclaration(
     ],
 )
 
-DECLARATIONS: tuple[SettingDeclaration, ...] = (CHAT_DISCLAIMER, RELEASE_NOTES_RECENT_COUNT, WEB_SEARCH, SCHEDULERS)
+DECLARATIONS: tuple[SettingDeclaration, ...] = (
+    CHAT_DISCLAIMER,
+    RELEASE_NOTES_RECENT_COUNT,
+    BANNER,
+    WEB_SEARCH,
+    SCHEDULERS,
+)
 
 _BY_COMPONENT_ID = {declaration.component_id: declaration for declaration in DECLARATIONS}
 _BY_KEY = {declaration.key: declaration for declaration in DECLARATIONS}

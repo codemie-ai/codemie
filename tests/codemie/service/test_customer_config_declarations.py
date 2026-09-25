@@ -33,7 +33,7 @@ from codemie.service.dynamic_config_service import DynamicConfigService
     [
         ("chatDisclaimer", "CUSTOMER_CONFIG__CHAT_DISCLAIMER"),
         ("features:webSearch", "CUSTOMER_CONFIG__FEATURES__WEB_SEARCH"),
-        ("bannerMessage", "CUSTOMER_CONFIG__BANNER_MESSAGE"),
+        ("mcpAuthTimeoutSeconds", "CUSTOMER_CONFIG__MCP_AUTH_TIMEOUT_SECONDS"),
         ("applications:test-mate", "CUSTOMER_CONFIG__APPLICATIONS__TEST_MATE"),
     ],
 )
@@ -43,7 +43,7 @@ def test_key_is_derived_from_component_id(component_id, expected_key):
 
 @pytest.mark.parametrize(
     "component_id",
-    ["chatDisclaimer", "features:webSearch", "applications:test-mate", "bannerLinkRoute"],
+    ["chatDisclaimer", "features:webSearch", "applications:test-mate", "banner"],
 )
 def test_derived_key_satisfies_dynamic_config_key_pattern(component_id):
     assert DynamicConfigService.KEY_PATTERN.match(build_key(component_id))
@@ -91,6 +91,36 @@ def test_every_declaration_has_a_unique_key():
     keys = [declaration.key for declaration in DECLARATIONS]
 
     assert len(keys) == len(set(keys))
+
+
+def test_banner_is_declared_with_its_four_fields():
+    declaration = by_component_id("banner")
+
+    assert declaration is not None
+    assert declaration.key == "CUSTOMER_CONFIG__BANNER"
+    assert [field.name for field in declaration.fields] == [
+        "enabled",
+        "message",
+        "linkLabel",
+        "linkRoute",
+    ]
+
+
+def test_banner_link_route_is_a_length_limited_input():
+    declaration = by_component_id("banner")
+    link_route = next(field for field in declaration.fields if field.name == "linkRoute")
+
+    assert link_route.type is FieldType.INPUT
+    assert link_route.max_length == 200
+
+
+def test_banner_message_is_plain_text_with_a_length_limit():
+    declaration = by_component_id("banner")
+    message = next(field for field in declaration.fields if field.name == "message")
+
+    assert message.type is FieldType.TEXTAREA
+    assert message.markup is Markup.PLAIN
+    assert message.max_length == 1000
 
 
 def test_release_notes_recent_count_is_declared():

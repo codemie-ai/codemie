@@ -16,6 +16,7 @@ import pytest
 
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.service.customer_config_declarations import (
+    BANNER,
     CHAT_DISCLAIMER,
     RELEASE_NOTES_RECENT_COUNT,
     FieldDeclaration,
@@ -199,6 +200,63 @@ def test_an_empty_optional_value_skips_the_pattern_check():
     )
 
     assert validate_and_sanitize(declaration, {"url": ""})["url"] == ""
+
+
+def _banner_payload(**overrides) -> dict:
+    payload = {"enabled": True, "message": "Scheduled maintenance", "linkLabel": "", "linkRoute": ""}
+    payload.update(overrides)
+    return payload
+
+
+def test_banner_accepts_a_relative_link_route():
+    result = validate_and_sanitize(BANNER, _banner_payload(linkLabel="Details", linkRoute="/settings/profile"))
+
+    assert result["linkRoute"] == "/settings/profile"
+
+
+@pytest.mark.parametrize(
+    "link_route",
+    ["https://docs.example.com/policy", "http://intranet.example/page", "/settings/profile", "//example.com"],
+)
+def test_banner_accepts_any_link_route_without_a_scripting_scheme(link_route):
+    result = validate_and_sanitize(BANNER, _banner_payload(linkLabel="Details", linkRoute=link_route))
+
+    assert result["linkRoute"] == link_route
+
+
+@pytest.mark.parametrize(
+    "link_route",
+    [
+        "javascript:alert(1)",
+        "JavaScript:alert(1)",
+        "  javascript:alert(1)",
+        "data:text/html;base64,PHN2Zz4=",
+        "vbscript:msgbox(1)",
+        "java&#115;cript:alert(1)",
+        "&#x6a;avascript:alert(1)",
+        "java\tscript:alert(1)",
+    ],
+)
+def test_banner_rejects_a_link_route_carrying_a_scripting_scheme(link_route):
+    with pytest.raises(ExtendedHTTPException) as error:
+        validate_and_sanitize(BANNER, _banner_payload(linkLabel="Details", linkRoute=link_route))
+
+    assert error.value.code == 400
+
+
+def test_banner_rejects_a_message_over_its_limit():
+    with pytest.raises(ExtendedHTTPException) as error:
+        validate_and_sanitize(BANNER, _banner_payload(message="x" * 1001))
+
+    assert error.value.code == 400
+
+
+def test_a_scripting_scheme_is_rejected_in_any_declared_text_field():
+    """The check belongs to text validation, not to one declaration's pattern."""
+    with pytest.raises(ExtendedHTTPException) as error:
+        validate_and_sanitize(BANNER, _banner_payload(message="javascript:alert(1)"))
+
+    assert error.value.code == 400
 
 
 @pytest.mark.parametrize("value", ["0", "01", "1.5", "-1", "abc", "5 "])

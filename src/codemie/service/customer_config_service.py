@@ -162,8 +162,13 @@ async def resolve_components() -> list[Component]:
 
 
 _INVALID_VALUE_MESSAGE = "Invalid configuration value"
+_UNSAFE_LINK_MESSAGE = "Unsafe link in configuration value"
 
-_DANGEROUS_LINK_SCHEMES = re.compile(r"\]\(\s*(?:javascript|data|vbscript)\s*:", re.IGNORECASE)
+_SCRIPTING_SCHEMES = "javascript|data|vbscript"
+
+# the same schemes reach a browser two ways: inside markdown link syntax, and as a bare value
+_DANGEROUS_LINK_SCHEMES = re.compile(rf"\]\(\s*(?:{_SCRIPTING_SCHEMES})\s*:", re.IGNORECASE)
+_DANGEROUS_VALUE_SCHEMES = re.compile(rf"^(?:{_SCRIPTING_SCHEMES}):", re.IGNORECASE)
 
 # bleach strips tags but keeps their text, which would leave script bodies behind as plain text
 _SCRIPTING_BLOCKS = re.compile(r"<\s*(script|style|iframe)\b[^>]*>.*?<\s*/\s*\1\s*>", re.IGNORECASE | re.DOTALL)
@@ -244,10 +249,29 @@ def _validate_text(field: FieldDeclaration, value: str) -> str:
             details=field.pattern_message or f"Field '{field.name}' does not match {field.pattern}",
         )
 
+    _reject_scripting_scheme(field, value)
+
     if field.markup is Markup.MARKDOWN:
         return _sanitize_markdown(field, value)
 
     return value
+
+
+def _reject_scripting_scheme(field: FieldDeclaration, value: str) -> None:
+    """Refuse a value whose own scheme executes script when a browser follows it.
+
+    Character references and inner control characters are stripped first: a browser
+    decodes and ignores them inside an href, so the raw spelling alone is not enough.
+    """
+    # \s already covers \x09-\x0d, so the range starts after it to keep the class duplicate-free
+    canonical = re.sub(r"[\s\x00-\x08\x0e-\x1f]", "", html.unescape(value))
+
+    if _DANGEROUS_VALUE_SCHEMES.match(canonical):
+        raise ExtendedHTTPException(
+            code=400,
+            message=_UNSAFE_LINK_MESSAGE,
+            details=f"Field '{field.name}' uses a disallowed URL scheme",
+        )
 
 
 def _sanitize_markdown(field: FieldDeclaration, value: str) -> str:
@@ -258,7 +282,7 @@ def _sanitize_markdown(field: FieldDeclaration, value: str) -> str:
     if _DANGEROUS_LINK_SCHEMES.search(canonical):
         raise ExtendedHTTPException(
             code=400,
-            message="Unsafe link in configuration value",
+            message=_UNSAFE_LINK_MESSAGE,
             details=f"Field '{field.name}' contains a link with a disallowed scheme",
         )
 

@@ -298,6 +298,67 @@ async def test_admin_listing_reads_through_so_the_admin_sees_their_own_write(pat
     assert disclaimer["value"]["text"] == "just saved"
 
 
+def test_banner_default_is_declared_disabled_and_empty():
+    """The deployment default must exist in YAML, so a reset has something to fall back to."""
+    from codemie.configs.customer_config import customer_config as real_config
+
+    component = next((c for c in real_config.components if c.id == "banner"), None)
+
+    assert component is not None
+    assert component.settings.enabled is False
+    assert getattr(component.settings, "message", None) == ""
+    assert getattr(component.settings, "linkLabel", None) == ""
+    assert getattr(component.settings, "linkRoute", None) == ""
+
+
+def test_legacy_banner_components_are_gone():
+    """The three-component shape is removed, not kept as a fallback."""
+    from codemie.configs.customer_config import customer_config as real_config
+
+    ids = {c.id for c in real_config.components}
+
+    assert ids.isdisjoint({"bannerMessage", "bannerLinkLabel", "bannerLinkRoute"})
+
+
+@pytest.mark.asyncio
+async def test_banner_override_wins_over_the_yaml_default(patched_yaml, yaml_components):
+    yaml_components.append(
+        Component(
+            id="banner",
+            settings=ComponentSetting(enabled=True, message="From YAML", linkLabel="", linkRoute=""),
+        )
+    )
+    rows = [
+        _row("CUSTOMER_CONFIG__BANNER", {"enabled": True, "message": "From admin", "linkLabel": "", "linkRoute": ""})
+    ]
+
+    with patch.object(
+        customer_config_service.DynamicConfigService, "alist_by_key_prefix", AsyncMock(return_value=rows)
+    ):
+        components = await resolve_components()
+
+    banner = next(c for c in components if c.id == "banner")
+    assert banner.settings.message == "From admin"
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_banner_is_absent_from_the_resolved_components(patched_yaml, yaml_components):
+    yaml_components.append(
+        Component(
+            id="banner",
+            settings=ComponentSetting(enabled=True, message="Visible", linkLabel="", linkRoute=""),
+        )
+    )
+    rows = [_row("CUSTOMER_CONFIG__BANNER", {"enabled": False, "message": "Visible", "linkLabel": "", "linkRoute": ""})]
+
+    with patch.object(
+        customer_config_service.DynamicConfigService, "alist_by_key_prefix", AsyncMock(return_value=rows)
+    ):
+        components = await resolve_components()
+
+    assert all(c.id != "banner" for c in components)
+
+
 def test_release_notes_recent_count_default_is_declared_enabled_with_a_value():
     """The reference deployment config carries a tunable default value; enabled: true is
     structural (ComponentSetting.enabled has no default), not a feature toggle here."""
