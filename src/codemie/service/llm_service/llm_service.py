@@ -181,6 +181,8 @@ class LLMService:
             multimodal=model.multimodal,
             supports_tools=model.features.tools if model.features is not None else None,
             is_premium=is_premium_model(model.base_name) if premium_enabled else None,
+            default=model.default,  # Propagate the default flag from model_info
+            default_for_categories=model.default_for_categories,  # Propagate default categories
             router_type="litellm_auto",
             strategy=litellm_router.strategy,
             tiers=litellm_router.tiers,
@@ -418,10 +420,7 @@ class LLMService:
             return category_default
 
         # If no category-specific default found, fall back to GLOBAL in default_for_categories
-        return next(
-            (model for model in active_models if model.enabled and model.is_default_for(ModelCategory.GLOBAL)),
-            None,
-        )
+        return self._get_global_default_model()
 
     def get_default_models_by_category(self) -> dict:
         """Returns a dictionary mapping all categories to their default models.
@@ -459,10 +458,20 @@ class LLMService:
         # Get the active model source (LiteLLM or YAML)
         active_models = self.get_all_llm_model_info()
 
-        return next(
-            (model for model in active_models if model.enabled and model.is_default_for(ModelCategory.GLOBAL)),
-            None,
+        return self._prefer_litellm_router(
+            [model for model in active_models if model.enabled and model.is_default_for(ModelCategory.GLOBAL)]
         )
+
+    @staticmethod
+    def _prefer_litellm_router(models: List[LLMModel]) -> Optional[LLMModel]:
+        """Pick the global default from candidate models: a LiteLLM auto-router wins over concrete models,
+        otherwise the first candidate. Shared by every global-default lookup so they never disagree.
+
+        Reads the model catalog only (no get_allowed_router_options()): default_llm_model is evaluated at
+        import time (core.utils default args), and that path imports codemie.enterprise, which creates a
+        circular import.
+        """
+        return next((model for model in models if model.is_declared_litellm_router()), next(iter(models), None))
 
     def _populate_missing_categories_with_global_default(self, category_models: dict, global_default: LLMModel):
         """Add the global default model for categories without a specific default."""
@@ -472,14 +481,20 @@ class LLMService:
 
     @property
     def default_llm_model(self) -> str:
-        """Retrieve all default LLM models and return name of first one."""
-        # Get the active model source (LiteLLM or YAML)
-        active_models = self.get_all_llm_model_info()
+        """Retrieve the default LLM model/router and return name of first one.
 
-        default_model_names = [model.base_name for model in active_models if model.default]
-        if not default_model_names:
+        Checks both concrete models and routers for default status. Routers are checked first
+        since they provide intelligent routing capabilities.
+        """
+        active_models = self.get_all_llm_model_info()
+        default_models = [model for model in active_models if model.default]
+
+        # Same router-first rule as the category lookups; disabled defaults are only a last resort.
+        default_model = self._prefer_litellm_router([model for model in default_models if model.enabled])
+        default_model = default_model or next(iter(default_models), None)
+        if default_model is None:
             raise ValueError("No global default LLM model is configured (no model with GLOBAL category).")
-        return default_model_names[0]
+        return default_model.base_name
 
     @property
     def default_embedding_model(self) -> str:

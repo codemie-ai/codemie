@@ -1,0 +1,38 @@
+{
+  "decision": "request-changes",
+  "rationale": "Compact profile: only the edge-case lens ran, and there was no spec (acceptance skipped), so confidence is low. Two blocking findings, both with reachability unconfirmed and capped at major; 2 deferred to docs/superpowers/runs/2026-09-25-epmcdme-14888-router-default-propagation/code-review-deferred.md (the concrete-default fallback ignores enabled; eager import-time default args freeze the YAML default); 3 dismissed as noise.",
+  "confidence": "low",
+  "risk_flags": ["breaking-change"],
+  "business_review": [],
+  "standards_review": [
+    {"kind": "commit-format", "status": "na", "notes": "Standards audit not part of compact profile."},
+    {"kind": "code-quality", "status": "na", "notes": "Standards audit not part of compact profile."},
+    {"kind": "security", "status": "na", "notes": "Standards audit not part of compact profile."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/llm_service/llm_service.py",
+      "line": 363,
+      "title": "Default router breaks default-model cost fallback",
+      "problem": "get_model_cost() uses self.default_llm_model both when no base_name is passed and as the fallback for unknown names. default_llm_model can now return a LiteLLM auto-router. If that router entry has no cost, the direct match fails, and _get_router_model_cost only resolves switchyard routers (get_llm_routers / router.switchyard.capable_model). The final fallback then matches the same cost-less router, so the function returns None. Before this change it returned a concrete default model's cost.",
+      "impact": "Token/cost callbacks (tokens_callback.py:107,437, core/utils.py:523, proxy_router.py:1006) can stop costing usage for unknown or default models whenever a cost-less router is the default. Reachability unconfirmed: it depends on whether LiteLLM router entries carry cost in model_info.",
+      "recommendation": "For cost fallback, resolve to a concrete priced model when the default is a LiteLLM auto-router. For example, fall back to the first enabled concrete default that has a cost, or resolve the router's tier/classifier model cost. Add a test for get_model_cost(None) and for an unknown name with a cost-less default router."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/llm_service/llm_service.py",
+      "line": 487,
+      "title": "Router-first default diverges from category defaults",
+      "problem": "default_llm_model now picks an enabled default LiteLLM router before any concrete default. _get_global_default_model and get_default_model_for_category still return the first enabled GLOBAL-default model in catalog order, without that preference.",
+      "impact": "When a router and a concrete model are both marked GLOBAL default, default_llm_model and get_default_models_by_category/get_default_model_for_category report different global defaults, so different code paths and clients act on different defaults. Reachability unconfirmed: it requires both entries to be flagged default in the catalog.",
+      "recommendation": "Put the router-first preference in one shared helper and use it in default_llm_model, _get_global_default_model and the GLOBAL fallback of get_default_model_for_category. If both being default is invalid configuration, reject it or log a warning."
+    }
+  ]
+}

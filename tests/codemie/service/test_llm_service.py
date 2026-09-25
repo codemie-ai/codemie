@@ -535,3 +535,101 @@ class TestLiteLLMAutoRouterCatalog:
 
         assert [m.base_name for m in service.get_allowed_chat_models(user=Mock(is_external_user=False))] == ["gpt-4o"]
         assert service.get_allowed_router_options() == []
+
+    def test_default_flag_propagated_when_router_marked_global_default(self):
+        """Mocks a LiteLLM config where a litellm_auto router (e.g. gpt-router-standard) is
+        marked default_for_categories=[GLOBAL] in model_info, mirroring the live LiteLLM proxy
+        config. The router option surfaced to the REST boundary must carry default=True so
+        clients relying on /v1/llm_models or /v1/default_models can see it."""
+        router = self._router_model(
+            base_name="gpt-router-standard",
+            default_for_categories=[ModelCategory.GLOBAL],
+        )
+        service = LLMService(self._config([router]))
+
+        options = service.get_allowed_router_options()
+
+        assert len(options) == 1
+        assert options[0].default is True
+        assert options[0].default_for_categories == [ModelCategory.GLOBAL]
+
+    def test_default_flag_false_when_router_not_marked_default(self):
+        """A router without default_for_categories=[GLOBAL] must not be reported as default,
+        even though it is otherwise a valid, enabled router."""
+        router = self._router_model(base_name="gpt-router-standard")
+        service = LLMService(self._config([router]))
+
+        options = service.get_allowed_router_options()
+
+        assert len(options) == 1
+        assert options[0].default is False
+        assert options[0].default_for_categories == []
+
+    def test_default_llm_model_resolves_to_default_router(self):
+        """When a litellm_auto router is marked default_for_categories=[GLOBAL] in a mocked
+        LiteLLM config (matching the real gpt-router-standard setup), LLMService.default_llm_model
+        must resolve to that router's base_name rather than falling back to a concrete model,
+        even if a concrete model exists but isn't marked default."""
+        router = self._router_model(
+            base_name="gpt-router-standard",
+            default_for_categories=[ModelCategory.GLOBAL],
+        )
+        concrete = LLMModel(base_name="gpt-4o", deployment_name="gpt-4o", enabled=True)
+        service = LLMService(self._config([router, concrete]))
+
+        assert service.default_llm_model == "gpt-router-standard"
+
+    def test_default_llm_model_falls_back_to_concrete_model_when_no_default_router(self):
+        """When no router is marked default, LLMService.default_llm_model must fall back to
+        the concrete model marked default_for_categories=[GLOBAL], preserving pre-fix behavior."""
+        router = self._router_model(base_name="gpt-router-standard")
+        concrete = LLMModel(
+            base_name="gpt-4o",
+            deployment_name="gpt-4o",
+            enabled=True,
+            default_for_categories=[ModelCategory.GLOBAL],
+        )
+        service = LLMService(self._config([router, concrete]))
+
+        assert service.default_llm_model == "gpt-4o"
+
+    def test_default_llm_model_ignores_disabled_default_router(self):
+        """A disabled router marked default_for_categories=[GLOBAL] must not be selected as the
+        default; default_llm_model must fall back to the enabled concrete default."""
+        router = self._router_model(
+            base_name="gpt-router-standard",
+            enabled=False,
+            default_for_categories=[ModelCategory.GLOBAL],
+        )
+        concrete = LLMModel(
+            base_name="gpt-4o",
+            deployment_name="gpt-4o",
+            enabled=True,
+            default_for_categories=[ModelCategory.GLOBAL],
+        )
+        service = LLMService(self._config([router, concrete]))
+
+        assert service.default_llm_model == "gpt-4o"
+
+    def _router_and_concrete_both_global_default(self) -> LLMService:
+        """Concrete model listed first so a plain first-match lookup would pick it over the router."""
+        concrete = LLMModel(
+            base_name="gpt-4o",
+            deployment_name="gpt-4o",
+            enabled=True,
+            default_for_categories=[ModelCategory.GLOBAL],
+        )
+        router = self._router_model(
+            base_name="gpt-router-standard",
+            default_for_categories=[ModelCategory.GLOBAL],
+        )
+        return LLMService(self._config([concrete, router]))
+
+    def test_global_default_lookups_agree_when_router_and_concrete_both_default(self):
+        """default_llm_model, get_default_model_for_category and get_default_models_by_category
+        must all resolve the GLOBAL default to the same (router) model."""
+        service = self._router_and_concrete_both_global_default()
+
+        assert service.default_llm_model == "gpt-router-standard"
+        assert service.get_default_model_for_category(ModelCategory.CHAT).base_name == "gpt-router-standard"
+        assert service.get_default_models_by_category()[ModelCategory.CHAT.value].base_name == "gpt-router-standard"

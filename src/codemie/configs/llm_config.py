@@ -197,6 +197,8 @@ class LlmRouterOption(BaseModel):
     multimodal: bool | None = None
     supports_tools: bool | None = None
     is_premium: bool | None = None
+    default: bool = False  # True if this router is the default for GLOBAL category
+    default_for_categories: list[ModelCategory] = Field(default_factory=list)  # Categories this router is default for
     # "switchyard" | "litellm_auto" — client badge only, never a behavioral branch on the backend.
     router_type: str
     strategy: RoutingMode | None = None

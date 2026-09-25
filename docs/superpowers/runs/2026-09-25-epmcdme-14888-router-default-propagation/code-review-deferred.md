@@ -1,0 +1,4 @@
+# Deferred from code review — 2026-09-25-router-default-propagation (2026-09-25)
+
+- **Concrete-default fallback ignores enabled flag** — `src/codemie/service/llm_service/llm_service.py:496` — the fallback `[m.base_name for m in active_models if m.default]` has no `enabled` check, so a disabled default (including a disabled default router the new branch skipped) can still be returned. Pre-existing: the fallback line is unchanged context from before 261e74ead; the new router branch adds no new path to it.
+- **Import-time default args freeze the YAML default** — `src/codemie/core/utils.py:190` — eager defaults (`core/utils.py:190`, `rest_api/models/tool.py:29,63`, `core/dependecies.py:222,354`) evaluate `default_llm_model` at import, before the LiteLLM catalog is loaded, so the router default never applies there. Pre-existing: these eager default args predate the change, and the task states import-time evaluation as a known constraint.
