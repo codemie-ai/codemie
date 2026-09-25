@@ -361,7 +361,16 @@ class TokensCalculationCallback(AsyncCallbackHandler):
             if cache_hit and display_routing.is_empty():
                 return
 
-            billed_model = billed_model or display_routing.routed_model or self.llm_model
+            # display_routing.routed_model wins over the generation_info/response_metadata
+            # -derived billed_model: for a decide()-less router (LiteLLM), the concretely
+            # invoked LangChain client is always built for the router's own alias (see
+            # LiteLLMRouter.candidate_models()), so generation_info/response_metadata only ever
+            # report that alias, never the real served deployment — only routing_info() (read
+            # from the router's response headers) knows which candidate actually answered. For
+            # a decision-bearing router (Switchyard) the two already agree (routed_model is
+            # decision.model, the same concrete deployment generation_info reports), so this
+            # reordering doesn't change behavior there.
+            billed_model = display_routing.routed_model or billed_model or self.llm_model
             money_spent, cached_tokens_money_spent, cached_tokens_creation_cost = self._cost_for_usage(
                 billed_model, proxy_cost, input_tokens, output_tokens, cached_tokens, cache_creation_tokens, cache_hit
             )
