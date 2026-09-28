@@ -15,11 +15,16 @@
 import asyncio
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi.responses import PlainTextResponse
 
 from codemie.configs import config, logger
 from codemie.triggers.bindings.webhook import WebhookService
 from codemie.triggers.bindings.webhook_rate_limiter import get_rate_limiter
 from codemie.triggers.trigger_exceptions import NotImplementedDatasource
+
+# Microsoft Graph validation tokens are short-lived, opaque strings well under this bound;
+# this is a defensive cap against arbitrarily large values on this unauthenticated route.
+MAX_VALIDATION_TOKEN_LENGTH = 256
 
 
 def _check_rate_limit(webhook_id: str) -> None:
@@ -60,6 +65,15 @@ async def invoke_webhook(
     background_tasks: BackgroundTasks,
 ):
     try:
+        validation_token = request.query_params.get("validationToken")
+        if validation_token is not None:
+            if len(validation_token) > MAX_VALIDATION_TOKEN_LENGTH:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="validationToken exceeds maximum allowed length",
+                )
+            return PlainTextResponse(content=validation_token)
+
         raw_payload = await request.body()
         return await asyncio.to_thread(
             WebhookService.invoke_webhook_logic, request, webhook_id, background_tasks, raw_payload

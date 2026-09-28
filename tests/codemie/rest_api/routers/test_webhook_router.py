@@ -69,3 +69,41 @@ async def test_invoke_webhook_success(mock_invoke_webhook_logic):
     assert response.status_code == 200
     assert response.json() == {"status": "success"}
     mock_invoke_webhook_logic.assert_called_once()
+
+
+@pytest.mark.anyio
+@patch.object(WebhookService, 'invoke_webhook_logic')
+async def test_invoke_webhook_msgraph_validation(mock_invoke_webhook_logic):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post("/v1/webhooks/test-webhook-id?validationToken=abc123XYZ")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.text == "abc123XYZ"
+    mock_invoke_webhook_logic.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch.object(WebhookService, 'invoke_webhook_logic')
+async def test_invoke_webhook_msgraph_validation_empty_token(mock_invoke_webhook_logic):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post("/v1/webhooks/test-webhook-id?validationToken=")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.text == ""
+    mock_invoke_webhook_logic.assert_not_called()
+
+
+@pytest.mark.anyio
+@patch.object(WebhookService, 'invoke_webhook_logic')
+async def test_invoke_webhook_msgraph_validation_token_too_long(mock_invoke_webhook_logic):
+    oversized_token = "a" * 257
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.post(f"/v1/webhooks/test-webhook-id?validationToken={oversized_token}")
+
+    assert response.status_code == 400
+    mock_invoke_webhook_logic.assert_not_called()
