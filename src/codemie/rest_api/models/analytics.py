@@ -146,6 +146,7 @@ class UserListItem(BaseModel):
 
     id: str = Field(..., description="User ID")
     name: str = Field(..., description="User display name")
+    email: str | None = Field(None, description="User email address")
 
 
 class UsersListData(BaseModel):

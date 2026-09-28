@@ -572,6 +572,7 @@ class TestGetUsersList:
         pg_user.id = "uuid-1"
         pg_user.name = "Alice"
         pg_user.username = "alice"
+        pg_user.email = None
 
         mock_pg_repo.aquery_active_users = AsyncMock(return_value=[pg_user])
         mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
@@ -580,7 +581,7 @@ class TestGetUsersList:
         response = await handler.get_users_list(time_period="last_30_days")
 
         data = response["data"]
-        assert data["users"] == [{"id": "uuid-1", "name": "Alice"}]
+        assert data["users"] == [{"id": "uuid-1", "name": "Alice", "email": None}]
         assert data["total_count"] == 1
         assert "metadata" in response
         mock_repository.execute_aggregation_query.assert_not_called()
@@ -599,6 +600,7 @@ class TestGetUsersList:
         pg_user.id = "uuid-2"
         pg_user.name = None
         pg_user.username = "bob"
+        pg_user.email = None
 
         mock_pg_repo.aquery_active_users = AsyncMock(return_value=[pg_user])
         mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
@@ -606,7 +608,7 @@ class TestGetUsersList:
 
         response = await handler.get_users_list(time_period="last_30_days")
 
-        assert response["data"]["users"] == [{"id": "uuid-2", "name": "bob"}]
+        assert response["data"]["users"] == [{"id": "uuid-2", "name": "bob", "email": None}]
 
     @pytest.mark.asyncio
     @patch("codemie.service.analytics.handlers.user_handler.get_async_session")
@@ -690,6 +692,57 @@ class TestGetUsersList:
 
         mock_pg_repo.aquery_active_users.assert_not_called()
         assert response["data"]["users"] == []
+
+    # ── Email inclusion (PG super-admin path) ─────────────────────────────────
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.analytics.handlers.user_handler.get_async_session")
+    @patch("codemie.service.analytics.handlers.user_handler.user_repository")
+    async def test_get_users_list_superadmin_includes_email(self, mock_pg_repo, mock_session_ctx, handler, mock_user):
+        """UserListItem must include email when returned from the PG super-admin path."""
+        mock_user.is_admin = True
+        mock_user.is_admin_or_maintainer = True
+
+        pg_user = MagicMock()
+        pg_user.id = "uuid-1"
+        pg_user.name = "Alice"
+        pg_user.username = "alice"
+        pg_user.email = "alice@example.com"
+
+        mock_pg_repo.aquery_active_users = AsyncMock(return_value=[pg_user])
+        mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        response = await handler.get_users_list(time_period="last_30_days")
+
+        users = response["data"]["users"]
+        assert len(users) == 1
+        assert users[0]["email"] == "alice@example.com"
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.analytics.handlers.user_handler.get_async_session")
+    @patch("codemie.service.analytics.handlers.user_handler.user_repository")
+    async def test_get_users_list_superadmin_email_none_when_db_email_is_none(
+        self, mock_pg_repo, mock_session_ctx, handler, mock_user
+    ):
+        """email key must still be present but None when UserDB.email is None."""
+        mock_user.is_admin = True
+        mock_user.is_admin_or_maintainer = True
+
+        pg_user = MagicMock()
+        pg_user.id = "uuid-2"
+        pg_user.name = "Bob"
+        pg_user.username = "bob"
+        pg_user.email = None
+
+        mock_pg_repo.aquery_active_users = AsyncMock(return_value=[pg_user])
+        mock_session_ctx.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_session_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        response = await handler.get_users_list(time_period="last_30_days")
+
+        users = response["data"]["users"]
+        assert users[0]["email"] is None
 
     # ── Non-admin (ES) path — unchanged ──────────────────────────────────────
 

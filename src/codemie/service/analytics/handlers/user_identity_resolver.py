@@ -134,7 +134,8 @@ class UserIdentityResolver:
         in ES. After resolution, rows sharing the same canonical user_id are merged
         (first occurrence wins).
 
-        Returns a new list with resolved {id, name} and no duplicates.
+        Returns a new list with resolved {id, name, email} and no duplicates. email is None
+        for rows that could not be resolved to a UserDB record.
         """
         if not users_list:
             return users_list
@@ -163,16 +164,21 @@ class UserIdentityResolver:
                 dedup_key = record.id
                 canonical_id = record.id
                 canonical_name = record.name or record.username
+                canonical_email = record.email
             else:
-                # Unresolved: dedup by raw ES user_id (shared across rows for the same user)
+                # Unresolved: dedup by raw ES user_id (shared across rows for the same user).
+                # Fall back to an email-shaped raw identifier when ES stored one.
                 dedup_key = stripped_id or stripped_name
                 canonical_id = stripped_id
                 canonical_name = stripped_name or stripped_id
+                canonical_email = next(
+                    (v for v in (stripped_name, stripped_id) if v and UserIdentityResolver._is_email(v)), None
+                )
 
             if dedup_key in seen_keys:
                 continue
             seen_keys.add(dedup_key)
-            merged.append({"id": canonical_id, "name": canonical_name})
+            merged.append({"id": canonical_id, "name": canonical_name, "email": canonical_email})
 
         logger.debug(f"resolve_and_merge: {len(users_list)} raw rows → {len(merged)} after dedup")
         return merged

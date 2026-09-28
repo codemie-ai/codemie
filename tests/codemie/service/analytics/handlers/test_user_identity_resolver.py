@@ -208,3 +208,53 @@ class TestResolveRows:
             await UserIdentityResolver.resolve_rows(rows, "user")
             mock_get_session.assert_not_called()
         assert rows[0] == {"other": "value"}
+
+
+# ── resolve_and_merge() ───────────────────────────────────────────────────────
+
+
+class TestResolveAndMerge:
+    @pytest.mark.asyncio
+    async def test_resolved_row_carries_db_email(self, mock_session, mock_db):
+        rows = [{"id": _UUID, "name": "Alice Smith"}]
+        mock_session.execute = AsyncMock(
+            return_value=[_db_row(id=_UUID, username="asmith", name="Alice Smith", email="alice@example.com")]
+        )
+        with patch(_PATCH_SESSION, return_value=mock_db):
+            merged = await UserIdentityResolver.resolve_and_merge(rows)
+        assert merged == [{"id": _UUID, "name": "Alice Smith", "email": "alice@example.com"}]
+
+    @pytest.mark.asyncio
+    async def test_unresolved_row_falls_back_to_email_shaped_identifier(self, mock_session, mock_db):
+        """ES often stores the email as user_name; keep it when the DB lookup misses."""
+        rows = [{"id": "raw-id-1", "name": "bob@example.com"}]
+        mock_session.execute = AsyncMock(return_value=[])
+        with patch(_PATCH_SESSION, return_value=mock_db):
+            merged = await UserIdentityResolver.resolve_and_merge(rows)
+        assert merged == [{"id": "raw-id-1", "name": "bob@example.com", "email": "bob@example.com"}]
+
+    @pytest.mark.asyncio
+    async def test_unresolved_row_without_email_shape_gets_none(self, mock_session, mock_db):
+        rows = [{"id": "raw-id-2", "name": "carol_jones"}]
+        mock_session.execute = AsyncMock(return_value=[])
+        with patch(_PATCH_SESSION, return_value=mock_db):
+            merged = await UserIdentityResolver.resolve_and_merge(rows)
+        assert merged == [{"id": "raw-id-2", "name": "carol_jones", "email": None}]
+
+    @pytest.mark.asyncio
+    async def test_dedup_keeps_first_occurrence_with_email(self, mock_session, mock_db):
+        """Two raw ES forms of the same user collapse into one row that keeps the email."""
+        rows = [{"id": _UUID, "name": "Alice Smith"}, {"id": "alice@example.com", "name": "Alice Smith"}]
+        mock_session.execute = AsyncMock(
+            return_value=[_db_row(id=_UUID, username="asmith", name="Alice Smith", email="alice@example.com")]
+        )
+        with patch(_PATCH_SESSION, return_value=mock_db):
+            merged = await UserIdentityResolver.resolve_and_merge(rows)
+        assert merged == [{"id": _UUID, "name": "Alice Smith", "email": "alice@example.com"}]
+
+    @pytest.mark.asyncio
+    async def test_empty_list_returned_as_is_no_db(self):
+        with patch(_PATCH_SESSION) as mock_get_session:
+            merged = await UserIdentityResolver.resolve_and_merge([])
+            mock_get_session.assert_not_called()
+        assert merged == []

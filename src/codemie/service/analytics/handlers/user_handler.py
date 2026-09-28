@@ -97,7 +97,7 @@ class UserHandler(CLICostAdjustmentMixin):
             async with get_async_session() as session:
                 pg_users = await user_repository.aquery_active_users(session, search=search, projects=projects)
 
-            users_list = [{"id": u.id, "name": u.name or u.username} for u in pg_users]
+            users_list = [{"id": u.id, "name": u.name or u.username, "email": u.email} for u in pg_users]
             total_count = len(users_list)
 
             execution_time_ms = (time.monotonic() - start_time) * 1000
