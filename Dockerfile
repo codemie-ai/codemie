@@ -65,4 +65,3 @@ EXPOSE 8080
 
 # Start the application with Poetry
 CMD ["sh", "-c", "poetry run uvicorn codemie.rest_api.main:app --host=0.0.0.0 --port=8080 --root-path $SUFFIX"]
-
