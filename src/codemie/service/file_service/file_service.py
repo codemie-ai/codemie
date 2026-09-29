@@ -34,5 +34,14 @@ class FileService:
         return file_repo.read_file(file_name=file_object.name, owner=file_object.owner, mime_type=file_object.mime_type)
 
     @classmethod
+    def load_content(cls, file_object: FileObject) -> FileObject:
+        file_repo = FileRepositoryFactory().get_current_repository()
+        return file_repo.read_file(
+            file_name=file_object.name,
+            owner=file_object.owner,
+            mime_type=file_object.mime_type,
+        )
+
+    @classmethod
     def get_image_base64(cls, file_name: str):
         return cls.get_file_object(file_name).to_image_base64()

@@ -62,6 +62,24 @@ class AgentWorkspaceRepository:
                 statement = statement.where(AgentWorkspaceFile.deleted_at.is_(None))
             return session.exec(statement).first()
 
+    def find_by_blob(
+        self,
+        workspace_id: str,
+        blob_owner: str,
+        blob_name: str,
+        mime_type: str | None = None,
+    ) -> Optional[AgentWorkspaceFile]:
+        with Session(AgentWorkspaceFile.get_engine()) as session:
+            conditions = [
+                AgentWorkspaceFile.workspace_id == workspace_id,
+                AgentWorkspaceFile.blob_owner == blob_owner,
+                AgentWorkspaceFile.blob_name == blob_name,
+                # Deliberately no deleted_at filter — see D-4.
+            ]
+            if mime_type is not None:
+                conditions.append(AgentWorkspaceFile.mime_type == mime_type)
+            return session.exec(select(AgentWorkspaceFile).where(*conditions)).first()
+
     def list_files(self, workspace_id: str, include_deleted: bool = False) -> list[AgentWorkspaceFile]:
         with Session(AgentWorkspaceFile.get_engine()) as session:
             statement = select(AgentWorkspaceFile).where(AgentWorkspaceFile.workspace_id == workspace_id)

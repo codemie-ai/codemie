@@ -301,7 +301,16 @@ class MCPTool(CodeMieTool):
     @override
     def _post_process_output_content(self, mcp_tool_output: Any, *args, **kwargs) -> Any:
         if isinstance(mcp_tool_output, MCPToolInvocationResponse) and mcp_tool_output.content:
-            return _convert_mcp_response_to_tool_message(mcp_tool_output)
+            # Own the screenshot by the authenticated initiator of the request, taken from
+            # `user_context`. `execution_context.user_id` is the credential-resolution id, which for
+            # a global assistant or workflow is the *creator* (workflows/nodes/agent_node.py sets it
+            # from workflow_config.created_by), so using it would attribute the blob to someone who
+            # is not present and 404 it for the user who produced it. A plain MCPTool has no context
+            # at all; then there is no initiator to attribute to and the shared namespace is used.
+            execution_context = getattr(self, "_execution_context", None)
+            user_context = getattr(execution_context, "user_context", None)
+            owner = getattr(user_context, "id", None)
+            return _convert_mcp_response_to_tool_message(mcp_tool_output, owner)
         return super()._post_process_output_content(mcp_tool_output, *args, **kwargs)
 
 
@@ -349,13 +358,17 @@ class ContextAwareMCPTool(MCPTool):
         return self.execute_with_context(execution_context=self._execution_context, **kwargs)
 
 
-def _save_screenshot_to_storage(image_data: str, mime_type: str) -> str:
+def _save_screenshot_to_storage(image_data: str, mime_type: str, owner: str | None = None) -> str:
     """
     Save screenshot to file storage and return encoded URL.
 
     Args:
         image_data: Base64 encoded image data
         mime_type: MIME type of the image
+        owner: Blob owner, normally the id of the user whose request produced the screenshot.
+            Owning the blob makes it retrievable through GET /v1/files/{file_name} by that user
+            alone (EPMCDME-12708). Falls back to the shared MCP_IMAGES_SUBDIR namespace only when
+            no user is known, e.g. an invocation with no execution context.
 
     Returns:
         Encoded file URL for accessing the saved screenshot
@@ -365,7 +378,13 @@ def _save_screenshot_to_storage(image_data: str, mime_type: str) -> str:
     """
     file_repo = FileRepositoryFactory().get_current_repository()
 
-    owner = MCP_IMAGES_SUBDIR
+    if not owner:
+        # No invoking user is known, so the blob cannot be attributed to anyone. It lands in the
+        # shared namespace, which GET /v1/files/{file_name} serves to any authenticated user, so
+        # log it: this path is not expected to fire from the agent runtime, where tools are wrapped
+        # as ContextAwareMCPTool with the requesting user's id.
+        logger.warning("MCP screenshot has no invoking user; storing it under the shared namespace")
+        owner = MCP_IMAGES_SUBDIR
 
     # Generate filename with appropriate extension
     extension = MIME_TO_EXTENSION.get(mime_type.lower(), ".png")
@@ -379,7 +398,7 @@ def _save_screenshot_to_storage(image_data: str, mime_type: str) -> str:
     return file_obj.to_encoded_url()
 
 
-def _convert_image_to_url(item: MCPToolContentItem) -> None:
+def _convert_image_to_url(item: MCPToolContentItem, owner: str | None = None) -> None:
     """
     Convert image item to image_url with file reference.
 
@@ -393,7 +412,7 @@ def _convert_image_to_url(item: MCPToolContentItem) -> None:
 
     try:
         # Save to storage and get file URL
-        url = _save_screenshot_to_storage(item.data, item.mimeType or "image/png")
+        url = _save_screenshot_to_storage(item.data, item.mimeType or "image/png", owner)
         item.type = 'image_url'
         item.image_url = {"url": f"sandbox:/v1/files/{url}", "detail": "high"}
         item.data = None
@@ -408,7 +427,9 @@ def _convert_image_to_url(item: MCPToolContentItem) -> None:
         item.mimeType = None
 
 
-def _post_process_tool_result(tool_result: MCPToolInvocationResponse) -> MCPToolInvocationResponse:
+def _post_process_tool_result(
+    tool_result: MCPToolInvocationResponse, owner: str | None = None
+) -> MCPToolInvocationResponse:
     """
     Process MCP tool result and save images to storage.
 
@@ -420,7 +441,7 @@ def _post_process_tool_result(tool_result: MCPToolInvocationResponse) -> MCPTool
     """
     for item in tool_result.content:
         if item.type == 'image':
-            _convert_image_to_url(item)
+            _convert_image_to_url(item, owner)
     return tool_result
 
 
@@ -451,7 +472,7 @@ def _format_content_item(item: MCPToolContentItem) -> str | None:
     return json.dumps(item_model, ensure_ascii=False)
 
 
-def _convert_mcp_response_to_tool_message(tool_result: MCPToolInvocationResponse) -> str:
+def _convert_mcp_response_to_tool_message(tool_result: MCPToolInvocationResponse, owner: str | None = None) -> str:
     """
     Convert MCP tool response to text format for LLM.
 
@@ -464,7 +485,7 @@ def _convert_mcp_response_to_tool_message(tool_result: MCPToolInvocationResponse
     Returns:
         Formatted text for LLM consumption
     """
-    tool_result = _post_process_tool_result(tool_result)
+    tool_result = _post_process_tool_result(tool_result, owner)
 
     text_parts = []
     for item in tool_result.content:

@@ -28,12 +28,29 @@ mimetypes.add_type('application/x-yaml', '.yml')
 mimetypes.add_type('text/xml', '.xml')
 
 
-def _resolve_safe_path(base_dir: str, *parts: str) -> str:
-    """Resolve path and raise ValidationException if it escapes base_dir."""
+_INVALID_PATH_MESSAGE = "Invalid file path: access outside storage directory is not allowed"
+
+
+def _resolve_safe_path(base_dir: str, owner: str, name: str) -> str:
+    """Resolve ``<base_dir>/<owner>/<name>``, refusing anything that leaves the owner's directory.
+
+    Scoping to the owner directory rather than to the storage root is what stops a forged file
+    token from reaching another owner's files: the download endpoint authorizes on the token's
+    ``owner`` field, so a name such as ``../<victim>/secret.pdf`` under the requester's own owner
+    would otherwise resolve to the victim's directory and still be served. Names may legitimately
+    contain subdirectories — workflow schemas and profiling snapshots are stored that way — as
+    long as the result stays under the owner.
+    """
     base = Path(base_dir).resolve()
-    resolved = base.joinpath(*parts).resolve()
-    if not resolved.is_relative_to(base):
-        raise ValidationException("Invalid file path: access outside storage directory is not allowed")
+
+    owner_dir = base.joinpath(owner).resolve()
+    if owner_dir == base or not owner_dir.is_relative_to(base):
+        raise ValidationException(_INVALID_PATH_MESSAGE)
+
+    resolved = owner_dir.joinpath(name).resolve()
+    if resolved == owner_dir or not resolved.is_relative_to(owner_dir):
+        raise ValidationException(_INVALID_PATH_MESSAGE)
+
     return str(resolved)
 
 

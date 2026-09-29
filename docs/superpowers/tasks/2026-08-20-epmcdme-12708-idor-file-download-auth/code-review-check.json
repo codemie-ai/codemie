@@ -1,0 +1,32 @@
+{
+  "gate_id": "code-review.check",
+  "decision": "approve",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {"id": "AC1", "requirement": "GET /v1/files/{file_name} enforces authorization", "status": "pass", "evidence": "Carried forward from code-review-final.json"},
+    {"id": "AC2", "requirement": "File-download URLs are unforgeable", "status": "pass", "evidence": "Re-evaluated after CR-001: both the owner and the name half of the token are now constrained. Named exception recorded in design A-4 (Rule C / MCP_IMAGES_SUBDIR)"},
+    {"id": "AC3", "requirement": "Share rendering keeps working, only for files of the shared conversation", "status": "partial", "evidence": "Scoping half now symmetric after CR-003. The 'without login' half stays a recorded deviation (D-7), not a regression"},
+    {"id": "AC4", "requirement": "No cross-user disclosure via URL reuse or forgery", "status": "pass", "evidence": "Re-evaluated after CR-001 and CR-005; residual for legacy MCP blobs is recorded in design A-4 with its exit condition"}
+  ],
+  "standards_review": [
+    {"standard": "git-workflow: EPMCDME-####: Description", "status": "pass", "notes": "Carried forward"},
+    {"standard": "security-patterns: central authenticate dependency", "status": "pass", "notes": "Carried forward"},
+    {"standard": "security-patterns: no credential logging", "status": "pass", "notes": "Carried forward"},
+    {"standard": "security-patterns: strict parsing, fail closed", "status": "pass", "notes": "Re-evaluated after CR-004: the authorization call now denies with the shared 404 on any unexpected error"},
+    {"standard": "code-quality: ruff gate", "status": "pass", "notes": "make ruff clean; cognitive complexity of _authorize_file_access reduced from 24 to 5, verified with flake8-cognitive-complexity, which reproduces Sonar's original 24"},
+    {"standard": "code-quality: license headers", "status": "pass", "notes": "Checked 2054 files, 0 missing"}
+  ],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "evidence": "_resolve_safe_path now resolves against <root>/<owner> and refuses anything leaving it; _points_outside_owner rejects such a token in the router before any rule so the answer stays the shared 404. Verified against the old and new implementations directly: the old one resolved 'attacker' + '../victim/secret.pdf' to <root>/victim/secret.pdf and accepted it; the new one rejects it while still allowing plain names and subdirectory names such as workflows/{id}.svg. Tests #16 and #17."},
+    {"id": "CR-002", "status": "resolved", "evidence": "The owner now comes from execution_context.user_context.id, the authenticated initiator. Pinned by test_owner_is_the_initiator_not_the_credential_owner, which fails if user_id is used."},
+    {"id": "CR-003", "status": "resolved", "evidence": "Both halves now call collect_message_file_tokens in share_conversation_service, so the granted set and the authorized set are derived from one function. An exact-membership check also avoids the false grant a substring match would give when one token prefixes another."},
+    {"id": "CR-004", "status": "resolved", "evidence": "The Ability evaluation moved inside the helper's try; the _authorize_file_access call is wrapped so ExtendedHTTPException propagates and anything else is logged and denied with the shared 404. Test #18 drives a RuntimeError from the share lookup and asserts 404."},
+    {"id": "CR-005", "status": "resolved", "evidence": "The unattributed write now logs a warning, and Rule C's comment, spec.md and design A-4 state the real accepted exception with the exit condition that would allow the rule to be dropped. The residual itself is accepted, not closed."},
+    {"id": "CR-006", "status": "resolved", "evidence": "test_find_by_blob_scopes_the_query_to_workspace_owner_and_name asserts the compiled statement carries the workspace_id, blob_owner, blob_name and mime_type predicates."},
+    {"id": "CR-007", "status": "resolved", "evidence": "codemie-ui getMermaidFile sends credentials: 'include' and api.authHeaders(), matching every other API call. typecheck, eslint and the files store suite pass."}
+  ],
+  "findings": [],
+  "rationale": "All seven blocking findings from code-review-final.json are resolved and each is pinned by a test or by a direct before/after verification, not by inspection alone. The fix-up diff introduced no new high-risk issue: it narrows a path resolution, moves an authorization source from the credential owner to the request initiator, unifies two token-set definitions behind one function, and adds a fail-closed wrapper — all reductions in privilege. One defect introduced during the fix-up was caught and corrected before this verdict: the first version of the Rule E symmetry fix used a substring match on message text, which would have granted a token that merely prefixes a longer one; it was replaced by exact membership through the shared collector. Gates after the fixes: make ruff clean, license headers clean, 3025 passed with the same 15 failures that reproduce identically on main in a clean worktree, and every touched function under the Sonar cognitive-complexity limit.",
+  "generated_at": "2026-08-26"
+}

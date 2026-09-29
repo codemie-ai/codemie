@@ -17,24 +17,32 @@ import hashlib
 import mimetypes
 import re
 
+from pathlib import PurePosixPath
 from urllib.parse import quote
 
-from fastapi import APIRouter, Response, UploadFile, Depends, Request, File
-from typing import Any, List
+from fastapi import APIRouter, Response, UploadFile, Depends, Request, File, Query
+from typing import Any, List, NoReturn
 from starlette import status
 
 from codemie.configs import config
-from codemie_tools.base.file_object import normalise_mime
+from codemie.configs.logger import logger
+from codemie_tools.base.file_object import FileObject, normalise_mime
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.core.models import AssistantChatRequest
 from codemie.core.constants import MermaidContentType, MermaidResponseType, MermaidMimeType
-from codemie.repository.repository_factory import FileRepositoryFactory
+from codemie.repository.repository_factory import FileRepositoryFactory, MCP_IMAGES_SUBDIR
 from codemie.rest_api.models.files import WriteFileResponse, MermaidRequest, BulkWriteFileResponse
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.file_service.file_service import FileService
 from codemie.service.file_service.markdown_cache_service import MarkdownCacheService
 from codemie.service.file_service.mermaid_service import MermaidService
+from codemie.repository.agent_workspace_repository import AgentWorkspaceRepository
+from codemie.rest_api.models.conversation import Conversation
+from codemie.rest_api.models.share.shared_conversation import SharedConversation
+from codemie.service.share_conversation_service import collect_message_file_tokens
+from codemie.core.ability import Ability, Action
+from codemie.core.workflow_models.workflow_config import WorkflowConfig
 
 router = APIRouter(
     tags=["File Operations"],
@@ -192,23 +200,212 @@ READ_FILE_MIME_TYPE_HANDLERS = {
 }
 
 
+_workspace_repo = AgentWorkspaceRepository()
+
+
+def _raise_file_not_found() -> NoReturn:
+    raise ExtendedHTTPException(
+        code=status.HTTP_404_NOT_FOUND,
+        message="File not found",
+        details="The requested file could not be found.",
+        help="Please verify the file name and try again.",
+    )
+
+
+_WORKFLOW_SCHEMA_PREFIX = "workflows/"
+_WORKFLOW_SCHEMA_SUFFIX = ".svg"
+
+
+def _can_read_workflow_schema(name: str, user: User) -> bool:
+    """Rule B helper: a workflow schema SVG is readable only by users who may read the workflow.
+
+    Schema blobs are written as ``workflows/{workflow_id}.svg`` (workflow_service.save_workflow_schema)
+    under the shared CODEMIE_STORAGE_BUCKET_NAME owner. That same owner namespace also holds
+    memory-profiling snapshots, so the name shape is checked first and everything else is denied.
+    Fails closed: any lookup error denies access rather than surfacing a 500 from the auth path.
+    """
+    if not name.startswith(_WORKFLOW_SCHEMA_PREFIX) or not name.endswith(_WORKFLOW_SCHEMA_SUFFIX):
+        return False
+
+    workflow_id = name[len(_WORKFLOW_SCHEMA_PREFIX) : -len(_WORKFLOW_SCHEMA_SUFFIX)]
+    if not workflow_id:
+        return False
+
+    try:
+        workflow_config = WorkflowConfig.find_by_id(workflow_id)
+        return workflow_config is not None and Ability(user).can(Action.READ, workflow_config)
+    except Exception:
+        logger.warning(f"Workflow schema authorization lookup failed for workflow_id={workflow_id!r}")
+        return False
+
+
+_WORKSPACE_OWNER_PREFIX = "workspace-"
+
+
+def _points_outside_owner(file_object: FileObject) -> bool:
+    """True when the decoded token could resolve outside its own owner's storage directory.
+
+    Authorization keys on the token's ``owner``, but the filesystem backend joins owner and name,
+    so a name like ``../<victim>/secret.pdf`` under the requester's own owner would pass the
+    ownership rule and still read someone else's file. The storage layer refuses such a path as
+    well; denying here keeps the answer identical to every other denial instead of surfacing the
+    storage error as a 500.
+    """
+    for value in (file_object.owner, file_object.name):
+        if not value or value.startswith("/") or ".." in PurePosixPath(value).parts:
+            return True
+    return False
+
+
+def _is_readable_workflow_schema(file_object: FileObject, user: User) -> bool:
+    """Rule B: a workflow schema SVG, and only for a workflow this user may read.
+
+    The same owner namespace also holds memory-profiling snapshots, so the name shape is
+    checked before anything else and everything outside `workflows/` is denied.
+    """
+    bucket = config.CODEMIE_STORAGE_BUCKET_NAME
+    return bool(bucket) and file_object.owner == bucket and _can_read_workflow_schema(file_object.name, user)
+
+
+def _owns_workspace_blob(owner: str, user: User, workspace_repo: AgentWorkspaceRepository) -> bool:
+    """Rule D: a workspace-prefixed blob whose workspace belongs to the requester."""
+    if not owner.startswith(_WORKSPACE_OWNER_PREFIX):
+        return False
+
+    workspace_id = owner.removeprefix(_WORKSPACE_OWNER_PREFIX)
+    return workspace_repo.get_by_id_for_user(workspace_id, user.id) is not None
+
+
+def _conversation_refers_to_file(conversation: Conversation, file_name_param: str) -> bool:
+    """True when any message of the conversation references this exact encoded token.
+
+    Uses the same collector the share endpoint issues grants from, so the set this authorizes and
+    the set the recipient was handed URLs for cannot drift apart. That covers both carriers:
+    `file_names` entries and inline `sandbox:/v1/files/<token>` references in message text.
+    """
+    return any(file_name_param in collect_message_file_tokens(message) for message in (conversation.history or []))
+
+
+def _has_share_grant(
+    file_object: FileObject,
+    share_token: str | None,
+    file_name_param: str,
+    workspace_repo: AgentWorkspaceRepository,
+) -> bool:
+    """Rule E: the file belongs to a conversation shared with the holder of this token.
+
+    Two carriers are accepted: the token appears in a message's `file_names`, or the blob is
+    registered in the sharer's workspace. The second covers files referenced only by an inline
+    `sandbox:/v1/files/...` URL, including blobs registered by reference under their original
+    owner rather than under the workspace.
+    """
+    if not share_token:
+        return False
+
+    shared = SharedConversation.get_by_fields({"share_token.keyword": share_token})
+    if not shared:
+        return False
+
+    conversation = Conversation.find_by_id(shared.conversation_id)
+    if not conversation:
+        return False
+
+    if _conversation_refers_to_file(conversation, file_name_param):
+        return True
+
+    workspace = workspace_repo.get_by_conversation_for_user(shared.conversation_id, shared.shared_by_user_id)
+    if not workspace:
+        return False
+
+    return (
+        workspace_repo.find_by_blob(workspace.id, file_object.owner, file_object.name, file_object.mime_type)
+        is not None
+    )
+
+
+def _authorize_file_access(
+    file_object: FileObject,
+    user: User,
+    share_token: str | None,
+    file_name_param: str,
+    workspace_repo: AgentWorkspaceRepository,
+) -> None:
+    """Grant a file download, or raise the shared 404. Rules are evaluated in order."""
+    owner = file_object.owner
+
+    # Before any rule: a token whose owner or name escapes the owner's directory is never served,
+    # however the rules below would classify it.
+    if _points_outside_owner(file_object):
+        _raise_file_not_found()
+
+    # Rule A: requester owns the file directly.
+    if owner == user.id:
+        return
+
+    # Rule B: workflow schema, and only for a workflow this user may read.
+    if _is_readable_workflow_schema(file_object, user):
+        return
+
+    # Rule C: MCP screenshot stored under the shared namespace. Screenshots are normally written
+    # under the invoking user's id (see _save_screenshot_to_storage) and so are covered by Rule A;
+    # this rule covers blobs written before that change, plus any written when no invoking user was
+    # known. Such blobs are readable by any authenticated user who has the name — accepted residual
+    # risk: names are uuid4().hex, and denying them would break images in existing conversations.
+    # The unattributed-write path is logged, so whether it still occurs is observable rather than
+    # assumed; the rule can be tightened once that log stays silent and history has aged out.
+    if owner == MCP_IMAGES_SUBDIR:
+        return
+
+    # Rule D: workspace blob the requester owns. A miss falls through to Rule E, which still
+    # grants a share recipient viewing the sharer's workspace files.
+    if _owns_workspace_blob(owner, user, workspace_repo):
+        return
+
+    # Rule E: share grant.
+    if _has_share_grant(file_object, share_token, file_name_param, workspace_repo):
+        return
+
+    _raise_file_not_found()
+
+
 @router.get(
     "/files/{file_name}",
+    dependencies=[Depends(authenticate)],
     responses={
-        status.HTTP_200_OK: {"description": "File content returned successfully"},
+        status.HTTP_400_BAD_REQUEST: {"description": "Malformed file token"},
+        status.HTTP_401_UNAUTHORIZED: {"description": "Authentication required"},
         status.HTTP_404_NOT_FOUND: {"description": "File not found"},
-        status.HTTP_500_INTERNAL_SERVER_ERROR: {"description": "Internal server error"},
     },
 )
-def read_file(file_name: str) -> Any:
-    """
-    Reads a file from the given file name and returns its content.
-    The endpoint is designed to handle images and PDF files, adjusting the response's content type accordingly.
-
-    - file_name: str - The name of the file to be read.
-    """
+def read_file(
+    file_name: str,
+    share_token: str | None = Query(default=None),
+    user: User = Depends(authenticate),
+) -> Any:
     try:
-        file_object = FileService.get_file_object(file_name)
+        file_object = FileObject.from_encoded_url(file_name)
+    except ValueError:
+        raise ExtendedHTTPException(
+            code=status.HTTP_400_BAD_REQUEST,
+            message="Invalid file token",
+            details="The file token could not be decoded.",
+            help="Verify the file URL is complete and unmodified.",
+        )
+
+    # Authorization runs BEFORE the storage try block. ExtendedHTTPException subclasses
+    # Exception; inside the try, the bare except would swallow 404 denials as 500.
+    # It also fails closed: a backend hiccup during a permission or share lookup must deny
+    # rather than surface a 500, which would otherwise tell a requester that the blob exists.
+    try:
+        _authorize_file_access(file_object, user, share_token, file_name, _workspace_repo)
+    except ExtendedHTTPException:
+        raise
+    except Exception:
+        logger.exception(f"File authorization failed to evaluate: user_id={user.id}")
+        _raise_file_not_found()
+
+    try:
+        file_object = FileService.load_content(file_object)
 
         display_name = _strip_uuid_prefix(file_object.name) or file_object.name
         normalised = normalise_mime(file_object.mime_type)
@@ -227,20 +424,16 @@ def read_file(file_name: str) -> Any:
 
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
-    except FileNotFoundError as e:
-        raise ExtendedHTTPException(
-            code=status.HTTP_404_NOT_FOUND,
-            message="File not found",
-            details=f"The requested file '{file_name}' could not be found.",
-            help="Please verify the file name and try again. If you believe this is an error, contact support.",
-        ) from e
-    except Exception as e:
+    except FileNotFoundError:
+        _raise_file_not_found()
+    except Exception:
+        logger.exception(f"Unexpected error reading file: file_name={file_name!r}, user_id={user.id}")
         raise ExtendedHTTPException(
             code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             message="Internal server error",
-            details=f"An unexpected error occurred while trying to read the file '{file_name}': {str(e)}",
-            help="Please try again later. If the problem persists, contact the system administrator.",
-        ) from e
+            details="An unexpected error occurred while processing the request.",
+            help="Please try again later. If the problem persists, contact support.",
+        )
 
 
 @router.post("/files/", dependencies=[Depends(authenticate)])

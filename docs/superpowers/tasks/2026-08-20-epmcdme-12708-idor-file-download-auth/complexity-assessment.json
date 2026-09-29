@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "task": "Fix IDOR vulnerability in GET /v1/files/{file_name} by enforcing authorization (ownership + shared-conversation grant), replacing forgeable base64 tokens with HMAC-signed URLs, and preserving public Share Chat access scoped to shared-conversation files only.",
+  "generated": "2026-08-20T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 26,
+  "size": "XL",
+  "routing": "split-required",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Touches API router (files.py, share.py), file service, domain token layer (FileObject + StringSerializer), Conversation model (is_shared_with stub), ability.py ownership framework, and config. StringSerializer and FileObject are shared utilities called by 12 callers across agents, workflows, and services — bumped from L to XL by the 'touches core shared utilities' red flag."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Security-sensitive IDOR fix that replaces a token format with stored instances in Postgres/Elasticsearch across all historical conversations. Dual-accept migration window for unsigned tokens is unresolved. Affects authentication/authorization on a path that was previously fully public. Bumped from L to XL by 'Security/Compliance' and 'Affects authentication or authorization' red flags."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Core mandatory files: files.py, file_object.py, string_serializer.py, file_service.py, ability.py, config.py, share.py, share_conversation_service.py, conversation.py (~9), plus docker-compose.yml and values.yaml (2 infra), plus test_files.py, test_file_object.py, test_string_serializer.py and new test files (~4). Total 14-15 files minimum before any call-site cascade, landing at XL."
+    },
+    {
+      "dimension": "affected_layers",
+      "reason": "Five distinct layers must change: API Router (auth enforcement), Service (ownership validation in FileService), Domain Model/Token Encoding (HMAC signing in FileObject/StringSerializer), Security/Auth framework (Ability.PERMISSIONS extension or inline ownership check, Conversation.is_shared_with implementation), and Configuration/Infra (FILE_DOWNLOAD_HMAC_SECRET in Config, docker-compose, Helm values)."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "Core auth fix is clearly specified. Open design questions: (1) the 'public Share Chat without login' requirement does not exist in the current codebase — GET /v1/share/conversations/{token} currently requires authenticate — so this represents a net-new public endpoint surface requiring product scoping; (2) the Conversation.is_shared_with stub is an unimplemented prerequisite whose query design is unspecified; (3) the dual-accept migration window for stored unsigned tokens is unresolved and could break all existing file links on deployment."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L (4) to XL (5): touches core shared utilities — FileObject.to_encoded_url/from_encoded_url and StringSerializer are called by 12 callers across agents, workflows, and services; any token format change has a wide blast radius.",
+    "Technical Risk bumped from L (4) to XL (5): Security/Compliance requirement — this is an IDOR security fix that replaces token signing on a previously unauthenticated endpoint.",
+    "Technical Risk cap confirmed at XL (5): 'Affects authentication or authorization' red flag also applies (adding authenticate dependency and ownership checks to GET /v1/files/{file_name}); already at XL after first bump."
+  ],
+  "split_recommendation": "This ticket scores XL (26/36, rounded up to XL tier per borderline rule: both Component Scope and Technical Risk are XL). Recommended decomposition into 3 stories:\n\n1. Story 1 (M): Authorization enforcement only — add Depends(authenticate) to GET /v1/files/{file_name}, implement inline ownership check (file_object.owner == current_user.id), update FileService.get_file_object to receive the authenticated user, update test_files.py to assert 401 on unauthenticated requests and 403 on cross-user access. No token format change — existing unsigned tokens remain valid. This story closes the critical IDOR gap immediately.\n\n2. Story 2 (M): HMAC-signed file tokens — add FILE_DOWNLOAD_HMAC_SECRET to Config with model_validator, implement HMAC signing in FileObject.to_encoded_url / from_encoded_url (or a new SignedFileToken wrapper), update docker-compose.yml and values.yaml, implement dual-accept (accept unsigned tokens with ownership check; require HMAC on new tokens) to avoid breaking stored history. Update all 12 call sites if needed. Add HMAC verification tests.\n\n3. Story 3 (L): Shared-conversation file access — implement Conversation.is_shared_with (requires DB query against shared_conversations), extend Ability.PERMISSIONS to cover file access or add the share-context grant check inline in the file router. Decide and implement whether the public Share Chat rendering requires a new unauthenticated endpoint or a session-scoped token passed through the share flow. Scope and implement the grant strictly to files belonging to the shared conversation."
+}

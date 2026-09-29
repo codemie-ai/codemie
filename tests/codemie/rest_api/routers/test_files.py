@@ -16,6 +16,9 @@ from codemie.core.constants import MermaidMimeType
 import pytest
 import re
 
+from codemie.repository.agent_workspace_repository import AgentWorkspaceRepository
+from codemie.rest_api.models.agent_workspace import AgentWorkspaceFile
+
 from urllib.parse import unquote
 
 from httpx import AsyncClient, ASGITransport
@@ -60,7 +63,7 @@ def auth_headers(authenticated_user):
 
 
 @pytest.mark.anyio
-async def test_read_file_success(mocker):
+async def test_read_file_success(mocker, authenticated_user):
     mock_file_content = b"file content"
     mock_file_object = mocker.Mock()
     mock_file_object.content = mock_file_content
@@ -71,18 +74,20 @@ async def test_read_file_success(mocker):
     mock_fs_repo.read_file.return_value = mock_file_object
 
     mocker.patch(
-        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository", return_value=mock_fs_repo
+        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository",
+        return_value=mock_fs_repo,
     )
+    mock_fo = mocker.Mock()
+    mock_fo.owner = authenticated_user.id
+    mock_fo.name = "test.txt"
+    mock_fo.mime_type = "text/plain"
     mocker.patch(
-        "codemie.repository.base_file_repository.FileObject.from_encoded_url",
-        return_value=mocker.Mock(name="test.txt", owner="user"),
+        "codemie.rest_api.routers.files.FileObject.from_encoded_url",
+        return_value=mock_fo,
     )
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(
-        transport=transport,
-        base_url="http://testserver",
-    ) as ac:
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
         response = await ac.get("/v1/files/test.txt")
 
     assert response.status_code == status.HTTP_200_OK
@@ -90,16 +95,21 @@ async def test_read_file_success(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_not_found(mocker):
+async def test_read_file_not_found(mocker, authenticated_user):
     mock_fs_repo = mocker.Mock()
     mock_fs_repo.read_file.side_effect = FileNotFoundError
 
     mocker.patch(
-        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository", return_value=mock_fs_repo
+        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository",
+        return_value=mock_fs_repo,
     )
+    mock_fo = mocker.Mock()
+    mock_fo.owner = authenticated_user.id
+    mock_fo.name = "nonexistent.txt"
+    mock_fo.mime_type = "text/plain"
     mocker.patch(
-        "codemie.repository.base_file_repository.FileObject.from_encoded_url",
-        return_value=mocker.Mock(name="nonexistent.txt", owner="user"),
+        "codemie.rest_api.routers.files.FileObject.from_encoded_url",
+        return_value=mock_fo,
     )
 
     transport = ASGITransport(app=app)
@@ -109,8 +119,8 @@ async def test_read_file_not_found(mocker):
     assert response.status_code == status.HTTP_404_NOT_FOUND
     assert response.json() == {
         'error': {
-            'details': "The requested file 'nonexistent.txt' could not be found.",
-            'help': 'Please verify the file name and try again. If you believe this is an error, contact support.',
+            'details': "The requested file could not be found.",
+            'help': 'Please verify the file name and try again.',
             'message': 'File not found',
         }
     }
@@ -747,7 +757,7 @@ def test_strip_uuid_prefix_empty_string():
 
 
 @pytest.mark.anyio
-async def test_read_file_uuid_prefix_stripped_from_content_disposition(mocker):
+async def test_read_file_uuid_prefix_stripped_from_content_disposition(mocker, authenticated_user):
     """UUID-prefixed storage name must be stripped before appearing in Content-Disposition."""
     uuid_name = "a1b2c3d4-e5f6-7890-abcd-ef1234567890_report.xlsx"
     _setup_read_file_mock(mocker, b"PK fake xlsx bytes", "application/octet-stream", uuid_name)
@@ -765,7 +775,7 @@ async def test_read_file_uuid_prefix_stripped_from_content_disposition(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_plain_text_has_content_disposition(mocker):
+async def test_read_file_plain_text_has_content_disposition(mocker, authenticated_user):
     """text/plain files must set Content-Disposition with the stripped filename."""
     uuid_name = "b2c3d4e5-f6a7-8901-bcde-f12345678901_notes.txt"
     _setup_read_file_mock(mocker, b"Hello world", "text/plain", uuid_name)
@@ -780,7 +790,7 @@ async def test_read_file_plain_text_has_content_disposition(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_uuid_only_name_keeps_raw_name(mocker):
+async def test_read_file_uuid_only_name_keeps_raw_name(mocker, authenticated_user):
     """When stripping the UUID prefix leaves nothing, fall back to the raw stored name."""
     uuid_only_name = "a1b2c3d4-e5f6-7890-abcd-ef1234567890_"
     _setup_read_file_mock(mocker, b"data", "application/octet-stream", uuid_only_name)
@@ -795,7 +805,7 @@ async def test_read_file_uuid_only_name_keeps_raw_name(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_cyrillic_filename_does_not_raise(mocker):
+async def test_read_file_cyrillic_filename_does_not_raise(mocker, authenticated_user):
     """Non-ASCII filenames must not raise UnicodeEncodeError inside Response()."""
     cyrillic_name = "звіт.xlsx"
     _setup_read_file_mock(mocker, b"xlsx bytes", "application/octet-stream", cyrillic_name)
@@ -899,7 +909,7 @@ XHTML_XSS_PAYLOAD = (
 )
 
 
-def _setup_read_file_mock(mocker, content, mime_type, name="test.svg"):
+def _setup_read_file_mock(mocker, content, mime_type, name="test.svg", owner="test_user"):
     mock_file_object = mocker.Mock()
     mock_file_object.content = content
     mock_file_object.mime_type = mime_type
@@ -912,15 +922,20 @@ def _setup_read_file_mock(mocker, content, mime_type, name="test.svg"):
         "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository",
         return_value=mock_fs_repo,
     )
+    # Patch path is files.py because the new handler calls FileObject.from_encoded_url directly.
+    mock_fo = mocker.Mock()
+    mock_fo.owner = owner
+    mock_fo.name = name
+    mock_fo.mime_type = mime_type
     mocker.patch(
-        "codemie.repository.base_file_repository.FileObject.from_encoded_url",
-        return_value=mocker.Mock(name=name, owner="user"),
+        "codemie.rest_api.routers.files.FileObject.from_encoded_url",
+        return_value=mock_fo,
     )
     return mock_file_object
 
 
 @pytest.mark.anyio
-async def test_read_file_svg_xss_payload_is_forced_attachment(mocker):
+async def test_read_file_svg_xss_payload_is_forced_attachment(mocker, authenticated_user):
     """Reproduces the stored XSS: SVG with embedded script must be served as attachment.
 
     SVG keeps image/svg+xml so <img> tags can still render it (browsers ignore
@@ -946,7 +961,7 @@ async def test_read_file_svg_xss_payload_is_forced_attachment(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_xml_forces_attachment(mocker):
+async def test_read_file_xml_forces_attachment(mocker, authenticated_user):
     _setup_read_file_mock(mocker, b"<root><item>data</item></root>", "text/xml", "data.xml")
 
     transport = ASGITransport(app=app)
@@ -958,7 +973,7 @@ async def test_read_file_xml_forces_attachment(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_xhtml_forces_attachment(mocker):
+async def test_read_file_xhtml_forces_attachment(mocker, authenticated_user):
     _setup_read_file_mock(mocker, XHTML_XSS_PAYLOAD, "application/xhtml+xml", "page.xhtml")
 
     transport = ASGITransport(app=app)
@@ -970,7 +985,7 @@ async def test_read_file_xhtml_forces_attachment(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_rss_forces_attachment(mocker):
+async def test_read_file_rss_forces_attachment(mocker, authenticated_user):
     _setup_read_file_mock(mocker, b"<rss version='2.0'/>", "application/rss+xml", "feed.rss")
 
     transport = ASGITransport(app=app)
@@ -982,7 +997,7 @@ async def test_read_file_rss_forces_attachment(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_svg_mixed_case_mime_forces_attachment(mocker):
+async def test_read_file_svg_mixed_case_mime_forces_attachment(mocker, authenticated_user):
     """Legacy blobs stored with non-canonical MIME casing must still be forced to download."""
     _setup_read_file_mock(mocker, SVG_XSS_PAYLOAD, "Image/SVG+XML", "evil.svg")
 
@@ -995,7 +1010,7 @@ async def test_read_file_svg_mixed_case_mime_forces_attachment(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_svg_mime_with_params_forces_attachment(mocker):
+async def test_read_file_svg_mime_with_params_forces_attachment(mocker, authenticated_user):
     """MIME with charset parameter must still be normalised and forced to download."""
     _setup_read_file_mock(mocker, SVG_XSS_PAYLOAD, "image/svg+xml; charset=utf-8", "evil.svg")
 
@@ -1008,7 +1023,7 @@ async def test_read_file_svg_mime_with_params_forces_attachment(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_svg_preserves_nosniff_header(mocker):
+async def test_read_file_svg_preserves_nosniff_header(mocker, authenticated_user):
     """X-Content-Type-Options: nosniff must be present even on attachment responses."""
     _setup_read_file_mock(mocker, SVG_XSS_PAYLOAD, "image/svg+xml", "evil.svg")
 
@@ -1021,7 +1036,7 @@ async def test_read_file_svg_preserves_nosniff_header(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_svg_filename_in_disposition(mocker):
+async def test_read_file_svg_filename_in_disposition(mocker, authenticated_user):
     """Attachment Content-Disposition must include the original filename."""
     _setup_read_file_mock(mocker, SVG_XSS_PAYLOAD, "image/svg+xml", "payload.svg")
 
@@ -1034,7 +1049,7 @@ async def test_read_file_svg_filename_in_disposition(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_unknown_mime_is_forced_attachment(mocker):
+async def test_read_file_unknown_mime_is_forced_attachment(mocker, authenticated_user):
     """Unknown MIME types must never render inline — default-deny forces download."""
     _setup_read_file_mock(mocker, b"some data", "application/x-custom-format", "report.bin")
 
@@ -1049,7 +1064,7 @@ async def test_read_file_unknown_mime_is_forced_attachment(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_raster_image_serves_inline(mocker):
+async def test_read_file_raster_image_serves_inline(mocker, authenticated_user):
     """Raster images (png, jpeg) must still render inline — they are safe."""
     _setup_read_file_mock(mocker, b"\x89PNG\r\n\x1a\n", "image/png", "photo.png")
 
@@ -1067,7 +1082,7 @@ async def test_read_file_raster_image_serves_inline(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_pdf_serves_inline(mocker):
+async def test_read_file_pdf_serves_inline(mocker, authenticated_user):
     """PDF must still render inline."""
     _setup_read_file_mock(mocker, b"%PDF-1.4", "application/pdf", "doc.pdf")
 
@@ -1084,7 +1099,7 @@ async def test_read_file_pdf_serves_inline(mocker):
 
 
 @pytest.mark.anyio
-async def test_read_file_inline_cyrillic_filename_encodes_cleanly(mocker):
+async def test_read_file_inline_cyrillic_filename_encodes_cleanly(mocker, authenticated_user):
     """Inline responses go through the same latin-1 header encoding as attachments —
     a non-ASCII name must not raise and must round-trip via filename*.
     """
@@ -1271,3 +1286,675 @@ async def test_write_files_bulk_too_many_files(authenticated_user, auth_headers,
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
     body = response.json()
     assert "Too many files" in body["error"]["message"]
+
+
+def test_find_by_blob_returns_matching_record(mocker):
+    repo = AgentWorkspaceRepository()
+    mock_file = mocker.Mock(spec=AgentWorkspaceFile)
+
+    session_mock = mocker.MagicMock()
+    session_mock.exec.return_value.first.return_value = mock_file
+
+    mock_session_cls = mocker.patch("codemie.repository.agent_workspace_repository.Session")
+    mock_session_cls.return_value.__enter__.return_value = session_mock
+    result = repo.find_by_blob("ws-1", "owner-1", "file.txt", "text/plain")
+
+    assert result is mock_file
+
+
+def test_file_service_load_content_delegates_to_repo(mocker):
+    from codemie.service.file_service.file_service import FileService
+    from codemie_tools.base.file_object import FileObject
+
+    mock_fo = mocker.Mock(spec=FileObject)
+    mock_fo.name = "report.pdf"
+    mock_fo.owner = "user-abc"
+    mock_fo.mime_type = "application/pdf"
+
+    mock_result = mocker.Mock()
+    mock_repo = mocker.Mock()
+    mock_repo.read_file.return_value = mock_result
+
+    mocker.patch(
+        "codemie.service.file_service.file_service.FileRepositoryFactory.get_current_repository",
+        return_value=mock_repo,
+    )
+
+    result = FileService.load_content(mock_fo)
+
+    mock_repo.read_file.assert_called_once_with(file_name="report.pdf", owner="user-abc", mime_type="application/pdf")
+    assert result is mock_result
+
+
+def test_find_by_blob_none_mime_omits_mime_condition(mocker):
+    repo = AgentWorkspaceRepository()
+    session_mock = mocker.MagicMock()
+    session_mock.exec.return_value.first.return_value = None
+
+    mock_session_cls = mocker.patch("codemie.repository.agent_workspace_repository.Session")
+    mock_session_cls.return_value.__enter__.return_value = session_mock
+    result = repo.find_by_blob("ws-1", "owner-1", "file.txt")
+
+    assert result is None
+    # Verify that the mime_type filter condition is absent from the WHERE clause when
+    # mime_type=None is passed. The compiled statement includes mime_type in the SELECT
+    # columns regardless, but only adds "mime_type = :mime_type_1" to WHERE when a
+    # non-None mime_type is provided.
+    stmt_str = str(session_mock.exec.call_args[0][0])
+    assert "mime_type = :mime_type_1" not in stmt_str, (
+        "Expected no mime_type filter in SQL when mime_type=None, but the WHERE clause "
+        f"still contains a mime_type condition: {stmt_str}"
+    )
+
+
+def test_get_shared_conversation_exposes_share_token(mocker):
+    from codemie.service.share_conversation_service import ShareConversationService
+
+    mock_shared = mocker.Mock()
+    mock_shared.conversation_id = "conv-1"
+    mock_shared.shared_by_user_name = "alice"
+    mock_shared.created_at = mocker.Mock()
+    mock_shared.access_count = 5
+    mock_shared.increment_access_count = mocker.Mock()
+    mock_conv = mocker.Mock()
+    mock_conv.id = "conv-1"
+    mock_conv.assistant_ids = []
+
+    mocker.patch(
+        "codemie.service.share_conversation_service.SharedConversation.get_by_fields",
+        return_value=mock_shared,
+    )
+    mocker.patch(
+        "codemie.service.share_conversation_service.Conversation.find_by_id",
+        return_value=mock_conv,
+    )
+    mocker.patch(
+        "codemie.service.share_conversation_service.Assistant.get_by_ids",
+        return_value=[],
+    )
+    mocker.patch(
+        "codemie.service.share_conversation_service.ConversationMonitoringService" ".send_share_conversation_metric"
+    )
+
+    result = ShareConversationService.get_shared_conversation("tok-abc", User(id="viewer"))
+
+    assert result["share_token"] == "tok-abc"
+
+
+def _share_service_mocks(mocker, mock_conv):
+    """Patch the collaborators of ShareConversationService.get_shared_conversation."""
+    mock_shared = mocker.Mock()
+    mock_shared.conversation_id = "conv-1"
+    mock_shared.shared_by_user_name = "alice"
+    mock_shared.created_at = mocker.Mock()
+    mock_shared.access_count = 5
+    mock_shared.increment_access_count = mocker.Mock()
+
+    mocker.patch(
+        "codemie.service.share_conversation_service.SharedConversation.get_by_fields",
+        return_value=mock_shared,
+    )
+    mocker.patch(
+        "codemie.service.share_conversation_service.Conversation.find_by_id",
+        return_value=mock_conv,
+    )
+    mocker.patch(
+        "codemie.service.share_conversation_service.Assistant.get_by_ids",
+        return_value=[],
+    )
+    mocker.patch(
+        "codemie.service.share_conversation_service.ConversationMonitoringService" ".send_share_conversation_metric"
+    )
+    return mock_shared
+
+
+def _shared_conversation_with_history(mocker, history):
+    mock_conv = mocker.Mock()
+    mock_conv.id = "conv-1"
+    mock_conv.assistant_ids = []
+    mock_conv.history = history
+    return mock_conv
+
+
+def test_get_shared_conversation_maps_file_names_to_granted_urls(mocker):
+    """Recipients get a separate map of granted URLs; file_names itself stays a bare token."""
+    from codemie.core.models import ChatRole
+    from codemie.rest_api.models.conversation import GeneratedMessage
+    from codemie.service.share_conversation_service import ShareConversationService
+
+    message = GeneratedMessage(role=ChatRole.USER, message="see attachment", file_names=["enc-token-1"])
+    mock_conv = _shared_conversation_with_history(mocker, [message])
+    _share_service_mocks(mocker, mock_conv)
+
+    result = ShareConversationService.get_shared_conversation("tok-abc", User(id="viewer"))
+
+    assert result["shared_file_urls"] == {"enc-token-1": "enc-token-1?share_token=tok-abc"}
+    # The conversation is handed back untouched — this is the contract the API and the
+    # sanity harness rely on, and what _process_file_names_to_objects decodes.
+    assert result["conversation"].history[0].file_names == ["enc-token-1"]
+    assert message.file_names == ["enc-token-1"]
+
+
+def test_get_shared_conversation_maps_inline_sandbox_urls(mocker):
+    """Tokens referenced only by an inline sandbox URL are in the map too."""
+    from codemie.core.models import ChatRole
+    from codemie.rest_api.models.conversation import GeneratedMessage
+    from codemie.service.share_conversation_service import ShareConversationService
+
+    original_text = "here it is ![shot](sandbox:/v1/files/enc-token-2) done"
+    message = GeneratedMessage(role=ChatRole.ASSISTANT, message=original_text)
+    mock_conv = _shared_conversation_with_history(mocker, [message])
+    _share_service_mocks(mocker, mock_conv)
+
+    result = ShareConversationService.get_shared_conversation("tok-abc", User(id="viewer"))
+
+    assert result["shared_file_urls"] == {"enc-token-2": "enc-token-2?share_token=tok-abc"}
+    # Message text is not rewritten either.
+    assert result["conversation"].history[0].message == original_text
+    assert message.message == original_text
+
+
+def test_get_shared_conversation_returns_empty_map_without_files(mocker):
+    """A conversation with no file references produces an empty map, not a missing key."""
+    from codemie.core.models import ChatRole
+    from codemie.rest_api.models.conversation import GeneratedMessage
+    from codemie.service.share_conversation_service import ShareConversationService
+
+    message = GeneratedMessage(role=ChatRole.ASSISTANT, message="plain answer")
+    mock_conv = _shared_conversation_with_history(mocker, [message])
+    _share_service_mocks(mocker, mock_conv)
+
+    result = ShareConversationService.get_shared_conversation("tok-abc", User(id="viewer"))
+
+    assert result["shared_file_urls"] == {}
+
+
+def test_find_by_blob_scopes_the_query_to_workspace_owner_and_name(mocker):
+    """The three mandatory predicates must be in the statement: they are Rule E's whole scoping."""
+    from codemie.repository.agent_workspace_repository import AgentWorkspaceRepository
+    from codemie.rest_api.models.agent_workspace import AgentWorkspaceFile
+
+    session_mock = mocker.MagicMock()
+    mocker.patch(
+        "codemie.repository.agent_workspace_repository.Session"
+    ).return_value.__enter__.return_value = session_mock
+
+    AgentWorkspaceRepository().find_by_blob("ws-1", "owner-1", "blob-1", "image/png")
+
+    statement = str(session_mock.exec.call_args.args[0])
+    for column in ("workspace_id", "blob_owner", "blob_name", "mime_type"):
+        assert f"{AgentWorkspaceFile.__tablename__}.{column}" in statement, column
+
+
+# Test #16: 404 — a name that escapes the owner's directory is never served
+@pytest.mark.anyio
+async def test_read_file_rejects_name_escaping_the_owner_directory(mocker, authenticated_user):
+    """Rule A keys on owner, but the filesystem backend joins owner and name — deny the traversal."""
+    _setup_read_file_mock(
+        mocker, b"secret", "application/pdf", "../victim-user/secret.pdf", owner=authenticated_user.id
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token")
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+# Test #17: 404 — the same guard applies to a traversal hidden in the owner field
+@pytest.mark.anyio
+async def test_read_file_rejects_owner_escaping_the_storage_root(mocker, authenticated_user):
+    _setup_read_file_mock(mocker, b"secret", "text/plain", "secret.txt", owner="../etc")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token")
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+# Test #18: 404 — an authorization backend failure denies instead of surfacing a 500
+@pytest.mark.anyio
+async def test_read_file_authorization_backend_failure_denies(mocker, authenticated_user):
+    """A share lookup blowing up must not become a 500: that would signal the blob exists."""
+    _setup_read_file_mock(mocker, b"data", "text/plain", "file.txt", owner="someone-else")
+    mocker.patch(
+        "codemie.rest_api.routers.files.SharedConversation.get_by_fields",
+        side_effect=RuntimeError("elasticsearch is down"),
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token?share_token=tok-abc")
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+# Test #1: 401 — no authentication
+@pytest.mark.anyio
+async def test_read_file_requires_authentication():
+    """Unauthenticated request must be rejected with 401."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_encoded_token")
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+# Test #2: 400 — malformed token
+@pytest.mark.anyio
+async def test_read_file_malformed_token_returns_400(mocker, authenticated_user):
+    """Non-decodable token must return 400, not 500."""
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileObject.from_encoded_url",
+        side_effect=ValueError("bad token"),
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/not_valid_base64_token")
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+    body = response.json()
+    assert body["error"]["message"] == "Invalid file token"
+    assert body["error"]["details"] == "The file token could not be decoded."
+
+
+# Test #3: 404 — wrong owner, no share_token
+@pytest.mark.anyio
+async def test_read_file_wrong_owner_returns_404(mocker, authenticated_user):
+    """Forged token with another user's owner must return 404, not 200."""
+    mock_fo = mocker.Mock()
+    mock_fo.owner = "other_user_id"
+    mock_fo.name = "secret.txt"
+    mock_fo.mime_type = "text/plain"
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileObject.from_encoded_url",
+        return_value=mock_fo,
+    )
+    mocker.patch(
+        "codemie.rest_api.routers.files._workspace_repo.get_by_id_for_user",
+        return_value=None,
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token")
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+    body = response.json()
+    assert body["error"]["details"] == "The requested file could not be found."
+    # 404 body must NOT include the file name (existence oracle risk)
+    assert "other_user_id" not in response.text
+    assert "secret.txt" not in response.text
+
+
+# Test #4: 200 — own file (Rule A)
+@pytest.mark.anyio
+async def test_read_file_own_file_succeeds(mocker, authenticated_user):
+    """Owner's own file must be served (Rule A)."""
+    _setup_read_file_mock(mocker, b"hello", "text/plain", "readme.txt", owner=authenticated_user.id)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_encoded_token")
+    assert response.status_code == status.HTTP_200_OK
+    assert response.content == b"hello"
+
+
+def _setup_workflow_schema_mock(mocker, bucket_name, *, workflow_found=True, can_read=True):
+    """Arrange a workflows/{id}.svg blob owned by the storage bucket plus the Ability outcome."""
+    from codemie.configs import config as _config
+
+    mocker.patch.object(_config, "CODEMIE_STORAGE_BUCKET_NAME", bucket_name)
+    _setup_read_file_mock(mocker, b"<svg/>", "image/svg+xml", "workflows/abc-123.svg", owner=bucket_name)
+    mocker.patch(
+        "codemie.rest_api.routers.files.WorkflowConfig.find_by_id",
+        return_value=mocker.Mock() if workflow_found else None,
+    )
+    mocker.patch("codemie.rest_api.routers.files.Ability.can", return_value=can_read)
+
+
+# Test #5: 200 — workflow schema readable by a user who may read the workflow (Rule B)
+@pytest.mark.anyio
+async def test_read_file_workflow_svg_allowed_when_user_can_read_workflow(mocker, authenticated_user):
+    """A workflow schema SVG is served when Ability grants READ on the owning workflow (Rule B)."""
+    _setup_workflow_schema_mock(mocker, "test-bucket")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token")
+    assert response.status_code == status.HTTP_200_OK
+
+
+# Test #5a: 404 — workflow schema denied when the user may not read the workflow (Rule B)
+@pytest.mark.anyio
+async def test_read_file_workflow_svg_denied_when_user_cannot_read_workflow(mocker, authenticated_user):
+    """Rule B no longer grants every authenticated user: Ability must allow READ on the workflow."""
+    _setup_workflow_schema_mock(mocker, "test-bucket", can_read=False)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token")
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+# Test #5b: 404 — workflow schema for a workflow that no longer exists (Rule B fails closed)
+@pytest.mark.anyio
+async def test_read_file_workflow_svg_denied_when_workflow_missing(mocker, authenticated_user):
+    """A schema blob whose workflow row is gone is denied rather than served."""
+    _setup_workflow_schema_mock(mocker, "test-bucket", workflow_found=False)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token")
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+# Test #6: 404 — memory_snapshots are never accessible (pins D-3)
+@pytest.mark.anyio
+async def test_read_file_memory_snapshot_denied_for_any_user(mocker, authenticated_user):
+    """memory_snapshots/ blobs under the bucket owner must never be served (D-3)."""
+    from codemie.configs import config as _config
+
+    bucket_name = "test-bucket"
+    mocker.patch.object(_config, "CODEMIE_STORAGE_BUCKET_NAME", bucket_name)
+
+    mock_fo = mocker.Mock()
+    mock_fo.owner = bucket_name
+    mock_fo.name = "memory_snapshots/snapshot_20260101_pod_deadbeef.json.gz"
+    mock_fo.mime_type = "application/gzip"
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileObject.from_encoded_url",
+        return_value=mock_fo,
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token")
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+# Test #7: 200 — legacy MCP image for any authenticated user (Rule C)
+@pytest.mark.anyio
+async def test_read_file_mcp_image_allowed_for_authenticated_user(mocker, authenticated_user):
+    """Legacy screenshots under the shared MCP namespace stay readable so old chats keep rendering.
+
+    New screenshots are written under the invoking user's id and go through Rule A instead.
+    """
+    from codemie.repository.repository_factory import MCP_IMAGES_SUBDIR
+
+    _setup_read_file_mock(mocker, b"\x89PNG\r\n", "image/png", "abc123.png", owner=MCP_IMAGES_SUBDIR)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token")
+    assert response.status_code == status.HTTP_200_OK
+
+
+# Test #8: 200 — workspace file, requester owns the workspace (Rule D)
+@pytest.mark.anyio
+async def test_read_file_workspace_owner_succeeds(mocker, authenticated_user):
+    """Requester who owns the workspace can access workspace blobs (Rule D)."""
+    workspace_id = "ws-abc-123"
+    mock_workspace = mocker.Mock()
+    _setup_read_file_mock(
+        mocker,
+        b"generated code",
+        "text/plain",
+        "output.py",
+        owner=f"workspace-{workspace_id}",
+    )
+    mocker.patch(
+        "codemie.rest_api.routers.files._workspace_repo.get_by_id_for_user",
+        return_value=mock_workspace,
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token")
+    assert response.status_code == status.HTTP_200_OK
+
+
+# Test #9: 200 — share grant via in_file_names (Rule E), user-uploaded attachment
+@pytest.mark.anyio
+async def test_read_file_share_grant_via_file_names(mocker, authenticated_user):
+    """Share recipient can access file listed in conversation.history[].file_names (Rule E)."""
+    file_token = "encoded_file_token_xyz"
+    mock_fo = mocker.Mock()
+    mock_fo.owner = "alice_user_id"
+    mock_fo.name = "attachment.pdf"
+    mock_fo.mime_type = "application/pdf"
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileObject.from_encoded_url",
+        return_value=mock_fo,
+    )
+
+    mock_msg = mocker.Mock()
+    mock_msg.file_names = [file_token]
+    mock_conv = mocker.Mock()
+    mock_conv.history = [mock_msg]
+
+    mock_shared = mocker.Mock()
+    mock_shared.conversation_id = "conv-1"
+    mock_shared.shared_by_user_id = "alice_user_id"
+
+    mocker.patch(
+        "codemie.rest_api.routers.files.SharedConversation.get_by_fields",
+        return_value=mock_shared,
+    )
+    mocker.patch(
+        "codemie.rest_api.routers.files.Conversation.find_by_id",
+        return_value=mock_conv,
+    )
+
+    mock_file_result = mocker.Mock()
+    mock_file_result.content = b"pdf bytes"
+    mock_file_result.mime_type = "application/pdf"
+    mock_file_result.name = "attachment.pdf"
+    mock_repo = mocker.Mock()
+    mock_repo.read_file.return_value = mock_file_result
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository",
+        return_value=mock_repo,
+    )
+    mocker.patch(
+        "codemie.rest_api.routers.files._workspace_repo.get_by_id_for_user",
+        return_value=None,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get(f"/v1/files/{file_token}?share_token=my-share-tok")
+    assert response.status_code == status.HTTP_200_OK
+
+
+# Test #10: 200 — share grant via find_by_blob (Rule E), AI-generated file
+@pytest.mark.anyio
+async def test_read_file_share_grant_via_find_by_blob_reference_written(mocker, authenticated_user):
+    """Share recipient can access AI-generated file registered by reference (blob_owner = sharer user id)."""
+    mock_fo = mocker.Mock()
+    mock_fo.owner = "alice_user_id"
+    mock_fo.name = "diagram.png"
+    mock_fo.mime_type = "image/png"
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileObject.from_encoded_url",
+        return_value=mock_fo,
+    )
+
+    mock_conv = mocker.Mock()
+    mock_conv.history = []  # no file_names match -> falls through to find_by_blob
+
+    mock_shared = mocker.Mock()
+    mock_shared.conversation_id = "conv-1"
+    mock_shared.shared_by_user_id = "alice_user_id"
+
+    mock_workspace = mocker.Mock()
+    mock_workspace.id = "ws-1"
+
+    mocker.patch(
+        "codemie.rest_api.routers.files.SharedConversation.get_by_fields",
+        return_value=mock_shared,
+    )
+    mocker.patch(
+        "codemie.rest_api.routers.files.Conversation.find_by_id",
+        return_value=mock_conv,
+    )
+    mocker.patch(
+        "codemie.rest_api.routers.files._workspace_repo.get_by_id_for_user",
+        return_value=None,
+    )
+    mocker.patch(
+        "codemie.rest_api.routers.files._workspace_repo.get_by_conversation_for_user",
+        return_value=mock_workspace,
+    )
+    mocker.patch(
+        "codemie.rest_api.routers.files._workspace_repo.find_by_blob",
+        return_value=mocker.Mock(),
+    )
+
+    mock_file_result = mocker.Mock()
+    mock_file_result.content = b"png bytes"
+    mock_file_result.mime_type = "image/png"
+    mock_file_result.name = "diagram.png"
+    mock_repo = mocker.Mock()
+    mock_repo.read_file.return_value = mock_file_result
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository",
+        return_value=mock_repo,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token?share_token=my-share-tok")
+    assert response.status_code == status.HTTP_200_OK
+
+
+# Test #11: 200 — workspace blob where Rule D misses but Rule E hits
+@pytest.mark.anyio
+async def test_read_file_workspace_blob_rule_d_miss_rule_e_hit(mocker, authenticated_user):
+    """Non-owner of workspace can still access workspace blob if they hold a share token (Rule D miss -> Rule E hit)."""
+    workspace_id = "ws-xyz"
+    mock_fo = mocker.Mock()
+    mock_fo.owner = f"workspace-{workspace_id}"
+    mock_fo.name = "output.py"
+    mock_fo.mime_type = "text/x-python"
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileObject.from_encoded_url",
+        return_value=mock_fo,
+    )
+
+    mock_conv = mocker.Mock()
+    mock_conv.history = []
+
+    mock_shared = mocker.Mock()
+    mock_shared.conversation_id = "conv-1"
+    mock_shared.shared_by_user_id = "alice_user_id"
+
+    mock_workspace = mocker.Mock()
+    mock_workspace.id = workspace_id
+
+    mocker.patch(
+        "codemie.rest_api.routers.files._workspace_repo.get_by_id_for_user",
+        return_value=None,  # Rule D miss
+    )
+    mocker.patch(
+        "codemie.rest_api.routers.files.SharedConversation.get_by_fields",
+        return_value=mock_shared,
+    )
+    mocker.patch(
+        "codemie.rest_api.routers.files.Conversation.find_by_id",
+        return_value=mock_conv,
+    )
+    mocker.patch(
+        "codemie.rest_api.routers.files._workspace_repo.get_by_conversation_for_user",
+        return_value=mock_workspace,
+    )
+    mocker.patch(
+        "codemie.rest_api.routers.files._workspace_repo.find_by_blob",
+        return_value=mocker.Mock(),
+    )
+
+    mock_file_result = mocker.Mock()
+    mock_file_result.content = b"code"
+    mock_file_result.mime_type = "text/x-python"
+    mock_file_result.name = "output.py"
+    mock_repo = mocker.Mock()
+    mock_repo.read_file.return_value = mock_file_result
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository",
+        return_value=mock_repo,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token?share_token=my-share-tok")
+    assert response.status_code == status.HTTP_200_OK
+
+
+# Test #12: 404 — workspace blob, non-owner, no share_token
+@pytest.mark.anyio
+async def test_read_file_workspace_blob_non_owner_no_share_token_returns_404(mocker, authenticated_user):
+    """Workspace blob with no matching workspace ownership and no share_token returns 404."""
+    mock_fo = mocker.Mock()
+    mock_fo.owner = "workspace-ws-abc"
+    mock_fo.name = "secret.py"
+    mock_fo.mime_type = "text/x-python"
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileObject.from_encoded_url",
+        return_value=mock_fo,
+    )
+    mocker.patch(
+        "codemie.rest_api.routers.files._workspace_repo.get_by_id_for_user",
+        return_value=None,
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token")
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+# Test #13: 404-parity — denial and genuine-missing return byte-identical JSON bodies
+@pytest.mark.anyio
+async def test_read_file_404_parity_denial_equals_genuine_missing(mocker, authenticated_user):
+    """Authorization 404 and storage FileNotFoundError 404 must have identical JSON bodies."""
+    # Denial 404 (wrong owner)
+    mock_fo_wrong = mocker.Mock()
+    mock_fo_wrong.owner = "other_user"
+    mock_fo_wrong.name = "file.txt"
+    mock_fo_wrong.mime_type = "text/plain"
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileObject.from_encoded_url",
+        return_value=mock_fo_wrong,
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        denial_resp = await ac.get("/v1/files/some_token")
+
+    # Storage FileNotFoundError 404 (correct owner)
+    mock_fo_own = mocker.Mock()
+    mock_fo_own.owner = authenticated_user.id
+    mock_fo_own.name = "missing.txt"
+    mock_fo_own.mime_type = "text/plain"
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileObject.from_encoded_url",
+        return_value=mock_fo_own,
+    )
+    mock_repo = mocker.Mock()
+    mock_repo.read_file.side_effect = FileNotFoundError
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository",
+        return_value=mock_repo,
+    )
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        genuine_resp = await ac.get("/v1/files/another_token")
+
+    assert denial_resp.status_code == genuine_resp.status_code == status.HTTP_404_NOT_FOUND
+    assert denial_resp.json() == genuine_resp.json()
+
+
+# Test #14: 404 not 500 — proves authorization runs OUTSIDE the storage try block
+@pytest.mark.anyio
+async def test_read_file_auth_outside_try_block_returns_404_not_500(mocker, authenticated_user):
+    """Authorization denial must return 404, not 500, proving it runs before the storage try block."""
+    mock_fo = mocker.Mock()
+    mock_fo.owner = "wrong_owner_id"
+    mock_fo.name = "file.txt"
+    mock_fo.mime_type = "text/plain"
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileObject.from_encoded_url",
+        return_value=mock_fo,
+    )
+    # Even if storage would raise Exception, auth runs first and returns 404
+    mock_repo = mocker.Mock()
+    mock_repo.read_file.side_effect = RuntimeError("should never be reached")
+    mocker.patch(
+        "codemie.rest_api.routers.files.FileRepositoryFactory.get_current_repository",
+        return_value=mock_repo,
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        response = await ac.get("/v1/files/some_token")
+    assert response.status_code == status.HTTP_404_NOT_FOUND
