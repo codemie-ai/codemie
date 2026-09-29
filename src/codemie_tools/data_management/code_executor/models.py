@@ -55,7 +55,7 @@ class CodeExecutorConfig(CodeMieToolConfig):
 
     # Kubernetes configuration
     namespace: str = Field(
-        default="codemie-runtime",
+        default="codemie-code-executor",
         description="Kubernetes namespace for executor pods",
     )
 
@@ -76,7 +76,7 @@ class CodeExecutorConfig(CodeMieToolConfig):
     )
 
     docker_image: str = Field(
-        default="codemie/codemie-python:2.41.0",
+        default="codemie/codemie-python:2.52.0",
         description="Docker image for Python execution environment",
     )
 
@@ -205,9 +205,9 @@ class CodeExecutorConfig(CodeMieToolConfig):
     )
 
     sandbox_mode: SandboxMode = Field(
-        default=SandboxMode.SHARED,
-        description="Sandbox execution mode: 'sandbox-shared' (pooled long-lived pods, default), "
-        "or 'sandbox-jobs' (one K8s Job per execution).",
+        default=SandboxMode.JOBS,
+        description="Sandbox execution mode: 'sandbox-shared' (pooled long-lived pods), "
+        "or 'sandbox-jobs' (one K8s Job per execution, default).",
     )
 
     verbose: bool = Field(
@@ -256,7 +256,7 @@ class CodeExecutorConfig(CodeMieToolConfig):
     def validate_sandbox_mode(cls, v) -> "SandboxMode":
         """Validate sandbox mode value."""
         if not v:
-            return SandboxMode.SHARED
+            return SandboxMode.JOBS
 
         if isinstance(v, SandboxMode):
             return v
@@ -368,7 +368,7 @@ class CodeExecutorConfig(CodeMieToolConfig):
             CODE_EXECUTOR_SKIP_ENVIRONMENT_SETUP: Skip environment setup (true/false)
             CODE_EXECUTOR_KUBECONFIG_PATH: Path to kubeconfig file (optional, takes priority over in-cluster config)
             CODE_EXECUTOR_SANDBOX_MODE: Sandbox mode (sandbox-shared/sandbox-jobs,
-                default: sandbox-shared)
+                default: sandbox-jobs)
             CODE_EXECUTOR_MAX_THREADS: Max threads per execution (default: 64)
             CODE_EXECUTOR_MAX_OPEN_FILES: Max open files per execution (default: 256)
 
@@ -383,10 +383,10 @@ class CodeExecutorConfig(CodeMieToolConfig):
         return cls(
             execution_mode=os.getenv("CODE_EXECUTOR_EXECUTION_MODE", "sandbox"),
             workdir_base=os.getenv("CODE_EXECUTOR_WORKDIR_BASE", "/home/codemie"),
-            namespace=os.getenv("CODE_EXECUTOR_NAMESPACE", "codemie-runtime"),
+            namespace=os.getenv("CODE_EXECUTOR_NAMESPACE", "codemie-code-executor"),
             runtime_class_name=os.getenv("CODE_EXECUTOR_RUNTIME_CLASS_NAME", "gvisor"),
             tolerations=os.getenv("CODE_EXECUTOR_TOLERATIONS", ""),
-            docker_image=os.getenv("CODE_EXECUTOR_DOCKER_IMAGE", "codemie/codemie-python:2.41.0"),
+            docker_image=os.getenv("CODE_EXECUTOR_DOCKER_IMAGE", "codemie/codemie-python:2.52.0"),
             execution_timeout=float(os.getenv("CODE_EXECUTOR_EXECUTION_TIMEOUT", "30.0")),
             session_timeout=float(os.getenv("CODE_EXECUTOR_SESSION_TIMEOUT", "300.0")),
             default_timeout=float(os.getenv("CODE_EXECUTOR_DEFAULT_TIMEOUT", "30.0")),
@@ -407,7 +407,7 @@ class CodeExecutorConfig(CodeMieToolConfig):
             keep_template=str_to_bool(os.getenv("CODE_EXECUTOR_KEEP_TEMPLATE", "true")),
             skip_environment_setup=str_to_bool(os.getenv("CODE_EXECUTOR_SKIP_ENVIRONMENT_SETUP", "false")),
             kubeconfig_path=os.getenv("CODE_EXECUTOR_KUBECONFIG_PATH", ""),
-            sandbox_mode=os.getenv("CODE_EXECUTOR_SANDBOX_MODE", "sandbox-shared"),
+            sandbox_mode=os.getenv("CODE_EXECUTOR_SANDBOX_MODE", "sandbox-jobs"),
             max_threads=int(os.getenv("CODE_EXECUTOR_MAX_THREADS", "64")),
             max_open_files=int(os.getenv("CODE_EXECUTOR_MAX_OPEN_FILES", "256")),
             creator_env=os.getenv("ENV", "codemie"),

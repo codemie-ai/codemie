@@ -59,8 +59,9 @@ A Helm chart for AI/Run API
 | extraObjects | list | `[]` | Array of extra Kubernetes manifests to deploy |
 | extraVolumeMounts | string | `"- name: google-service-account\n  readOnly: true\n  mountPath: \"/secrets/gcp-service-account.json\"\n  subPath: gcp-service-account.json\n- name: codemie-customer-config\n  mountPath: /app/config/customer\n"` | List of extra mounts to add (normally used with extraVolumes) |
 | extraVolumes | string | `"- name: google-service-account\n  secret:\n    secretName: google-service-account\n- name: codemie-customer-config\n  configMap:\n    name: codemie-customer-config\n"` | List of extra volumes to add |
-| features.tools.code_executor.rbac | object | `{"enabled":false,"namespace":""}` | Create Role and RoleBinding to allow the service account to manage executor pods |
-| features.tools.code_executor.rbac.namespace | string | `""` | Specify name to use a separate namespace for scheduling code_executor pods. Empty means the same namespace as CodeMie |
+| features.tools.code_executor.namespace.create | bool | `false` | Create the namespace where executor pods run. Set to true only if it doesn't already exist |
+| features.tools.code_executor.namespace.name | string | `"codemie-code-executor"` | Namespace where executor pods run (must match CODE_EXECUTOR_NAMESPACE env var) |
+| features.tools.code_executor.rbac | object | `{"enabled":false}` | Create Role and RoleBinding in features.tools.code_executor.namespace.name to allow the service account to manage executor pods |
 | fullnameOverride | string | `""` |  |
 | hostAliases | list | `[]` | Mapping between IP and hostnames that will be injected as entries in the pod's hosts files |
 | hpa.enabled | bool | `false` | Enable the HorizontalPodAutoscaler for the codemie-api rollout/deployment |

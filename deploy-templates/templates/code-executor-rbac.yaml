@@ -3,7 +3,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ printf "%s-%s-code-executor" (include "codemie.fullname" .) .Release.Namespace | trunc 63 | trimSuffix "-" }}
-  namespace: {{ .Values.features.tools.code_executor.rbac.namespace | default .Release.Namespace }}
+  namespace: {{ .Values.features.tools.code_executor.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "codemie.labels" . | nindent 4 }}
 rules:
@@ -24,7 +24,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ printf "%s-%s-code-executor" (include "codemie.fullname" .) .Release.Namespace | trunc 63 | trimSuffix "-" }}
-  namespace: {{ .Values.features.tools.code_executor.rbac.namespace | default .Release.Namespace }}
+  namespace: {{ .Values.features.tools.code_executor.namespace.name | default .Release.Namespace }}
   labels:
     {{- include "codemie.labels" . | nindent 4 }}
 subjects:

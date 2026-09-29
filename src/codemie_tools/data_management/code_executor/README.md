@@ -31,7 +31,7 @@ All configuration is managed through environment variables. The tool automatical
 **Essential Settings:**
 - `CODE_EXECUTOR_EXECUTION_MODE` - Execution mode (default: `sandbox`)
 - `CODE_EXECUTOR_SECURITY_THRESHOLD` - Security policy threshold (default: `LOW`)
-- `CODE_EXECUTOR_NAMESPACE` - Kubernetes namespace (default: `codemie-runtime`)
+- `CODE_EXECUTOR_NAMESPACE` - Kubernetes namespace (default: `codemie-code-executor`)
 - `CODE_EXECUTOR_EXECUTION_TIMEOUT` - Code timeout in seconds (default: `30.0`)
 - `CODE_EXECUTOR_MEMORY_LIMIT` - Pod memory limit (default: `256Mi`)
 
@@ -48,11 +48,11 @@ All configuration is managed through environment variables. The tool automatical
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `CODE_EXECUTOR_NAMESPACE` | Kubernetes namespace for executor pods | `codemie-runtime` |
-| `CODE_EXECUTOR_DOCKER_IMAGE` | Docker image for Python execution environment | `epamairun/codemie-python:2.37.0` |
+| `CODE_EXECUTOR_NAMESPACE` | Kubernetes namespace for executor pods | `codemie-code-executor` |
+| `CODE_EXECUTOR_DOCKER_IMAGE` | Docker image for Python execution environment | `codemie/codemie-python:2.52.0` |
 | `CODE_EXECUTOR_MAX_POD_POOL_SIZE` | Maximum number of pods to create dynamically | `5` |
 | `CODE_EXECUTOR_POD_NAME_PREFIX` | Prefix for dynamically created pod names | `codemie-executor-` |
-| `CODE_EXECUTOR_SANDBOX_MODE` | Sandbox mode: `sandbox-shared` or `sandbox-jobs` | `sandbox-shared` |
+| `CODE_EXECUTOR_SANDBOX_MODE` | Sandbox mode: `sandbox-shared` or `sandbox-jobs` | `sandbox-jobs` |
 
 #### Working Directory
 

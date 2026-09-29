@@ -1,0 +1,8 @@
+{{- if and .Values.features.tools.code_executor.namespace.create .Values.features.tools.code_executor.namespace.name }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.features.tools.code_executor.namespace.name }}
+  labels:
+    {{- include "codemie.labels" . | nindent 4 }}
+{{- end }}

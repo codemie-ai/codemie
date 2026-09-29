@@ -48,9 +48,9 @@ class TestCodeExecutorConfigDefaults(unittest.TestCase):
         config = CodeExecutorConfig()
 
         assert config.workdir_base == "/home/codemie"
-        assert config.namespace == "codemie-runtime"
+        assert config.namespace == "codemie-code-executor"
         assert config.runtime_class_name == "gvisor"
-        assert config.docker_image == "codemie/codemie-python:2.41.0"
+        assert config.docker_image == "codemie/codemie-python:2.52.0"
         assert config.execution_timeout == 30.0
         assert config.session_timeout == 300.0
         assert config.default_timeout == 30.0
@@ -264,7 +264,7 @@ class TestCodeExecutorConfigFromEnv(unittest.TestCase):
 
             assert config.execution_mode == ExecutionMode.SANDBOX
             assert config.workdir_base == "/home/codemie"
-            assert config.namespace == "codemie-runtime"
+            assert config.namespace == "codemie-code-executor"
 
     def test_from_env_with_local_execution_mode_is_rejected(self):
         """Test from_env rejects deprecated local execution mode."""
@@ -588,9 +588,9 @@ class TestSandboxMode(unittest.TestCase):
 class TestSandboxModeValidation(unittest.TestCase):
     """Test suite for sandbox_mode field validator on CodeExecutorConfig."""
 
-    def test_default_sandbox_mode_is_shared(self):
+    def test_default_sandbox_mode_is_jobs(self):
         config = CodeExecutorConfig()
-        assert config.sandbox_mode == SandboxMode.SHARED
+        assert config.sandbox_mode == SandboxMode.JOBS
 
     def test_sandbox_mode_string_shared(self):
         config = CodeExecutorConfig(sandbox_mode="sandbox-shared")
@@ -600,9 +600,9 @@ class TestSandboxModeValidation(unittest.TestCase):
         config = CodeExecutorConfig(sandbox_mode="sandbox-jobs")
         assert config.sandbox_mode == SandboxMode.JOBS
 
-    def test_sandbox_mode_empty_defaults_to_shared(self):
+    def test_sandbox_mode_empty_defaults_to_jobs(self):
         config = CodeExecutorConfig(sandbox_mode="")
-        assert config.sandbox_mode == SandboxMode.SHARED
+        assert config.sandbox_mode == SandboxMode.JOBS
 
     def test_sandbox_mode_pods_isolated_string_no_longer_valid(self):
         with pytest.raises(ValueError):
@@ -620,10 +620,10 @@ class TestSandboxModeValidation(unittest.TestCase):
 class TestSandboxModeFromEnv(unittest.TestCase):
     """Test suite for CODE_EXECUTOR_SANDBOX_MODE env var."""
 
-    def test_from_env_default_is_shared(self):
+    def test_from_env_default_is_jobs(self):
         with patch.dict(os.environ, {}, clear=True):
             config = CodeExecutorConfig.from_env()
-            assert config.sandbox_mode == SandboxMode.SHARED
+            assert config.sandbox_mode == SandboxMode.JOBS
 
     def test_from_env_reads_sandbox_mode_jobs(self):
         with patch.dict(os.environ, {"CODE_EXECUTOR_SANDBOX_MODE": "sandbox-jobs"}, clear=True):

@@ -208,12 +208,14 @@ customEnv:
 features:
   tools:
     code_executor:
-      # -- Create Role and RoleBinding to allow the service account to manage executor pods
+      namespace:
+        # -- Create the namespace where executor pods run. Set to true only if it doesn't already exist
+        create: false
+        # -- Namespace where executor pods run (must match CODE_EXECUTOR_NAMESPACE env var)
+        name: "codemie-code-executor"
+      # -- Create Role and RoleBinding in features.tools.code_executor.namespace.name to allow the service account to manage executor pods
       rbac:
         enabled: false
-        # -- Namespace where executor pods run (must match CODE_EXECUTOR_NAMESPACE env var)
-        # -- Specify name to use a separate namespace for scheduling code_executor pods. Empty means the same namespace as CodeMie
-        namespace: ""
 
 serviceAccount:
   # -- Specifies whether a service account should be created
