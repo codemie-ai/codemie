@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-14763_expose-max-input-tokens",
+  "head": "6745741e6c7b8bc6709e61de8b72f53fd46eb92b",
+  "runner": "custom",
+  "started_at": "2026-09-29T07:31:12Z",
+  "completed_at": "2026-09-29T07:31:13Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {"id": "lint", "source": "guide", "status": "PASS", "duration_ms": 1200, "command": "make ruff", "exit_code": 0},
+    {"id": "build", "source": "guide", "status": "N/A", "command": "make build", "notes": "Out of requested scope (caller requested lint only)."},
+    {"id": "license-check", "source": "guide", "status": "N/A", "command": "make license-check", "notes": "Out of requested scope (caller requested lint only). Also enforced by codemie-pre-commit hook; not run here."},
+    {"id": "gitleaks", "source": "guide", "status": "N/A", "command": "make gitleaks", "notes": "Out of requested scope; needs Docker. Also enforced by codemie-gitleaks pre-commit hook; still owed."},
+    {"id": "unit", "source": "guide", "status": "SKIPPED", "command": "make test", "notes": "Skipped by policy: AGENTS.md forbids running tests unless the user explicitly asks."},
+    {"id": "affected", "source": "guide", "status": "N/A", "notes": "No affected-tests command in plan; tests explicit-only."},
+    {"id": "sonar-local", "source": "hook", "status": "SKIPPED", "command": "make sonar-local", "notes": "Pre-push hook (pytest + sonar-local) not run: tests explicit-only and needs Sonar credentials/network; only CI/reviewer can settle."},
+    {"id": "pytest-pre-push", "source": "hook", "status": "SKIPPED", "command": "scripts/git-hooks/pre_push.sh", "notes": "Skipped by test policy; owed before push."},
+    {"id": "ci-guards", "source": "ci", "status": "N/A", "notes": ".gitlab-ci.yml only runs pre-ci-guard templates (wait-ci-init) on MRs to main; requires GitLab infrastructure. Guide states no pipeline exists, which mismatches the presence of .gitlab-ci.yml."}
+  ],
+  "failures": {}
+}

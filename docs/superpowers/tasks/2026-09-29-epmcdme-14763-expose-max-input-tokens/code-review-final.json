@@ -1,0 +1,13 @@
+{
+  "decision": "approve",
+  "rationale": "Edge-case lens ran; no spec existed so acceptance was skipped (confidence low), and the compact profile omits blind/verification lenses. 2 findings dismissed as noise: both concern mapper value validation of max_input_tokens (non-int, zero/negative), an explicit non-goal of the task; the route uses response_model_exclude_none so unknown values are omitted. 0 deferred.",
+  "confidence": "low",
+  "risk_flags": [],
+  "business_review": [],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards audit not expected for this review profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards audit not expected for this review profile." },
+    { "kind": "security", "status": "na", "notes": "Standards audit not expected for this review profile." }
+  ],
+  "findings": []
+}

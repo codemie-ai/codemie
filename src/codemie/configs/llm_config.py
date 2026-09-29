@@ -218,6 +218,7 @@ class LLMModel(BaseModel):
     default: Optional[bool] = False  # Backward compatibility for "default" field
     default_for_categories: list[ModelCategory] = Field(default_factory=list)
     cost: Optional[CostConfig] = None
+    max_input_tokens: Optional[int] = None  # Context window; lets clients (e.g. CodeMie CLI) detect 1M-context models
     max_output_tokens: Optional[int] = None
     features: Optional[LLMFeatures] = LLMFeatures()
     configuration: Optional[ModelConfigurationSection] = None

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-09-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 1, "label": "XS" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 8,
+  "size": "XS",
+  "band_range": "6-9",
+  "files_changed": 2,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "One optional field added to the LLMModel config class (llm_config.py) and one line in map_litellm_to_llm_model (enterprise/litellm/models.py) that reads it from LiteLLM model_info; self-contained, follows the existing cost/feature mapping pattern." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 2 files changed, 3 insertions, 0 new files, so the score comes from the 2-3 file band (S)." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}
