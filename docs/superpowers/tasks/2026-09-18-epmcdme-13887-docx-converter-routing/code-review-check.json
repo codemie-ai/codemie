@@ -1,0 +1,53 @@
+{
+  "gate_id": "code-review.check",
+  "branch": "EPMCDME-13887_docx-converter-routing",
+  "diff_base": "origin/main",
+  "decision": "approve",
+  "confidence": "high",
+  "rationale": "Both prior blocking findings resolved. CR-001 (CWD-relative fixture paths): replaced with Path(__file__).parent.parent / 'docx'/'pptx' / 'test.*', matching project convention from test_reader.py and test_pptx_processor.py. CR-002 (unnecessary fixture read in unit test): replaced with b'placeholder'; test is now self-contained. Ruff format and check passed. 17/17 tests green from both repo root and subdirectory CWD. No new issues introduced by the fix-up. Production change (StreamInfo hint) was clean in the final round and is unchanged.",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "ac_id": "AC1",
+      "criterion": "Valid .docx never routed to PptxConverter",
+      "status": "pass",
+      "notes": "stream_info extension hint makes DocxConverter win before any magika content guess; deterministic per MarkItDown's converter precedence."
+    },
+    {
+      "ac_id": "AC2",
+      "criterion": "DOCX processing succeeds for previously-working documents",
+      "status": "pass",
+      "notes": "test_plain_docx_happy_path_still_works: unmocked end-to-end DOCX conversion asserts non-empty result."
+    },
+    {
+      "ac_id": "AC3",
+      "criterion": "Converter selection correctly distinguishes DOCX vs PPTX",
+      "status": "pass",
+      "notes": "StreamInfo hint is deterministic (extension-based guess precedes magika guess); both routing directions are tested."
+    },
+    {
+      "ac_id": "AC4",
+      "criterion": "Error names correct document type on failure",
+      "status": "partial",
+      "notes": "Spec designates as free side effect of routing fix (DocxConverter, not PptxConverter, handles any future DOCX failure); markdown_cache_service never exposes exception message body. No direct test; deferred per spec scope decision."
+    },
+    {
+      "ac_id": "AC5",
+      "criterion": "Regression tests cover both DOCX and PPTX routing",
+      "status": "pass",
+      "notes": "Both mandated tests present: test_docx_misclassified_by_magika_still_converts_after_fix (forced magika misclassification) and test_pptx_conversion_unaffected_by_fix (unmocked PPTX). Two additional tests exceed the minimum."
+    },
+    {
+      "ac_id": "AC6",
+      "criterion": "Existing PPTX conversion unaffected",
+      "status": "pass",
+      "notes": "test_pptx_conversion_unaffected_by_fix: real .pptx fixture, no mocks, asserts non-empty result."
+    }
+  ],
+  "standards_review": [],
+  "findings": [],
+  "finding_status": {
+    "CR-001": "resolved",
+    "CR-002": "resolved"
+  }
+}

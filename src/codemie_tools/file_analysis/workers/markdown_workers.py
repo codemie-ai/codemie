@@ -18,7 +18,7 @@ import io
 import logging
 import os
 
-from markitdown import MarkItDown
+from markitdown import MarkItDown, StreamInfo
 
 from codemie_tools.file_analysis.workers.utf8_safe_plain_text_converter import Utf8SafePlainTextConverter
 from codemie_tools.file_analysis.workers.xlsx_workers import process_xlsx_to_markdown
@@ -55,7 +55,7 @@ def convert_file_to_markdown(file_bytes: bytes, file_name: str, llm_client=None,
         md.register_converter(Utf8SafePlainTextConverter(), priority=9)
         binary_content = io.BytesIO(file_bytes)
 
-        result = md.convert(binary_content)
+        result = md.convert(binary_content, stream_info=StreamInfo(filename=file_name, extension=ext or None))
         return result.text_content
     except Exception as e:
         logger.error(f"MarkItDown conversion failed for {file_name}: {e}")

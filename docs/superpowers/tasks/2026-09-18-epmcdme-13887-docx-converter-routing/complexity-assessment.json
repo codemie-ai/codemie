@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "task": "Fix DOCX-vs-PPTX misrouting in MarkItDown conversion by passing stream_info into md.convert(), add magika-boundary-mocked regression tests for both DOCX and PPTX routing, and correct user-facing error messages at the two exception-swallowing boundaries (markdown_cache_service.get_or_convert and file_analysis_tool._fallback_decode_text_file).",
+  "generated": "2026-09-18",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 3, "label": "M" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 16,
+  "size": "M",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Base score is M (3 components: markdown_workers.py, markdown_cache_service.py, file_analysis_tool.py across Agent-Tool + Service layers), bumped to L by the 'touches core shared utilities' red flag: convert_file_to_markdown is a shared conversion entry point consumed by two independent production call sites, and both of its exception-swallowing boundaries need coordinated changes to satisfy AC #4." },
+    { "dimension": "technical_risk", "reason": "The production fix itself is trivial (mirrors the existing .xlsb extension-hint idiom already in the same file), but the required regression-test strategy has no precedent in this codebase: mocking the magika.Magika boundary inside the third-party markitdown package is a first-of-its-kind technique here, chosen only after a real-fixture repro attempt (per the ticket's own Comment 2 theory) failed to fool the installed model. That introduces genuine novelty and future-brittleness risk (coupling tests to markitdown._markitdown internal import paths)." },
+    { "dimension": "requirements_clarity", "reason": "The four Jira ACs are concrete, but two judgment calls are left open: whether both exception-swallowing boundaries must be touched to satisfy AC #4 (vs. just one), and whether the sticky-cache second-order effect (misclassified results cached permanently until invalidate()) needs handling even though it isn't explicitly named in the AC." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from M to L: convert_file_to_markdown is a shared utility used by multiple independent call sites (file_analysis_tool.py and markdown_cache_service.py), and the fix requires touching both of its downstream exception-handling boundaries."
+  ],
+  "split_recommendation": null
+}

@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest.mock import patch, MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -171,3 +172,71 @@ class TestConvertFileToMarkdownCyrillic:
         mixed = "# Header\n\n123ууу mixed content строка\n".encode("utf-8")
         result = convert_file_to_markdown(mixed, "mixed.md")
         assert "ууу" in result
+
+
+class TestDocxPptxRouting:
+    """Regression tests for EPMCDME-13887: DOCX must never be routed to PptxConverter.
+
+    MarkItDown falls back to magika's content-based type guess when no stream_info hint is
+    given. Because DOCX and PPTX are both OOXML zip containers, magika can misclassify a real
+    DOCX as PPTX-like, and MarkItDown then tries PptxConverter first, which fails opening the
+    real (docx) bytes with python-pptx. These tests force that exact magika misclassification
+    by patching markitdown._markitdown.magika.Magika (class-level, since convert_file_to_markdown
+    builds its own MarkItDown() instance whose __init__ does self._magika = magika.Magika()) and
+    verify the real DocxConverter/PptxConverter pipeline routes correctly once a stream_info
+    extension hint is supplied.
+    """
+
+    DOCX_PATH = Path(__file__).parent.parent / "docx" / "test.docx"
+    PPTX_PATH = Path(__file__).parent.parent / "pptx" / "test.pptx"
+
+    @staticmethod
+    def _read(path):
+        with open(path, "rb") as f:
+            return f.read()
+
+    @staticmethod
+    def _make_pptx_like_magika_result():
+        """A magika identify_stream() result shaped like a real PPTX-content prediction."""
+        result = MagicMock()
+        result.status = "ok"
+        result.prediction.output.label = "pptx"
+        result.prediction.output.is_text = False
+        result.prediction.output.extensions = ["pptx"]
+        result.prediction.output.mime_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        return result
+
+    def test_docx_misclassified_by_magika_still_converts_after_fix(self):
+        """Core regression test: a real .docx must convert even when magika guesses pptx."""
+        docx_bytes = self._read(self.DOCX_PATH)
+        with patch("markitdown._markitdown.magika.Magika") as mock_magika_cls:
+            mock_magika_cls.return_value.identify_stream.return_value = self._make_pptx_like_magika_result()
+            result = convert_file_to_markdown(docx_bytes, "report.docx")
+        assert result is not None
+        assert len(result) > 0
+
+    def test_pptx_conversion_unaffected_by_fix(self):
+        """No PPTX regression: the real .pptx fixture must still convert, unmocked."""
+        pptx_bytes = self._read(self.PPTX_PATH)
+        result = convert_file_to_markdown(pptx_bytes, "slides.pptx")
+        assert result is not None
+        assert len(result) > 0
+
+    def test_plain_docx_happy_path_still_works(self):
+        """Guard against regressions in the normal (unmocked) docx conversion path."""
+        docx_bytes = self._read(self.DOCX_PATH)
+        result = convert_file_to_markdown(docx_bytes, "report.docx")
+        assert result is not None
+        assert len(result) > 0
+
+    def test_extensionless_filename_passes_none_not_empty_string(self):
+        """ext == '' must become stream_info.extension=None, not '' (see spec pitfall note)."""
+        docx_bytes = b"placeholder"
+        with patch("codemie_tools.file_analysis.workers.markdown_workers.MarkItDown") as mock_md_cls:
+            mock_result = MagicMock()
+            mock_result.text_content = "converted"
+            mock_md = mock_md_cls.return_value
+            mock_md.convert.return_value = mock_result
+            convert_file_to_markdown(docx_bytes, "noext")
+        _, kwargs = mock_md.convert.call_args
+        assert kwargs["stream_info"].extension is None
