@@ -790,24 +790,30 @@ class AssistantEvaluationRequest(BaseModel):
     llm_model: Optional[str] = None
 
 
+# Folder names are trimmed so "FAQ" and " FAQ " resolve to the same folder
+FolderName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+# Empty string is allowed here: it means "no folder"
+OptionalFolderName = Annotated[str, StringConstraints(strip_whitespace=True)]
+
+
 class CreateConversationRequest(ConfiguredModel):
     initial_assistant_id: Optional[str] = None
-    folder: Optional[str] = None
+    folder: Optional[OptionalFolderName] = None
     mcp_server_single_usage: Optional[bool] = False
     is_workflow: Optional[bool] = None
 
 
 class UpdateConversationFolderRequest(ConfiguredModel):
-    folder: str
+    folder: FolderName
 
 
 class MoveConversationsToFolderRequest(ConfiguredModel):
     conversation_ids: list[str]
-    target_folder: str
+    target_folder: FolderName
 
 
 class UpdateConversationRequest(ConfiguredModel):
-    folder: Optional[str] = None
+    folder: Optional[OptionalFolderName] = None
     pinned: Optional[bool] = None
     name: Optional[str] = None
     active_assistant_id: Optional[str] = None
