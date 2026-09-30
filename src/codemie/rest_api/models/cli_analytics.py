@@ -307,6 +307,7 @@ class LocalAnalyticsEfficiencyKPIs(BaseModel):
     worst_session_trace_id: str | None = None
     cache_read_cost_usd: float = 0.0
     bloat_pct: float = 0.0
+    total_cost_usd: float = 0.0
 
 
 class LocalAnalyticsDeadSessionsKPIs(BaseModel):

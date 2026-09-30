@@ -842,6 +842,7 @@ class LocalAnalyticsHandler:
                 "worst_session_trace_id": worst_trace,
                 "cache_read_cost_usd": cache_read_cost_usd,
                 "bloat_pct": _pct(cache_read_cost_usd, total_cost),
+                "total_cost_usd": total_cost,
             },
             "dead_sessions": {
                 "count": dead_count,

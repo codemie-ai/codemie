@@ -1,0 +1,32 @@
+{
+  "gate_id": "code-review.final",
+  "decision": "approve",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    {
+      "criterion": "Efficiency API exposes total_cost_usd so the frontend can compute the wasted-cost percentage against total spend instead of cache_read_cost_usd",
+      "status": "pass",
+      "notes": "LocalAnalyticsEfficiencyKPIs.total_cost_usd added; get_efficiency() populates it from the already-computed total_cost variable also used for bloat_pct."
+    },
+    {
+      "criterion": "No existing Efficiency response field or behavior changes",
+      "status": "pass",
+      "notes": "Change is additive only: new field with default 0.0, consistent with sibling fields (cache_read_cost_usd, bloat_pct). bloat_pct and dead_sessions unaffected."
+    }
+  ],
+  "standards_review": [
+    {
+      "standard": "git-workflow/commit-format",
+      "status": "pass",
+      "notes": "Commit uses the required EPMCDME-15207: prefix."
+    },
+    {
+      "standard": "code-quality/backward-compatibility",
+      "status": "pass",
+      "notes": "New Pydantic field is additive with a default, so existing consumers deserializing the response are unaffected."
+    }
+  ],
+  "findings": [],
+  "rationale": "Minimal, additive, plan-conforming change: adds total_cost_usd to LocalAnalyticsEfficiencyKPIs and to the kpis dict in get_efficiency(), reusing an already-scoped variable. No existing behavior, schema compatibility, or other KPI field is affected. Advisory, non-blocking notes (not raised as findings since neither is a defect introduced by this diff): (1) no existing unit test exercises get_efficiency()'s kpis dict shape, before or after this change; (2) the end-to-end user-visible fix requires the paired codemie-ui change (same ticket, separate repo) to actually consume total_cost_usd as the wasted-cost percentage denominator, which is correctly out of scope for this repo's diff. Diff size: 2 lines across 2 source files (+ a 59-line plan.md doc)."
+}
