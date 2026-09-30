@@ -26,11 +26,11 @@ environment. The delete is irreversible: downgrade() restores the enum label onl
 The value lists below describe the enum as fa14587c0de1 (EPMCDME-14587) leaves it: that
 revision folded GITLAB_OAUTH, JIRA_OAUTH and CONFLUENCE_OAUTH into their base types, so
 listing the folded values here would recreate them. The revisions between it and
-d3c838ee6ab9 do not change the enum. tests/codemie/migrations/
+u2v3w4x5y6a7 do not change the enum. tests/codemie/migrations/
 test_credentialtypes_enum_migrations.py checks both lists against the chain.
 
 Revision ID: d9e8f7a6b5c4
-Revises: d3c838ee6ab9
+Revises: u2v3w4x5y6a7
 Create Date: 2026-09-03 00:00:00.000000
 
 """
@@ -44,7 +44,7 @@ from alembic_postgresql_enum import TableReference
 
 # revision identifiers, used by Alembic.
 revision: str = 'd9e8f7a6b5c4'
-down_revision: Union[str, None] = 'd3c838ee6ab9'
+down_revision: Union[str, None] = 'u2v3w4x5y6a7'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
