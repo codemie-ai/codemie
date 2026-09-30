@@ -1,0 +1,3 @@
+# Deferred from code review — 2026-09-29-epmcdme-15382-mcp-auth-popup-opener (2026-09-29)
+
+- **Sign-in watcher skipped for rows without auth_config_id** — `codemie-ui/src/hooks/useMCPAuthPrompt.ts:213` (same guard at `codemie-ui/src/store/chatGeneration.ts:525`) — both open paths start the watcher only `if (authConfigId)`, although the watcher needs only `mcpConfigId`, so a null-id row is set to `authenticating` with no completion path. Pre-existing: `isAuthenticatingGateRow` already required `auth_config_id`, so such rows were never tracked by the listener and never had a completion channel before this change; whether an `initiate_url` row can carry a null id is unconfirmed.

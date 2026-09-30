@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15382-mcp-auth-popup-opener",
+  "head": "8acc4d921361f67f8d0853e9e8bff7cb996dcb05",
+  "runner": "npm",
+  "started_at": "2026-09-29T18:20:13Z",
+  "completed_at": "2026-09-29T18:41:03Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 52756,
+      "command": "npm run lint",
+      "exit_code": 0,
+      "notes": "Only stderr line is the eslint-plugin-react settings warning (React version not specified); no lint findings."
+    },
+    {
+      "id": "typecheck",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 40618,
+      "command": "npm run typecheck",
+      "exit_code": 0
+    },
+    {
+      "id": "license-check",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "npm run license-check",
+      "notes": "Guide Skip-if met: no dependency added, removed or moved (diff origin/main...HEAD touches no package.json or lockfile)."
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 39707,
+      "command": "npm run secrets:check",
+      "exit_code": 0,
+      "notes": "Output read, not exit code: gitleaks scanned ~103 MB and printed \"no leaks found\"; image pull succeeded."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 805613,
+      "command": "npm run test:unit:slnt",
+      "exit_code": 0,
+      "notes": "621 files passed; 6370 tests passed, 1 skipped (test-level skip)."
+    },
+    {
+      "id": "integration",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 276380,
+      "command": "npm run test:integration:slnt",
+      "exit_code": 0,
+      "notes": "48 files passed; 547 tests passed, 1 skipped (test-level skip)."
+    },
+    {
+      "id": "license-headers",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 376,
+      "command": "npm run license-headers:check",
+      "exit_code": 0,
+      "notes": "Checked 2218 files, 0 missing license headers."
+    },
+    {
+      "id": "sonar-local",
+      "source": "hook",
+      "status": "SKIPPED",
+      "command": "npm run sonar-local",
+      "notes": "Not run: scripts/sonar/run-local-sonar.mjs connects to the remote SonarQube server in .sonarlint/connectedMode.json and uploads analysis (network plus SONAR_TOKEN). Caller reports the pre-commit hook already ran it on HEAD 8acc4d921. Locally: npm run sonar-local with network access; CI compliance-report/ci-pipeline contexts still owed."
+    },
+    {
+      "id": "lint-staged",
+      "source": "hook",
+      "status": "N/A",
+      "command": "npx lint-staged",
+      "notes": "Operates on staged files only; nothing staged. Equivalent full-tree coverage by lint gate; prettier not run as a separate full-tree gate."
+    },
+    {
+      "id": "ci-pipeline",
+      "source": "ci",
+      "status": "N/A",
+      "command": "(none)",
+      "notes": ".gitlab-ci.yml only includes the external pre-ci-guard template and waits for external contexts ci-pipeline and compliance-report (managed elsewhere); not runnable locally."
+    },
+    {
+      "id": "ui",
+      "source": "guide",
+      "status": "SKIPPED",
+      "command": "(none)",
+      "notes": "UI surface changed but no configured UI test script; browser verification is a separate caller decision."
+    }
+  ],
+  "failures": {}
+}

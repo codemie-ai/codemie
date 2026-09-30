@@ -224,8 +224,21 @@ if (main instanceof HTMLElement) {{
 
   if (main.dataset.callbackResult === 'success') {{
     if (!window.opener) {{
-      sendDiagnostics({{}});
-      updateMessage(CALLBACK_SUCCESS_OPEN_CODEMIE_MESSAGE);
+      // The opener is cut on purpose (an IdP opener guard must not be able to
+      // close the sign-in window), so CodeMie learns of success by polling
+      // /status and this tab has to close itself. opener_present is null, not false:
+      // the opener is absent by design, which must not log as a lost opener.
+      sendDiagnostics({{ opener_present: null, window_should_close: !CALLBACK_KEEP_TAB_OPEN }});
+      if (!CALLBACK_KEEP_TAB_OPEN) {{
+        window.close();
+        window.setTimeout(() => {{
+          if (!window.closed) {{
+            updateMessage(CALLBACK_SUCCESS_OPEN_CODEMIE_MESSAGE);
+          }}
+        }}, CALLBACK_FALLBACK_DELAY_MS);
+      }} else {{
+        updateMessage(CALLBACK_SUCCESS_OPEN_CODEMIE_MESSAGE);
+      }}
     }} else if (authConfigId && targetOrigin) {{
       let postMessageAttempted = false;
       let postMessageError = null;
@@ -258,6 +271,9 @@ if (main instanceof HTMLElement) {{
   }}
 
   if (main.dataset.callbackResult === 'error') {{
+    // Known limit: an IdP error code can only travel to an opener. Windows the UI opens
+    // have none (it is cut on purpose), so for them this branch only reports diagnostics
+    // and the UI shows its generic hint or early-close wording, never the provider error.
     if (window.opener && authConfigId && targetOrigin && errorCode) {{
       let postMessageAttempted = false;
       let postMessageError = null;

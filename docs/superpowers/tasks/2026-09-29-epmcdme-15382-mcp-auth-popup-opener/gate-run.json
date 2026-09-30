@@ -1,0 +1,114 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15382-mcp-auth-popup-opener",
+  "head": "a60660d67d731cf6e2be3eec05e1fe0ed2dc8a2e",
+  "runner": "poetry",
+  "started_at": "2026-09-29T18:20:01Z",
+  "completed_at": "2026-09-29T18:40:10Z",
+  "status": "BLOCKED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1481,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "2577 files unchanged; no working-tree mutations"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 8181,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1075,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2291 files, 0 missing headers"
+    },
+    {
+      "id": "secrets",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 24480,
+      "command": "make gitleaks",
+      "exit_code": 2,
+      "notes": "make exit 2 wrapping gitleaks exit 1. 8 generic-api-key findings, all in gitignored untracked local files outside the branch diff: .codex/config.toml, local/downloaded-logs-20260825-162017.json (4), .mcp.json.lock, opencode.json, run_claude.sh. gitleaks dir scans the working tree including ignored files, so the result is local-environment dependent; CI-side or clean-checkout result is unverified."
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 313569,
+      "command": "make test",
+      "exit_code": 2,
+      "notes": "1 failed, 16729 passed, 173 skipped. Failing test tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation is outside the branch diff; it reproduces in isolation (RuntimeError: can't start new thread inside the guarded subprocess). Likely environment-related."
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "FAIL",
+      "duration_ms": 771217,
+      "command": "make sonar-local",
+      "exit_code": 2,
+      "notes": "Aborted at coverage generation: 2 failed (test_guard_allows_matplotlib_png_generation, test_guard_allows_openpyxl_to_save_workbook, both in test_filesystem_policy.py, outside branch diff). The Sonar scan itself never ran, so the server-side quality gate is unverified. Note the pre-push hook is opt-in and excludes tests/enterprise, while make sonar-local runs all of tests/."
+    },
+    {
+      "id": "secrets-staged",
+      "source": "hook",
+      "status": "SKIPPED",
+      "duration_ms": 593,
+      "command": "bash scripts/git-hooks/validate_secrets.sh",
+      "exit_code": 0,
+      "notes": "Exited 0 without scanning: 'INF 0 commits scanned.' / 'scanned ~0 bytes' because nothing is staged (gitleaks protect --staged). Enable by staging the change before running."
+    },
+    {
+      "id": "coverage",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make coverage",
+      "notes": "Guide: skip if coverage not requested. Not requested."
+    },
+    {
+      "id": "verify",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make verify",
+      "notes": "Composite of ruff, license, gitleaks, test, each already run individually."
+    },
+    {
+      "id": "test-harness",
+      "source": "guide",
+      "status": "N/A",
+      "command": "make test-harness",
+      "notes": "Guide: skip if not opening a merge request. Needs docker stack up plus ~/.codemie/test-harness.json; run before MR creation."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "N/A",
+      "command": "bash scripts/git-hooks/commit_msg.sh",
+      "notes": "Validates the EPMCDME-<n>: prefix on a commit message; no commit is being made in this run."
+    },
+    {
+      "id": "wait-ci-init",
+      "source": "ci",
+      "status": "N/A",
+      "command": ".gitlab-ci.yml wait-ci-init (pre-ci-guard template)",
+      "notes": "Waits for external contexts ci-pipeline and compliance-report on MR pipelines targeting main; needs GitLab and cannot run locally. Still owed: /sanity regression run and MR-description compliance sections."
+    }
+  ],
+  "failures": {
+    "secrets": "[redacted] gitleaks reported 8 generic-api-key findings, all in gitignored untracked local files outside the branch diff (.codex/config.toml, local/downloaded-logs-*.json, .mcp.json.lock, opencode.json, run_claude.sh). Raw output removed because it contained secret values. A clean checkout of the branch HEAD scans clean.",
+    "unit": "tests/codemie/rest_api/routers/test_settings_cron_validation.py::test_mixin_invalid_timezone_raises_422[Bad/Zone]\ntests/codemie/rest_api/routers/test_settings_cron_validation.py::test_mixin_invalid_timezone_raises_422[not_a_timezone]\ntests/codemie/rest_api/routers/test_settings_cron_validation.py::test_mixin_invalid_timezone_raises_422[]\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/rest_api/models/index.py:127: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_timezone_string(self.timezone)\n\ntests/codemie/rest_api/routers/test_user_settings_crud.py::test_create_user_setting_integrity_error_non_ms_teams_not_mislabeled\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/rest_api/routers/user_settings.py:188: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise _map_integrity_error(request) from e\n\ntests/codemie/rest_api/routers/test_user_settings_crud.py::test_update_user_setting_integrity_error_non_ms_teams_not_mislabeled\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/rest_api/routers/user_settings.py:241: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise _map_integrity_error(request) from e\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFiles::test_combined_kept_and_new_over_limit_raises\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:297: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    FileDatasourceService.upload_and_prepare_files(\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFiles::test_raises_422_when_json_file_has_invalid_content\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/datasource/file_datasource_service.py:287: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(file.filename, content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_missing_content_key\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:416: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_missing_metadata_key\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:422: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", content)\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestValidateJsonFile::test_raises_422_on_invalid_json_bytes\n  /home/taras_spashchenko/EPAM/cm/codemie/tests/codemie/service/datasource/test_file_datasource_service.py:427: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(\"file.json\", b\"not-json-content\")\n\ntests/codemie/service/datasource/test_file_datasource_service.py::TestUploadAndPrepareFilesZip::test_upload_and_prepare_files_zip_validates_json_entries\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/service/datasource/file_datasource_service.py:214: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    _validate_json_file(name, content)\n\ntests/codemie_tools/qa/zephyr_squad/test_api_wrapper.py::test_request_successfull\ntests/codemie_tools/qa/zephyr_squad/test_api_wrapper.py::test_request_failure\ntests/codemie_tools/qa/zephyr_squad/test_api_wrapper.py::test_request_with_custom_headers_and_content_type\ntests/codemie_tools/qa/zephyr_squad/test_api_wrapper.py::test_request_without_explicit_content_type\n  /home/taras_spashchenko/EPAM/cm/codemie/.venv/lib/python3.12/site-packages/jwt/api_jwt.py:147: InsecureKeyLengthWarning: The HMAC key is 15 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.\n    return self._jws.encode(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n=========================== short test summary info ============================\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\n==== 1 failed, 16729 passed, 173 skipped, 229 warnings in 310.09s (0:05:10) ====\nmake: *** [Makefile:31: test] Error 1",
+    "sonar": "    validate_cron_expression(mock_request)\n\ntests/codemie/rest_api/routers/test_settings_cron_validation.py::test_mixin_invalid_timezone_raises_422[UTC+2]\ntests/codemie/rest_api/routers/test_settings_cron_validation.py::test_mixin_invalid_timezone_raises_422[Bad/Zone]\ntests/codemie/rest_api/routers/test_settings_cron_validation.py::test_mixin_invalid_timezone_raises_422[not_a_timezone]\ntests/codemie/rest_api/routers/test_settings_cron_validation.py::test_mixin_invalid_timezone_raises_422[]\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/rest_api/models/index.py:127: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    validate_timezone_string(self.timezone)\n\ntests/codemie/rest_api/routers/test_user_settings_crud.py::test_create_user_setting_integrity_error_non_ms_teams_not_mislabeled\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/rest_api/routers/user_settings.py:188: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise _map_integrity_error(request) from e\n\ntests/codemie/rest_api/routers/test_user_settings_crud.py::test_update_user_setting_integrity_error_non_ms_teams_not_mislabeled\n  /home/taras_spashchenko/EPAM/cm/codemie/src/codemie/rest_api/routers/user_settings.py:241: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.\n    raise _map_integrity_error(request) from e\n\ntests/codemie/service/mcp/test_client.py::TestMCPConnectClientListTools::test_invoke_tool_raises_auth_required_for_recoverable_insufficient_scope\n  /home/taras_spashchenko/EPAM/cm/codemie/.venv/lib/python3.12/site-packages/_pytest/python.py:148: PytestUnhandledCoroutineWarning: async def functions are not natively supported and have been skipped.\n  You need to install a suitable plugin for your async framework, for example:\n    - anyio\n    - pytest-asyncio\n    - pytest-tornasync\n    - pytest-trio\n    - pytest-twisted\n    warnings.warn(PytestUnhandledCoroutineWarning(msg.format(nodeid)))\n\ntests/codemie/service/provider/test_provider_service.py::test_create\n  /home/taras_spashchenko/EPAM/cm/codemie/.venv/lib/python3.12/site-packages/pydantic/main.py:475: UserWarning: Pydantic serializer warnings:\n    PydanticSerializationUnexpectedValue(Expected `<class 'pydantic.networks.HttpUrl'>` but got `<class 'str'>` with value `'http://path1.com/'` - serialized value may not be as expected.)\n    return self.__pydantic_serializer__.to_python(\n\ntests/codemie_tools/qa/zephyr_squad/test_api_wrapper.py::test_request_successfull\ntests/codemie_tools/qa/zephyr_squad/test_api_wrapper.py::test_request_failure\ntests/codemie_tools/qa/zephyr_squad/test_api_wrapper.py::test_request_with_custom_headers_and_content_type\ntests/codemie_tools/qa/zephyr_squad/test_api_wrapper.py::test_request_without_explicit_content_type\n  /home/taras_spashchenko/EPAM/cm/codemie/.venv/lib/python3.12/site-packages/jwt/api_jwt.py:147: InsecureKeyLengthWarning: The HMAC key is 15 bytes long, which is below the minimum recommended length of 32 bytes for SHA256. See RFC 7518 Section 3.2.\n    return self._jws.encode(\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n\n---------- coverage: platform linux, python 3.12.12-final-0 ----------\nCoverage XML written to file coverage.xml\n\n=========================== short test summary info ============================\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_matplotlib_png_generation\nFAILED tests/codemie_tools/data_management/code_executor/test_filesystem_policy.py::test_guard_allows_openpyxl_to_save_workbook\n==== 2 failed, 16728 passed, 173 skipped, 229 warnings in 763.70s (0:12:43) ====\n[sonar-local] coverage generation exited with code 1\nmake: *** [Makefile:68: sonar-local] Error 1"
+  }
+}

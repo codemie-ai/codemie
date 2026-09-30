@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "task": "Stop the EPAM IdP opener guard from closing the MCP OAuth sign-in window via an opener-cutting open-window helper, /status polling with early-close detection and a new-tab action in codemie-ui, a backend callback-page no-opener branch, and a log-level fix (EPMCDME-15382).",
+  "generated": "2026-09-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 24,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Two repos. UI: new shared open-window helper, status-fetch client, generalized diagnostics beacon, useMCPAuthPrompt, useAuthCallbackListener, chatGeneration store, shared AssistantAuthGateRow plus three consumers. Backend: callback-page script and diagnostics. New abstractions, but the backend part is small." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is usePopupWindow, which hides the Window and does not cut the opener. It does not cover the new auth_url-to-location.href sink, which needs scheme validation under the security guide, so the risk is bumped. Completion moves from push to pull, and success must stay idempotent across concurrent listeners. Popup, opener and window.close() behaviour is browser-dependent and jsdom cannot model it. The chat store has no timer lifecycle. JS-in-f-string escaping is a further hazard." },
+    { "dimension": "file_change_estimate", "reason": "About 10 UI source files, 2 backend files, 1-3 new files (helper, status client) and 6-8 test files, with existing window.open assertions to rework. Scored XL, not XXL, because most edits are localized." },
+    { "dimension": "affected_layers", "reason": "UI, hook/store service logic, API (/status, diagnostics beacon), backend callback page, external IdP behaviour. Two codebases, no DB or infra change." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: closest pattern (usePopupWindow) does not cover the security-sensitive location.href sink with a backend-provided URL (scheme validation)",
+    "Technical Risk bumped: acceptance criteria enumerate variant cases (blocked popup, early close, cross-origin, KEEP_TAB_OPEN, untracked id) and existing tests must be redesigned around window mocks",
+    "Component Scope: touches shared hooks, store and components used by the assistant editor, chat and workflows",
+    "Integration with cross-origin IdP behaviour: Affected Layers raised"
+  ],
+  "split_recommendation": null
+}

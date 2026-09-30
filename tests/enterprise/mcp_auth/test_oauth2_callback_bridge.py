@@ -198,6 +198,81 @@ def test_callback_script_keeps_tab_open_when_flag_enabled(monkeypatch) -> None:
     assert "window_should_close: !CALLBACK_KEEP_TAB_OPEN," in script
 
 
+def _success_branches(script: str) -> tuple[str, str]:
+    """Split the success handler into its (no-opener, opener) branches."""
+    no_opener_start = script.index("if (!window.opener) {")
+    opener_start = script.index("} else if (authConfigId && targetOrigin) {", no_opener_start)
+    error_start = script.index("if (main.dataset.callbackResult === 'error')", opener_start)
+    return script[no_opener_start:opener_start], script[opener_start:error_start]
+
+
+def test_callback_script_no_opener_success_branch_reports_then_closes_tab_with_fallback_message() -> None:
+    script = _build_enabled_client().get("/v1/mcp-auth/oauth2/callback-page.js").text
+
+    no_opener_branch, _ = _success_branches(script)
+
+    assert "const CALLBACK_KEEP_TAB_OPEN = false;" in script
+    # the opener is absent by design, so the beacon must not claim a lost one (that logs WARNING)
+    assert (
+        "sendDiagnostics({ opener_present: null, window_should_close: !CALLBACK_KEEP_TAB_OPEN });" in no_opener_branch
+    )
+    assert "window.close();" in no_opener_branch
+    # the beacon must fire before the tab goes away
+    assert no_opener_branch.index("sendDiagnostics(") < no_opener_branch.index("window.close();")
+    # a blocked close still leaves the user a message after the fallback delay
+    assert "if (!window.closed)" in no_opener_branch
+    assert "updateMessage(CALLBACK_SUCCESS_OPEN_CODEMIE_MESSAGE);" in no_opener_branch
+    assert "CALLBACK_FALLBACK_DELAY_MS" in no_opener_branch
+    # the no-opener page has nobody to notify
+    assert "postMessage" not in no_opener_branch
+
+
+def test_callback_script_no_opener_success_branch_does_not_close_when_keep_tab_open_enabled(monkeypatch) -> None:
+    from codemie.enterprise.mcp_auth import _callback_pages
+
+    monkeypatch.setattr(_callback_pages.config, "MCP_AUTH_CALLBACK_KEEP_TAB_OPEN", True)
+    script = _build_enabled_client().get("/v1/mcp-auth/oauth2/callback-page.js").text
+
+    no_opener_branch, _ = _success_branches(script)
+
+    assert "const CALLBACK_KEEP_TAB_OPEN = true;" in script
+    # close is reachable only through the gate, so the flag being true keeps the tab open
+    gate, close = no_opener_branch.index("if (!CALLBACK_KEEP_TAB_OPEN) {"), no_opener_branch.index("window.close();")
+    assert gate < close
+    # with the tab kept open the user is told immediately, in the else branch of the gate
+    keep_open_branch = no_opener_branch[no_opener_branch.index("} else {", gate) :]
+    assert "updateMessage(CALLBACK_SUCCESS_OPEN_CODEMIE_MESSAGE);" in keep_open_branch
+    assert "window.close();" not in keep_open_branch
+
+
+def test_callback_script_opener_success_branch_still_posts_message_before_closing() -> None:
+    script = _build_enabled_client().get("/v1/mcp-auth/oauth2/callback-page.js").text
+
+    _, opener_branch = _success_branches(script)
+
+    assert "window.opener.postMessage" in opener_branch
+    assert "status: 'success'" in opener_branch
+    assert opener_branch.index("window.opener.postMessage") < opener_branch.index("window.close();")
+    assert "updateMessage(CALLBACK_SUCCESS_CLOSE_MESSAGE);" in opener_branch
+
+
+def test_callback_script_error_branch_without_opener_only_reports_diagnostics() -> None:
+    """Accepted limit: with the opener cut, an IdP error code cannot reach the UI.
+
+    The error is posted to an opener and nowhere else, so a window opened without one only
+    beacons diagnostics; the UI shows its generic hint / early-close wording instead.
+    """
+    script = _build_enabled_client().get("/v1/mcp-auth/oauth2/callback-page.js").text
+
+    error_branch = script[script.index("if (main.dataset.callbackResult === 'error')") :]
+    posting_branch, no_opener_branch = error_branch.split("} else {", 1)
+
+    assert "if (window.opener && authConfigId && targetOrigin && errorCode) {" in posting_branch
+    assert "window.opener.postMessage" in posting_branch
+    assert "sendDiagnostics({});" in no_opener_branch
+    assert "postMessage" not in no_opener_branch
+
+
 def test_disabled_callback_script_route_is_absent() -> None:
     client = _build_disabled_client()
 
@@ -984,6 +1059,45 @@ def test_callback_diagnostics_warns_on_lost_opener_and_returns_204(monkeypatch) 
 
     assert resp.status_code == status.HTTP_204_NO_CONTENT
     assert any("opener_present=False" in message for message in warned)
+
+
+def test_callback_diagnostics_logs_info_for_intentional_no_opener_success(monkeypatch) -> None:
+    from codemie.enterprise.mcp_auth import _diagnostics
+
+    warned: list[str] = []
+    infos: list[str] = []
+    monkeypatch.setattr(_diagnostics.logger, "warning", lambda message, *a, **k: warned.append(message))
+    monkeypatch.setattr(_diagnostics.logger, "info", lambda message, *a, **k: infos.append(message))
+
+    client = _build_enabled_client()
+    resp = client.post(
+        "/v1/mcp-auth/oauth2/callback-diagnostics",
+        json={"result": "success", "opener_present": None, "window_should_close": True},
+    )
+
+    assert resp.status_code == status.HTTP_204_NO_CONTENT
+    assert not warned
+    assert len(infos) == 1
+
+
+def test_callback_diagnostics_warns_with_phase_when_window_closed_before_callback(monkeypatch) -> None:
+    from codemie.enterprise.mcp_auth import _diagnostics
+
+    warned: list[str] = []
+    infos: list[str] = []
+    monkeypatch.setattr(_diagnostics.logger, "warning", lambda message, *a, **k: warned.append(message))
+    monkeypatch.setattr(_diagnostics.logger, "info", lambda message, *a, **k: infos.append(message))
+
+    client = _build_enabled_client()
+    resp = client.post(
+        "/v1/mcp-auth/oauth2/callback-diagnostics",
+        json={"result": "error", "phase": "window_closed_before_callback", "waited_ms": 1200},
+    )
+
+    assert resp.status_code == status.HTTP_204_NO_CONTENT
+    assert not infos
+    assert len(warned) == 1
+    assert "phase=window_closed_before_callback" in warned[0]
 
 
 def test_callback_diagnostics_rejects_invalid_result() -> None:

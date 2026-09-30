@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 6, "label": "XXL" }
+  },
+  "total": 27,
+  "size": "XL",
+  "band_range": "27-31",
+  "files_changed": 27,
+  "routing": "split-required",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Multi-repo changes with distinct content across 2 repos — scope scored additively. Backend: callback-page script no-opener branch and diagnostics model (opener_present tri-state). codemie-ui: two new abstractions (openSignInWindow opener-cutting helper, watchSignInWindow status-poll/early-close watcher), mcpAuthStatus client, useMCPAuthPrompt and useAuthCallbackListener (live-id acceptance window), chatGeneration store, useChatAuthCallbacks, AssistantAuthGateRow 'Open sign-in in a new tab' action. 4+ components across subsystems with new abstractions." },
+    { "dimension": "requirements_clarity", "reason": "Core goal (survive the IdP opener guard) was clear, but design decisions surfaced during implementation: unplanned task 4b, a review fix-up round (6 findings), retry semantics for the closed-window status check, and a documented known limit (IdP error code cannot reach a window with no opener). Initial estimate was L (24); rework risk materialised." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the existing postMessage callback listener, which assumes an opener; it does not cover the no-opener path, so polling, early-close detection and dual success reporting (poll plus postMessage) had no exact precedent. Touches the MCP OAuth sign-in flow (authentication), cross-window trust (opener cut, origin-checked postMessage), timers/races and the diagnostics beacon. Bumped from L for authentication." },
+    { "dimension": "file_change_estimate", "reason": "27 files changed (3 backend, 24 codemie-ui), 1937 insertions and 251 deletions; 16+ maps to XXL. About 13 are test files and 1 is a guide doc, but diffstat mapping is applied as specified. Roughly 6 new files (openSignInWindow, watchSignInWindow, mcpAuthStatus and their tests)." },
+    { "dimension": "affected_layers", "reason": "UI (AssistantAuthGateRow), Service/state (hooks, chatGeneration store, utils), API (backend callback page and diagnostics endpoint model) and External (IdP opener guard, /v1/mcp-auth/status polling) across two separate codebases with a shared callback/diagnostics contract; no DB or infra. Raw sum was 26 (borderline); lean-higher rule applied because Technical Risk and Component Scope are XL, and the rubric text for multiple codebases supports XXL." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from L to XL: affects authentication (MCP OAuth sign-in) and cross-window opener/postMessage trust",
+    "Borderline 26 to 27: lean higher because Technical Risk and Component Scope are XL (Affected Layers set to XXL for multi-codebase scope)",
+    "Component Scope bumped: affects multiple workflows (chat auth gate, callback listener, store, backend callback page)"
+  ],
+  "split_recommendation": "Retrospective only (work is already implemented as two single-repo changes; initial estimate L 24 vs actual XL 27). Had it been split: by-component, backend codemie first (callback-page no-opener branch, opener_present tri-state diagnostics, INFO log level) then codemie-ui (openSignInWindow, watchSignInWindow and mcpAuthStatus helpers, then hook/store/AssistantAuthGateRow wiring)."
+}

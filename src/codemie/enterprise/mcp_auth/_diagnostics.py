@@ -38,7 +38,9 @@ class OAuth2CallbackDiagnostics(BaseModel):
     result: Literal["success", "error", "timeout"]
     auth_config_id: str | None = Field(default=None, max_length=256)
     # Optional: only the bridge page has a window.opener to report on. A timeout is reported by
-    # the parent window, which omits it rather than asserting a meaningless false.
+    # the parent window, which omits it rather than asserting a meaningless false. The bridge page
+    # also sends null when the UI cut the opener on purpose, so that success logs at INFO: only an
+    # explicit False means a lost opener.
     opener_present: bool | None = None
     target_origin: str | None = Field(default=None, max_length=256)
     post_message_attempted: bool = False
@@ -77,7 +79,8 @@ def build_oauth2_callback_diagnostics_response(payload: OAuth2CallbackDiagnostic
         f"post_message_error={_sanitize_log_value(payload.post_message_error)} "
         f"window_should_close={payload.window_should_close} "
         f"bridge_error_code={_sanitize_log_value(payload.bridge_error_code)} "
-        f"idp_error_code={_sanitize_log_value(payload.idp_error_code)}"
+        f"idp_error_code={_sanitize_log_value(payload.idp_error_code)} "
+        f"phase={_sanitize_log_value(payload.phase)}"
     )
     if payload.result == "error" or payload.opener_present is False or payload.post_message_error:
         logger.warning(message)
