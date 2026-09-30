@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-09-22T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 1, "label": "XS" },
+    "requirements_clarity": { "score": 1, "label": "XS" },
+    "technical_risk":       { "score": 2, "label": "S" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 8,
+  "size": "XS",
+  "band_range": "6-9",
+  "files_changed": 2,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Adds a LiteLLM team-provisioning call inside _initialize_enterprise_services using the asyncio.to_thread + try/except pattern already established elsewhere in main.py (e.g. recover_orphaned_workflow_states); failure is logged as a warning and does not block startup or budget-provider registration." },
+    { "dimension": "file_change_estimate", "reason": "2 files changed per diffstat: src/codemie/rest_api/main.py modified (added ~15-20 lines inside one existing function) and a new focused test module tests/codemie/rest_api/test_main_enterprise_services.py with 5 unit tests." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

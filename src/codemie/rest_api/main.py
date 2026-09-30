@@ -284,7 +284,7 @@ async def _initialize_plugin_service():
         return None
 
 
-def _initialize_enterprise_services(app: FastAPI):
+async def _initialize_enterprise_services(app: FastAPI):
     """Initialize observability and LiteLLM enterprise services."""
     observability_provider = get_observability_provider()
     observability_provider.initialize()
@@ -293,6 +293,16 @@ def _initialize_enterprise_services(app: FastAPI):
     litellm_service = initialize_litellm_from_config()
     app.state.litellm_service = litellm_service
     set_global_litellm_service(litellm_service)
+
+    if litellm_service is not None and config.LLM_PROXY_BUDGET_CHECK_ENABLED:
+        try:
+            team_provisioned = await asyncio.to_thread(litellm_service.ensure_team_exists)
+            if team_provisioned:
+                logger.info("LiteLLM codemie-projects team provisioning ensured")
+            else:
+                logger.warning("LiteLLM codemie-projects team could not be confirmed/created")
+        except Exception as e:
+            logger.warning(f"Failed to ensure LiteLLM codemie-projects team exists: {e}")
 
     if litellm_service is not None:
         from codemie.enterprise.litellm.llm_proxy_provider_adapter import LiteLLMLLMProxyProvider
@@ -789,7 +799,7 @@ async def lifespan(app: FastAPI):
         await jwks_warmup()
 
     # Initialize enterprise services
-    _initialize_enterprise_services(app)
+    await _initialize_enterprise_services(app)
 
     # Setup LiteLLM features
     _setup_litellm_features()

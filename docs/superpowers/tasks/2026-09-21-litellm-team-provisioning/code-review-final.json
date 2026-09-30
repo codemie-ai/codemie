@@ -1,0 +1,45 @@
+{
+  "decision": "approved",
+  "rationale": "Edge-case lens raised 4 candidates; 2 were dismissed after reading codemie_enterprise/litellm/service.py: ensure_team_exists() is a plain sync def (not a coroutine) and it already catches httpx.HTTPError/Exception internally and returns False rather than propagating, so the not-awaited and log-leaks-credentials claims do not hold. The remaining 2 (CR-001, CR-002) were real at the reviewed snapshot but were both fixed by commit 02f749d54 ('Run LiteLLM team provisioning off the startup event loop'): the call is now offloaded via `asyncio.to_thread`, and its boolean return value is checked to log a warning on a soft provisioning failure instead of always logging success. Acceptance lens confirms all 4 story ACs pass; standards review is intentionally out of scope for the compact profile, so its rows are na with no coverage gap.",
+  "confidence": "high",
+  "risk_flags": [],
+  "business_review": [
+    { "kind": "story-ac", "item": "AC1: calls ensure_team_exists() once at startup, immediately before budget-provider registration, gated on litellm_service present and LLM_PROXY_BUDGET_CHECK_ENABLED", "status": "pass", "notes": "main.py:296-301 sits directly before the pre-existing budget-provider registration block, under the same two-part gate." },
+    { "kind": "story-ac", "item": "AC2: startup remains idempotent across repeated runs; duplicate-creation avoidance delegated to ensure_team_exists()", "status": "pass", "notes": "try/except prevents any exception from propagating out of _initialize_enterprise_services; dedup logic lives in codemie-enterprise, out of this repo's scope." },
+    { "kind": "story-ac", "item": "AC3: if ensure_team_exists() raises, the exception is caught, a warning is logged, and budget-provider registration still proceeds", "status": "pass", "notes": "try/except at main.py:297-301 logs via logger.warning and falls through to proxy/budget registration; covered by a dedicated test." },
+    { "kind": "story-ac", "item": "AC4: skipped entirely with no behavior change when litellm_service is None or LLM_PROXY_BUDGET_CHECK_ENABLED is false", "status": "pass", "notes": "Guard at main.py:296 covers both conditions; covered by two dedicated skip tests." }
+  ],
+  "standards_review": [
+    { "kind": "commit-format", "status": "na", "notes": "Standards lens intentionally omitted for the compact review profile." },
+    { "kind": "code-quality", "status": "na", "notes": "Standards lens intentionally omitted for the compact review profile." },
+    { "kind": "security", "status": "na", "notes": "Standards lens intentionally omitted for the compact review profile." }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "fixed",
+      "file": "src/codemie/rest_api/main.py",
+      "line": 296,
+      "title": "Sync LiteLLM call blocks the async startup loop",
+      "problem": "litellm_service.ensure_team_exists() makes a blocking synchronous HTTP call (via LiteLLMAPIClient, default 5s timeout per request, two requests possible) and is invoked directly inside `async def lifespan`, which runs on the single startup event loop.",
+      "impact": "Every application startup now blocks the event loop for up to several seconds when the LiteLLM proxy is slow, unreachable, or under load, delaying readiness/liveness signals for that window; this is a newly introduced blocking call in an otherwise non-blocking startup path.",
+      "recommendation": "Offload the call, e.g. `await asyncio.to_thread(litellm_service.ensure_team_exists)`, or make `_initialize_enterprise_services` async and run the call through an executor, so the event loop is not blocked during startup.",
+      "resolution": "Fixed in commit 02f749d54: `_initialize_enterprise_services` is now `async def` and awaits `asyncio.to_thread(litellm_service.ensure_team_exists)`, so the blocking call no longer runs on the startup event loop."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "fixed",
+      "file": "src/codemie/rest_api/main.py",
+      "line": 298,
+      "title": "ensure_team_exists() return value is ignored",
+      "problem": "ensure_team_exists() returns False (not an exception) whenever the underlying check/create HTTP call fails, because it catches httpx.HTTPError and Exception internally; the new call site never inspects that return value and unconditionally logs \"LiteLLM codemie-projects team provisioning ensured\" as if it succeeded.",
+      "impact": "A soft provisioning failure (the far more likely failure mode, since HTTP errors are swallowed inside ensure_team_exists and rarely reach the outer try/except) is masked as a success in the logs, making a missing/unprovisioned team hard to detect operationally.",
+      "recommendation": "Check the boolean result and log accordingly, e.g. `if litellm_service.ensure_team_exists(): logger.info(...) else: logger.warning(\"LiteLLM codemie-projects team could not be confirmed/created\")`.",
+      "resolution": "Fixed in commit 02f749d54: the call site captures `team_provisioned = await asyncio.to_thread(...)` and branches on it, logging `logger.warning(\"LiteLLM codemie-projects team could not be confirmed/created\")` when falsy instead of unconditionally logging success. The return value carries no other business logic beyond driving this log level."
+    }
+  ]
+}
