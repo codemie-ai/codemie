@@ -12,12 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import http.client
 from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
 
 from codemie.datasource.datasources_config import STORAGE_CONFIG
+from codemie.datasource.exceptions import ConfluenceRetryExhaustedError
 from codemie.datasource.loader.confluence_loader import ConfluenceDatasourceLoader
 
 
@@ -449,14 +451,15 @@ class TestSearchContentByCqlRetry:
         assert mock_confluence_client.get.call_count == 2
 
     def test_exhausted_retries_raises(self, confluence_loader, mock_confluence_client):
-        """Continuous 504 responses exhaust the retry limit and raise HTTPError."""
+        """Continuous 504 responses exhaust the retry limit and raise ConfluenceRetryExhaustedError."""
         mock_confluence_client.get.side_effect = self._http_error(504)
 
         with patch("tenacity.nap.time.sleep"):
-            with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+            with pytest.raises(ConfluenceRetryExhaustedError) as exc_info:
                 confluence_loader._search_content_by_cql(cql="type=page")
 
-        assert exc_info.value.response.status_code == 504
+        assert isinstance(exc_info.value.__cause__, requests.exceptions.HTTPError)
+        assert exc_info.value.__cause__.response.status_code == 504
         assert mock_confluence_client.get.call_count == STORAGE_CONFIG.indexing_max_retries
 
     def test_non_retryable_error_fails_immediately(self, confluence_loader, mock_confluence_client):
@@ -490,16 +493,16 @@ class TestSearchContentByCqlRetry:
         assert mock_confluence_client.get.call_count == 2
 
     def test_exhausted_retries_with_next_url_raises(self, confluence_loader, mock_confluence_client):
-        """Continuous 504 on a next_url call exhausts retries and raises HTTPError."""
+        """Continuous 504 on a next_url call exhausts retries and raises ConfluenceRetryExhaustedError."""
         mock_confluence_client.get.side_effect = self._http_error(504)
 
         with patch("tenacity.nap.time.sleep"):
-            with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+            with pytest.raises(ConfluenceRetryExhaustedError) as exc_info:
                 confluence_loader._search_content_by_cql(
                     cql="type=page", next_url="/rest/api/content/search?cursor=abc"
                 )
 
-        assert exc_info.value.response.status_code == 504
+        assert exc_info.value.__cause__.response.status_code == 504
         assert mock_confluence_client.get.call_count == STORAGE_CONFIG.indexing_max_retries
 
     def test_non_retryable_error_with_next_url_fails_immediately(self, confluence_loader, mock_confluence_client):
@@ -579,7 +582,7 @@ class TestSearchContentByCqlRetry:
         mock_confluence_client.get.side_effect = self._http_error(504)
 
         with patch.object(confluence_logger, "error") as mock_error, patch("tenacity.nap.time.sleep"):
-            with pytest.raises(requests.exceptions.HTTPError):
+            with pytest.raises(ConfluenceRetryExhaustedError):
                 confluence_loader._search_content_by_cql(cql="type=page")
 
         assert mock_error.call_count == 1
@@ -589,21 +592,100 @@ class TestSearchContentByCqlRetry:
         assert str(STORAGE_CONFIG.indexing_max_retries) in call_repr
 
     def test_retry_predicate_transient_and_non_transient(self):
-        """_is_transient_http_error returns True for gateway errors and False for auth/not-found/non-HTTP."""
-        from codemie.datasource.loader.confluence_loader import _is_transient_http_error
+        """_is_transient_error returns True for gateway errors and False for auth/not-found/non-HTTP."""
+        from codemie.datasource.loader.confluence_loader import _is_transient_error
 
         def http_error(status_code: int) -> requests.exceptions.HTTPError:
             resp = MagicMock()
             resp.status_code = status_code
             return requests.exceptions.HTTPError(response=resp)
 
-        assert _is_transient_http_error(http_error(502))
-        assert _is_transient_http_error(http_error(503))
-        assert _is_transient_http_error(http_error(504))
-        assert not _is_transient_http_error(http_error(401))
-        assert not _is_transient_http_error(http_error(403))
-        assert not _is_transient_http_error(http_error(404))
-        assert not _is_transient_http_error(ValueError("not http"))
+        assert _is_transient_error(http_error(502))
+        assert _is_transient_error(http_error(503))
+        assert _is_transient_error(http_error(504))
+        assert not _is_transient_error(http_error(401))
+        assert not _is_transient_error(http_error(403))
+        assert not _is_transient_error(http_error(404))
+        assert not _is_transient_error(ValueError("not http"))
+
+    # --- ConnectionError retry (EPMCDME-15184) ---
+
+    @staticmethod
+    def _connection_error() -> requests.exceptions.ConnectionError:
+        from urllib3.exceptions import ProtocolError
+
+        return requests.exceptions.ConnectionError(
+            ProtocolError("Connection aborted.", http.client.RemoteDisconnected("Remote end closed connection"))
+        )
+
+    @pytest.mark.parametrize(
+        "make_exc, expected",
+        [
+            (lambda: TestSearchContentByCqlRetry._http_error(502), True),
+            (lambda: TestSearchContentByCqlRetry._http_error(503), True),
+            (lambda: TestSearchContentByCqlRetry._http_error(504), True),
+            (lambda: requests.exceptions.ConnectionError("boom"), True),
+            (lambda: requests.exceptions.ConnectTimeout("boom"), True),
+            (lambda: TestSearchContentByCqlRetry._connection_error(), True),
+            (lambda: TestSearchContentByCqlRetry._http_error(401), False),
+            (lambda: TestSearchContentByCqlRetry._http_error(403), False),
+            (lambda: requests.exceptions.SSLError("bad cert"), False),
+            (lambda: requests.exceptions.ReadTimeout("slow"), False),
+            (lambda: ValueError("nope"), False),
+        ],
+    )
+    def test_is_transient_error_predicate(self, make_exc, expected):
+        from codemie.datasource.loader.confluence_loader import _is_transient_error
+
+        assert _is_transient_error(make_exc()) is expected
+
+    def test_retries_on_connection_error_then_succeeds(self, confluence_loader, mock_confluence_client):
+        mock_confluence_client.get.side_effect = [self._connection_error(), {"results": [{"id": "1"}], "_links": {}}]
+
+        with patch("tenacity.nap.time.sleep"):
+            results, _ = confluence_loader._search_content_by_cql(cql="type=page")
+
+        assert results == [{"id": "1"}]
+        assert mock_confluence_client.get.call_count == 2
+
+    def test_connection_error_exhaustion_raises_actionable_error(self, confluence_loader, mock_confluence_client):
+        from codemie.datasource.loader.confluence_loader import logger as confluence_logger
+
+        original = self._connection_error()
+        mock_confluence_client.get.side_effect = original
+
+        with patch.object(confluence_logger, "error") as mock_error, patch("tenacity.nap.time.sleep"):
+            with pytest.raises(ConfluenceRetryExhaustedError) as exc_info:
+                confluence_loader._search_content_by_cql(cql="type=page")
+
+        attempts = STORAGE_CONFIG.indexing_max_retries
+        assert "ConnectionError" in str(exc_info.value)
+        assert str(attempts) in str(exc_info.value)
+        assert exc_info.value.__cause__ is original
+        assert mock_confluence_client.get.call_count == attempts
+        call_repr = str(mock_error.call_args)
+        assert "ConnectionError" in call_repr
+        assert "exhausted" in call_repr
+
+    @pytest.mark.parametrize(
+        "make_exc, expected_type",
+        [
+            (lambda: TestSearchContentByCqlRetry._http_error(401), requests.exceptions.HTTPError),
+            (lambda: requests.exceptions.SSLError("bad cert"), requests.exceptions.SSLError),
+        ],
+    )
+    def test_non_transient_error_raised_unwrapped(
+        self, confluence_loader, mock_confluence_client, make_exc, expected_type
+    ):
+        mock_confluence_client.get.side_effect = make_exc()
+
+        with patch("tenacity.nap.time.sleep") as mock_sleep:
+            with pytest.raises(expected_type) as exc_info:
+                confluence_loader._search_content_by_cql(cql="type=page")
+
+        assert type(exc_info.value) is expected_type
+        assert mock_confluence_client.get.call_count == 1
+        mock_sleep.assert_not_called()
 
     def test_retry_count_wired_to_storage_config(self):
         """The @retry decorator's stop_after_attempt is wired to STORAGE_CONFIG.indexing_max_retries."""
@@ -681,7 +763,7 @@ class TestLazyLoadRetryIntegration:
         assert mock_confluence_client.get.call_count == 2
 
     def test_exhausted_retries_mid_pagination_raises(self, loader, mock_confluence_client):
-        """Page 1 succeeds; page 2 always 504 — HTTPError raised after retries exhausted."""
+        """Page 1 succeeds; page 2 always 504 — ConfluenceRetryExhaustedError raised after retries exhausted."""
         mock_confluence_client.get.side_effect = [
             {
                 "results": [self._make_page("1")],
@@ -690,10 +772,10 @@ class TestLazyLoadRetryIntegration:
         ] + [self._http_error(504)] * STORAGE_CONFIG.indexing_max_retries
 
         with patch("tenacity.nap.time.sleep"):
-            with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+            with pytest.raises(ConfluenceRetryExhaustedError) as exc_info:
                 list(loader.lazy_load())
 
-        assert exc_info.value.response.status_code == 504
+        assert exc_info.value.__cause__.response.status_code == 504
         assert mock_confluence_client.get.call_count == 1 + STORAGE_CONFIG.indexing_max_retries
 
     def test_non_retryable_mid_pagination_fails_immediately(self, loader, mock_confluence_client):
@@ -713,3 +795,119 @@ class TestLazyLoadRetryIntegration:
         assert exc_info.value.response.status_code == 403
         assert mock_confluence_client.get.call_count == 2  # 1 page-1 success + 1 immediate 403
         mock_sleep.assert_not_called()
+
+
+class TestIsPublicPageRetry:
+    """Retry behaviour of the restrictions call made by is_public_page."""
+
+    _open = {"read": {"restrictions": {"user": {"results": []}, "group": {"results": []}}}}
+    _restricted = {"read": {"restrictions": {"user": {"results": [{"a": 1}]}, "group": {"results": []}}}}
+
+    @staticmethod
+    def _http_error(status_code: int) -> requests.exceptions.HTTPError:
+        response = MagicMock()
+        response.status_code = status_code
+        return requests.exceptions.HTTPError(response=response)
+
+    @staticmethod
+    def _make_page(page_id: str) -> dict:
+        return TestLazyLoadRetryIntegration._make_page(page_id)
+
+    @pytest.fixture
+    def loader(self, mock_confluence_client):
+        from langchain_community.document_loaders.confluence import ContentFormat
+
+        with patch("langchain_community.document_loaders.ConfluenceLoader.__init__", return_value=None):
+            loader = ConfluenceDatasourceLoader(url="https://confluence.example.com", username="u", api_key="k")
+        loader.confluence = mock_confluence_client
+        loader.base_url = "https://confluence.example.com"
+        loader.cql = "type=page AND space=TEST"
+        loader.content_format = ContentFormat.VIEW
+        loader.max_pages = 1000
+        loader.limit = 3
+        loader.include_archived_content = False
+        loader.include_restricted_content = False
+        loader.include_attachments = False
+        loader.include_comments = False
+        loader.include_labels = False
+        loader.ocr_languages = None
+        loader.keep_markdown_format = False
+        loader.keep_newlines = False
+        return loader
+
+    @staticmethod
+    def _conn_error():
+        from urllib3.exceptions import ProtocolError
+
+        return requests.exceptions.ConnectionError(
+            ProtocolError("Connection aborted.", http.client.RemoteDisconnected("Remote end closed connection"))
+        )
+
+    def test_retries_connection_error_then_returns_same_bool(self, loader, mock_confluence_client):
+        mock_confluence_client.get_all_restrictions_for_content.side_effect = [self._conn_error(), self._open]
+
+        with patch("tenacity.nap.time.sleep"):
+            assert loader.is_public_page({"id": "1", "status": "current"}) is True
+
+        assert mock_confluence_client.get_all_restrictions_for_content.call_count == 2
+
+    def test_restricted_page_returns_false_after_retry(self, loader, mock_confluence_client):
+        mock_confluence_client.get_all_restrictions_for_content.side_effect = [self._http_error(504), self._restricted]
+
+        with patch("tenacity.nap.time.sleep"):
+            assert loader.is_public_page({"id": "1", "status": "current"}) is False
+
+        assert mock_confluence_client.get_all_restrictions_for_content.call_count == 2
+
+    def test_non_current_page_short_circuits(self, loader, mock_confluence_client):
+        assert loader.is_public_page({"id": "1", "status": "draft"}) is False
+        mock_confluence_client.get_all_restrictions_for_content.assert_not_called()
+
+    def test_exhaustion_raises_actionable_error(self, loader, mock_confluence_client):
+        mock_confluence_client.get_all_restrictions_for_content.side_effect = self._conn_error()
+
+        with patch("tenacity.nap.time.sleep"):
+            with pytest.raises(ConfluenceRetryExhaustedError) as exc_info:
+                loader.is_public_page({"id": "1", "status": "current"})
+
+        assert "ConnectionError" in str(exc_info.value)
+        assert mock_confluence_client.get_all_restrictions_for_content.call_count == STORAGE_CONFIG.indexing_max_retries
+
+    @pytest.mark.parametrize(
+        "make_exc, expected_type",
+        [
+            (lambda: TestIsPublicPageRetry._http_error(403), requests.exceptions.HTTPError),
+            (lambda: requests.exceptions.SSLError("bad cert"), requests.exceptions.SSLError),
+        ],
+    )
+    def test_non_transient_raised_unwrapped(self, loader, mock_confluence_client, make_exc, expected_type):
+        mock_confluence_client.get_all_restrictions_for_content.side_effect = make_exc()
+
+        with patch("tenacity.nap.time.sleep") as mock_sleep:
+            with pytest.raises(expected_type) as exc_info:
+                loader.is_public_page({"id": "1", "status": "current"})
+
+        assert type(exc_info.value) is expected_type
+        assert mock_confluence_client.get_all_restrictions_for_content.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_lazy_load_continues_after_restrictions_retry(self, loader, mock_confluence_client):
+        mock_confluence_client.get.return_value = {
+            "results": [self._make_page("1"), self._make_page("2"), self._make_page("3")],
+            "_links": {},
+        }
+        mock_confluence_client.get.side_effect = [
+            mock_confluence_client.get.return_value,
+            {"results": [], "_links": {}},
+        ]
+        mock_confluence_client.get_all_restrictions_for_content.side_effect = [
+            self._open,
+            self._conn_error(),
+            self._open,
+            self._open,
+        ]
+
+        with patch("tenacity.nap.time.sleep"):
+            result = list(loader.lazy_load())
+
+        assert [d.metadata["title"] for d in result] == ["Page 1", "Page 2", "Page 3"]

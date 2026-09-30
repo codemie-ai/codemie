@@ -13,39 +13,65 @@
 # limitations under the License.
 
 import logging
-from typing import Any, List, Dict, Optional, Iterator
+from typing import Any, List, Dict, NoReturn, Optional, Iterator
 
 import requests
 from langchain_community.document_loaders import ConfluenceLoader
 from langchain_core.documents import Document
-from tenacity import before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_exponential
+from tenacity import RetryCallState, before_sleep_log, retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from codemie.datasource.loader.base_datasource_loader import BaseDatasourceLoader
 from codemie.configs import logger
 from codemie.datasource.datasources_config import CONFLUENCE_CONFIG, STORAGE_CONFIG
+from codemie.datasource.exceptions import ConfluenceRetryExhaustedError
 
 # Captured at import time; changing CONFLUENCE_CONFIG.retry_transient_status_codes at runtime has no effect
 # until the application restarts (the @retry decorator and this set are both evaluated once at module load).
 _TRANSIENT_HTTP_STATUS_CODES: frozenset[int] = frozenset(CONFLUENCE_CONFIG.retry_transient_status_codes)
 
 
-def _is_transient_http_error(exc: BaseException) -> bool:
+def _is_transient_error(exc: BaseException) -> bool:
+    """True for transient gateway HTTP statuses and connection-level failures.
+
+    SSLError subclasses ConnectionError but is a configuration problem, so it is never retried.
+    """
+    if isinstance(exc, requests.exceptions.SSLError):
+        return False
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return True
     return (
         isinstance(exc, requests.exceptions.HTTPError)
         and getattr(exc.response, "status_code", None) in _TRANSIENT_HTTP_STATUS_CODES
     )
 
 
-def _log_and_reraise_exhausted(retry_state: Any) -> None:
+def _log_and_reraise_exhausted(retry_state: RetryCallState) -> NoReturn:
     exc = retry_state.outcome.exception()
-    status_code = getattr(getattr(exc, "response", None), "status_code", "unknown")
+    status_code = getattr(getattr(exc, "response", None), "status_code", None)
+    status_note = f" (HTTP status: {status_code})" if status_code is not None else ""
+    error = f"{type(exc).__name__}{status_note}"
     logger.error(
-        "Retries exhausted for %s after %d attempts — last HTTP status: %s",
+        "Retries exhausted for %s after %d attempts — last error: %s",
         retry_state.fn.__qualname__,
         retry_state.attempt_number,
-        status_code,
+        error,
     )
-    raise exc
+    raise ConfluenceRetryExhaustedError(
+        f"{error} after {retry_state.attempt_number} attempts (retries exhausted): {exc}"
+    ) from exc
+
+
+_confluence_retry = retry(
+    stop=stop_after_attempt(STORAGE_CONFIG.indexing_max_retries),
+    wait=wait_exponential(
+        multiplier=STORAGE_CONFIG.indexing_error_retry_wait_multiplier,
+        min=STORAGE_CONFIG.indexing_error_retry_wait_min_seconds,
+        max=STORAGE_CONFIG.indexing_error_retry_wait_max_seconds,
+    ),
+    retry=retry_if_exception(_is_transient_error),
+    retry_error_callback=_log_and_reraise_exhausted,
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+)
 
 
 class ConfluenceDatasourceLoader(ConfluenceLoader, BaseDatasourceLoader):
@@ -61,17 +87,7 @@ class ConfluenceDatasourceLoader(ConfluenceLoader, BaseDatasourceLoader):
             self.SKIPPED_DOCUMENTS_KEY: total_documents - pages_count,
         }
 
-    @retry(
-        stop=stop_after_attempt(STORAGE_CONFIG.indexing_max_retries),
-        wait=wait_exponential(
-            multiplier=STORAGE_CONFIG.indexing_error_retry_wait_multiplier,
-            min=STORAGE_CONFIG.indexing_error_retry_wait_min_seconds,
-            max=STORAGE_CONFIG.indexing_error_retry_wait_max_seconds,
-        ),
-        retry=retry_if_exception(_is_transient_http_error),
-        retry_error_callback=_log_and_reraise_exhausted,
-        before_sleep=before_sleep_log(logger, logging.WARNING),
-    )
+    @_confluence_retry
     def _search_content_by_cql(
         self,
         cql: str,
@@ -96,6 +112,11 @@ class ConfluenceDatasourceLoader(ConfluenceLoader, BaseDatasourceLoader):
             response = self.confluence.get(url, params=params)
 
         return response.get("results", []), response.get("_links", {}).get("next", "")
+
+    @_confluence_retry
+    def is_public_page(self, page: dict) -> bool:
+        """Retries transient failures of the page-restrictions call; the check itself is upstream's."""
+        return super().is_public_page(page)
 
     def lazy_load(self) -> Iterator[Document]:
         """Stream the CQL result set, following the `_links.next` URL Confluence returns.

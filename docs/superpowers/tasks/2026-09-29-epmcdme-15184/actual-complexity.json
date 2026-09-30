@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "generated": "2026-09-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 3, "label": "M" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 2, "label": "S" }
+  },
+  "total": 12,
+  "size": "S",
+  "band_range": "10-14",
+  "files_changed": 2,
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Retry/backoff logic (tenacity) wraps external Confluence calls in ConfluenceDatasourceLoader (_search_content_by_cql, is_public_page); transient-vs-permanent classification (SSLError explicitly not retried) and a new ConfluenceRetryExhaustedError need edge-case coverage. Reuses existing STORAGE_CONFIG retry settings, so only a modest divergence from precedent." },
+    { "dimension": "component_scope", "reason": "Single component (confluence_loader.py): retry decorator, transient-error predicate, exhausted-callback, and an is_public_page override; no layer boundary crossed beyond the loader-to-Confluence call." }
+  ],
+  "red_flags_applied": [],
+  "split_recommendation": null
+}

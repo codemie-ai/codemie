@@ -129,3 +129,7 @@ class NoChunksImportedException(Exception):
         self.processed_documents = processed_documents
         message = self.ERROR_MSG.format(datasource_name=datasource_name)
         super().__init__(message, *args, **kwargs)
+
+
+class ConfluenceRetryExhaustedError(Exception):
+    """Raised when a transient Confluence failure persists after all retry attempts."""

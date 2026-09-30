@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "task": "Extend Confluence loader retry to cover transient ConnectionError/RemoteDisconnected (including get_all_restrictions_for_content) alongside 502/503/504, with actionable exhaustion errors and tests.",
+  "generated": "2026-09-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 2, "label": "S" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 2, "label": "S" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 1, "label": "XS" }
+  },
+  "total": 12,
+  "size": "S",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "writing-plans",
+  "key_reasoning": [
+    { "dimension": "technical_risk", "reason": "Closest pattern is the tenacity @retry on ConfluenceDatasourceLoader._search_content_by_cql, but it does not cover the failing call get_all_restrictions_for_content, which runs inside upstream langchain_community ConfluenceLoader.process_pages. The fix needs a wrap or override of upstream behaviour. The predicate must retry ConnectionError but never auth/authz errors. AC enumerates edge and error cases (502/503/504, RemoteDisconnected, exhaustion) with no existing parameterized test template, so Technical Risk is bumped from M to L." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped from M to L: enumerated edge/error AC cases with no existing test template, and the retry must exclude auth/authz errors"
+  ],
+  "split_recommendation": null
+}
