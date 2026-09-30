@@ -39,7 +39,6 @@ from codemie_tools.notification.email.models import EmailToolConfig
 from codemie_tools.notification.telegram.models import TelegramConfig
 from codemie_tools.open_api.models import OpenApiConfig
 from codemie_tools.qa.zephyr.models import ZephyrConfig
-from codemie_tools.qa.zephyr_squad.models import ZephyrSquadConfig
 from codemie_tools.qa.xray.models import XrayConfig
 from codemie_tools.report_portal.models import ReportPortalConfig
 from sqlalchemy.orm import attributes
@@ -113,9 +112,6 @@ class SettingsService(BaseSettingsService):
     PASSWORD: str = "password"
     SECURE_HEADER_VALUE: str = "secure_header_value"
     WEBHOOK_ID: str = "webhook_id"
-    ZEPHYR_SQUAD_ACCOUNT_ID: str = "account_id"
-    ZEPHYR_SQUAD_ACCESS_KEY: str = "access_key"
-    ZEPHYR_SQUAD_SECRET_KEY: str = "secret_key"
     XRAY_BASE_URL: str = "base_url"
     XRAY_CLIENT_ID: str = "client_id"
     XRAY_CLIENT_SECRET: str = "client_secret"
@@ -149,8 +145,6 @@ class SettingsService(BaseSettingsService):
         "openapi_api_key",
         PASSWORD,
         SECURE_HEADER_VALUE,
-        ZEPHYR_SQUAD_ACCESS_KEY,
-        ZEPHYR_SQUAD_SECRET_KEY,
         ENV_VARS,
         AUTH_VALUE,
         "private_key",  # GitHub App private key
@@ -178,11 +172,6 @@ class SettingsService(BaseSettingsService):
         DATABASE_INFLUXDB_VERIFY_SSL: "verify_ssl",
     }
     ZEPHYR_FIELDS = {URL: "url", TOKEN: "token"}
-    ZEPHYR_SQUAD_FIELDS = {
-        ZEPHYR_SQUAD_ACCOUNT_ID: "account_id",
-        ZEPHYR_SQUAD_ACCESS_KEY: "access_key",
-        ZEPHYR_SQUAD_SECRET_KEY: "secret_key",
-    }
     XRAY_FIELDS = {
         XRAY_BASE_URL: "base_url",
         XRAY_CLIENT_ID: "client_id",
@@ -249,7 +238,6 @@ class SettingsService(BaseSettingsService):
         OpenApiConfig: CredentialTypes.OPEN_API,
         ReportPortalConfig: CredentialTypes.REPORT_PORTAL,
         ZephyrConfig: CredentialTypes.ZEPHYR_SCALE,
-        ZephyrSquadConfig: CredentialTypes.ZEPHYR_SQUAD,
         XrayConfig: CredentialTypes.XRAY,
         ElasticConfig: CredentialTypes.ELASTIC,
         SQLConfig: CredentialTypes.SQL,
@@ -1734,24 +1722,6 @@ class SettingsService(BaseSettingsService):
             tool_config=tool_config,
             required_fields=cls.ZEPHYR_FIELDS,
             credential_class=ZephyrConfig,
-        )
-
-    @classmethod
-    def get_zephyr_squad_creds(
-        cls,
-        user_id: str,
-        project_name: str = None,
-        assistant_id: Optional[str] = None,
-        tool_config: Optional[ToolConfig] = None,
-    ) -> ZephyrSquadConfig:
-        return cls.get_credentials(
-            credential_type=CredentialTypes.ZEPHYR_SQUAD,
-            user_id=user_id,
-            project_name=project_name,
-            assistant_id=assistant_id,
-            tool_config=tool_config,
-            required_fields=cls.ZEPHYR_SQUAD_FIELDS,
-            credential_class=ZephyrSquadConfig,
         )
 
     @classmethod

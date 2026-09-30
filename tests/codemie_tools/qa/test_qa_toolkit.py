@@ -14,7 +14,6 @@
 
 from codemie_tools.base.models import ToolSet
 from codemie_tools.qa.toolkit import QualityAssuranceToolkit, QualityAssuranceToolkitUI
-from codemie_tools.qa.zephyr_squad.tools_vars import ZEPHYR_SQUAD_TOOL
 
 
 class TestQualityAssuranceToolkit:
@@ -22,7 +21,7 @@ class TestQualityAssuranceToolkit:
         toolkit_ui = QualityAssuranceToolkit.get_definition()
         assert isinstance(toolkit_ui, QualityAssuranceToolkitUI)
         assert toolkit_ui.toolkit == ToolSet.QUALITY_ASSURANCE
-        assert len(toolkit_ui.tools) == 5
+        assert len(toolkit_ui.tools) == 4
         assert toolkit_ui.label == ToolSet.QUALITY_ASSURANCE.value
 
 
@@ -33,22 +32,12 @@ class TestQualityAssuranceToolkitUI:
 
     def test_tools_property(self):
         toolkit_ui = QualityAssuranceToolkitUI()
-        assert len(toolkit_ui.tools) == 5
+        assert len(toolkit_ui.tools) == 4
 
         # Check that the tools are correctly defined
         tool_names = [tool.name for tool in toolkit_ui.tools]
         assert "ZephyrScale" in tool_names
-        assert "ZephyrSquad" in tool_names
+        assert "ZephyrSquad" not in tool_names
         assert "XrayGetTests" in tool_names
         assert "XrayCreateTest" in tool_names
         assert "XrayExecuteGraphQL" in tool_names
-
-    def test_zephyr_squad_marked_deprecated(self):
-        toolkit_ui = QualityAssuranceToolkitUI()
-        by_name = {tool.name: tool for tool in toolkit_ui.tools}
-        assert by_name["ZephyrSquad"].deprecated is True
-        for name in ("ZephyrScale", "XrayGetTests", "XrayCreateTest", "XrayExecuteGraphQL"):
-            assert by_name[name].deprecated is False, f"{name} should not be deprecated"
-
-    def test_zephyr_squad_metadata_deprecated_flag(self):
-        assert ZEPHYR_SQUAD_TOOL.deprecated is True

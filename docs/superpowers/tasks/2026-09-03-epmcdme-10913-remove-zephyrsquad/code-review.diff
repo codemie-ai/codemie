@@ -1,0 +1,1670 @@
+diff --git a/README.md b/README.md
+index 41d24b49a..00fd32926 100644
+--- a/README.md
++++ b/README.md
+@@ -315,7 +315,7 @@ Two-layer design:
+ | Cloud | `src/codemie_tools/cloud/` | AWS (S3, Bedrock, KMS), Azure (Blob, KeyVault), GCP (GCS, Vertex AI), Kubernetes |
+ | VCS / Git | `src/codemie_tools/core/vcs/` | GitHub, GitLab, Bitbucket, Azure DevOps Git |
+ | Project Management | `src/codemie_tools/core/project_management/` | Confluence, Jira |
+-| QA | `src/codemie_tools/qa/` | X-ray, Zephyr Scale, Zephyr Squad |
++| QA | `src/codemie_tools/qa/` | X-ray, Zephyr Scale |
+ | Data Management | `src/codemie_tools/data_management/` | Elasticsearch, SQL, file system, code executor |
+ | File Analysis | `src/codemie_tools/file_analysis/` | CSV, DOCX, PDF, PPTX, XLSX |
+ | Azure DevOps | `src/codemie_tools/azure_devops/` | Wiki, Work Items, Test Plans |
+diff --git a/docs/superpowers/tasks/2026-09-03-epmcdme-10913-remove-zephyrsquad/plan.md b/docs/superpowers/tasks/2026-09-03-epmcdme-10913-remove-zephyrsquad/plan.md
+new file mode 100644
+index 000000000..5d1a40b7a
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-09-03-epmcdme-10913-remove-zephyrsquad/plan.md
+@@ -0,0 +1,92 @@
++# Plan: Remove ZephyrSquad integration entirely (backend)
++
++Ticket: EPMCDME-10913 (reopened). Product owner (Yana Asadchaya) explicitly rejected the
++prior "deprecate" approach (merged MR codemie!3904) and asked for total removal: "Let's
++just totally remove ZephyrSquad from all app places and that's all." Confirmed: zero prod
++usage, ZephyrSquad service itself no longer exists, no backward compatibility required.
++
++Decision on the DB-level risk flagged by research (Section 6 of technical-analysis.md):
++`credential_type` is a native Postgres ENUM. Since the PO confirmed zero prod rows and
++explicitly said no backward compatibility is needed, we do a full removal: drop the
++`ZEPHYR_SQUAD` label from the `credentialtypes` enum via a `sync_enum_values` migration,
++matching the existing per-migration pattern. This is what "totally remove... that's all"
++means at the DB layer, not an inert leftover enum value forever.
++
++## Task 1 — Delete the ZephyrSquad tool implementation and catalog registration
++
++Test-first: yes — `test_qa_toolkit.py::test_get_definition` and `test_tools_property`
++currently assert `len(toolkit_ui.tools) == 5` and `"ZephyrSquad" in tool_names`; update
++these first to assert `== 4` and absence, confirm they fail (RED) against unmodified
++`toolkit.py`, then remove the registration to make them pass (GREEN).
++
++- Delete `src/codemie_tools/qa/zephyr_squad/` (whole directory: `__init__.py`,
++  `tools_vars.py`, `models.py`, `tools.py`, `api_wrapper.py`).
++- `src/codemie_tools/qa/toolkit.py`: remove the `ZephyrSquadGenericTool`/`ZEPHYR_SQUAD_TOOL`
++  import and its `Tool.from_metadata(...)` registration.
++- `src/codemie_tools/base/models.py`: remove `deprecated: Optional[bool] = False` from
++  `ToolMetadata` and `Tool`, and its propagation in `Tool.from_metadata` (confirmed zero
++  other consumers).
++- Delete `tests/codemie_tools/qa/zephyr_squad/` (whole directory).
++- Delete `tests/codemie_tools/base/test_models_deprecated_flag.py`.
++- `tests/codemie_tools/qa/test_qa_toolkit.py`: remove `ZEPHYR_SQUAD_TOOL` import (line 17),
++  delete `test_zephyr_squad_marked_deprecated` and `test_zephyr_squad_metadata_deprecated_flag`,
++  update the two count/membership assertions.
++
++## Task 2 — Remove ZephyrSquad from the settings/credentials service layer
++
++Test-first: yes — `test_settings_request_validator.py`'s deprecated-registry block and the
++4 router "zephyr_squad_blocked" tests currently pass against the deprecation mechanism;
++after deletion they must be removed (they'd otherwise fail to collect once
++`CredentialTypes.ZEPHYR_SQUAD` / `DEPRECATED_CREDENTIAL_TYPES` no longer exist). Add one
++generic-invalid-credential-type test if none remains post-deletion, confirming the
++routers still 422 on a bogus `credential_type` — write/verify that test first.
++
++- `src/codemie/service/settings/settings_request_validator.py`: remove
++  `DEPRECATED_CREDENTIAL_TYPES` registry and `validate_credential_type_not_deprecated`;
++  keep the `CredentialTypes` import if other code in the file still needs it (verify).
++- `src/codemie/rest_api/routers/user_settings.py` and `project_settings.py`: remove the
++  `validate_credential_type_not_deprecated` import and its 2 call sites each (create +
++  update).
++- `src/codemie/service/settings/settings.py`: remove `ZephyrSquadConfig` import; the
++  `ZEPHYR_SQUAD_ACCOUNT_ID`/`ZEPHYR_SQUAD_ACCESS_KEY`/`ZEPHYR_SQUAD_SECRET_KEY` constants;
++  their `LIST_OF_SENSITIVE_FIELDS` entries; `ZEPHYR_SQUAD_FIELDS`; the
++  `ZephyrSquadConfig: CredentialTypes.ZEPHYR_SQUAD` entry in `__CREDENTIAL_CONFIG_TO_TYPE`;
++  and the dead `get_zephyr_squad_creds()` method.
++- `src/codemie/service/settings/settings_tester.py`: remove `ZephyrSquadConfig`/
++  `ZephyrSquadGenericTool` imports, the `CredentialTypes.ZEPHYR_SQUAD` dispatch entry, and
++  `_test_zephyr_squad()`.
++- `src/codemie_tools/base/models.py`: remove `CredentialTypes.ZEPHYR_SQUAD` enum member.
++- Delete matching test blocks: `test_settings_request_validator.py` lines ~25,27,344-386;
++  `test_user_settings.py` `ZEPHYR_SQUAD_DEPRECATION_MESSAGE` + both blocked tests;
++  `test_project_settings.py` same pattern.
++
++## Task 3 — Drop the DB enum label
++
++Test-first: no — this is a schema migration, verified by running it locally against the
++dev DB and confirming `\dT+ credentialtypes` no longer lists `ZephyrSquad`, plus that
++existing settings rows (none expected) still deserialize.
++
++- Add a new Alembic migration using `op.sync_enum_values(...)` for the `credentialtypes`
++  enum, following the pattern in `e03e516e00da_add_xray_credential_type.py` etc., but
++  removing `ZephyrSquad` from the value list instead of adding one.
++- Run the migration locally; confirm no data-rewrite error (expected, since zero rows use
++  this value).
++
++## Task 4 — Cosmetic cleanup
++
++Test-first: no.
++
++- `README.md:318`: drop "Zephyr Squad" from the QA toolkit description list.
++- Optional: reword the `"ZephyrSquad"` sample string in
++  `search_and_rerank/tool.py`/its test to any other camelCase example — purely cosmetic,
++  skip if it risks unrelated churn.
++- Verify `config/customer/customer-config.yaml:389-391` and `pyproject.toml:141`
++  (`zephyr-python-api`) per the research risk notes before touching — leave alone if
++  shared with Zephyr Scale or actually unused-but-unconfirmed (favor not breaking Zephyr
++  Scale over a marginal cleanup).
++
++## Out of scope
++
++- Zephyr Scale / Zephyr Cloud (`_ZEPHYR_CLOUD`) — different, active integration, untouched.
++- Coordinating with the UI removal (parallel sdlc-light run in codemie-ui, same branch
++  name `EPMCDME-10913_remove-zephyrsquad`) — cross-link MRs at the end.
+diff --git a/docs/superpowers/tasks/2026-09-03-epmcdme-10913-remove-zephyrsquad/technical-analysis.md b/docs/superpowers/tasks/2026-09-03-epmcdme-10913-remove-zephyrsquad/technical-analysis.md
+new file mode 100644
+index 000000000..3455c4578
+--- /dev/null
++++ b/docs/superpowers/tasks/2026-09-03-epmcdme-10913-remove-zephyrsquad/technical-analysis.md
+@@ -0,0 +1,193 @@
++# Technical Research
++
++**Task**: zephyrsquad credential-types tool-catalog integrations deprecation
++**Generated**: 2026-09-03
++**Research path**: filesystem
++
++---
++
++## 1. Original Context
++
++Fully remove the ZephyrSquad integration/tool from the CodeMie backend (repo: codemie, currently checked out at /Users/oleg_sotnichenko/codemie-dev/codemie-13968, branch EPMCDME-10913_remove-zephyrsquad). Product owner explicitly wants total removal — no deprecation flag, no backward compatibility, no data migration (no prod usage exists). This supersedes a previously-merged "deprecate" approach (MR codemie!3904) that added: a `deprecated: bool` field to `ToolMetadata`/`Tool`, marked `ZEPHYR_SQUAD_TOOL` as deprecated, and added a `DEPRECATED_CREDENTIAL_TYPES` registry + `validate_credential_type_not_deprecated` check in `settings_request_validator.py` that blocks writes for deprecated credential types with a 410.
++
++Find and document EVERY place ZephyrSquad appears in the backend:
++- The tool implementation directory (likely `codemie_tools/qa/zephyr_squad/` or similar — tools_vars.py, tools.py, models, etc.)
++- Tool catalog registration (wherever tools are registered/listed for assistants — this is what shows up in "tools on assistant edit page")
++- `CredentialTypes` enum (ZEPHYR_SQUAD member) and every place that enum is matched/dispatched on (settings routers, credential validation, integration filters — this is what shows up in "filters dropdown on integrations page")
++- The `deprecated` field additions from MR 3904 in `codemie_tools/base/models.py` and `Tool.from_metadata` — determine whether `deprecated` is used by anything OTHER than ZephyrSquad; if ZephyrSquad is its only user, the field itself should be removable
++- The `DEPRECATED_CREDENTIAL_TYPES` registry and `validate_credential_type_not_deprecated` in `settings_request_validator.py` — determine whether other credential types are in this registry; if ZephyrSquad was the only entry, the whole mechanism can be removed
++- Tests referencing ZephyrSquad or the deprecated-credential-type mechanism (unit tests, router tests, QA toolkit tests)
++- Any config/env vars, docs, README, or fixture data mentioning ZephyrSquad
++- Any DB enum/migration referencing ZEPHYR_SQUAD (note: no migration needed per product decision, but flag if the enum is used in a DB column type — e.g. a Postgres enum type that would need an ALTER if we drop the value, vs a plain string column which is fine to just stop using)
++
++Report exact file paths and line ranges for each hit, grouped by concern (tool implementation / catalog registration / credential type enum & validators / deprecated-flag mechanism / tests / docs). Call out anything that looks risky to remove blind (e.g. shared code paths, other credential types depending on the same generic mechanism).
++
++---
++
++## 2. Codebase Findings
++
++### Existing Implementations
++
++**Tool implementation directory — `src/codemie_tools/qa/zephyr_squad/` (delete whole package):**
++- `src/codemie_tools/qa/zephyr_squad/__init__.py:1` — package marker
++- `src/codemie_tools/qa/zephyr_squad/tools_vars.py:1-48` — `ZEPHYR_SQUAD_TOOL` `ToolMetadata` definition, including `deprecated=True` at line 47
++- `src/codemie_tools/qa/zephyr_squad/models.py:1-54` — `ZephyrSquadConfig`, `ZephyrSquadToolInput`
++- `src/codemie_tools/qa/zephyr_squad/tools.py:1-68` — `ZephyrSquadGenericTool` (the `CodeMieTool` implementation)
++- `src/codemie_tools/qa/zephyr_squad/api_wrapper.py:1-206` — `ZephyrRestAPI`, a JWT-signed REST client (uses `jwt`, `requests`)
++
++**Tool catalog registration:**
++- `src/codemie_tools/qa/toolkit.py:21-22,31` — imports `ZephyrSquadGenericTool` / `ZEPHYR_SQUAD_TOOL` and registers `Tool.from_metadata(ZEPHYR_SQUAD_TOOL, ...)` inside `QualityAssuranceToolkitUI.tools`. This is the exact list that renders on the assistant tool-edit page.
++
++**Credential type enum and dispatch:**
++- `src/codemie_tools/base/models.py:97` — `CredentialTypes.ZEPHYR_SQUAD = "ZephyrSquad"` enum member. Sibling `_ZEPHYR_CLOUD = "ZephyrCloud"  # Deprecated` at line 96 is an unrelated, older, purely-cosmetic deprecation (underscore-prefix convention, no API flag) — leave it alone, out of scope.
++- `src/codemie/service/settings/settings.py:42` — imports `ZephyrSquadConfig`
++- `src/codemie/service/settings/settings.py:110-112` — `ZEPHYR_SQUAD_ACCOUNT_ID` / `ZEPHYR_SQUAD_ACCESS_KEY` / `ZEPHYR_SQUAD_SECRET_KEY` field-name constants (these are dict-key names for DB-backed settings fields, not OS env vars)
++- `src/codemie/service/settings/settings.py:146-147` — access/secret key added to `LIST_OF_SENSITIVE_FIELDS`
++- `src/codemie/service/settings/settings.py:175-179` — `ZEPHYR_SQUAD_FIELDS` mapping dict
++- `src/codemie/service/settings/settings.py:246` — `ZephyrSquadConfig: CredentialTypes.ZEPHYR_SQUAD` entry in `__CREDENTIAL_CONFIG_TO_TYPE`
++- `src/codemie/service/settings/settings.py:1654-1670` — `get_zephyr_squad_creds()` classmethod. **Confirmed dead code** — no callers found anywhere in `src/`; the real runtime path is the generic `SettingsService.get_config(config_class)`. Safe to delete without touching a live call chain.
++- `src/codemie/service/settings/settings_tester.py:40-41` — imports `ZephyrSquadConfig` / `ZephyrSquadGenericTool`
++- `src/codemie/service/settings/settings_tester.py:93` — `CredentialTypes.ZEPHYR_SQUAD: SettingsTester._test_zephyr_squad` dispatch entry
++- `src/codemie/service/settings/settings_tester.py:132-133` — `_test_zephyr_squad()` method
++
++**Cosmetic/no functional dependency:**
++- `src/codemie/service/search_and_rerank/tool.py:255,257,268` — docstring example text uses the literal string `"ZephyrSquad"` purely as a tokenization/example sample; no functional dependency on the tool existing.
++
++### Architecture and Layers Affected
++
++- **Tool implementation layer** — `codemie_tools/qa/zephyr_squad/*` (LangChain-style `CodeMieTool` + Pydantic config/input models + raw REST client)
++- **Tool catalog / toolkit registration layer** — `codemie_tools/qa/toolkit.py`, `codemie_tools/base/models.py`
++- **Settings/credentials service layer** — `codemie/service/settings/settings.py`, `settings_tester.py`
++- **API validation layer** — `codemie/service/settings/settings_request_validator.py` (`DEPRECATED_CREDENTIAL_TYPES` + `validate_credential_type_not_deprecated`)
++- **REST router layer** — `codemie/rest_api/routers/user_settings.py`, `project_settings.py`
++- **Persistence layer** — SQLModel `Settings.credential_type` column backed by a native Postgres ENUM type (`credentialtypes`), plus its Alembic migration history
++- **Search/indexing layer** — `search_and_rerank/tool.py` (cosmetic docstring reference only, no functional coupling)
++
++### Integration Points
++
++- Toolkit registration pattern: `Tool.from_metadata(TOOL_METADATA_CONSTANT, tool_class=ToolClass)` inside a `ToolKit` subclass — mirrored by sibling `qa/zephyr` (Zephyr Scale, **kept, do not touch**) and `qa/xray` packages. Naming collision risk: do not confuse `zephyr` (Zephyr Scale) with `zephyr_squad` (removal target).
++- Credential dispatch chain: `CredentialTypes` enum member → per-type `*_FIELDS` mapping dict → `__CREDENTIAL_CONFIG_TO_TYPE` dict (config class → enum) → generic `SettingsService.get_config(ConfigClass)` resolves stored settings at runtime.
++- `SettingsTester` dispatch: a `CredentialTypes -> callable` dict (`settings_tester.py:93` area) maps to a `_test_<tool>()` instance method that instantiates the tool and calls `.healthcheck()`.
++- `validate_credential_type_not_deprecated` call sites (4 total — 2 routers × create + update):
++  - `src/codemie/rest_api/routers/user_settings.py:34` (import), `:133` (create), `:176` (update)
++  - `src/codemie/rest_api/routers/project_settings.py:33` (import), `:95` (create), `:148` (update)
++- Shared dependency check: `pyjwt` (`api_wrapper.py` does `import jwt`) is **also used independently** by `codemie/service/jwt_service.py` and `codemie/rest_api/security/idp/local.py` — do NOT remove this dependency from `pyproject.toml`. Same for `requests`, used ubiquitously elsewhere.
++- `pyproject.toml:141` declares `zephyr-python-api = "^0.1.0"`. A grep for `zephyr_python_api`/`import zephyr` under `src/` returned no hits — the actual ZephyrSquad tool builds raw HTTP requests via its own `api_wrapper.py` rather than importing this package. **Action needed before removing this dependency**: explicitly check `src/codemie_tools/qa/zephyr_squad/api_wrapper.py` and `src/codemie_tools/qa/zephyr/` (Zephyr Scale, kept) for the actual import name to confirm the package isn't used by Zephyr Scale.
++
++### Patterns and Conventions
++
++- Per-tool file split convention: `tools_vars.py` (ToolMetadata constant) / `models.py` (Config + Input schema) / `tools.py` (CodeMieTool subclass) / `api_wrapper.py` (raw REST client) — remove the whole directory as a unit.
++- Deprecation-registry pattern introduced by MR!3904: a single generic `DEPRECATED_CREDENTIAL_TYPES: dict[CredentialTypes, str]` plus one validator function called from both settings routers, explicitly designed so "no router changes needed" to deprecate another type (docstring at `settings_request_validator.py:92-112`). For full removal this entire pattern is now unused dead weight — ZephyrSquad was and remains its only entry.
++- Native Postgres ENUM for the `credential_type` column, managed via `alembic_postgresql_enum`'s `op.sync_enum_values(...)` in each migration that adds a new credential type. Every past migration re-lists the full value set.
++
++---
++
++## 3. Documentation Findings
++
++### Guides and Architecture Docs
++
++`.ai-run/guides/` exists but has no guide covering tool catalogs, credential types, or ZephyrSquad specifically. The only tangential hit — `.ai-run/guides/security/dependencies.md:38` — mentions "deprecation warnings" only in the context of `poetry check --lock` output; unrelated to this domain.
++
++### Architectural Decisions
++
++The prior "deprecate, don't remove" decision is fully documented in the superseded task folder `docs/superpowers/tasks/2026-07-31-deprecate-zephyrsquad/`:
++
++- `spec.md:1-65` — explicitly **rejected removing** the `ZephyrSquad` enum value, stating it "would break deserialization of existing rows" (spec.md:46).
++- `plan.md:33-95` — introduced `DEPRECATED_CREDENTIAL_TYPES` as a generic, reusable deprecation guard, framed as "Deprecating the next integration = one dict entry, zero router edits" (plan.md:61).
++- `technical-analysis.md:77,166,169,177` — the key rationale record: `CredentialTypes.ZEPHYR_SQUAD` is persisted in Postgres, so "removing it from the Python enum would break deserialization of existing rows" (line 169). **This is the exact risk the current full-removal task must now revisit** — see Section 6.
++- `code-review-final.json:10-19` — recorded review verdict confirming the shipped mechanism: `deprecated: Optional[bool] = False`; `ZEPHYR_SQUAD_TOOL` sets `deprecated=True`; 410 Gone blocking; `CredentialTypes.ZEPHYR_SQUAD` retained "so existing rows deserialize normally."
++- `docs/superpowers/tasks/2026-09-03-epmcdme-10913-remove-zephyrsquad/.state.json` — the current in-progress task (sdlc-light, branch `EPMCDME-10913_remove-zephyrsquad`); only `.state.json` exists so far in this run directory before this technical-analysis.md was written.
++
++### Derived Conventions
++
++- Historically, credential-type enum values were never removed once persisted — only flagged (underscore-prefix `_ZEPHYR_CLOUD`, or the newer `DEPRECATED_CREDENTIAL_TYPES` dict). **The current task explicitly breaks this convention**, which is why the DB-enum risk below needs a deliberate decision in the plan, not a blind deletion.
++- No TODO/HACK/NOTE/ADR/DECISION markers exist adjacent to ZephyrSquad or `DEPRECATED_CREDENTIAL_TYPES` code beyond the docstring in `settings_request_validator.py` itself.
++
++### External Documentation Findings
++
++Not applicable — no external library/API research was needed; this is a pure internal-removal task with no new third-party integration surface.
++
++---
++
++## 4. Testing Landscape
++
++### Existing Coverage
++
++**ZephyrSquad-specific test files (delete entirely):**
++- `tests/codemie_tools/qa/zephyr_squad/test_squad_generic_tool.py:1-79` — unit tests for `ZephyrSquadGenericTool` (healthcheck, invoke, config)
++- `tests/codemie_tools/qa/zephyr_squad/test_api_wrapper.py:1-97` — unit tests for `ZephyrRestAPI` request-signing wrapper
++- `tests/codemie_tools/base/test_models_deprecated_flag.py:1-34` — tests the generic `deprecated` flag added purely for ZephyrSquad; no other feature depends on it, delete whole file
++
++**Mixed files needing targeted edits (not full deletion):**
++- `tests/codemie_tools/qa/test_qa_toolkit.py:17,25,33-41,46-54` — `test_get_definition` asserts `len(toolkit_ui.tools) == 5` (line 25); `test_tools_property` asserts `len == 5` + `"ZephyrSquad" in tool_names` (lines 33-41); `test_zephyr_squad_marked_deprecated` (46-50) and `test_zephyr_squad_metadata_deprecated_flag` (53-54) are entirely ZephyrSquad-specific — delete those two tests, update the count/membership assertions to drop by one, remove the `ZEPHYR_SQUAD_TOOL` import at line 17
++- `tests/codemie/service/settings/test_settings_request_validator.py:25,27,344-386` — the whole "EPMCDME-10913 — deprecated credential-type registry" block: `test_zephyr_squad_is_registered_as_deprecated` (357-359, ZephyrSquad-only), `test_validate_credential_type_not_deprecated_rejects_registered_types` (362-371, parametrized generically over `list(DEPRECATED_CREDENTIAL_TYPES)`), `test_validate_credential_type_not_deprecated_allows_active_types` (374-386, includes `ZEPHYR_SCALE`, `GIT`, `JIRA`, `XRAY` as allowed cases). **Once the mechanism itself is deleted per this task, this entire block plus the imports at lines 25 and 27 must be removed** — the "generic" parametrized tests only ever had ZephyrSquad as their single real-world case, so they degenerate to no-ops.
++- `tests/codemie/rest_api/routers/test_user_settings.py:497,565-609` — `ZEPHYR_SQUAD_DEPRECATION_MESSAGE` constant, `test_create_user_setting_zephyr_squad_blocked` (565-582), `test_update_user_setting_zephyr_squad_blocked` (588-609) — delete both tests + constant
++- `tests/codemie/rest_api/routers/test_project_settings.py:216,438-487` — same pattern: `test_create_project_setting_zephyr_squad_blocked` (438-458), `test_update_project_setting_zephyr_squad_blocked` (463-487) — delete both + constant (216)
++- `tests/codemie/service/search_and_rerank/test_search_and_rerank_tool.py:537-538` — `test_tokenize_tool_name_with_camel_case` uses `"ZephyrSquad"` purely as a camelCase tokenization sample string (`['zephyr','squad']`); no functional dependency, cosmetic optional cleanup only
++
++**Confirmed NOT in scope (Zephyr Scale, unrelated, do not touch):**
++- `tests/codemie/service/settings/test_settings_tester.py:217-254` — `test_test_zephyr_success`/`test_test_zephyr_fail` use `CredentialTypes.ZEPHYR_SCALE` and `_test_zephyr()`, not ZephyrSquad
++- `tests/codemie/service/tools/test_toolkit_settings_service.py:87` — fixture uses `Tool(name="ZephyrScale", ...)`, unrelated
++- `tests/codemie_tools/qa/zephyr/test_zephyr_models.py`, `tests/codemie_tools/qa/zephyr/test_generic_tool.py` — test the surviving Zephyr Scale integration
++
++### Testing Framework and Patterns
++
++- pytest `^8.3.1` (`pyproject.toml:181`), plus pytest-asyncio 0.23.7, pytest-cov 5.0.0, pytest-mock 3.14.0, pytest-httpx 0.35.0. Async router tests use `@pytest.mark.anyio`.
++- Patterns observed in the affected tests: `@pytest.mark.parametrize("credential_type", list(DEPRECATED_CREDENTIAL_TYPES))` (dynamic parametrization over the registry dict keys); `@patch(...)` + `MagicMock()` for tool/service mocking; `pytest.raises(ExtendedHTTPException)` with assertions on `.code`/`.message`/`.details`/`.help` for the 410 deprecation path; `ASGITransport`/`AsyncClient` FastAPI integration-test pattern for router tests.
++- No conftest.py fixtures or JSON/YAML fixture files reference Zephyr anywhere.
++
++### Coverage Gaps
++
++- After removing the 4 router-level "zephyr_squad_blocked" 410 tests, verify there is still generic coverage for rejecting an unrecognized/invalid `credential_type` string (a 422/400 path) so the "reject bad input" behavior isn't silently lost.
++- After removing `CredentialTypes.ZEPHYR_SQUAD`, any remaining reference to it in test files (e.g. `test_settings_request_validator.py:359`) will fail to collect at import time — must be removed in the same change, not left dangling.
++- No other test file asserts overall tool/catalog counts beyond `test_qa_toolkit.py` — a final catalog grep after code removal is worth doing to confirm no other count-based assertion breaks.
++
++---
++
++## 5. Configuration and Environment
++
++### Environment Variables
++
++No OS-level environment variables (`ZEPHYR_SQUAD_API_TOKEN`-style) exist in `src/` or `deploy-templates/`. ZephyrSquad credentials are stored as DB-backed settings, referenced via dict-key constants only:
++- `ZEPHYR_SQUAD_ACCOUNT_ID` — `src/codemie/service/settings/settings.py:110`
++- `ZEPHYR_SQUAD_ACCESS_KEY` — `src/codemie/service/settings/settings.py:111`, also `:146`
++- `ZEPHYR_SQUAD_SECRET_KEY` — `src/codemie/service/settings/settings.py:112`, also `:147`
++
++No `.env.example` file exists at repo root or anywhere in the repo.
++
++### Configuration Files
++
++- `config/customer/customer-config.yaml:389-391` — a generic "zephyr" URL placeholder text block that may be shared by Zephyr Scale/Squad UI hints — **verify whether this key is Scale-only or shared before touching**, do not delete blind.
++- `config/index-dumps/codemie-codemie-onboarding.json` — FAQ/onboarding vector-index dump mentioning "Zephyr Scale"/"Zephyr Cloud" in sample Q&A text; not functional config, optional cleanup only.
++
++### Feature Flags and Deployment Concerns
++
++- `deprecated=True` on `ZEPHYR_SQUAD_TOOL` metadata (`src/codemie_tools/qa/zephyr_squad/tools_vars.py`) — this is the flag the task wants removed entirely along with the tool, not converted to a toggle.
++- No Helm/K8s manifest, values file, or env-var declaration in `deploy-templates/` references Zephyr/ZephyrSquad — deployment layer needs no changes.
++- No dedicated Alembic migration exists solely for adding the ZephyrSquad credential type as a distinct schema object (credential types share the `credentialtypes` enum type). Migrations found via a broad Zephyr grep — `e03e516e00da_add_xray_credential_type.py`, `300e51656562_add_oauth_credential_types.py`, `8b2c1a4d5e6f_add_ms_teams_credential_type.py`, etc. — matched only because they each enumerate the full `credentialtypes` enum value list via `op.sync_enum_values(...)`, not because they add Zephyr-specific logic.
++- `README.md:318` lists "X-ray, Zephyr Scale, Zephyr Squad" under the QA toolkit description — update as a documentation-only change.
++- `zephyr-python-api = "^0.1.0"` in `pyproject.toml:141` — usage unconfirmed (see Section 2, Integration Points); verify before removing.
++
++---
++
++## 6. Risk Indicators
++
++- **DB native enum, not a plain string column — the "no data migration" assumption may be technically infeasible to satisfy at the DB-schema level.** The `credential_type` column (`src/codemie/rest_api/models/settings.py:254`) is a genuine Postgres `ENUM` type named `credentialtypes` (see `postgresql.ENUM(..., name='credentialtypes', create_type=False)` in `074d06e75b25_create_settings.py:68-97`), evolved via `alembic_postgresql_enum`'s `op.sync_enum_values(...)`. Postgres cannot drop an enum label that is still referenced by existing rows without a data rewrite. The prior deprecation spec explicitly cited this as the reason it kept `CredentialTypes.ZEPHYR_SQUAD` in the Python enum (`docs/superpowers/tasks/2026-07-31-deprecate-zephyrsquad/technical-analysis.md:169`). **This needs an explicit decision in the plan**: (a) remove the Python-side tool/integration entirely but leave `CredentialTypes.ZEPHYR_SQUAD` as an inert enum member (satisfies "no migration" but leaves a dead enum value/no full removal), or (b) confirm via a DB query that zero rows currently have `credential_type = 'ZephyrSquad'` (product owner says "no prod usage exists") and then safely run `op.sync_enum_values(...)` to drop the label as a genuinely no-op, low-risk migration. Given the PO has confirmed no prod usage, option (b) is very likely safe, but it should be verified with a real query against the target environment(s) before writing the migration, and the migration itself is unavoidable if full DB-level removal is required — it just carries near-zero data risk given zero usage.
++- `settings_request_validator.py:30` imports `CredentialTypes` for other purposes beyond `DEPRECATED_CREDENTIAL_TYPES` — do not blindly strip this import when removing the deprecation mechanism; verify remaining usages in the file first.
++- `config/customer/customer-config.yaml:389-391` — shared "zephyr" URL placeholder text of unconfirmed scope (Scale vs Squad vs shared) — needs a targeted check before edit.
++- `pyproject.toml:141` `zephyr-python-api` dependency — usage is unconfirmed; removing it blind could silently break Zephyr Scale if the import name differs from the package name. Requires an explicit grep of `zephyr_squad/api_wrapper.py` and `qa/zephyr/` before deletion.
++- `test_validate_credential_type_not_deprecated_rejects_registered_types` and `_allows_active_types` in `test_settings_request_validator.py` are written generically (parametrized over the registry / a hardcoded allow-list) but in practice only ever exercised ZephyrSquad as their one real deprecated case — deleting the mechanism guts this entire test block; confirm no other future-planned credential type currently relies on this scaffolding before deleting it outright (research found none — `DEPRECATED_CREDENTIAL_TYPES` has exactly one entry, `ZEPHYR_SQUAD`).
++- `ToolMetadata.deprecated` / `Tool.deprecated` / `Tool.from_metadata` deprecated-flag propagation (`src/codemie_tools/base/models.py:59,158,184`) is confirmed to have **zero other consumers** (`deprecated=True` appears nowhere else in the codebase) — safe to remove the field entirely, not just its ZephyrSquad usage.
++- `get_zephyr_squad_creds()` (`settings.py:1654-1670`) is confirmed dead code with no callers — safe to delete without further blast-radius analysis.
++- No guide in `.ai-run/guides/` documents the credential-type deprecation pattern or tool catalog conventions — conventions had to be derived entirely from source and from the prior task's own planning docs.
++- `search_and_rerank/tool.py:255,257,268` and `test_search_and_rerank_tool.py:537-538` reference the string "ZephyrSquad" purely as example/sample text with no functional coupling — low risk, optional cosmetic cleanup, should not block the removal PR.
++
++---
++
++## 7. Summary for Complexity Assessment
++
++This is a moderate-breadth, low-technical-novelty removal task spanning six layers: tool implementation (`codemie_tools/qa/zephyr_squad/` — 4 files, ~375 lines, delete as a unit), tool catalog registration (`codemie_tools/qa/toolkit.py`), the shared `CredentialTypes` enum and its `deprecated`-flag mechanism (`codemie_tools/base/models.py`), the settings/credential service layer (`settings.py`, `settings_tester.py`), the API validation layer (`settings_request_validator.py`'s `DEPRECATED_CREDENTIAL_TYPES` + `validate_credential_type_not_deprecated`, called from 4 sites across 2 routers), and the persistence layer (a native Postgres ENUM column). Estimated file-change surface is roughly 15-20 source/test files plus one Alembic migration, all editing existing, well-understood code paths rather than introducing new patterns — every mechanism being removed (the `deprecated` field, the `DEPRECATED_CREDENTIAL_TYPES` registry) was confirmed to have ZephyrSquad as its sole real-world user, so removal is clean deletion rather than careful untangling of shared logic. No other integration or credential type depends on either mechanism.
++
++Test coverage posture is good-to-excellent for the code being removed: dedicated unit tests exist for the tool and API wrapper, the toolkit registration, the deprecation registry, and both routers' 410-blocking behavior — all of which map directly onto deletion targets, reducing the risk of missing a code path. The one meaningful gap is post-removal verification: confirming a generic invalid-credential-type test still exists after the specific ZephyrSquad 410 tests are deleted, and updating count-based assertions in `test_qa_toolkit.py`.
++
++The single genuine risk factor that should weigh on complexity/risk scoring is the DB-level native enum: `credential_type` is a real Postgres `ENUM` type (not a plain string column), and Postgres cannot drop an enum label with a data rewrite risk if rows still reference it. The product owner's "no data migration" instruction is almost certainly satisfiable because "no prod usage exists," but the plan should explicitly decide whether to (a) fully drop the DB enum label via a low-risk `sync_enum_values` migration after confirming zero rows reference it, or (b) leave `ZEPHYR_SQUAD` as an inert Python/DB enum value indefinitely. This decision affects whether the task needs exactly one small, verifiably-safe Alembic migration or none at all, and should be surfaced explicitly in the spec/plan rather than assumed.
+diff --git a/src/codemie/rest_api/routers/project_settings.py b/src/codemie/rest_api/routers/project_settings.py
+index 88be91c12..f506ca894 100644
+--- a/src/codemie/rest_api/routers/project_settings.py
++++ b/src/codemie/rest_api/routers/project_settings.py
+@@ -30,7 +30,6 @@ from codemie.service.aws_bedrock.bedrock_orchestration_service import BedrockOrc
+ from codemie.service.settings.settings import SettingsService
+ from codemie.service.settings.settings_index_service import SettingsIndexService
+ from codemie.service.settings.settings_request_validator import (
+-    validate_credential_type_not_deprecated,
+     validate_git_request,
+     validate_litellm_request,
+     validate_ms_teams_request,
+@@ -92,8 +91,6 @@ def create_project_setting(request: SettingRequest, user: User = Depends(authent
+     Create project-specific setting
+     """
+     _check_permission(user, request.project_name)
+-    validate_credential_type_not_deprecated(request)
+-
+     if request.credential_type == CredentialTypes.SCHEDULER:
+         validate_scheduler_request(request)
+     elif request.credential_type == CredentialTypes.LITE_LLM:
+@@ -145,8 +142,6 @@ def update_project_setting(request: SettingRequest, setting_id: str, user: User
+     """
+     Update project setting
+     """
+-    validate_credential_type_not_deprecated(request)
+-
+     try:
+         setting_ability = SettingsService.get_setting_ability(
+             credential_id=setting_id,
+diff --git a/src/codemie/rest_api/routers/user_settings.py b/src/codemie/rest_api/routers/user_settings.py
+index a07fc1328..e57f9ce9d 100644
+--- a/src/codemie/rest_api/routers/user_settings.py
++++ b/src/codemie/rest_api/routers/user_settings.py
+@@ -31,7 +31,6 @@ from codemie.rest_api.security.authentication import authenticate, User
+ from codemie.rest_api.models.settings import SettingRequest, Settings, SettingType, TestSettingRequest
+ from codemie_tools.base.models import CredentialTypes
+ from codemie.service.settings.settings_request_validator import (
+-    validate_credential_type_not_deprecated,
+     validate_git_request,
+     validate_litellm_request,
+     validate_ms_teams_request,
+@@ -130,8 +129,6 @@ def create_user_setting(request: SettingRequest, user: User = Depends(authentica
+     """
+     Save user-specific settings to DB
+     """
+-    validate_credential_type_not_deprecated(request)
+-
+     if request.credential_type == CredentialTypes.SCHEDULER:
+         validate_scheduler_request(request)
+     elif request.credential_type == CredentialTypes.LITE_LLM:
+@@ -173,8 +170,6 @@ def update_user_setting(request: SettingRequest, setting_id: str, user: User = D
+     """
+     Update user-specific settings
+     """
+-    validate_credential_type_not_deprecated(request)
+-
+     if request.credential_type == CredentialTypes.SCHEDULER:
+         validate_scheduler_request(request)
+     elif request.credential_type == CredentialTypes.LITE_LLM:
+diff --git a/src/codemie/service/settings/settings.py b/src/codemie/service/settings/settings.py
+index 43c808279..4f9fcb085 100644
+--- a/src/codemie/service/settings/settings.py
++++ b/src/codemie/service/settings/settings.py
+@@ -39,7 +39,6 @@ from codemie_tools.notification.email.models import EmailToolConfig
+ from codemie_tools.notification.telegram.models import TelegramConfig
+ from codemie_tools.open_api.models import OpenApiConfig
+ from codemie_tools.qa.zephyr.models import ZephyrConfig
+-from codemie_tools.qa.zephyr_squad.models import ZephyrSquadConfig
+ from codemie_tools.qa.xray.models import XrayConfig
+ from codemie_tools.report_portal.models import ReportPortalConfig
+ from sqlalchemy.orm import attributes
+@@ -107,9 +106,6 @@ class SettingsService(BaseSettingsService):
+     PASSWORD: str = "password"
+     SECURE_HEADER_VALUE: str = "secure_header_value"
+     WEBHOOK_ID: str = "webhook_id"
+-    ZEPHYR_SQUAD_ACCOUNT_ID: str = "account_id"
+-    ZEPHYR_SQUAD_ACCESS_KEY: str = "access_key"
+-    ZEPHYR_SQUAD_SECRET_KEY: str = "secret_key"
+     XRAY_BASE_URL: str = "base_url"
+     XRAY_CLIENT_ID: str = "client_id"
+     XRAY_CLIENT_SECRET: str = "client_secret"
+@@ -143,8 +139,6 @@ class SettingsService(BaseSettingsService):
+         "openapi_api_key",
+         PASSWORD,
+         SECURE_HEADER_VALUE,
+-        ZEPHYR_SQUAD_ACCESS_KEY,
+-        ZEPHYR_SQUAD_SECRET_KEY,
+         ENV_VARS,
+         AUTH_VALUE,
+         "private_key",  # GitHub App private key
+@@ -172,11 +166,6 @@ class SettingsService(BaseSettingsService):
+         DATABASE_INFLUXDB_VERIFY_SSL: "verify_ssl",
+     }
+     ZEPHYR_FIELDS = {URL: "url", TOKEN: "token"}
+-    ZEPHYR_SQUAD_FIELDS = {
+-        ZEPHYR_SQUAD_ACCOUNT_ID: "account_id",
+-        ZEPHYR_SQUAD_ACCESS_KEY: "access_key",
+-        ZEPHYR_SQUAD_SECRET_KEY: "secret_key",
+-    }
+     XRAY_FIELDS = {
+         XRAY_BASE_URL: "base_url",
+         XRAY_CLIENT_ID: "client_id",
+@@ -243,7 +232,6 @@ class SettingsService(BaseSettingsService):
+         OpenApiConfig: CredentialTypes.OPEN_API,
+         ReportPortalConfig: CredentialTypes.REPORT_PORTAL,
+         ZephyrConfig: CredentialTypes.ZEPHYR_SCALE,
+-        ZephyrSquadConfig: CredentialTypes.ZEPHYR_SQUAD,
+         XrayConfig: CredentialTypes.XRAY,
+         ElasticConfig: CredentialTypes.ELASTIC,
+         SQLConfig: CredentialTypes.SQL,
+@@ -1651,24 +1639,6 @@ class SettingsService(BaseSettingsService):
+             credential_class=ZephyrConfig,
+         )
+ 
+-    @classmethod
+-    def get_zephyr_squad_creds(
+-        cls,
+-        user_id: str,
+-        project_name: str = None,
+-        assistant_id: Optional[str] = None,
+-        tool_config: Optional[ToolConfig] = None,
+-    ) -> ZephyrSquadConfig:
+-        return cls.get_credentials(
+-            credential_type=CredentialTypes.ZEPHYR_SQUAD,
+-            user_id=user_id,
+-            project_name=project_name,
+-            assistant_id=assistant_id,
+-            tool_config=tool_config,
+-            required_fields=cls.ZEPHYR_SQUAD_FIELDS,
+-            credential_class=ZephyrSquadConfig,
+-        )
+-
+     @classmethod
+     def get_xray_creds(
+         cls,
+diff --git a/src/codemie/service/settings/settings_request_validator.py b/src/codemie/service/settings/settings_request_validator.py
+index 15083ef75..debad6b9f 100644
+--- a/src/codemie/service/settings/settings_request_validator.py
++++ b/src/codemie/service/settings/settings_request_validator.py
+@@ -27,7 +27,6 @@ from codemie.service.settings.scheduler_settings_service import (
+     INVALID_CRON_EXPRESSION_MESSAGE,
+     validate_timezone_string,
+ )
+-from codemie_tools.base.models import CredentialTypes
+ from apscheduler.triggers.cron import CronTrigger
+ from croniter import croniter
+ 
+@@ -76,42 +75,6 @@ UNSUPPORTED_WEBHOOK_DATASOURCE_TYPES_HELP_MESSAGE = (
+ )
+ 
+ 
+-DEPRECATED_CREDENTIAL_TYPES: dict[CredentialTypes, str] = {
+-    CredentialTypes.ZEPHYR_SQUAD: (
+-        "Use an alternative test-management integration (e.g. Zephyr Scale) for new setups."
+-    ),
+-}
+-"""Credential types that can no longer be created or updated.
+-
+-Maps the deprecated credential type to the ``help`` hint pointing users at a replacement.
+-Existing settings of these types stay readable and usable; only create/update is blocked.
+-To deprecate another integration, add one entry here — no router changes needed.
+-"""
+-
+-
+-def validate_credential_type_not_deprecated(request: SettingRequest) -> None:
+-    """
+-    Reject create/update of a setting whose credential type is deprecated.
+-
+-    Raises:
+-        ExtendedHTTPException: 410 GONE if the credential type is in DEPRECATED_CREDENTIAL_TYPES
+-    """
+-    help_message = DEPRECATED_CREDENTIAL_TYPES.get(request.credential_type)
+-    if help_message is None:
+-        return
+-
+-    credential_type_name = request.credential_type.value
+-    raise ExtendedHTTPException(
+-        code=status.HTTP_410_GONE,
+-        message=f"{credential_type_name} integration is deprecated",
+-        details=(
+-            f"New {credential_type_name} settings can no longer be created or updated. "
+-            "Existing configurations remain read-only."
+-        ),
+-        help=help_message,
+-    )
+-
+-
+ def _validate_pat_authentication(values: dict):
+     """Validate PAT authentication fields."""
+     if "token" not in values or not values["token"]:
+diff --git a/src/codemie/service/settings/settings_tester.py b/src/codemie/service/settings/settings_tester.py
+index 808857feb..7ea7eb9b8 100644
+--- a/src/codemie/service/settings/settings_tester.py
++++ b/src/codemie/service/settings/settings_tester.py
+@@ -37,8 +37,6 @@ from codemie_tools.notification.email.models import EmailToolConfig
+ from codemie_tools.notification.email.tools import EmailTool
+ from codemie_tools.qa.zephyr.models import ZephyrConfig
+ from codemie_tools.qa.zephyr.tools import ZephyrGenericTool
+-from codemie_tools.qa.zephyr_squad.models import ZephyrSquadConfig
+-from codemie_tools.qa.zephyr_squad.tools import ZephyrSquadGenericTool
+ from codemie_tools.qa.xray.models import XrayConfig
+ from codemie_tools.qa.xray.tools import XrayGetTestsTool
+ from codemie_tools.report_portal.models import ReportPortalConfig
+@@ -90,7 +88,6 @@ class SettingsTester(SettingsService):
+             CredentialTypes.AZURE: SettingsTester._test_azure,
+             CredentialTypes.EMAIL: SettingsTester._test_email,
+             CredentialTypes.ZEPHYR_SCALE: SettingsTester._test_zephyr,
+-            CredentialTypes.ZEPHYR_SQUAD: SettingsTester._test_zephyr_squad,
+             CredentialTypes.XRAY: SettingsTester._test_xray,
+             CredentialTypes.SERVICENOW: SettingsTester._test_snow,
+             CredentialTypes.GIT: SettingsTester._test_git,
+@@ -129,9 +126,6 @@ class SettingsTester(SettingsService):
+     def _test_zephyr(self) -> Tuple[bool, str]:
+         return ZephyrGenericTool(config=ZephyrConfig(**self.credential_values)).healthcheck()
+ 
+-    def _test_zephyr_squad(self) -> Tuple[bool, str]:
+-        return ZephyrSquadGenericTool(config=ZephyrSquadConfig(**self.credential_values)).healthcheck()
+-
+     def _test_xray(self) -> Tuple[bool, str]:
+         return XrayGetTestsTool(config=XrayConfig(**self.credential_values)).healthcheck()
+ 
+diff --git a/src/codemie_tools/base/models.py b/src/codemie_tools/base/models.py
+index 244c5a42c..283f82ba1 100755
+--- a/src/codemie_tools/base/models.py
++++ b/src/codemie_tools/base/models.py
+@@ -56,7 +56,6 @@ class ToolMetadata(BaseModel):
+     user_description: Optional[str] = ''
+     settings_config: Optional[bool] = False
+     config_class: Optional[Any] = Field(default=None, exclude=True)
+-    deprecated: Optional[bool] = False
+ 
+     @model_validator(mode='after')
+     def validate_settings_config(self) -> 'ToolMetadata':
+@@ -94,7 +93,6 @@ class CredentialTypes(str, Enum):
+     TELEGRAM = "Telegram"
+     ZEPHYR_SCALE = "ZephyrScale"
+     _ZEPHYR_CLOUD = "ZephyrCloud"  # Deprecated
+-    ZEPHYR_SQUAD = "ZephyrSquad"
+     XRAY = "Xray"
+     SERVICENOW = "ServiceNow"
+     REPORT_PORTAL = "ReportPortal"
+@@ -155,7 +153,6 @@ class Tool(BaseModel):
+     settings_config: Optional[bool] = False
+     description: Optional[str] = None
+     user_description: Optional[str] = None
+-    deprecated: Optional[bool] = False
+     config_class: Optional[Any] = Field(default=None, exclude=True)
+     tool_class: Optional[Any] = Field(default=None, exclude=True)
+ 
+@@ -181,7 +178,6 @@ class Tool(BaseModel):
+             label=metadata.label or None,
+             description=metadata.description or None,
+             user_description=metadata.user_description or None,
+-            deprecated=bool(metadata.deprecated),
+             config_class=config_class,
+             settings_config=settings_config,
+             tool_class=tool_class,
+diff --git a/src/codemie_tools/qa/toolkit.py b/src/codemie_tools/qa/toolkit.py
+index 46a7cf6fe..bfb3e6d4b 100644
+--- a/src/codemie_tools/qa/toolkit.py
++++ b/src/codemie_tools/qa/toolkit.py
+@@ -18,8 +18,6 @@ from codemie_tools.base.base_toolkit import DiscoverableToolkit
+ from codemie_tools.base.models import ToolKit, Tool, ToolSet
+ from codemie_tools.qa.zephyr.tools import ZephyrGenericTool
+ from codemie_tools.qa.zephyr.tools_vars import ZEPHYR_TOOL
+-from codemie_tools.qa.zephyr_squad.tools import ZephyrSquadGenericTool
+-from codemie_tools.qa.zephyr_squad.tools_vars import ZEPHYR_SQUAD_TOOL
+ from codemie_tools.qa.xray.tools import XrayGetTestsTool, XrayCreateTestTool, XrayExecuteGraphQLTool
+ from codemie_tools.qa.xray.tools_vars import XRAY_GET_TESTS_TOOL, XRAY_CREATE_TEST_TOOL, XRAY_EXECUTE_GRAPHQL_TOOL
+ 
+@@ -28,7 +26,6 @@ class QualityAssuranceToolkitUI(ToolKit):
+     toolkit: ToolSet = ToolSet.QUALITY_ASSURANCE
+     tools: List[Tool] = [
+         Tool.from_metadata(ZEPHYR_TOOL, tool_class=ZephyrGenericTool),
+-        Tool.from_metadata(ZEPHYR_SQUAD_TOOL, tool_class=ZephyrSquadGenericTool),
+         Tool.from_metadata(XRAY_GET_TESTS_TOOL, tool_class=XrayGetTestsTool),
+         Tool.from_metadata(XRAY_CREATE_TEST_TOOL, tool_class=XrayCreateTestTool),
+         Tool.from_metadata(XRAY_EXECUTE_GRAPHQL_TOOL, tool_class=XrayExecuteGraphQLTool),
+diff --git a/src/codemie_tools/qa/zephyr_squad/__init__.py b/src/codemie_tools/qa/zephyr_squad/__init__.py
+deleted file mode 100644
+index 08ee1004e..000000000
+--- a/src/codemie_tools/qa/zephyr_squad/__init__.py
++++ /dev/null
+@@ -1 +0,0 @@
+-# Zephyr Squad tool package
+diff --git a/src/codemie_tools/qa/zephyr_squad/api_wrapper.py b/src/codemie_tools/qa/zephyr_squad/api_wrapper.py
+deleted file mode 100644
+index 26ca1fa6c..000000000
+--- a/src/codemie_tools/qa/zephyr_squad/api_wrapper.py
++++ /dev/null
+@@ -1,206 +0,0 @@
+-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-
+-import hashlib
+-import logging
+-import time
+-from json import dumps
+-from typing import List, Dict
+-from urllib.parse import urlencode
+-
+-import jwt
+-import requests
+-from requests import HTTPError
+-
+-logger = logging.getLogger(__name__)
+-
+-DEFAULT_TIMEOUT = 75
+-DEFAULT_BASE_URL = "https://prod-api.zephyr4jiracloud.com/connect"
+-DEFAULT_RELATIVE_PATH = "/public/rest/api/1.0"
+-JWT_EXPIRE_SEC = 3000
+-
+-
+-# API DOCS:
+-# General info https://zephyrdocs.atlassian.net/wiki/spaces/ZFJCLOUD/pages/1925120024/REST+API
+-# Interactive API https://zephyrsquad.docs.apiary.io/#reference/config/get-general-configuration
+-class ZephyrRestAPI(object):
+-    def __init__(
+-        self,
+-        account_id: str,
+-        access_key: str,
+-        secret_key: str,
+-        base_url: str = DEFAULT_BASE_URL,
+-        relative_path: str = DEFAULT_RELATIVE_PATH,
+-        timeout: str = DEFAULT_TIMEOUT,
+-    ):
+-        self.base_url = base_url
+-        self.relative_path = relative_path
+-        self.account_id = account_id
+-        self.access_key = access_key
+-        self.secret_key = secret_key
+-        self.timeout = int(timeout)
+-
+-    def __enter__(self):
+-        return self
+-
+-    def __exit__(self, *_):
+-        self.close()
+-
+-    def request(
+-        self,
+-        method="GET",
+-        path="/",
+-        data=None,
+-        json=None,
+-        flags=None,
+-        params=None,
+-        headers=None,
+-        files=None,
+-    ):
+-        """Perform an HTTP request with flexible header support
+-
+-        Args:
+-            method: HTTP method (GET, POST, etc.)
+-            path: API path
+-            data: Request data
+-            json: JSON data to send
+-            flags: URL flags
+-            params: URL parameters
+-            headers: Additional headers to include (will be merged with auth headers)
+-                    Use headers={'Content-Type': 'your/type'} to set content type
+-            files: Files to upload
+-
+-        Returns:
+-            requests.Response: The HTTP response
+-
+-        Note:
+-            Authentication headers (Authorization with JWT and zapiAccessKey) are
+-            automatically added and cannot be overridden by user headers.
+-        """
+-        method = method.upper()
+-
+-        if not path.startswith("/"):
+-            path = "/" + path
+-
+-        raw_url = self.base_url + self.relative_path + path
+-        url = self._prepare_url(raw_url, flags, params)
+-
+-        if files is None:
+-            data = None if not data else dumps(data)
+-
+-        headers = self._get_headers(method=method, path=path, headers=headers)
+-        response = requests.Session().request(
+-            method=method,
+-            url=url,
+-            headers=headers,
+-            data=data,
+-            json=json,
+-            timeout=self.timeout,
+-            files=files,
+-        )
+-        response.encoding = "utf-8"
+-
+-        logger.debug("HTTP: %s %s -> %s %s", method, path, response.status_code, response.reason)
+-        logger.debug("HTTP: Response text -> %s", response.text)
+-
+-        self._raise_for_status(response)
+-        return response
+-
+-    @staticmethod
+-    def _prepare_url(url: str, flags: List = None, params: Dict = None):
+-        """Does some URL encoding magic"""
+-        if not flags:
+-            flags = []
+-
+-        if not params:
+-            params = {}
+-
+-        params_already_in_url = "?" in url
+-
+-        if params or flags:
+-            if params_already_in_url:
+-                url += "&"
+-            else:
+-                url += "?"
+-        if params:
+-            url += urlencode(params or {})
+-
+-        if flags:
+-            url += ("&" if params or params_already_in_url else "") + "&".join(flags or [])
+-
+-        return url
+-
+-    def _get_headers(self, method: str, path: str, headers: dict = None) -> Dict:
+-        """Generate headers with proper authentication"""
+-        # Generate JWT for authentication
+-        jwt_token = self._generate_jwt(method=method, path=path)
+-
+-        # Start with user-provided headers (or empty dict)
+-        final_headers = headers.copy() if headers else {}
+-
+-        # Add authentication headers (these cannot be overridden)
+-        final_headers.update({'Authorization': 'JWT ' + jwt_token, 'zapiAccessKey': self.access_key})
+-
+-        return final_headers
+-
+-    def _generate_jwt(self, method: str, path: str, jwt_expire_sec: int = JWT_EXPIRE_SEC) -> str:
+-        """Generate JWT token for header"""
+-        if "?" not in path:  # Without we get 401
+-            path += "?"
+-
+-        canonical_path = (method + '&' + self.relative_path + path).replace('?', '&')
+-
+-        payload_token = {
+-            'sub': self.account_id,
+-            'qsh': hashlib.sha256(canonical_path.encode('utf-8')).hexdigest(),
+-            'iss': self.access_key,
+-            'exp': int(time.time()) + jwt_expire_sec,
+-            'iat': int(time.time()),
+-        }
+-        return jwt.encode(payload_token, self.secret_key, algorithm='HS256').strip()
+-
+-    def _raise_for_status(self, response):
+-        """Checks the response for errors and throws an exception if return code >= 400"""
+-        if response.status_code == 401 and response.headers.get("Content-Type") != "application/json;charset=UTF-8":
+-            raise HTTPError("Unauthorized (401)", response=response)
+-
+-        if 400 <= response.status_code < 600:
+-            try:
+-                error_msg = self._handle_error_message(response.json())
+-            except Exception as e:
+-                logger.error(e)
+-                response.raise_for_status()
+-            else:
+-                raise HTTPError(error_msg, response=response)
+-        else:
+-            response.raise_for_status()
+-
+-    def _handle_error_message(self, json: dict) -> str:
+-        """Hadles error messages from API response"""
+-        error_msg_list = json.get("errorMessages", [])
+-        errors = json.get("errors", {})
+-
+-        if len(errors):
+-            if isinstance(errors, dict):
+-                error_msg_list.append(errors.get("message", ""))
+-            elif isinstance(errors, list):
+-                error_msg_list.extend([v.get("message", "") if isinstance(v, dict) else v for v in errors])
+-
+-        if error := json.get("error"):
+-            error_msg_list.append(error)
+-
+-        if error := json.get("clientMessage"):
+-            error_msg_list.append(error)
+-
+-        return ",".join(error_msg_list)
+diff --git a/src/codemie_tools/qa/zephyr_squad/models.py b/src/codemie_tools/qa/zephyr_squad/models.py
+deleted file mode 100644
+index 54be90866..000000000
+--- a/src/codemie_tools/qa/zephyr_squad/models.py
++++ /dev/null
+@@ -1,54 +0,0 @@
+-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-
+-from typing import Optional
+-from pydantic import BaseModel, Field
+-from codemie_tools.base.models import CodeMieToolConfig, CredentialTypes
+-
+-
+-class ZephyrSquadConfig(CodeMieToolConfig):
+-    credential_type: CredentialTypes = Field(default=CredentialTypes.ZEPHYR_SQUAD, exclude=True, frozen=True)
+-    account_id: str
+-    access_key: str
+-    secret_key: str
+-
+-
+-class ZephyrSquadToolInput(BaseModel):
+-    method: str = Field(
+-        ...,
+-        description="""
+-        HTTP method to be used in an API call, e.x. GET or POST
+-        """.strip(),
+-    )
+-    relative_path: str = Field(
+-        ...,
+-        description="""
+-        Relative path excluding base url and /public/rest/api/1.0/config/, e.x.:
+-        - /cycle?expand=123&cloned123CycleId=123
+-        - /executions/search?executionId=123
+-        - ...
+-        """.strip(),
+-    )
+-    body: Optional[str] = Field(
+-        ...,
+-        description="""
+-        Optional JSON of input parameters of the method. MUST be string with valid JSON.
+-        """,
+-    )
+-    content_type: Optional[str] = Field(
+-        default="application/json",
+-        description="""
+-        Content type to pass in the header of the HTTP request. For ex. application/json, application/text, etc.
+-        """,
+-    )
+diff --git a/src/codemie_tools/qa/zephyr_squad/tools.py b/src/codemie_tools/qa/zephyr_squad/tools.py
+deleted file mode 100644
+index d7f79c90c..000000000
+--- a/src/codemie_tools/qa/zephyr_squad/tools.py
++++ /dev/null
+@@ -1,68 +0,0 @@
+-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-
+-import json
+-from typing import Optional, Type
+-
+-from pydantic import BaseModel, Field
+-
+-from codemie_tools.base.codemie_tool import CodeMieTool
+-from codemie_tools.qa.zephyr_squad.models import ZephyrSquadConfig, ZephyrSquadToolInput
+-from codemie_tools.qa.zephyr_squad.tools_vars import ZEPHYR_SQUAD_TOOL
+-from codemie_tools.qa.zephyr_squad.api_wrapper import ZephyrRestAPI
+-
+-# URL that is used for integration healthcheck
+-ZEPHYR_SQUAD_HEALTHCHECK_URL = "/serverinfo"
+-ZEPHYR_SQUAD_ERROR_MSG: str = "Access denied"
+-
+-
+-class ZephyrSquadGenericTool(CodeMieTool):
+-    config: Optional[ZephyrSquadConfig] = Field(exclude=True, default=None)
+-    name: str = ZEPHYR_SQUAD_TOOL.name
+-    description: str = ZEPHYR_SQUAD_TOOL.description
+-    args_schema: Type[BaseModel] = ZephyrSquadToolInput
+-
+-    def is_safe(self, args: dict) -> bool:
+-        return self._http_method_is_safe(args)
+-
+-    def _healthcheck(self):
+-        """Performs a healthcheck by querying the serverinfo endpoint"""
+-        content = self.execute(relative_path=ZEPHYR_SQUAD_HEALTHCHECK_URL, method="GET")
+-        try:
+-            data = json.loads(content)
+-        except (json.JSONDecodeError, TypeError, ValueError):
+-            raise AssertionError(ZEPHYR_SQUAD_ERROR_MSG)
+-        if "baseUrl" not in data and "version" not in data:
+-            raise AssertionError(ZEPHYR_SQUAD_ERROR_MSG)
+-
+-    def execute(
+-        self, method: str, relative_path: str, body: Optional[str] = None, content_type: str = 'application/json'
+-    ):
+-        if not self.config:
+-            raise ValueError("Zephyr Squad config is not provided. Please set it before using the tool.")
+-
+-        api = ZephyrRestAPI(
+-            account_id=self.config.account_id,
+-            access_key=self.config.access_key,
+-            secret_key=self.config.secret_key,
+-        )
+-
+-        data = json.loads(body) if body else {}
+-
+-        return api.request(
+-            path=relative_path,
+-            method=method,
+-            json=data,
+-            headers={'Content-Type': content_type},
+-        ).content
+diff --git a/src/codemie_tools/qa/zephyr_squad/tools_vars.py b/src/codemie_tools/qa/zephyr_squad/tools_vars.py
+deleted file mode 100644
+index 66b466d7d..000000000
+--- a/src/codemie_tools/qa/zephyr_squad/tools_vars.py
++++ /dev/null
+@@ -1,48 +0,0 @@
+-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-
+-from codemie_tools.base.models import ToolMetadata
+-from codemie_tools.qa.zephyr_squad.models import ZephyrSquadConfig
+-
+-ZEPHYR_SQUAD_TOOL = ToolMetadata(
+-    name="ZephyrSquad",
+-    description="""
+-    Zephyr SquatTool that provides access to Zephyr Squad API, enabling interaction with Zephyr test cases,
+-    cycles or executions etc.
+-    You must provide the following args: method, relative_path.
+-    1. 'method': HTTP method to be used in an API call
+-    2. 'relative_path': Relative path excluding base url and /public/rest/api/1.0/config/, e.x.:
+-    - /cycle?expand=123&cloned123CycleId=123
+-    - /executions/search?executionId=123
+-    - ...
+-    3. 'body': an optional JSON parameter. Must be a valid JSON
+-    """.strip(),
+-    label="Zephyr Squad",
+-    user_description="""
+-    Provides access to the Zephyr Squad Cloud API.
+-
+-    Before using it, the following credentials must be obtained:
+-    1. Jira Account ID.
+-
+-    The easiest way to retrieve the AccountID is to click on the icon on the left-hand menu and then click the Profile link.
+-    Within the URL, you can find your AccountID after the last "/".
+-    Example: https://your-domain.atlassian.net/people/<your-account-id>
+-    Or get from https://your-domain.atlassian.net/rest/api/3/myself
+-
+-    2. Zephyr API Access and Secret keys, obtained via Zephyr UI in Jira
+-    """.strip(),
+-    settings_config=True,
+-    config_class=ZephyrSquadConfig,
+-    deprecated=True,
+-)
+diff --git a/src/external/alembic/versions/d9e8f7a6b5c4_remove_zephyr_squad_credential_type.py b/src/external/alembic/versions/d9e8f7a6b5c4_remove_zephyr_squad_credential_type.py
+new file mode 100644
+index 000000000..efb36f6a0
+--- /dev/null
++++ b/src/external/alembic/versions/d9e8f7a6b5c4_remove_zephyr_squad_credential_type.py
+@@ -0,0 +1,136 @@
++# Copyright 2026 EPAM Systems, Inc. ("EPAM")
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++"""remove_zephyr_squad_credential_type
++
++EPMCDME-10913: ZephyrSquad is fully removed from the platform (no deprecation path —
++the product owner confirmed zero prod usage and that the ZephyrSquad service itself no
++longer exists). Delete any leftover rows first, then drop the enum label.
++
++Revision ID: d9e8f7a6b5c4
++Revises: b1c2d3e4f5a6
++Create Date: 2026-09-03 00:00:00.000000
++
++"""
++
++from typing import Sequence, Union
++
++from alembic import op
++from alembic_postgresql_enum import TableReference
++
++# revision identifiers, used by Alembic.
++revision: str = 'd9e8f7a6b5c4'
++down_revision: Union[str, None] = 'b1c2d3e4f5a6'
++branch_labels: Union[str, Sequence[str], None] = None
++depends_on: Union[str, Sequence[str], None] = None
++
++
++def upgrade() -> None:
++    """Remove ZEPHYR_SQUAD from credentialtypes enum."""
++    op.execute("DELETE FROM codemie.settings WHERE credential_type = 'ZEPHYR_SQUAD'")
++    op.sync_enum_values(
++        enum_schema='codemie',
++        enum_name='credentialtypes',
++        new_values=[
++            'JIRA',
++            'CONFLUENCE',
++            'GIT',
++            'SVN',
++            'KUBERNETES',
++            'AWS',
++            'GCP',
++            'KEYCLOAK',
++            'AZURE',
++            'ELASTIC',
++            'OPEN_API',
++            'PLUGIN',
++            'FILE_SYSTEM',
++            'SCHEDULER',
++            'WEBHOOK',
++            'EMAIL',
++            'AZURE_DEVOPS',
++            'SONAR',
++            'SQL',
++            'TELEGRAM',
++            'ZEPHYR_SCALE',
++            '_ZEPHYR_CLOUD',
++            'XRAY',
++            'SERVICENOW',
++            'REPORT_PORTAL',
++            'ENVIRONMENT_VARS',
++            'AUTH_TOKEN',
++            'A2A',
++            'LITE_LLM',
++            'SHAREPOINT',
++            'XWIKI',
++            'GOOGLE_OAUTH',
++            'DIAL',
++            'GITLAB_OAUTH',
++            'JIRA_OAUTH',
++            'CONFLUENCE_OAUTH',
++            'MS_TEAMS',
++        ],
++        affected_columns=[TableReference(table_schema='codemie', table_name='settings', column_name='credential_type')],
++        enum_values_to_rename=[],
++    )
++
++
++def downgrade() -> None:
++    """Restore ZEPHYR_SQUAD in credentialtypes enum (rows deleted by upgrade are not restored)."""
++    op.sync_enum_values(
++        enum_schema='codemie',
++        enum_name='credentialtypes',
++        new_values=[
++            'JIRA',
++            'CONFLUENCE',
++            'GIT',
++            'SVN',
++            'KUBERNETES',
++            'AWS',
++            'GCP',
++            'KEYCLOAK',
++            'AZURE',
++            'ELASTIC',
++            'OPEN_API',
++            'PLUGIN',
++            'FILE_SYSTEM',
++            'SCHEDULER',
++            'WEBHOOK',
++            'EMAIL',
++            'AZURE_DEVOPS',
++            'SONAR',
++            'SQL',
++            'TELEGRAM',
++            'ZEPHYR_SCALE',
++            '_ZEPHYR_CLOUD',
++            'ZEPHYR_SQUAD',
++            'XRAY',
++            'SERVICENOW',
++            'REPORT_PORTAL',
++            'ENVIRONMENT_VARS',
++            'AUTH_TOKEN',
++            'A2A',
++            'LITE_LLM',
++            'SHAREPOINT',
++            'XWIKI',
++            'GOOGLE_OAUTH',
++            'DIAL',
++            'GITLAB_OAUTH',
++            'JIRA_OAUTH',
++            'CONFLUENCE_OAUTH',
++            'MS_TEAMS',
++        ],
++        affected_columns=[TableReference(table_schema='codemie', table_name='settings', column_name='credential_type')],
++        enum_values_to_rename=[],
++    )
+diff --git a/tests/codemie/rest_api/routers/test_project_settings.py b/tests/codemie/rest_api/routers/test_project_settings.py
+index cc1aaf98d..49385683d 100644
+--- a/tests/codemie/rest_api/routers/test_project_settings.py
++++ b/tests/codemie/rest_api/routers/test_project_settings.py
+@@ -213,9 +213,6 @@ async def test_delete_project_setting_logs_on_success(
+     assert "set-1" in message
+ 
+ 
+-ZEPHYR_SQUAD_DEPRECATION_MESSAGE = "ZephyrSquad integration is deprecated"
+-
+-
+ @pytest.mark.anyio
+ @patch('codemie.service.settings.settings.SettingsService.create_setting')
+ @patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+@@ -430,57 +427,3 @@ async def test_create_git_integrity_error_maps_to_generic_422(mock_authenticate,
+ 
+     assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+     assert "ms_teams" not in excinfo.value.message
+-
+-
+-@pytest.mark.anyio
+-@patch("codemie.service.settings.settings.SettingsService.create_setting")
+-@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+-async def test_create_project_setting_zephyr_squad_blocked(mock_authenticate, mock_create_setting):
+-    # The caller is authorized for the project: the 410 comes from the deprecation guard,
+-    # not from the permission check that now runs first in create_project_setting.
+-    mock_authenticate.return_value = _admin_user()
+-
+-    request_data = {
+-        "project_name": "test_project",
+-        "alias": "old-zephyr",
+-        "credential_type": "ZephyrSquad",
+-        "credential_values": [{"key": "api_key", "value": "x"}],
+-    }
+-    transport = ASGITransport(app=app)
+-
+-    with pytest.raises(ExtendedHTTPException) as excinfo:
+-        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+-            await ac.post("/v1/settings/project", headers={"user-id": "admin1"}, json=request_data)
+-
+-    assert excinfo.value.code == status.HTTP_410_GONE
+-    assert excinfo.value.message == ZEPHYR_SQUAD_DEPRECATION_MESSAGE
+-    mock_create_setting.assert_not_called()
+-
+-
+-@pytest.mark.anyio
+-@patch("codemie.service.settings.settings.SettingsService.update_settings")
+-@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+-async def test_update_project_setting_zephyr_squad_blocked(mock_authenticate, mock_update_settings):
+-    user = User(id="user123", username="testuser", project_names=["test_project"])
+-    user.is_admin = False
+-    mock_authenticate.return_value = user
+-
+-    request_data = {
+-        "project_name": "test_project",
+-        "alias": "old-zephyr",
+-        "credential_type": "ZephyrSquad",
+-        "credential_values": [{"key": "api_key", "value": "x"}],
+-    }
+-    transport = ASGITransport(app=app)
+-
+-    with pytest.raises(ExtendedHTTPException) as excinfo:
+-        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+-            await ac.put(
+-                "/v1/settings/project/setting_123",
+-                headers={"user-id": "user123"},
+-                json=request_data,
+-            )
+-
+-    assert excinfo.value.code == status.HTTP_410_GONE
+-    assert excinfo.value.message == ZEPHYR_SQUAD_DEPRECATION_MESSAGE
+-    mock_update_settings.assert_not_called()
+diff --git a/tests/codemie/rest_api/routers/test_user_settings.py b/tests/codemie/rest_api/routers/test_user_settings.py
+index d9ebcba00..94db28528 100644
+--- a/tests/codemie/rest_api/routers/test_user_settings.py
++++ b/tests/codemie/rest_api/routers/test_user_settings.py
+@@ -492,118 +492,3 @@ async def test_admin_create_litellm_unchanged_when_personal_feature_disabled(
+     mock_require_litellm_enabled.assert_called_once_with()
+     mock_validate_litellm_request.assert_called_once()
+     mock_create_setting.assert_called_once()
+-
+-
+-ZEPHYR_SQUAD_DEPRECATION_MESSAGE = "ZephyrSquad integration is deprecated"
+-
+-
+-@pytest.mark.anyio
+-@patch(
+-    "codemie.configs.customer_config.CustomerConfig.is_feature_enabled",
+-    return_value=True,
+-)
+-@patch('codemie.service.settings.settings.SettingsService.create_setting')
+-@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+-async def test_create_user_setting_rejects_ms_teams(mock_authenticate, mock_create_setting, mock_is_feature_enabled):
+-    # ms_teams integrations are project-scope only and must be rejected at USER scope.
+-    # is_feature_enabled is forced True here so this exercises the USER-scope rejection
+-    # itself, decoupled from the shared customer-config.yaml teamsBotIntegration value.
+-    mock_authenticate.return_value = User(id="user123", username="testuser", project_names=["test_project"])
+-
+-    request_data = {
+-        "project_name": "test_project",
+-        "alias": "ms-teams-alias",
+-        "credential_type": "MSTeams",
+-        "credential_values": [{"key": "assistant_ids", "value": ["assistant-1"]}],
+-    }
+-    transport = ASGITransport(app=app)
+-
+-    with pytest.raises(ExtendedHTTPException) as excinfo:
+-        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+-            await ac.post("/v1/settings/user", headers={"user-id": "user123"}, json=request_data)
+-
+-    assert excinfo.value.code == status.HTTP_400_BAD_REQUEST
+-    mock_create_setting.assert_not_called()
+-
+-
+-@pytest.mark.anyio
+-@patch(
+-    "codemie.configs.customer_config.CustomerConfig.is_feature_enabled",
+-    return_value=True,
+-)
+-@patch('codemie.service.settings.settings.SettingsService.update_settings')
+-@patch('codemie.service.settings.settings.SettingsService.get_setting_ability')
+-@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+-async def test_update_user_setting_rejects_ms_teams(
+-    mock_authenticate, mock_get_setting_ability, mock_update_settings, mock_is_feature_enabled
+-):
+-    # ms_teams integrations are project-scope only and must be rejected at USER scope.
+-    # is_feature_enabled is forced True here so this exercises the USER-scope rejection
+-    # itself, decoupled from the shared customer-config.yaml teamsBotIntegration value.
+-    mock_authenticate.return_value = User(id="user123", username="testuser", project_names=["test_project"])
+-
+-    request_data = {
+-        "project_name": "test_project",
+-        "alias": "ms-teams-alias",
+-        "credential_type": "MSTeams",
+-        "credential_values": [{"key": "assistant_ids", "value": ["assistant-1"]}],
+-    }
+-    transport = ASGITransport(app=app)
+-
+-    with pytest.raises(ExtendedHTTPException) as excinfo:
+-        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+-            await ac.put("/v1/settings/user/setting_123", headers={"user-id": "user123"}, json=request_data)
+-
+-    assert excinfo.value.code == status.HTTP_400_BAD_REQUEST
+-    mock_get_setting_ability.assert_not_called()
+-    mock_update_settings.assert_not_called()
+-
+-
+-@pytest.mark.anyio
+-@patch("codemie.service.settings.settings.SettingsService.create_setting")
+-@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+-async def test_create_user_setting_zephyr_squad_blocked(mock_authenticate, mock_create_setting):
+-    mock_authenticate.return_value = User(id="user123", username="testuser")
+-
+-    request_data = {
+-        "project_name": "test_project",
+-        "alias": "old-zephyr",
+-        "credential_type": "ZephyrSquad",
+-        "credential_values": [{"key": "api_key", "value": "x"}],
+-    }
+-    transport = ASGITransport(app=app)
+-
+-    with pytest.raises(ExtendedHTTPException) as excinfo:
+-        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+-            await ac.post("/v1/settings/user", headers={"user-id": "user123"}, json=request_data)
+-
+-    assert excinfo.value.code == status.HTTP_410_GONE
+-    assert excinfo.value.message == ZEPHYR_SQUAD_DEPRECATION_MESSAGE
+-    mock_create_setting.assert_not_called()
+-
+-
+-@pytest.mark.anyio
+-@patch("codemie.service.settings.settings.SettingsService.update_settings")
+-@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
+-async def test_update_user_setting_zephyr_squad_blocked(mock_authenticate, mock_update_settings):
+-    mock_authenticate.return_value = User(id="user123", username="testuser")
+-
+-    request_data = {
+-        "project_name": "test_project",
+-        "alias": "old-zephyr",
+-        "credential_type": "ZephyrSquad",
+-        "credential_values": [{"key": "api_key", "value": "x"}],
+-    }
+-    transport = ASGITransport(app=app)
+-
+-    with pytest.raises(ExtendedHTTPException) as excinfo:
+-        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+-            await ac.put(
+-                "/v1/settings/user/setting_123",
+-                headers={"user-id": "user123"},
+-                json=request_data,
+-            )
+-
+-    assert excinfo.value.code == status.HTTP_410_GONE
+-    assert excinfo.value.message == ZEPHYR_SQUAD_DEPRECATION_MESSAGE
+-    mock_update_settings.assert_not_called()
+diff --git a/tests/codemie/service/settings/test_settings_request_validator.py b/tests/codemie/service/settings/test_settings_request_validator.py
+index 805b23e15..15960f3ee 100644
+--- a/tests/codemie/service/settings/test_settings_request_validator.py
++++ b/tests/codemie/service/settings/test_settings_request_validator.py
+@@ -22,9 +22,7 @@ from fastapi import status
+ from codemie.core.exceptions import ExtendedHTTPException
+ from codemie.rest_api.models.settings import CredentialValues, SettingRequest, SettingType
+ from codemie.service.settings.settings_request_validator import (
+-    DEPRECATED_CREDENTIAL_TYPES,
+     UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES,
+-    validate_credential_type_not_deprecated,
+     validate_datasource_type_for_scheduler,
+     validate_ms_teams_request,
+     validate_timezone_value,
+@@ -338,48 +336,3 @@ def test_rejects_duplicate_assistant_ids_within_list(mock_belongs_to_project):
+     with pytest.raises(ExtendedHTTPException) as exc_info:
+         validate_ms_teams_request(request, setting_type=SettingType.PROJECT)
+     assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
+-
+-
+-# ---------------------------------------------------------------------------
+-# EPMCDME-10913 — deprecated credential-type registry
+-# ---------------------------------------------------------------------------
+-
+-
+-def _make_request_with_credential_type(credential_type: CredentialTypes) -> SettingRequest:
+-    return SettingRequest(
+-        project_name="test_project",
+-        alias="test_alias",
+-        credential_type=credential_type,
+-        credential_values=[{"key": "api_key", "value": "x"}],
+-    )
+-
+-
+-def test_zephyr_squad_is_registered_as_deprecated():
+-    """ZephyrSquad must stay in the registry — that is what blocks create/update."""
+-    assert CredentialTypes.ZEPHYR_SQUAD in DEPRECATED_CREDENTIAL_TYPES
+-
+-
+-@pytest.mark.parametrize("credential_type", list(DEPRECATED_CREDENTIAL_TYPES))
+-def test_validate_credential_type_not_deprecated_rejects_registered_types(credential_type):
+-    """Every registered deprecated type must be rejected with 410 and a replacement hint."""
+-    with pytest.raises(ExtendedHTTPException) as exc_info:
+-        validate_credential_type_not_deprecated(_make_request_with_credential_type(credential_type))
+-
+-    assert exc_info.value.code == status.HTTP_410_GONE
+-    assert exc_info.value.message == f"{credential_type.value} integration is deprecated"
+-    assert credential_type.value in exc_info.value.details
+-    assert exc_info.value.help == DEPRECATED_CREDENTIAL_TYPES[credential_type]
+-
+-
+-@pytest.mark.parametrize(
+-    "credential_type",
+-    [
+-        CredentialTypes.ZEPHYR_SCALE,
+-        CredentialTypes.GIT,
+-        CredentialTypes.JIRA,
+-        CredentialTypes.XRAY,
+-    ],
+-)
+-def test_validate_credential_type_not_deprecated_allows_active_types(credential_type):
+-    """Types absent from the registry must pass through untouched."""
+-    validate_credential_type_not_deprecated(_make_request_with_credential_type(credential_type))
+diff --git a/tests/codemie_tools/base/test_models_deprecated_flag.py b/tests/codemie_tools/base/test_models_deprecated_flag.py
+deleted file mode 100644
+index 59ace9f49..000000000
+--- a/tests/codemie_tools/base/test_models_deprecated_flag.py
++++ /dev/null
+@@ -1,34 +0,0 @@
+-# Copyright 2026 EPAM Systems, Inc. ("EPAM")
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-
+-from codemie_tools.base.models import Tool, ToolMetadata
+-
+-
+-def test_tool_metadata_deprecated_defaults_false():
+-    metadata = ToolMetadata(name="anything")
+-    dumped = metadata.model_dump()
+-    assert "deprecated" in dumped
+-    assert dumped["deprecated"] is False
+-
+-
+-def test_tool_metadata_deprecated_can_be_set_true():
+-    metadata = ToolMetadata(name="anything", deprecated=True)
+-    assert metadata.deprecated is True
+-    assert metadata.model_dump()["deprecated"] is True
+-
+-
+-def test_tool_carries_deprecated_from_metadata():
+-    metadata = ToolMetadata(name="anything", deprecated=True)
+-    tool = Tool.from_metadata(metadata)
+-    dumped = tool.model_dump()
+-    assert dumped["deprecated"] is True
+-
+-
+-def test_tool_deprecated_defaults_false():
+-    tool = Tool(name="anything")
+-    assert tool.model_dump()["deprecated"] is False
+diff --git a/tests/codemie_tools/qa/test_qa_toolkit.py b/tests/codemie_tools/qa/test_qa_toolkit.py
+index f0fc00f1d..98a28fafb 100644
+--- a/tests/codemie_tools/qa/test_qa_toolkit.py
++++ b/tests/codemie_tools/qa/test_qa_toolkit.py
+@@ -14,7 +14,6 @@
+ 
+ from codemie_tools.base.models import ToolSet
+ from codemie_tools.qa.toolkit import QualityAssuranceToolkit, QualityAssuranceToolkitUI
+-from codemie_tools.qa.zephyr_squad.tools_vars import ZEPHYR_SQUAD_TOOL
+ 
+ 
+ class TestQualityAssuranceToolkit:
+@@ -22,7 +21,7 @@ class TestQualityAssuranceToolkit:
+         toolkit_ui = QualityAssuranceToolkit.get_definition()
+         assert isinstance(toolkit_ui, QualityAssuranceToolkitUI)
+         assert toolkit_ui.toolkit == ToolSet.QUALITY_ASSURANCE
+-        assert len(toolkit_ui.tools) == 5
++        assert len(toolkit_ui.tools) == 4
+         assert toolkit_ui.label == ToolSet.QUALITY_ASSURANCE.value
+ 
+ 
+@@ -33,22 +32,12 @@ class TestQualityAssuranceToolkitUI:
+ 
+     def test_tools_property(self):
+         toolkit_ui = QualityAssuranceToolkitUI()
+-        assert len(toolkit_ui.tools) == 5
++        assert len(toolkit_ui.tools) == 4
+ 
+         # Check that the tools are correctly defined
+         tool_names = [tool.name for tool in toolkit_ui.tools]
+         assert "ZephyrScale" in tool_names
+-        assert "ZephyrSquad" in tool_names
++        assert "ZephyrSquad" not in tool_names
+         assert "XrayGetTests" in tool_names
+         assert "XrayCreateTest" in tool_names
+         assert "XrayExecuteGraphQL" in tool_names
+-
+-    def test_zephyr_squad_marked_deprecated(self):
+-        toolkit_ui = QualityAssuranceToolkitUI()
+-        by_name = {tool.name: tool for tool in toolkit_ui.tools}
+-        assert by_name["ZephyrSquad"].deprecated is True
+-        for name in ("ZephyrScale", "XrayGetTests", "XrayCreateTest", "XrayExecuteGraphQL"):
+-            assert by_name[name].deprecated is False, f"{name} should not be deprecated"
+-
+-    def test_zephyr_squad_metadata_deprecated_flag(self):
+-        assert ZEPHYR_SQUAD_TOOL.deprecated is True
+diff --git a/tests/codemie_tools/qa/zephyr_squad/test_api_wrapper.py b/tests/codemie_tools/qa/zephyr_squad/test_api_wrapper.py
+deleted file mode 100644
+index 2fa33de8c..000000000
+--- a/tests/codemie_tools/qa/zephyr_squad/test_api_wrapper.py
++++ /dev/null
+@@ -1,97 +0,0 @@
+-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-
+-from unittest.mock import MagicMock, patch, ANY
+-
+-import pytest
+-from requests import HTTPError
+-
+-from codemie_tools.qa.zephyr_squad.api_wrapper import ZephyrRestAPI
+-
+-
+-@patch("requests.Session.request")
+-def test_request_successfull(mock_request):
+-    mock_request.return_value = MagicMock(value="test_response", status_code=200)
+-    api = ZephyrRestAPI(account_id="test_account_id", secret_key="test_secret_key", access_key="secret_key")
+-
+-    response = api.request(method="GET", path="/test_path")
+-
+-    assert response.value == "test_response"
+-    mock_request.assert_called_once_with(
+-        method='GET',
+-        url='https://prod-api.zephyr4jiracloud.com/connect/public/rest/api/1.0/test_path',
+-        headers=ANY,
+-        data=None,
+-        json=None,
+-        timeout=75,
+-        files=None,
+-    )
+-
+-
+-@patch("requests.Session.request")
+-def test_request_failure(mock_request):
+-    mock_request.return_value = MagicMock(value="test_response", status_code=401)
+-    api = ZephyrRestAPI(account_id="test_account_id", secret_key="test_secret_key", access_key="secret_key")
+-
+-    with pytest.raises(HTTPError):
+-        api.request(method="GET", path="/test_path")
+-
+-
+-@patch("requests.Session.request")
+-def test_request_with_custom_headers_and_content_type(mock_request):
+-    """Test that custom headers are merged with auth headers and content type can be set via headers"""
+-    mock_request.return_value = MagicMock(value="test_response", status_code=200)
+-    api = ZephyrRestAPI(account_id="test_account_id", secret_key="test_secret_key", access_key="test_access_key")
+-
+-    custom_headers = {"X-Custom-Header": "custom_value", "Content-Type": "application/xml"}
+-    response = api.request(method="POST", path="/test_path", headers=custom_headers)
+-
+-    assert response.value == "test_response"
+-
+-    # Verify the request was called with merged headers
+-    call_args = mock_request.call_args
+-    headers = call_args.kwargs['headers']
+-
+-    # Auth headers should be present
+-    assert 'Authorization' in headers
+-    assert headers['Authorization'].startswith('JWT ')
+-    assert headers['zapiAccessKey'] == 'test_access_key'
+-
+-    # Custom content type should be set
+-    assert headers['Content-Type'] == 'application/xml'
+-
+-    # Custom header should be preserved
+-    assert headers['X-Custom-Header'] == 'custom_value'
+-
+-
+-@patch("requests.Session.request")
+-def test_request_without_explicit_content_type(mock_request):
+-    """Test that no default content type is set when not specified"""
+-    mock_request.return_value = MagicMock(value="test_response", status_code=200)
+-    api = ZephyrRestAPI(account_id="test_account_id", secret_key="test_secret_key", access_key="test_access_key")
+-
+-    response = api.request(method="GET", path="/test_path")
+-
+-    assert response.value == "test_response"
+-
+-    # Verify no default content type is set
+-    call_args = mock_request.call_args
+-    headers = call_args.kwargs['headers']
+-
+-    # Auth headers should be present
+-    assert 'Authorization' in headers
+-    assert headers['zapiAccessKey'] == 'test_access_key'
+-
+-    # Content-Type should not be set automatically
+-    assert 'Content-Type' not in headers
+diff --git a/tests/codemie_tools/qa/zephyr_squad/test_squad_generic_tool.py b/tests/codemie_tools/qa/zephyr_squad/test_squad_generic_tool.py
+deleted file mode 100644
+index b58db3ee7..000000000
+--- a/tests/codemie_tools/qa/zephyr_squad/test_squad_generic_tool.py
++++ /dev/null
+@@ -1,79 +0,0 @@
+-# Copyright 2026 EPAM Systems, Inc. (“EPAM”)
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#     http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-
+-import pytest
+-from unittest.mock import patch, MagicMock
+-
+-from codemie_tools.qa.zephyr_squad.tools import (
+-    ZephyrSquadGenericTool,
+-    ZEPHYR_SQUAD_HEALTHCHECK_URL,
+-)
+-from codemie_tools.qa.zephyr_squad.models import ZephyrSquadConfig
+-
+-
+-def test_execute_no_config():
+-    tool = ZephyrSquadGenericTool()
+-
+-    with pytest.raises(ValueError):
+-        tool.execute(method="GET", relative_path="path")
+-
+-
+-@patch("codemie_tools.qa.zephyr_squad.api_wrapper.ZephyrRestAPI.request")
+-def test_execute_valid_config(mock_make_request):
+-    mock_make_request.return_value = MagicMock(content="test_content")
+-
+-    config = ZephyrSquadConfig(account_id="test_account_id", access_key="test_access_key", secret_key="test_secret_key")
+-    tool = ZephyrSquadGenericTool(config=config)
+-
+-    result = tool.execute(method="GET", relative_path="path")
+-
+-    assert result == "test_content"
+-
+-
+-@patch("codemie_tools.qa.zephyr_squad.api_wrapper.ZephyrRestAPI.request")
+-def test_healthcheck_success(mock_make_request):
+-    mock_make_request.return_value = MagicMock(
+-        content=b'{"baseUrl": "https://jira.example.com", "version": "8.20.0", "buildNumber": 820000}'
+-    )
+-
+-    config = ZephyrSquadConfig(account_id="test_account_id", access_key="test_access_key", secret_key="test_secret_key")
+-    tool = ZephyrSquadGenericTool(config=config)
+-
+-    tool._healthcheck()
+-
+-    mock_make_request.assert_called_once_with(
+-        path=ZEPHYR_SQUAD_HEALTHCHECK_URL, method="GET", json={}, headers={"Content-Type": "application/json"}
+-    )
+-
+-
+-@patch("codemie_tools.qa.zephyr_squad.api_wrapper.ZephyrRestAPI.request")
+-def test_healthcheck_failure_html_response(mock_make_request):
+-    mock_make_request.return_value = MagicMock(content=b"<html><body>Login required</body></html>")
+-
+-    config = ZephyrSquadConfig(account_id="test_account_id", access_key="test_access_key", secret_key="test_secret_key")
+-    tool = ZephyrSquadGenericTool(config=config)
+-
+-    with pytest.raises(AssertionError, match="Access denied"):
+-        tool._healthcheck()
+-
+-
+-@patch("codemie_tools.qa.zephyr_squad.api_wrapper.ZephyrRestAPI.request")
+-def test_healthcheck_failure_missing_expected_fields(mock_make_request):
+-    mock_make_request.return_value = MagicMock(content=b'{"message": "Authentication failed"}')
+-
+-    config = ZephyrSquadConfig(account_id="test_account_id", access_key="test_access_key", secret_key="test_secret_key")
+-    tool = ZephyrSquadGenericTool(config=config)
+-
+-    with pytest.raises(AssertionError, match="Access denied"):
+-        tool._healthcheck()

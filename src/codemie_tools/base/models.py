@@ -56,7 +56,6 @@ class ToolMetadata(BaseModel):
     user_description: Optional[str] = ''
     settings_config: Optional[bool] = False
     config_class: Optional[Any] = Field(default=None, exclude=True)
-    deprecated: Optional[bool] = False
 
     @model_validator(mode='after')
     def validate_settings_config(self) -> 'ToolMetadata':
@@ -94,7 +93,6 @@ class CredentialTypes(str, Enum):
     TELEGRAM = "Telegram"
     ZEPHYR_SCALE = "ZephyrScale"
     _ZEPHYR_CLOUD = "ZephyrCloud"  # Deprecated
-    ZEPHYR_SQUAD = "ZephyrSquad"
     XRAY = "Xray"
     SERVICENOW = "ServiceNow"
     REPORT_PORTAL = "ReportPortal"
@@ -156,7 +154,6 @@ class Tool(BaseModel):
     settings_config: Optional[bool] = False
     description: Optional[str] = None
     user_description: Optional[str] = None
-    deprecated: Optional[bool] = False
     config_class: Optional[Any] = Field(default=None, exclude=True)
     tool_class: Optional[Any] = Field(default=None, exclude=True)
 
@@ -182,7 +179,6 @@ class Tool(BaseModel):
             label=metadata.label or None,
             description=metadata.description or None,
             user_description=metadata.user_description or None,
-            deprecated=bool(metadata.deprecated),
             config_class=config_class,
             settings_config=settings_config,
             tool_class=tool_class,

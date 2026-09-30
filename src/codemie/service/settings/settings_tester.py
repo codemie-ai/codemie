@@ -39,8 +39,6 @@ from codemie_tools.notification.email.models import EmailToolConfig
 from codemie_tools.notification.email.tools import EmailTool
 from codemie_tools.qa.zephyr.models import ZephyrConfig
 from codemie_tools.qa.zephyr.tools import ZephyrGenericTool
-from codemie_tools.qa.zephyr_squad.models import ZephyrSquadConfig
-from codemie_tools.qa.zephyr_squad.tools import ZephyrSquadGenericTool
 from codemie_tools.qa.xray.models import XrayConfig
 from codemie_tools.qa.xray.tools import XrayGetTestsTool
 from codemie_tools.report_portal.models import ReportPortalConfig
@@ -94,7 +92,6 @@ class SettingsTester(SettingsService):
             CredentialTypes.AZURE: SettingsTester._test_azure,
             CredentialTypes.EMAIL: SettingsTester._test_email,
             CredentialTypes.ZEPHYR_SCALE: SettingsTester._test_zephyr,
-            CredentialTypes.ZEPHYR_SQUAD: SettingsTester._test_zephyr_squad,
             CredentialTypes.XRAY: SettingsTester._test_xray,
             CredentialTypes.SERVICENOW: SettingsTester._test_snow,
             CredentialTypes.GIT: SettingsTester._test_git,
@@ -146,9 +143,6 @@ class SettingsTester(SettingsService):
 
     def _test_zephyr(self) -> Tuple[bool, str]:
         return ZephyrGenericTool(config=ZephyrConfig(**self.credential_values)).healthcheck()
-
-    def _test_zephyr_squad(self) -> Tuple[bool, str]:
-        return ZephyrSquadGenericTool(config=ZephyrSquadConfig(**self.credential_values)).healthcheck()
 
     def _test_xray(self) -> Tuple[bool, str]:
         return XrayGetTestsTool(config=XrayConfig(**self.credential_values)).healthcheck()

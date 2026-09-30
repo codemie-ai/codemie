@@ -254,7 +254,7 @@ class SearchAndRerankTool(SearchAndRerankBase):
         Splits by underscore and camelCase to extract individual words.
         Examples:
             'generic_jira_tool' -> ['generic', 'jira', 'tool']
-            'ZephyrSquad' -> ['zephyr', 'squad']
+            'ZephyrScale' -> ['zephyr', 'scale']
             'search_code_repo_by_path' -> ['search', 'code', 'repo', 'by', 'path']
 
         Args:
@@ -265,7 +265,7 @@ class SearchAndRerankTool(SearchAndRerankBase):
         """
         # Split by underscore first
         parts = tool_name.replace('_', ' ')
-        # Split camelCase (e.g., 'ZephyrSquad' -> 'Zephyr Squad')
+        # Split camelCase (e.g., 'ZephyrScale' -> 'Zephyr Scale')
         parts = re.sub(r'([a-z])([A-Z])', r'\1 \2', parts)
         # Lowercase and split into tokens
         tokens = parts.lower().split()

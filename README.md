@@ -319,7 +319,7 @@ Two-layer design:
 | Cloud | `src/codemie_tools/cloud/` | AWS (S3, Bedrock, KMS), Azure (Blob, KeyVault), GCP (GCS, Vertex AI), Kubernetes |
 | VCS / Git | `src/codemie_tools/core/vcs/` | GitHub, GitLab, Bitbucket, Azure DevOps Git |
 | Project Management | `src/codemie_tools/core/project_management/` | Confluence, Jira |
-| QA | `src/codemie_tools/qa/` | X-ray, Zephyr Scale, Zephyr Squad |
+| QA | `src/codemie_tools/qa/` | X-ray, Zephyr Scale |
 | Data Management | `src/codemie_tools/data_management/` | Elasticsearch, SQL, file system, code executor |
 | File Analysis | `src/codemie_tools/file_analysis/` | CSV, DOCX, PDF, PPTX, XLSX |
 | Azure DevOps | `src/codemie_tools/azure_devops/` | Wiki, Work Items, Test Plans |

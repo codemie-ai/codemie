@@ -28,7 +28,6 @@ from codemie.service.settings.scheduler_settings_service import (
     INVALID_CRON_EXPRESSION_MESSAGE,
     validate_timezone_string,
 )
-from codemie_tools.base.models import CredentialTypes
 from apscheduler.triggers.cron import CronTrigger
 from croniter import croniter
 
@@ -80,42 +79,6 @@ UNSUPPORTED_WEBHOOK_DATASOURCE_TYPES_HELP_MESSAGE = (
     "file, sharepoint, xray, azure devops wiki, azure devops work item. "
     "Please select a datasource of a supported type (e.g., git/code, summary, chunk-summary, confluence, jira, google)."
 )
-
-
-DEPRECATED_CREDENTIAL_TYPES: dict[CredentialTypes, str] = {
-    CredentialTypes.ZEPHYR_SQUAD: (
-        "Use an alternative test-management integration (e.g. Zephyr Scale) for new setups."
-    ),
-}
-"""Credential types that can no longer be created or updated.
-
-Maps the deprecated credential type to the ``help`` hint pointing users at a replacement.
-Existing settings of these types stay readable and usable; only create/update is blocked.
-To deprecate another integration, add one entry here — no router changes needed.
-"""
-
-
-def validate_credential_type_not_deprecated(request: SettingRequest) -> None:
-    """
-    Reject create/update of a setting whose credential type is deprecated.
-
-    Raises:
-        ExtendedHTTPException: 410 GONE if the credential type is in DEPRECATED_CREDENTIAL_TYPES
-    """
-    help_message = DEPRECATED_CREDENTIAL_TYPES.get(request.credential_type)
-    if help_message is None:
-        return
-
-    credential_type_name = request.credential_type.value
-    raise ExtendedHTTPException(
-        code=status.HTTP_410_GONE,
-        message=f"{credential_type_name} integration is deprecated",
-        details=(
-            f"New {credential_type_name} settings can no longer be created or updated. "
-            "Existing configurations remain read-only."
-        ),
-        help=help_message,
-    )
 
 
 def _validate_pat_authentication(values: dict):

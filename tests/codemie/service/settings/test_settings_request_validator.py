@@ -24,9 +24,7 @@ from fastapi import status
 from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.models.settings import CredentialValues, SettingRequest, SettingType
 from codemie.service.settings.settings_request_validator import (
-    DEPRECATED_CREDENTIAL_TYPES,
     UNSUPPORTED_SCHEDULER_DATASOURCE_TYPES,
-    validate_credential_type_not_deprecated,
     validate_datasource_type_for_scheduler,
     validate_datasource_type_for_webhook,
     validate_git_request,
@@ -454,51 +452,6 @@ def test_rejects_duplicate_assistant_ids_within_list(mock_belongs_to_project):
     with pytest.raises(ExtendedHTTPException) as exc_info:
         validate_ms_teams_request(request, setting_type=SettingType.PROJECT)
     assert exc_info.value.code == status.HTTP_400_BAD_REQUEST
-
-
-# ---------------------------------------------------------------------------
-# EPMCDME-10913 — deprecated credential-type registry
-# ---------------------------------------------------------------------------
-
-
-def _make_request_with_credential_type(credential_type: CredentialTypes) -> SettingRequest:
-    return SettingRequest(
-        project_name="test_project",
-        alias="test_alias",
-        credential_type=credential_type,
-        credential_values=[{"key": "api_key", "value": "x"}],
-    )
-
-
-def test_zephyr_squad_is_registered_as_deprecated():
-    """ZephyrSquad must stay in the registry — that is what blocks create/update."""
-    assert CredentialTypes.ZEPHYR_SQUAD in DEPRECATED_CREDENTIAL_TYPES
-
-
-@pytest.mark.parametrize("credential_type", list(DEPRECATED_CREDENTIAL_TYPES))
-def test_validate_credential_type_not_deprecated_rejects_registered_types(credential_type):
-    """Every registered deprecated type must be rejected with 410 and a replacement hint."""
-    with pytest.raises(ExtendedHTTPException) as exc_info:
-        validate_credential_type_not_deprecated(_make_request_with_credential_type(credential_type))
-
-    assert exc_info.value.code == status.HTTP_410_GONE
-    assert exc_info.value.message == f"{credential_type.value} integration is deprecated"
-    assert credential_type.value in exc_info.value.details
-    assert exc_info.value.help == DEPRECATED_CREDENTIAL_TYPES[credential_type]
-
-
-@pytest.mark.parametrize(
-    "credential_type",
-    [
-        CredentialTypes.ZEPHYR_SCALE,
-        CredentialTypes.GIT,
-        CredentialTypes.JIRA,
-        CredentialTypes.XRAY,
-    ],
-)
-def test_validate_credential_type_not_deprecated_allows_active_types(credential_type):
-    """Types absent from the registry must pass through untouched."""
-    validate_credential_type_not_deprecated(_make_request_with_credential_type(credential_type))
 
 
 def _git_request(credential_values):

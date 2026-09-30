@@ -534,8 +534,8 @@ class TestSearchAndRerankTool:
 
     def test_tokenize_tool_name_with_camel_case(self):
         """Test tokenization of camelCase tool names."""
-        result = SearchAndRerankTool.tokenize_tool_name("ZephyrSquad")
-        assert result == ['zephyr', 'squad']
+        result = SearchAndRerankTool.tokenize_tool_name("ZephyrScale")
+        assert result == ['zephyr', 'scale']
 
     def test_tokenize_tool_name_mixed_format(self):
         """Test tokenization of tool names with mixed formats."""

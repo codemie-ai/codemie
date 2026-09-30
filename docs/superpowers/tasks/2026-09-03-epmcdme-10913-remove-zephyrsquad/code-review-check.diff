@@ -1,0 +1,118 @@
+diff --git a/tests/codemie/rest_api/routers/test_project_settings.py b/tests/codemie/rest_api/routers/test_project_settings.py
+index 49385683d..767e93b4f 100644
+--- a/tests/codemie/rest_api/routers/test_project_settings.py
++++ b/tests/codemie/rest_api/routers/test_project_settings.py
+@@ -427,3 +427,23 @@ async def test_create_git_integrity_error_maps_to_generic_422(mock_authenticate,
+ 
+     assert excinfo.value.code == status.HTTP_422_UNPROCESSABLE_ENTITY
+     assert "ms_teams" not in excinfo.value.message
++
++
++@pytest.mark.anyio
++@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
++async def test_create_project_setting_rejects_unknown_credential_type(mock_authenticate):
++    """An unrecognized credential_type must fail request validation (422), not reach the service."""
++    mock_authenticate.return_value = _admin_user()
++
++    request_data = {
++        "project_name": "test_project",
++        "alias": "bogus-alias",
++        "credential_type": "NotARealCredentialType",
++        "credential_values": [{"key": "api_key", "value": "x"}],
++    }
++    transport = ASGITransport(app=app)
++
++    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++        response = await ac.post("/v1/settings/project", headers={"user-id": "admin1"}, json=request_data)
++
++    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
+diff --git a/tests/codemie/rest_api/routers/test_user_settings.py b/tests/codemie/rest_api/routers/test_user_settings.py
+index 94db28528..5c7c8baaf 100644
+--- a/tests/codemie/rest_api/routers/test_user_settings.py
++++ b/tests/codemie/rest_api/routers/test_user_settings.py
+@@ -492,3 +492,85 @@ async def test_admin_create_litellm_unchanged_when_personal_feature_disabled(
+     mock_require_litellm_enabled.assert_called_once_with()
+     mock_validate_litellm_request.assert_called_once()
+     mock_create_setting.assert_called_once()
++
++
++@pytest.mark.anyio
++@patch(
++    "codemie.configs.customer_config.CustomerConfig.is_feature_enabled",
++    return_value=True,
++)
++@patch('codemie.service.settings.settings.SettingsService.create_setting')
++@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
++async def test_create_user_setting_rejects_ms_teams(mock_authenticate, mock_create_setting, mock_is_feature_enabled):
++    # ms_teams integrations are project-scope only and must be rejected at USER scope.
++    # is_feature_enabled is forced True here so this exercises the USER-scope rejection
++    # itself, decoupled from the shared customer-config.yaml teamsBotIntegration value.
++    mock_authenticate.return_value = User(id="user123", username="testuser", project_names=["test_project"])
++
++    request_data = {
++        "project_name": "test_project",
++        "alias": "ms-teams-alias",
++        "credential_type": "MSTeams",
++        "credential_values": [{"key": "assistant_ids", "value": ["assistant-1"]}],
++    }
++    transport = ASGITransport(app=app)
++
++    with pytest.raises(ExtendedHTTPException) as excinfo:
++        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++            await ac.post("/v1/settings/user", headers={"user-id": "user123"}, json=request_data)
++
++    assert excinfo.value.code == status.HTTP_400_BAD_REQUEST
++    mock_create_setting.assert_not_called()
++
++
++@pytest.mark.anyio
++@patch(
++    "codemie.configs.customer_config.CustomerConfig.is_feature_enabled",
++    return_value=True,
++)
++@patch('codemie.service.settings.settings.SettingsService.update_settings')
++@patch('codemie.service.settings.settings.SettingsService.get_setting_ability')
++@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
++async def test_update_user_setting_rejects_ms_teams(
++    mock_authenticate, mock_get_setting_ability, mock_update_settings, mock_is_feature_enabled
++):
++    # ms_teams integrations are project-scope only and must be rejected at USER scope.
++    # is_feature_enabled is forced True here so this exercises the USER-scope rejection
++    # itself, decoupled from the shared customer-config.yaml teamsBotIntegration value.
++    mock_authenticate.return_value = User(id="user123", username="testuser", project_names=["test_project"])
++
++    request_data = {
++        "project_name": "test_project",
++        "alias": "ms-teams-alias",
++        "credential_type": "MSTeams",
++        "credential_values": [{"key": "assistant_ids", "value": ["assistant-1"]}],
++    }
++    transport = ASGITransport(app=app)
++
++    with pytest.raises(ExtendedHTTPException) as excinfo:
++        async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++            await ac.put("/v1/settings/user/setting_123", headers={"user-id": "user123"}, json=request_data)
++
++    assert excinfo.value.code == status.HTTP_400_BAD_REQUEST
++    mock_get_setting_ability.assert_not_called()
++    mock_update_settings.assert_not_called()
++
++
++@pytest.mark.anyio
++@patch("codemie.rest_api.security.idp.local.LocalIdp.authenticate")
++async def test_create_user_setting_rejects_unknown_credential_type(mock_authenticate):
++    """An unrecognized credential_type must fail request validation (422), not reach the service."""
++    mock_authenticate.return_value = User(id="user123", username="testuser")
++
++    request_data = {
++        "project_name": "test_project",
++        "alias": "bogus-alias",
++        "credential_type": "NotARealCredentialType",
++        "credential_values": [{"key": "api_key", "value": "x"}],
++    }
++    transport = ASGITransport(app=app)
++
++    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
++        response = await ac.post("/v1/settings/user", headers={"user-id": "user123"}, json=request_data)
++
++    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY

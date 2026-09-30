@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "task": "Fully remove the ZephyrSquad credential type and tool integration from the platform, including the associated database enum value and stored settings rows.",
+  "generated": "2026-09-03",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 5, "label": "XL" }
+  },
+  "total": 23,
+  "size": "L",
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Removal spans the QA toolkit (zephyr_squad module deleted entirely: __init__, api_wrapper, models, tools, tools_vars), the settings service layer (settings.py, settings_request_validator.py, settings_tester.py), two REST routers (project_settings.py, user_settings.py), and the shared CredentialTypes enum in codemie_tools/base/models.py — 4+ components across multiple subsystems." },
+    { "dimension": "technical_risk", "reason": "The alembic migration (d9e8f7a6b5c4) issues a hard DELETE FROM codemie.settings WHERE credential_type = 'ZEPHYR_SQUAD' before dropping the enum label; the downgrade path restores the enum value but not the deleted rows, making the data loss irreversible even though the change itself follows an established enum-cleanup pattern and was pre-confirmed by the product owner as zero-usage." },
+    { "dimension": "file_change_estimate", "reason": "diffstat reports 23 files changed (439 insertions, 823 deletions) — comfortably in the 16+ file XXL band, though the heavy deletion bias reflects removal work rather than new-code complexity." },
+    { "dimension": "affected_layers", "reason": "Touches Agent-Tool (qa toolkit), Service (settings/validator/tester), API (two routers), and DB-Persistence (alembic migration + enum definition) — 4 distinct layers, with an actual schema-changing migration." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches a core shared utility (CredentialTypes enum consumed by settings service, validator, tester, and tool configs)",
+    "Technical Risk bumped from S to M: requires a data migration (DELETE FROM settings WHERE credential_type = 'ZEPHYR_SQUAD')",
+    "Technical Risk bumped from M to L: changes the database schema significantly (drops the ZEPHYR_SQUAD enum label via alembic_postgresql_enum)",
+    "Affected Layers bumped from L to XL: changes database schema significantly, adding DB-Persistence blast radius beyond the feature-local change"
+  ],
+  "split_recommendation": null
+}
