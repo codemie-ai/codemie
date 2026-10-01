@@ -16,7 +16,7 @@ import pytest
 from datetime import datetime
 from unittest.mock import ANY, AsyncMock, MagicMock
 
-from codemie.repository.cli_analytics_repository import LocalAnalyticsFilter
+from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
 
 
@@ -253,6 +253,26 @@ async def test_branch_none_when_not_provided():
 
     call_filter = repo.get_session_cost_facts.call_args.args[0]
     assert call_filter.branch is None
+
+
+@pytest.mark.asyncio
+async def test_a_branch_keeps_a_filter_that_denies_every_session_denying():
+    # A project admin who administers no project sees nothing, whatever branch /sessions asks for.
+    handler = make_handler()
+    denied = LocalAnalyticsFilter(start_dt=datetime(2026, 1, 1), end_dt=datetime(2026, 12, 31), deny_all=True)
+
+    await handler.get_sessions(denied, page=0, per_page=20, sort_by="start_time", search=None, branch="main")
+
+    repo = handler._repo
+    for query in (
+        repo.get_session_cost_facts,
+        repo.get_turns_by_session,
+        repo.get_tool_success_by_session,
+        repo.get_lines_by_session,
+        repo.get_model_breakdown,
+    ):
+        call_filter = query.call_args.args[0]
+        assert (call_filter.deny_all, call_filter.branch) == (True, "main")
 
 
 def _dispatch_row(*, subagent_type="", skill_name="", duration_ms=9, real_duration_ms=152845, offset_s=10):

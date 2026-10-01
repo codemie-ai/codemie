@@ -1,0 +1,174 @@
+# Copyright 2026 EPAM Systems, Inc. ("EPAM")
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Harness vocabulary: how a coding agent's telemetry maps onto canonical kinds.
+
+The PostgreSQL adapter stores a small integer kind next to each span and log event and its
+queries filter on the kind, not on harness-specific names. Supporting another harness
+(Cursor, Codex, Gemini CLI) is therefore a data change here: map its span names, log
+events and metric names onto the same kinds. Rows stored before a name was added keep
+kind 0 until the backfill command (`postgres/backfill.py`) re-derives their kind and
+rebuilds the rollups of the range it is given.
+
+The hook constants mirror the ClickHouse schema (`config/clickhouse/schema.sql`), which
+the ClickHouse adapter keeps using unchanged.
+"""
+
+from __future__ import annotations
+
+from enum import IntEnum
+
+
+class SpanKind(IntEnum):
+    OTHER = 0
+    TOOL = 1
+    TOOL_EXECUTION = 2
+    INTERACTION = 3
+    LLM_REQUEST = 4
+
+
+class EventKind(IntEnum):
+    OTHER = 0
+    API_REQUEST = 1
+    USER_PROMPT = 2
+    SKILL_ACTIVATED = 3
+    TOOL_RESULT = 4
+    TOOL_DECISION = 5
+    API_ERROR = 6
+
+
+SPAN_KIND: dict[str, SpanKind] = {
+    "claude_code.tool": SpanKind.TOOL,
+    "claude_code.tool.execution": SpanKind.TOOL_EXECUTION,
+    "claude_code.interaction": SpanKind.INTERACTION,
+    "claude_code.llm_request": SpanKind.LLM_REQUEST,
+    "cursor.tool": SpanKind.TOOL,
+    "cursor.tool.execution": SpanKind.TOOL_EXECUTION,
+    "cursor.interaction": SpanKind.INTERACTION,
+}
+
+EVENT_KIND: dict[str, EventKind] = {
+    "api_request": EventKind.API_REQUEST,
+    "user_prompt": EventKind.USER_PROMPT,
+    "skill_activated": EventKind.SKILL_ACTIVATED,
+    "tool_result": EventKind.TOOL_RESULT,
+    "tool_decision": EventKind.TOOL_DECISION,
+    "api_error": EventKind.API_ERROR,
+}
+
+LINES_METRICS: tuple[str, ...] = ("claude_code.lines_of_code.count", "cursor.lines_of_code.count")
+ACTIVE_TIME_METRICS: tuple[str, ...] = ("claude_code.active_time.total", "cursor.active_time.total")
+ROLLUP_METRICS: tuple[str, ...] = LINES_METRICS + ACTIVE_TIME_METRICS
+
+# Tool names whose file_path counts as written / edited (mv_file_facts_daily).
+WRITE_TOOLS: tuple[str, ...] = ("Write",)
+EDIT_TOOLS: tuple[str, ...] = ("Edit", "MultiEdit", "NotebookEdit")
+
+# The hook types ClickHouse copies into coding_agent_hook_events (mv_hook_events), and so
+# the only ones that feed session dimensions and "last active".
+DIMENSION_HOOK_TYPES: tuple[str, ...] = (
+    "agent.session.start",
+    "agent.session.stop",
+    "agent.session.end",
+    "agent.session.compact",
+    "agent.prompt.submit",
+    "agent.tool.start",
+    "agent.tool.end",
+    "agent.tool.error",
+    "agent.tool.denied",
+    "agent.turn.error",
+    "agent.subagent.start",
+    "agent.subagent.stop",
+    "agent.notification",
+)
+
+# Hook-sourced slash-command skill dispatch (UserPromptExpansion); not a dimension type.
+SKILL_DISPATCH_EVENT = "agent.skill.dispatch"
+
+# Hook fields stored in typed columns, in hook_events column order.
+HOOK_TEXT_FIELDS: tuple[str, ...] = (
+    "developer_name",
+    "codemie_project_name",
+    "cwd",
+    "git_branch",
+    "repo_remote",
+    "permission_mode",
+    "source",
+    "effort",
+    "tool_name",
+    "tool_use_id",
+    "tool_input",
+    "tool_output",
+    "error_message",
+    "error_type",
+    "reason",
+    "agent_id",
+    "agent_type",
+    "trigger",
+    "denial_reason",
+    "notification_type",
+    "prompt_body",
+    "skill_name",
+)
+
+# The attributes the ClickHouse path writes for each hook event, in the router's order.
+HOOK_ATTRIBUTE_KEYS: tuple[str, ...] = (
+    "event_type",
+    "session_id",
+    "prompt_id",
+    "agent_id",
+    "agent_type",
+    "codemie_project_name",
+    "cwd",
+    "denial_reason",
+    "developer_name",
+    "effort",
+    "error_message",
+    "error_type",
+    "git_branch",
+    "notification_type",
+    "permission_mode",
+    "prompt_body",
+    "reason",
+    "repo_remote",
+    "skill_name",
+    "source",
+    "tool_input",
+    "tool_name",
+    "tool_output",
+    "tool_use_id",
+    "trigger",
+)
+
+# Hook keys with a typed home; any other key is kept in the residual attributes.
+HOOK_KNOWN_KEYS: frozenset[str] = frozenset({"type", "timestamp", "session_id", "prompt_id", *HOOK_TEXT_FIELDS})
+
+# OTel attributes that are constant for a session: stored once per session, not per row.
+SESSION_SCOPED_KEYS: tuple[str, ...] = (
+    "user.id",
+    "user.account_uuid",
+    "user.account_id",
+    "organization.id",
+    "terminal.type",
+    "app.version",
+    "app.entrypoint",
+)
+
+# Prompts that never become a session's first prompt (mv_session_dims).
+SENTINEL_EXACT: tuple[str, ...] = ("/clear", "/resume", "/compact", "/exit", "/quit")
+SENTINEL_PREFIX_TRIMMED: tuple[str, ...] = ("<command-name>/clear", "<command-name>/resume")
+SENTINEL_PREFIX_RAW: tuple[str, ...] = (
+    "This session is being continued from a previous conversation",
+    "Caveat: The messages below were generated by the user while running local commands",
+)

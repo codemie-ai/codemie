@@ -202,6 +202,33 @@ class Config(BaseSettings):
     ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT: str = "http://otelcol:4318"  # NOSONAR — internal Docker service, not public
     ANALYTICS_INGEST_MAX_BODY_BYTES: int = 5_242_880
 
+    # OTel CLI Analytics storage engine (codemie.repository.cli_analytics).
+    # "clickhouse": the OTel Collector writes ClickHouse (CLICKHOUSE_*, ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT).
+    # "postgres": the API writes PostgreSQL directly; neither ClickHouse nor the Collector is needed.
+    CLI_ANALYTICS_STORAGE_BACKEND: Literal["clickhouse", "postgres"] = "clickhouse"
+    # Analytics database; empty means the application database (PG_URL / POSTGRES_*). Large installs
+    # should point this at a separate database so vacuum, backups and I/O do not compete.
+    CLI_ANALYTICS_PG_URL: str = ""
+    CLI_ANALYTICS_PG_SCHEMA: str = Field(default="codemie_analytics", pattern=r"^[a-z_][a-z0-9_]{0,62}$")
+    CLI_ANALYTICS_PG_POOL_SIZE: int = Field(default=8, ge=1)  # dedicated pool, never the application pool
+    CLI_ANALYTICS_PG_STATEMENT_TIMEOUT_MS: int = Field(default=30_000, ge=1)
+    CLI_ANALYTICS_PG_WORK_MEM: str = Field(default="32MB", pattern=r"^[0-9]+(kB|MB|GB)$")
+    # An ingest request that cannot get a connection this fast gets 503 (the plugin retries)
+    # instead of queueing past the plugin's 2 s hook timeout.
+    CLI_ANALYTICS_PG_INGEST_ACQUIRE_TIMEOUT_MS: int = Field(default=1_000, ge=1)
+    # Statements of one ingest request. Above the plugin's 2 s wait on purpose: a large spool (up to
+    # the 5 MB body limit) takes seconds, and a lower limit would reject it on every re-send.
+    CLI_ANALYTICS_PG_INGEST_STATEMENT_TIMEOUT_MS: int = Field(default=10_000, ge=1)
+    CLI_ANALYTICS_RAW_RETENTION_DAYS: int = Field(default=90, ge=1)
+    CLI_ANALYTICS_ROLLUP_RETENTION_DAYS: int = Field(default=365, ge=1)
+    # Re-sent records are recognised and dropped for this many days after the record's own day, or
+    # after its first delivery when it arrives later than that.
+    CLI_ANALYTICS_DEDUP_RETENTION_DAYS: int = Field(default=14, ge=1)
+    CLI_ANALYTICS_ROLLUP_REFRESH_SECONDS: int = Field(default=30, ge=1)  # dashboard freshness
+    CLI_ANALYTICS_ROLLUP_BATCH_SIZE: int = Field(default=5_000, ge=1)
+    CLI_ANALYTICS_PARTITION_PREMAKE_WEEKS: int = Field(default=4, ge=1)
+    CLI_ANALYTICS_MAINTENANCE_INTERVAL_MINUTES: int = Field(default=60, ge=1)
+
     INDEXES_PERMITTED_FOR_SEARCH: list[str] = [
         KZ_USERS_INDEX,
     ]
@@ -955,6 +982,13 @@ class Config(BaseSettings):
         return minute_value, hour_value
 
     @model_validator(mode="after")
+    def _check_cli_analytics_retention(self) -> Self:
+        # Dashboard windows reach as far back as the raw rows: rollups dropped earlier read as zero.
+        if self.CLI_ANALYTICS_ROLLUP_RETENTION_DAYS < self.CLI_ANALYTICS_RAW_RETENTION_DAYS:
+            raise ValueError("CLI_ANALYTICS_ROLLUP_RETENTION_DAYS must be at least CLI_ANALYTICS_RAW_RETENTION_DAYS")
+        return self
+
+    @model_validator(mode="after")
     def finalize_settings(self) -> Self:
         if not self.AWS_S3_REGION and self.AWS_DEFAULT_REGION:
             self.AWS_S3_REGION = self.AWS_DEFAULT_REGION
@@ -1044,6 +1078,7 @@ class Config(BaseSettings):
         sensitive_keys = [
             "AZURE_STORAGE_CONNECTION_STRING",
             "PG_URL",
+            "CLI_ANALYTICS_PG_URL",
             "ELASTIC_URL",
         ]
         config_dict = self.model_dump()

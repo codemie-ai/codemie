@@ -16,7 +16,10 @@
 
 Serves the contract consumed by codemie-ui's OTel CLI Analytics tab
 (`src/types/localAnalytics.ts`). Field names and shapes follow that contract;
-the data behind them comes from this backend's `codemie_analytics` tables.
+the data behind them comes from the `codemie_analytics` storage selected by
+CLI_ANALYTICS_STORAGE_BACKEND (ClickHouse or PostgreSQL, see
+codemie.repository.cli_analytics). This module parses requests and maps storage
+errors to HTTP statuses; it never touches an engine directly.
 
 Three modelling decisions are invisible in the payload but change every number
 (see ANALYTICS_DISCOVERY/local_analytics_implementation_plan.md §3):
@@ -38,7 +41,6 @@ Three modelling decisions are invisible in the payload but change every number
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -48,15 +50,26 @@ from datetime import datetime, timezone
 from functools import wraps
 from typing import Any, Literal
 
-import httpx
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
-from codemie.clients.clickhouse import ch_query
 from codemie.configs.config import config
 from codemie.configs.customer_config import customer_config
 from codemie.core.exceptions import ExtendedHTTPException
-from codemie.repository.cli_analytics_repository import LocalAnalyticsFilter, LocalAnalyticsRepository
+from codemie.repository.cli_analytics.factory import get_cli_analytics_storage
+from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
+from codemie.repository.cli_analytics.hook_events import datetime_to_ns
+from codemie.repository.cli_analytics.ports import (
+    IngestResult,
+    InvalidTelemetryPayloadError,
+    OtlpSignal,
+    CliAnalyticsStorageConfigError,
+    TelemetryIngestError,
+    TelemetryStorageUnavailableError,
+    TelemetryUpstreamConfigurationError,
+    UnsupportedTelemetryContentTypeError,
+)
 from codemie.rest_api.models.cli_analytics import (
     LocalAnalyticsActivityResponse,
     LocalAnalyticsCostResponse,
@@ -83,28 +96,23 @@ DEFAULT_PAGE = 0
 DEFAULT_PER_PAGE = 20
 MAX_PER_PAGE = 1000
 
-EVENT_SEVERITY: dict[str, tuple[str, int]] = {
-    "agent.tool.error": ("ERROR", 17),
-    "agent.turn.error": ("ERROR", 17),
-    "agent.tool.denied": ("WARN", 13),
-}
-DEFAULT_SEVERITY: tuple[str, int] = ("INFO", 9)
-
-_RETRY_DELAYS = (1.0, 2.0)
-_MAX_ATTEMPTS = len(_RETRY_DELAYS) + 1
-_HTTPX_TIMEOUT = httpx.Timeout(connect=3.0, read=8.0, write=5.0, pool=1.0)
-
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 _ERR_BODY_TOO_LARGE = "Request body too large"
+# The storage refuses its configuration; the reason is logged at startup, not sent to clients.
+_ERR_STORAGE_MISCONFIGURED = "Analytics storage is not available"
 _PROTOBUF_CONTENT_TYPE = "application/x-protobuf"
 
-# Raw tables carry TTL 90d while the daily roll-ups carry 365d (deployment/clickhouse/schema.sql).
-# Any window longer than the raw TTL would mix a full year of cost with 90 days of
-# turns/tools/files, so the requested range is clamped and the clamp is logged.
-RAW_RETENTION_DAYS = 90
 
-_repository = LocalAnalyticsRepository(ch_query)
-_handler = LocalAnalyticsHandler(_repository)
+_INGEST_ERROR_STATUS: dict[type[TelemetryIngestError], int] = {
+    InvalidTelemetryPayloadError: status.HTTP_400_BAD_REQUEST,
+    UnsupportedTelemetryContentTypeError: status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+    TelemetryUpstreamConfigurationError: status.HTTP_502_BAD_GATEWAY,
+    TelemetryStorageUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
+}
+
+
+def _handler() -> LocalAnalyticsHandler:
+    """The handler over the configured storage's reader (the storage is built on first use)."""
+    return LocalAnalyticsHandler(get_cli_analytics_storage().reader)
 
 
 async def _admin_gate(request: Request, _: User = Depends(authenticate)) -> None:
@@ -139,37 +147,27 @@ def _ensure_enabled() -> None:
         )
 
 
-async def _forward(url: str, body: bytes, content_type: str) -> Response:
-    last_exc: Exception | None = None
-    last_status: int | None = None
-    async with httpx.AsyncClient(timeout=_HTTPX_TIMEOUT) as client:
-        for attempt in range(_MAX_ATTEMPTS):
-            if attempt > 0:
-                await asyncio.sleep(_RETRY_DELAYS[attempt - 1])
-            try:
-                resp = await client.post(url, content=body, headers={"Content-Type": content_type})
-                if 200 <= resp.status_code < 300:
-                    return Response(
-                        content=resp.content,
-                        status_code=200,
-                        media_type=resp.headers.get("content-type"),
-                    )
-                if resp.status_code < 500:
-                    logger.error("OTel Collector returned unexpected %d — check routing config", resp.status_code)
-                    raise HTTPException(status_code=502, detail="Analytics collector configuration error")
-                last_status = resp.status_code
-            except httpx.TransportError as exc:
-                last_exc = exc
-                logger.warning("OTel Collector unreachable at %s: %s", url, exc)
-            except HTTPException:
-                raise
-            except Exception as exc:
-                last_exc = exc
-                logger.exception("Unexpected error forwarding to %s", url)
-                break
-    reason = f"upstream {last_status}" if last_status else str(last_exc)
-    logger.error("Analytics collector unavailable after %d attempts: %s", _MAX_ATTEMPTS, reason)
-    raise HTTPException(status_code=503, detail="Analytics collector unavailable")
+def _ingest_response(result: IngestResult) -> Response:
+    return Response(content=result.body, status_code=200, media_type=result.media_type)
+
+
+def _ingest_http_error(exc: TelemetryIngestError) -> HTTPException:
+    return HTTPException(status_code=_INGEST_ERROR_STATUS.get(type(exc), 503), detail=str(exc))
+
+
+async def _ingest_otlp(request: Request, signal: OtlpSignal) -> Response:
+    _ensure_enabled()
+    body = await request.body()
+    if len(body) > config.ANALYTICS_INGEST_MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail=_ERR_BODY_TOO_LARGE)
+    content_type = request.headers.get("content-type", _PROTOBUF_CONTENT_TYPE)
+    try:
+        result = await get_cli_analytics_storage().ingestor.ingest_otlp(signal, body, content_type)
+    except TelemetryIngestError as exc:
+        raise _ingest_http_error(exc) from exc
+    except CliAnalyticsStorageConfigError as exc:  # retried by the client until the configuration is fixed
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_ERR_STORAGE_MISCONFIGURED) from exc
+    return _ingest_response(result)
 
 
 def _parse_ndjson(body: bytes) -> list[dict]:
@@ -179,93 +177,15 @@ def _parse_ndjson(body: bytes) -> list[dict]:
         if not stripped:
             continue
         try:
-            records.append(json.loads(stripped))
-        except (json.JSONDecodeError, UnicodeDecodeError):
+            record = json.loads(stripped)
+        except (ValueError, RecursionError):  # JSONDecodeError, UnicodeDecodeError, 4,300+ digit integers
             logger.debug("Skipping malformed NDJSON line")
+            continue
+        if isinstance(record, dict):  # a hook event is an object
+            records.append(record)
+        else:
+            logger.debug("Skipping NDJSON line that is not an object")
     return records
-
-
-def _ts_to_ns(event: dict, now_ns: int) -> int:
-    ts = event.get("timestamp")
-    if not ts:
-        return now_ns
-    try:
-        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-        delta = dt - _EPOCH
-        return delta.days * 86_400_000_000_000 + delta.seconds * 1_000_000_000 + delta.microseconds * 1_000
-    except (ValueError, AttributeError):
-        return now_ns
-
-
-def _safe_str(val: object) -> str:
-    if val is None:
-        return ""
-    if isinstance(val, (dict, list)):
-        return json.dumps(val, ensure_ascii=False)
-    return str(val)
-
-
-_EVENT_ATTRIBUTE_KEYS: tuple[str, ...] = (
-    "event_type",
-    "session_id",
-    "prompt_id",
-    "agent_id",
-    "agent_type",
-    "codemie_project_name",
-    "cwd",
-    "denial_reason",
-    "developer_name",
-    "effort",
-    "error_message",
-    "error_type",
-    "git_branch",
-    "notification_type",
-    "permission_mode",
-    "prompt_body",
-    "reason",
-    "repo_remote",
-    "skill_name",
-    "source",
-    "tool_input",
-    "tool_name",
-    "tool_output",
-    "tool_use_id",
-    "trigger",
-)
-
-
-def _event_to_log_record(event: dict, now_ns: int, user_email: str = "") -> dict:
-    severity_text, severity_number = EVENT_SEVERITY.get(event.get("type", ""), DEFAULT_SEVERITY)
-    ts_ns = _ts_to_ns(event, now_ns)
-    attributes = [
-        {"key": "event_type", "value": {"stringValue": _safe_str(event.get("type"))}},
-        *({"key": key, "value": {"stringValue": _safe_str(event.get(key))}} for key in _EVENT_ATTRIBUTE_KEYS[1:]),
-    ]
-    if user_email:
-        attributes.append({"key": "user.email", "value": {"stringValue": user_email}})
-    return {
-        "timeUnixNano": str(ts_ns),
-        "observedTimeUnixNano": str(now_ns),
-        "severityNumber": severity_number,
-        "severityText": severity_text,
-        "body": {"stringValue": ""},
-        "attributes": attributes,
-    }
-
-
-def _build_otlp_logs_payload(records: list[dict]) -> bytes:
-    return json.dumps(
-        {
-            "resourceLogs": [
-                {
-                    "resource": {
-                        "attributes": [{"key": "service.name", "value": {"stringValue": "codemie-agent-hooks"}}]
-                    },
-                    "scopeLogs": [{"scope": {}, "logRecords": records}],
-                }
-            ]
-        }
-    ).encode()
 
 
 def handle_errors(endpoint_name: str) -> Callable:
@@ -279,6 +199,30 @@ def handle_errors(endpoint_name: str) -> Callable:
                 return await func(*args, **kwargs)
             except ExtendedHTTPException:
                 raise
+            except CliAnalyticsStorageConfigError as e:
+                logger.error(f"Analytics storage unavailable for {endpoint_name}: {e}")
+                raise ExtendedHTTPException(
+                    code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    message=_ERR_STORAGE_MISCONFIGURED,
+                    details="The analytics storage refuses its configuration; see the server log.",
+                    help="Contact your administrator.",
+                ) from e
+            except (asyncpg.PostgresError, asyncpg.InterfaceError) as e:
+                logger.error(f"Analytics storage failed for {endpoint_name}: {type(e).__name__}: {e}")
+                raise ExtendedHTTPException(
+                    code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    message=_ERR_STORAGE_MISCONFIGURED,
+                    details="The analytics storage is unavailable; see the server log.",
+                    help="Please try again later.",
+                ) from e
+            except OSError as e:  # the network, TLS or a timeout; before ValueError, which TLS errors also are
+                logger.error(f"Analytics storage unreachable for {endpoint_name}: {type(e).__name__}: {e}")
+                raise ExtendedHTTPException(
+                    code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    message=_ERR_STORAGE_MISCONFIGURED,
+                    details="The analytics storage cannot be reached; see the server log.",
+                    help="Please try again later.",
+                ) from e
             except ValueError as e:
                 logger.warning(f"Invalid parameters for {endpoint_name}: {e}")
                 raise ExtendedHTTPException(
@@ -328,7 +272,10 @@ class FilterParams:
     async def resolve(self, user: User) -> LocalAnalyticsFilter:
         start_dt, end_dt = TimeParser.parse(self.time_period, self.start_date, self.end_date)
 
-        max_span = TimeParser.PERIODS["last_7_days"] / 7 * RAW_RETENTION_DAYS
+        # Raw rows are kept for less time than the rollups. A longer window would mix a year of
+        # cost with fewer days of turns/tools/files, so the requested range is clamped and logged.
+        retention_days = get_cli_analytics_storage().raw_retention_days
+        max_span = TimeParser.PERIODS["last_7_days"] / 7 * retention_days
         if (end_dt - start_dt) > max_span:
             clamped = end_dt - max_span
             logger.warning(
@@ -336,7 +283,7 @@ class FilterParams:
                 "clamping start to %s so trace-sourced metrics stay consistent with cost metrics",
                 start_dt.isoformat(),
                 end_dt.isoformat(),
-                RAW_RETENTION_DAYS,
+                retention_days,
                 clamped.isoformat(),
             )
             start_dt = clamped
@@ -349,13 +296,13 @@ class FilterParams:
             emails = [r["user"] for r in rows]
 
         projects = self._split(self.projects)
+        deny_all = False
         ctx = AccessFilter(user).get_project_access_context()
         if not ctx.is_admin:
             visible = set(ctx.admin_projects)
             projects = list(set(projects) & visible) if projects else list(visible)
-            if not projects:
-                # No visible admin project: return an impossible filter rather than all data.
-                projects = ["\x00__no_project_access__"]
+            # No visible admin project: select nothing rather than all data.
+            deny_all = not projects
 
         return LocalAnalyticsFilter(
             start_dt=start_dt,
@@ -363,6 +310,7 @@ class FilterParams:
             users=emails,
             projects=projects,
             repositories=self._split(self.repositories),
+            deny_all=deny_all,
         )
 
 
@@ -392,41 +340,17 @@ def _respond(payload: dict, model_class: Any) -> JSONResponse:
 
 @router.post("/logs", status_code=200)
 async def ingest_logs(request: Request) -> Response:
-    _ensure_enabled()
-    body = await request.body()
-    if len(body) > config.ANALYTICS_INGEST_MAX_BODY_BYTES:
-        raise HTTPException(status_code=413, detail=_ERR_BODY_TOO_LARGE)
-    return await _forward(
-        f"{config.ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT}/v1/logs",
-        body,
-        request.headers.get("content-type", _PROTOBUF_CONTENT_TYPE),
-    )
+    return await _ingest_otlp(request, "logs")
 
 
 @router.post("/metrics", status_code=200)
 async def ingest_metrics(request: Request) -> Response:
-    _ensure_enabled()
-    body = await request.body()
-    if len(body) > config.ANALYTICS_INGEST_MAX_BODY_BYTES:
-        raise HTTPException(status_code=413, detail=_ERR_BODY_TOO_LARGE)
-    return await _forward(
-        f"{config.ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT}/v1/metrics",
-        body,
-        request.headers.get("content-type", _PROTOBUF_CONTENT_TYPE),
-    )
+    return await _ingest_otlp(request, "metrics")
 
 
 @router.post("/traces", status_code=200)
 async def ingest_traces(request: Request) -> Response:
-    _ensure_enabled()
-    body = await request.body()
-    if len(body) > config.ANALYTICS_INGEST_MAX_BODY_BYTES:
-        raise HTTPException(status_code=413, detail=_ERR_BODY_TOO_LARGE)
-    return await _forward(
-        f"{config.ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT}/v1/traces",
-        body,
-        request.headers.get("content-type", _PROTOBUF_CONTENT_TYPE),
-    )
+    return await _ingest_otlp(request, "traces")
 
 
 @router.post("/event-hooks", status_code=200)
@@ -443,18 +367,16 @@ async def ingest_event_hooks(request: Request) -> Response:
     events = _parse_ndjson(raw)
     if not events:
         raise HTTPException(status_code=400, detail="No parseable events")
-    _now = datetime.now(timezone.utc)
-    _delta = _now - _EPOCH
-    now_ns = _delta.days * 86_400_000_000_000 + _delta.seconds * 1_000_000_000 + _delta.microseconds * 1_000
+    now_ns = datetime_to_ns(datetime.now(timezone.utc))
     user = getattr(request.state, "user", None)
     user_email = user.email if user and user.email else ""
-    records = [_event_to_log_record(e, now_ns, user_email=user_email) for e in events]
-    payload = _build_otlp_logs_payload(records)
-    return await _forward(
-        f"{config.ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT}/v1/logs",
-        payload,
-        "application/json",
-    )
+    try:
+        result = await get_cli_analytics_storage().ingestor.ingest_hook_events(events, user_email, now_ns)
+    except TelemetryIngestError as exc:
+        raise _ingest_http_error(exc) from exc
+    except CliAnalyticsStorageConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=_ERR_STORAGE_MISCONFIGURED) from exc
+    return _ingest_response(result)
 
 
 # ── Read endpoints ──────────────────────────────────────────────────────────
@@ -474,7 +396,7 @@ async def get_overview(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data, unpriced, data_as_of = await _handler.get_overview(f)
+    data, unpriced, data_as_of = await _handler().get_overview(f)
     return _respond(
         {"data": data, "metadata": _metadata(start_ns, data_as_of, unpriced, f.end_dt)}, LocalAnalyticsOverviewResponse
     )
@@ -494,7 +416,7 @@ async def get_cost(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data, unpriced = await _handler.get_cost(f)
+    data, unpriced = await _handler().get_cost(f)
     return _respond(
         {"data": data, "metadata": _metadata(start_ns, None, unpriced, f.end_dt)}, LocalAnalyticsCostResponse
     )
@@ -516,7 +438,7 @@ async def get_users(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data = await _handler.get_users(f, page, per_page)
+    data = await _handler().get_users(f, page, per_page)
     await _attach_user_ids(data["rows"])
     return _respond({"data": data, "metadata": _metadata(start_ns, None, [], f.end_dt)}, LocalAnalyticsUsersResponse)
 
@@ -535,7 +457,7 @@ async def get_user_charts(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data = await _handler.get_users(f, None, None)
+    data = await _handler().get_users(f, None, None)
     data["total_count"] = None  # unpaginated by contract
     await _attach_user_ids(data["rows"])
     return _respond({"data": data, "metadata": _metadata(start_ns, None, [], f.end_dt)}, LocalAnalyticsUsersResponse)
@@ -586,7 +508,7 @@ async def get_repositories(
     else:
         resolved_page = page if page is not None else DEFAULT_PAGE
         resolved_per_page = per_page if per_page is not None else DEFAULT_PER_PAGE
-    data = await _handler.get_repositories(f, resolved_page, resolved_per_page, include_branches, search)
+    data = await _handler().get_repositories(f, resolved_page, resolved_per_page, include_branches, search)
     return _respond(
         {"data": data, "metadata": _metadata(start_ns, None, [], f.end_dt)}, LocalAnalyticsRepositoriesResponse
     )
@@ -606,7 +528,7 @@ async def get_tools(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data = await _handler.get_tools(f)
+    data = await _handler().get_tools(f)
     return _respond({"data": data, "metadata": _metadata(start_ns, None, [], f.end_dt)}, LocalAnalyticsToolsResponse)
 
 
@@ -624,7 +546,7 @@ async def get_activity(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data = await _handler.get_activity(f)
+    data = await _handler().get_activity(f)
     return _respond({"data": data, "metadata": _metadata(start_ns, None, [], f.end_dt)}, LocalAnalyticsActivityResponse)
 
 
@@ -642,7 +564,7 @@ async def get_efficiency(
     _ensure_enabled()
     start_ns = time.monotonic_ns()
     f = await filters.resolve(user)
-    data, unpriced = await _handler.get_efficiency(f)
+    data, unpriced = await _handler().get_efficiency(f)
     return _respond(
         {"data": data, "metadata": _metadata(start_ns, None, unpriced, f.end_dt)}, LocalAnalyticsEfficiencyResponse
     )
@@ -683,7 +605,7 @@ async def get_sessions(
     f = await filters.resolve(user)
     resolved_page = page if page is not None else DEFAULT_PAGE
     resolved_per_page = per_page if per_page is not None else DEFAULT_PER_PAGE
-    data, unpriced, data_as_of = await _handler.get_sessions(
+    data, unpriced, data_as_of = await _handler().get_sessions(
         f, resolved_page, resolved_per_page, sort_by, search, framework, is_unattributed, branch
     )
     return _respond(
@@ -704,7 +626,7 @@ async def get_session_detail(
 ) -> JSONResponse:
     _ensure_enabled()
     start_ns = time.monotonic_ns()
-    detail, unpriced = await _handler.get_session_detail(trace_id)
+    detail, unpriced = await _handler().get_session_detail(trace_id)
     if detail is None:
         raise ExtendedHTTPException(
             code=status.HTTP_404_NOT_FOUND,
@@ -717,7 +639,7 @@ async def get_session_detail(
     ctx = AccessFilter(user).get_project_access_context()
     if not ctx.is_admin:
         visible = set(ctx.admin_projects)
-        rows = await _repository.get_session_detail_meta(trace_id)
+        rows = await get_cli_analytics_storage().reader.get_session_detail_meta(trace_id)
         project = str(rows[0].get("project_name") or "") if rows else ""
         if project not in visible:
             raise ExtendedHTTPException(

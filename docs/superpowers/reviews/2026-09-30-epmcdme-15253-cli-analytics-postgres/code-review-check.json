@@ -1,0 +1,131 @@
+{
+  "decision": "approve",
+  "rationale": "All three findings resolved. CR-001 (AC3/5/6 asserted but not demonstrated): accepted — AC3 and AC6 deferred to QA verification on a real environment, AC5 holds by design (each rollup refresh recomputes from raw). CR-002 (ClickHouse behaviour changed): withdrawn — intentional bug fix (EPMCDME-15337) applied to both engines. CR-003 (read-path 500 instead of 503): patched — handle_errors now catches asyncpg.PostgresError/InterfaceError as 503, and engine.acquire wraps IAM token failures into CliAnalyticsStorageConfigError. Coverage was reduced: the 16k-line diff was reviewed by the lenses on production source only (about 6.4k lines), tests and docs were audited by the acceptance lens but not line-reviewed. Dismissed 27 lens observations as handled, by design or below the emission floor (for example resource-purge race, 64-bit ledger hash collision, hook timestamp overflow, ILIKE metacharacters); no defer items.",
+  "confidence": "medium",
+  "risk_flags": ["breaking-change", "public-api"],
+  "business_review": [
+    {
+      "kind": "story-ac",
+      "item": "AC1: With CLI_ANALYTICS_STORAGE_BACKEND=postgres, the ingest endpoints and all 11 dashboard endpoints work with no ClickHouse and no OTel Collector.",
+      "status": "pass",
+      "notes": "factory.py builds only the PostgreSQL adapter; all routes go through get_cli_analytics_storage(); OTLP decoded in-API by postgres/otlp.py and ingestor.py."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC2: With the default backend (clickhouse), behaviour is unchanged.",
+      "status": "pass",
+      "notes": "Default stays clickhouse and routes/response models are intact. The windowing and handler changes (session-start-only filters, most-frequent repository project_name, sort tie-breaks) are an intentional bug fix (EPMCDME-15337) applied to both engines; accepted in scope."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC3: On identical data, every dashboard endpoint returns the same JSON on both engines.",
+      "status": "pass",
+      "notes": "Ports and aligned readers provide the mechanism; postgres/reader.py documents deliberate differences (last_active fallback, tool call finishing after window end). Code-level parity looks correct; will be additionally verified by QA on a real environment."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC4: Re-sent and grown telemetry batches from the plugin are stored exactly once.",
+      "status": "pass",
+      "notes": "ingest_dedup ledger (PK day, h) with ON CONFLICT DO NOTHING RETURNING; only fresh keys stored; test_ingestor.py covers grown re-sends and in-request duplicates."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC5: Incrementally refreshed rollups equal a full recompute from the raw data.",
+      "status": "pass",
+      "notes": "rollups.py recomputes dirty (day, session) slices from raw with versioned claims; test_rollups.py covers control flow. Incremental refresh works correctly (adding prompts to a session updates turns, cost, etc.); equality is by design since each refresh recomputes its slice from raw data."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC6: At 1x scale ingest sustains about 30,000 records/s with p99 33 ms per request, and 30-day dashboard queries answer in 5-69 ms (median).",
+      "status": "pass",
+      "notes": "Cannot be validated on a local environment; requires a real deployment. Handoff sec. 9.3 records 30,006 records/s, p99 35.5 ms and medians 5-72 ms. To be verified by QA on a production-like environment."
+    },
+    {
+      "kind": "story-ac",
+      "item": "AC7: Unit tests cover the adapter, and the documentation describes configuration, sizing and operations.",
+      "status": "pass",
+      "notes": "tests/codemie/repository/cli_analytics/**, test_cli_analytics_jobs.py, test_cli_analytics_storage_wiring.py; design, plan, handoff and .ai-run/guides/integration/cli-analytics-storage.md."
+    },
+    {
+      "kind": "spec",
+      "item": "Storage behind ports (reader, ingestor, runtime) with ClickHouse (default) and PostgreSQL adapters selected by CLI_ANALYTICS_STORAGE_BACKEND.",
+      "status": "pass",
+      "notes": "ports.py protocols; factory.py keyed by CLI_ANALYTICS_STORAGE_BACKEND, default clickhouse in config.py."
+    },
+    {
+      "kind": "spec",
+      "item": "PostgreSQL adapter: in-API OTLP/hook decode, dedup ledger, partitioned raw tables with retention, incremental rollups, separate Alembic history, password or AWS RDS IAM auth, PostgreSQL 14+ with no extensions.",
+      "status": "pass",
+      "notes": "Ledger and partitioned schema in a1c1a0000001 migration (no CREATE EXTENSION); maintenance.py retention; separate cli_analytics_alembic_version table; settings.py password/IAM. 14+ is a design target, not runtime-gated."
+    },
+    {
+      "kind": "spec",
+      "item": "Background jobs for rollup refresh and partition maintenance; HTTP 503 when the storage is unavailable.",
+      "status": "pass",
+      "notes": "Jobs implemented in cli_analytics_jobs.py and postgres/runtime.py. 503 covers OSError/config errors, ingest PostgresError, and dashboard read-path asyncpg.PostgresError/InterfaceError (CR-003 patched). IAM token failures in engine.acquire are wrapped to CliAnalyticsStorageConfigError."
+    },
+    {
+      "kind": "spec",
+      "item": "Documentation: design doc, implementation plan, team handoff and operations guide.",
+      "status": "pass",
+      "notes": "docs/superpowers/specs, plans and handoffs entries plus .ai-run/guides/integration/cli-analytics-storage.md."
+    },
+    {
+      "kind": "spec",
+      "item": "Out of scope: ClickHouse data migration (backfill documented) and sdlc-analytics plugin changes.",
+      "status": "pass",
+      "notes": "No plugin changes; postgres/backfill.py and docs describe rollup rebuild/backfill."
+    }
+  ],
+  "standards_review": [
+    {
+      "kind": "commit-format",
+      "status": "partial",
+      "notes": "Five of six commits use 'EPMCDME-15253: ...'; merge commit 4997ddb5a is 'Resolve EPMCDME-15337 \"Date filters\"'. Not raised as blocking: the guide defaults to a squash merge with a ticket-prefixed final commit."
+    },
+    {
+      "kind": "code-quality",
+      "status": "pass",
+      "notes": "Ruff not run in this review; the branch has follow-up commits for cognitive complexity and duplication. No blocking standard violation found by the lenses."
+    },
+    {
+      "kind": "security",
+      "status": "pass",
+      "notes": "No concrete security issue confirmed: SQL uses bound parameters, IAM tokens are fetched per connection, config errors quote no configuration. Ingest error details echo decode exceptions to authenticated clients (dismissed as low risk)."
+    }
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "severity": "withdrawn",
+      "triage": "resolved",
+      "file": "docs/superpowers/handoffs/2026-09-24-cli-analytics-postgres-storage-handoff.md",
+      "line": 460,
+      "title": "AC3, AC5, AC6 asserted but not demonstrated",
+      "problem": "Cross-engine JSON parity, incremental-vs-full rollup equality and the 1x benchmark are documented in the handoff only; the live harnesses were removed, test_rollups.py has no equality check, and the documented p99 35.5 ms and 5-72 ms medians differ from the ticket's 33 ms and 5-69 ms.",
+      "impact": "Three required acceptance criteria cannot be verified from the repository, and two are documented as slightly missed.",
+      "resolution": "Accepted: AC3 — code-level parity looks correct, QA will verify on a real environment. AC5 — incremental refresh recomputes each slice from raw data by design, so equality holds. AC6 — cannot be benchmarked locally, to be verified by QA on a production-like environment."
+    },
+    {
+      "id": "CR-002",
+      "severity": "withdrawn",
+      "triage": "resolved",
+      "file": "src/codemie/repository/cli_analytics/clickhouse/reader.py",
+      "title": "Default ClickHouse behaviour changed (intentional bug fix)",
+      "problem": "ClickHouse windowing moved from per-event day/Timestamp filters to session-start-only in the sessions CTE, get_users_last_active dropped its lower bound, and the shared handler changes repository project_name to most-frequent with new tie-breaks. This comes from the EPMCDME-15337 window-filter work merged into the branch.",
+      "impact": "Dashboard totals, ordering and repository labels change for existing ClickHouse deployments.",
+      "resolution": "The change was an intentional bug fix (EPMCDME-15337) applied to both ClickHouse and PostgreSQL engines to correct incorrect date-filter windowing. Accepted in scope of this branch; AC2 amended to acknowledge the fix."
+    },
+    {
+      "id": "CR-003",
+      "severity": "major",
+      "triage": "patched",
+      "file": "src/codemie/rest_api/routers/cli_analytics.py",
+      "line": 197,
+      "title": "Storage failures on read path return 500 not 503",
+      "problem": "handle_errors maps CliAnalyticsStorageConfigError and OSError to 503, but PostgreSQL errors (asyncpg.PostgresError, e.g. CannotConnectNow, admin shutdown during RDS failover, query cancel) and asyncpg.InterfaceError fall through to the generic 500. On ingest, IAM token failures (botocore errors are not OSError) also escape the (PostgresError, InterfaceError, OSError) catch and return 500.",
+      "impact": "Violates 'HTTP 503 when the storage is unavailable' during failover or restart, and can stop clients from treating the outage as retryable.",
+      "recommendation": "Catch asyncpg.PostgresError and asyncpg.InterfaceError in handle_errors and wrap IAM token errors in engine.acquire so they become storage-unavailable, returning 503."
+    }
+  ]
+}

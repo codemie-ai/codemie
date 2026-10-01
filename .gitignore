@@ -123,3 +123,6 @@ docs/superpowers/runs/*/**/*.local.*
 docs/superpowers/qa-tasks/*/**/*.local.*
 credentials.json
 .code-graph/
+
+# CLI Analytics engine comparison and integration testing: local tooling, not committed
+/scripts/cli_analytics_testing/

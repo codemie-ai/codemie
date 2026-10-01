@@ -376,6 +376,33 @@ class TestLifespanShutdown:
                         provider.shutdown.assert_called_once()
 
 
+class TestCliAnalyticsRuntimeLifecycle:
+    """The CLI Analytics storage runtime (PostgreSQL migrations and jobs) follows the app lifespan."""
+
+    @pytest.mark.asyncio
+    async def test_runtime_is_started_on_boot_and_stopped_on_shutdown(self, mock_app, mock_non_litellm_startup):
+        from codemie.rest_api.main import lifespan
+
+        jobs = MagicMock(name="cli_analytics_jobs")
+        start = AsyncMock(return_value=jobs)
+        stop = AsyncMock()
+
+        with (
+            patch("codemie.rest_api.main.initialize_litellm_from_config", return_value=None),
+            patch("codemie.rest_api.main.is_litellm_enabled", return_value=False),
+            patch("codemie.rest_api.main.set_global_litellm_service"),
+            patch("codemie.rest_api.main.close_llm_proxy_client", new_callable=AsyncMock),
+            patch("codemie.rest_api.main.start_cli_analytics_runtime", start),
+            patch("codemie.rest_api.main.stop_cli_analytics_runtime", stop),
+        ):
+            async with lifespan(mock_app):
+                start.assert_awaited_once_with()
+                assert mock_app.state.cli_analytics_jobs is jobs
+                stop.assert_not_awaited()
+
+        stop.assert_awaited_once_with(jobs)
+
+
 class TestGlobalServiceRegistry:
     """Test global service registry during startup."""
 

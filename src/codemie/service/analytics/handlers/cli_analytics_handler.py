@@ -12,11 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Assembles Local Analytics responses from this backend's ClickHouse facts.
+"""Assembles Local Analytics responses from the CLI Analytics storage facts.
+
+Works on any `CliAnalyticsReader` (ClickHouse or PostgreSQL): it only calls the fact
+queries and coerces values, so both engines share pricing, dead-session, depth and
+delivery-framework logic. No response may depend on the row order of a query without a
+total ORDER BY, or the two engines could answer the same data differently.
 
 Per-session facts are merged in Python rather than in one wide SQL statement.
 At current volume (single-digit thousands of spans per week) this costs nothing
-measurable and keeps each ClickHouse query independently verifiable. See
+measurable and keeps each query independently verifiable. See
 ANALYTICS_DISCOVERY/local_analytics_implementation_plan.md §9 item F1 for the
 threshold at which this should move into a materialized fact table.
 """
@@ -28,11 +33,8 @@ import logging
 from datetime import date, datetime, timezone
 from typing import Any
 
-from codemie.repository.cli_analytics_repository import (
-    LocalAnalyticsFilter,
-    LocalAnalyticsRepository,
-    depth_bucket,
-)
+from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
+from codemie.repository.cli_analytics.ports import CliAnalyticsReader
 from codemie.service.analytics.delivery_framework import classify_delivery_framework
 from codemie.service.analytics.handlers.coding_agent_pricing import cache_read_cost, lookup_cost_config
 
@@ -41,6 +43,20 @@ logger = logging.getLogger(__name__)
 _DEPTH_BUCKETS = ("1", "2-5", "6-10", "11-25", "26-50", "50+")
 _MAX_INVOCATIONS = 10
 _PROMPT_PREVIEW_LEN = 50
+
+
+def depth_bucket(turns: int) -> str:
+    if turns <= 1:
+        return "1"
+    if turns <= 5:
+        return "2-5"
+    if turns <= 10:
+        return "6-10"
+    if turns <= 25:
+        return "11-25"
+    if turns <= 50:
+        return "26-50"
+    return "50+"
 
 
 # ── Coercion helpers (ClickHouse returns Decimal / None / UInt64 variously) ───
@@ -80,6 +96,17 @@ def _pct(numerator: float, denominator: float) -> float:
 
 def _first(rows: list[dict]) -> dict:
     return rows[0] if rows else {}
+
+
+def _float_sort_key(value: float) -> float:
+    """Sort key for a float computed from sums: the same values added in another order
+    can differ in the last bits, which must not reorder otherwise equal rows."""
+    return round(value, 9)
+
+
+def _most_frequent(counts: dict[str, int]) -> str | None:
+    """The most frequent value; ties go to the alphabetically first."""
+    return min(counts, key=lambda value: (-counts[value], value)) if counts else None
 
 
 def _count_dispatch_subtypes(rows: list[dict]) -> dict[str, int]:
@@ -123,7 +150,7 @@ def _dispatch_label_and_kind(
 
 
 class LocalAnalyticsHandler:
-    def __init__(self, repo: LocalAnalyticsRepository) -> None:
+    def __init__(self, repo: CliAnalyticsReader) -> None:
         self._repo = repo
 
     # ── Pricing ──────────────────────────────────────────────────────────────
@@ -410,7 +437,7 @@ class LocalAnalyticsHandler:
                 {
                     "repository": repository,
                     "branch": branch if include_branches else None,
-                    "project_name": _s(row.get("project_name")) or None,
+                    "project_name": None,
                     "session_count": 0,
                     "turns": 0,
                     "cost_usd": 0.0,
@@ -419,6 +446,7 @@ class LocalAnalyticsHandler:
                     "lines_removed": 0,
                     "_tool_calls": 0,
                     "_tool_ok": 0,
+                    "_projects": {},
                 },
             )
             bucket["session_count"] += 1
@@ -429,18 +457,24 @@ class LocalAnalyticsHandler:
             bucket["lines_removed"] += _i(lines_by_session.get(sid, {}).get("lines_removed"))
             bucket["_tool_calls"] += _i(success_by_session.get(sid, {}).get("tool_calls"))
             bucket["_tool_ok"] += _i(success_by_session.get(sid, {}).get("tool_calls_success"))
-            if not bucket["project_name"]:
-                bucket["project_name"] = _s(row.get("project_name")) or None
+            project = _s(row.get("project_name"))
+            if project:
+                bucket["_projects"][project] = bucket["_projects"].get(project, 0) + 1
 
         rows = []
         for bucket in buckets.values():
             tool_calls = bucket.pop("_tool_calls")
             tool_ok = bucket.pop("_tool_ok")
+            # A repository can be worked on from several projects: label it with the one
+            # most of its sessions belong to (defect D3 of the storage design), not whichever
+            # session came first.
+            bucket["project_name"] = _most_frequent(bucket.pop("_projects"))
             bucket["tool_success_rate"] = _pct(tool_ok, tool_calls)
             bucket["net_lines"] = bucket["lines_added"] - bucket["lines_removed"]
             rows.append(bucket)
 
-        rows.sort(key=lambda r: (r["session_count"], r["cost_usd"]), reverse=True)
+        rows.sort(key=lambda r: (r["repository"] or "", r["branch"] or ""))
+        rows.sort(key=lambda r: (r["session_count"], _float_sort_key(r["cost_usd"])), reverse=True)
         total_count = len(rows)
 
         if include_branches:
@@ -546,9 +580,12 @@ class LocalAnalyticsHandler:
 
         sort_key = {
             "start_time": lambda s: s["start_time"],
-            "cost_usd": lambda s: s["cost_usd"],
-            "ctx_per_call": lambda s: s["_ctx_per_call"],
+            "cost_usd": lambda s: _float_sort_key(s["cost_usd"]),
+            "ctx_per_call": lambda s: _float_sort_key(s["_ctx_per_call"]),
         }.get(sort_by, lambda s: s["start_time"])
+        # Equal sort values (e.g. sessions without plugin data share one start time) keep
+        # a stable trace_id order, so pages neither repeat nor skip sessions.
+        sessions.sort(key=lambda s: s["trace_id"])
         sessions.sort(key=sort_key, reverse=True)
 
         total = len(sessions)
@@ -782,7 +819,7 @@ class LocalAnalyticsHandler:
             for r in rows
             if _s(r.get("kind")) == kind and _s(r.get("name"))
         ]
-        items.sort(key=lambda r: r["count"], reverse=True)
+        items.sort(key=lambda r: (-r["count"], r["name"]))
         return items[:_MAX_INVOCATIONS]
 
     # ── Efficiency ───────────────────────────────────────────────────────────
@@ -816,7 +853,8 @@ class LocalAnalyticsHandler:
             sid = _s(row.get("session_id"))
             turns = turns_by_session.get(sid, 0)
             ratio = (_i(row.get("cache_read_tokens")) / turns) if turns else 0.0
-            if worst_ratio is None or ratio > worst_ratio:
+            # Highest ratio wins; a tie goes to the lowest session id, not to row order.
+            if worst_ratio is None or ratio > worst_ratio or (ratio == worst_ratio and sid < worst_trace):
                 worst_ratio = ratio
                 worst_prompt = _s(row.get("prompt")) or None
                 worst_trace = sid

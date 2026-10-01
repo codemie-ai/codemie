@@ -28,12 +28,12 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+import codemie.repository.cli_analytics.clickhouse.ingestor as ch_ingestor
 import codemie.rest_api.routers.cli_analytics as ingest_router
-from codemie.rest_api.routers.cli_analytics import (
-    _build_otlp_logs_payload,
-    _event_to_log_record,
-    _parse_ndjson,
-)
+from codemie.configs.config import config
+from codemie.repository.cli_analytics.clickhouse.ingestor import _build_otlp_logs_payload, _event_to_log_record
+from codemie.repository.cli_analytics.factory import reset_cli_analytics_storage
+from codemie.rest_api.routers.cli_analytics import _parse_ndjson
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 
@@ -62,6 +62,15 @@ def _make_app_no_auth() -> FastAPI:
     app.include_router(ingest_router.router)
     app.dependency_overrides[authenticate] = _raise_401
     return app
+
+
+@pytest.fixture(autouse=True)
+def clickhouse_storage():
+    """These tests cover the ClickHouse path, whatever backend the local environment selects."""
+    reset_cli_analytics_storage()
+    with patch.object(config, "CLI_ANALYTICS_STORAGE_BACKEND", "clickhouse"):
+        yield
+    reset_cli_analytics_storage()
 
 
 @pytest.fixture()
@@ -126,7 +135,7 @@ def _mock_httpx_4xx(status_code: int = 404):
 class TestIngestLogs:
     def test_returns_200_on_collector_ok(self, client):
         cm, _ = _mock_httpx_ok()
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             resp = client.post(
                 "/v1/analytics/cli-analytics/logs",
                 content=b"\x00\x01\x02",
@@ -143,7 +152,7 @@ class TestIngestLogs:
 
     def test_forwards_content_type_to_collector(self, client):
         cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/logs",
                 content=b"\x00\x01",
@@ -155,7 +164,7 @@ class TestIngestLogs:
     def test_forwards_raw_body_unchanged(self, client):
         cm, mock_client = _mock_httpx_ok()
         raw = b"\xde\xad\xbe\xef"
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/logs",
                 content=raw,
@@ -166,7 +175,7 @@ class TestIngestLogs:
 
     def test_empty_body_forwarded_not_rejected(self, client):
         cm, _ = _mock_httpx_ok()
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             resp = client.post(
                 "/v1/analytics/cli-analytics/logs",
                 content=b"",
@@ -177,7 +186,7 @@ class TestIngestLogs:
     def test_forwards_to_otlp_logs_path(self, client):
         cm, mock_client = _mock_httpx_ok()
         with (
-            patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
             patch(
                 "codemie.rest_api.routers.cli_analytics.config.ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT",
                 "http://collector:4318",
@@ -201,8 +210,8 @@ class TestIngestLogs:
         cm.__aenter__.return_value = mock_client
         cm.__aexit__.return_value = None
         with (
-            patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm),
-            patch("codemie.rest_api.routers.cli_analytics.asyncio.sleep", new_callable=AsyncMock),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
         ):
             resp = client.post(
                 "/v1/analytics/cli-analytics/logs",
@@ -218,8 +227,8 @@ class TestIngestLogs:
         cm.__aenter__.return_value = mock_client
         cm.__aexit__.return_value = None
         with (
-            patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm),
-            patch("codemie.rest_api.routers.cli_analytics.asyncio.sleep", new_callable=AsyncMock),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
         ):
             resp = client.post(
                 "/v1/analytics/cli-analytics/logs",
@@ -230,15 +239,15 @@ class TestIngestLogs:
     def test_collector_5xx_retries_and_returns_503(self, client):
         cm, mock_client = _mock_httpx_5xx()
         with (
-            patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm),
-            patch("codemie.rest_api.routers.cli_analytics.asyncio.sleep", new_callable=AsyncMock),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
         ):
             resp = client.post(
                 "/v1/analytics/cli-analytics/logs",
                 content=b"\x00",
             )
         assert resp.status_code == 503
-        assert mock_client.post.call_count == ingest_router._MAX_ATTEMPTS
+        assert mock_client.post.call_count == ch_ingestor._MAX_ATTEMPTS
 
     def test_collector_5xx_then_ok_returns_200(self, client):
         mock_500 = MagicMock(status_code=500, content=b"", headers={})
@@ -249,8 +258,8 @@ class TestIngestLogs:
         cm.__aenter__.return_value = mock_client
         cm.__aexit__.return_value = None
         with (
-            patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm),
-            patch("codemie.rest_api.routers.cli_analytics.asyncio.sleep", new_callable=AsyncMock),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
         ):
             resp = client.post(
                 "/v1/analytics/cli-analytics/logs",
@@ -262,8 +271,8 @@ class TestIngestLogs:
     def test_collector_4xx_returns_502_not_retried(self, client):
         cm, mock_client = _mock_httpx_4xx(404)
         with (
-            patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm),
-            patch("codemie.rest_api.routers.cli_analytics.asyncio.sleep", new_callable=AsyncMock),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
         ):
             resp = client.post(
                 "/v1/analytics/cli-analytics/logs",
@@ -278,7 +287,7 @@ class TestIngestLogs:
         cm = AsyncMock()
         cm.__aenter__.return_value = mock_client
         cm.__aexit__.return_value = None
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             resp = client.post(
                 "/v1/analytics/cli-analytics/logs",
                 content=b"\x00",
@@ -304,7 +313,7 @@ class TestIngestLogs:
 class TestIngestMetrics:
     def test_returns_200_on_collector_ok(self, client):
         cm, _ = _mock_httpx_ok()
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             resp = client.post(
                 "/v1/analytics/cli-analytics/metrics",
                 content=b"\x00\x01",
@@ -322,7 +331,7 @@ class TestIngestMetrics:
     def test_forwards_to_otlp_metrics_path(self, client):
         cm, mock_client = _mock_httpx_ok()
         with (
-            patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
             patch(
                 "codemie.rest_api.routers.cli_analytics.config.ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT",
                 "http://collector:4318",
@@ -385,7 +394,7 @@ class TestIngestEventHooks:
     # Happy path
     def test_returns_200_single_event(self, client):
         cm, _ = _mock_httpx_ok()
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             resp = client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(_session_start_event()),
@@ -396,7 +405,7 @@ class TestIngestEventHooks:
     def test_returns_200_multi_event(self, client):
         cm, _ = _mock_httpx_ok()
         events = [_tool_start_event() for _ in range(10)]
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             resp = client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(*events),
@@ -406,7 +415,7 @@ class TestIngestEventHooks:
 
     def test_event_type_passed_through_unchanged(self, client):
         cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(_session_start_event()),
@@ -421,7 +430,7 @@ class TestIngestEventHooks:
 
     def test_severity_info_for_session_start(self, client):
         cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(_session_start_event()),
@@ -442,7 +451,7 @@ class TestIngestEventHooks:
             "tool_use_id": "toolu_02",
             "error_message": "Command not found",
         }
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(event),
@@ -455,7 +464,7 @@ class TestIngestEventHooks:
 
     def test_timestamp_converted_to_nanoseconds(self, client):
         cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(_session_start_event(timestamp="2026-07-23T10:00:00.000Z")),
@@ -469,7 +478,7 @@ class TestIngestEventHooks:
 
     def test_all_log_attribute_fields_present(self, client):
         cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(_session_start_event()),
@@ -516,7 +525,7 @@ class TestIngestEventHooks:
             "timestamp": "2026-07-23T10:00:05.000Z",
             "skill_name": "sdlc-factory:sdlc-standard",
         }
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(event),
@@ -541,7 +550,7 @@ class TestIngestEventHooks:
             "command_source": "plugin",
             "command_args": "arg1 arg2",
         }
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(event),
@@ -560,7 +569,7 @@ class TestIngestEventHooks:
         # get_session_detail's argMinIf(prompt_body, ...) has nothing to read no
         # matter how well analytics-hook captures the prompt client-side.
         cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(_session_start_event(type="agent.prompt.submit", prompt_body="fix the login bug")),
@@ -575,7 +584,7 @@ class TestIngestEventHooks:
 
     def test_resource_attributes_service_name(self, client):
         cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(_session_start_event()),
@@ -590,7 +599,7 @@ class TestIngestEventHooks:
     def test_posts_to_otlp_logs_path(self, client):
         cm, mock_client = _mock_httpx_ok()
         with (
-            patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
             patch(
                 "codemie.rest_api.routers.cli_analytics.config.ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT",
                 "http://collector:4318",
@@ -631,7 +640,7 @@ class TestIngestEventHooks:
     def test_empty_lines_skipped_valid_events_processed(self, client):
         cm, _ = _mock_httpx_ok()
         body = b"\n" + _ndjson(_session_start_event()) + b"\n\n"
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             resp = client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=body,
@@ -641,7 +650,7 @@ class TestIngestEventHooks:
     def test_mixed_valid_invalid_lines_processes_valid(self, client):
         cm, mock_client = _mock_httpx_ok()
         body = json.dumps(_session_start_event()).encode() + b"\nnot-json\n" + json.dumps(_tool_start_event()).encode()
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             resp = client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=body,
@@ -673,7 +682,7 @@ class TestIngestEventHooks:
     def test_missing_session_id_defaults_to_empty(self, client):
         cm, mock_client = _mock_httpx_ok()
         event = {"type": "agent.session.start", "timestamp": "2026-07-23T10:00:00Z"}
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(event),
@@ -689,7 +698,7 @@ class TestIngestEventHooks:
     def test_missing_developer_name_defaults_to_empty(self, client):
         cm, mock_client = _mock_httpx_ok()
         event = {"type": "agent.session.start", "session_id": "s1"}
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(event),
@@ -705,7 +714,7 @@ class TestIngestEventHooks:
     def test_missing_timestamp_uses_current_time(self, client):
         cm, mock_client = _mock_httpx_ok()
         event = {"type": "agent.session.start", "session_id": "s1"}
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(event),
@@ -718,7 +727,7 @@ class TestIngestEventHooks:
     def test_invalid_timestamp_uses_current_time(self, client):
         cm, mock_client = _mock_httpx_ok()
         event = {"type": "agent.session.start", "session_id": "s1", "timestamp": "not-a-date"}
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             resp = client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(event),
@@ -733,7 +742,7 @@ class TestIngestEventHooks:
         """cwd is stored as-is; the plugin is the single normalization site."""
         cm, mock_client = _mock_httpx_ok()
         event = {"type": "agent.session.start", "session_id": "s1", "cwd": "epm-cdme/my-repo"}
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(event),
@@ -749,7 +758,7 @@ class TestIngestEventHooks:
     def test_unknown_event_type_passes_through_as_info(self, client):
         cm, mock_client = _mock_httpx_ok()
         event = {"type": "custom.event", "session_id": "s1"}
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(event),
@@ -765,7 +774,7 @@ class TestIngestEventHooks:
         cm, mock_client = _mock_httpx_ok()
         long_input = "x" * 500
         event = {"type": "agent.tool.start", "session_id": "s1", "tool_input": long_input}
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(event),
@@ -789,8 +798,8 @@ class TestIngestEventHooks:
         cm.__aenter__.return_value = mock_client
         cm.__aexit__.return_value = None
         with (
-            patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm),
-            patch("codemie.rest_api.routers.cli_analytics.asyncio.sleep", new_callable=AsyncMock),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
         ):
             resp = client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
@@ -805,8 +814,8 @@ class TestIngestEventHooks:
         cm.__aenter__.return_value = mock_client
         cm.__aexit__.return_value = None
         with (
-            patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm),
-            patch("codemie.rest_api.routers.cli_analytics.asyncio.sleep", new_callable=AsyncMock),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
         ):
             resp = client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
@@ -817,15 +826,15 @@ class TestIngestEventHooks:
     def test_collector_5xx_retries_and_returns_503(self, client):
         cm, mock_client = _mock_httpx_5xx()
         with (
-            patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm),
-            patch("codemie.rest_api.routers.cli_analytics.asyncio.sleep", new_callable=AsyncMock),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
         ):
             resp = client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson(_session_start_event()),
             )
         assert resp.status_code == 503
-        assert mock_client.post.call_count == ingest_router._MAX_ATTEMPTS
+        assert mock_client.post.call_count == ch_ingestor._MAX_ATTEMPTS
 
     def test_collector_5xx_then_ok_returns_200(self, client):
         mock_500 = MagicMock(status_code=500, content=b"", headers={})
@@ -836,8 +845,8 @@ class TestIngestEventHooks:
         cm.__aenter__.return_value = mock_client
         cm.__aexit__.return_value = None
         with (
-            patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm),
-            patch("codemie.rest_api.routers.cli_analytics.asyncio.sleep", new_callable=AsyncMock),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
         ):
             resp = client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
@@ -849,8 +858,8 @@ class TestIngestEventHooks:
     def test_collector_4xx_returns_502_not_retried(self, client):
         cm, mock_client = _mock_httpx_4xx(400)
         with (
-            patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm),
-            patch("codemie.rest_api.routers.cli_analytics.asyncio.sleep", new_callable=AsyncMock),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
+            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
         ):
             resp = client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
@@ -869,7 +878,7 @@ class TestIngestEventHooks:
 
     def test_now_ns_precision_integer_arithmetic(self, client):
         cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.rest_api.routers.cli_analytics.httpx.AsyncClient", return_value=cm):
+        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
             client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=_ndjson({"type": "agent.session.start", "session_id": "s1"}),
@@ -915,6 +924,20 @@ class TestParseNdjson:
 
     def test_empty_body_returns_empty(self):
         assert _parse_ndjson(b"") == []
+
+    def test_skips_lines_that_are_not_objects(self):
+        # Only an object is a hook event; the ClickHouse path would fail on anything else.
+        body = b'[1, 2]\n"text"\n5\nnull\n{"a": 1}'
+        assert _parse_ndjson(body) == [{"a": 1}]
+
+    def test_skips_lines_nested_beyond_the_recursion_limit(self):
+        body = b"[" * 100_000 + b"]" * 100_000 + b'\n{"a": 1}'
+        assert _parse_ndjson(body) == [{"a": 1}]
+
+    def test_skips_lines_with_integers_too_long_to_convert(self):
+        # json.loads raises a plain ValueError past 4,300 digits; the batch must not fail with a 500.
+        body = b'{"n": ' + b"9" * 5000 + b'}\n{"a": 1}'
+        assert _parse_ndjson(body) == [{"a": 1}]
 
 
 class TestEventToLogRecord:

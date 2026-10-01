@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ClickHouse queries backing the Local Analytics endpoints.
+"""ClickHouse queries backing the Local Analytics endpoints (the ClickHouse `CliAnalyticsReader`).
 
 Source mapping (this backend, NOT the reference implementation's tables):
 
@@ -31,14 +31,29 @@ Design decisions (see ANALYTICS_DISCOVERY/local_analytics_implementation_plan.md
   D2 repository key   = the git remote (owner/repo) when available, otherwise the
                         directory the session STARTED in.
   D3 turns            = claude_code.interaction spans.
+
+Kept on purpose (PostgreSQL parity, public port/API): the `is_unattributed` repository filter of
+get_session_cost_facts and the coalesce(..., 'unknown') developer fallbacks, which still cover a
+windowed session whose resolved email is empty. Sessions without dimensions drop out via inner joins.
+
+Window contract: a session is in scope iff v_session_dimensions.started_at is in [start_dt, end_dt]
+(inclusive). The predicate lives once, in `_sessions_cte` (`sel`); every windowed fact query is
+scoped or inner-joined to `sel` and carries no day/timestamp predicate, so an in-window session
+contributes all its data. This matches the PostgreSQL reader. Tool/invocation queries scan the raw
+traces/logs tables for those sessions (no ClickHouse hourly rollup).
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+
+from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
 
 QueryFn = Callable[[str, dict], Awaitable[list[dict]]]
+
+# How long the raw tables keep rows (their TTL in config/clickhouse/schema.sql); the rollups keep 365 days.
+RAW_TTL_DAYS = 90
 
 # Collapses a stored `cwd` to a bare folder name. Handles both separators and the
 # historical full-path rows written before ingest_router started normalising cwd
@@ -46,60 +61,39 @@ _TOOL_SPAN = "SpanName IN ('claude_code.tool', 'cursor.tool')"
 _EXEC_SPAN = "SpanName IN ('claude_code.tool.execution', 'cursor.tool.execution')"
 _INTERACTION_SPAN = "SpanName IN ('claude_code.interaction', 'cursor.interaction')"
 
-_DEPTH_BUCKETS = ("1", "2-5", "6-10", "11-25", "26-50", "50+")
+# A session is in scope iff it started inside the window (bounds inclusive). Applied once, in `sel`.
+_STARTED_IN_WINDOW = "started_at BETWEEN {start_dt:DateTime64(3)} AND {end_dt:DateTime64(3)}"
+
+# clickhouse-connect sends query parameters as HTTP form fields, and ClickHouse rejects a
+# field above http_max_field_value_size (131,072 bytes by default). A window's session ids
+# are therefore sent in parts that stay well below it (defect D10 of the PostgreSQL storage
+# design, which measured that about 3,250 ids fit).
+SESSION_IDS_PARAM_BUDGET_BYTES = 100_000
 
 
-def depth_bucket(turns: int) -> str:
-    if turns <= 1:
-        return "1"
-    if turns <= 5:
-        return "2-5"
-    if turns <= 10:
-        return "6-10"
-    if turns <= 25:
-        return "11-25"
-    if turns <= 50:
-        return "26-50"
-    return "50+"
+def _session_id_parts(session_ids: list[str]) -> list[list[str]]:
+    """Split ids so each part, rendered as ['id1','id2',...], fits the parameter budget.
+
+    An id too long to fit even alone is left out: sent, it would fail its whole part.
+    """
+    parts: list[list[str]] = []
+    current: list[str] = []
+    size = 2  # the brackets
+    for sid in dict.fromkeys(session_ids):
+        cost = len(sid.encode()) + 3 + sid.count("'") + sid.count("\\")  # quotes, comma, escapes
+        if 2 + cost > SESSION_IDS_PARAM_BUDGET_BYTES:
+            continue
+        if current and size + cost > SESSION_IDS_PARAM_BUDGET_BYTES:
+            parts.append(current)
+            current, size = [], 2
+        current.append(sid)
+        size += cost
+    if current:
+        parts.append(current)
+    return parts
 
 
-class LocalAnalyticsFilter:
-    """Resolved query filters shared by every Local Analytics query."""
-
-    def __init__(
-        self,
-        start_dt: datetime,
-        end_dt: datetime,
-        users: list[str] | None = None,
-        projects: list[str] | None = None,
-        repositories: list[str] | None = None,
-        branch: str | None = None,
-    ) -> None:
-        self.start_dt = start_dt
-        self.end_dt = end_dt
-        self.users = users or None
-        self.projects = projects or None
-        self.repositories = repositories or None
-        self.branch = branch or None
-
-    @property
-    def has_session_filter(self) -> bool:
-        return bool(self.users or self.projects or self.repositories)
-
-    def params(self) -> dict:
-        p: dict = {"start_dt": self.start_dt, "end_dt": self.end_dt}
-        if self.users:
-            p["users"] = [u.lower() for u in self.users]
-        if self.projects:
-            p["projects"] = self.projects
-        if self.repositories:
-            p["repositories"] = self.repositories
-        if self.branch:
-            p["branch"] = self.branch
-        return p
-
-
-class LocalAnalyticsRepository:
+class ClickHouseCliAnalyticsReader:
     """Read-only ClickHouse access for the Local Analytics endpoints."""
 
     def __init__(self, query_fn: QueryFn) -> None:
@@ -109,13 +103,10 @@ class LocalAnalyticsRepository:
 
     @staticmethod
     def _sessions_cte(f: LocalAnalyticsFilter) -> str:
-        """CTE resolving every session's dimensions, honouring user/project/repo filters.
-
-        Time is deliberately NOT filtered here: a session started before the window
-        can still produce facts inside it. Each fact query applies its own time
-        predicate, matching the reference contract's per-event semantics.
-        """
-        conditions = []
+        """Sessions whose started_at is in the window; the only place the window is decided."""
+        conditions = [_STARTED_IN_WINDOW]
+        if f.deny_all:
+            conditions.append("1 = 0")
         if f.users:
             conditions.append("lower(user_email) IN {users:Array(String)}")
         if f.projects:
@@ -124,7 +115,7 @@ class LocalAnalyticsRepository:
             conditions.append("repository IN {repositories:Array(String)}")
         if f.branch:
             conditions.append("branch = {branch:String}")
-        having = ("\n            WHERE " + "\n              AND ".join(conditions)) if conditions else ""
+        having = "\n            WHERE " + "\n              AND ".join(conditions)
         return f"""
         sel AS (
             SELECT
@@ -155,9 +146,7 @@ class LocalAnalyticsRepository:
 
     @staticmethod
     def _session_scope(f: LocalAnalyticsFilter, column: str = "session_id") -> str:
-        """Restrict a fact query to the filtered session set (no-op when unfiltered)."""
-        if not f.has_session_filter:
-            return ""
+        """Restrict a fact query to the sessions selected by `sel` (always applied)."""
         return f"\n              AND {column} IN (SELECT session_id FROM sel)"
 
     # ── Cost / token facts (coding_agent_cost_daily) ─────────────────────────
@@ -173,7 +162,7 @@ class LocalAnalyticsRepository:
             sum(cache_read_tokens)         AS total_cache_read_tokens,
             sum(cache_creation_tokens)     AS total_cache_creation_tokens
         FROM codemie_analytics.coding_agent_cost_daily
-        WHERE day BETWEEN toDate({{start_dt:DateTime64(3)}}) AND toDate({{end_dt:DateTime64(3)}})
+        WHERE 1 = 1
               {self._session_scope(f)}
         """
         return await self._q(sql, f.params())
@@ -190,11 +179,11 @@ class LocalAnalyticsRepository:
             sum(d.input_tokens + d.output_tokens + d.cache_read_tokens + d.cache_creation_tokens)
                                                                                          AS total_tokens
         FROM codemie_analytics.coding_agent_cost_daily d
-        WHERE d.day BETWEEN toDate({{start_dt:DateTime64(3)}}) AND toDate({{end_dt:DateTime64(3)}})
+        WHERE 1 = 1
               {self._session_scope(f, "d.session_id")}
         GROUP BY d.model_name
         HAVING model_name != ''
-        ORDER BY session_count DESC, cost_usd DESC
+        ORDER BY session_count DESC, cost_usd DESC, model_name
         """
         return await self._q(sql, f.params())
 
@@ -207,11 +196,9 @@ class LocalAnalyticsRepository:
             coalesce(nullIf(s.user_email, ''), nullIf(c.user_email, ''), 'unknown') AS developer_name,
             sum(c.cost_usd)                                                         AS cost_usd
         FROM codemie_analytics.coding_agent_cost_daily c
-        LEFT JOIN sel s ON s.session_id = c.session_id
-        WHERE c.day BETWEEN toDate({{start_dt:DateTime64(3)}}) AND toDate({{end_dt:DateTime64(3)}})
-              {self._session_scope(f, "c.session_id")}
+        JOIN sel s ON s.session_id = c.session_id
         GROUP BY developer_name
-        ORDER BY cost_usd DESC
+        ORDER BY cost_usd DESC, developer_name
         """
         return await self._q(sql, f.params())
 
@@ -229,11 +216,9 @@ class LocalAnalyticsRepository:
             argMax(c.model_name, c.api_call_count)                                  AS top_model,
             groupUniqArray(c.session_id)                                            AS session_ids
         FROM codemie_analytics.coding_agent_cost_daily c
-        LEFT JOIN sel s ON s.session_id = c.session_id
-        WHERE c.day BETWEEN toDate({{start_dt:DateTime64(3)}}) AND toDate({{end_dt:DateTime64(3)}})
-              {self._session_scope(f, "c.session_id")}
+        JOIN sel s ON s.session_id = c.session_id
         GROUP BY developer_name
-        ORDER BY cost_usd DESC
+        ORDER BY cost_usd DESC, developer_name
         """
         return await self._q(sql, f.params())
 
@@ -245,9 +230,7 @@ class LocalAnalyticsRepository:
             c.day                                                                   AS day,
             uniqExact(c.session_id)                                                 AS session_count
         FROM codemie_analytics.coding_agent_cost_daily c
-        LEFT JOIN sel s ON s.session_id = c.session_id
-        WHERE c.day BETWEEN toDate({{start_dt:DateTime64(3)}}) AND toDate({{end_dt:DateTime64(3)}})
-              {self._session_scope(f, "c.session_id")}
+        JOIN sel s ON s.session_id = c.session_id
         GROUP BY developer_name, day
         ORDER BY developer_name, day
         """
@@ -267,10 +250,9 @@ class LocalAnalyticsRepository:
             coalesce(nullIf(s.user_email, ''), nullIf(h.developer_name, ''), 'unknown') AS developer_name,
             max(h.Timestamp)                                                             AS last_active
         FROM codemie_analytics.coding_agent_hook_events h
-        LEFT JOIN sel s ON s.session_id = h.session_id
-        WHERE h.Timestamp BETWEEN {{start_dt:DateTime64(3)}} AND {{end_dt:DateTime64(3)}}
+        JOIN sel s ON s.session_id = h.session_id
+        WHERE h.Timestamp <= {{end_dt:DateTime64(3)}}
               AND h.session_id != ''
-              {self._session_scope(f, "h.session_id")}
         GROUP BY developer_name
         """
         return await self._q(sql, f.params())
@@ -284,7 +266,7 @@ class LocalAnalyticsRepository:
             sum(lines_added)   AS lines_added,
             sum(lines_removed) AS lines_removed
         FROM codemie_analytics.coding_agent_lines_daily
-        WHERE day BETWEEN toDate({{start_dt:DateTime64(3)}}) AND toDate({{end_dt:DateTime64(3)}})
+        WHERE 1 = 1
               {self._session_scope(f)}
         """
         return await self._q(sql, f.params())
@@ -296,7 +278,7 @@ class LocalAnalyticsRepository:
             day                                     AS day,
             sum(lines_added) - sum(lines_removed)   AS net_lines
         FROM codemie_analytics.coding_agent_lines_daily
-        WHERE day BETWEEN toDate({{start_dt:DateTime64(3)}}) AND toDate({{end_dt:DateTime64(3)}})
+        WHERE 1 = 1
               {self._session_scope(f)}
         GROUP BY day
         ORDER BY day
@@ -310,9 +292,7 @@ class LocalAnalyticsRepository:
             coalesce(nullIf(s.user_email, ''), nullIf(l.user_email, ''), 'unknown') AS developer_name,
             sum(l.lines_added) - sum(l.lines_removed)                               AS net_lines
         FROM codemie_analytics.coding_agent_lines_daily l
-        LEFT JOIN sel s ON s.session_id = l.session_id
-        WHERE l.day BETWEEN toDate({{start_dt:DateTime64(3)}}) AND toDate({{end_dt:DateTime64(3)}})
-              {self._session_scope(f, "l.session_id")}
+        JOIN sel s ON s.session_id = l.session_id
         GROUP BY developer_name
         """
         return await self._q(sql, f.params())
@@ -325,7 +305,7 @@ class LocalAnalyticsRepository:
             sum(lines_added)                        AS lines_added,
             sum(lines_removed)                      AS lines_removed
         FROM codemie_analytics.coding_agent_lines_daily
-        WHERE day BETWEEN toDate({{start_dt:DateTime64(3)}}) AND toDate({{end_dt:DateTime64(3)}})
+        WHERE 1 = 1
               {self._session_scope(f)}
         GROUP BY session_id
         """
@@ -339,7 +319,7 @@ class LocalAnalyticsRepository:
         Uses coding_agent_turns_daily (SummingMergeTree, ORDER BY (day, session_id))
         instead of scanning the raw coding_agent_traces table (~15 K rows).
         Pattern mirrors get_cost_kpis / get_lines_by_session which already read daily
-        rollups filtered by the same day-range predicate.
+        rollups scoped to the sessions selected by `sel`.
         """
         sql = f"""
         WITH {self._sessions_cte(f)}
@@ -347,7 +327,7 @@ class LocalAnalyticsRepository:
             session_id          AS session_id,
             sum(turns)          AS turns
         FROM codemie_analytics.coding_agent_turns_daily
-        WHERE day BETWEEN toDate({{start_dt:DateTime64(3)}}) AND toDate({{end_dt:DateTime64(3)}})
+        WHERE 1 = 1
               {self._session_scope(f)}
         GROUP BY session_id
         """
@@ -359,6 +339,7 @@ class LocalAnalyticsRepository:
         Uses coding_agent_file_facts_daily (AggregatingMergeTree) instead of scanning
         coding_agent_traces.  uniqExactMerge correctly accumulates state across days and
         across AggregatingMergeTree parts so cross-day sessions produce consistent counts.
+        All of a windowed session's days are included (the window is decided in `sel`).
         tool_calls is a SimpleAggregateFunction(sum) so a plain sum() suffices.
         """
         sql = f"""
@@ -370,7 +351,7 @@ class LocalAnalyticsRepository:
             uniqExactMerge(files_edited)   AS files_edited,
             sum(tool_calls)                AS tool_calls
         FROM codemie_analytics.coding_agent_file_facts_daily
-        WHERE day BETWEEN toDate({{start_dt:DateTime64(3)}}) AND toDate({{end_dt:DateTime64(3)}})
+        WHERE 1 = 1
               {self._session_scope(f)}
         GROUP BY session_id
         """
@@ -393,7 +374,6 @@ class LocalAnalyticsRepository:
             FROM codemie_analytics.coding_agent_traces
             WHERE {_TOOL_SPAN}
                   AND tool_name != ''
-                  AND Timestamp BETWEEN {{start_dt:DateTime64(3)}} AND {{end_dt:DateTime64(3)}}
                   AND session_id != ''
                   {self._session_scope(f)}
         ) t
@@ -402,7 +382,7 @@ class LocalAnalyticsRepository:
             FROM codemie_analytics.coding_agent_traces
             WHERE {_EXEC_SPAN}
                   AND tool_use_id != ''
-                  AND Timestamp BETWEEN {{start_dt:DateTime64(3)}} AND {{end_dt:DateTime64(3)}}
+                  {self._session_scope(f)}
             GROUP BY tool_use_id
         ) e ON t.tool_use_id = e.tool_use_id AND t.tool_use_id != ''
         GROUP BY t.session_id
@@ -421,7 +401,6 @@ class LocalAnalyticsRepository:
             FROM codemie_analytics.coding_agent_traces
             WHERE {_TOOL_SPAN}
                   AND tool_name != ''
-                  AND Timestamp BETWEEN {{start_dt:DateTime64(3)}} AND {{end_dt:DateTime64(3)}}
                   {self._session_scope(f)}
         ) t
         LEFT JOIN (
@@ -429,11 +408,11 @@ class LocalAnalyticsRepository:
             FROM codemie_analytics.coding_agent_traces
             WHERE {_EXEC_SPAN}
                   AND tool_use_id != ''
-                  AND Timestamp BETWEEN {{start_dt:DateTime64(3)}} AND {{end_dt:DateTime64(3)}}
+                  {self._session_scope(f)}
             GROUP BY tool_use_id
         ) e ON t.tool_use_id = e.tool_use_id AND t.tool_use_id != ''
         GROUP BY t.tool_name
-        ORDER BY call_count DESC
+        ORDER BY call_count DESC, tool_name
         LIMIT 20
         """
         return await self._q(sql, f.params())
@@ -455,7 +434,6 @@ class LocalAnalyticsRepository:
         FROM codemie_analytics.coding_agent_traces
         WHERE {_TOOL_SPAN}
               AND span_skill_name != ''
-              AND Timestamp BETWEEN {{start_dt:DateTime64(3)}} AND {{end_dt:DateTime64(3)}}
               {self._session_scope(f)}
         GROUP BY name
 
@@ -465,7 +443,6 @@ class LocalAnalyticsRepository:
         FROM codemie_analytics.coding_agent_traces
         WHERE {_TOOL_SPAN}
               AND subagent_type != ''
-              AND Timestamp BETWEEN {{start_dt:DateTime64(3)}} AND {{end_dt:DateTime64(3)}}
               {self._session_scope(f)}
         GROUP BY name
 
@@ -475,7 +452,6 @@ class LocalAnalyticsRepository:
         FROM codemie_analytics.coding_agent_logs
         WHERE event_name = 'user_prompt'
               AND LogAttributes['command_name'] != ''
-              AND Timestamp BETWEEN {{start_dt:DateTime64(3)}} AND {{end_dt:DateTime64(3)}}
               {self._session_scope(f)}
         GROUP BY name
         """
@@ -493,7 +469,8 @@ class LocalAnalyticsRepository:
 
         Accepts already-filtered session IDs from cost_facts — no date filter needed.
         Works for both bulk (sessions list) and single-session (detail) callers;
-        pass [session_id] for the detail endpoint.
+        pass [session_id] for the detail endpoint. Large id lists are queried in parts
+        (see SESSION_IDS_PARAM_BUDGET_BYTES); a session's rows never span two parts.
         """
         if not session_ids:
             return []
@@ -505,20 +482,19 @@ class LocalAnalyticsRepository:
           AND skill_name != ''
         GROUP BY session_id
         """
-        return await self._q(sql, {"session_ids": session_ids})
+        parts = await asyncio.gather(*(self._q(sql, {"session_ids": part}) for part in _session_id_parts(session_ids)))
+        return [row for rows in parts for row in rows]
 
     # ── Session-level aggregates ─────────────────────────────────────────────
 
     async def get_session_durations(self, f: LocalAnalyticsFilter) -> list[dict]:
-        """Wall-clock span per session, restricted to sessions active in the window."""
+        """Wall-clock span per session, for the sessions that started in the window."""
         sql = f"""
         WITH {self._sessions_cte(f)}
         SELECT
             session_id                                                     AS session_id,
             dateDiff('millisecond', started_at, last_event_at)             AS duration_ms
         FROM sel
-        WHERE started_at <= {{end_dt:DateTime64(3)}}
-          AND last_event_at >= {{start_dt:DateTime64(3)}}
         """
         return await self._q(sql, f.params())
 
@@ -529,7 +505,7 @@ class LocalAnalyticsRepository:
             session_id                                     AS session_id,
             sum(active_ms_user) + sum(active_ms_cli)       AS active_ms
         FROM codemie_analytics.coding_agent_active_time_daily
-        WHERE day BETWEEN toDate({{start_dt:DateTime64(3)}}) AND toDate({{end_dt:DateTime64(3)}})
+        WHERE 1 = 1
               {self._session_scope(f)}
         GROUP BY session_id
         """
@@ -567,9 +543,7 @@ class LocalAnalyticsRepository:
             sum(c.cache_read_tokens)                                                AS cache_read_tokens,
             sum(c.cache_creation_tokens)                                            AS cache_creation_tokens
         FROM codemie_analytics.coding_agent_cost_daily c
-        LEFT JOIN sel s ON s.session_id = c.session_id
-        WHERE c.day BETWEEN toDate({{start_dt:DateTime64(3)}}) AND toDate({{end_dt:DateTime64(3)}})
-              {self._session_scope(f, "c.session_id")}
+        JOIN sel s ON s.session_id = c.session_id
         GROUP BY c.session_id, developer_name{having}
         """
         params = f.params()
@@ -583,7 +557,6 @@ class LocalAnalyticsRepository:
         WITH {self._sessions_cte(f)}
         SELECT started_at AS started_at
         FROM sel
-        WHERE started_at BETWEEN {{start_dt:DateTime64(3)}} AND {{end_dt:DateTime64(3)}}
         """
         return await self._q(sql, f.params())
 
@@ -717,14 +690,20 @@ class LocalAnalyticsRepository:
             GROUP BY tool_use_id
         ) e ON t.tool_use_id = e.tool_use_id AND t.tool_use_id != ''
         GROUP BY t.tool_name
-        ORDER BY call_count DESC
+        ORDER BY call_count DESC, tool_name
         LIMIT 20
         """
         return await self._q(sql, {"session_id": session_id})
 
     async def get_session_detail_events(self, session_id: str) -> list[dict]:
-        """Merged per-call event stream: api_request logs UNION tool spans, time-ordered."""
+        """Merged per-call event stream: api_request logs UNION tool spans, time-ordered.
+
+        The union is a subquery because ClickHouse applies an ORDER BY written after
+        UNION ALL to the last SELECT only.
+        """
         sql = """
+        SELECT *
+        FROM (
         SELECT
             Timestamp                                          AS timestamp,
             'api_request'                                      AS event_type,
@@ -753,8 +732,8 @@ class LocalAnalyticsRepository:
         WHERE session_id = {session_id:String}
           AND SpanName IN ('claude_code.tool', 'cursor.tool')
           AND tool_name != ''
-
-        ORDER BY timestamp
+        )
+        ORDER BY timestamp, event_type, tool_name, model_name
         """
         return await self._q(sql, {"session_id": session_id})
 
@@ -765,8 +744,13 @@ class LocalAnalyticsRepository:
         claude_code.tool span's own duration is ~0). Cost/tokens are attributed through
         api_request.SpanId = claude_code.tool.ParentSpanId - verified live: 30/30
         agent+skill spans matched an api_request span in the trailing 7 days.
+
+        The union is a subquery because ClickHouse applies an ORDER BY written after
+        UNION ALL to the last SELECT only.
         """
         sql = """
+        SELECT *
+        FROM (
         SELECT
             t.subagent_type                                                      AS subagent_type,
             t.skill_name                                                         AS skill_name,
@@ -880,7 +864,7 @@ class LocalAnalyticsRepository:
                     AND span_skill_name != ''
               )
         )
-
-        ORDER BY span_start
+        )
+        ORDER BY span_start, is_slash_command, subagent_type, skill_name
         """
         return await self._q(sql, {"session_id": session_id})

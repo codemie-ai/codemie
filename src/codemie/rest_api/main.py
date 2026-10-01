@@ -133,6 +133,7 @@ from external.deployment_scripts.preconfigured_skills import manage_preconfigure
 from external.deployment_scripts.preconfigured_workflows import create_preconfigured_workflows
 from external.deployment_scripts.preconfigured_katas import import_preconfigured_katas
 from codemie.clients.postgres import alembic_upgrade_enterprise_postgres, alembic_upgrade_postgres
+from codemie.service.analytics.cli_analytics_jobs import start_cli_analytics_runtime, stop_cli_analytics_runtime
 from codemie.service.budget.startup_reconciliation_service import budget_startup_reconciliation_service
 from codemie.service.customer_config_service import override_cache, refresh_overrides
 
@@ -748,6 +749,7 @@ async def _shutdown_services(app: FastAPI, tasks: list):
     _stop_scheduler(app, 'inactive_project_budget_scheduler', 'Inactive project budget stop scheduler')
     _stop_scheduler(app, 'inactive_cost_center_budget_scheduler', 'Inactive cost center budget stop scheduler')
     _stop_scheduler(app, 'active_project_budget_scheduler', 'Active project budget restore scheduler')
+    await stop_cli_analytics_runtime(getattr(app.state, "cli_analytics_jobs", None))
 
     await close_llm_proxy_client()
     logger.info("LLM Proxy HTTP client closed")
@@ -894,6 +896,9 @@ async def lifespan(app: FastAPI):
     _setup_metrics_rotation_scheduler(app)
     _schedule_budget_reconciliation(app, tasks)
     _schedule_startup_recovery(tasks)
+
+    # CLI Analytics storage: PostgreSQL prepares its schema and runs rollup/partition jobs.
+    app.state.cli_analytics_jobs = await start_cli_analytics_runtime()
 
     yield
 

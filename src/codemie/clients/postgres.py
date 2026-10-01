@@ -36,15 +36,16 @@ def _get_gcp_iam_token() -> str:
     return credentials.token
 
 
-def _get_aws_rds_token() -> str:
+def _get_aws_rds_token(host: str | None = None, port: int | None = None, user: str | None = None) -> str:
+    """An RDS token, signed for one endpoint and user: POSTGRES_HOST/PORT/USER unless given."""
     import boto3
 
     region = config.PG_AWS_RDS_REGION or config.AWS_DEFAULT_REGION
     client = boto3.client("rds", region_name=region)
     return client.generate_db_auth_token(
-        DBHostname=config.POSTGRES_HOST,
-        Port=config.POSTGRES_PORT,
-        DBUsername=config.POSTGRES_USER,
+        DBHostname=host or config.POSTGRES_HOST,
+        Port=port or config.POSTGRES_PORT,
+        DBUsername=user or config.POSTGRES_USER,
         Region=region,
     )
 
@@ -62,21 +63,27 @@ _IAM_TOKEN_PROVIDERS = {
 }
 
 
-def _get_iam_token() -> str:
+def _get_iam_token(host: str | None = None, port: int | None = None, user: str | None = None) -> str:
+    """A token for PG_IAM_AUTH_PROVIDER; only AWS binds it to an endpoint (GCP and Azure tokens are not)."""
     provider = config.PG_IAM_AUTH_PROVIDER
     if provider not in _IAM_TOKEN_PROVIDERS:
         raise ValueError(f"Unsupported PG_IAM_AUTH_PROVIDER: {provider!r}")
+    if provider == "aws":
+        return _get_aws_rds_token(host=host, port=port, user=user)
     return _IAM_TOKEN_PROVIDERS[provider]()
 
 
-def _register_iam_token_event(engine) -> None:
+def _register_iam_token_event(
+    engine, host: str | None = None, port: int | None = None, user: str | None = None
+) -> None:
+    """Authenticate each new connection with a fresh IAM token, for POSTGRES_* unless another endpoint is given."""
     from sqlalchemy import event
 
     target = engine.sync_engine if hasattr(engine, "sync_engine") else engine
 
     @event.listens_for(target, "do_connect")
     def _inject_iam_token(dialect, conn_rec, cargs, cparams):
-        cparams["password"] = _get_iam_token()
+        cparams["password"] = _get_iam_token(host=host, port=port, user=user)
 
 
 class PostgresClient:
