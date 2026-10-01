@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
+
 from elasticsearch import NotFoundError
 from fastapi import APIRouter, status, Request, Depends, Query
 from fastapi.responses import RedirectResponse
 from typing import Optional, Union
+from urllib.parse import urlsplit
 
 from codemie.rest_api.models.usage.assistant_user_interaction import ReactionType
 
@@ -35,9 +38,11 @@ from codemie.rest_api.models.user_reactions import (
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.idp import get_idp_provider
 from codemie.rest_api.security.user import User
+from codemie.rest_api.security.user_providers import get_user_provider
 from codemie.service.monitoring.conversation_monitoring_service import ConversationMonitoringService
 from codemie.service.assistant.assistant_user_interaction_service import assistant_user_interaction_service
 from codemie.service.skill_user_interaction_service import skill_user_interaction_service
+from codemie.service.security.logout_token_cleanup import remove_user_tokens_on_logout_async
 from codemie.service.skill_service import SkillService
 
 conversation_monitoring_service = ConversationMonitoringService()
@@ -132,11 +137,70 @@ def get_profile(request: Request):
     return _get_user_response(user)
 
 
+_SAME_SITE_FETCH_SITES = frozenset({"same-origin", "same-site"})
+
+
+def _is_same_site_request(request: Request) -> bool:
+    """True only when the browser's own request metadata shows a same-origin or same-site request.
+
+    `Sec-Fetch-Site` cannot be set by page scripts, so it decides alone when present. Browsers without
+    it fall back to `Origin`, then `Referer`, which count only when they name this request's own host:
+    deciding "same-site" from a URL needs the public suffix list, so the fallback stays same-origin.
+    With none of the three, the request is not shown to be same-site.
+    """
+    fetch_site = request.headers.get("sec-fetch-site")
+    if fetch_site is not None:
+        return fetch_site.lower() in _SAME_SITE_FETCH_SITES
+    source = request.headers.get("origin", request.headers.get("referer"))
+    if source is None:
+        return False
+    try:
+        source_host = urlsplit(source).netloc.lower()
+    except ValueError:
+        return False
+    return bool(source_host) and source_host == request.headers.get("host", "").lower()
+
+
+async def _resolve_logout_user_id(request: Request) -> str | None:
+    """Resolve the logging-out user the way `authenticate` does; None when the session is unusable.
+
+    Bounded by LOGOUT_TOKEN_CLEANUP_TIMEOUT_SECONDS. Logs the exception class name only: exception
+    text can carry token material.
+    """
+    try:
+        user = await asyncio.wait_for(
+            get_user_provider().authenticate_and_load_user(request, get_idp_provider()),
+            timeout=config.LOGOUT_TOKEN_CLEANUP_TIMEOUT_SECONDS,
+        )
+        return user.id
+    except Exception as exc:
+        logger.warning(f"Logout user resolution failed: {type(exc).__name__}")
+        return None
+
+
+async def _remove_session_user_tokens(request: Request) -> None:
+    """Best-effort TMS token cleanup for the logging-out session; never raises.
+
+    A state-changing GET can be triggered by any site, so only a same-origin or same-site request may
+    purge; anything else still logs out, it just leaves the tokens in place.
+    """
+    if not _is_same_site_request(request):
+        logger.warning("Logout token cleanup skipped: request is not same-origin or same-site")
+        return
+    user_id = await _resolve_logout_user_id(request)
+    if user_id is None:
+        logger.warning("Logout token cleanup skipped: session user could not be resolved")
+        return
+    await remove_user_tokens_on_logout_async(user_id)
+
+
 @router.get("/user/log_out", include_in_schema=False)
-def logout() -> RedirectResponse:
+async def logout(request: Request) -> RedirectResponse:
     """
-    Deletes keycloak cookie and redirects to keycloak logout page
+    Removes the user's TMS tokens (best effort, same-origin or same-site requests only), deletes keycloak
+    cookie and redirects to keycloak logout page
     """
+    await _remove_session_user_tokens(request)
 
     response = RedirectResponse(url=config.KEYCLOAK_LOGOUT_URL, status_code=status.HTTP_302_FOUND)
     response.delete_cookie(get_idp_provider().get_session_cookie())

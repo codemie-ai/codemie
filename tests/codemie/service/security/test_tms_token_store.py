@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from codemie.service.security.thread_safe_ttl_cache import ThreadSafeTTLCache
 from codemie.service.security.token_providers.base_provider import TokenProviderException
 
 
@@ -348,6 +349,27 @@ def test_invalidate_all_for_user(store, mock_tms):
     assert "user-1:config-a" not in store._fallback
     assert "user-1:config-b" not in store._fallback
     assert store._fallback["user-2:config-c"] == "c"
+
+
+# ---------------------------------------------------------------------------
+# purge_fallback_for_user() tests
+# ---------------------------------------------------------------------------
+
+
+def test_purge_fallback_for_user_drops_only_that_users_entries_without_tms_call(store, mock_tms):
+    store._fallback["user-1:config-a"] = "a"
+    store._fallback["user-1:config-b"] = "b"
+    store._fallback["user-2:config-c"] = "c"
+
+    store.purge_fallback_for_user("user-1")
+
+    assert dict(store._fallback) == {"user-2:config-c": "c"}
+    assert mock_tms.method_calls == []
+
+
+def test_fallback_cache_is_thread_safe(store):
+    """Pod fallback entries are read, written and purged from different threads."""
+    assert isinstance(store._fallback, ThreadSafeTTLCache)
 
 
 # ---------------------------------------------------------------------------

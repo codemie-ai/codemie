@@ -37,6 +37,11 @@ def is_token_storage_secure() -> bool:
     return EncryptionFactory.get_current_encryption_service_type() not in _INSECURE_TYPES
 
 
+def is_tool_oauth_enabled() -> bool:
+    """True when any tool OAuth provider is enabled, i.e. tool tokens may be stored in the TMS."""
+    return bool(config.GITLAB_OAUTH_ENABLED or config.JIRA_OAUTH_ENABLED or config.CONFLUENCE_OAUTH_ENABLED)
+
+
 def assert_secure_token_storage(provider_label: str) -> None:
     """Raise 503 when token storage is insecure and the escape hatch is off; otherwise no-op."""
     if is_token_storage_secure() or config.OAUTH_ALLOW_INSECURE_TOKEN_STORAGE:

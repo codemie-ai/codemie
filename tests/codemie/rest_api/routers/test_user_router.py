@@ -18,18 +18,24 @@ Test coverage for src/codemie/rest_api/routers/user.py
 Target coverage: >= 80%
 """
 
+import asyncio
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import jwt
 import pytest
 from elasticsearch import NotFoundError
 from fastapi import FastAPI, status
 from httpx import AsyncClient, ASGITransport
 
+from codemie.configs import config
 from codemie.core.exceptions import ExtendedHTTPException
+from codemie.enterprise.idp.dependencies import register_enterprise_idps
 from codemie.rest_api.models.usage.assistant_user_interaction import ReactionType
 from codemie.rest_api.models.user import UserData
 from codemie.rest_api.routers.user import router
+from codemie.rest_api.security.idp.factory import IdpFactory
 from codemie.rest_api.security.user import User
 
 
@@ -708,3 +714,269 @@ async def test_get_reactions_error_handling(mock_authenticate, mock_skill_servic
     # Assert
     assert exc_info.value.code == status.HTTP_500_INTERNAL_SERVER_ERROR
     assert "Failed to retrieve reactions" in exc_info.value.message
+
+
+# =============================================================================
+# Test GET /v1/user/log_out endpoint
+# =============================================================================
+
+_LOGOUT_URL = "https://keycloak.example/logout"
+_SESSION_COOKIE = "kc-session"
+_SECRET = "sentinel-secret-token-value"
+_SAME_ORIGIN = {"sec-fetch-site": "same-origin"}
+_CLEANUP = "codemie.rest_api.routers.user.remove_user_tokens_on_logout_async"
+
+
+@pytest.fixture
+def logout_deps(monkeypatch, mock_user):
+    """Patch the IdP and user provider that resolve the logging-out user in the router module."""
+    monkeypatch.setattr(config, "KEYCLOAK_LOGOUT_URL", _LOGOUT_URL)
+    idp = MagicMock()
+    idp.get_session_cookie.return_value = _SESSION_COOKIE
+    provider = MagicMock()
+    provider.authenticate_and_load_user = AsyncMock(return_value=mock_user)
+    with (
+        patch("codemie.rest_api.routers.user.get_idp_provider", return_value=idp),
+        patch("codemie.rest_api.routers.user.get_user_provider", return_value=provider),
+    ):
+        yield SimpleNamespace(idp=idp, provider=provider)
+
+
+async def _get_logout(headers: dict[str, str] | None = None, **kwargs):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as ac:
+        return await ac.get("/v1/user/log_out", headers=headers, follow_redirects=False, **kwargs)
+
+
+def _assert_redirected_and_cookie_deleted(response, cookie_name: str = _SESSION_COOKIE) -> None:
+    assert response.status_code == status.HTTP_302_FOUND
+    assert response.headers["location"] == _LOGOUT_URL
+    set_cookie = response.headers["set-cookie"]
+    assert f'{cookie_name}=""' in set_cookie
+    assert "Max-Age=0" in set_cookie
+
+
+@pytest.mark.anyio
+@patch(_CLEANUP)
+async def test_logout_removes_tokens_of_resolved_user(mock_cleanup, logout_deps, mock_user):
+    """A resolvable same-origin session is purged, then redirected with the session cookie deleted."""
+    response = await _get_logout(_SAME_ORIGIN)
+
+    mock_cleanup.assert_awaited_once_with(mock_user.id)
+    logout_deps.provider.authenticate_and_load_user.assert_awaited_once()
+    assert logout_deps.provider.authenticate_and_load_user.await_args.args[1] is logout_deps.idp
+    _assert_redirected_and_cookie_deleted(response)
+
+
+@pytest.mark.anyio
+@patch(_CLEANUP)
+async def test_logout_ignores_user_id_from_query_string(mock_cleanup, logout_deps, mock_user):
+    """Identity comes from the resolved session only, never from request input."""
+    await _get_logout({**_SAME_ORIGIN, "user-id": "someone-else"}, params={"user_id": "someone-else"})
+
+    mock_cleanup.assert_awaited_once_with(mock_user.id)
+
+
+@pytest.mark.anyio
+@patch("codemie.rest_api.routers.user.logger")
+@patch(_CLEANUP)
+async def test_logout_skips_cleanup_when_user_unresolvable(mock_cleanup, mock_logger, logout_deps):
+    """An unresolvable session still logs out; cleanup is skipped and nothing leaks into logs."""
+    logout_deps.provider.authenticate_and_load_user.side_effect = RuntimeError(_SECRET)
+
+    response = await _get_logout(_SAME_ORIGIN)
+
+    mock_cleanup.assert_not_awaited()
+    _assert_redirected_and_cookie_deleted(response)
+    mock_logger.warning.assert_called()
+    assert "skipped" in mock_logger.warning.call_args.args[0]
+    assert _SECRET not in str(mock_logger.mock_calls)
+
+
+@pytest.mark.anyio
+@patch("codemie.rest_api.routers.user.logger")
+@patch(_CLEANUP)
+async def test_logout_skips_cleanup_when_user_resolution_times_out(mock_cleanup, mock_logger, logout_deps, monkeypatch):
+    """A stalled IdP or DB lookup must not hang the logout redirect."""
+
+    async def stalled_resolution(*_args, **_kwargs):
+        await asyncio.sleep(5)
+
+    logout_deps.provider.authenticate_and_load_user.side_effect = stalled_resolution
+    monkeypatch.setattr(config, "LOGOUT_TOKEN_CLEANUP_TIMEOUT_SECONDS", 0.05)
+
+    response = await _get_logout(_SAME_ORIGIN)
+
+    mock_cleanup.assert_not_awaited()
+    _assert_redirected_and_cookie_deleted(response)
+    assert "TimeoutError" in str(mock_logger.warning.call_args_list)
+    assert "skipped" in mock_logger.warning.call_args.args[0]
+
+
+@pytest.mark.anyio
+@patch("codemie.service.security.logout_token_cleanup._delete_all_tms_tokens")
+@patch("codemie.service.security.logout_token_cleanup._tms_in_use", return_value=True)
+async def test_logout_redirects_when_token_cleanup_fails(_mock_in_use, mock_delete, logout_deps, mock_user):
+    """A failing TMS delete never turns the logout redirect into an error."""
+    mock_delete.side_effect = RuntimeError(_SECRET)
+
+    response = await _get_logout(_SAME_ORIGIN)
+
+    mock_delete.assert_called_once_with(mock_user.id)
+    _assert_redirected_and_cookie_deleted(response)
+
+
+# --- CR-003: only same-origin / same-site requests may purge tokens -------------------------------
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "headers",
+    [
+        pytest.param({"sec-fetch-site": "same-origin"}, id="fetch-site-same-origin"),
+        pytest.param({"sec-fetch-site": "same-site"}, id="fetch-site-same-site"),
+        pytest.param({"origin": "http://testserver"}, id="origin-matches-host"),
+        pytest.param({"referer": "http://testserver/ui/home"}, id="referer-matches-host"),
+        pytest.param(
+            {"sec-fetch-site": "same-origin", "referer": "https://evil.example/page"},
+            id="fetch-site-wins-over-referer",
+        ),
+    ],
+)
+@patch(_CLEANUP)
+async def test_logout_removes_tokens_for_same_site_request(mock_cleanup, logout_deps, mock_user, headers):
+    response = await _get_logout(headers)
+
+    mock_cleanup.assert_awaited_once_with(mock_user.id)
+    _assert_redirected_and_cookie_deleted(response)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "headers",
+    [
+        pytest.param({"sec-fetch-site": "cross-site"}, id="fetch-site-cross-site"),
+        pytest.param({"sec-fetch-site": "none"}, id="fetch-site-none"),
+        pytest.param({}, id="no-request-metadata"),
+        pytest.param({"origin": "https://evil.example"}, id="origin-other-host"),
+        pytest.param({"origin": "null"}, id="origin-null"),
+        pytest.param({"referer": "https://evil.example/page"}, id="referer-other-host"),
+        pytest.param({"referer": "http://[malformed"}, id="referer-malformed"),
+        pytest.param(
+            {"sec-fetch-site": "cross-site", "origin": "http://testserver"},
+            id="fetch-site-wins-over-origin",
+        ),
+        pytest.param(
+            {"origin": "https://evil.example", "referer": "http://testserver/ui"},
+            id="origin-wins-over-referer",
+        ),
+    ],
+)
+@patch("codemie.rest_api.routers.user.logger")
+@patch(_CLEANUP)
+async def test_logout_skips_cleanup_but_still_redirects_for_other_requests(
+    mock_cleanup, mock_logger, logout_deps, headers
+):
+    """Cross-site or unprovable requests delete the cookie and redirect exactly as before, without purging."""
+    response = await _get_logout(headers)
+
+    mock_cleanup.assert_not_awaited()
+    logout_deps.provider.authenticate_and_load_user.assert_not_awaited()
+    _assert_redirected_and_cookie_deleted(response)
+    mock_logger.warning.assert_called_once()
+    assert "same-origin or same-site" in mock_logger.warning.call_args.args[0]
+
+
+# --- CR-002: the real IdP chain, not a mocked one -------------------------------------------------
+
+_KEYCLOAK_USER_ID = "keycloak-user-id"
+
+
+class _AcceptingValidator:
+    """Stands in for the enterprise JWKS validator: accepts any bearer token."""
+
+    async def validate(self, token: str) -> dict:
+        return {"sub": _KEYCLOAK_USER_ID}
+
+
+def _keycloak_access_token() -> str:
+    claims = {
+        "sub": _KEYCLOAK_USER_ID,
+        "preferred_username": "kc-user",
+        "name": "Keycloak User",
+        "realm_access": {"roles": []},
+    }
+    return jwt.encode(claims, "unused-signing-key", algorithm="HS256")
+
+
+@pytest.fixture
+def real_keycloak_chain(monkeypatch):
+    """Route logout through the real IdpFactory, JwksValidatingIdp, Keycloak IdP and legacy user provider.
+
+    Yields configure(jwks_enabled), which returns the session cookie name of the real IdP.
+    """
+    pytest.importorskip("codemie_enterprise.idp")
+    monkeypatch.setattr(IdpFactory, "_idp_registry", dict(IdpFactory._idp_registry))
+    register_enterprise_idps()
+    monkeypatch.setattr(config, "IDP_PROVIDER", "keycloak")
+    monkeypatch.setattr(config, "ENABLE_USER_MANAGEMENT", False)
+    monkeypatch.setattr(config, "KEYCLOAK_LOGOUT_URL", _LOGOUT_URL)
+
+    def configure(jwks_enabled: bool) -> str:
+        monkeypatch.setattr(config, "JWKS_VALIDATION_ENABLED", jwks_enabled)
+        return IdpFactory.create().get_session_cookie()
+
+    with patch("codemie.rest_api.security.jwks.runtime.get_global_validator", return_value=_AcceptingValidator()):
+        yield configure
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("jwks_enabled", "bearer_header"),
+    [
+        pytest.param(False, False, id="jwks-off-proxy-token-header"),
+        pytest.param(False, True, id="jwks-off-proxy-token-and-bearer"),
+        pytest.param(True, True, id="jwks-on-proxy-token-and-bearer"),
+    ],
+)
+@patch(_CLEANUP)
+async def test_logout_removes_tokens_through_real_keycloak_idp_chain(
+    mock_cleanup, real_keycloak_chain, jwks_enabled, bearer_header
+):
+    """Identity arrives as proxy-injected headers; the id handed to cleanup is the IdP subject."""
+    cookie_name = real_keycloak_chain(jwks_enabled)
+    token = _keycloak_access_token()
+    headers = {**_SAME_ORIGIN, "x-auth-request-access-token": token}
+    if bearer_header:
+        headers["authorization"] = f"Bearer {token}"
+
+    response = await _get_logout(headers)
+
+    mock_cleanup.assert_awaited_once_with(_KEYCLOAK_USER_ID)
+    _assert_redirected_and_cookie_deleted(response, cookie_name)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("jwks_enabled", "headers"),
+    [
+        pytest.param(False, {"cookie": "_oauth2_proxy=opaque-session"}, id="jwks-off-cookie-only"),
+        pytest.param(True, {"cookie": "_oauth2_proxy=opaque-session"}, id="jwks-on-cookie-only"),
+        pytest.param(
+            True,
+            {"x-auth-request-access-token": _keycloak_access_token()},
+            id="jwks-on-proxy-token-without-bearer",
+        ),
+    ],
+)
+@patch(_CLEANUP)
+async def test_logout_skips_cleanup_but_redirects_when_real_keycloak_chain_cannot_identify_user(
+    mock_cleanup, real_keycloak_chain, jwks_enabled, headers
+):
+    """Accepted limitation: a request the IdP chain cannot authenticate skips the purge and still logs out."""
+    cookie_name = real_keycloak_chain(jwks_enabled)
+
+    response = await _get_logout({**_SAME_ORIGIN, **headers})
+
+    mock_cleanup.assert_not_awaited()
+    _assert_redirected_and_cookie_deleted(response, cookie_name)

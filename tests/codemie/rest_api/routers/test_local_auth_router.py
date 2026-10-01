@@ -584,6 +584,62 @@ class TestChangePasswordEndpoint:
 class TestLogoutEndpoint:
     """Test POST /logout endpoint"""
 
+    @pytest.fixture
+    def event_insert(self):
+        """Replace the DB session and activity repository; yields the insert mock."""
+        with (
+            patch("codemie.rest_api.routers.local_auth_router.get_async_session") as get_session,
+            patch("codemie.rest_api.routers.local_auth_router.activity_event_repository") as repository,
+        ):
+            get_session.return_value.__aenter__.return_value = AsyncMock()
+            get_session.return_value.__aexit__.return_value = False
+            repository.async_insert = AsyncMock()
+            yield repository.async_insert
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.local_auth_router.remove_user_tokens_on_logout_async")
+    async def test_logout_removes_user_tokens_once(self, mock_cleanup, mock_response, mock_user, event_insert):
+        """Logout hands the authenticated user's id to the TMS token cleanup"""
+        # Act
+        await logout(mock_response, _user=mock_user)
+
+        # Assert
+        mock_cleanup.assert_awaited_once_with(mock_user.id)
+
+    @pytest.mark.asyncio
+    @patch("codemie.service.security.logout_token_cleanup._delete_all_tms_tokens")
+    @patch("codemie.service.security.logout_token_cleanup._tms_in_use", return_value=True)
+    async def test_logout_response_unchanged_when_token_cleanup_fails(
+        self, _mock_in_use, mock_delete, mock_response, mock_user, event_insert
+    ):
+        """A failing TMS delete never changes the message, cookie deletion or activity event"""
+        # Arrange
+        mock_delete.side_effect = RuntimeError("sentinel-secret")
+
+        # Act
+        result = await logout(mock_response, _user=mock_user)
+
+        # Assert
+        mock_delete.assert_called_once_with(mock_user.id)
+        assert result.message == "Logged out successfully"
+        mock_response.delete_cookie.assert_called_once()
+        event_insert.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("codemie.rest_api.routers.local_auth_router.remove_user_tokens_on_logout_async")
+    async def test_logout_removes_user_tokens_even_when_activity_insert_fails(
+        self, mock_cleanup, mock_response, mock_user, event_insert
+    ):
+        """The purge runs before the activity insert, so an insert failure cannot skip it"""
+        # Arrange
+        event_insert.side_effect = RuntimeError("db down")
+
+        # Act & Assert
+        with pytest.raises(RuntimeError, match="db down"):
+            await logout(mock_response, _user=mock_user)
+
+        mock_cleanup.assert_awaited_once_with(mock_user.id)
+
     @pytest.mark.asyncio
     @patch("codemie.rest_api.routers.local_auth_router.config")
     async def test_logout_clears_cookie(self, mock_config, mock_response, mock_user):

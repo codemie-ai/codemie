@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from codemie.service.security.oidc_token_exchange_service import OIDCTokenExchangeService
 from codemie.service.security.principal_token_resolver import PrincipalType
+from codemie.service.security.thread_safe_ttl_cache import ThreadSafeTTLCache
 from codemie.service.security.token_providers.base_provider import TokenProviderException
 from codemie.rest_api.security.user import User
 
@@ -282,3 +283,37 @@ def test_get_exchanged_token_no_store_uses_legacy(service, mock_cache, mock_user
         result = service.get_exchanged_token(_AUDIENCE)
 
     assert result == "legacy-exchange"
+
+
+def test_purge_user_cache_drops_only_that_users_entries_without_tms_delete(service, monkeypatch):
+    """Logout purge is cache-only: legacy cache and TMS fallback go, no TMS delete, others untouched."""
+    store = MagicMock()
+    monkeypatch.setattr(OIDCTokenExchangeService, "_store", store)
+    service._cache = ThreadSafeTTLCache(maxsize=16, ttl=60)
+    service._cache[f"oidc_exchange:user-1:{_AUDIENCE}"] = "one"
+    service._cache["oidc_exchange:user-1:other-audience"] = "one-b"
+    service._cache[f"oidc_exchange:user-2:{_AUDIENCE}"] = "two"
+
+    service.purge_user_cache("user-1")
+
+    assert set(service._cache) == {f"oidc_exchange:user-2:{_AUDIENCE}"}
+    store.purge_fallback_for_user.assert_called_once_with("user-1")
+    store.invalidate.assert_not_called()
+    store.invalidate_all_for_user.assert_not_called()
+
+
+def test_purge_user_cache_without_tms_store_still_drops_cache(service, monkeypatch):
+    monkeypatch.setattr(OIDCTokenExchangeService, "_store", None)
+    service._cache = ThreadSafeTTLCache(maxsize=16, ttl=60)
+    service._cache[f"oidc_exchange:user-1:{_AUDIENCE}"] = "one"
+
+    service.purge_user_cache("user-1")
+
+    assert len(service._cache) == 0
+
+
+def test_exchange_cache_is_thread_safe():
+    """Exchanged tokens are read, written and purged from different threads."""
+    OIDCTokenExchangeService._instance = None
+
+    assert isinstance(OIDCTokenExchangeService()._cache, ThreadSafeTTLCache)

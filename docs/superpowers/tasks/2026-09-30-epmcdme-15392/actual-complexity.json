@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 22,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 17,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Eight source components touched: new logout_token_cleanup module (never-raising orchestration plus async timeout wrapper), new ThreadSafeTTLCache utility, TMSTokenStore.purge_fallback_for_user, purge_user_cache on both TokenExchangeService and OIDCTokenExchangeService singletons, is_tool_oauth_enabled helper in oauth_security, and the local-auth and Keycloak logout routers. Two new abstractions and shared token-exchange singletons are involved."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Closest existing pattern is TokenExchangeService.clear_cache(user_id), but it does a TMS delete per principal alias and raises, so it cannot serve a best-effort logout path. The new work adds thread-safety to TTLCache (request threads vs a logout worker thread), an un-cancellable asyncio.to_thread worker bounded by wait_for, and log sanitisation (user id plus exception class name only, since exception text can carry token material). Credential removal on logout is authentication-adjacent. Error-path and concurrency test suites were added alongside."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Diffstat reports 17 files changed (1039 insertions, 12 deletions): 9 source files and 8 test files, at least 5 of them new (logout_token_cleanup.py, thread_safe_ttl_cache.py and three new test modules). The 17-file count falls in the XXL band of the actual-mode mapping, though about half the files are tests. Nearest calibration anchor, epmcdme-10401 (L, total 22), had 8 files. The file-count dimension here reads higher than that example, and the other dimensions offset it."
+    }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches shared token-exchange singletons and more than one logout workflow (local auth and Keycloak)",
+    "Technical Risk bumped from M to L: affects authentication (logout and credential removal) and adds concurrency handling around shared caches"
+  ],
+  "split_recommendation": null
+}

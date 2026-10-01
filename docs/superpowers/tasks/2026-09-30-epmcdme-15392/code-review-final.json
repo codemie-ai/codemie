@@ -1,0 +1,99 @@
+{
+  "decision": "request-changes",
+  "rationale": "All four lenses and the standards audit ran; 5 blockers remain, reachability was unconfirmed for CR-001, CR-002, CR-003 and CR-005 (capped at major), and CR-003 (cross-site GET purge) is a decision_needed item, so confidence is low. AC4 is only partial by approved-spec design (no retry, warning only). 2 deferred (legacy caches skipped when both TMS flags are off; other pods' fallback caches unpurged; both pre-existing) are in /home/taras_spashchenko/EPAM/cm/codemie/docs/superpowers/tasks/2026-09-30-epmcdme-15392/code-review-deferred.md, and 16 findings were dismissed as noise or spec-accepted (e.g. expired-session skip).",
+  "confidence": "low",
+  "risk_flags": ["security", "auth"],
+  "business_review": [
+    {"kind": "spec", "item": "Logout always completes on both routes; a TMS failure never becomes an error response", "status": "pass", "notes": "Cleanup wrapped in except Exception; failure-path tests cover both routes."},
+    {"kind": "spec", "item": "No scheduled, queued, retried or background cleanup; enqueue_mcp_auth_cleanup and USER_OFFBOARDING worker not used", "status": "pass", "notes": "No enqueue/retry/schedule call in the diff; tests assert enqueue_mcp_auth_cleanup not called."},
+    {"kind": "spec", "item": "GET /v1/user/log_out resolves the user best-effort via the configured IdP; invalid session skips purge with a warning and still logs out", "status": "pass", "notes": "Else branch logs skip and redirects; test_logout_skips_cleanup_when_user_unresolvable. Header-less resolution risk: CR-002."},
+    {"kind": "spec", "item": "One new sync service unit under service/security taking user_id and never raising", "status": "pass", "notes": "logout_token_cleanup.remove_user_tokens_on_logout(user_id: str) -> None."},
+    {"kind": "spec", "item": "Step 1: resolve TMS handle via get_token_management_system(); return silently when no TMS is in use", "status": "pass", "notes": "_tms_in_use gate; silent no-op tested. Caches not purged in the no-TMS case (spec: no-op)."},
+    {"kind": "spec", "item": "Step 2: tms_vault_ops.delete_all_for_user inside tms_audit_context('user_logout', user_id)", "status": "pass", "notes": "Signature matches tms_vault_ops; audit source asserted in tests."},
+    {"kind": "spec", "item": "Step 3: purge this pod's exchange cache and TMSTokenStore fallback even if step 2 failed; no extra TMS round-trips", "status": "pass", "notes": "try/finally around delete; OIDC cache also purged; tests assert store.invalidate not called. Purge robustness: CR-005."},
+    {"kind": "spec", "item": "Step 4: exceptions caught at one boundary; one warning with user_id and exception class name only", "status": "pass", "notes": "Only user_id and type(exc).__name__ logged; sentinel-secret assertion in tests."},
+    {"kind": "spec", "item": "Local POST /v1/local-auth/logout: run the unit off the event loop with _user.id; cookie, USER_LOGOUT event and response unchanged", "status": "pass", "notes": "asyncio.to_thread call added; existing cookie/event/response lines untouched."},
+    {"kind": "spec", "item": "Keycloak GET /v1/user/log_out: resolve user via authenticate machinery, never raise, never read identity from query; cookie deletion and 302 unchanged", "status": "pass", "notes": "Uses authenticate_and_load_user; class-name-only logging; redirect and cookie lines unchanged."},
+    {"kind": "story-ac", "item": "AC1: when a signed-in user explicitly logs out, all TMS tokens associated with that user are removed", "status": "pass", "notes": "delete_all_for_user on both routes; per-user isolation tested."},
+    {"kind": "story-ac", "item": "AC2: after logging back in, CodeMie does not reuse any TMS tokens that existed before logout", "status": "pass", "notes": "Rows deleted and logout pod's caches purged; other pods' TTL caches remain (accepted, deferred)."},
+    {"kind": "story-ac", "item": "AC3: after logging back in, any integration or auth-dependent flow requires authentication from scratch", "status": "pass", "notes": "MockTMS test: exchange alias, MCP config and tool rows raise TokenNotFound; other user's rows survive."},
+    {"kind": "story-ac", "item": "AC4: TMS deletion failure is handled safely and does not allow stale tokens to be silently reused", "status": "partial", "notes": "Safe, but failed delete leaves rows until expiry, no retry. Approved spec accepts this."},
+    {"kind": "story-ac", "item": "AC5: sensitive token values are not exposed in logs, UI, Jira or error messages during logout or cleanup", "status": "pass", "notes": "Both warnings log user_id and class name only; sentinel-secret assertions."},
+    {"kind": "story-ac", "item": "AC6: existing logout behavior remains functional and redirects to the expected signed-out state", "status": "pass", "notes": "Local response/cookie/event untouched; GET still 302 to KEYCLOAK_LOGOUT_URL with cookie deleted."},
+    {"kind": "story-ac", "item": "AC7: automated or manual validation covers logout with existing TMS tokens and subsequent login/authentication behavior", "status": "pending-stage-7", "notes": "Tests added; execution evidence outstanding, including that the MockTMS module is not skipped by importorskip."},
+    {"kind": "spec", "item": "Tests: unit tests for the cleanup unit (success/audit source, contained TMS errors, no-TMS no-op, caches purged when delete fails)", "status": "pass", "notes": "test_logout_token_cleanup.py covers each listed case."},
+    {"kind": "spec", "item": "Tests: POST route and GET route cases (resolved, unresolved, cleanup failure)", "status": "pass", "notes": "test_local_auth_router.py and test_user_router.py additions. GET tests mock the IdP chain (CR-002)."},
+    {"kind": "spec", "item": "Tests: logout-then-login test with MockTokenManagementSystem seeding exchange alias, MCP config and tool integration plus another user", "status": "pending-stage-7", "notes": "Implemented in test_logout_token_cleanup_mock_tms.py; uses importorskip so execution must be confirmed."},
+    {"kind": "spec", "item": "Non-goals: no change to codemie-enterprise, codemie-mcp-connect-service or codemie-ui", "status": "pass", "notes": "Diff touches only src/codemie and tests/codemie."},
+    {"kind": "spec", "item": "Non-goals: no fail-closed behavior, logout error path, retry, worker or scheduled cleanup", "status": "pass", "notes": "Cleanup swallows all exceptions; no retry or queue code."},
+    {"kind": "spec", "item": "Non-goals: no change to user-deactivation cleanup, authenticate, or TMSTokenStore/ToolOAuthTokenPort error contracts", "status": "pass", "notes": "authentication.py and token_port.py untouched; invalidate_all_for_user only extracts purge_fallback_for_user."},
+    {"kind": "spec", "item": "Non-goals: no USER_LOGOUT on Keycloak route; no session-expiry handling; no cross-pod purge; no upstream token revocation", "status": "pass", "notes": "No such code in the diff."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "4 subjects in 4779872aa9..HEAD match the EPMCDME-####: Description format (ticket EPMCDME-15392, capitalised description)."},
+    {"kind": "code-quality", "status": "partial", "notes": "Headers, typing and modern unions met. Unmet: none of the 3 new modules has 'from __future__ import annotations' as code-quality.md asks. Ruff and license-check not run."},
+    {"kind": "security", "status": "partial", "notes": "Guide checks met: local logout keeps Depends(authenticate); GET resolver fails closed and logs class names only. Concern: cross-site GET /v1/user/log_out can now trigger TMS deletion; SameSite unverified."}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/local_auth_router.py",
+      "line": 241,
+      "title": "Unbounded TMS delete can stall logout",
+      "problem": "Both logout routes await asyncio.to_thread(remove_user_tokens_on_logout, ...) with no timeout (local_auth_router.py:241, user.py:159), and the new user resolution at user.py:145 has none either. The 'never raises' contract bounds exceptions, not latency.",
+      "impact": "GET /user/log_out used to be credential- and DB-free and always completed. A stalled Postgres, Redis or TMS call now hangs the logout response and pins a default-executor thread shared with other to_thread users. Reachability of a stall was unconfirmed: no DB or socket timeout outside the diff was read.",
+      "recommendation": "Bound the cleanup (and the GET resolution) with asyncio.wait_for and a configured timeout, treating expiry as a sanitized warning followed by the normal logout. wait_for does not stop the worker thread, so also ensure the TMS delete path has a statement or socket timeout."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/rest_api/routers/user.py",
+      "line": 145,
+      "title": "Header-less logout navigation may skip purge",
+      "problem": "codemie-ui logs out with a top-level navigation to /v1/user/log_out (codemie-ui auth.ts:94), which cannot carry an Authorization header. With JWKS_VALIDATION_ENABLED, JwksValidatingIdp.authenticate requires a Bearer header (jwks_validating.py:124-130) and raises 401; _resolve_logout_user_id swallows it and skips cleanup with a warning. Every GET test mocks get_idp_provider and get_user_provider, so none drives the real IdP chain or a cookie-only request.",
+      "impact": "For Keycloak deployments in this mode the ticket's core behavior (TMS tokens removed on logout) may never run, and the passing tests cannot show it. Reachability unconfirmed: an authenticating proxy may inject the header, and the inner enterprise IdP was not readable.",
+      "recommendation": "Add a test that sends GET /v1/user/log_out with only the session cookie through the real IdpFactory (JWKS on and off) and asserts cleanup runs with the cookie user's id, or explicitly asserts it is skipped. If skipped in JWKS mode, resolve the identity from the session credential using the same validation."
+    },
+    {
+      "id": "CR-003",
+      "kind": "decision",
+      "severity": "major",
+      "triage": "decision_needed",
+      "file": "src/codemie/rest_api/routers/user.py",
+      "line": 152,
+      "title": "Cross-site GET can trigger TMS token deletion",
+      "problem": "GET /v1/user/log_out, resolved from the session credential alone with no CSRF token, Origin or Sec-Fetch-Site check, now also deletes every stored MCP and tool OAuth token of that user. Before this change the same request only cleared the session cookie. A cross-site top-level GET carries SameSite=Lax cookies, and cookie attributes are not set in this repo.",
+      "impact": "A third-party page can force a victim's browser to this URL and destroy persisted third-party credentials, forcing re-authorization of every MCP server and tool OAuth grant. Reachability unconfirmed and tied to CR-002: if header-less requests never resolve a user, the purge does not run and the exposure is absent.",
+      "recommendation": "Decide whether cross-site-initiated logout (e.g. IdP-initiated links) should purge tokens. The UI is out of scope and cannot switch to POST, so the likely option is to run the purge only for same-origin or same-site requests (Sec-Fetch-Site/Origin/Referer) while still deleting the cookie and redirecting."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/security/logout_token_cleanup.py",
+      "line": 1,
+      "title": "New modules omit __future__ annotations import",
+      "problem": "code-quality.md (Types And Imports) says to add 'from __future__ import annotations' in new modules. logout_token_cleanup.py, tests/codemie/service/security/test_logout_token_cleanup.py and test_logout_token_cleanup_mock_tms.py all omit it.",
+      "impact": "The documented code-quality convention for new modules is not followed, so the standards check is only partially met.",
+      "recommendation": "Add 'from __future__ import annotations' after the license header and module docstring in each of the three new files."
+    },
+    {
+      "id": "CR-005",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie/service/security/logout_token_cleanup.py",
+      "line": 65,
+      "title": "Cache purges not isolated or synchronized",
+      "problem": "_purge_process_caches runs token_exchange_service.purge_user_cache then oidc_token_exchange_service.purge_user_cache with no per-step isolation, so if the first raises the OIDC cache and its store.purge_fallback_for_user are skipped. Because the purge sits in a finally, its exception also replaces the delete's exception and the failed TMS delete goes unlogged. The purges now run on a worker thread and iterate shared TTLCache and _fallback dicts (oidc_token_exchange_service.py:345, tms_token_store.py:195) with no lock seen around them, so a concurrent insert or eviction can raise 'changed size during iteration'.",
+      "impact": "Cached user tokens can survive logout after only a one-line warning, and the TMS delete failure can be hidden. Concurrency reachability was unconfirmed; the same list-then-pop pattern already exists in invalidate_all_for_user.",
+      "recommendation": "Run the delete and each purge under its own try/except that logs the class name, so one failure neither skips another purge nor masks the delete failure. Snapshot the keys safely (a lock shared with get/put, or retry on RuntimeError) in both purge_fallback_for_user and OIDCTokenExchangeService.purge_user_cache."
+    }
+  ]
+}

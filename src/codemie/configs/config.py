@@ -565,6 +565,9 @@ class Config(BaseSettings):
     # Token Exchange Factory configuration
     TOKEN_CACHE_TTL: int = 600  # 10 mins for exchanged tokens
     TOKEN_CACHE_MAX_SIZE: int = 1024  # max entries across all token caches (per-user + per-audience)
+    # Bounds the best-effort TMS token cleanup and the Keycloak logout user lookup,
+    # so a stalled backend cannot hang logout
+    LOGOUT_TOKEN_CLEANUP_TIMEOUT_SECONDS: float = 5.0
 
     # MCP Client configuration
     MCP_CLIENT_TIMEOUT: float = 300.0  # Timeout in seconds for MCP client requests

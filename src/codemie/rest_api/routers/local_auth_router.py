@@ -38,6 +38,7 @@ from codemie.service.activity.activity_models import (
     UserManagementEvent,
 )
 from codemie.service.activity.activity_repository import activity_event_repository
+from codemie.service.security.logout_token_cleanup import remove_user_tokens_on_logout_async
 from codemie.service.user.authentication_service import authentication_service
 from codemie.service.user.registration_service import registration_service
 from codemie.service.user.password_management_service import password_management_service
@@ -234,6 +235,8 @@ async def logout(response: Response, _user: User = Depends(authenticate)):
 
     Requires authentication (via cookie or Authorization header).
     """
+    # First, so a failing activity insert below cannot skip the token purge. Never raises.
+    await remove_user_tokens_on_logout_async(_user.id)
     response.delete_cookie(
         key=config.AUTH_COOKIE_NAME,
         path=config.AUTH_COOKIE_PATH,

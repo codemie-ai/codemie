@@ -22,12 +22,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import httpx
-from cachetools import TTLCache
 
 from codemie.configs.config import config
 from codemie.configs.logger import logger
 from codemie.rest_api.security.user_context import get_current_user
 from codemie.service.security.jwt_utils import parse_jwt_exp
+from codemie.service.security.thread_safe_ttl_cache import ThreadSafeTTLCache
 from codemie.service.security.token_providers.base_provider import TokenProviderException
 
 
@@ -87,7 +87,7 @@ class OIDCTokenExchangeService:
         return cls._instance
 
     def _initialize(self) -> None:
-        self._cache: TTLCache[str, str] = TTLCache(maxsize=config.TOKEN_CACHE_MAX_SIZE, ttl=config.TOKEN_CACHE_TTL)
+        self._cache = ThreadSafeTTLCache(maxsize=config.TOKEN_CACHE_MAX_SIZE, ttl=config.TOKEN_CACHE_TTL)
         logger.info(f"OIDCTokenExchangeService initialized with cache_ttl={config.TOKEN_CACHE_TTL}s")
 
     @staticmethod
@@ -338,6 +338,12 @@ class OIDCTokenExchangeService:
             f"OIDC exchange subject token resolved with {principal_type.value}-principal for user_id={user_id}"
         )
         return token
+
+    def purge_user_cache(self, user_id: str) -> None:
+        """Drop this process's cached exchanged tokens for ``user_id`` without any TMS round-trip."""
+        self._cache.purge_prefix(f"oidc_exchange:{user_id}:")
+        if self._store is not None:
+            self._store.purge_fallback_for_user(user_id)
 
     def get_exchanged_token(self, audience: str) -> str | None:
         from codemie.service.security.token_exchange_service import token_exchange_service

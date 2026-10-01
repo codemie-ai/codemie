@@ -15,6 +15,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from cachetools import TTLCache
 from unittest.mock import MagicMock, patch
 from codemie.service.security.principal_token_resolver import PrincipalType
 from codemie.service.security.token_exchange_service import TokenExchangeService
@@ -197,6 +198,32 @@ def test_clear_cache_specific_user_evicts_both_principals(factory, mock_cache):
 
     popped_keys = {call.args[0] for call in mock_cache.pop.call_args_list}
     assert popped_keys == {f"auth_token:{user_id}:user", f"auth_token:{user_id}:client"}
+
+
+def test_purge_user_cache_drops_only_that_users_slots_without_tms_delete(factory, monkeypatch):
+    """Logout purge is cache-only: no per-alias TMS delete, other users untouched."""
+    store = MagicMock()
+    monkeypatch.setattr(TokenExchangeService, "_store", store)
+    factory._cache = TTLCache(maxsize=16, ttl=60)
+    for user_id in ("user-1", "user-2"):
+        for principal_type in PrincipalType:
+            factory._cache[f"auth_token:{user_id}:{principal_type.value}"] = "token"
+
+    factory.purge_user_cache("user-1")
+
+    assert set(factory._cache) == {"auth_token:user-2:user", "auth_token:user-2:client"}
+    store.purge_fallback_for_user.assert_called_once_with("user-1")
+    store.invalidate.assert_not_called()
+
+
+def test_purge_user_cache_without_tms_store_still_drops_cache(factory, monkeypatch):
+    monkeypatch.setattr(TokenExchangeService, "_store", None)
+    factory._cache = TTLCache(maxsize=16, ttl=60)
+    factory._cache["auth_token:user-1:user"] = "token"
+
+    factory.purge_user_cache("user-1")
+
+    assert len(factory._cache) == 0
 
 
 def test_clear_cache_all(factory, mock_cache):

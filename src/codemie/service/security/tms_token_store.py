@@ -17,11 +17,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from cachetools import TTLCache
-
 from codemie.configs.config import config
 from codemie.configs.logger import logger
 from codemie.service.security import tms_vault_ops
+from codemie.service.security.thread_safe_ttl_cache import ThreadSafeTTLCache
 from codemie.service.security.token_providers.base_provider import TokenProviderException
 
 _AUDIT_SOURCE = "token_exchange"
@@ -40,7 +39,7 @@ class TMSTokenStore:
         self._audit_ctx = audit_context_provider
         # Token exchange caches the access-token string; tool OAuth caches the full token object.
         # Keys never overlap (MCP auth_config_id vs tool integration_id), so one cache serves both.
-        self._fallback: TTLCache[str, Any] = TTLCache(maxsize=config.TOKEN_CACHE_MAX_SIZE, ttl=config.TOKEN_CACHE_TTL)
+        self._fallback = ThreadSafeTTLCache(maxsize=config.TOKEN_CACHE_MAX_SIZE, ttl=config.TOKEN_CACHE_TTL)
 
     def get(self, user_id: str, auth_config_id: str) -> str | None:
         from codemie_enterprise.mcp_auth import (
@@ -187,7 +186,8 @@ class TMSTokenStore:
         except (TMSUnavailable, TMSPersistenceError, TMSCryptoError):
             pass
 
-        prefix = f"{user_id}:"
-        keys_to_remove = [k for k in self._fallback if k.startswith(prefix)]
-        for k in keys_to_remove:
-            self._fallback.pop(k, None)
+        self.purge_fallback_for_user(user_id)
+
+    def purge_fallback_for_user(self, user_id: str) -> None:
+        """Drop this process's fallback entries for ``user_id``; never touches TMS."""
+        self._fallback.purge_prefix(f"{user_id}:")

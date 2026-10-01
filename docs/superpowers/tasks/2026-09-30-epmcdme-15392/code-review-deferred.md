@@ -1,0 +1,4 @@
+# Deferred from code review — 2026-09-30-epmcdme-15392 (2026-09-30)
+
+- **Legacy token caches skipped when both TMS flags are off** — `src/codemie/service/security/logout_token_cleanup.py:37` — `_tms_in_use()` returns early when MCP auth and tool OAuth are both off, so the in-process exchange caches (`_store is None` legacy path) are not purged on logout. Pre-existing: those caches held user tokens across logout before this change, and the ticket scopes removal to TMS tokens.
+- **Other replicas' fallback caches are not purged** — `src/codemie/service/security/tms_token_store.py:192` — logout purges only the logout pod's `_fallback` and exchange caches; other pods can still serve a cached entry until `TOKEN_CACHE_TTL` (TMS rows themselves are shared and deleted). Pre-existing: per-process token caches predate this change, and cross-pod purge is a recorded non-goal.

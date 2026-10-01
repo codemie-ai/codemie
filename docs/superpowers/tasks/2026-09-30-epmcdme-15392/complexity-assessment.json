@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "task": "Remove all user TMS tokens on explicit CodeMie logout (EPMCDME-15392) across both logout routes, failing safely on deletion errors without leaking token values, preserving existing logout behavior, with tests.",
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 21,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    {
+      "dimension": "component_scope",
+      "reason": "Two logout routers (local_auth_router POST, user.py GET Keycloak redirect) plus a new shared logout-cleanup unit and the enterprise-bridge TMS handle (enterprise/mcp_auth/dependencies.py); shared security utilities (tms_vault_ops.delete_all_for_user, TMSTokenStore, TokenExchangeService.clear_cache) are in play. 3-4 components across API, Service and bridge. Mechanism reuses existing user-wide delete primitives, so not XL."
+    },
+    {
+      "dimension": "requirements_clarity",
+      "reason": "ACs are enumerated but AC4 ('handled safely, no stale token silently reused') is vague and leaves design decisions open: fail-closed vs complete-logout-with-error, sync delete vs the existing queued best-effort cleanup, and how to resolve the user id on the unauthenticated GET /v1/user/log_out route. Rework risk if the wrong semantics are chosen."
+    },
+    {
+      "dimension": "technical_risk",
+      "reason": "Security-sensitive authentication/session change. Closest pattern is USER_OFFBOARDING cleanup (enqueue_mcp_auth_cleanup -> MCPAuthService worker) and TMSTokenStore.invalidate_all_for_user; both are best-effort or swallow TMS errors, the opposite of AC4, so the pattern does not cover the fail-safe/security aspect. Keycloak route has no authenticate dependency and no tests. Per-process TTL caches (TokenExchangeService, TMSTokenStore fallback) are unreachable from other pods and per-user state outside TMS (MCPToolkitFactory cache, mcp-connect client cache) is unexamined. Token values must not leak via TokenProviderException details or logs. Rollback itself is trivial (revert), which keeps this below XXL."
+    },
+    {
+      "dimension": "file_change_estimate",
+      "reason": "Est. 4 modified (local_auth_router.py, user.py, a bridge or TMS helper such as dependencies.py/tms_token_store.py, test_local_auth_router.py) and 3 new (logout-cleanup service module, its test, test for GET log_out) across 3+ directories (rest_api/routers, service/security or enterprise/mcp_auth, tests/*). No codemie-ui or codemie-enterprise change evidenced."
+    }
+  ],
+  "red_flags_applied": [
+    "Technical Risk bumped: affects authentication/session management (logout is a full authentication reset for the user)",
+    "Technical Risk bumped: closest existing pattern (enqueue_mcp_auth_cleanup, TMSTokenStore.invalidate_all_for_user) does not cover the fail-safe security semantics required by AC4 (auto-bump: pattern gap on security-sensitive aspect)",
+    "Requirements Clarity bumped: AC4 'handled safely' is vague and leaves fail-closed, sync-vs-queued and user-id-resolution decisions open",
+    "Borderline 20->21 resolved upward: Technical Risk is XL (5)"
+  ],
+  "split_recommendation": null
+}

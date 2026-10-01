@@ -229,6 +229,17 @@ class TokenExchangeService:
             self._cache.clear()
             logger.info("Cleared all token cache")
 
+    def purge_user_cache(self, user_id: str) -> None:
+        """Drop this process's cached tokens for ``user_id`` without any TMS round-trip.
+
+        Unlike ``clear_cache(user_id)``, the store is only purged locally: its ``invalidate``
+        is a TMS delete per principal alias.
+        """
+        for principal_type in _STORE_ALIASES:
+            self._cache.pop(_cache_key(user_id, principal_type), None)
+        if self._store is not None:
+            self._store.purge_fallback_for_user(user_id)
+
     def get_cache_stats(self) -> dict[str, int]:
         """
         Get cache statistics for monitoring and debugging.
