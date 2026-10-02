@@ -4,9 +4,12 @@
 core = sysmon
 # Sonar reads coverage only for src/ (sonar.sources=src/codemie); measuring
 # tests/ as well doubled the tracked file count and the XML report time.
-source =
-  src/codemie
-  src/codemie_tools
+# `include` (not `source`) keeps the XML paths rooted at the repo
+# (filename="src/codemie/..."), which is how Sonar matches them; `source`
+# re-rooted them at src/codemie and Sonar reported 0% coverage on main.
+include =
+  src/codemie/*
+  src/codemie_tools/*
 omit =
   */templates/*
   */codemie/clients/provider/*
