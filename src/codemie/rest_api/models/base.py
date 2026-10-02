@@ -524,7 +524,8 @@ class BaseModelWithSQLSupport(CommonBaseModel):
                 raise ValueError(validation_message)
 
         with Session(self.get_engine()) as session:
-            if session.get(type(self), self.id) is None:
+            existing = session.get(type(self), self.id)
+            if existing is None:
                 raise StaleDataError(f"Record {self.id} has been deleted")
             session.merge(self)
             session.commit()

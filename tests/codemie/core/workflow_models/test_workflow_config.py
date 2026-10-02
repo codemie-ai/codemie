@@ -16,6 +16,11 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm.exc import StaleDataError
+from sqlmodel import Session, SQLModel
 
 from codemie.configs import config
 from codemie.core.exceptions import NotFoundException
@@ -31,6 +36,15 @@ from codemie.core.workflow_models import (
 from codemie.rest_api.models.base import BaseModelWithSQLSupport
 from codemie.rest_api.security.user import User
 from codemie.core.workflow_models.workflow_config import WorkflowConfigListResponse
+
+
+# WorkflowConfig's JSONB-typed columns have no SQLite compiler by default. Registering a
+# fallback (render JSONB as plain JSON on SQLite) is a test-only concern -- it doesn't touch
+# production code -- and lets these tests exercise a real in-memory SQLite session instead of
+# a fully-mocked one.
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_as_json_on_sqlite(element, compiler, **kw):
+    return "JSON"
 
 
 class TestWorkflowConfig:
@@ -350,6 +364,36 @@ class TestWorkflowConfigUpdatePreservesHistory:
             pytest.raises(NotFoundException, match="WorkflowConfig missing not found"),
         ):
             workflow.update()
+
+    def test_update_propagates_stale_data_error_when_deleted_after_find_by_id(self):
+        engine = create_engine("sqlite:///:memory:")
+        SQLModel.metadata.create_all(engine, tables=[WorkflowConfig.__table__])
+
+        with patch.object(WorkflowConfig, "get_engine", return_value=engine):
+            workflow = WorkflowConfig(id="wf_stale", name="Old", description="d")
+            workflow.save()
+
+            real_find_by_id = WorkflowConfig.find_by_id
+
+            def _find_by_id_then_delete(id_):
+                # WorkflowConfig.update()'s own pre-check succeeds here (the row still
+                # exists), then the row is deleted directly via the engine before control
+                # returns to update() -- simulating a delete that lands between the
+                # subclass's find_by_id pre-check and the base class's own session.get().
+                result = real_find_by_id(id_)
+                with Session(engine) as other_session:
+                    obj = other_session.get(WorkflowConfig, id_)
+                    if obj is not None:
+                        other_session.delete(obj)
+                        other_session.commit()
+                return result
+
+            with patch.object(WorkflowConfig, "find_by_id", side_effect=_find_by_id_then_delete):
+                with pytest.raises(StaleDataError):
+                    workflow.update()
+
+            with Session(engine) as session:
+                assert session.get(WorkflowConfig, "wf_stale") is None
 
 
 def test_template_from_yaml_extracts_required_variables():

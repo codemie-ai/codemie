@@ -99,7 +99,9 @@ def _materialize_execution_reference(message: GeneratedMessage, workflow_id: Opt
         logger.warning(f"Workflow execution {execution_id} not found, keeping reference as-is")
         return message
 
-    thoughts = _get_execution_thoughts(execution_id, history_index=message.history_index)
+    thoughts = _get_execution_thoughts(
+        execution_id, history_index=message.history_index, run_status=execution.overall_status
+    )
     final_output = _resolve_execution_output(execution, thoughts, execution_id)
 
     return GeneratedMessage(
@@ -121,9 +123,7 @@ def _materialize_execution_reference(message: GeneratedMessage, workflow_id: Opt
 
 def _resolve_execution_output(execution: WorkflowExecution, thoughts: List[dict], execution_id: str) -> str:
     """Return hydrated assistant text, empty while the workflow run is still in progress."""
-    run_in_progress = execution.overall_status == WorkflowExecutionStatusEnum.IN_PROGRESS or any(
-        thought.get("in_progress") for thought in thoughts
-    )
+    run_in_progress = execution.overall_status == WorkflowExecutionStatusEnum.IN_PROGRESS
     if run_in_progress:
         return ""
 
@@ -148,7 +148,11 @@ def _get_last_completed_state_output(execution_id: str) -> Optional[str]:
         return None
 
 
-def _get_execution_thoughts(execution_id: str, history_index: Optional[int] = None) -> List[dict]:
+def _get_execution_thoughts(
+    execution_id: str,
+    history_index: Optional[int] = None,
+    run_status: WorkflowExecutionStatusEnum | None = None,
+) -> List[dict]:
     """
     Retrieve thoughts for a workflow execution ordered by creation time.
 
@@ -159,11 +163,18 @@ def _get_execution_thoughts(execution_id: str, history_index: Optional[int] = No
         execution_id: The workflow execution ID
         history_index: When provided, return only states tagged with this turn index.
             Falls back to all states when no states carry a history_index (legacy data).
+        run_status: The run's own overall_status. A step's own IN_PROGRESS status is only
+            trusted to mean "still running" when the run itself is IN_PROGRESS -- otherwise
+            it is a leftover row from a run that has since finished/aborted/interrupted/
+            required auth, and must not be reported as in progress. Defaults to None (not
+            live), so callers that don't pass it keep today's behavior.
 
     Returns:
         List of thought dicts, one per visible execution state
     """
     from codemie.core.workflow_models import WorkflowExecutionState
+
+    run_is_live = run_status == WorkflowExecutionStatusEnum.IN_PROGRESS
 
     try:
         states = WorkflowExecutionState.get_all_by_fields(
@@ -183,7 +194,7 @@ def _get_execution_thoughts(execution_id: str, history_index: Optional[int] = No
                 "message": state.output or "",
                 "input_text": state.task or None,
                 "children": [],
-                "in_progress": state.status == WorkflowExecutionStatusEnum.IN_PROGRESS,
+                "in_progress": run_is_live and state.status == WorkflowExecutionStatusEnum.IN_PROGRESS,
                 "interrupted": state.status == WorkflowExecutionStatusEnum.INTERRUPTED,
                 "aborted": state.status == WorkflowExecutionStatusEnum.ABORTED,
             }

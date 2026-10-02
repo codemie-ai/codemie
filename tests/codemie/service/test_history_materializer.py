@@ -429,3 +429,49 @@ class TestMaterializeWorkflowConversation:
         result = materialize_workflow_conversation([_execution_ref()])
 
         assert result.history[0].execution_status == WorkflowExecutionStatusEnum.SUCCEEDED
+
+
+class TestMaterializeExecutionReferenceRunStatus:
+    """A leftover IN_PROGRESS step row must not make a finished run look still in progress."""
+
+    @pytest.mark.parametrize(
+        "run_status",
+        [
+            WorkflowExecutionStatusEnum.SUCCEEDED,
+            WorkflowExecutionStatusEnum.FAILED,
+            WorkflowExecutionStatusEnum.ABORTED,
+            WorkflowExecutionStatusEnum.INTERRUPTED,
+            WorkflowExecutionStatusEnum.AUTHENTICATION_REQUIRED,
+        ],
+    )
+    def test_leftover_in_progress_step_does_not_block_finished_run(self, mock_workflow_service, run_status):
+        mock_workflow_service.find_workflow_execution_by_id.return_value = _mock_execution(
+            status=run_status, output="final output"
+        )
+        leftover = _mock_state(output=None, status=WorkflowExecutionStatusEnum.IN_PROGRESS)
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[leftover],
+        ):
+            result = materialize_workflow_conversation([_execution_ref()])
+
+        msg = result.history[0]
+        assert msg.thoughts[0].in_progress is False
+        assert msg.message == "final output"
+
+    def test_in_progress_run_with_in_progress_step_is_unchanged(self, mock_workflow_service):
+        mock_workflow_service.find_workflow_execution_by_id.return_value = _mock_execution(
+            status=WorkflowExecutionStatusEnum.IN_PROGRESS, output=""
+        )
+        in_progress = _mock_state(output=None, status=WorkflowExecutionStatusEnum.IN_PROGRESS)
+
+        with patch(
+            "codemie.core.workflow_models.WorkflowExecutionState.get_all_by_fields",
+            return_value=[in_progress],
+        ):
+            result = materialize_workflow_conversation([_execution_ref()])
+
+        msg = result.history[0]
+        assert msg.thoughts[0].in_progress is True
+        assert msg.message == ""
