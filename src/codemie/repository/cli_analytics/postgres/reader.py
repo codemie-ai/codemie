@@ -12,22 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The PostgreSQL `CliAnalyticsReader`: the ClickHouse reader's queries, answered from PostgreSQL.
+"""The PostgreSQL `CliAnalyticsReader`: the analytics queries, answered from PostgreSQL.
 
-Every method returns the row shapes and Python types the ClickHouse reader returns, so
+Every method returns the row shapes and Python types the port defines, so
 the shared handler produces the same JSON. Semantics carried over on purpose:
 - a session is in the window iff its `started_at` is in [start, end], the bounds truncated
-  to milliseconds as ClickHouse's DateTime64(3) parameters are; the window is decided once,
-  in `_sessions_cte`, and every fact query is scoped to that session set;
-- string comparisons in ORDER BY and max() use byte order (COLLATE "C"), as ClickHouse does;
-- a ClickHouse LEFT JOIN yields '' / 0 / 1970-01-01 for a missing match where
-  PostgreSQL yields NULL; where that reaches the API it is reproduced (marked CH parity);
-- argMax / argMin ties go to a stated order instead of ClickHouse's scan order.
+  to whole milliseconds; the window is decided once, in `_sessions_cte`, and every fact
+  query is scoped to that session set;
+- string comparisons in ORDER BY and max() use byte order (COLLATE "C");
+- a missing LEFT JOIN match reads as '' / 0 / 1970-01-01 in the API where
+  PostgreSQL yields NULL; where that reaches the API it is mapped explicitly;
+- ties of "the value of the largest / earliest row" go to a stated order instead of scan order.
 
 Tool success, tool usage and invocations read the `invocations_hourly` rollup for the
-selected sessions. Two deliberate differences from ClickHouse, both documented in the
-design: `last_active` falls back to a session's first developer name, and a tool call
-whose execution span lands after the window end still counts as successful.
+selected sessions. Two deliberate choices, both documented in the design: `last_active`
+falls back to a session's first developer name, and a tool call whose execution span
+lands after the window end still counts as successful.
 """
 
 from __future__ import annotations
@@ -52,12 +52,31 @@ _C = 'COLLATE "C"'
 _STARTED_IN_WINDOW = "started_at BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
 # Clips the raw hook events that decide a session's last dimension event (not session membership).
 _TS = "ts BETWEEN $start_dt::timestamptz AND $end_dt::timestamptz"
+# Slash commands have one source per session: a session with a summary counts only the `commands`
+# of its summary, so its OTel `user_prompt` records (kind 4 of the rollup) add nothing.
+
+
+def _no_summary(column: str) -> str:
+    return f"NOT EXISTS (SELECT 1 FROM session_dims sd WHERE sd.session_id = {column} AND sd.summary_ts IS NOT NULL)"
+
+
 _DEVELOPER = "coalesce(nullif(s.user_email, ''), nullif(c.user_email, ''), 'unknown')"
-# argMax(model_name, api_call_count); ties go to the earliest day, then the key columns.
+# The model of the row with the most calls, over the rows of the original grain of cost_daily:
+# (day, session, user, model, query_source). cost_daily now has several rows per
+# such key (speed, geo, scope, agent type), so their calls are summed back to that grain first (window
+# `w`), then the largest row wins; ties go to the earliest day, then the key columns, as before. On
+# days without plugin data cost_daily has one row per such key and the answer is unchanged.
+_GRAIN_CALLS = "sum(c.api_call_count) OVER w AS grain_calls"
+_GRAIN = "c.day, c.session_id, c.user_email, c.model_name, c.query_source"
 _TOP_MODEL = (
-    f"(array_agg(c.model_name ORDER BY c.api_call_count DESC, c.day, c.session_id {_C}, c.user_email {_C}, "
+    f"(array_agg(c.model_name ORDER BY c.grain_calls DESC, c.day, c.session_id {_C}, c.user_email {_C}, "
     f"c.model_name {_C}, c.query_source {_C}))[1]"
 )
+
+
+def _cost_rows(where: str) -> str:
+    """`cost_daily` rows of the selection, each with the calls of its original grain (see _TOP_MODEL)."""
+    return f"(SELECT c.*, {_GRAIN_CALLS} FROM cost_daily c WHERE {where} WINDOW w AS (PARTITION BY {_GRAIN})) c"
 
 
 def positional(sql: str, params: dict[str, Any]) -> tuple[str, list[Any]]:
@@ -75,7 +94,7 @@ def positional(sql: str, params: dict[str, Any]) -> tuple[str, list[Any]]:
 
 
 def normalise(value: Any) -> Any:
-    """asyncpg values -> the types clickhouse-connect returns (naive UTC datetime, int, float)."""
+    """asyncpg values -> the types the port returns (naive UTC datetime, int, float)."""
     if isinstance(value, datetime) and value.tzinfo is not None:
         return value.astimezone(timezone.utc).replace(tzinfo=None)
     if isinstance(value, Decimal):
@@ -84,7 +103,7 @@ def normalise(value: Any) -> Any:
 
 
 def truncate_to_ms(dt: datetime) -> datetime:
-    """A window bound as ClickHouse binds DateTime64(3): millisecond precision; naive means UTC."""
+    """A window bound truncated to whole milliseconds, in UTC; a naive bound is taken as UTC."""
     dt = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
     return dt.replace(microsecond=dt.microsecond // 1000 * 1000)
 
@@ -133,10 +152,10 @@ class PostgresCliAnalyticsReader:
 
     @staticmethod
     def _sessions_cte(f: LocalAnalyticsFilter) -> str:
-        """Every session's dimensions (ClickHouse: v_session_dimensions + v_session_email).
+        """Every session's dimensions (dimensions plus the session's email).
 
         Sessions whose started_at is in the window; the only place the window is decided.
-        ClickHouse strings are never NULL, so missing values become '' for the filters.
+        Strings are never NULL in the result, so missing values become '' for the filters.
         """
         if f.deny_all:
             conditions = ["false"]
@@ -233,7 +252,8 @@ class PostgresCliAnalyticsReader:
                sum(c.cost_usd)                          AS cost_usd,
                {_TOP_MODEL}                             AS top_model,
                array_agg(DISTINCT c.session_id)         AS session_ids
-        FROM cost_daily c JOIN sel s ON s.session_id = c.session_id
+        FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")}
+             JOIN sel s ON s.session_id = c.session_id
         GROUP BY 1
         ORDER BY cost_usd DESC, ({_DEVELOPER}) {_C}""",
             window_params(f),
@@ -396,15 +416,26 @@ class PostgresCliAnalyticsReader:
         )
 
     async def get_invocations(self, f: LocalAnalyticsFilter) -> Rows:
-        """Skills and subagent types from tool spans, slash commands from user prompts."""
+        """Skills and subagent types from the hourly rollup; slash commands from one source per session:
+        the summary's `commands` (every non-empty string element counts 1) or, for a session without a
+        summary, its OTel user prompts from the rollup. The window is the one of `sel`, as everywhere."""
         return await self._q(
             f"""
         WITH {self._sessions_cte(f)}
         SELECT CASE kind WHEN 2 THEN 'skill' WHEN 3 THEN 'agent' ELSE 'command' END AS kind,
                name,
-               sum(calls)::bigint AS count
-        FROM invocations_hourly
-        WHERE kind IN (2, 3, 4){self._scope(f)}
+               sum(c)::bigint AS count
+        FROM (
+            SELECT kind, name, calls AS c FROM invocations_hourly
+            WHERE kind IN (2, 3){self._scope(f)}
+            UNION ALL
+            SELECT kind, name, calls AS c FROM invocations_hourly
+            WHERE kind = 4 AND {_no_summary("invocations_hourly.session_id")}{self._scope(f)}
+            UNION ALL
+            SELECT 4, e.cmd #>> '{{}}', 1 FROM session_dims, jsonb_array_elements(session_dims.commands) AS e(cmd)
+            WHERE session_dims.summary_ts IS NOT NULL AND jsonb_typeof(e.cmd) = 'string'
+              AND e.cmd #>> '{{}}' <> ''{self._scope(f)}
+        ) u
         GROUP BY 1, 2""",
             window_params(f),
         )
@@ -476,7 +507,8 @@ class PostgresCliAnalyticsReader:
                sum(c.output_tokens)::bigint                 AS output_tokens,
                sum(c.cache_read_tokens)::bigint             AS cache_read_tokens,
                sum(c.cache_creation_tokens)::bigint         AS cache_creation_tokens
-        FROM cost_daily c JOIN sel s ON s.session_id = c.session_id
+        FROM {_cost_rows("c.session_id IN (SELECT session_id FROM sel)")}
+             JOIN sel s ON s.session_id = c.session_id
         GROUP BY c.session_id, 2{having_sql}""",
             params,
         )
@@ -517,7 +549,7 @@ class PostgresCliAnalyticsReader:
                nullif(d.branch, '')                                                   AS branch,
                nullif(d.project_name, '')                                             AS project_name,
                nullif(d.first_prompt, '')                                             AS prompt,
-               coalesce(d.started_at, {_EPOCH})                                       AS started_at,  -- CH parity
+               coalesce(d.started_at, {_EPOCH})                                       AS started_at,  -- or 1970-01-01
                coalesce({_ms("d.last_event_at")} - {_ms("d.started_at")}, 0)          AS duration_ms
         FROM c LEFT JOIN session_dims d ON d.session_id = c.session_id""",
             {"sid": session_id},
@@ -532,8 +564,7 @@ class PostgresCliAnalyticsReader:
                sum(c.output_tokens)::bigint         AS output_tokens,
                sum(c.cache_read_tokens)::bigint     AS cache_read_tokens,
                sum(c.cache_creation_tokens)::bigint AS cache_creation_tokens
-        FROM cost_daily c
-        WHERE c.session_id = $sid::text""",
+        FROM {_cost_rows("c.session_id = $sid::text")}""",
             {"sid": session_id},
         )
 
@@ -632,7 +663,7 @@ class PostgresCliAnalyticsReader:
         SELECT * FROM (
         SELECT t.subagent_type, t.skill_name, 0 AS is_slash_command, t.span_start,
                coalesce(ex.duration_ms, 0)::bigint AS duration_ms,
-               -- CH parity: an unmatched interaction counts as Timestamp 1970-01-01, Duration 0
+               -- an interaction with no match counts as starting at 1970-01-01 (0 ns) and lasting 0 ns
                ((coalesce({_ns("ia.ts")}, 0) + coalesce(ia.duration_ns, 0) - {_ns("t.span_start")}) / 1000000)::bigint
                                                          AS real_duration_ms,
                coalesce(lr.cost_usd, 0)::float8          AS cost_usd,

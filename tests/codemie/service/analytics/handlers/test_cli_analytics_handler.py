@@ -52,7 +52,7 @@ def make_filter():
 
 @pytest.mark.asyncio
 async def test_session_repository_none_when_plugin_absent():
-    """Empty string from ClickHouse for plugin-less session must become None."""
+    """Empty string from the reader for plugin-less session must become None."""
     row = {**BASE_COST_ROW, "repository": "", "branch": ""}
     handler = make_handler(cost_facts=[row])
     data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
@@ -337,3 +337,78 @@ async def test_get_sessions_start_time_carries_utc_offset_for_naive_started_at()
     data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
     session = data["sessions"][0]
     assert session["start_time"] == "2026-01-01T00:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_rows_with_developer_name_also_carry_user_email() -> None:
+    """user, cost-by-user, session and detail rows carry user_email equal to developer_name."""
+    from codemie.rest_api.models.cli_analytics import (
+        LocalAnalyticsCostByUserRow,
+        LocalAnalyticsSessionDetail,
+        LocalAnalyticsSessionRow,
+        LocalAnalyticsUserRow,
+    )
+
+    email = "dev@example.com"
+    repo = MagicMock()
+    repo.get_users = AsyncMock(
+        return_value=[
+            {
+                "developer_name": email,
+                "session_count": 1,
+                "input_tokens": 1,
+                "output_tokens": 1,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+                "cost_usd": 1.0,
+                "session_ids": [],
+            }
+        ]
+    )
+    for name in (
+        "get_users_daily_activity",
+        "get_users_last_active",
+        "get_lines_by_user",
+        "get_turns_by_session",
+        "get_file_facts_by_session",
+        "get_tool_success_by_session",
+        "get_session_durations",
+        "get_cost_kpis",
+        "get_model_breakdown",
+        "get_session_detail_cost",
+        "get_session_detail_scalars",
+        "get_session_detail_tools",
+        "get_session_detail_events",
+        "get_session_detail_dispatches",
+        "get_skill_names_by_session",
+        "get_lines_by_session",
+    ):
+        setattr(repo, name, AsyncMock(return_value=[]))
+    repo.get_cost_by_user = AsyncMock(return_value=[{"developer_name": email, "cost_usd": 2.0}])
+    repo.get_session_cost_facts = AsyncMock(return_value=[{**BASE_COST_ROW, "developer_name": email}])
+    repo.get_session_detail_meta = AsyncMock(
+        return_value=[
+            {
+                "session_id": "s1",
+                "developer_name": email,
+                "started_at": datetime(2026, 1, 1),
+                "duration_ms": 0,
+            }
+        ]
+    )
+    handler = LocalAnalyticsHandler(repo)
+
+    users = await handler.get_users(make_filter(), page=None, per_page=None)
+    cost, _ = await handler.get_cost(make_filter())
+    sessions, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
+    detail, _ = await handler.get_session_detail("s1")
+
+    dumped = [
+        LocalAnalyticsUserRow(**users["rows"][0]).model_dump(by_alias=True),
+        LocalAnalyticsCostByUserRow(**cost["cost_by_user"][0]).model_dump(by_alias=True),
+        LocalAnalyticsSessionRow(**sessions["sessions"][0]).model_dump(by_alias=True),
+        LocalAnalyticsSessionDetail(**detail).model_dump(by_alias=True),
+    ]
+    for row in dumped:
+        assert row["developer_name"] == email
+        assert row["user_email"] == email

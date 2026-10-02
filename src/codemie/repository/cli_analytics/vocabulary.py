@@ -21,8 +21,7 @@ events and metric names onto the same kinds. Rows stored before a name was added
 kind 0 until the backfill command (`postgres/backfill.py`) re-derives their kind and
 rebuilds the rollups of the range it is given.
 
-The hook constants mirror the ClickHouse schema (`config/clickhouse/schema.sql`), which
-the ClickHouse adapter keeps using unchanged.
+The hook constants define the hook types and the keys that have a typed column.
 """
 
 from __future__ import annotations
@@ -71,11 +70,11 @@ LINES_METRICS: tuple[str, ...] = ("claude_code.lines_of_code.count", "cursor.lin
 ACTIVE_TIME_METRICS: tuple[str, ...] = ("claude_code.active_time.total", "cursor.active_time.total")
 ROLLUP_METRICS: tuple[str, ...] = LINES_METRICS + ACTIVE_TIME_METRICS
 
-# Tool names whose file_path counts as written / edited (mv_file_facts_daily).
+# Tool names whose file_path counts as written / edited (session_files_daily).
 WRITE_TOOLS: tuple[str, ...] = ("Write",)
 EDIT_TOOLS: tuple[str, ...] = ("Edit", "MultiEdit", "NotebookEdit")
 
-# The hook types ClickHouse copies into coding_agent_hook_events (mv_hook_events), and so
+# The hook types that count as dimension events, and so
 # the only ones that feed session dimensions and "last active".
 DIMENSION_HOOK_TYPES: tuple[str, ...] = (
     "agent.session.start",
@@ -122,35 +121,6 @@ HOOK_TEXT_FIELDS: tuple[str, ...] = (
     "skill_name",
 )
 
-# The attributes the ClickHouse path writes for each hook event, in the router's order.
-HOOK_ATTRIBUTE_KEYS: tuple[str, ...] = (
-    "event_type",
-    "session_id",
-    "prompt_id",
-    "agent_id",
-    "agent_type",
-    "codemie_project_name",
-    "cwd",
-    "denial_reason",
-    "developer_name",
-    "effort",
-    "error_message",
-    "error_type",
-    "git_branch",
-    "notification_type",
-    "permission_mode",
-    "prompt_body",
-    "reason",
-    "repo_remote",
-    "skill_name",
-    "source",
-    "tool_input",
-    "tool_name",
-    "tool_output",
-    "tool_use_id",
-    "trigger",
-)
-
 # Hook keys with a typed home; any other key is kept in the residual attributes.
 HOOK_KNOWN_KEYS: frozenset[str] = frozenset({"type", "timestamp", "session_id", "prompt_id", *HOOK_TEXT_FIELDS})
 
@@ -165,7 +135,7 @@ SESSION_SCOPED_KEYS: tuple[str, ...] = (
     "app.entrypoint",
 )
 
-# Prompts that never become a session's first prompt (mv_session_dims).
+# Prompts that never become a session's first prompt (session_dims.first_prompt).
 SENTINEL_EXACT: tuple[str, ...] = ("/clear", "/resume", "/compact", "/exit", "/quit")
 SENTINEL_PREFIX_TRIMMED: tuple[str, ...] = ("<command-name>/clear", "<command-name>/resume")
 SENTINEL_PREFIX_RAW: tuple[str, ...] = (

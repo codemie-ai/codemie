@@ -25,6 +25,7 @@ from sqlalchemy.engine import make_url
 from codemie.configs.config import Config
 from codemie.repository.cli_analytics.ports import CliAnalyticsStorageConfigError
 from codemie.repository.cli_analytics.postgres import settings as settings_module
+from codemie.repository.cli_analytics.postgres.maintenance import RetentionPolicy
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
 
 
@@ -504,3 +505,31 @@ def test_iam_tokens_are_minted_for_the_host_port_and_user_the_pool_connects_to(o
     s = AnalyticsPgSettings.from_config(_config(PG_IAM_AUTH_PROVIDER="aws", **overrides))
 
     assert s.iam_endpoint == endpoint
+
+
+@pytest.mark.parametrize("days", [0, 90, 400])
+def test_session_retention_accepts_zero_or_at_least_raw(days: int) -> None:
+    s = AnalyticsPgSettings.from_config(
+        _config(CLI_ANALYTICS_RAW_RETENTION_DAYS=90, CLI_ANALYTICS_SESSION_RETENTION_DAYS=days)
+    )
+
+    assert s.session_retention_days == days
+
+
+@pytest.mark.parametrize("days", [1, 45, 89])
+def test_session_retention_below_raw_is_refused_as_a_storage_config_error(days: int) -> None:
+    # 89 is raw - 1: the endpoints answer 503 through CliAnalyticsStorageConfigError, no startup crash.
+    with pytest.raises(CliAnalyticsStorageConfigError, match="CLI_ANALYTICS_SESSION_RETENTION_DAYS"):
+        AnalyticsPgSettings.from_config(
+            _config(CLI_ANALYTICS_RAW_RETENTION_DAYS=90, CLI_ANALYTICS_SESSION_RETENTION_DAYS=days)
+        )
+
+
+def test_the_session_retention_setting_reaches_the_retention_policy() -> None:
+    # PostgresAnalyticsRuntime builds its PartitionMaintainer policy from_settings: a lost mapping
+    # would leave session_days at 0 and the whole-session purge would never run.
+    settings = AnalyticsPgSettings.from_config(
+        _config(CLI_ANALYTICS_RAW_RETENTION_DAYS=90, CLI_ANALYTICS_SESSION_RETENTION_DAYS=180)
+    )
+
+    assert RetentionPolicy.from_settings(settings).session_days == 180

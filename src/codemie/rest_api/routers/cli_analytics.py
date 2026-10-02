@@ -16,8 +16,7 @@
 
 Serves the contract consumed by codemie-ui's OTel CLI Analytics tab
 (`src/types/localAnalytics.ts`). Field names and shapes follow that contract;
-the data behind them comes from the `codemie_analytics` storage selected by
-CLI_ANALYTICS_STORAGE_BACKEND (ClickHouse or PostgreSQL, see
+the data behind them comes from the `codemie_analytics` PostgreSQL storage (see
 codemie.repository.cli_analytics). This module parses requests and maps storage
 errors to HTTP statuses; it never touches an engine directly.
 
@@ -67,7 +66,6 @@ from codemie.repository.cli_analytics.ports import (
     CliAnalyticsStorageConfigError,
     TelemetryIngestError,
     TelemetryStorageUnavailableError,
-    TelemetryUpstreamConfigurationError,
     UnsupportedTelemetryContentTypeError,
 )
 from codemie.rest_api.models.cli_analytics import (
@@ -105,7 +103,6 @@ _PROTOBUF_CONTENT_TYPE = "application/x-protobuf"
 _INGEST_ERROR_STATUS: dict[type[TelemetryIngestError], int] = {
     InvalidTelemetryPayloadError: status.HTTP_400_BAD_REQUEST,
     UnsupportedTelemetryContentTypeError: status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-    TelemetryUpstreamConfigurationError: status.HTTP_502_BAD_GATEWAY,
     TelemetryStorageUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
@@ -288,7 +285,7 @@ class FilterParams:
             )
             start_dt = clamped
 
-        # The shared user filter sends CodeMie user IDs; ClickHouse is keyed by email.
+        # The shared user filter sends CodeMie user IDs; the storage is keyed by email.
         emails = self._split(self.users)
         if emails:
             rows = [{"user": u} for u in emails]

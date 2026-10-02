@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from unittest.mock import patch
@@ -38,6 +39,7 @@ from codemie.repository.cli_analytics.ports import (
 from codemie.repository.cli_analytics.postgres import ingestor as ingestor_module
 from codemie.repository.cli_analytics.postgres.ingestor import PostgresTelemetryIngestor
 from tests.codemie.repository.cli_analytics.postgres.test_engine import SETTINGS
+from tests.codemie.repository.cli_analytics.support import hook_event_builders as hb
 from tests.codemie.repository.cli_analytics.support import otlp_builders as b
 from tests.codemie.repository.cli_analytics.support.contracts import assert_implements_port
 
@@ -263,7 +265,7 @@ class RejectingConnection(RecordingConnection):
         self.failed_transactions = 0
 
     @asynccontextmanager
-    async def _transaction(self):
+    async def _transaction(self) -> AsyncIterator[None]:
         ledger, self.pending = set(self.ledger), []
         self.transactions += 1
         try:
@@ -425,7 +427,7 @@ async def test_hook_events_are_stored_with_the_sender_and_answered_in_json():
     assert hook_args[4] == ["dev@example.com"]  # user_email column
     assert (result.body, result.media_type, result.accepted) == (b"{}", "application/json", 1)
     (dirty_args,) = engine.conn.sql("INSERT INTO rollup_dirty")
-    assert list(dirty_args[2]) == [2]  # session dimensions
+    assert list(dirty_args[2]) == [34]  # DIMENSIONS 2 + SESSION 32
 
 
 @pytest.mark.asyncio
@@ -472,3 +474,92 @@ async def test_jsonb_columns_are_sent_as_json_text():
 
     (log_args,) = engine.conn.sql("INSERT INTO log_events")
     assert json.loads(log_args[-1][0]) == {"event.sequence": 1, "extra_attr": "x"}
+
+
+def _usage_events(*request_ids: str) -> list[dict[str, object]]:
+    return [hb.usage_request(request_id=r, event_id=f"usage:s:{r}", session_id=r) for r in request_ids]
+
+
+@pytest.mark.asyncio
+async def test_a_usage_request_is_stored_in_its_own_table_and_the_ledger() -> None:
+    engine = FakeEngine()
+
+    result = await _ingestor(engine).ingest_hook_events([hb.usage_request()], "dev@example.com", 0)
+
+    order = [m.group(1) for sql, _ in engine.conn.statements if (m := re.search(r"INSERT INTO (\w+)", sql))]
+    assert order == ["ingest_dedup", "usage_requests", "rollup_dirty"]
+    assert result.accepted == 1
+    (ledger_args,) = engine.conn.sql("INSERT INTO ingest_dedup")
+    assert list(ledger_args[0]) == [date(2026, 9, 29)] and len(ledger_args[1]) == 1
+    (usage_args,) = engine.conn.sql("INSERT INTO usage_requests")
+    assert usage_args[1] == ["3f6c0a52"]  # session_id column, after ts
+
+
+@pytest.mark.asyncio
+async def test_usage_columns_are_sent_with_their_sql_types() -> None:
+    engine = FakeEngine()
+
+    await _ingestor(engine).ingest_hook_events([hb.usage_request()], "dev@example.com", 0)
+
+    (sql,) = [s for s, _ in engine.conn.statements if "INSERT INTO usage_requests" in s]
+    unnest = sql.split("FROM unnest(")[1]
+    types = dict(zip(re.findall(r"\) AS u\(([^)]*)\)", unnest)[0].split(", "), re.findall(r"::(\w+)\[\]", unnest)))
+    assert types["web_search_requests"] == types["web_fetch_requests"] == "int4"
+    assert types["is_api_error"] == "bool"
+    assert types["thinking_tokens"] == types["cache_creation_5m_tokens"] == types["cache_creation_1h_tokens"] == "int8"
+    # Existing names keep their types.
+    assert (types["input_tokens"], types["output_tokens"], types["cache_read_tokens"]) == ("int8",) * 3
+    assert types["ts"] == "timestamptz" and types["session_id"] == "text"
+    assert "$" + str(list(types).index("attrs") + 1) + "::text[]" in sql and "attrs::jsonb" in sql
+
+
+@pytest.mark.asyncio
+async def test_usage_requests_touch_no_rollup_or_session_table() -> None:
+    engine = FakeEngine()
+
+    await _ingestor(engine).ingest_hook_events([hb.usage_request()], "dev@example.com", 0)
+
+    targets = {m.group(1) for sql, _ in engine.conn.statements if (m := re.search(r"INSERT INTO (\w+)", sql))}
+    assert not {t for t in targets if t.startswith("rollup_") and t != "rollup_dirty"}
+    assert "session_attributes" not in targets and "sessions" not in targets
+
+
+class RejectingUsageConnection(RecordingConnection):
+    """Rejects any insert of usage rows of the `poison` session (class 22), as PostgreSQL would."""
+
+    def __init__(self, poison: str) -> None:
+        super().__init__()
+        self.poison = poison
+        self.pending: list[str] = []
+        self.stored: list[str] = []
+
+    @asynccontextmanager
+    async def _transaction(self) -> AsyncIterator[None]:
+        ledger, self.pending = set(self.ledger), []
+        self.transactions += 1
+        try:
+            yield
+        except BaseException:
+            self.ledger = ledger
+            raise
+        self.stored += self.pending
+
+    async def execute(self, sql: str, *args: object) -> str:
+        if "INSERT INTO usage_requests" in sql:
+            if self.poison in args[1]:  # session_id column, after ts
+                raise asyncpg.exceptions.InvalidParameterValueError("unstorable value")
+            self.pending += args[1]
+        return await super().execute(sql, *args)
+
+
+@pytest.mark.asyncio
+async def test_a_usage_row_the_database_rejects_is_dropped_and_the_others_are_stored() -> None:
+    conn = RejectingUsageConnection(poison="s-bad")
+    events = _usage_events("s1", "s-bad", "s2", "s3")
+
+    with patch.object(ingestor_module, "logger") as logger:
+        result = await _ingestor(FakeEngine(conn)).ingest_hook_events(events, "dev@example.com", 0)
+
+    assert sorted(conn.stored) == ["s1", "s2", "s3"]
+    assert result.accepted == 3
+    assert "s-bad" in logger.warning.call_args.args[0]

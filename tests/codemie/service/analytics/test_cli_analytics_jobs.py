@@ -32,6 +32,7 @@ from codemie.service.analytics.cli_analytics_jobs import (
     start_cli_analytics_runtime,
     stop_cli_analytics_runtime,
 )
+from codemie.service.analytics.delivery_framework import classify_delivery_framework
 
 
 def _runtime(*jobs: ScheduledJob) -> MagicMock:
@@ -122,29 +123,36 @@ async def test_a_storage_that_refuses_its_configuration_does_not_stop_the_applic
 
 
 @pytest.mark.asyncio
-async def test_an_engine_without_background_work_starts_nothing():
-    storage = CliAnalyticsStorage(backend="clickhouse", reader=MagicMock(), ingestor=MagicMock())
+async def test_a_storage_without_background_work_starts_nothing() -> None:
+    storage = CliAnalyticsStorage(reader=MagicMock(), ingestor=MagicMock())
 
     with _feature(True), patch.object(cli_analytics_jobs, "get_cli_analytics_storage", return_value=storage):
         assert await start_cli_analytics_runtime() is None
 
 
 @pytest.mark.asyncio
-async def test_an_engine_with_a_runtime_is_started_and_scheduled():
+async def test_a_storage_with_a_runtime_is_started_and_scheduled() -> None:
     runtime = _runtime(ScheduledJob("refresh", 30, AsyncMock()))
-    storage = CliAnalyticsStorage(backend="postgres", reader=MagicMock(), ingestor=MagicMock(), runtime=runtime)
+    storage = CliAnalyticsStorage(reader=MagicMock(), ingestor=MagicMock(), runtime=runtime)
 
     with (
         _feature(True),
         patch.object(cli_analytics_jobs, "get_cli_analytics_storage", return_value=storage),
         patch.object(cli_analytics_jobs, "AsyncIOScheduler") as scheduler_type,
     ):
+        order = MagicMock()  # one parent to read the order of the calls off
+        order.attach_mock(runtime.set_classifier, "set_classifier")
+        order.attach_mock(runtime.start, "runtime_start")
+        order.attach_mock(scheduler_type.return_value.add_job, "add_job")
         jobs = await start_cli_analytics_runtime()
         await asyncio.sleep(0)  # the storage prepares itself in the background
 
     runtime.start.assert_awaited_once()
     assert jobs is not None
     scheduler_type.return_value.add_job.assert_called_once()
+    # The refresher gets the delivery-framework classifier before anything can run it.
+    runtime.set_classifier.assert_called_once_with(classify_delivery_framework)
+    assert [c[0] for c in order.mock_calls] == ["set_classifier", "add_job", "runtime_start"]
 
 
 @pytest.mark.asyncio
@@ -153,7 +161,7 @@ async def test_the_application_does_not_wait_for_the_analytics_database_at_start
     never = asyncio.Event()
     runtime = _runtime(ScheduledJob("refresh", 30, AsyncMock()))
     runtime.start = AsyncMock(side_effect=never.wait)
-    storage = CliAnalyticsStorage(backend="postgres", reader=MagicMock(), ingestor=MagicMock(), runtime=runtime)
+    storage = CliAnalyticsStorage(reader=MagicMock(), ingestor=MagicMock(), runtime=runtime)
 
     with (
         _feature(True),

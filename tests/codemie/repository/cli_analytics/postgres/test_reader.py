@@ -70,7 +70,7 @@ def test_a_missing_parameter_fails_loudly():
         (1.5, 1.5),
     ],
 )
-def test_values_are_normalised_to_the_clickhouse_row_contract(value, expected):
+def test_values_are_normalised_to_the_port_row_contract(value: object, expected: object) -> None:
     result = normalise(value)
 
     assert result == expected
@@ -336,6 +336,32 @@ async def test_session_cost_facts_inner_join_sel_without_epoch_defaults():
     assert "JOIN sel" in sql
 
 
+@pytest.mark.parametrize("method", ["get_users", "get_session_cost_facts", "get_session_detail_cost"])
+@pytest.mark.asyncio
+async def test_the_top_model_is_the_largest_row_of_the_original_cost_grain(method: str) -> None:
+    # cost_daily holds several rows per (day, session, user, model, query_source) once plugin data adds
+    # speed, geo, scope and agent type. Their calls are summed back to that grain, then the largest row
+    # wins: ordering by a single row's api_call_count would let a model split over many rows lose.
+    recorder = _SqlRecorder()
+    reader = PostgresCliAnalyticsReader(recorder)  # type: ignore[arg-type]
+    if method == "get_session_detail_cost":
+        await reader.get_session_detail_cost("s1")
+    else:
+        await getattr(reader, method)(_flt())
+    (statement,) = recorder.statements
+    sql = " ".join(statement.split())
+
+    assert "sum(c.api_call_count) OVER w AS grain_calls" in sql
+    assert "WINDOW w AS (PARTITION BY c.day, c.session_id, c.user_email, c.model_name, c.query_source)) c" in sql
+    assert "(array_agg(c.model_name ORDER BY c.grain_calls DESC, c.day, c.session_id" in sql
+    assert "ORDER BY c.api_call_count" not in sql
+    # cost_daily is read only inside that subquery: a plain `FROM cost_daily c` has no grain_calls column
+    assert (
+        sql.count("cost_daily") == 1
+        and "(SELECT c.*, sum(c.api_call_count) OVER w AS grain_calls FROM cost_daily c" in sql
+    )
+
+
 @pytest.mark.asyncio
 async def test_users_daily_activity_still_groups_by_the_fact_day():
     sql, _ = await _sql_of("get_users_daily_activity")
@@ -389,13 +415,16 @@ async def test_file_facts_scope_both_branches_without_a_window():
 
 @pytest.mark.parametrize("method", ["get_tool_success_by_session", "get_tool_usage", "get_invocations"])
 @pytest.mark.asyncio
-async def test_invocation_methods_read_only_the_scoped_hourly_rollup(method):
+async def test_invocation_methods_read_the_scoped_hourly_rollup_without_a_window(method: str) -> None:
     sql, _ = await _sql_of(method)
 
     assert "FROM invocations_hourly" in sql
     assert "IN (SELECT session_id FROM sel)" in sql
-    for forbidden in ("hour >=", "ts BETWEEN", "ts >=", "FROM spans", "FROM log_events", "UNION"):
-        assert forbidden not in sql
+    forbidden = ["hour >=", "ts BETWEEN", "ts >=", "FROM spans", "FROM log_events"]
+    if method != "get_invocations":  # its slash commands also read session_dims.commands
+        forbidden.append("UNION")
+    for fragment in forbidden:
+        assert fragment not in sql
 
 
 @pytest.mark.parametrize("method", ["get_tool_success_by_session", "get_tool_usage", "get_invocations"])
@@ -485,3 +514,82 @@ async def test_bound_window_values_are_the_ms_truncated_filter_bounds():
         datetime(2026, 9, 1, 8, 30, 0, 999000, tzinfo=UTC),
         datetime(2026, 9, 8, 17, 45, 0, 0, tzinfo=UTC),
     )
+
+
+# ── slash commands: one source per session ──
+
+_SCOPED = "AND session_id IN (SELECT session_id FROM sel)"
+
+
+async def _invocation_branches(**filters: object) -> list[str]:
+    """The UNION ALL branches of `get_invocations`, named parameters kept, whitespace collapsed."""
+    captured: list[str] = []
+
+    async def capture(sql: str, params: dict[str, object]) -> list[dict[str, object]]:
+        captured.append(sql)
+        return []
+
+    reader = PostgresCliAnalyticsReader(_SqlRecorder())  # type: ignore[arg-type]
+    reader._q = capture  # type: ignore[method-assign]
+    await reader.get_invocations(_flt(**filters))
+    (sql,) = captured
+    start = sql.index("FROM (", sql.index("AS count")) + len("FROM (")
+    body = sql[start : sql.rindex(") u")]
+    return [" ".join(branch.split()) for branch in body.split("UNION ALL")]
+
+
+def _no_summary(column: str) -> str:
+    return f"NOT EXISTS (SELECT 1 FROM session_dims sd WHERE sd.session_id = {column} AND sd.summary_ts IS NOT NULL)"
+
+
+@pytest.mark.parametrize("filters", _ALL_FILTERS, ids=["unfiltered", "deny_all", "projects"])
+@pytest.mark.asyncio
+async def test_invocations_have_three_branches_each_scoped_to_sel(filters: dict[str, object]) -> None:
+    branches = await _invocation_branches(**filters)
+
+    assert len(branches) == 3
+    assert all(branch.endswith(_SCOPED) for branch in branches)
+
+
+@pytest.mark.asyncio
+async def test_skill_and_agent_invocations_come_from_the_hourly_rollup_alone() -> None:
+    branches = await _invocation_branches()
+
+    assert f"SELECT kind, name, calls AS c FROM invocations_hourly WHERE kind IN (2, 3) {_SCOPED}" in branches
+
+
+@pytest.mark.asyncio
+async def test_otel_slash_commands_count_only_for_sessions_without_a_summary() -> None:
+    # Missing, a session with a summary would count its commands twice: OTel and session_dims.commands.
+    branches = await _invocation_branches()
+
+    assert (
+        "SELECT kind, name, calls AS c FROM invocations_hourly WHERE kind = 4 "
+        f"AND {_no_summary('invocations_hourly.session_id')} {_SCOPED}"
+    ) in branches
+
+
+@pytest.mark.asyncio
+async def test_summary_sessions_count_every_string_command_once_by_the_shared_window() -> None:
+    branches = await _invocation_branches()
+
+    summary = [b for b in branches if "jsonb_array_elements" in b]
+    assert summary == [
+        "SELECT 4, e.cmd #>> '{}', 1 FROM session_dims, jsonb_array_elements(session_dims.commands) AS e(cmd) "
+        "WHERE session_dims.summary_ts IS NOT NULL AND jsonb_typeof(e.cmd) = 'string' AND e.cmd #>> '{}' <> '' "
+        f"{_SCOPED}"
+    ]
+    # The window is the one of `sel`: the branch has no time predicate of its own.
+    assert "started_at" not in summary[0] and "BETWEEN" not in summary[0]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_summary_command_counts_nothing_and_names_are_taken_as_stored() -> None:
+    # The rollup skips a blank name; without the filter an empty element of session_dims.commands
+    # would count as a blank-named command. Names are not rewritten: commands are stored without
+    # a leading slash and the server does not guess.
+    (summary,) = [b for b in await _invocation_branches() if "jsonb_array_elements" in b]
+
+    assert "AND jsonb_typeof(e.cmd) = 'string' AND e.cmd #>> '{}' <> '' " in summary
+    assert summary.startswith("SELECT 4, e.cmd #>> '{}', 1 FROM session_dims, ")
+    assert "ltrim" not in summary

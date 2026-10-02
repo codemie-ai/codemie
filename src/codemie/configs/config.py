@@ -88,12 +88,6 @@ class Config(BaseSettings):
     POSTGRES_USER: str = "postgres"
     POSTGRES_PASSWORD: str = "password"
 
-    CLICKHOUSE_HOST: str = "localhost"
-    CLICKHOUSE_PORT: int = 8123
-    CLICKHOUSE_USER: str = "default"
-    CLICKHOUSE_PASSWORD: str = ""
-    CLICKHOUSE_QUERY_TIMEOUT_SECONDS: int = 30
-
     PG_URL: str = ""
     PG_POOL_SIZE: int = 10
     DEFAULT_DB_SCHEMA: str = "codemie"
@@ -195,17 +189,10 @@ class Config(BaseSettings):
     # Analytics dashboard configuration
     ANALYTICS_DEFAULT_PAGE_SIZE: int = 20  # Default number of rows for analytics endpoints
 
-    # Analytics ingest endpoints — OTel Collector forwarding
-    # Default resolves inside Docker network (otelcol service, internal port 4318).
-    # For local dev outside Docker, override with the host-mapped port from OTLP_HTTP_PORT:
-    #   ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT=http://localhost:14318
-    ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT: str = "http://otelcol:4318"  # NOSONAR — internal Docker service, not public
+    # Analytics ingest endpoints: the largest request body accepted
     ANALYTICS_INGEST_MAX_BODY_BYTES: int = 5_242_880
 
-    # OTel CLI Analytics storage engine (codemie.repository.cli_analytics).
-    # "clickhouse": the OTel Collector writes ClickHouse (CLICKHOUSE_*, ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT).
-    # "postgres": the API writes PostgreSQL directly; neither ClickHouse nor the Collector is needed.
-    CLI_ANALYTICS_STORAGE_BACKEND: Literal["clickhouse", "postgres"] = "clickhouse"
+    # OTel CLI Analytics storage (codemie.repository.cli_analytics), written by the API directly.
     # Analytics database; empty means the application database (PG_URL / POSTGRES_*). Large installs
     # should point this at a separate database so vacuum, backups and I/O do not compete.
     CLI_ANALYTICS_PG_URL: str = ""
@@ -221,6 +208,10 @@ class Config(BaseSettings):
     CLI_ANALYTICS_PG_INGEST_STATEMENT_TIMEOUT_MS: int = Field(default=10_000, ge=1)
     CLI_ANALYTICS_RAW_RETENTION_DAYS: int = Field(default=90, ge=1)
     CLI_ANALYTICS_ROLLUP_RETENTION_DAYS: int = Field(default=365, ge=1)
+    # 0 keeps the per-session tables (session_usage, session_usage_hourly, subagent_invocations,
+    # session_dims) as before. Above 0, a whole session is purged once idle for this many days;
+    # the value is checked against the raw retention when the storage settings are read.
+    CLI_ANALYTICS_SESSION_RETENTION_DAYS: int = Field(default=0, ge=0)
     # Re-sent records are recognised and dropped for this many days after the record's own day, or
     # after its first delivery when it arrives later than that.
     CLI_ANALYTICS_DEDUP_RETENTION_DAYS: int = Field(default=14, ge=1)

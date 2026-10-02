@@ -19,8 +19,8 @@ Revises:
 Create Date: 2026-09-23
 
 Typed raw tables partitioned by week, a per-record idempotency ledger partitioned by day,
-a work queue of (day, session) keys, and rollups with the grain of the ClickHouse
-materialized views, partitioned by month. Partitions (including each table's DEFAULT
+a work queue of (day, session) keys, and rollups at the grain the API reads,
+partitioned by month. Partitions (including each table's DEFAULT
 partition) are created by the maintenance job, not here: see
 codemie.repository.cli_analytics.postgres.maintenance.
 
@@ -83,7 +83,7 @@ UPGRADE = [
     """
     CREATE TABLE log_events (
         ts                    timestamptz NOT NULL,
-        session_id            text NOT NULL,       -- '' when the record has none, as in ClickHouse
+        session_id            text NOT NULL,       -- '' when the record has none
         event_kind            smallint NOT NULL,
         event_name            text,
         prompt_id             text,
@@ -104,7 +104,7 @@ UPGRADE = [
         attrs                 jsonb                -- attributes without a typed column
     ) PARTITION BY RANGE (ts)""",
     # Orders hook events with equal timestamps by arrival: the earliest-value rules of the
-    # session dimensions break ties that way, like ClickHouse's argMin.
+    # session dimensions break ties that way.
     "CREATE SEQUENCE hook_events_ingest_seq",
     f"""
     CREATE TABLE hook_events (
@@ -174,7 +174,7 @@ UPGRADE = [
         alone      boolean     NOT NULL DEFAULT false, -- recompute it on its own; see rollups.py
         PRIMARY KEY (day, session_id)
     ) WITH (fillfactor = 70)""",
-    # ── rollups (monthly partitions): the grain of the ClickHouse materialized views ──
+    # ── rollups (monthly partitions): the grain the API reads ──
     """
     CREATE TABLE cost_daily (
         day                   date   NOT NULL,
@@ -225,7 +225,7 @@ UPGRADE = [
         skill_count bigint NOT NULL,
         PRIMARY KEY (day, session_id)
     ) PARTITION BY RANGE (day)""",
-    # Exact distinct file counts across days (ClickHouse keeps uniqExact states instead).
+    # Exact distinct file counts across days (no distinct-count states are kept).
     """
     CREATE TABLE session_files_daily (
         day        date    NOT NULL,
@@ -260,7 +260,7 @@ UPGRADE = [
         project_name   text,
         developer_name text,
         first_prompt   text,
-        jwt_email      text,                       -- max() in byte order, as ClickHouse compares
+        jwt_email      text,                       -- max() in byte order
         dev_name_max   text,
         updated_at     timestamptz NOT NULL DEFAULT now()
     ) WITH (fillfactor = 90)""",

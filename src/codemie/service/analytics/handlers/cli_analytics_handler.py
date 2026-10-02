@@ -14,10 +14,10 @@
 
 """Assembles Local Analytics responses from the CLI Analytics storage facts.
 
-Works on any `CliAnalyticsReader` (ClickHouse or PostgreSQL): it only calls the fact
-queries and coerces values, so both engines share pricing, dead-session, depth and
-delivery-framework logic. No response may depend on the row order of a query without a
-total ORDER BY, or the two engines could answer the same data differently.
+Works on any `CliAnalyticsReader`: it only calls the fact
+queries and coerces values, so pricing, dead-session, depth and
+delivery-framework logic live here. No response may depend on the row order of a query without a
+total ORDER BY, or the same data could be answered differently.
 
 Per-session facts are merged in Python rather than in one wide SQL statement.
 At current volume (single-digit thousands of spans per week) this costs nothing
@@ -59,7 +59,7 @@ def depth_bucket(turns: int) -> str:
     return "50+"
 
 
-# ── Coercion helpers (ClickHouse returns Decimal / None / UInt64 variously) ───
+# ── Coercion helpers (the reader may return Decimal, None or int) ───────────────
 
 
 def _i(value: Any) -> int:
@@ -313,7 +313,12 @@ class LocalAnalyticsHandler:
                 "avg_cost_per_session": (total_cost / total_sessions) if total_sessions else 0.0,
             },
             "cost_by_user": [
-                {"developer_name": _s(r.get("developer_name")), "cost_usd": _f(r.get("cost_usd"))} for r in by_user
+                {
+                    "developer_name": _s(r.get("developer_name")),
+                    "user_email": _s(r.get("developer_name")),
+                    "cost_usd": _f(r.get("cost_usd")),
+                }
+                for r in by_user
             ],
             "cost_by_model": [
                 {"model_name": _s(r.get("model_name")), "cost_usd": _f(r.get("cost_usd"))}
@@ -366,6 +371,7 @@ class LocalAnalyticsHandler:
             rows.append(
                 {
                     "developer_name": name,
+                    "user_email": name,
                     "session_count": _i(row.get("session_count")),
                     "input_tokens": _i(row.get("input_tokens")),
                     "output_tokens": _i(row.get("output_tokens")),
@@ -549,6 +555,7 @@ class LocalAnalyticsHandler:
                 {
                     "trace_id": sid,
                     "developer_name": _s(row.get("developer_name")),
+                    "user_email": _s(row.get("developer_name")),
                     "repository": _s(row.get("repository")) or None,
                     "branch": _s(row.get("branch")) or None,
                     "prompt": _s(row.get("prompt")),
@@ -675,6 +682,7 @@ class LocalAnalyticsHandler:
         detail = {
             "trace_id": _s(meta.get("session_id")),
             "developer_name": _s(meta.get("developer_name")),
+            "user_email": _s(meta.get("developer_name")),
             "repository": _s(meta.get("repository")) or None,
             "branch": _s(meta.get("branch")) or None,
             "prompt": _s(meta.get("prompt")),

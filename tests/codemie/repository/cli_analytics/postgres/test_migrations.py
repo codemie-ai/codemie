@@ -17,11 +17,15 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
+import re
+from pathlib import Path
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from codemie.repository.cli_analytics.postgres import migrations
+from codemie.repository.cli_analytics.postgres import ingestor, migrations, rollups
 from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettings
 from tests.codemie.repository.cli_analytics.postgres.test_engine import SETTINGS
 
@@ -118,3 +122,160 @@ def test_the_engine_is_disposed_even_when_the_upgrade_fails():
 def test_the_migration_scripts_ship_with_the_package():
     assert (migrations.ALEMBIC_DIR / "env.py").is_file()
     assert any(migrations.ALEMBIC_DIR.joinpath("versions").glob("*_cli_analytics_initial_schema.py"))
+
+
+def _load_revision(file_name: str) -> ModuleType:
+    path = Path(migrations.ALEMBIC_DIR) / "versions" / file_name
+    spec = importlib.util.spec_from_file_location(file_name.removesuffix(".py"), path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+SCHEMA_EXTENSION = _load_revision("a1c1a0000006_cli_analytics_schema_extension.py")
+_COST_DAILY_KEY_STATEMENTS = (
+    "ALTER TABLE cost_daily DROP CONSTRAINT cost_daily_pkey",
+    "ALTER TABLE cost_daily ADD PRIMARY KEY (day, session_id, user_email, model_name, query_source, speed, "
+    "inference_geo, scope_kind, scope_name, agent_type)",
+)
+
+
+def _normalized(statement: str) -> str:
+    return " ".join(statement.split())
+
+
+def test_schema_extension_revision_follows_the_initial_revision() -> None:
+    assert SCHEMA_EXTENSION.revision == "a1c1a0000006"
+    assert SCHEMA_EXTENSION.down_revision == "a1c1a0000001"
+
+
+def test_schema_extension_uses_only_the_allowed_statement_kinds() -> None:
+    for statement in SCHEMA_EXTENSION.UPGRADE:
+        text = _normalized(statement)
+        allowed = (
+            text.startswith(("CREATE TABLE ", "CREATE INDEX "))
+            or (text.startswith("ALTER TABLE ") and " ADD COLUMN " in text and "cost_daily_pkey" not in text)
+            or text in _COST_DAILY_KEY_STATEMENTS
+        )
+        assert allowed, text
+
+
+def test_schema_extension_swaps_the_cost_daily_key_with_exactly_two_statements() -> None:
+    texts = [_normalized(s) for s in SCHEMA_EXTENSION.UPGRADE]
+
+    assert [t for t in texts if "cost_daily_pkey" in t or "ADD PRIMARY KEY" in t] == list(_COST_DAILY_KEY_STATEMENTS)
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        "IF NOT EXISTS",
+        "CHECK",
+        "REFERENCES",
+        "UNIQUE",
+        "CREATE TYPE",
+        "EXTENSION",
+        "NULLS NOT DISTINCT",
+        "PARTITION OF",
+        "codemie_analytics.",
+    ],
+)
+def test_schema_extension_avoids_forbidden_constructs(forbidden: str) -> None:
+    assert not [s for s in SCHEMA_EXTENSION.UPGRADE if forbidden in s]
+
+
+INITIAL_SCHEMA = _load_revision("a1c1a0000001_cli_analytics_initial_schema.py")
+_INSERT_TARGET = re.compile(r"INSERT INTO (\w+)(?: AS \w+)? \(([^)]*)\)")
+
+
+def _declared_columns() -> dict[str, set[str]]:
+    """The columns of each table once both revisions ran, read from the text of their statements."""
+    declared: dict[str, set[str]] = {}
+    for statement in [*INITIAL_SCHEMA.UPGRADE, *SCHEMA_EXTENSION.UPGRADE]:
+        lines = statement.strip().splitlines()
+        created = re.match(r"CREATE TABLE (\w+) \(", lines[0])
+        if created:
+            for line in lines[1:]:
+                definition = line.split("--", 1)[0].strip()
+                if definition.startswith(")"):
+                    break
+                if definition and not definition.startswith("PRIMARY KEY"):
+                    declared.setdefault(created.group(1), set()).add(definition.split()[0])
+        altered = re.match(r"ALTER TABLE (\w+)", lines[0])
+        if altered:
+            declared.setdefault(altered.group(1), set()).update(re.findall(r"ADD COLUMN (\w+)", statement))
+    return declared
+
+
+def _written_columns(statement: str) -> tuple[str, set[str]]:
+    """(table, columns) of the column list of an INSERT statement."""
+    table, names = _INSERT_TARGET.search(_normalized(statement)).groups()
+    return table, {name.strip() for name in names.split(",")}
+
+
+def test_the_declared_columns_are_read_from_both_revisions() -> None:
+    declared = _declared_columns()
+
+    assert {"ts", "session_id", "attrs", "request_id"} <= declared["log_events"]  # initial + ADD COLUMN
+    assert {"tool_name", "skill_name", "ingest_seq"} <= declared["hook_events"]  # the shared text columns too
+    assert "PRIMARY" not in declared["session_usage"] and ")" not in declared["log_events"]
+    assert declared["cost_daily"] >= {"api_call_count", "speed", "cache_creation_1h_tokens"}
+
+
+@pytest.mark.parametrize("table", sorted(ingestor._INSERT_SQL))
+def test_every_column_ingest_writes_is_declared_by_the_revisions(table: str) -> None:
+    # A column dropped from a revision (request_id of log_events, thinking_tokens of usage_requests)
+    # would fail every ingest INSERT of that table at run time.
+    target, written = _written_columns(ingestor._INSERT_SQL[table])
+
+    assert target == table
+    assert written and written <= _declared_columns()[table], written - _declared_columns()[table]
+
+
+def test_every_column_the_recompute_writes_is_declared_by_the_revisions() -> None:
+    # The same for the refresher: one missing column fails every batch that reaches its statement.
+    declared = _declared_columns()
+    inserts = [_written_columns(s) for s in rollups.RECOMPUTE if s.lstrip().startswith("INSERT INTO")]
+    inserts = [(table, written) for table, written in inserts if not table.startswith("_")]  # not the temp tables
+
+    assert {"cost_daily", "session_usage", "session_usage_hourly", "session_dims", "subagent_invocations"} <= {
+        table for table, _ in inserts
+    }
+    for table, written in inserts:
+        assert written and written <= declared[table], (table, written - declared[table])
+
+
+def test_downgrade_removes_group_b_before_group_a() -> None:
+    texts = [_normalized(s) for s in SCHEMA_EXTENSION.DOWNGRADE]
+    group_b = texts[: texts.index("DROP TABLE subagent_invocations")]  # the first statement of group A
+
+    assert group_b[:2] == ["DROP TABLE session_usage_hourly", "DROP INDEX log_events_session_request"]
+    for statement in SCHEMA_EXTENSION.UPGRADE_GROUP_B:
+        text = _normalized(statement)
+        if text.startswith("ALTER TABLE "):
+            table = text.split()[2]
+            dropped = [t for t in group_b if t.startswith(f"ALTER TABLE {table} DROP COLUMN")]
+            assert len(dropped) == 1, table
+            assert re.findall(r"DROP COLUMN (\w+)", dropped[0]) == re.findall(r"ADD COLUMN (\w+)", text), table
+
+
+def test_downgrade_restores_the_five_column_cost_daily_key_and_drops_what_the_upgrade_added() -> None:
+    texts = [_normalized(s) for s in SCHEMA_EXTENSION.DOWNGRADE]
+    drop_key = texts.index("ALTER TABLE cost_daily DROP CONSTRAINT cost_daily_pkey")
+    drop_columns = next(i for i, t in enumerate(texts) if t.startswith("ALTER TABLE cost_daily DROP COLUMN"))
+    restore_key = texts.index(
+        "ALTER TABLE cost_daily ADD PRIMARY KEY (day, session_id, user_email, model_name, query_source)"
+    )
+
+    # the wide key goes first, then its columns, then the original key
+    assert drop_key < drop_columns < restore_key
+    upgrade = [_normalized(s) for s in SCHEMA_EXTENSION.UPGRADE]
+    created = {t.split()[2] for t in upgrade if t.startswith("CREATE TABLE ")}
+    assert {t.split()[2] for t in texts if t.startswith("DROP TABLE ")} == created
+    added = {
+        (t.split()[2], c) for t in upgrade if t.startswith("ALTER TABLE ") for c in re.findall(r"ADD COLUMN (\w+)", t)
+    }
+    dropped = {
+        (t.split()[2], c) for t in texts if t.startswith("ALTER TABLE ") for c in re.findall(r"DROP COLUMN (\w+)", t)
+    }
+    assert dropped == added  # the columns added to a table of this revision too, before the table is dropped

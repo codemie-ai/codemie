@@ -14,15 +14,16 @@
 
 """OTLP export requests and plugin hook events → typed PostgreSQL rows (pure, no I/O).
 
-Values follow what the ClickHouse path stores, so both engines answer alike:
-- promoted string columns render attributes like the Collector's pcommon `AsString()`
-  (a double 5.0 is "5");
-- numeric columns parse like ClickHouse's `toUInt64OrZero` / `toFloat64OrZero`, and an
+Stored values follow these rules:
+- promoted string columns render an attribute as text: a string as is (bytes as base64),
+  a bool as "true"/"false", a double in shortest decimal form (5.0 is "5"), and a map or
+  list as compact JSON with sorted keys (see `as_str`);
+- numeric columns parse leniently (an unparseable value becomes 0), and an
   unparseable original stays in the residual `attrs` JSON;
 - a log record's `session_id` is `session.id`, else `session_id`, and its `prompt_id` falls
-  back to `prompt.id` (spans and metrics read `session.id` only, as the ClickHouse schema does);
+  back to `prompt.id` (spans and metrics read `session.id` only, by design);
   a span without `user.email` takes the resource's.
-- An OTel log record carrying `event_type` is a hook event (ClickHouse: mv_hook_events).
+- An OTel log record carrying `event_type` is a hook event (it feeds the hook-event table).
 
 Every string is sanitised for PostgreSQL, which rejects NUL and unpaired surrogates in
 `text` and `jsonb`. Both occur in real plugin payloads: the plugin cuts hook text at a
@@ -113,6 +114,7 @@ class LogRow(NamedTuple):
     user_email: str | None
     model: str | None
     query_source: str | None
+    request_id: str | None
     skill_name: str | None
     command_name: str | None
     trace_id: bytes | None
@@ -200,10 +202,42 @@ class MetricRow(NamedTuple):
     attrs: str | None
 
 
+class UsageRow(NamedTuple):
+    day: date
+    h: int
+    ts: datetime
+    session_id: str
+    user_email: str | None
+    request_id: str | None
+    message_id: str | None
+    agent_id: str | None
+    agent_type: str | None
+    scope_kind: str | None
+    scope_name: str | None
+    model_raw: str | None
+    model: str | None
+    speed: str | None
+    inference_geo: str | None
+    service_tier: str | None
+    input_tokens: int | None
+    cache_creation_5m_tokens: int | None
+    cache_creation_1h_tokens: int | None
+    cache_read_tokens: int | None
+    output_tokens: int | None
+    thinking_tokens: int | None
+    web_search_requests: int | None
+    web_fetch_requests: int | None
+    stop_reason: str | None
+    is_api_error: bool | None
+    git_branch: str | None
+    attrs: str | None
+
+
 @dataclass
 class DecodedBatch:
     logs: list[LogRow] = field(default_factory=list)
     hooks: list[HookRow] = field(default_factory=list)
+    usage: list[UsageRow] = field(default_factory=list)
     spans: list[SpanRow] = field(default_factory=list)
     metrics: list[MetricRow] = field(default_factory=list)
     # resource_id -> (service.name, attributes as JSON)
@@ -213,7 +247,7 @@ class DecodedBatch:
 
     @property
     def record_count(self) -> int:
-        return len(self.logs) + len(self.hooks) + len(self.spans) + len(self.metrics)
+        return len(self.logs) + len(self.hooks) + len(self.usage) + len(self.spans) + len(self.metrics)
 
 
 # ── value rendering ───────────────────────────────────────────────────────────
@@ -243,7 +277,8 @@ def attrs_to_py(key_values: Any) -> dict[str, Any]:
 
 
 def go_float(x: float) -> str:
-    """strconv.FormatFloat(x, 'f', -1, 64): how the Collector renders a double as text."""
+    """A double as text: the shortest decimal that reads back as `x`, never in exponent form
+    (5.0 is "5", 1e21 is "1000000000000000000000"); NaN and infinities as "NaN", "+Inf", "-Inf"."""
     if math.isnan(x):
         return "NaN"
     if x in (float("inf"), float("-inf")):
@@ -273,7 +308,8 @@ def json_text(value: Any, sort_keys: bool = False) -> str:
 
 
 def as_str(value: Any) -> str:
-    """pcommon.Value.AsString()."""
+    """An attribute value as text: '' for none, a string as is, "true"/"false", an integer in
+    decimal, a double by `go_float`, anything else as compact JSON with sorted keys."""
     if value is None:
         return ""
     if isinstance(value, str):
@@ -288,7 +324,8 @@ def as_str(value: Any) -> str:
 
 
 def ch_uint(value: Any, limit: int = _BIGINT_LIMIT - 1) -> tuple[int, bool]:
-    """toUInt64OrZero(AsString(value)); the flag tells whether the value was parseable or absent.
+    """The value's text (`as_str`) as a non-negative integer, else 0; the flag tells whether the
+    value was parseable or absent.
 
     Values above `limit` (by default a signed bigint's, the column type) count as unparseable.
     """
@@ -302,7 +339,8 @@ def ch_uint(value: Any, limit: int = _BIGINT_LIMIT - 1) -> tuple[int, bool]:
 
 
 def ch_float(value: Any, limit: float | None = None) -> tuple[float, bool]:
-    """toFloat64OrZero(AsString(value)); the flag tells whether the value was parseable or absent.
+    """The value's text (`as_str`) as a float, else 0.0; the flag tells whether the value was
+    parseable or absent.
 
     NaN and infinities count as unparseable: summed into a rollup they would make every
     total of the window NaN, which a JSON response cannot carry. So do values beyond ±`limit`.
@@ -319,6 +357,32 @@ def ch_float(value: Any, limit: float | None = None) -> tuple[float, bool]:
 
 def _tokens(value: Any) -> tuple[int | float, bool]:
     return ch_uint(value, MAX_TOKENS)
+
+
+def usage_int(value: Any) -> tuple[int | None, bool]:
+    """Typed usage_requests count: (stored value, keep the original in attrs).
+
+    Absent gives (None, False); ASCII digits within MAX_TOKENS are stored; digits above it store 0
+    and keep the original; anything else stores NULL and keeps the original.
+    """
+    text = as_str(value)
+    if text == "":
+        return None, False
+    if text.isascii() and text.isdigit():
+        number, parsed = ch_uint(text, MAX_TOKENS)
+        return (number, False) if parsed else (0, True)
+    return None, True
+
+
+def usage_bool(value: Any) -> tuple[bool | None, bool]:
+    """Typed usage_requests flag: only a bool or a case-insensitive "true"/"false" string is parsed."""
+    if isinstance(value, bool):
+        return value, False
+    if value is None or value == "":
+        return None, False
+    if isinstance(value, str) and value.lower() in ("true", "false"):
+        return value.lower() == "true", False
+    return None, True
 
 
 def _cost(value: Any) -> tuple[int | float, bool]:
@@ -426,7 +490,7 @@ def parse_request(signal: OtlpSignal, body: bytes, content_type: str) -> Message
     media_type = _media_type(content_type)
     try:
         if media_type in PROTOBUF_MEDIA_TYPES:
-            # Concatenated requests merge (repeated fields append), as the Collector's parser does.
+            # Concatenated requests merge into one: their repeated fields append (protobuf merge rules).
             message.ParseFromString(body)
         elif media_type == JSON_MEDIA_TYPE:
             document = clean_json(json.loads(body))
@@ -489,26 +553,85 @@ def _hook_row(
     )  # fmt: skip
 
 
-def _log_from_record(record: Any, attrs: dict[str, Any], h: int, resource_id: int, batch: DecodedBatch) -> None:
-    ts = ns_to_datetime(record.time_unix_nano or record.observed_time_unix_nano)
-    day = ts.date()
-    if as_str(attrs.get("event_type")):
-        # A hook event delivered as an OTel log: stored like /event-hooks stores it.
-        identity = (
-            as_str(attrs.pop(_SESSION_ID_KEY, None)) or as_str(attrs.pop("session_id", None)),
-            as_str(attrs.pop("event_type")),
-            as_str(attrs.pop("prompt_id", None)) or as_str(attrs.pop("prompt.id", None)),
-            as_str(attrs.pop(_USER_EMAIL_KEY, None)),
-        )
-        texts = {name: as_str(attrs.pop(name, None)) for name in HOOK_TEXT_FIELDS}
-        batch.hooks.append(_hook_row(ts, h, identity, texts, attrs))
-        return
+USAGE_REQUEST_EVENT = "agent.usage.request"
+_USAGE_TEXT_FIELDS = (
+    "request_id", "message_id", "agent_id", "agent_type", "scope_kind", "scope_name", "model_raw", "model",
+    "speed", "inference_geo", "service_tier",
+)  # fmt: skip
+_USAGE_INT_FIELDS = (
+    "input_tokens", "cache_creation_5m_tokens", "cache_creation_1h_tokens", "cache_read_tokens", "output_tokens",
+    "thinking_tokens", "web_search_requests", "web_fetch_requests",
+)  # fmt: skip
+_USAGE_ENVELOPE = ("type", "timestamp", "session_id")
 
-    session_id = _session_key(as_str(attrs.pop(_SESSION_ID_KEY, None)) or as_str(attrs.get("session_id")))
-    _split_session_attrs(attrs, session_id, batch)
-    event_name = as_str(attrs.pop("event.name", None))
-    attrs.pop("event.timestamp", None)  # the record's own timestamp
-    prompt_id = as_str(attrs.get("prompt_id")) or as_str(attrs.pop("prompt.id", None))
+
+def _usage_text(value: Any) -> str | None:
+    return _opt(_fit(clean(as_str(value)) or "", MAX_KEY_BYTES))
+
+
+def _usage_row(ts: datetime, h: int, session_id: str, user_email: str, fields: dict[str, Any]) -> UsageRow:
+    """A usage_requests row. Typed keys leave `fields` unless the parser keeps the original
+    (a rejected or capped value); the rest, minus the envelope, is `attrs`."""
+    rest = {k: v for k, v in fields.items() if k not in _USAGE_ENVELOPE}
+    if rest.get("prompt_id") == "":
+        del rest["prompt_id"]  # an empty prompt_id is never stored, as on the OTLP path
+    text = {name: _usage_text(rest.pop(name, None)) for name in _USAGE_TEXT_FIELDS}
+    numbers: dict[str, int | None] = {}
+    for name in _USAGE_INT_FIELDS:
+        original = rest.pop(name, None)
+        numbers[name], keep = usage_int(original)
+        if keep:
+            rest[name] = original
+    original = rest.pop("is_api_error", None)
+    is_api_error, keep = usage_bool(original)
+    if keep:
+        rest["is_api_error"] = original
+    stop_reason = _usage_text(rest.pop("stop_reason", None))
+    git_branch = _usage_text(rest.pop("git_branch", None))
+    return UsageRow(
+        ts.date(), h, ts, _session_key(session_id), _usage_text(user_email),
+        text["request_id"], text["message_id"], text["agent_id"], text["agent_type"], text["scope_kind"],
+        text["scope_name"], text["model_raw"], text["model"], text["speed"], text["inference_geo"],
+        text["service_tier"], *(numbers[name] for name in _USAGE_INT_FIELDS), stop_reason, is_api_error,
+        git_branch, _jsonb(rest),
+    )  # fmt: skip
+
+
+def _event_identity(type_: str, session_key: str, event_id: str) -> int | None:
+    """Record hash of the (type, session, event_id) triple as stored; None without an event_id."""
+    event_id = clean(event_id) or ""
+    if not event_id:
+        return None
+    return record_hash((clean(type_) or "").encode(), _session_key(session_key).encode(), event_id.encode())
+
+
+def _hook_log(attrs: dict[str, Any], ts: datetime, h: int, record_ns: int, batch: DecodedBatch) -> bool:
+    """A hook event delivered as an OTel log: stored like /event-hooks stores it; False when it is not one."""
+    if not as_str(attrs.get("event_type")):
+        return False
+    raw_session = as_str(attrs.pop(_SESSION_ID_KEY, None)) or as_str(attrs.pop("session_id", None))
+    event_type = as_str(attrs.pop("event_type"))
+    by_event_id = _event_identity(event_type, raw_session, as_str(attrs.get("event_id")))
+    if by_event_id is not None:
+        h = by_event_id
+    is_usage = clean(event_type) == USAGE_REQUEST_EVENT
+    if by_event_id is not None or is_usage:
+        # The event's own time, as on /event-hooks; the record time when it does not parse.
+        ts = ns_to_datetime(timestamp_to_ns({"timestamp": attrs.pop("timestamp", None)}, record_ns))
+    prompt_id = as_str(attrs.pop("prompt_id", None)) or as_str(attrs.pop("prompt.id", None))
+    user_email = as_str(attrs.pop(_USER_EMAIL_KEY, None))
+    if is_usage:
+        batch.usage.append(
+            _usage_row(ts, h, raw_session, user_email, attrs | ({"prompt_id": prompt_id} if prompt_id else {}))
+        )
+        return True
+    texts = {name: as_str(attrs.pop(name, None)) for name in HOOK_TEXT_FIELDS}
+    batch.hooks.append(_hook_row(ts, h, (raw_session, event_type, prompt_id, user_email), texts, attrs))
+    return True
+
+
+def _pop_log_numbers(attrs: dict[str, Any]) -> dict[str, float | int]:
+    """The log's cost and token counts; each parsed one leaves attrs."""
     numbers: dict[str, float | int] = {}
     for key, parse in (
         ("cost_usd", _cost),
@@ -521,9 +644,24 @@ def _log_from_record(record: Any, attrs: dict[str, Any], h: int, resource_id: in
             numbers[key], parsed = parse(attrs[key])
             if parsed:
                 del attrs[key]  # an unparseable original stays in attrs
+    return numbers
+
+
+def _log_from_record(record: Any, attrs: dict[str, Any], h: int, resource_id: int, batch: DecodedBatch) -> None:
+    record_ns = record.time_unix_nano or record.observed_time_unix_nano
+    ts = ns_to_datetime(record_ns)
+    if _hook_log(attrs, ts, h, record_ns, batch):
+        return
+
+    session_id = _session_key(as_str(attrs.pop(_SESSION_ID_KEY, None)) or as_str(attrs.get("session_id")))
+    _split_session_attrs(attrs, session_id, batch)
+    event_name = as_str(attrs.pop("event.name", None))
+    attrs.pop("event.timestamp", None)  # the record's own timestamp
+    prompt_id = as_str(attrs.get("prompt_id")) or as_str(attrs.pop("prompt.id", None))
+    numbers = _pop_log_numbers(attrs)
     batch.logs.append(
         LogRow(
-            day=day,
+            day=ts.date(),
             h=h,
             ts=ts,
             session_id=session_id,
@@ -533,6 +671,7 @@ def _log_from_record(record: Any, attrs: dict[str, Any], h: int, resource_id: in
             user_email=_pop_key(attrs, _USER_EMAIL_KEY),
             model=_pop_key(attrs, "model"),
             query_source=_pop_key(attrs, "query_source"),
+            request_id=_pop_key(attrs, "request_id"),
             skill_name=_pop_key(attrs, "skill.name"),
             command_name=_pop_key(attrs, "command_name"),
             trace_id=record.trace_id or None,
@@ -707,16 +846,22 @@ def decode_hook_events(events: list[Any], user_email: str, received_at_ns: int) 
         if not isinstance(raw, dict):
             continue
         try:
-            batch.hooks.append(_hook_event_row(raw, user_email, received_at_ns))
+            row = _hook_event_row(raw, user_email, received_at_ns)
+            (batch.usage if isinstance(row, UsageRow) else batch.hooks).append(row)
         except RecursionError:
             # Skipped like an unparseable NDJSON line; the rest of the batch is stored.
             logger.debug("cli_analytics: skipping a hook event nested too deeply to store")
     return batch
 
 
-def _hook_event_row(raw: dict, user_email: str, received_at_ns: int) -> HookRow:
+def _hook_event_row(raw: dict[str, Any], user_email: str, received_at_ns: int) -> HookRow | UsageRow:
     event = clean_json(raw)
     ts = ns_to_datetime(timestamp_to_ns(event, received_at_ns))
+    session_id, event_type = safe_str(event.get("session_id")), safe_str(event.get("type"))
+    by_event_id = _event_identity(event_type, session_id, safe_str(event.get("event_id")))
+    if event_type == USAGE_REQUEST_EVENT:
+        h = by_event_id if by_event_id is not None else record_hash(json_text(event, sort_keys=True).encode())
+        return _usage_row(ts, h, session_id, user_email, event)
     identity = (
         safe_str(event.get("session_id")),
         safe_str(event.get("type")),
@@ -725,7 +870,7 @@ def _hook_event_row(raw: dict, user_email: str, received_at_ns: int) -> HookRow:
     )
     return _hook_row(
         ts,
-        record_hash(json_text(event, sort_keys=True).encode()),
+        by_event_id if by_event_id is not None else record_hash(json_text(event, sort_keys=True).encode()),
         identity,
         {name: safe_str(event.get(name)) for name in HOOK_TEXT_FIELDS},
         {k: v for k, v in event.items() if k not in HOOK_KNOWN_KEYS},

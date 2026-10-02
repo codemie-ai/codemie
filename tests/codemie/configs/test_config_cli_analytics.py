@@ -28,7 +28,7 @@ from codemie.configs.config import Config
 def defaults_only(monkeypatch):
     """Builds a Config from its defaults: no CLI_ANALYTICS_* variable and no .env file is read.
 
-    A developer's .env.local selecting PostgreSQL must not change what these tests see.
+    A developer's .env.local must not change what these tests see.
     """
     for name in list(os.environ):
         if name.startswith("CLI_ANALYTICS_"):
@@ -36,17 +36,9 @@ def defaults_only(monkeypatch):
     return lambda: Config(_env_file=None)
 
 
-def test_storage_backend_defaults_to_clickhouse(defaults_only):
-    assert defaults_only().CLI_ANALYTICS_STORAGE_BACKEND == "clickhouse"
-
-
-def test_postgres_backend_is_accepted():
-    assert Config(CLI_ANALYTICS_STORAGE_BACKEND="postgres").CLI_ANALYTICS_STORAGE_BACKEND == "postgres"
-
-
-def test_unknown_storage_backend_is_rejected():
-    with pytest.raises(ValidationError):
-        Config(CLI_ANALYTICS_STORAGE_BACKEND="mysql")
+def test_no_setting_selects_an_engine() -> None:
+    # PostgreSQL is the only engine: there is nothing to select.
+    assert "CLI_ANALYTICS_STORAGE_BACKEND" not in Config.model_fields
 
 
 def test_postgres_defaults_match_the_design(defaults_only):
@@ -66,6 +58,7 @@ def test_postgres_defaults_match_the_design(defaults_only):
     assert c.CLI_ANALYTICS_ROLLUP_BATCH_SIZE == 5_000
     assert c.CLI_ANALYTICS_PARTITION_PREMAKE_WEEKS == 4
     assert c.CLI_ANALYTICS_MAINTENANCE_INTERVAL_MINUTES == 60
+    assert c.CLI_ANALYTICS_SESSION_RETENTION_DAYS == 0  # above 0 the maintenance job deletes whole idle sessions
 
 
 @pytest.mark.parametrize("schema", ["Analytics", "1abc", "a-b", 'x"; drop', "a" * 64, ""])

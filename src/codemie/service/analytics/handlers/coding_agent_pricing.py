@@ -39,7 +39,7 @@ def lookup_cost_config(model: str) -> CostConfig | None:
        LiteLLM proxy (enterprise adapter, uses ``litellm.get_model_info`` live data);
        when False it falls back to the YAML config.  Matches by both ``base_name``
        (after Bedrock-prefix stripping) and ``deployment_name`` so Bedrock variants
-       stored in ClickHouse (e.g. ``us.anthropic.claude-sonnet-4-6``) are resolved
+       stored in analytics (e.g. ``us.anthropic.claude-sonnet-4-6``) are resolved
        without extra normalisation.
 
     2. ``litellm.get_model_info(normalized)`` — direct litellm lookup for any model

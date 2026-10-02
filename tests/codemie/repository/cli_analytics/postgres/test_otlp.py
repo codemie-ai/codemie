@@ -31,7 +31,9 @@ from codemie.repository.cli_analytics.postgres import otlp
 from codemie.repository.cli_analytics.postgres.otlp import (
     MAX_COST_USD,
     MAX_TOKENS,
+    DecodedBatch,
     HookRow,
+    UsageRow,
     as_str,
     ch_float,
     ch_uint,
@@ -39,8 +41,21 @@ from codemie.repository.cli_analytics.postgres.otlp import (
     decode_hook_events,
     decode_otlp,
     go_float,
+    usage_bool,
+    usage_int,
 )
 from tests.codemie.repository.cli_analytics.support import otlp_builders as b
+from tests.codemie.repository.cli_analytics.support.hook_event_builders import (
+    as_otlp_log,
+    git_snapshot,
+    minimal,
+    session_env,
+    session_summary,
+    skill_dispatch,
+    subagent_usage,
+    usage_request,
+    without,
+)
 
 T = datetime(2026, 9, 23, 10, 15, 30, 123456, tzinfo=timezone.utc)
 RESOURCE = {"service.name": "claude-code", "service.version": "2.0.1", "user.email": "res@example.com"}
@@ -74,7 +89,7 @@ def _logs_body(records, resource=RESOURCE) -> bytes:
     return b.logs_request(resource, records).SerializeToString()
 
 
-# ── pcommon AsString() and ClickHouse *OrZero parsing ─────────────────────────
+# ── pcommon AsString() and lenient numeric parsing ─────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -90,7 +105,7 @@ def _logs_body(records, resource=RESOURCE) -> bytes:
         (1.5e-7, "0.00000015"),
     ],
 )
-def test_doubles_render_like_the_collector(value, rendered):
+def test_doubles_render_in_their_shortest_decimal_form(value: float, rendered: str) -> None:
     assert go_float(value) == rendered
 
 
@@ -511,7 +526,7 @@ def test_hook_identity_ignores_the_sender():
     assert first.h == again.h
 
 
-def test_hook_values_are_stringified_like_the_clickhouse_path():
+def test_hook_values_under_typed_keys_are_stored_as_text() -> None:
     (row,) = decode_hook_events([_hook(tool_input={"command": "ls"}, reason=None, source=3)], "", 0).hooks
 
     assert (row.tool_input, row.reason, row.source) == ('{"command": "ls"}', None, "3")
@@ -614,7 +629,7 @@ def test_a_cost_no_request_comes_near_counts_as_unparseable(cost):
 
 @pytest.mark.parametrize(("digits", "stored"), [("9" * 5000, 0), ("0" * 5000 + "1", 1)])
 def test_digit_strings_int_would_refuse_never_fail_the_request(digits, stored):
-    # int() refuses more than 4,300 digits, leading zeros included; toUInt64OrZero reads "0…01" as 1.
+    # int() refuses more than 4,300 digits, leading zeros included; "0…01" is still read as 1.
     (row,) = decode_otlp(
         "logs", _logs_body([b.log_record(T, _api_request(input_tokens=digits))]), "application/x-protobuf"
     ).logs
@@ -780,3 +795,345 @@ def test_a_hook_event_with_a_huge_integer_and_non_finite_numbers_is_stored_as_va
 
     attrs = json.loads(row.attrs, parse_constant=reject)  # NaN / Infinity are not JSON
     assert attrs == {"big": 2**70, "ratio": None, "inf": None}
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (12, (12, False)),
+        ("12", (12, False)),
+        ("1000000000", (1000000000, False)),  # 10^9 is exactly the cap
+        (1000000001, (0, True)),  # above the cap
+        ("99999999999999999999", (0, True)),  # above 2^63, still (0, True)
+        (None, (None, False)),
+        ("", (None, False)),
+        ("abc", (None, True)),
+        ("-1", (None, True)),
+        (-1, (None, True)),
+        ("12.5", (None, True)),
+        (12.5, (None, True)),
+        (True, (None, True)),
+        ([1], (None, True)),
+        ({"a": 1}, (None, True)),
+    ],
+)
+def test_usage_int_parses_digits_and_flags_the_rest(value: object, expected: object) -> None:
+    assert usage_int(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (True, (True, False)),
+        ("TRUE", (True, False)),
+        ("true", (True, False)),
+        ("False", (False, False)),
+        (None, (None, False)),
+        ("", (None, False)),
+        (1, (None, True)),
+        (0, (None, True)),
+        ("yes", (None, True)),
+    ],
+)
+def test_usage_bool_parses_only_true_and_false(value: object, expected: object) -> None:
+    assert usage_bool(value) == expected
+
+
+# --- sdlc-analytics events on /event-hooks (usage_requests routing, event_id hash) ---
+
+# Captured on the unmodified branch (before UsageRow existed), re-captured after the codemie_cli_version rename:
+# decode_hook_events([without(skill_dispatch(), "event_id")], "jwt@example.com", 0).hooks[0].h
+OLD_FORMAT_SKILL_DISPATCH_H = 2558847118315968949
+
+
+def _decode(*events: dict[str, object], email: str = "jwt@example.com") -> DecodedBatch:
+    return decode_hook_events(list(events), email, 0)
+
+
+def test_usage_request_goes_to_usage_only() -> None:
+    batch = _decode(usage_request())
+
+    assert batch.hooks == []
+    assert len(batch.usage) == 1
+    assert batch.record_count == 1
+
+
+def test_usage_request_fills_typed_columns_and_keeps_the_rest_in_attrs() -> None:
+    (row,) = _decode(usage_request(unknown_key={"a": [1]})).usage
+
+    assert isinstance(row, UsageRow)
+    assert row.ts == datetime(2026, 9, 29, 10, 59, 41, 512000, tzinfo=timezone.utc)
+    assert row.day == date(2026, 9, 29)
+    assert (row.session_id, row.user_email) == ("3f6c0a52", "jwt@example.com")
+    assert (row.request_id, row.message_id, row.model_raw, row.model) == (
+        "req_011CTx9aB",
+        "msg_01H7Yq",
+        "claude-opus-5-5-20260101",
+        "claude-opus-5-5",
+    )
+    assert (row.input_tokens, row.cache_creation_1h_tokens, row.cache_read_tokens) == (12, 2500, 48000)
+    assert (row.output_tokens, row.thinking_tokens, row.web_search_requests) == (295, 289, 0)
+    assert (row.scope_kind, row.scope_name, row.agent_id, row.agent_type) == ("main", None, None, None)
+    assert (row.stop_reason, row.is_api_error, row.git_branch) == ("tool_use", False, "feature/EPMCDME-15302")
+    attrs = json.loads(row.attrs)
+    assert attrs["event_id"] == "usage:3f6c0a52:req_011CTx9aB"
+    assert attrs["schema_version"] == 2
+    assert attrs["unknown_key"] == {"a": [1]}
+    for gone in ("type", "timestamp", "session_id", "input_tokens", "model", "is_api_error", "request_id"):
+        assert gone not in attrs
+
+
+@pytest.mark.parametrize(
+    ("event", "event_type"),
+    [
+        (subagent_usage(), "agent.subagent.usage"),
+        (session_summary(), "agent.session.summary"),
+        (session_env(), "agent.session.env"),
+        (skill_dispatch(), "agent.skill.dispatch"),
+        (git_snapshot(), "agent.git.snapshot"),
+    ],
+)
+def test_other_sdlc_events_go_to_hooks_only(event: dict[str, object], event_type: str) -> None:
+    batch = _decode({**event, "future_field": True})
+
+    assert batch.usage == []
+    (row,) = batch.hooks
+    assert row.event_type == event_type
+    attrs = json.loads(row.attrs)
+    assert attrs["future_field"] is True
+    assert attrs["schema_version"] == 2
+    assert attrs["event_id"] == event["event_id"]
+
+
+def test_subagent_usage_keeps_json_types_in_attrs_and_fills_typed_columns() -> None:
+    (row,) = _decode(subagent_usage()).hooks
+
+    assert (row.agent_id, row.agent_type, row.tool_use_id) == ("agent-7", "Explore", "toolu_01Abc")
+    attrs = json.loads(row.attrs)
+    assert attrs["api_calls"] == 4
+    assert attrs["tools"] == {"Read": {"calls": 6, "errors": 0}, "Bash": {"calls": 3, "errors": 1}}
+    assert attrs["commands"] == ["review"]
+    assert "agent_id" not in attrs
+
+
+def test_envelope_only_usage_request_leaves_every_other_column_null() -> None:
+    (row,) = _decode(minimal("agent.usage.request", "s1", "2026-09-29T10:00:00Z")).usage
+
+    assert row.session_id == "s1"
+    assert row.ts == datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
+    others = row._replace(day=None, h=None, ts=None, session_id=None, user_email=None)
+    assert all(value is None for value in others)
+
+
+def test_otlp_envelope_only_usage_request_leaves_attrs_null() -> None:
+    (row,) = _decode_logs(minimal("agent.usage.request", "s1", "2026-09-29T10:00:00Z")).usage
+
+    assert row.session_id == "s1"
+    others = row._replace(day=None, h=None, ts=None, session_id=None, user_email=None)
+    assert all(value is None for value in others)
+
+
+def test_otlp_usage_request_keeps_a_non_empty_prompt_id_in_attrs() -> None:
+    event = {**minimal("agent.usage.request", "s1", "2026-09-29T10:00:00Z"), "prompt_id": "p-7"}
+
+    (row,) = _decode_logs(event).usage
+
+    assert json.loads(row.attrs) == {"prompt_id": "p-7"}
+
+
+def test_usage_request_digit_string_is_stored_as_integer() -> None:
+    (row,) = _decode(usage_request(input_tokens="12")).usage
+
+    assert row.input_tokens == 12
+    assert "input_tokens" not in json.loads(row.attrs)
+
+
+def test_usage_request_unparseable_count_is_null_and_keeps_original() -> None:
+    (row,) = _decode(usage_request(input_tokens="abc")).usage
+
+    assert row.input_tokens is None
+    assert json.loads(row.attrs)["input_tokens"] == "abc"
+
+
+def test_usage_request_count_above_the_cap_is_zero_and_keeps_original() -> None:
+    (row,) = _decode(usage_request(output_tokens=2 * 10**9)).usage
+
+    assert row.output_tokens == 0
+    assert json.loads(row.attrs)["output_tokens"] == 2 * 10**9
+
+
+def test_usage_request_unparseable_flag_is_null_and_keeps_original() -> None:
+    (row,) = _decode(usage_request(is_api_error="yes")).usage
+
+    assert row.is_api_error is None
+    assert json.loads(row.attrs)["is_api_error"] == "yes"
+
+
+def test_usage_request_text_is_cleaned_cut_and_empty_becomes_null() -> None:
+    (row,) = _decode(usage_request(model="a\x00b", stop_reason="", speed="x" * 300)).usage
+
+    assert row.model == "ab"
+    assert row.stop_reason is None
+    assert row.speed == "x" * 256
+
+
+def test_usage_request_sender_is_cut_like_every_other_text_column() -> None:
+    # On the OTLP route the sender is the client's `user.email` attribute: like the other text columns
+    # it is cleaned and cut to 256 bytes on both routes.
+    (hooked,) = _decode(usage_request(), email="a\x00" + "x" * 300).usage
+    (logged,) = _decode_logs({**usage_request(), "user.email": "y" * 300}).usage
+
+    assert hooked.user_email == "a" + "x" * 255
+    assert logged.user_email == "y" * 256
+
+
+def test_same_event_id_with_different_fields_or_email_gives_the_same_hash() -> None:
+    first = _decode(usage_request(), email="a@example.com").usage[0]
+    changed = _decode(usage_request(input_tokens=99, extra="x"), email="b@example.com").usage[0]
+
+    assert first.h == changed.h
+
+
+def test_event_id_hash_is_the_same_for_hook_events_with_a_different_field_set() -> None:
+    first = _decode(session_summary()).hooks[0]
+    changed = _decode({**session_summary(), "cwd": "/elsewhere"}, email="other@example.com").hooks[0]
+
+    assert first.h == changed.h
+
+
+def test_sessions_sharing_an_event_id_give_different_hashes() -> None:
+    one = _decode(usage_request(event_id="shared")).usage[0]
+    two = _decode(usage_request(event_id="shared", session_id="another")).usage[0]
+
+    assert one.h != two.h
+
+
+def test_types_sharing_an_event_id_give_different_hashes() -> None:
+    usage = _decode(usage_request(event_id="shared")).usage[0]
+    summary = _decode(session_summary(event_id="shared")).hooks[0]
+
+    assert usage.h != summary.h
+
+
+def test_empty_event_id_falls_back_to_the_content_hash() -> None:
+    with_empty = _decode(usage_request(event_id="")).usage[0]
+    with_other_content = _decode(usage_request(event_id="", input_tokens=99)).usage[0]
+
+    assert with_empty.h != with_other_content.h
+
+
+def test_old_format_event_keeps_its_hash_and_row() -> None:
+    (row,) = _decode(without(skill_dispatch(), "event_id")).hooks
+
+    assert row.h == OLD_FORMAT_SKILL_DISPATCH_H
+    assert (row.session_id, row.event_type, row.user_email, row.skill_name) == (
+        "3f6c0a52",
+        "agent.skill.dispatch",
+        "jwt@example.com",
+        "brainstorming",
+    )
+    assert "event_id" not in json.loads(row.attrs)
+
+
+def test_dimension_hook_types_are_unchanged() -> None:
+    assert len(v.DIMENSION_HOOK_TYPES) == 13
+
+
+# ── the six events as OTLP log records ────────────────────────────────────────
+
+RECORD_T = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+
+def _decode_logs(event: dict[str, object], record_ts: datetime | None = RECORD_T) -> DecodedBatch:
+    return otlp.decode_logs(b.logs_request({"service.name": "claude-code"}, [as_otlp_log(event, record_ts)]))
+
+
+def test_otlp_usage_request_goes_to_usage_only_with_the_attribute_email() -> None:
+    batch = _decode_logs({**usage_request(), "user.email": "otel@example.com"})
+
+    assert (len(batch.usage), batch.hooks, batch.logs) == (1, [], [])
+    assert batch.usage[0].user_email == "otel@example.com"
+
+
+@pytest.mark.parametrize(
+    "event", [session_summary(), session_env(), skill_dispatch(), git_snapshot(), subagent_usage()]
+)
+def test_otlp_other_new_events_go_to_hooks(event: dict[str, object]) -> None:
+    batch = _decode_logs(event)
+
+    assert (len(batch.hooks), batch.usage, batch.logs) == (1, [], [])
+
+
+@pytest.mark.parametrize(
+    "event, table, expected_ts",
+    [
+        (usage_request(), "usage", datetime(2026, 9, 29, 10, 59, 41, 512000, tzinfo=timezone.utc)),
+        (session_summary(), "hooks", datetime(2026, 9, 29, 11, 30, tzinfo=timezone.utc)),
+        (skill_dispatch(), "hooks", datetime(2026, 9, 29, 10, 5, tzinfo=timezone.utc)),
+    ],
+)
+def test_one_event_through_both_paths_gives_equal_hash_and_time(
+    event: dict[str, object], table: str, expected_ts: datetime
+) -> None:
+    via_hooks = getattr(decode_hook_events([event], "u@example.com", 0), table)[0]
+    via_otlp = getattr(_decode_logs(event), table)[0]
+
+    assert via_otlp.h == via_hooks.h
+    assert (via_otlp.ts, via_otlp.day) == (via_hooks.ts, via_hooks.day)
+    assert via_otlp.ts == expected_ts  # the timestamp field, not RECORD_T
+
+
+def test_otlp_hook_without_event_id_keeps_the_record_time_and_content_hash() -> None:
+    event = without(skill_dispatch(), "event_id")
+
+    (row,) = _decode_logs(event).hooks
+
+    assert row.ts == RECORD_T
+    assert json.loads(row.attrs)["timestamp"] == "2026-09-29T10:05:00.000Z"
+    # Captured once on 198bddcce, re-captured after the codemie_cli_version rename: otlp.decode_logs of this record, `.hooks[0].h`.
+    assert row.h == -4943635364139866433
+
+
+@pytest.mark.parametrize("event", [skill_dispatch(timestamp="not-a-time"), usage_request(timestamp="not-a-time")])
+def test_otlp_unparseable_timestamp_falls_back_to_the_record_time(event: dict[str, object]) -> None:
+    batch = _decode_logs(event)
+
+    (row,) = batch.hooks + batch.usage
+    assert row.ts == RECORD_T
+
+
+def test_api_request_request_id_is_a_typed_column_and_not_in_attrs() -> None:
+    (row,) = otlp.decode_logs(b.logs_request({}, [b.log_record(T, _api_request(request_id="req_1"))])).logs
+
+    assert row.request_id == "req_1"
+    assert "request_id" not in json.loads(row.attrs)
+
+
+def test_api_request_empty_request_id_is_null() -> None:
+    (row,) = otlp.decode_logs(b.logs_request({}, [b.log_record(T, _api_request(request_id=""))])).logs
+
+    assert row.request_id is None
+
+
+def test_log_events_tokens_still_store_unparseable_text_as_zero() -> None:
+    (row,) = otlp.decode_logs(b.logs_request({}, [b.log_record(T, _api_request(input_tokens="abc"))])).logs
+
+    assert row.input_tokens == 0
+
+
+def test_empty_prompt_id_gives_equal_usage_attrs_on_both_paths() -> None:
+    event = {**minimal("agent.usage.request", "s1", "2026-09-29T10:00:00Z"), "prompt_id": ""}
+
+    (via_hooks,) = _decode(event).usage
+    (via_otlp,) = _decode_logs(event).usage
+
+    assert via_hooks.attrs == via_otlp.attrs
+    assert via_hooks.attrs is None
+
+
+def test_hooks_usage_request_keeps_a_non_empty_prompt_id_in_attrs() -> None:
+    event = {**minimal("agent.usage.request", "s1", "2026-09-29T10:00:00Z"), "prompt_id": "p-7"}
+
+    (row,) = _decode(event).usage
+
+    assert json.loads(row.attrs) == {"prompt_id": "p-7"}

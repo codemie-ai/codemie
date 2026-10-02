@@ -12,10 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Selects the CLI Analytics storage adapter from `CLI_ANALYTICS_STORAGE_BACKEND`.
+"""Builds the CLI Analytics storage: the PostgreSQL adapter, written directly by the API.
 
-The storage is built lazily on first use and once per process. Each adapter is imported
-only when selected, so a PostgreSQL deployment never loads or configures ClickHouse.
+The storage is built lazily on first use and once per process.
 """
 
 from __future__ import annotations
@@ -29,11 +28,10 @@ from codemie.repository.cli_analytics.ports import CliAnalyticsReader, CliAnalyt
 
 @dataclass(frozen=True)
 class CliAnalyticsStorage:
-    backend: str
     reader: CliAnalyticsReader
     ingestor: CliTelemetryIngestor
-    # Startup, background jobs and resources beyond request handling; None when the engine
-    # needs none (ClickHouse: the Collector and materialized views do that work).
+    # Startup, background jobs and resources beyond request handling; None when there is no
+    # such work to run.
     runtime: CliAnalyticsRuntime | None = None
     # How far back raw rows reach: dashboard windows are clamped to it, so rollup-backed and
     # raw-backed numbers of one window always cover the same days.
@@ -44,20 +42,7 @@ _lock = threading.Lock()
 _storage: CliAnalyticsStorage | None = None
 
 
-def _build_clickhouse_storage() -> CliAnalyticsStorage:
-    from codemie.clients.clickhouse import ch_query
-    from codemie.repository.cli_analytics.clickhouse.ingestor import ClickHouseTelemetryIngestor
-    from codemie.repository.cli_analytics.clickhouse.reader import RAW_TTL_DAYS, ClickHouseCliAnalyticsReader
-
-    return CliAnalyticsStorage(
-        backend="clickhouse",
-        reader=ClickHouseCliAnalyticsReader(ch_query),
-        ingestor=ClickHouseTelemetryIngestor(),
-        raw_retention_days=RAW_TTL_DAYS,
-    )
-
-
-def _build_postgres_storage() -> CliAnalyticsStorage:
+def _build_storage() -> CliAnalyticsStorage:
     from codemie.repository.cli_analytics.postgres.engine import AnalyticsPgEngine
     from codemie.repository.cli_analytics.postgres.ingestor import PostgresTelemetryIngestor
     from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
@@ -67,7 +52,6 @@ def _build_postgres_storage() -> CliAnalyticsStorage:
     settings = AnalyticsPgSettings.from_config(config)
     engine = AnalyticsPgEngine(settings)  # one dedicated pool for ingest, reads and jobs
     return CliAnalyticsStorage(
-        backend="postgres",
         reader=PostgresCliAnalyticsReader(engine),
         ingestor=PostgresTelemetryIngestor(engine),
         runtime=PostgresAnalyticsRuntime(engine, settings),
@@ -75,23 +59,13 @@ def _build_postgres_storage() -> CliAnalyticsStorage:
     )
 
 
-_BUILDERS = {
-    "clickhouse": _build_clickhouse_storage,
-    "postgres": _build_postgres_storage,
-}
-
-
 def get_cli_analytics_storage() -> CliAnalyticsStorage:
-    """The storage adapter selected by configuration, built on first use."""
+    """The storage, built on first use."""
     global _storage
     if _storage is None:
         with _lock:
             if _storage is None:
-                backend = config.CLI_ANALYTICS_STORAGE_BACKEND
-                builder = _BUILDERS.get(backend)
-                if builder is None:
-                    raise ValueError(f"Unsupported CLI_ANALYTICS_STORAGE_BACKEND: {backend!r}")
-                _storage = builder()
+                _storage = _build_storage()
     return _storage
 
 

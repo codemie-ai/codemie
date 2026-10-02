@@ -108,9 +108,8 @@ def test_file_datasource_max_upload_count_defaults_to_ten():
 
 
 def test_analytics_ingest_config_defaults(monkeypatch):
-    monkeypatch.delenv("ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT", raising=False)
+    monkeypatch.delenv("ANALYTICS_INGEST_MAX_BODY_BYTES", raising=False)
     cfg = Config(_env_file=())
-    assert cfg.ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT == "http://otelcol:4318"
     assert cfg.ANALYTICS_INGEST_MAX_BODY_BYTES == 5_242_880
 
 

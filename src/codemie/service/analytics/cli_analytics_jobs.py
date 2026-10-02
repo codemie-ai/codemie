@@ -14,8 +14,8 @@
 
 """Background jobs of the CLI Analytics storage.
 
-The storage adapter decides which jobs it needs (PostgreSQL: rollup refresh and partition
-maintenance; ClickHouse: none) and takes care of running each on one pod only. This
+The storage adapter decides which jobs it needs (rollup refresh and partition
+maintenance) and takes care of running each on one pod only. This
 module schedules them with APScheduler and ties them to the application lifecycle.
 """
 
@@ -32,6 +32,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from codemie.configs.customer_config import customer_config
 from codemie.repository.cli_analytics.factory import get_cli_analytics_storage
 from codemie.repository.cli_analytics.ports import CliAnalyticsRuntime, CliAnalyticsStorageConfigError, ScheduledJob
+from codemie.service.analytics.delivery_framework import classify_delivery_framework
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,8 @@ async def start_cli_analytics_runtime() -> CliAnalyticsJobsScheduler | None:
         return None
     if runtime is None:
         return None
+    # The repository layer never imports the service layer: the refresher gets the classifier here.
+    runtime.set_classifier(classify_delivery_framework)
     jobs = CliAnalyticsJobsScheduler(AsyncIOScheduler(), runtime)
     jobs.start()
     # The application does not wait: an unreachable analytics database only delays analytics.

@@ -14,6 +14,5 @@
 
 """Storage for the OTel CLI Analytics feature, behind engine-neutral ports.
 
-`CLI_ANALYTICS_STORAGE_BACKEND` selects the adapter (see `factory.py`): ClickHouse fed by
-the OTel Collector, or PostgreSQL written directly by the API.
+`factory.py` builds the PostgreSQL adapter, which the API writes directly.
 """

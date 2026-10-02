@@ -36,7 +36,6 @@ from codemie.repository.cli_analytics.ports import (
     IngestResult,
     InvalidTelemetryPayloadError,
     TelemetryStorageUnavailableError,
-    TelemetryUpstreamConfigurationError,
     UnsupportedTelemetryContentTypeError,
 )
 from codemie.rest_api.security.authentication import authenticate
@@ -68,7 +67,7 @@ class FakeIngestor:
 def storage():
     reader = MagicMock()
     reader.get_session_detail_meta = AsyncMock(return_value=[{"project_name": "other-project"}])
-    fake = CliAnalyticsStorage(backend="fake", reader=reader, ingestor=FakeIngestor())
+    fake = CliAnalyticsStorage(reader=reader, ingestor=FakeIngestor())
     with patch.object(router_module, "get_cli_analytics_storage", return_value=fake):
         yield fake
 
@@ -162,7 +161,7 @@ def test_a_storage_that_cannot_be_reached_answers_503(error):
     async def _extended(request, exc: ExtendedHTTPException):  # as the application registers it
         return JSONResponse(status_code=exc.code, content={"message": exc.message, "details": exc.details})
 
-    unreachable = CliAnalyticsStorage(backend="fake", reader=UnreachableReader(error), ingestor=FakeIngestor())
+    unreachable = CliAnalyticsStorage(reader=UnreachableReader(error), ingestor=FakeIngestor())
     with (
         patch.object(router_module, "get_cli_analytics_storage", return_value=unreachable),
         patch.object(router_module, "_ensure_enabled", return_value=None),
@@ -210,7 +209,6 @@ def test_oversized_otlp_body_is_rejected_before_storage(client, storage):
     [
         (InvalidTelemetryPayloadError("cannot decode"), 400),
         (UnsupportedTelemetryContentTypeError("text/plain"), 415),
-        (TelemetryUpstreamConfigurationError("Analytics collector configuration error"), 502),
         (TelemetryStorageUnavailableError("Analytics storage unavailable"), 503),
     ],
 )

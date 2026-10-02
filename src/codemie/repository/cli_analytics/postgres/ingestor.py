@@ -57,6 +57,7 @@ from codemie.repository.cli_analytics.postgres.otlp import (
     LogRow,
     MetricRow,
     SpanRow,
+    UsageRow,
     decode_hook_events,
     decode_otlp,
     json_text,
@@ -75,7 +76,7 @@ _KNOWN_RESOURCES_LIMIT = 50_000
 # (class 22) or one too large for an index row (54000). Not class 23: "no partition for the
 # row" means the partitions are missing, which the next maintenance run repairs.
 _REJECTED_CONTENT = (asyncpg.DataError, asyncpg.exceptions.ProgramLimitExceededError)
-_RECORD_KINDS = ("logs", "hooks", "spans", "metrics")
+_RECORD_KINDS = ("logs", "hooks", "usage", "spans", "metrics")
 # Failed attempts a request may spend isolating rejected records. Past them the request answers
 # 503: what it stored or rejected stays, and the plugin's re-send carries on from there (the
 # ledger skips both). A 2xx would lose the rest, as the plugin deletes its spool on any 2xx.
@@ -106,6 +107,12 @@ _COLUMN_TYPES: dict[str, str] = {
     "output_tokens": "int8",
     "cache_read_tokens": "int8",
     "cache_creation_tokens": "int8",
+    "cache_creation_5m_tokens": "int8",
+    "cache_creation_1h_tokens": "int8",
+    "thinking_tokens": "int8",
+    "web_search_requests": "int4",
+    "web_fetch_requests": "int4",
+    "is_api_error": "bool",
     "duration_ns": "int8",
     "resource_id": "int8",
     "is_monotonic": "bool",
@@ -128,6 +135,7 @@ def _insert_sql(table: str, row_type: type) -> str:
 _TABLES: tuple[tuple[str, str, type], ...] = (
     ("logs", "log_events", LogRow),
     ("hooks", "hook_events", HookRow),
+    ("usage", "usage_requests", UsageRow),
     ("spans", "spans", SpanRow),
     ("metrics", "metric_points", MetricRow),
 )
@@ -324,9 +332,7 @@ class PostgresTelemetryIngestor:
             raise TelemetryStorageUnavailableError("Analytics storage unavailable") from exc
 
     async def _store_once(self, batch: DecodedBatch) -> int:
-        keys = sorted(
-            {(row.day, row.h) for rows in (batch.logs, batch.hooks, batch.spans, batch.metrics) for row in rows}
-        )
+        keys = sorted({(row.day, row.h) for kind in _RECORD_KINDS for row in getattr(batch, kind)})
         today = self._today()
         async with self._transaction() as conn:
             # The ledger first: a re-sent record (stored, or rejected before) brings nothing else.

@@ -14,14 +14,20 @@
 
 from __future__ import annotations
 
+import dataclasses
 from unittest.mock import patch
 
 import pytest
 
-from codemie.configs.config import config
-from codemie.repository.cli_analytics.clickhouse.ingestor import ClickHouseTelemetryIngestor
-from codemie.repository.cli_analytics.clickhouse.reader import ClickHouseCliAnalyticsReader
-from codemie.repository.cli_analytics.factory import get_cli_analytics_storage, reset_cli_analytics_storage
+from codemie.configs.config import Config, config
+from codemie.repository.cli_analytics.factory import (
+    CliAnalyticsStorage,
+    get_cli_analytics_storage,
+    reset_cli_analytics_storage,
+)
+from codemie.repository.cli_analytics.postgres.ingestor import PostgresTelemetryIngestor
+from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
+from codemie.repository.cli_analytics.postgres.runtime import PostgresAnalyticsRuntime
 
 
 @pytest.fixture(autouse=True)
@@ -31,58 +37,34 @@ def _fresh_storage():
     reset_cli_analytics_storage()
 
 
-def test_clickhouse_backend_uses_the_clickhouse_adapters():
-    with patch.object(config, "CLI_ANALYTICS_STORAGE_BACKEND", "clickhouse"):
-        storage = get_cli_analytics_storage()
+def test_storage_is_postgresql_without_any_engine_setting() -> None:
+    assert "CLI_ANALYTICS_STORAGE_BACKEND" not in Config.model_fields
 
-    assert storage.backend == "clickhouse"
-    assert isinstance(storage.reader, ClickHouseCliAnalyticsReader)
-    assert isinstance(storage.ingestor, ClickHouseTelemetryIngestor)
-    assert storage.runtime is None
+    storage = get_cli_analytics_storage()
 
-
-def test_clickhouse_reader_queries_through_the_shared_clickhouse_client():
-    from codemie.clients.clickhouse import ch_query
-
-    with patch.object(config, "CLI_ANALYTICS_STORAGE_BACKEND", "clickhouse"):
-        storage = get_cli_analytics_storage()
-
-    assert storage.reader._q is ch_query
-
-
-def test_storage_is_built_once_per_process():
-    with patch.object(config, "CLI_ANALYTICS_STORAGE_BACKEND", "clickhouse"):
-        assert get_cli_analytics_storage() is get_cli_analytics_storage()
-
-
-def test_reset_builds_a_new_storage_next_time():
-    with patch.object(config, "CLI_ANALYTICS_STORAGE_BACKEND", "clickhouse"):
-        first = get_cli_analytics_storage()
-        reset_cli_analytics_storage()
-        assert get_cli_analytics_storage() is not first
-
-
-def test_postgres_backend_uses_the_postgres_adapters_and_never_touches_clickhouse():
-    from codemie.repository.cli_analytics.postgres.ingestor import PostgresTelemetryIngestor
-    from codemie.repository.cli_analytics.postgres.reader import PostgresCliAnalyticsReader
-    from codemie.repository.cli_analytics.postgres.runtime import PostgresAnalyticsRuntime
-
-    with (
-        patch.object(config, "CLI_ANALYTICS_STORAGE_BACKEND", "postgres"),
-        patch("codemie.clients.clickhouse.get_client") as clickhouse_client,
-    ):
-        storage = get_cli_analytics_storage()
-
-    assert storage.backend == "postgres"
     assert isinstance(storage.reader, PostgresCliAnalyticsReader)
     assert isinstance(storage.ingestor, PostgresTelemetryIngestor)
     assert isinstance(storage.runtime, PostgresAnalyticsRuntime)
-    clickhouse_client.assert_not_called()
 
 
-def test_postgres_adapters_share_one_pool_configured_from_settings():
+def test_storage_names_no_engine() -> None:
+    # One engine: nothing is left to tell engines apart by.
+    assert "backend" not in {field.name for field in dataclasses.fields(CliAnalyticsStorage)}
+
+
+def test_storage_is_built_once_per_process():
+    assert get_cli_analytics_storage() is get_cli_analytics_storage()
+
+
+def test_reset_builds_a_new_storage_next_time():
+    first = get_cli_analytics_storage()
+    reset_cli_analytics_storage()
+
+    assert get_cli_analytics_storage() is not first
+
+
+def test_adapters_share_one_pool_configured_from_settings() -> None:
     with (
-        patch.object(config, "CLI_ANALYTICS_STORAGE_BACKEND", "postgres"),
         patch.object(config, "CLI_ANALYTICS_PG_SCHEMA", "custom_schema"),
         patch.object(config, "CLI_ANALYTICS_PG_URL", "postgresql://u:p@analytics/db"),
     ):
@@ -94,19 +76,6 @@ def test_postgres_adapters_share_one_pool_configured_from_settings():
     assert (engine.settings.schema, engine.settings.dsn) == ("custom_schema", "postgresql://u:p@analytics/db")
 
 
-def test_unknown_backend_is_rejected():
-    with (
-        patch.object(config, "CLI_ANALYTICS_STORAGE_BACKEND", "cassandra"),
-        pytest.raises(ValueError, match="cassandra"),
-    ):
-        get_cli_analytics_storage()
-
-
-@pytest.mark.parametrize(("backend", "days"), [("clickhouse", 90), ("postgres", 30)])
-def test_each_storage_states_how_far_back_its_raw_rows_reach(backend, days):
-    # ClickHouse: the raw tables' TTL in config/clickhouse/schema.sql; PostgreSQL: configured.
-    with (
-        patch.object(config, "CLI_ANALYTICS_STORAGE_BACKEND", backend),
-        patch.object(config, "CLI_ANALYTICS_RAW_RETENTION_DAYS", 30),
-    ):
-        assert get_cli_analytics_storage().raw_retention_days == days
+def test_raw_rows_reach_back_as_far_as_configured() -> None:
+    with patch.object(config, "CLI_ANALYTICS_RAW_RETENTION_DAYS", 30):
+        assert get_cli_analytics_storage().raw_retention_days == 30

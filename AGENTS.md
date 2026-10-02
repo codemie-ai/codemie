@@ -39,7 +39,8 @@ Detailed project guidance lives under `.ai-run/guides/`, which is the source of 
 | X-ray | `.ai-run/guides/integration/xray-integration.md` | X-ray integration |
 | Google Docs | `.ai-run/guides/integration/google-docs-integration.md` | Google Docs integration |
 | MCP | `.ai-run/guides/integration/mcp-integration.md` | MCP configuration and tools |
-| CLI Analytics Storage | `.ai-run/guides/integration/cli-analytics-storage.md` | ClickHouse/PostgreSQL storage for OTel CLI analytics: engine choice, settings, sizing, operations |
+| CLI Analytics Storage | `.ai-run/guides/integration/cli-analytics-storage.md` | PostgreSQL storage for OTel CLI analytics: settings, sizing, operations |
+| CLI Analytics Events | `.ai-run/guides/integration/cli-analytics-events.md` | Contract of the six plugin events: JSON, stored columns, identity and re-sends |
 | FAQ Git | `.ai-run/guides/integration/faq-git-integration.md` | Git FAQ (llm_routing_faq) datasource: parser, routing, contracts |
 | Code Quality | `.ai-run/guides/standards/code-quality.md` | Python and Ruff standards |
 | Git Workflow | `.ai-run/guides/standards/git-workflow.md` | Branch, commit, and review conventions |

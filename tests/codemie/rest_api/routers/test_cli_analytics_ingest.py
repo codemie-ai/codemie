@@ -15,24 +15,29 @@
 """Tests for the analytics ingest endpoints (EPMCDME-13556).
 
 Covers /logs, /metrics, and /event-hooks under
-/v1/analytics/cli-analytics/.
+/v1/analytics/cli-analytics/: what the router accepts, rejects and hands to the
+storage ingestor. How the storage decodes and stores it is tested with the adapter.
 """
 
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any
+from unittest.mock import patch
 
-import httpx
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
-import codemie.repository.cli_analytics.clickhouse.ingestor as ch_ingestor
 import codemie.rest_api.routers.cli_analytics as ingest_router
-from codemie.configs.config import config
-from codemie.repository.cli_analytics.clickhouse.ingestor import _build_otlp_logs_payload, _event_to_log_record
-from codemie.repository.cli_analytics.factory import reset_cli_analytics_storage
+from codemie.repository.cli_analytics.factory import CliAnalyticsStorage
+from codemie.repository.cli_analytics.ports import (
+    CliAnalyticsStorageConfigError,
+    IngestResult,
+    InvalidTelemetryPayloadError,
+    OtlpSignal,
+    TelemetryStorageUnavailableError,
+)
 from codemie.rest_api.routers.cli_analytics import _parse_ndjson
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
@@ -43,14 +48,49 @@ from codemie.rest_api.security.user import User
 # ---------------------------------------------------------------------------
 
 
-def _make_user() -> User:
-    return User(id="test-user", email="dev@example.com")
+class RecordingIngestor:
+    """Stands in for the storage ingestor and records what the router hands it.
+
+    With `error` set, every call is recorded and then raises it, as the storage would.
+    """
+
+    def __init__(self) -> None:
+        self.otlp_calls: list[tuple[str, bytes, str]] = []
+        self.hook_calls: list[tuple[list[dict[str, Any]], str, int]] = []
+        self.error: Exception | None = None
+
+    async def ingest_otlp(self, signal: OtlpSignal, body: bytes, content_type: str) -> IngestResult:
+        self.otlp_calls.append((signal, body, content_type))
+        if self.error is not None:
+            raise self.error
+        return IngestResult()
+
+    async def ingest_hook_events(
+        self, events: list[dict[str, Any]], user_email: str, received_at_ns: int
+    ) -> IngestResult:
+        self.hook_calls.append((events, user_email, received_at_ns))
+        if self.error is not None:
+            raise self.error
+        return IngestResult(body=b"{}", media_type="application/json", accepted=len(events))
+
+    @property
+    def events(self) -> list[dict[str, Any]]:
+        """The events of the only hook call."""
+        (call,) = self.hook_calls
+        return call[0]
+
+
+def _authenticate(request: Request) -> User:
+    """Stands in for `authenticate`, which also publishes the user on request.state."""
+    user = User(id="test-user", email="dev@example.com")
+    request.state.user = user
+    return user
 
 
 def _make_app() -> FastAPI:
     app = FastAPI()
     app.include_router(ingest_router.router)
-    app.dependency_overrides[authenticate] = lambda: _make_user()
+    app.dependency_overrides[authenticate] = _authenticate
     return app
 
 
@@ -65,12 +105,11 @@ def _make_app_no_auth() -> FastAPI:
 
 
 @pytest.fixture(autouse=True)
-def clickhouse_storage():
-    """These tests cover the ClickHouse path, whatever backend the local environment selects."""
-    reset_cli_analytics_storage()
-    with patch.object(config, "CLI_ANALYTICS_STORAGE_BACKEND", "clickhouse"):
-        yield
-    reset_cli_analytics_storage()
+def ingestor() -> RecordingIngestor:
+    recording = RecordingIngestor()
+    storage = CliAnalyticsStorage(reader=None, ingestor=recording)
+    with patch.object(ingest_router, "get_cli_analytics_storage", return_value=storage):
+        yield recording
 
 
 @pytest.fixture()
@@ -85,217 +124,63 @@ def client_no_auth() -> TestClient:
         yield TestClient(_make_app_no_auth())
 
 
-def _mock_httpx_ok(status_code: int = 200):
-    """Return a context-manager-compatible httpx mock that yields a success response."""
-    mock_resp = MagicMock()
-    mock_resp.status_code = status_code
-    mock_resp.content = b""
-    mock_resp.headers = {}
-    mock_client = AsyncMock()
-    mock_client.post.return_value = mock_resp
-    cm = AsyncMock()
-    cm.__aenter__.return_value = mock_client
-    cm.__aexit__.return_value = None
-    return cm, mock_client
-
-
-def _mock_httpx_5xx():
-    """Return a mock that always returns 500."""
-    mock_resp = MagicMock()
-    mock_resp.status_code = 500
-    mock_resp.content = b"error"
-    mock_resp.headers = {}
-    mock_client = AsyncMock()
-    mock_client.post.return_value = mock_resp
-    cm = AsyncMock()
-    cm.__aenter__.return_value = mock_client
-    cm.__aexit__.return_value = None
-    return cm, mock_client
-
-
-def _mock_httpx_4xx(status_code: int = 404):
-    """Return a mock that returns a 4xx response (misconfigured collector)."""
-    mock_resp = MagicMock()
-    mock_resp.status_code = status_code
-    mock_resp.content = b"not found"
-    mock_resp.headers = {}
-    mock_client = AsyncMock()
-    mock_client.post.return_value = mock_resp
-    cm = AsyncMock()
-    cm.__aenter__.return_value = mock_client
-    cm.__aexit__.return_value = None
-    return cm, mock_client
-
-
 # ---------------------------------------------------------------------------
-# /logs — happy path
+# /logs
 # ---------------------------------------------------------------------------
 
 
 class TestIngestLogs:
-    def test_returns_200_on_collector_ok(self, client):
-        cm, _ = _mock_httpx_ok()
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/logs",
-                content=b"\x00\x01\x02",
-                headers={"Content-Type": "application/x-protobuf"},
-            )
+    def test_returns_200_once_stored(self, client: TestClient) -> None:
+        resp = client.post(
+            "/v1/analytics/cli-analytics/logs",
+            content=b"\x00\x01\x02",
+            headers={"Content-Type": "application/x-protobuf"},
+        )
         assert resp.status_code == 200
 
-    def test_requires_auth(self, client_no_auth):
+    def test_requires_auth(self, client_no_auth: TestClient, ingestor: RecordingIngestor) -> None:
         resp = client_no_auth.post(
             "/v1/analytics/cli-analytics/logs",
             content=b"\x00",
         )
         assert resp.status_code == 401
+        assert ingestor.otlp_calls == []
 
-    def test_forwards_content_type_to_collector(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/logs",
-                content=b"\x00\x01",
-                headers={"Content-Type": "application/x-protobuf"},
-            )
-        _, kwargs = mock_client.post.call_args
-        assert kwargs["headers"]["Content-Type"] == "application/x-protobuf"
+    def test_hands_the_logs_signal_to_the_ingestor(self, client: TestClient, ingestor: RecordingIngestor) -> None:
+        client.post("/v1/analytics/cli-analytics/logs", content=b"\x00")
 
-    def test_forwards_raw_body_unchanged(self, client):
-        cm, mock_client = _mock_httpx_ok()
+        assert [signal for signal, _, _ in ingestor.otlp_calls] == ["logs"]
+
+    def test_hands_the_content_type_to_the_ingestor(self, client: TestClient, ingestor: RecordingIngestor) -> None:
+        client.post(
+            "/v1/analytics/cli-analytics/logs",
+            content=b"\x00\x01",
+            headers={"Content-Type": "application/json"},
+        )
+
+        assert ingestor.otlp_calls[0][2] == "application/json"
+
+    def test_hands_the_raw_body_unchanged(self, client: TestClient, ingestor: RecordingIngestor) -> None:
         raw = b"\xde\xad\xbe\xef"
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/logs",
-                content=raw,
-                headers={"Content-Type": "application/x-protobuf"},
-            )
-        _, kwargs = mock_client.post.call_args
-        assert kwargs["content"] == raw
+        client.post(
+            "/v1/analytics/cli-analytics/logs",
+            content=raw,
+            headers={"Content-Type": "application/x-protobuf"},
+        )
 
-    def test_empty_body_forwarded_not_rejected(self, client):
-        cm, _ = _mock_httpx_ok()
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/logs",
-                content=b"",
-                headers={"Content-Type": "application/x-protobuf"},
-            )
+        assert ingestor.otlp_calls[0][1] == raw
+
+    def test_empty_body_is_handed_on_not_rejected(self, client: TestClient, ingestor: RecordingIngestor) -> None:
+        resp = client.post(
+            "/v1/analytics/cli-analytics/logs",
+            content=b"",
+            headers={"Content-Type": "application/x-protobuf"},
+        )
+
         assert resp.status_code == 200
+        assert ingestor.otlp_calls == [("logs", b"", "application/x-protobuf")]
 
-    def test_forwards_to_otlp_logs_path(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        with (
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
-            patch(
-                "codemie.rest_api.routers.cli_analytics.config.ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT",
-                "http://collector:4318",
-            ),
-        ):
-            client.post(
-                "/v1/analytics/cli-analytics/logs",
-                content=b"\x00",
-            )
-        url, _ = mock_client.post.call_args
-        assert url[0].endswith("/v1/logs")
-
-    # ------------------------------------------------------------------
-    # Collector errors
-    # ------------------------------------------------------------------
-
-    def test_collector_unreachable_returns_503(self, client):
-        mock_client = AsyncMock()
-        mock_client.post.side_effect = httpx.ConnectError("refused")
-        cm = AsyncMock()
-        cm.__aenter__.return_value = mock_client
-        cm.__aexit__.return_value = None
-        with (
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/logs",
-                content=b"\x00",
-            )
-        assert resp.status_code == 503
-        assert "unavailable" in resp.json()["detail"].lower()
-
-    def test_collector_timeout_returns_503(self, client):
-        mock_client = AsyncMock()
-        mock_client.post.side_effect = httpx.ReadTimeout("timed out")
-        cm = AsyncMock()
-        cm.__aenter__.return_value = mock_client
-        cm.__aexit__.return_value = None
-        with (
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/logs",
-                content=b"\x00",
-            )
-        assert resp.status_code == 503
-
-    def test_collector_5xx_retries_and_returns_503(self, client):
-        cm, mock_client = _mock_httpx_5xx()
-        with (
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/logs",
-                content=b"\x00",
-            )
-        assert resp.status_code == 503
-        assert mock_client.post.call_count == ch_ingestor._MAX_ATTEMPTS
-
-    def test_collector_5xx_then_ok_returns_200(self, client):
-        mock_500 = MagicMock(status_code=500, content=b"", headers={})
-        mock_200 = MagicMock(status_code=200, content=b"", headers={})
-        mock_client = AsyncMock()
-        mock_client.post.side_effect = [mock_500, mock_500, mock_200]
-        cm = AsyncMock()
-        cm.__aenter__.return_value = mock_client
-        cm.__aexit__.return_value = None
-        with (
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/logs",
-                content=b"\x00",
-            )
-        assert resp.status_code == 200
-        assert mock_client.post.call_count == 3
-
-    def test_collector_4xx_returns_502_not_retried(self, client):
-        cm, mock_client = _mock_httpx_4xx(404)
-        with (
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/logs",
-                content=b"\x00",
-            )
-        assert resp.status_code == 502
-        assert mock_client.post.call_count == 1
-
-    def test_unexpected_exception_returns_503(self, client):
-        mock_client = AsyncMock()
-        mock_client.post.side_effect = RuntimeError("unexpected")
-        cm = AsyncMock()
-        cm.__aenter__.return_value = mock_client
-        cm.__aexit__.return_value = None
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/logs",
-                content=b"\x00",
-            )
-        assert resp.status_code == 503
-        assert mock_client.post.call_count == 1
-
-    def test_body_too_large_returns_413(self, client):
+    def test_body_too_large_returns_413(self, client: TestClient, ingestor: RecordingIngestor) -> None:
         with patch("codemie.rest_api.routers.cli_analytics.config.ANALYTICS_INGEST_MAX_BODY_BYTES", 10):
             resp = client.post(
                 "/v1/analytics/cli-analytics/logs",
@@ -303,22 +188,21 @@ class TestIngestLogs:
                 headers={"Content-Type": "application/x-protobuf"},
             )
         assert resp.status_code == 413
+        assert ingestor.otlp_calls == []
 
 
 # ---------------------------------------------------------------------------
-# /metrics — happy path
+# /metrics
 # ---------------------------------------------------------------------------
 
 
 class TestIngestMetrics:
-    def test_returns_200_on_collector_ok(self, client):
-        cm, _ = _mock_httpx_ok()
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/metrics",
-                content=b"\x00\x01",
-                headers={"Content-Type": "application/x-protobuf"},
-            )
+    def test_returns_200_once_stored(self, client: TestClient) -> None:
+        resp = client.post(
+            "/v1/analytics/cli-analytics/metrics",
+            content=b"\x00\x01",
+            headers={"Content-Type": "application/x-protobuf"},
+        )
         assert resp.status_code == 200
 
     def test_requires_auth(self, client_no_auth):
@@ -328,21 +212,10 @@ class TestIngestMetrics:
         )
         assert resp.status_code == 401
 
-    def test_forwards_to_otlp_metrics_path(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        with (
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
-            patch(
-                "codemie.rest_api.routers.cli_analytics.config.ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT",
-                "http://collector:4318",
-            ),
-        ):
-            client.post(
-                "/v1/analytics/cli-analytics/metrics",
-                content=b"\x00",
-            )
-        url, _ = mock_client.post.call_args
-        assert url[0].endswith("/v1/metrics")
+    def test_hands_the_metrics_signal_to_the_ingestor(self, client: TestClient, ingestor: RecordingIngestor) -> None:
+        client.post("/v1/analytics/cli-analytics/metrics", content=b"\x00")
+
+        assert [signal for signal, _, _ in ingestor.otlp_calls] == ["metrics"]
 
     def test_body_too_large_returns_413(self, client):
         with patch("codemie.rest_api.routers.cli_analytics.config.ANALYTICS_INGEST_MAX_BODY_BYTES", 10):
@@ -355,7 +228,7 @@ class TestIngestMetrics:
 
 
 # ---------------------------------------------------------------------------
-# /event-hooks — happy path
+# /event-hooks
 # ---------------------------------------------------------------------------
 
 
@@ -393,504 +266,194 @@ def _ndjson(*events: dict) -> bytes:
 class TestIngestEventHooks:
     # Happy path
     def test_returns_200_single_event(self, client):
-        cm, _ = _mock_httpx_ok()
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(_session_start_event()),
-                headers={"Content-Type": "application/x-ndjson"},
-            )
+        resp = client.post(
+            "/v1/analytics/cli-analytics/event-hooks",
+            content=_ndjson(_session_start_event()),
+            headers={"Content-Type": "application/x-ndjson"},
+        )
         assert resp.status_code == 200
 
-    def test_returns_200_multi_event(self, client):
-        cm, _ = _mock_httpx_ok()
-        events = [_tool_start_event() for _ in range(10)]
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(*events),
-                headers={"Content-Type": "application/x-ndjson"},
-            )
+    def test_hands_every_event_of_the_batch_to_the_ingestor(
+        self, client: TestClient, ingestor: RecordingIngestor
+    ) -> None:
+        events = [_tool_start_event(tool_use_id=f"toolu_{i}") for i in range(10)]
+
+        resp = client.post(
+            "/v1/analytics/cli-analytics/event-hooks",
+            content=_ndjson(*events),
+            headers={"Content-Type": "application/x-ndjson"},
+        )
+
         assert resp.status_code == 200
+        assert ingestor.events == events
 
-    def test_event_type_passed_through_unchanged(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(_session_start_event()),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        attrs = {
-            a["key"]: a["value"]["stringValue"]
-            for a in body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["attributes"]
-        }
-        assert attrs["event_type"] == "agent.session.start"
+    def test_hands_the_authenticated_sender_to_the_ingestor(
+        self, client: TestClient, ingestor: RecordingIngestor
+    ) -> None:
+        client.post(
+            "/v1/analytics/cli-analytics/event-hooks",
+            content=_ndjson(_session_start_event(developer_name="someone@example.com")),
+        )
 
-    def test_severity_info_for_session_start(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(_session_start_event()),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        record = body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]
-        assert record["severityText"] == "INFO"
-        assert record["severityNumber"] == 9
+        (_, user_email, received_at_ns) = ingestor.hook_calls[0]
+        assert user_email == "dev@example.com"
+        assert received_at_ns % 1000 == 0  # microsecond precision
+        assert received_at_ns > 1_700_000_000_000_000_000
 
-    def test_severity_error_for_tool_error(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        event = {
-            "type": "agent.tool.error",
-            "session_id": "s1",
-            "timestamp": "2026-07-23T10:00:10.000Z",
-            "tool_name": "Bash",
-            "tool_use_id": "toolu_02",
-            "error_message": "Command not found",
-        }
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(event),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        record = body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]
-        assert record["severityText"] == "ERROR"
-        assert record["severityNumber"] == 17
+    @pytest.mark.parametrize(
+        "event",
+        [
+            _session_start_event(),
+            _session_start_event(type="agent.prompt.submit", prompt_body="fix the login bug"),
+            {"type": "agent.tool.error", "session_id": "s1", "tool_name": "Bash", "error_message": "not found"},
+            {
+                "type": "agent.skill.dispatch",
+                "session_id": "sess-abc",
+                "prompt_id": "p-1",
+                "skill_name": "sdlc-factory:sdlc-standard",
+                "command_source": "plugin",
+                "command_args": "arg1 arg2",
+            },
+            {"type": "agent.session.start", "session_id": "s1", "cwd": "epm-cdme/my-repo"},  # the plugin normalises
+            {"type": "agent.tool.start", "session_id": "s1", "tool_input": "x" * 500},  # not truncated by the API
+            {"type": "agent.tool.start", "tool_input": {"command": "git status"}, "tool_output": ["a", "b"]},
+            {"type": "custom.event", "session_id": "s1"},
+            {"type": "agent.session.start", "timestamp": "not-a-date"},
+        ],
+    )
+    def test_events_are_handed_on_unchanged(
+        self, client: TestClient, ingestor: RecordingIngestor, event: dict[str, Any]
+    ) -> None:
+        resp = client.post("/v1/analytics/cli-analytics/event-hooks", content=_ndjson(event))
 
-    def test_timestamp_converted_to_nanoseconds(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(_session_start_event(timestamp="2026-07-23T10:00:00.000Z")),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        ts_ns = int(body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["timeUnixNano"])
-        assert ts_ns > 0
-        # 2026-07-23 timestamp in nanoseconds should be roughly 1.75e18
-        assert 1_700_000_000_000_000_000 < ts_ns < 1_800_000_000_000_000_000
-
-    def test_all_log_attribute_fields_present(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(_session_start_event()),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        attrs_keys = {a["key"] for a in body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["attributes"]}
-        # Exact whitelist: mirrors _EVENT_ATTRIBUTE_KEYS in ingest_router.py
-        expected = {
-            "event_type",
-            "session_id",
-            "prompt_id",
-            "developer_name",
-            "codemie_project_name",
-            "cwd",
-            "git_branch",
-            "repo_remote",
-            "permission_mode",
-            "source",
-            "effort",
-            "tool_name",
-            "tool_use_id",
-            "tool_input",
-            "tool_output",
-            "error_message",
-            "error_type",
-            "reason",
-            "agent_id",
-            "agent_type",
-            "trigger",
-            "denial_reason",
-            "notification_type",
-            "prompt_body",
-            "skill_name",
-        }
-        assert expected == attrs_keys
-
-    def test_skill_dispatch_skill_name_forwarded(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        event = {
-            "type": "agent.skill.dispatch",
-            "session_id": "sess-abc",
-            "prompt_id": "p-1",
-            "timestamp": "2026-07-23T10:00:05.000Z",
-            "skill_name": "sdlc-factory:sdlc-standard",
-        }
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(event),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        attrs = {
-            a["key"]: a["value"]["stringValue"]
-            for a in body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["attributes"]
-        }
-        assert attrs["event_type"] == "agent.skill.dispatch"
-        assert attrs["skill_name"] == "sdlc-factory:sdlc-standard"
-
-    def test_skill_dispatch_command_source_forwarded(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        event = {
-            "type": "agent.skill.dispatch",
-            "session_id": "sess-abc",
-            "prompt_id": "p-1",
-            "timestamp": "2026-07-23T10:00:05.000Z",
-            "skill_name": "sdlc-factory:sdlc-standard",
-            "command_source": "plugin",
-            "command_args": "arg1 arg2",
-        }
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(event),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        attrs = {
-            a["key"]: a["value"]["stringValue"]
-            for a in body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["attributes"]
-        }
-        assert attrs["event_type"] == "agent.skill.dispatch"
-        assert attrs["skill_name"] == "sdlc-factory:sdlc-standard"
-
-    def test_prompt_submit_prompt_body_forwarded(self, client):
-        # prompt_body must survive the hook -> OTel LogAttributes translation, or
-        # get_session_detail's argMinIf(prompt_body, ...) has nothing to read no
-        # matter how well analytics-hook captures the prompt client-side.
-        cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(_session_start_event(type="agent.prompt.submit", prompt_body="fix the login bug")),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        attrs = {
-            a["key"]: a["value"]["stringValue"]
-            for a in body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["attributes"]
-        }
-        assert attrs["prompt_body"] == "fix the login bug"
-
-    def test_resource_attributes_service_name(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(_session_start_event()),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        resource_attrs = {
-            a["key"]: a["value"]["stringValue"] for a in body["resourceLogs"][0]["resource"]["attributes"]
-        }
-        assert resource_attrs["service.name"] == "codemie-agent-hooks"
-
-    def test_posts_to_otlp_logs_path(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        with (
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
-            patch(
-                "codemie.rest_api.routers.cli_analytics.config.ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT",
-                "http://collector:4318",
-            ),
-        ):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(_session_start_event()),
-            )
-        url, _ = mock_client.post.call_args
-        assert url[0] == "http://collector:4318/v1/logs"
+        assert resp.status_code == 200
+        assert ingestor.events == [event]
 
     # ------------------------------------------------------------------
     # Input validation
     # ------------------------------------------------------------------
 
-    def test_empty_body_returns_400(self, client):
+    def test_empty_body_returns_400(self, client: TestClient, ingestor: RecordingIngestor) -> None:
         resp = client.post(
             "/v1/analytics/cli-analytics/event-hooks",
             content=b"",
         )
         assert resp.status_code == 400
+        assert ingestor.hook_calls == []
 
-    def test_whitespace_only_body_returns_400(self, client):
+    def test_whitespace_only_body_returns_400(self, client: TestClient, ingestor: RecordingIngestor) -> None:
         resp = client.post(
             "/v1/analytics/cli-analytics/event-hooks",
             content=b"   \n  \n  ",
         )
         assert resp.status_code == 400
+        assert ingestor.hook_calls == []
 
-    def test_all_lines_invalid_json_returns_400(self, client):
+    def test_all_lines_invalid_json_returns_400(self, client: TestClient, ingestor: RecordingIngestor) -> None:
         resp = client.post(
             "/v1/analytics/cli-analytics/event-hooks",
             content=b"not-json\nalso-not-json",
         )
         assert resp.status_code == 400
+        assert ingestor.hook_calls == []
 
-    def test_empty_lines_skipped_valid_events_processed(self, client):
-        cm, _ = _mock_httpx_ok()
+    def test_empty_lines_skipped_valid_events_processed(self, client: TestClient, ingestor: RecordingIngestor) -> None:
         body = b"\n" + _ndjson(_session_start_event()) + b"\n\n"
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=body,
-            )
-        assert resp.status_code == 200
 
-    def test_mixed_valid_invalid_lines_processes_valid(self, client):
-        cm, mock_client = _mock_httpx_ok()
+        resp = client.post(
+            "/v1/analytics/cli-analytics/event-hooks",
+            content=body,
+        )
+
+        assert resp.status_code == 200
+        assert ingestor.events == [_session_start_event()]
+
+    def test_mixed_valid_invalid_lines_processes_valid(self, client: TestClient, ingestor: RecordingIngestor) -> None:
         body = json.dumps(_session_start_event()).encode() + b"\nnot-json\n" + json.dumps(_tool_start_event()).encode()
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=body,
-            )
-        assert resp.status_code == 200
-        _, kwargs = mock_client.post.call_args
-        parsed = json.loads(kwargs["content"])
-        assert len(parsed["resourceLogs"][0]["scopeLogs"][0]["logRecords"]) == 2
 
-    def test_body_too_large_returns_413(self, client):
+        resp = client.post(
+            "/v1/analytics/cli-analytics/event-hooks",
+            content=body,
+        )
+
+        assert resp.status_code == 200
+        assert ingestor.events == [_session_start_event(), _tool_start_event()]
+
+    def test_body_too_large_returns_413(self, client: TestClient, ingestor: RecordingIngestor) -> None:
         with patch("codemie.rest_api.routers.cli_analytics.config.ANALYTICS_INGEST_MAX_BODY_BYTES", 10):
             resp = client.post(
                 "/v1/analytics/cli-analytics/event-hooks",
                 content=b"x" * 11,
             )
         assert resp.status_code == 413
+        assert ingestor.hook_calls == []
 
-    def test_requires_auth(self, client_no_auth):
+    def test_requires_auth(self, client_no_auth: TestClient, ingestor: RecordingIngestor) -> None:
         resp = client_no_auth.post(
             "/v1/analytics/cli-analytics/event-hooks",
             content=_ndjson(_session_start_event()),
         )
         assert resp.status_code == 401
+        assert ingestor.hook_calls == []
 
-    # ------------------------------------------------------------------
-    # Missing / malformed fields
-    # ------------------------------------------------------------------
-
-    def test_missing_session_id_defaults_to_empty(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        event = {"type": "agent.session.start", "timestamp": "2026-07-23T10:00:00Z"}
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(event),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        attrs = {
-            a["key"]: a["value"]["stringValue"]
-            for a in body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["attributes"]
-        }
-        assert attrs["session_id"] == ""
-
-    def test_missing_developer_name_defaults_to_empty(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        event = {"type": "agent.session.start", "session_id": "s1"}
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(event),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        attrs = {
-            a["key"]: a["value"]["stringValue"]
-            for a in body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["attributes"]
-        }
-        assert attrs["developer_name"] == ""
-
-    def test_missing_timestamp_uses_current_time(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        event = {"type": "agent.session.start", "session_id": "s1"}
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(event),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        ts_ns = int(body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["timeUnixNano"])
-        assert ts_ns > 0
-
-    def test_invalid_timestamp_uses_current_time(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        event = {"type": "agent.session.start", "session_id": "s1", "timestamp": "not-a-date"}
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(event),
-            )
-        assert resp.status_code == 200
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        ts_ns = int(body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["timeUnixNano"])
-        assert ts_ns > 0
-
-    def test_cwd_passed_through_unchanged(self, client):
-        """cwd is stored as-is; the plugin is the single normalization site."""
-        cm, mock_client = _mock_httpx_ok()
-        event = {"type": "agent.session.start", "session_id": "s1", "cwd": "epm-cdme/my-repo"}
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(event),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        attrs = {
-            a["key"]: a["value"]["stringValue"]
-            for a in body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["attributes"]
-        }
-        assert attrs["cwd"] == "epm-cdme/my-repo"
-
-    def test_unknown_event_type_passes_through_as_info(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        event = {"type": "custom.event", "session_id": "s1"}
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(event),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        record = body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]
-        attrs = {a["key"]: a["value"]["stringValue"] for a in record["attributes"]}
-        assert attrs["event_type"] == "custom.event"
-        assert record["severityText"] == "INFO"
-
-    def test_tool_input_not_truncated_by_api(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        long_input = "x" * 500
-        event = {"type": "agent.tool.start", "session_id": "s1", "tool_input": long_input}
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(event),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        attrs = {
-            a["key"]: a["value"]["stringValue"]
-            for a in body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["attributes"]
-        }
-        assert attrs["tool_input"] == long_input
-
-    # ------------------------------------------------------------------
-    # Collector errors
-    # ------------------------------------------------------------------
-
-    def test_collector_unreachable_returns_503(self, client):
-        mock_client = AsyncMock()
-        mock_client.post.side_effect = httpx.ConnectError("refused")
-        cm = AsyncMock()
-        cm.__aenter__.return_value = mock_client
-        cm.__aexit__.return_value = None
-        with (
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(_session_start_event()),
-            )
-        assert resp.status_code == 503
-
-    def test_collector_timeout_returns_503(self, client):
-        mock_client = AsyncMock()
-        mock_client.post.side_effect = httpx.ReadTimeout("timed out")
-        cm = AsyncMock()
-        cm.__aenter__.return_value = mock_client
-        cm.__aexit__.return_value = None
-        with (
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(_session_start_event()),
-            )
-        assert resp.status_code == 503
-
-    def test_collector_5xx_retries_and_returns_503(self, client):
-        cm, mock_client = _mock_httpx_5xx()
-        with (
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(_session_start_event()),
-            )
-        assert resp.status_code == 503
-        assert mock_client.post.call_count == ch_ingestor._MAX_ATTEMPTS
-
-    def test_collector_5xx_then_ok_returns_200(self, client):
-        mock_500 = MagicMock(status_code=500, content=b"", headers={})
-        mock_200 = MagicMock(status_code=200, content=b"", headers={})
-        mock_client = AsyncMock()
-        mock_client.post.side_effect = [mock_500, mock_500, mock_200]
-        cm = AsyncMock()
-        cm.__aenter__.return_value = mock_client
-        cm.__aexit__.return_value = None
-        with (
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(_session_start_event()),
-            )
-        assert resp.status_code == 200
-        assert mock_client.post.call_count == 3
-
-    def test_collector_4xx_returns_502_not_retried(self, client):
-        cm, mock_client = _mock_httpx_4xx(400)
-        with (
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm),
-            patch("codemie.repository.cli_analytics.clickhouse.ingestor.asyncio.sleep", new_callable=AsyncMock),
-        ):
-            resp = client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson(_session_start_event()),
-            )
-        assert resp.status_code == 502
-        assert mock_client.post.call_count == 1
-
-    def test_wrong_content_type_returns_415(self, client):
+    def test_wrong_content_type_returns_415(self, client: TestClient, ingestor: RecordingIngestor) -> None:
         resp = client.post(
             "/v1/analytics/cli-analytics/event-hooks",
             content=b"data",
             headers={"Content-Type": "text/plain"},
         )
         assert resp.status_code == 415
+        assert ingestor.hook_calls == []
 
-    def test_now_ns_precision_integer_arithmetic(self, client):
-        cm, mock_client = _mock_httpx_ok()
-        with patch("codemie.repository.cli_analytics.clickhouse.ingestor.httpx.AsyncClient", return_value=cm):
-            client.post(
-                "/v1/analytics/cli-analytics/event-hooks",
-                content=_ndjson({"type": "agent.session.start", "session_id": "s1"}),
-            )
-        _, kwargs = mock_client.post.call_args
-        body = json.loads(kwargs["content"])
-        record = body["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]
-        obs_ns = int(record["observedTimeUnixNano"])
-        # observedTimeUnixNano must be a multiple of 1000 (microsecond precision)
-        # and within a reasonable range of now
-        assert obs_ns % 1000 == 0
-        assert obs_ns > 1_700_000_000_000_000_000
+
+# ---------------------------------------------------------------------------
+# Storage errors -> HTTP status (every ingest endpoint)
+# ---------------------------------------------------------------------------
+
+_INGEST_REQUESTS = [
+    ("/v1/analytics/cli-analytics/logs", b"\x00", "application/x-protobuf"),
+    ("/v1/analytics/cli-analytics/metrics", b"\x00", "application/x-protobuf"),
+    ("/v1/analytics/cli-analytics/traces", b"\x00", "application/x-protobuf"),
+    ("/v1/analytics/cli-analytics/event-hooks", b'{"type": "agent.session.start"}', "application/x-ndjson"),
+]
+
+
+class TestIngestStorageErrors:
+    @pytest.mark.parametrize(("path", "body", "content_type"), _INGEST_REQUESTS)
+    def test_storage_unavailable_returns_503(
+        self, client: TestClient, ingestor: RecordingIngestor, path: str, body: bytes, content_type: str
+    ) -> None:
+        # 503 tells the CLI to retry later instead of dropping the telemetry.
+        ingestor.error = TelemetryStorageUnavailableError("Analytics storage unavailable")
+
+        resp = client.post(path, content=body, headers={"Content-Type": content_type})
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Analytics storage unavailable"
+
+    @pytest.mark.parametrize(("path", "body", "content_type"), _INGEST_REQUESTS)
+    def test_invalid_body_returns_400(
+        self, client: TestClient, ingestor: RecordingIngestor, path: str, body: bytes, content_type: str
+    ) -> None:
+        # The storage cannot decode or store the body as sent; resending it will not help.
+        ingestor.error = InvalidTelemetryPayloadError("cannot decode")
+
+        resp = client.post(path, content=body, headers={"Content-Type": content_type})
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "cannot decode"
+
+    @pytest.mark.parametrize(("path", "body", "content_type"), _INGEST_REQUESTS)
+    def test_storage_misconfigured_returns_503_without_its_message(
+        self, client: TestClient, ingestor: RecordingIngestor, path: str, body: bytes, content_type: str
+    ) -> None:
+        # Retried by the client until the configuration is fixed; the settings named in the message stay in the log.
+        ingestor.error = CliAnalyticsStorageConfigError("CLI_ANALYTICS_PG_URL is not a PostgreSQL URL")
+
+        resp = client.post(path, content=body, headers={"Content-Type": content_type})
+
+        assert resp.status_code == 503
+        assert resp.json()["detail"] == "Analytics storage is not available"
 
 
 # ---------------------------------------------------------------------------
@@ -926,7 +489,7 @@ class TestParseNdjson:
         assert _parse_ndjson(b"") == []
 
     def test_skips_lines_that_are_not_objects(self):
-        # Only an object is a hook event; the ClickHouse path would fail on anything else.
+        # Only an object is a hook event; anything else would fail.
         body = b'[1, 2]\n"text"\n5\nnull\n{"a": 1}'
         assert _parse_ndjson(body) == [{"a": 1}]
 
@@ -938,89 +501,3 @@ class TestParseNdjson:
         # json.loads raises a plain ValueError past 4,300 digits; the batch must not fail with a 500.
         body = b'{"n": ' + b"9" * 5000 + b'}\n{"a": 1}'
         assert _parse_ndjson(body) == [{"a": 1}]
-
-
-class TestEventToLogRecord:
-    def _attrs(self, record: dict) -> dict:
-        return {a["key"]: a["value"]["stringValue"] for a in record["attributes"]}
-
-    def test_maps_type_to_event_type_attribute(self):
-        record = _event_to_log_record({"type": "agent.session.start"}, 0)
-        assert self._attrs(record)["event_type"] == "agent.session.start"
-
-    def test_info_severity_default(self):
-        record = _event_to_log_record({"type": "agent.session.start"}, 0)
-        assert record["severityText"] == "INFO"
-        assert record["severityNumber"] == 9
-
-    def test_error_severity_for_tool_error(self):
-        record = _event_to_log_record({"type": "agent.tool.error"}, 0)
-        assert record["severityText"] == "ERROR"
-        assert record["severityNumber"] == 17
-
-    def test_uses_now_ns_when_no_timestamp(self):
-        record = _event_to_log_record({}, 999_000_000_000)
-        assert record["timeUnixNano"] == "999000000000"
-
-    def test_parses_iso8601_timestamp(self):
-        record = _event_to_log_record({"timestamp": "2026-07-23T10:00:00.000Z"}, 0)
-        ts = int(record["timeUnixNano"])
-        assert ts > 0
-
-    def test_invalid_timestamp_falls_back_to_now_ns(self):
-        record = _event_to_log_record({"timestamp": "bad"}, 42)
-        assert record["timeUnixNano"] == "42"
-
-    def test_cwd_passed_through_unchanged_unit(self):
-        """cwd is not modified at ingest; the plugin normalises it before sending."""
-        record = _event_to_log_record({"cwd": "epm-cdme/codemie-ui"}, 0)
-        assert self._attrs(record)["cwd"] == "epm-cdme/codemie-ui"
-
-    def test_cwd_group_slash_repo_preserved(self):
-        record = _event_to_log_record({"cwd": "my-group/my-repo"}, 0)
-        assert self._attrs(record)["cwd"] == "my-group/my-repo"
-
-    def test_none_fields_default_to_empty_string(self):
-        record = _event_to_log_record({}, 0)
-        attrs = self._attrs(record)
-        for key in ("session_id", "developer_name", "cwd", "git_branch", "tool_name"):
-            assert attrs[key] == "", f"expected empty string for {key}"
-
-    def test_observed_time_unix_nano_equals_now_ns(self):
-        record = _event_to_log_record({"timestamp": "2026-07-23T10:00:00.000Z"}, 999_000_000_000)
-        assert record["observedTimeUnixNano"] == "999000000000"
-
-    def test_observed_time_unix_nano_present_when_no_timestamp(self):
-        record = _event_to_log_record({}, 42)
-        assert "observedTimeUnixNano" in record
-        assert record["observedTimeUnixNano"] == "42"
-
-    def test_dict_tool_input_serialized_as_json_string(self):
-        tool_input = {"command": "git status", "cwd": "/repo"}
-        record = _event_to_log_record({"type": "agent.tool.start", "tool_input": tool_input}, 0)
-        raw = self._attrs(record)["tool_input"]
-        assert json.loads(raw) == tool_input
-
-    def test_list_tool_output_serialized_as_json_string(self):
-        tool_output = ["line1", "line2"]
-        record = _event_to_log_record({"tool_output": tool_output}, 0)
-        raw = self._attrs(record)["tool_output"]
-        assert json.loads(raw) == tool_output
-
-
-class TestBuildOtlpLogsPayload:
-    def test_produces_valid_json(self):
-        records = [_event_to_log_record({"type": "agent.session.start"}, 0)]
-        payload = _build_otlp_logs_payload(records)
-        parsed = json.loads(payload)
-        assert "resourceLogs" in parsed
-
-    def test_service_name_in_resource_attributes(self):
-        payload = json.loads(_build_otlp_logs_payload([]))
-        attrs = {a["key"]: a["value"]["stringValue"] for a in payload["resourceLogs"][0]["resource"]["attributes"]}
-        assert attrs["service.name"] == "codemie-agent-hooks"
-
-    def test_records_in_scope_logs(self):
-        records = [_event_to_log_record({"type": "agent.session.start"}, 0)] * 3
-        payload = json.loads(_build_otlp_logs_payload(records))
-        assert len(payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]) == 3

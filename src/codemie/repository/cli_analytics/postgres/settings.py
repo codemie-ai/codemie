@@ -329,6 +329,7 @@ class AnalyticsPgSettings:
     partition_premake_weeks: int
     maintenance_interval_minutes: int
     ingest_statement_timeout_ms: int = 10_000
+    session_retention_days: int = 0  # 0: the session tables are not purged by age
     migration_dsn: str = field(default="", repr=False)  # libpq's, for the migrations; `dsn` when empty
 
     @classmethod
@@ -350,6 +351,13 @@ class AnalyticsPgSettings:
             raise CliAnalyticsStorageConfigError(
                 "AWS IAM authentication needs a network host and a user in the analytics database URL"
             )
+        # Refused here, not by the Config validator: a bad value must answer 503, not stop the application.
+        session_days = cfg.CLI_ANALYTICS_SESSION_RETENTION_DAYS
+        if 0 < session_days < cfg.CLI_ANALYTICS_RAW_RETENTION_DAYS:
+            raise CliAnalyticsStorageConfigError(
+                "CLI_ANALYTICS_SESSION_RETENTION_DAYS must be 0 or at least CLI_ANALYTICS_RAW_RETENTION_DAYS "
+                f"({cfg.CLI_ANALYTICS_RAW_RETENTION_DAYS}), got {session_days}"
+            )
         return cls(
             dsn=target.url(target.asyncpg_params),
             migration_dsn=target.url(target.libpq_params),
@@ -367,6 +375,7 @@ class AnalyticsPgSettings:
             partition_premake_weeks=cfg.CLI_ANALYTICS_PARTITION_PREMAKE_WEEKS,
             maintenance_interval_minutes=cfg.CLI_ANALYTICS_MAINTENANCE_INTERVAL_MINUTES,
             ingest_statement_timeout_ms=cfg.CLI_ANALYTICS_PG_INGEST_STATEMENT_TIMEOUT_MS,
+            session_retention_days=session_days,
         )
 
     @staticmethod

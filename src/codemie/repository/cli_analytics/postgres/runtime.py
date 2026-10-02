@@ -88,19 +88,27 @@ class PostgresAnalyticsRuntime:
         self._engine = engine
         self._settings = settings
         self._migrate = migrate
-        # A refresh may run longer than its interval when it has catching up to do, but
-        # never much longer, so the leader lock is handed back regularly.
-        self._refresher = RollupRefresher(
-            engine,
-            batch_size=settings.rollup_batch_size,
-            max_run_seconds=max(60.0, 4 * settings.rollup_refresh_seconds),
-            raw_retention_days=settings.raw_retention_days,
-        )
+        self._refresher = self._build_refresher(classify=None)
         self._maintainer = PartitionMaintainer(engine, RetentionPolicy.from_settings(settings))
         self._schema_ready = False
         self._partitions_ready = False  # every DEFAULT partition exists, so ingest has a target
         self._schema_lock = asyncio.Lock()
         self._last_stale_warning: float | None = None
+
+    def _build_refresher(self, classify: Callable[[list[str]], str] | None) -> RollupRefresher:
+        # A refresh may run longer than its interval when it has catching up to do, but
+        # never much longer, so the leader lock is handed back regularly.
+        return RollupRefresher(
+            self._engine,
+            batch_size=self._settings.rollup_batch_size,
+            max_run_seconds=max(60.0, 4 * self._settings.rollup_refresh_seconds),
+            raw_retention_days=self._settings.raw_retention_days,
+            classify=classify,
+        )
+
+    def set_classifier(self, classify: Callable[[list[str]], str] | None) -> None:
+        """Hand the refresher the delivery-framework classifier; called before the jobs start."""
+        self._refresher = self._build_refresher(classify)
 
     async def start(self) -> None:
         """Bring the schema up to date and create the partitions ingest needs; never raises."""

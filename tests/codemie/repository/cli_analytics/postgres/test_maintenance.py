@@ -150,19 +150,35 @@ class RecordingConnection:
 
     def __init__(self, today: date = TODAY) -> None:
         self.statements: list[str] = []
+        self.args: list[tuple[str, tuple[object, ...]]] = []  # (statement, bind arguments) of every execute
+        self.transactions: list[list[str]] = []  # the statements of each transaction, in order
+        self._open: list[str] | None = None
         self.today = today
 
     async def execute(self, sql, *args, timeout=None):
-        self.statements.append(" ".join(sql.split()))
+        statement = " ".join(sql.split())
+        self.statements.append(statement)
+        self.args.append((statement, args))
+        if self._open is not None:
+            self._open.append(statement)
         return "DELETE 0"
 
     async def fetchval(self, sql, *args, timeout=None):
-        self.statements.append(" ".join(sql.split()))
+        statement = " ".join(sql.split())
+        self.statements.append(statement)
+        self.args.append((statement, args))
+        if self._open is not None:
+            self._open.append(statement)
         return self.today if "now()" in sql else 0
 
     @asynccontextmanager
     async def _tx(self):
-        yield
+        self._open = []
+        self.transactions.append(self._open)
+        try:
+            yield
+        finally:
+            self._open = None
 
     def transaction(self):
         return self._tx()
@@ -234,6 +250,11 @@ class FailingConnection(RecordingConnection):
             raise self.error
         return await super().execute(sql, *args, timeout=timeout)
 
+    async def fetchval(self, sql: str, *args: object, timeout: float | None = None) -> object:
+        if self.needle in sql:
+            raise self.error
+        return await super().fetchval(sql, *args, timeout=timeout)
+
     async def fetch(self, sql, *args):
         return []
 
@@ -299,15 +320,14 @@ async def test_an_expired_partition_that_cannot_be_dropped_does_not_keep_the_lat
 @pytest.mark.parametrize("error", [SERVER_TIMEOUT, TimeoutError()], ids=["server-side", "client-side"])
 @pytest.mark.asyncio
 async def test_a_purge_that_fails_does_not_stop_the_others(error):
-    conn = FailingConnection("DELETE FROM session_dims", error)
+    conn = FailingConnection("DELETE FROM session_skills", error)
 
     with patch.object(maintenance, "logger"):
         report = await PartitionMaintainer(MagicMock(), POLICY, clock=lambda: TODAY).run(conn)  # type: ignore[arg-type]
 
     purges = [sql for sql in conn.statements if sql.startswith("DELETE FROM")]
-    assert any(sql.startswith("DELETE FROM session_skills") for sql in purges)
     assert any(sql.startswith("DELETE FROM session_attributes") for sql in purges)
-    assert "session_dims" in " ".join(report.failed)
+    assert "session_skills" in " ".join(report.failed)
 
 
 class PoolTimeoutConnection(RecordingConnection):
@@ -329,6 +349,153 @@ class PoolTimeoutConnection(RecordingConnection):
     async def fetchval(self, sql, *args, timeout=None):
         self._run(sql, timeout)
         return await super().fetchval(sql, *args, timeout=timeout)
+
+
+SESSION_TABLES = ("session_usage", "session_usage_hourly", "subagent_invocations", "session_dims")
+
+
+def _deletes_from(conn: RecordingConnection, table: str) -> list[str]:
+    return [sql for sql in conn.statements if sql.startswith(f"DELETE FROM {table} ")]
+
+
+@pytest.mark.asyncio
+async def test_purge_plan_at_zero_leaves_session_tables() -> None:
+    conn = RecordingConnection()
+
+    await PartitionMaintainer(MagicMock(), POLICY, clock=lambda: TODAY)._purge_expired_rows(
+        conn,
+        TODAY,
+        maintenance.MaintenanceReport(),  # type: ignore[arg-type]
+    )
+
+    for table in SESSION_TABLES:
+        assert _deletes_from(conn, table) == []
+    assert len(_deletes_from(conn, "session_skills")) == 1
+
+
+SESSION_POLICY = RetentionPolicy(raw_days=90, rollup_days=365, dedup_days=14, premake_weeks=4, session_days=180)
+# The first midnight UTC after today, from the cutoff ($1 = today - 180 days): 180 + 1 days later.
+TOMORROW = "(($1::date + 181)::timestamp AT TIME ZONE 'UTC')"
+CUTOFF = "($1::date::timestamp AT TIME ZONE 'UTC')"
+
+
+def _whole_session_purges(conn: RecordingConnection) -> list[str]:
+    return [sql for sql in conn.statements if sql.startswith("WITH idle AS (DELETE FROM session_dims ")]
+
+
+async def _purge_with_session_retention(conn: RecordingConnection) -> maintenance.MaintenanceReport:
+    report = maintenance.MaintenanceReport()
+    await PartitionMaintainer(MagicMock(), SESSION_POLICY, clock=lambda: TODAY)._purge_expired_rows(conn, TODAY, report)  # type: ignore[arg-type]
+    return report
+
+
+@pytest.mark.asyncio
+async def test_purge_plan_above_zero_deletes_whole_sessions_then_orphans() -> None:
+    conn = RecordingConnection()
+
+    await _purge_with_session_retention(conn)
+
+    (whole,) = _whole_session_purges(conn)
+    orphans = [sql for sql in conn.statements if sql.startswith("DELETE FROM") and "NOT EXISTS" in sql]
+    assert [sql.split()[2] for sql in orphans] == ["session_usage", "session_usage_hourly", "subagent_invocations"]
+    assert all(conn.statements.index(o) > conn.statements.index(whole) for o in orphans)
+    for table in SESSION_TABLES:  # no other statement deletes by session age, none by rollup retention
+        assert [sql for sql in _deletes_from(conn, table) if "NOT EXISTS" not in sql] == []
+
+
+@pytest.mark.asyncio
+async def test_a_whole_session_purge_decides_the_idle_sessions_once() -> None:
+    # One statement: session_dims decides which sessions are idle, and the other three tables lose
+    # exactly the sessions it returned. With one DELETE per table, each with its own idle test, a session
+    # the refresher touches in between lost its usage rows and kept its session_dims row.
+    conn = RecordingConnection()
+
+    await _purge_with_session_retention(conn)
+
+    (whole,) = _whole_session_purges(conn)
+    assert whole.count("updated_at") == 1  # the idle test is written once
+    assert whole.startswith("WITH idle AS (DELETE FROM session_dims WHERE coalesce(greatest(")
+    assert f"updated_at) < {CUTOFF} RETURNING session_id), " in whole
+    for table in maintenance._SESSION_CHILDREN:
+        assert (
+            f"{table}_purged AS (DELETE FROM {table} WHERE session_id IN (SELECT session_id FROM idle) RETURNING 1)"
+            in whole
+        ), table
+    # its answer is the number of rows deleted from the four tables
+    assert whole.endswith(
+        "SELECT (SELECT count(*) FROM idle) + (SELECT count(*) FROM session_usage_purged) + "
+        "(SELECT count(*) FROM session_usage_hourly_purged) + (SELECT count(*) FROM subagent_invocations_purged)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_rows_a_whole_session_purge_deletes_are_counted() -> None:
+    class Counting(RecordingConnection):
+        async def fetchval(self, sql: str, *args: object, timeout: float | None = None) -> int:
+            await super().fetchval(sql, *args, timeout=timeout)
+            return 7
+
+    report = await _purge_with_session_retention(Counting())
+
+    assert report.purged_rows == 7  # every plain DELETE of the fake answers "DELETE 0"
+
+
+@pytest.mark.asyncio
+async def test_a_client_time_after_today_does_not_keep_a_session_or_an_orphan() -> None:
+    # last_event_at, ended_at and a subagent's dates come from the client. A clock error (or intent)
+    # that dates one in the future would keep the rows past their retention for ever, so such a time is
+    # ignored: the other time decides, and for a session with neither, updated_at.
+    conn = RecordingConnection()
+
+    await _purge_with_session_retention(conn)
+
+    def past(column: str) -> str:
+        return f"CASE WHEN {column} < {TOMORROW} THEN {column} END"
+
+    (whole,) = _whole_session_purges(conn)
+    assert f"coalesce(greatest({past('last_event_at')}, {past('ended_at')}), updated_at) < {CUTOFF}" in whole
+    subagents = next(sql for sql in conn.statements if sql.startswith("DELETE FROM subagent_invocations "))
+    # Own date of a subagent row: its end, else its start; neither (or both in the future): NULL, kept.
+    assert f"coalesce({past('ended_at')}, {past('started_at')}) < {CUTOFF}" in subagents
+    assert "now()" not in whole + subagents  # the maintainer's clock decides, as for every cutoff
+
+
+@pytest.mark.asyncio
+async def test_session_purges_are_bound_to_the_session_cutoff_and_share_one_transaction() -> None:
+    conn = RecordingConnection()
+    session_cutoff = date(2026, 3, 27)  # 180 days before 2026-09-23: 23 + 31 + 31 + 30 + 31 + 30 + 4 (Mar 27 to Mar 31)
+
+    await _purge_with_session_retention(conn)
+
+    assert TODAY - timedelta(days=180) == session_cutoff
+    session_purges = [
+        (sql, args)
+        for sql, args in conn.args
+        if sql.startswith("WITH idle AS") or (sql.startswith("DELETE FROM") and sql.split()[2] in SESSION_TABLES)
+    ]
+    assert len(session_purges) == 4  # whole sessions: one statement; orphans: 3 tables
+    assert all(args == (session_cutoff,) for _, args in session_purges)  # neither the raw nor the rollup cutoff
+    assert all(CUTOFF in sql or "day < $1::date" in sql for sql, _ in session_purges)
+    whole = [tx for tx in conn.transactions if any(s.startswith("WITH idle AS") for s in tx)]
+    assert len(whole) == 1 and len(whole[0]) == 2  # the raised statement timeout, then the one statement
+
+
+@pytest.mark.asyncio
+async def test_a_failing_session_purge_is_reported_and_does_not_stop_the_others() -> None:
+    conn = FailingConnection("WITH idle AS (DELETE FROM session_dims", SERVER_TIMEOUT)
+    report = maintenance.MaintenanceReport()
+
+    with patch.object(maintenance, "logger"):
+        await PartitionMaintainer(MagicMock(), SESSION_POLICY, clock=lambda: TODAY)._purge_expired_rows(
+            conn,  # type: ignore[arg-type]
+            TODAY,
+            report,
+        )
+
+    assert "purge sessions" in report.failed
+    assert _whole_session_purges(conn) == []
+    assert any(sql.startswith("DELETE FROM session_attributes") for sql in conn.statements)
+    assert len([sql for sql in conn.statements if "NOT EXISTS" in sql]) == 3  # the orphans still run
 
 
 @pytest.mark.asyncio
@@ -356,3 +523,9 @@ async def test_a_step_cut_short_on_the_client_side_does_not_stop_the_others():
 
     steps["_count_default_rows"].assert_awaited_once()
     assert report.failed == ["_purge_expired_rows"]
+
+
+def test_usage_requests_is_a_raw_table_partitioned_on_ts() -> None:
+    assert "usage_requests" in RAW_TABLES
+    assert maintenance.PARTITION_KEY["usage_requests"] == "ts"
+    assert "usage_requests" in maintenance.PARTITIONED_TABLES

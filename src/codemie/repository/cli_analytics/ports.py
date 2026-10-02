@@ -17,8 +17,8 @@
 Reader row contract, identical for every adapter because `LocalAnalyticsHandler` and the
 response models are shared: timestamps are naive UTC `datetime`, days are `date`, counts
 are `int`, money is `float`, arrays are `list[str]`, and a missing string is `''` or
-`None` exactly where ClickHouse returns one. Rows are plain dicts keyed by the column
-aliases each method documents in the ClickHouse adapter.
+`None` exactly where the adapter documents one. Rows are plain dicts keyed by the column
+aliases each method documents in the adapter.
 """
 
 from __future__ import annotations
@@ -52,6 +52,11 @@ class CliAnalyticsRuntime(Protocol):
 
     def jobs(self) -> list[ScheduledJob]: ...
 
+    def set_classifier(self, classify: Callable[[list[str]], str] | None) -> None:
+        """Hand in the delivery-framework classifier (skill names -> label) the adapter's background work
+        uses. It belongs to the service layer, so an adapter never imports it. Called before `start`."""
+        ...
+
     async def aclose(self) -> None: ...
 
 
@@ -60,7 +65,7 @@ class IngestResult:
     """What the ingest endpoint answers once the telemetry is accepted.
 
     `accepted` is the number of records newly stored, or None when the adapter cannot
-    tell (the ClickHouse adapter hands the body to the OTel Collector).
+    tell.
     """
 
     body: bytes = b""
@@ -89,10 +94,6 @@ class UnsupportedTelemetryContentTypeError(TelemetryIngestError):
 
 class TelemetryStorageUnavailableError(TelemetryIngestError):
     """Storage is temporarily unavailable or saturated; the client should retry later."""
-
-
-class TelemetryUpstreamConfigurationError(TelemetryIngestError):
-    """The upstream collector rejected the request, which points to a misconfiguration."""
 
 
 @runtime_checkable

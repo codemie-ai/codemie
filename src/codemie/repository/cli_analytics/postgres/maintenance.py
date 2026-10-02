@@ -16,7 +16,7 @@
 
 Raw tables are partitioned by week, daily rollups and the hourly rollup by month, the
 idempotency ledger by day. Retention drops whole partitions (no DELETE, no vacuum debt),
-which is what ClickHouse's TTLs do row by row. Partitions are created ahead of time; each
+instead of expiring row by row. Partitions are created ahead of time; each
 table also has a DEFAULT partition as a safety net for records outside every planned
 range (a laptop clock far off, a spool delivered months late). When a planned partition's
 range already has rows in DEFAULT, they are moved into the new partition.
@@ -39,7 +39,7 @@ from codemie.repository.cli_analytics.postgres.settings import AnalyticsPgSettin
 
 logger = logging.getLogger(__name__)
 
-RAW_TABLES: tuple[str, ...] = ("log_events", "hook_events", "spans", "metric_points")
+RAW_TABLES: tuple[str, ...] = ("log_events", "hook_events", "spans", "metric_points", "usage_requests")
 ROLLUP_TABLES: tuple[str, ...] = (
     "cost_daily",
     "lines_daily",
@@ -70,6 +70,9 @@ _REWRITTEN = frozenset({*ROLLUP_TABLES, HOURLY_TABLE})
 DDL_LOCK_TIMEOUT_MS = 2000
 
 
+_SESSION_CHILDREN = ("session_usage", "session_usage_hourly", "subagent_invocations")
+
+
 def quote_ident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
@@ -92,6 +95,7 @@ class RetentionPolicy:
     rollup_days: int
     dedup_days: int
     premake_weeks: int
+    session_days: int = 0  # 0: the session tables are not purged by age
 
     @classmethod
     def from_settings(cls, settings: AnalyticsPgSettings) -> RetentionPolicy:
@@ -100,6 +104,7 @@ class RetentionPolicy:
             rollup_days=settings.rollup_retention_days,
             dedup_days=settings.dedup_retention_days,
             premake_weeks=settings.partition_premake_weeks,
+            session_days=settings.session_retention_days,
         )
 
     def retention_days(self, table: str) -> int:
@@ -361,7 +366,7 @@ class PartitionMaintainer:
     async def _purge_expired_rows(self, conn: asyncpg.Connection, today: date, report: MaintenanceReport) -> None:
         """Rows retention cannot drop with a partition: DEFAULT partitions and per-session tables."""
         utc_midnight = "($1::date::timestamp AT TIME ZONE 'UTC')"
-        statements: list[tuple[str, str, date]] = []  # (what, statement, cutoff)
+        statements: list[tuple[str, list[str], date]] = []  # (what, statements of one transaction, cutoff)
         for table in PARTITIONED_TABLES:
             cutoff = today - timedelta(days=self._policy.retention_days(table))
             if table == LEDGER_TABLE:
@@ -372,30 +377,87 @@ class PartitionMaintainer:
                 key = quote_ident(PARTITION_KEY[table])
                 condition = f"{key} < {utc_midnight if table in _TIMESTAMP_KEYED else '$1::date'}"
             default = default_partition_name(table)
-            statements.append((default, f"DELETE FROM {quote_ident(default)} WHERE {condition}", cutoff))
+            statements.append((default, [f"DELETE FROM {quote_ident(default)} WHERE {condition}"], cutoff))
         rollup_cutoff = today - timedelta(days=self._policy.rollup_days)
         raw_cutoff = today - timedelta(days=self._policy.raw_days)
         statements += [
-            (
-                "session_dims",
-                f"DELETE FROM session_dims WHERE coalesce(last_event_at, updated_at) < {utc_midnight}",
-                rollup_cutoff,
-            ),
-            ("session_skills", f"DELETE FROM session_skills WHERE updated_at < {utc_midnight}", rollup_cutoff),
-            ("session_attributes", f"DELETE FROM session_attributes WHERE updated_at < {utc_midnight}", raw_cutoff),
+            ("session_skills", [f"DELETE FROM session_skills WHERE updated_at < {utc_midnight}"], rollup_cutoff),
+            ("session_attributes", [f"DELETE FROM session_attributes WHERE updated_at < {utc_midnight}"], raw_cutoff),
             # Only raw rows reference a resource, and they are gone after the raw retention.
-            ("otel_resources", f"DELETE FROM otel_resources WHERE last_seen < {utc_midnight}", raw_cutoff),
+            ("otel_resources", [f"DELETE FROM otel_resources WHERE last_seen < {utc_midnight}"], raw_cutoff),
         ]
-        for what, sql, cutoff in statements:
+        if self._policy.session_days:
+            session_cutoff = today - timedelta(days=self._policy.session_days)
+            # The first midnight UTC after today, from the cutoff the statements are given.
+            tomorrow = f"(($1::date + {int(self._policy.session_days) + 1})::timestamp AT TIME ZONE 'UTC')"
+            statements += [
+                ("sessions", [self._session_purge(utc_midnight, tomorrow)], session_cutoff),
+                ("session orphans", self._orphan_purge(utc_midnight, tomorrow), session_cutoff),
+            ]
+        for what, sqls, cutoff in statements:
+            deleted = 0
             try:
                 async with conn.transaction():
                     await conn.execute(_RAISED_STATEMENT_TIMEOUT, timeout=_RAISED_CLIENT_TIMEOUT_S)
-                    status = await conn.execute(sql, cutoff, timeout=_RAISED_CLIENT_TIMEOUT_S)
+                    for sql in sqls:
+                        deleted += await self._purge(conn, sql, cutoff)
             except _ISOLATED_FAILURES as exc:
                 report.failed.append(f"purge {what}")
                 logger.error(f"cli_analytics: purging expired rows of {what} failed: {exc!r}")
                 continue
-            report.purged_rows += int(status.rsplit(" ", 1)[-1])
+            report.purged_rows += deleted
+
+    @staticmethod
+    async def _purge(conn: asyncpg.Connection, sql: str, cutoff: date) -> int:
+        """How many rows one purge statement deleted. A statement over several tables (WITH) returns
+        its own count; the status of a plain DELETE carries it."""
+        if sql.startswith("WITH "):
+            return int(await conn.fetchval(sql, cutoff, timeout=_RAISED_CLIENT_TIMEOUT_S))
+        status = await conn.execute(sql, cutoff, timeout=_RAISED_CLIENT_TIMEOUT_S)
+        return int(status.rsplit(" ", 1)[-1])
+
+    @staticmethod
+    def _past(column: str, tomorrow: str) -> str:
+        """`column` unless it lies after today: the time comes from the client, and one in the future
+        is a clock error, which must not keep a row past its retention."""
+        return f"CASE WHEN {column} < {tomorrow} THEN {column} END"
+
+    @classmethod
+    def _session_purge(cls, utc_midnight: str, tomorrow: str) -> str:
+        """Whole idle sessions in one statement, which returns how many rows it deleted.
+
+        The delete from session_dims decides once which sessions are idle: a row another transaction
+        changes meanwhile is tested again on its new version and kept when it is no longer idle. The
+        other tables lose the sessions that delete returned and no other, so a session never keeps
+        its session_dims row without the rest.
+        """
+        last_activity = f"greatest({cls._past('last_event_at', tomorrow)}, {cls._past('ended_at', tomorrow)})"
+        children = [
+            f"{t}_purged AS (DELETE FROM {t} WHERE session_id IN (SELECT session_id FROM idle) RETURNING 1)"
+            for t in _SESSION_CHILDREN
+        ]
+        counts = ["(SELECT count(*) FROM idle)", *(f"(SELECT count(*) FROM {t}_purged)" for t in _SESSION_CHILDREN)]
+        return (
+            f"WITH idle AS (DELETE FROM session_dims WHERE coalesce({last_activity}, updated_at) < {utc_midnight} "
+            f"RETURNING session_id), {', '.join(children)} SELECT {' + '.join(counts)}"
+        )
+
+    @classmethod
+    def _orphan_purge(cls, utc_midnight: str, tomorrow: str) -> list[str]:
+        """Rows of sessions with no session_dims row, by their own date. A subagent's date is its
+        end, else its start, neither believed when it lies after today; a subagent row with no such
+        date is kept."""
+        subagent_date = f"coalesce({cls._past('ended_at', tomorrow)}, {cls._past('started_at', tomorrow)})"
+        own_date = {
+            "session_usage": "day < $1::date",
+            "session_usage_hourly": f"hour < {utc_midnight}",
+            "subagent_invocations": f"{subagent_date} < {utc_midnight}",
+        }
+        return [
+            f"DELETE FROM {t} WHERE {own_date[t]} AND NOT EXISTS (SELECT 1 FROM session_dims d "
+            f"WHERE d.session_id = {t}.session_id)"
+            for t in _SESSION_CHILDREN
+        ]
 
     async def _count_default_rows(self, conn: asyncpg.Connection, report: MaintenanceReport) -> None:
         for table in PARTITIONED_TABLES:

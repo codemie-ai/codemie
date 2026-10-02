@@ -261,3 +261,20 @@ async def test_close_releases_the_pool():
     await runtime.aclose()
 
     engine.close.assert_awaited_once()
+
+
+def test_runtime_hands_its_classifier_to_the_refresher() -> None:
+    # The service layer hands classify_delivery_framework in before the jobs start: the
+    # repository layer never imports it. The refresher then builds delivery_framework with it.
+    def classify(skill_names: list[str]) -> str:
+        return "Pure chat"
+
+    with patch.object(runtime_module, "RollupRefresher") as refresher_type:
+        runtime = PostgresAnalyticsRuntime(LockingEngine(), SETTINGS, migrate=MagicMock())  # type: ignore[arg-type]
+        assert refresher_type.call_args.kwargs["classify"] is None
+
+        runtime.set_classifier(classify)
+
+    assert refresher_type.call_args.kwargs["classify"] is classify
+    assert runtime._refresher is refresher_type.return_value
+    assert refresher_type.call_args.kwargs["raw_retention_days"] == SETTINGS.raw_retention_days

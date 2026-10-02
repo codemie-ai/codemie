@@ -243,7 +243,6 @@ def test_main_runs_the_backfill_and_closes_the_pool():
     run = AsyncMock(return_value=backfill.BackfillResult(reclassified=3, queued=7, rebuilt=0))
 
     with (
-        patch.object(backfill.config, "CLI_ANALYTICS_STORAGE_BACKEND", "postgres"),
         patch.object(backfill.AnalyticsPgSettings, "from_config", return_value=SETTINGS),
         patch.object(backfill, "AnalyticsPgEngine", return_value=engine),
         patch.object(backfill, "backfill", run),
@@ -259,16 +258,15 @@ def test_main_runs_the_backfill_and_closes_the_pool():
 
 
 @pytest.mark.parametrize(
-    ("argv", "backend"),
+    "argv",
     [
-        (["--from", "2026-09-23", "--to", "2026-09-01"], "postgres"),  # an empty range
-        (["--from", "2026-09-01"], "postgres"),
-        (["--from", "yesterday", "--to", "2026-09-01"], "postgres"),
-        (["--from", "2026-09-01", "--to", "2026-09-23"], "clickhouse"),  # ClickHouse has no rollup queue
+        ["--from", "2026-09-23", "--to", "2026-09-01"],  # an empty range
+        ["--from", "2026-09-01"],
+        ["--from", "yesterday", "--to", "2026-09-01"],
     ],
 )
-def test_main_refuses_what_it_cannot_do(argv, backend):
-    with patch.object(backfill.config, "CLI_ANALYTICS_STORAGE_BACKEND", backend), pytest.raises(SystemExit) as exit_:
+def test_main_refuses_what_it_cannot_do(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as exit_:
         backfill.main(argv)
 
     assert exit_.value.code == 2

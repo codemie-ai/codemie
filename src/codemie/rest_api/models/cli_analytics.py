@@ -25,6 +25,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 _ISO8601 = "ISO 8601 datetime string"
+_SAME_AS_DEVELOPER_NAME = "Same value as developer_name"
 
 
 # ── Envelope ──────────────────────────────────────────────────────────────────
@@ -134,6 +135,7 @@ class LocalAnalyticsDailyActivityBucket(BaseModel):
 
 class LocalAnalyticsUserRow(BaseModel):
     developer_name: str = Field(..., description="Resolved user email")
+    user_email: str = Field("", description=_SAME_AS_DEVELOPER_NAME)
     session_count: int
     input_tokens: int
     output_tokens: int
@@ -167,6 +169,7 @@ class LocalAnalyticsUsersResponse(BaseModel):
 class LocalAnalyticsSessionRow(BaseModel):
     trace_id: str
     developer_name: str
+    user_email: str = Field("", description=_SAME_AS_DEVELOPER_NAME)
     repository: str | None = Field(
         None, description="Repository cwd at session start. None when the analytics plugin was not active."
     )
@@ -278,6 +281,7 @@ class LocalAnalyticsCostKPIs(BaseModel):
 
 class LocalAnalyticsCostByUserRow(BaseModel):
     developer_name: str
+    user_email: str = Field("", description=_SAME_AS_DEVELOPER_NAME)
     cost_usd: float
 
 

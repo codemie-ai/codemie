@@ -103,10 +103,7 @@ docker compose up --build codemie postgres elasticsearch
 
 **API Docs**: http://localhost:8080/docs
 
-#### Core stack + local analytics pipeline (ClickHouse + OTel Collector):
-```bash
-docker compose up --build codemie postgres elasticsearch clickhouse otelcollector
-```
+CLI analytics (OTel) data is stored in the same PostgreSQL and ingested by the API itself, so the core stack above is all it needs; no extra services or `.env` keys are required.
 
 ### Running Locally 🐍
 

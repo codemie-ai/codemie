@@ -30,6 +30,7 @@ import argparse
 import asyncio
 import getpass
 import logging
+from collections.abc import Callable
 from datetime import date, timedelta
 from typing import NamedTuple
 
@@ -89,12 +90,20 @@ async def reclassify(conn: asyncpg.Connection, first_day: date, last_day: date) 
 
 
 async def backfill(
-    engine: AnalyticsPgEngine, settings: AnalyticsPgSettings, first_day: date, last_day: date, now: bool
+    engine: AnalyticsPgEngine,
+    settings: AnalyticsPgSettings,
+    first_day: date,
+    last_day: date,
+    now: bool,
+    classify: Callable[[list[str]], str] | None = None,
 ) -> BackfillResult:
+    """`classify` is the delivery-framework classifier of the service layer. The command line has none:
+    a rebuild with --now does not write session_dims.delivery_framework, the refresh job does."""
     refresher = RollupRefresher(
         engine,
         batch_size=settings.rollup_batch_size,
         raw_retention_days=settings.raw_retention_days,
+        classify=classify,
     )
     async with engine.acquire() as conn:
         reclassified = await reclassify(conn, first_day, last_day)
@@ -133,8 +142,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.last_day < args.first_day:
         parser.error("--to is before --from")
-    if config.CLI_ANALYTICS_STORAGE_BACKEND != "postgres":
-        parser.error("CLI_ANALYTICS_STORAGE_BACKEND is not postgres: ClickHouse keeps no rollup queue")
 
     settings = AnalyticsPgSettings.from_config(config)
 
