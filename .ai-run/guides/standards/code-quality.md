@@ -32,3 +32,15 @@ Source files use the Apache 2.0 header checker.
 | Editing generated/external files just to satisfy style | Check the owning guide or existing ignore first |
 
 Evidence: Makefile license targets are defined at `Makefile:41`.
+
+## Module Cohesion
+
+Code goes into the module that owns its concern. A new concern does not go into an existing file just because the file is nearby.
+
+| Avoid | Prefer |
+|---|---|
+| Appending a new concern (its own constants, pure functions and tests) to an existing module | A new module next to the code that uses it, imported by the existing one |
+| Adding to a file of about 500 lines or more when the change is not that file's core responsibility | Extract the new piece first, then wire it in |
+| Adding code where the piece cannot be named | Name the piece in one noun; if it has a name, it is a module |
+
+Evidence: the workspace script bridge added timeout handling, channel lifecycle and limit clamping to large service and runner modules, and each was later moved into its own module without changing behavior (`workspace_script_bridge.py`, `job_bridge.py`, `tool_calling_limits.py`).

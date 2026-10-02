@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "task": "EPMCDME-15401: add a bridge channel (injected stdlib-only SDK, side thread with own exec calls, per-run exchange folder, echo handler) so a script on a pooled sandbox pod can call the backend during a run, with env-wide switch, 120 s tool-calling limit, timeout process kill, folder cleanup/sweep and import-allowlist tests.",
+  "generated": "2026-09-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 23,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Four or more components in one repo with a new abstraction: WorkspaceScriptRunner, CodeExecutorTool._execute_code_sandbox (per-pod lock, timeout), sandbox_guard wrapper builder (SDK injection), CodeExecutorConfig (switch and limit), new SDK/constants folder, new side-channel and exchange-folder helper, plus a per-run opt-in carrier through AgentWorkspaceService." },
+    { "dimension": "technical_risk", "reason": "Closest pattern is the manual minikube spike plus the guard-wrapper subprocess tests; there is no production precedent for a concurrent side channel over separate k8s exec calls. Unverified: stopping the script's process in a shared pod without hitting other conversations, running the injected SDK under the audit-hook guard, 120 s runs against the 300 s session TTL and the per-pod lock. Security-sensitive: the existing guard does not cover exchange-data isolation, so this gap is a divergence and adds to the score, and sandbox enforcement must not be weakened. Enumerated edge cases (size cap, concurrent runs, timeout, interruption) have no existing defensive test template (no import-allowlist, clean-interpreter or k8s exec fake). Held at XL because the spike reduces true novelty." },
+    { "dimension": "file_change_estimate", "reason": "About 5-7 modified files (runner, code_executor_tool, sandbox_guard, models, README, agent_workspace_service, possibly toolkit) and 3-5 new source files (SDK, constants, channel/exchange helper, cleanup) plus 4-6 new test files, across src/codemie_tools and src/codemie and tests: new-file count lands in XL." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk raised for security-sensitive work: exchange-data isolation between concurrent runs and the shared pod, with the sandbox guard required to stay unchanged.",
+    "Technical Risk raised for the auto-bump: the security-sensitive aspect is not covered by the closest existing pattern, and the enumerated edge cases have no test template.",
+    "Component Scope at XL: touches the shared code executor path used by all pooled runs (per-pod lock, timeout handling)."
+  ],
+  "split_recommendation": null
+}

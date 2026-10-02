@@ -38,9 +38,12 @@ from codemie_tools.data_management.code_executor.code_executor_tool import (
 from codemie_tools.data_management.code_executor.file_export_service import (
     FileExportService,
 )
+from codemie_tools.data_management.code_executor.job_bridge import is_bridge_path, new_job_bridge_options
 from codemie_tools.data_management.code_executor.llm_sandbox import is_sandbox_system_file_path
 from codemie_tools.data_management.code_executor.models import ExecutionMode, SandboxMode
+from codemie_tools.data_management.code_executor.runtime_sdk.codemie_runtime_sdk import BRIDGE_DIR_NAME
 from codemie_tools.data_management.code_executor.sandbox_guard import build_guarded_workspace_script
+from codemie_tools.data_management.code_executor.tool_calling_limits import clamp_tool_calling_timeout
 from codemie_tools.data_management.workspace.tools_vars import (
     EXECUTE_WORKSPACE_SCRIPT_TOOL,
 )
@@ -49,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_system_output_path(file_path: str) -> bool:
-    return file_path.endswith(".pyc") or is_sandbox_system_file_path(file_path)
+    return is_bridge_path(file_path) or file_path.endswith(".pyc") or is_sandbox_system_file_path(file_path)
 
 
 class ExecuteWorkspaceScriptInput(BaseModel):
@@ -63,6 +66,7 @@ class ExecuteWorkspaceScriptInput(BaseModel):
 class WorkspaceScriptRunner(CodeExecutorTool):
     conversation_id: str | None = Field(default=None, exclude=True)
     last_execution_files: list[FileObject] = Field(default_factory=list, exclude=True)
+    tool_calling_timeout: float | None = Field(default=None, exclude=True)
 
     def __init__(
         self,
@@ -71,6 +75,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
         input_files: list[FileObject] | None = None,
         execution_mode: ExecutionMode | None = None,
         conversation_id: str | None = None,
+        tool_calling_timeout: float | None = None,
     ):
         super().__init__(
             file_repository=file_repository,
@@ -79,6 +84,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
             execution_mode=execution_mode,
         )
         self.conversation_id = conversation_id
+        self.tool_calling_timeout = tool_calling_timeout
 
     def _get_user_workdir(self) -> str:
         base_workdir = super()._get_user_workdir()
@@ -105,13 +111,19 @@ class WorkspaceScriptRunner(CodeExecutorTool):
             raise ToolException("script_path must point to a file")
         return normalized
 
-    def _build_script_wrapper(self, script_path: str, workspace_root: str) -> str:
+    def _build_script_wrapper(self, script_path: str, workspace_root: str, exchange_dir: str | None = None) -> str:
         return build_guarded_workspace_script(
             script_path,
             workspace_root=workspace_root,
             max_threads=self.config.max_threads,
             max_open_files=self.config.max_open_files,
+            exchange_dir=exchange_dir,
         )
+
+    def _resolve_tool_calling_limit(self) -> float | None:
+        """Effective tool-calling limit for this run, or ``None`` when tool calling is off."""
+        # Read defensively: instances built with ``__new__`` in tests may not carry the field.
+        return clamp_tool_calling_timeout(getattr(self, "tool_calling_timeout", None))
 
     @staticmethod
     def _hash_content(content: bytes) -> str:
@@ -158,8 +170,11 @@ class WorkspaceScriptRunner(CodeExecutorTool):
         snapshot_code = (
             "import hashlib, json, os\n"
             f"root = {workdir!r}\n"
+            f"bridge = {BRIDGE_DIR_NAME!r}\n"
             "snapshot = {}\n"
-            "for current_root, _, files in os.walk(root):\n"
+            "for current_root, dirs, files in os.walk(root):\n"
+            "    if current_root == root and bridge in dirs:\n"
+            "        dirs.remove(bridge)\n"
             "    if '__pycache__' in current_root.split(os.sep):\n"
             "        continue\n"
             "    for name in files:\n"
@@ -198,7 +213,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
 
             script_code = self._get_script_content(script_path)
             self._validate_code_security(session, script_code)
-            wrapper_code = self._build_script_wrapper(script_path, user_workdir)
+            wrapper_code = self._build_script_wrapper(script_path, user_workdir, exchange_dir=None)
 
             result, exec_time = self._execute_code_sandbox(session, wrapper_code)
             self._log_execution_timing(0.0, exec_time)
@@ -217,7 +232,11 @@ class WorkspaceScriptRunner(CodeExecutorTool):
     ) -> str:
         script_code = self._get_script_content(script_path)
         self._validate_code_security_policy(script_code)
-        wrapper_code = self._build_script_wrapper(script_path, user_workdir)
+        tool_calling_limit = self._resolve_tool_calling_limit()
+        bridge = None if tool_calling_limit is None else new_job_bridge_options(tool_calling_limit)
+        wrapper_code = self._build_script_wrapper(
+            script_path, user_workdir, exchange_dir=None if bridge is None else bridge.exchange_dir
+        )
 
         input_file_hashes = self._get_input_file_hashes()
         input_bytes = self._read_input_file_bytes(self.input_files)
@@ -229,6 +248,7 @@ class WorkspaceScriptRunner(CodeExecutorTool):
             export_files=export_files,
             workdir=user_workdir,
             baseline_hashes=input_file_hashes,
+            bridge=bridge,
         )
         self._log_execution_timing(0.0, _time.time() - start)
         self._log_guard_denials(result.stdout or "", result.stderr or "", workdir=user_workdir)

@@ -14,7 +14,8 @@
 
 from __future__ import annotations
 
-import textwrap
+from functools import cache
+from pathlib import Path
 
 from codemie_tools.data_management.code_executor.filesystem_policy import (
     extract_denial_events,
@@ -47,19 +48,38 @@ def build_guarded_python_script(
     )
 
 
+_RUNTIME_SDK_DIR = Path(__file__).parent / "runtime_sdk"
+_BOOTSTRAP_FUNCTION_MARKER = "def codemie_bootstrap("
+
+
+@cache
+def _read_sdk_source() -> str:
+    return (_RUNTIME_SDK_DIR / "codemie_runtime_sdk.py").read_text(encoding="utf-8")
+
+
+@cache
+def _read_bootstrap_function_source() -> str:
+    text = (_RUNTIME_SDK_DIR / "workspace_bootstrap.py").read_text(encoding="utf-8")
+    return text[text.index(_BOOTSTRAP_FUNCTION_MARKER) :].strip()
+
+
 def build_guarded_workspace_script(
     script_path: str,
     *,
     workspace_root: str,
     max_threads: int = 64,
     max_open_files: int = 256,
+    exchange_dir: str | None = None,
 ) -> str:
-    launcher = textwrap.dedent(
-        f"""
-        import runpy
-        runpy.run_path({script_path!r}, run_name='__main__')
-        """
-    ).strip()
+    launcher = "\n".join(
+        [
+            _read_bootstrap_function_source(),
+            f"codemie_bootstrap({_read_sdk_source()!r}, {exchange_dir!r})",
+            "del codemie_bootstrap",
+            "import runpy",
+            f"runpy.run_path({script_path!r}, run_name='__main__')",
+        ]
+    )
     return build_guarded_python_script(
         launcher,
         workspace_root=workspace_root,

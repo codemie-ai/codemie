@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import unittest
 from collections import Counter
 from pathlib import Path
@@ -666,3 +667,92 @@ class TestCustomerConfigToolPermissions(unittest.TestCase):
     def test_tool_permissions_disabled(self):
         cfg = _make_config_with_tool_permissions(enabled=False, tool_call_policy="ask_for_approval")
         self.assertFalse(cfg.is_feature_enabled("tool_permissions"))
+
+
+PRE_EXISTING_SHIPPED_COMPONENT_IDS: tuple[str, ...] = (
+    "videoPortal",
+    "youtubeChannel",
+    "learningCourses",
+    "userGuide",
+    "userGuideOld",
+    "adminActions",
+    "feedbackAssistant",
+    "customerSupport",
+    "mcpConnect",
+    "skills",
+    "likeForm",
+    "confluenceIntegrationMessage",
+    "remoteAssistant",
+    "defaultConversationAssistant",
+    "userSurvey",
+    "workflowDocumentation",
+    "googleDocsDocumentation",
+    "workflowYamlDocumentation",
+    "applications:technology-copilot",
+    "applications:aice",
+    "applications:angular-upgrade-app",
+    "aiChampionsLeaderboard",
+    "vendorIntegrationAWS",
+    "features:cliAnalytics",
+    "features:routingAnalytics",
+    "features:schedulersView",
+    "features:webSearch",
+    "features:dynamicCodeInterpreter",
+    "features:generatedAssistantIcons",
+    "features:userAbilityToCreateProject",
+    "features:providersDatasourceImport",
+    "features:costCenters",
+    "features:userEnrichmentEnabled",
+    "features:favorites",
+    "features:pinnedAssistants",
+    "features:favoritesPage",
+    "features:requestHedging",
+    "features:workflowAI",
+    "features:interactiveElements",
+    "features:personalLiteLLMIntegrations",
+    "features:budgetManagement",
+    "features:showAllProjects",
+    "features:tool_permissions",
+    "mcpCustomServersDisabled",
+    "features:sharepointCodeMieOAuth",
+    "features:teamsBotIntegration",
+    "mcpAuthTimeoutSeconds",
+    "chatDisclaimer",
+    "releaseNotesRecentCount",
+    "banner",
+    "features:projectChargeback",
+    "subWorkflowNode",
+    "features:subWorkflow",
+    "allowedImageDomains",
+)
+
+
+class TestShippedWorkspaceScriptToolCalls(unittest.TestCase):
+    """The shipped default must carry the script tool-calls component, disabled."""
+
+    def _load_shipped(self) -> CustomerConfig:
+        # The FEATURE_* override is applied at load time; keep the host env out of the assertion.
+        with patch.dict("os.environ"):
+            os.environ.pop("FEATURE_WORKSPACE_SCRIPT_BRIDGE", None)
+            return CustomerConfig(config_path=SHIPPED_CUSTOMER_CONFIG)
+
+    def test_component_present_disabled_with_default_timeout(self) -> None:
+        config = self._load_shipped()
+
+        component = next((c for c in config.components if c.id == "features:workspaceScriptBridge"), None)
+
+        self.assertIsNotNone(component)
+        assert component is not None
+        self.assertFalse(component.settings.enabled)
+        self.assertEqual(getattr(component.settings, "timeoutSeconds"), 120)
+        self.assertTrue(component.settings.name)
+        self.assertTrue(getattr(component.settings, "description"))
+
+    def test_feature_is_disabled_by_default(self) -> None:
+        self.assertFalse(self._load_shipped().is_feature_enabled("workspaceScriptBridge"))
+
+    def test_pre_existing_component_ids_are_unchanged(self) -> None:
+        ids = [c.id for c in self._load_shipped().components]
+
+        self.assertEqual(ids[: len(PRE_EXISTING_SHIPPED_COMPONENT_IDS)], list(PRE_EXISTING_SHIPPED_COMPONENT_IDS))
+        self.assertEqual(ids[len(PRE_EXISTING_SHIPPED_COMPONENT_IDS) :], ["features:workspaceScriptBridge"])

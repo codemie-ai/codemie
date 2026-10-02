@@ -1,0 +1,31 @@
+{
+  "decision": "approve",
+  "rationale": "All four prior blocking findings (CR-001..CR-004, kind=code) were verified resolved against current source in the changed files; no new findings are discovered on the check round. Business and standards rows are carried forward unchanged from the prior verdict (none recorded).",
+  "confidence": "high",
+  "risk_flags": ["security", "public-api"],
+  "business_review": [],
+  "standards_review": [],
+  "findings": [],
+  "finding_status": [
+    {
+      "id": "CR-001",
+      "status": "resolved",
+      "notes": "batch_job_runner.py _close_channel now runs channel.stop() and channel.cleanup(kill=False) in separate try/except blocks, so cleanup is always attempted and each failure is logged on its own."
+    },
+    {
+      "id": "CR-002",
+      "status": "resolved",
+      "notes": "run() computes budget once via _budget_seconds(tool_calling_timeout) and passes budget_seconds to _wait_for_pod_running, _wait_for_sentinel and _wait_for_completion; timeout messages use _reported_budget(), and the docstring describes the widened budget."
+    },
+    {
+      "id": "CR-003",
+      "status": "resolved",
+      "notes": "_download_exports skips any path whose normalised first segment is BRIDGE_DIR_NAME (_is_bridge_path); _download_changed_files also filters bridge paths, so neither export_files nor changed_files can carry the bridge folder even if cleanup fails."
+    },
+    {
+      "id": "CR-004",
+      "status": "resolved",
+      "notes": "execute_workspace_script_tool.py _resolve_tool_calling_limit treats non-finite or non-positive values as disabled (with a warning) and clamps values above MAX_TOOL_CALLING_SECONDS (3600.0) with a warning."
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 4, "label": "L" },
+    "requirements_clarity": { "score": 2, "label": "S" },
+    "technical_risk":       { "score": 4, "label": "L" },
+    "file_change_estimate": { "score": 5, "label": "XL" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 19,
+  "size": "M",
+  "band_range": "15-20",
+  "files_changed": 11,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Four components changed across two subsystems: BatchJobRunner (channel lifecycle, widened Job budget, bridge-path filtering), CodeExecutorTool and SandboxSessionManager (pooled bridge wiring removed), WorkspaceScriptRunner (tool-call limit resolution, exchange dir), plus a customer-config declaration. The existing ToolCallChannel is reused, so there is no new abstraction." },
+    { "dimension": "technical_risk", "reason": "Closest precedent is the removed pooled-mode bridge wiring, which does not cover the Job pod lifecycle: the channel must start at pod Running and stop before downloads, and the Job needs one shared wall-clock budget. Sandbox-security handling is new: bridge folder paths are excluded from exports and changed-file pulls (normalised path check) and the tool-calling timeout is clamped. Concurrency and Kubernetes exec behaviour bring real regression risk, and the ticket needed a follow-up pass on review findings." },
+    { "dimension": "file_change_estimate", "reason": "11 files changed (6 source, 5 test, including a README) across src/codemie, src/codemie_tools and tests. That maps to XL by file count. The net diff is roughly balanced (583 insertions, 642 deletions) because much of it is removal." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk held at L: sandbox export-path filtering for the bridge folder and a clamped tool-calling timeout are security-relevant with no exact precedent in the removed pooled-mode code"
+  ],
+  "split_recommendation": null
+}

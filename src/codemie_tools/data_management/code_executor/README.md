@@ -223,6 +223,30 @@ spec:
           value: "prod-exec-"
 ```
 
+## Workspace Script Bridge
+
+Scripts run by the workspace script runner can call the backend during their run when the
+customer-config component `features:workspaceScriptBridge` is enabled. The component ships in
+`config/customer/customer-config.yaml` disabled (`enabled: false`), with `timeoutSeconds: 120`.
+
+- `FEATURE_WORKSPACE_SCRIPT_BRIDGE=true|false`
+  overrides `enabled` in the YAML at load time, only where the component exists in the loaded file; changing
+  the file or this variable needs a backend restart.
+- The bridge works in `sandbox-jobs` mode (`CODE_EXECUTOR_SANDBOX_MODE`, the default). When it is on, the
+  Job deadline (`activeDeadlineSeconds`) widens to `max(execution timeout, timeoutSeconds) + 60s`. The
+  tool-call exchange folder is stopped and removed right after the script finishes, before exports and
+  changed files are pulled from the Job.
+
+Smoke check on an environment: enable the component in the YAML, then upload this script to a chat and ask
+the assistant to run it. Each call returns the request payload (the only handler in this version is `echo`):
+
+```python
+import codemie_runtime_sdk as sdk
+
+for n in range(3):
+    print("PONG", n, sdk.call("echo", {"msg": "ping", "n": n}))
+```
+
 ## Security
 
 ### Security Policy

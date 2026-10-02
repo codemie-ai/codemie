@@ -1111,8 +1111,17 @@ class HealthCheckFilter(logging.Filter):
 
 # Populate os.environ too, for the modules that read env vars directly (e.g. OTEL_*, LANGFUSE_*)
 # instead of through the Config object — pydantic-settings' env_file only feeds Config's fields.
-load_dotenv(Config._REPO_ROOT_FOR_ENV_FILES / ".env", override=False)
-load_dotenv(Config._REPO_ROOT_FOR_ENV_FILES / ".env.local", override=True)
+def load_env_files(root: Path) -> None:
+    """Populate os.environ from .env.local and .env without overriding what is already set.
+
+    Precedence: process environment > .env.local > .env. With override=False the first value set wins,
+    so .env.local is loaded before .env.
+    """
+    load_dotenv(root / ".env.local", override=False)
+    load_dotenv(root / ".env", override=False)
+
+
+load_env_files(Config._REPO_ROOT_FOR_ENV_FILES)
 
 config = Config()  # type: ignore
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())

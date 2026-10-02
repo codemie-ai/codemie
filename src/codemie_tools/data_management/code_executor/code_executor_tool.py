@@ -655,6 +655,7 @@ class CodeExecutorTool(CodeMieTool):
             ToolException: If execution times out
         """
         start_time = time.time()
+        timeout = self.config.execution_timeout
 
         # Log code summary for debugging
         code_lines = code.strip().split("\n")
@@ -675,10 +676,10 @@ class CodeExecutorTool(CodeMieTool):
 
         try:
             with lock:
-                result = session.run(code, timeout=self.config.execution_timeout)
+                result = session.run(code, timeout=timeout)
         except SandboxTimeoutError as e:
             error_msg = (
-                f"Code execution timed out after {self.config.execution_timeout} seconds. "
+                f"Code execution timed out after {timeout:g} seconds. "
                 "This may indicate an infinite loop or a resource-intensive operation. "
                 "Please review your code and consider optimizing it."
             )

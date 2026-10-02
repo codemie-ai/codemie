@@ -28,6 +28,26 @@ function log(message) {
     process.stdout.write(`[sonar-local] ${message}\n`);
 }
 
+function loadSonarVariablesFromEnvLocal() {
+    const envLocalPath = path.resolve(REPOSITORY_ROOT, '.env.local');
+    if (!fs.existsSync(envLocalPath)) {
+        return;
+    }
+
+    for (const rawLine of fs.readFileSync(envLocalPath, 'utf8').split(/\r?\n/)) {
+        const match = rawLine.match(/^\s*(?:export\s+)?(SONAR_[A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+        if (!match) {
+            continue;
+        }
+
+        const [, name, rawValue] = match;
+        const value = rawValue.replace(/^(['"])(.*)\1$/, '$2');
+        if (value && !process.env[name]?.trim()) {
+            process.env[name] = value;
+        }
+    }
+}
+
 function logError(message) {
     process.stderr.write(`[sonar-local] ${message}\n`);
 }
@@ -337,6 +357,7 @@ async function printFailureDetails(context) {
 }
 
 async function main() {
+    loadSonarVariablesFromEnvLocal();
     const { sonarHostUrl, sonarProjectKey } = readConnectedModeConfig();
     const sonarProperties = readSonarProperties();
     const sonarToken = process.env.SONAR_TOKEN?.trim();

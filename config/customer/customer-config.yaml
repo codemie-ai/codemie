@@ -312,6 +312,16 @@ components:
       enabled: true
       value: ""
 
+  # Lets a script run by the workspace script runner call back into the backend during its run.
+  # Off by default. A customer ConfigMap that replaces this file must add this component itself;
+  # FEATURE_WORKSPACE_SCRIPT_BRIDGE overrides `enabled` only where the component exists.
+  - id: "features:workspaceScriptBridge"
+    settings:
+      enabled: false
+      timeoutSeconds: 120
+      name: "Workspace Script Bridge"
+      description: "Allow scripts run in the workspace sandbox to call the backend during their run"
+
 preconfigured_assistants:
   - id: "codemie-onboarding"
     settings:

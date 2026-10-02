@@ -12,7 +12,7 @@ import base64
 import io
 import tarfile
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from kubernetes.client.exceptions import ApiException
@@ -22,6 +22,7 @@ from codemie_tools.data_management.code_executor.batch_job_runner import (
     BatchJobRunner,
     JobResult,
 )
+from codemie_tools.data_management.code_executor.job_bridge import JobBridgeOptions
 from codemie_tools.data_management.code_executor.models import CodeExecutorConfig
 
 
@@ -43,6 +44,16 @@ def _make_config(**overrides) -> CodeExecutorConfig:
     }
     defaults.update(overrides)
     return CodeExecutorConfig(**defaults)
+
+
+def _bridge_at(exchange_dir: str, tool_calling_timeout: float = 120.0) -> JobBridgeOptions:
+    return JobBridgeOptions(exchange_dir=exchange_dir, tool_calling_timeout=tool_calling_timeout)
+
+
+def _bridge_options(tool_calling_timeout: float | None) -> JobBridgeOptions | None:
+    if tool_calling_timeout is None:
+        return None
+    return _bridge_at(".codemie_bridge/ex1", tool_calling_timeout)
 
 
 def _terminal_status(succeeded=1, failed=0):
@@ -151,6 +162,82 @@ class TestBatchJobRunnerHappyPath(unittest.TestCase):
         del_kwargs = batch.delete_namespaced_job.call_args.kwargs
         assert del_kwargs["body"].grace_period_seconds == 0
         assert del_kwargs["body"].propagation_policy == "Foreground"
+
+    def _run_capturing_budget(self, tool_calling_timeout: float | None = None) -> tuple[int, float]:
+        """Run once with time.monotonic pinned to 1000.0; return (activeDeadlineSeconds, deadline - now)."""
+        config = _make_config(execution_timeout=5.0)
+        batch = MagicMock(name="batch")
+        core = MagicMock(name="core")
+        batch.read_namespaced_job_status.return_value = _terminal_status(succeeded=1)
+        core.list_namespaced_pod.return_value = MagicMock(items=[_pod(phase="Running", exit_code=0, name="the-pod")])
+        core.read_namespaced_pod_log.return_value = ""
+
+        with (
+            patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager") as mgr_cls,
+            patch("codemie_tools.data_management.code_executor.batch_job_runner.JobToolCallBridge"),
+        ):
+            mgr = mgr_cls.return_value
+            mgr.get_batch_client.return_value = batch
+            mgr.get_client.return_value = core
+            runner = BatchJobRunner(config)
+            _patch_runner_internals(runner, pod_name="the-pod")
+            with (
+                patch.object(runner, "_upload_payload"),
+                patch.object(runner, "_download_exports", return_value={}),
+                patch(
+                    "codemie_tools.data_management.code_executor.batch_job_runner.time.monotonic", return_value=1000.0
+                ),
+            ):
+                runner.run("print('hello')", bridge=_bridge_options(tool_calling_timeout))
+
+        manifest = batch.create_namespaced_job.call_args.kwargs["body"]
+        deadline = runner._wait_for_pod_running.call_args.args[1]
+        return manifest["spec"]["activeDeadlineSeconds"], deadline - 1000.0
+
+    def test_tool_calling_timeout_widens_job_deadline(self):
+        active_deadline, deadline_offset = self._run_capturing_budget(tool_calling_timeout=120)
+
+        assert active_deadline == 180
+        assert deadline_offset == 180.0
+
+    def test_deadline_defaults_to_execution_timeout_without_tool_calling(self):
+        active_deadline, deadline_offset = self._run_capturing_budget()
+
+        assert active_deadline == 65
+        assert deadline_offset == 65.0
+
+    def test_run_passes_the_widened_budget_to_every_wait_helper(self):
+        config = _make_config(execution_timeout=5.0)
+        batch = MagicMock(name="batch")
+        core = MagicMock(name="core")
+        batch.read_namespaced_job_status.return_value = _terminal_status(succeeded=1)
+        core.list_namespaced_pod.return_value = MagicMock(items=[_pod(phase="Running", exit_code=0, name="the-pod")])
+        core.read_namespaced_pod_log.return_value = ""
+
+        with (
+            patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager") as mgr_cls,
+            patch("codemie_tools.data_management.code_executor.batch_job_runner.JobToolCallBridge"),
+        ):
+            mgr_cls.return_value.get_batch_client.return_value = batch
+            mgr_cls.return_value.get_client.return_value = core
+            runner = BatchJobRunner(config)
+            _patch_runner_internals(runner, pod_name="the-pod")
+            with (
+                patch.object(runner, "_upload_payload"),
+                patch.object(runner, "_download_exports", return_value={}),
+                patch.object(runner, "_wait_for_completion", return_value=0) as completion,
+            ):
+                runner.run("print('hello')", bridge=_bridge_options(120))
+
+        assert runner._wait_for_pod_running.call_args.kwargs["budget_seconds"] == 180.0
+        assert runner._wait_for_sentinel.call_args.kwargs["budget_seconds"] == 180.0
+        assert completion.call_args.kwargs["budget_seconds"] == 180.0
+
+    def test_smaller_tool_calling_timeout_does_not_shrink_deadline(self):
+        active_deadline, deadline_offset = self._run_capturing_budget(tool_calling_timeout=2)
+
+        assert active_deadline == 65
+        assert deadline_offset == 65.0
 
     def test_manifest_omits_runtime_class_name_when_none(self):
         config = _make_config(runtime_class_name=None)
@@ -365,6 +452,24 @@ class TestBatchJobRunnerFiles(unittest.TestCase):
 
         assert result.exported_files == {"out.txt": b"OUT-out.txt", "log.csv": b"OUT-log.csv"}
 
+    def test_download_changed_files_skips_bridge_folder(self):
+        config = _make_config()
+        snapshot = {
+            "a.txt": "h1",
+            ".codemie_bridge/x/req.1.json": "h2",
+            ".codemie_bridge_other.txt": "h3",
+        }
+
+        with patch("codemie_tools.data_management.code_executor.batch_job_runner.KubernetesClientManager"):
+            runner = BatchJobRunner(config)
+            with (
+                patch.object(runner, "_snapshot_workdir", return_value=snapshot),
+                patch.object(runner, "_download_exports", return_value={}) as download,
+            ):
+                runner._download_changed_files("sbx-pod-xyz", "/workspace", {})
+
+        download.assert_called_once_with("sbx-pod-xyz", "/workspace", [".codemie_bridge_other.txt", "a.txt"])
+
 
 class TestBatchJobRunnerExecHelpers(unittest.TestCase):
     """tar pack/unpack round-trips without going through stream()."""
@@ -465,6 +570,27 @@ class TestBatchJobRunnerWaitHelpers(unittest.TestCase):
         ):
             with pytest.raises(ToolException, match="did not complete"):
                 runner._wait_for_sentinel("the-pod", "/workspace/.done", deadline=0.0)
+
+    def test_wait_for_pod_running_timeout_reports_the_given_budget(self):
+        runner = self._runner()
+        with patch.object(runner, "_find_job_pod", return_value=None):
+            with pytest.raises(ToolException, match=r"within 180s"):
+                runner._wait_for_pod_running("job-x", deadline=0.0, budget_seconds=180.0)
+
+    def test_wait_for_sentinel_timeout_reports_the_given_budget(self):
+        runner = self._runner()
+        with pytest.raises(ToolException, match=r"within 180s"):
+            runner._wait_for_sentinel("the-pod", "/workspace/.done", deadline=0.0, budget_seconds=180.0)
+
+    def test_wait_for_completion_timeout_reports_the_given_budget(self):
+        runner = self._runner()
+        with pytest.raises(ToolException, match=r"within 180s"):
+            runner._wait_for_completion("job-x", deadline=0.0, budget_seconds=180.0)
+
+    def test_timeouts_default_to_the_execution_timeout_budget(self):
+        runner = self._runner()
+        with pytest.raises(ToolException, match=r"within 65s"):
+            runner._wait_for_sentinel("the-pod", "/workspace/.done", deadline=0.0)
 
 
 class TestBatchJobRunnerErrors(unittest.TestCase):
@@ -602,3 +728,172 @@ class TestFindJobPod(unittest.TestCase):
         assert self.runner._find_job_pod("job-1") is None
         self.mgr.recreate_client.assert_not_called()
         assert self.core.list_namespaced_pod.call_count == 1
+
+
+_BJR = "codemie_tools.data_management.code_executor.batch_job_runner"
+_JB = "codemie_tools.data_management.code_executor.job_bridge"
+
+
+class TestBatchJobRunnerToolCallChannel(unittest.TestCase):
+    """The tool-call channel is bound to the Job pod and closed before any download."""
+
+    def setUp(self):
+        BatchJobRunner._instance = None
+
+    def _run(
+        self,
+        *,
+        sentinel_error: ToolException | None = None,
+        snapshot: dict[str, str] | None = None,
+        cleanup_error: Exception | None = None,
+        real_exports: bool = False,
+        **run_kwargs,
+    ):
+        events: list[str] = []
+        self.events = events
+        channel = MagicMock(name="channel")
+        self.channel = channel
+        channel.start.side_effect = lambda: events.append("start")
+        channel.stop.side_effect = lambda: events.append("stop")
+
+        def _cleanup(*, kill: bool) -> None:
+            events.append(f"cleanup(kill={kill})")
+            if cleanup_error is not None:
+                raise cleanup_error
+
+        channel.cleanup.side_effect = _cleanup
+
+        batch = MagicMock(name="batch")
+        batch.read_namespaced_job_status.return_value = _terminal_status(succeeded=1)
+        core = MagicMock(name="core")
+        core.read_namespaced_pod_log.return_value = ""
+
+        with (
+            patch(f"{_BJR}.KubernetesClientManager") as mgr_cls,
+            patch(f"{_JB}.KubernetesExecRunner") as runner_cls,
+            patch(f"{_JB}.ToolCallChannel", return_value=channel) as channel_cls,
+        ):
+            mgr_cls.return_value.get_batch_client.return_value = batch
+            mgr_cls.return_value.get_client.return_value = core
+            runner = BatchJobRunner(_make_config(kubeconfig_path=""))
+            _patch_runner_internals(runner, pod_name="the-pod")
+
+            def _sentinel(*_args: object, **_kwargs: object) -> None:
+                events.append("sentinel")
+                if sentinel_error is not None:
+                    raise sentinel_error
+
+            def _download_exports(_pod: str, _workdir: str, paths: list[str]) -> dict[str, bytes]:
+                events.append("exports")
+                return {path: path.encode() for path in paths}
+
+            runner._wait_for_sentinel.side_effect = _sentinel
+            if real_exports:
+                self.pulled: list[str] = []
+
+                def _tar_out(_pod: str, _workdir: str, rel_path: str) -> bytes | None:
+                    self.pulled.append(rel_path)
+                    return rel_path.encode()
+
+                runner._exec_tar_out = MagicMock(side_effect=_tar_out)
+            exports_patch = (
+                patch.object(runner, "_signal_cleanup")
+                if real_exports
+                else patch.object(runner, "_download_exports", side_effect=_download_exports)
+            )
+            with (
+                patch.object(runner, "_upload_payload", side_effect=lambda *a, **k: events.append("upload")),
+                exports_patch,
+                patch.object(
+                    runner,
+                    "_snapshot_workdir",
+                    side_effect=lambda *a, **k: events.append("snapshot") or (snapshot or {}),
+                ),
+                patch.object(runner, "_delete_job", side_effect=lambda *a, **k: events.append("delete_job")),
+            ):
+                self.result = runner.run("print('x')", baseline_hashes={}, **run_kwargs)
+        return events, runner_cls, channel_cls, channel
+
+    def test_channel_started_before_upload_and_closed_before_downloads(self):
+        events, runner_cls, channel_cls, channel = self._run(bridge=_bridge_at(".codemie_bridge/ex1"))
+
+        assert events == [
+            "start",
+            "upload",
+            "sentinel",
+            "stop",
+            "cleanup(kill=False)",
+            "exports",
+            "snapshot",
+            "exports",
+            "delete_job",
+        ]
+        runner_cls.assert_called_once_with(
+            pod_name="the-pod",
+            container_name="executor",
+            namespace="test-ns",
+            workdir="/workspace",
+            kubeconfig_path=None,
+        )
+        channel_cls.assert_called_once_with(runner_cls.return_value, ".codemie_bridge/ex1")
+        channel.sweep.assert_not_called()
+
+    def test_no_bridge_never_builds_a_channel(self):
+        events, runner_cls, channel_cls, _ = self._run()
+
+        assert events == ["upload", "sentinel", "exports", "snapshot", "exports", "delete_job"]
+        runner_cls.assert_not_called()
+        channel_cls.assert_not_called()
+
+    def test_sentinel_failure_stops_channel_once_before_job_deletion(self):
+        with pytest.raises(ToolException, match="sentinel timed out"):
+            self._run(bridge=_bridge_at(".codemie_bridge/ex1"), sentinel_error=ToolException("sentinel timed out"))
+
+        assert self.events == ["start", "upload", "sentinel", "stop", "cleanup(kill=False)", "delete_job"]
+        self.channel.stop.assert_called_once_with()
+        assert self.channel.cleanup.call_args_list == [call(kill=False)]
+        self.channel.sweep.assert_not_called()
+
+    def test_happy_path_stops_and_cleans_up_channel_exactly_once(self):
+        _, _, _, channel = self._run(bridge=_bridge_at(".codemie_bridge/ex1"))
+
+        channel.stop.assert_called_once_with()
+        assert channel.cleanup.call_args_list == [call(kill=False)]
+        channel.sweep.assert_not_called()
+
+    def test_bridge_files_never_reach_job_result(self):
+        snapshot = {"a.txt": "h1", ".codemie_bridge/x/req.1.json": "h2"}
+
+        self._run(bridge=_bridge_at(".codemie_bridge/x"), snapshot=snapshot, export_files=["out.txt"])
+
+        assert self.result.changed_files == {"a.txt": b"a.txt"}
+        assert self.result.exported_files == {"out.txt": b"out.txt"}
+
+    def test_bridge_paths_never_reach_exported_files_when_cleanup_fails(self):
+        snapshot = {"a.txt": "h1", ".codemie_bridge/x/req.1.json": "h2"}
+
+        self._run(
+            bridge=_bridge_at(".codemie_bridge/x"),
+            snapshot=snapshot,
+            cleanup_error=RuntimeError("cleanup failed"),
+            real_exports=True,
+            export_files=["out.txt", ".codemie_bridge/x/req.1.json", "./.codemie_bridge/x", "sub/../.codemie_bridge"],
+        )
+
+        assert self.result.exported_files == {"out.txt": b"out.txt"}
+        assert self.result.changed_files == {"a.txt": b"a.txt"}
+        assert self.pulled == ["out.txt", "a.txt", ".stderr"]
+        self.channel.cleanup.assert_called_once_with(kill=False)
+        assert self.events[-1] == "delete_job"
+
+    def test_bridge_lookalike_export_is_still_pulled(self):
+        self._run(bridge=_bridge_at(".codemie_bridge/x"), real_exports=True, export_files=[".codemie_bridge_other.txt"])
+
+        assert self.result.exported_files == {".codemie_bridge_other.txt": b".codemie_bridge_other.txt"}
+
+    def test_cleanup_failure_does_not_fail_the_run(self):
+        self._run(bridge=_bridge_at(".codemie_bridge/x"), cleanup_error=RuntimeError("cleanup failed"))
+
+        assert isinstance(self.result, JobResult)
+        self.channel.cleanup.assert_called_once_with(kill=False)
+        assert self.events[-1] == "delete_job"

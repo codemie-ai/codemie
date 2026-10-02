@@ -1,0 +1,53 @@
+{
+  "decision": "approve",
+  "rationale": "All 10 prior blocking findings (CR-001..CR-010) were graded against current source and are resolved; no finding is unresolved or ungraded, and no new findings are discovered on this round. business_review and standards_review are carried forward unchanged from the final round (standards not re-audited; the security row's cause, CR-006, is fixed in source), and AC1 real-exec proof remains pending-stage-7.",
+  "confidence": "high",
+  "risk_flags": ["security"],
+  "business_review": [
+    {"kind": "spec", "item": "Layout: single-file stdlib-only SDK, constants only in SDK file, no import side effects", "status": "pass", "notes": "AST, size and clean-interpreter tests in test_codemie_runtime_sdk.py"},
+    {"kind": "spec", "item": "Protocol: exchange folder, tmp+os.replace files, call(), ToolCallError, echo-only registry, unknown_op", "status": "pass", "notes": "SDK call() and DEFAULT_HANDLERS; TestProtocol covers echo, sequential, unknown_op"},
+    {"kind": "spec", "item": "Injection: only build_guarded_workspace_script gains the bootstrap, run under the unchanged guard", "status": "pass", "notes": "filesystem_policy.py unchanged; guarded python script does not embed the SDK"},
+    {"kind": "spec", "item": "Stdout invariant: SDK and bootstrap never write to stdout", "status": "pass", "notes": "SDK has no print/sys; bootstrap writes only to stderr; covered by tests"},
+    {"kind": "spec", "item": "Switch and limit: features:workspaceScriptToolCalls component, enabled false, timeoutSeconds 120", "status": "pass", "notes": "customer-config.yaml component appended; no CodeExecutorConfig fields added"},
+    {"kind": "spec", "item": "Where read: AgentWorkspaceService reads customer_config per run and passes tool_calling_timeout", "status": "pass", "notes": "resolve_tool_calling_timeout; only consulted when the per-run flag is set"},
+    {"kind": "spec", "item": "Timeout value handling: bad values fall back to 120, runner clamps to session_timeout-60, never raises", "status": "pass", "notes": "Bool/nan/inf handled; huge int still raises OverflowError, see CR-001"},
+    {"kind": "spec", "item": "Per-run flag: effective only with switch AND flag AND pooled mode; jobs mode ignores flag", "status": "pass", "notes": "_resolve_tool_calling_limit jobs branch; limit applies to the wrapper call only"},
+    {"kind": "spec", "item": "Side channel: daemon thread inside pod lock, own client, one exec per poll, stdin responses, 3 retries", "status": "pass", "notes": "Protocol tests pass with stand-in runner; real-exec stdin EOF is unproven, see CR-008"},
+    {"kind": "spec", "item": "Size cap: 256 KiB per request and response, clear errors on both sides", "status": "pass", "notes": "SDK pre-check, poll cap+1 read, payload_too_large responses tested"},
+    {"kind": "spec", "item": "Timeout: stop thread, kill only on matching /proc start time and SANDBOX_ marker, remove folder, raise timeout error", "status": "pass", "notes": "Timeout branch of _run_locked and KILL_SCRIPT; marker coupling untested, see CR-007"},
+    {"kind": "spec", "item": "Session lifetime: get_session min_remaining_seconds = limit + 60, short-lived sessions recreated", "status": "pass", "notes": "session_manager.py remaining check; interaction with in-flight runs, see CR-005"},
+    {"kind": "spec", "item": "Pod lock: held for whole run; log tool_calling_run with lock wait and hold durations", "status": "partial", "notes": "Log emitted only after _run_locked returns normally; timed-out or errored runs log nothing (CR-002)"},
+    {"kind": "spec", "item": "Isolation model: folder inside workspace root, no chmod, filesystem_policy.py unchanged", "status": "pass", "notes": "Guard denies symlinks leaving the root, so planted links cannot redirect channel execs"},
+    {"kind": "spec", "item": "Cleanup, sweep, snapshot: removal in finally, sweep before run, snapshot prunes bridge folder", "status": "pass", "notes": "Sweep only runs when a channel exists, see CR-003"},
+    {"kind": "spec", "item": "Deployment and UI: documented in code_executor/README.md, no UI or Helm change", "status": "pass", "notes": "README section added; no UI or chart files changed"},
+    {"kind": "spec", "item": "Non-goals: generic CodeExecutorTool gets no SDK or bridge; only echo handler; no caller sets tool_calling=True", "status": "pass", "notes": "tool_calling defaults False; no declarations change; wiring is sub-task 2"},
+    {"kind": "story-ac", "item": "task.md AC1: switch on and script uses SDK, receives echoed content and continues in the same run", "status": "pending-stage-7", "notes": "Needs manual minikube run; stdin EOF on a real exec looks broken from source (CR-008)"},
+    {"kind": "story-ac", "item": "task.md AC2: several sequential requests each get their own response", "status": "pass", "notes": "test_sequential_calls_each_get_their_own_result"},
+    {"kind": "story-ac", "item": "task.md AC3: switch off leaves scripts unchanged and SDK use gives a clear error", "status": "pass", "notes": "Unconfigured SDK raises ToolCallError 'tool calling is not available in this run'"},
+    {"kind": "story-ac", "item": "task.md AC4: run without tool calling gets clear SDK error and the ordinary 30 s limit", "status": "pass", "notes": "test_channel_without_timeout_uses_config_timeout and flag-off service test"},
+    {"kind": "story-ac", "item": "task.md AC5: checks fail on non-allowlisted imports, platform imports, size cap, module differences", "status": "pass", "notes": "TestSdkSourceInvariants: allowlist, 12 KiB cap, -I subprocess module diff"},
+    {"kind": "story-ac", "item": "task.md AC6: concurrent SDK runs see only their own responses", "status": "pass", "notes": "Design evidence: unique folder, per-pod lock, sweep; no dedicated two-run test"},
+    {"kind": "story-ac", "item": "task.md AC7: run may last up to the limit, then standard timeout result, process stopped, folder removed", "status": "pass", "notes": "SandboxTimeoutError branch stops the channel, kills, cleans up"},
+    {"kind": "story-ac", "item": "task.md AC8: request or response above the size cap gives a clear error, not a hang", "status": "pass", "notes": "SDK rejects oversize requests; backend returns payload_too_large"},
+    {"kind": "story-ac", "item": "task.md AC9: exchange data removed by run end or at the start of the next run in the conversation", "status": "partial", "notes": "Sweep runs only when the next run has a channel, so tool-calling-off runs leave leftovers (CR-003)"},
+    {"kind": "story-ac", "item": "task.md AC10: existing sandbox denial outside the workspace boundary is not weakened", "status": "pass", "notes": "filesystem_policy.py unchanged; argv-only execs; exchange_dir regex-validated"}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "All 8 subjects in the review range match the documented EPMCDME-####: Description format (EPMCDME-15401: ...)"},
+    {"kind": "code-quality", "status": "pass", "notes": "Apache header and future annotations present; signatures typed with X | None and parameterized generics. Ruff and license-check were not run (read-only review)."},
+    {"kind": "security", "status": "fail", "notes": "security-patterns.md Untyped Input Handling forbids lossy repair before parsing; tool_call_channel.py:141 decodes script-written request bytes with utf-8 'replace' before json.loads. No secrets or shell interpolation found."}
+  ],
+  "findings": [],
+  "finding_status": [
+    {"id": "CR-001", "status": "resolved", "notes": "parse_tool_calling_timeout now catches (ValueError, OverflowError) and falls back to the 120 s default with a warning."},
+    {"id": "CR-002", "status": "resolved", "notes": "tool_calling_run log moved into a finally around _run_locked, so timed-out and failed runs log lock_wait and lock_hold."},
+    {"id": "CR-003", "status": "resolved", "notes": "Channel-less runs get a pre_run hook (sweep_stale_exchange_folders) executed inside the pod lock; wired from execute_workspace_script_tool.py."},
+    {"id": "CR-004", "status": "resolved", "notes": "_run_locked now stops the channel and cleans up with kill=True on any exception escaping session.run; non-kill cleanup only on the success path."},
+    {"id": "CR-005", "status": "resolved", "notes": "The min_remaining branch of _is_session_healthy checks the per-pod lock and leaves an executing session open, returning not-reusable instead of closing it."},
+    {"id": "CR-006", "status": "resolved", "notes": "Poll script decodes strictly and reports bad_encoding, answered as bad_request; KILL_SCRIPT decodes ascii strictly and exits 0 on UnicodeDecodeError."},
+    {"id": "CR-007", "status": "resolved", "notes": "SANDBOX_CMDLINE_MARKER is now imported from llm_sandbox.SANDBOX_SYSTEM_FILE_PREFIX, so a rename cannot silently disable the kill."},
+    {"id": "CR-008", "status": "resolved", "notes": "Response write is length-prefixed (reads exactly N bytes, no EOF needed), stdin sent as binary frames, and the exec read loop has a deadline that raises TimeoutError. Real-exec proof stays with Stage 7 (AC1)."},
+    {"id": "CR-009", "status": "resolved", "notes": "_run catches ExecFailed and any Exception and writes the unavailable marker the SDK polls; _build_response is total and answers internal_error; _parse_request also catches RecursionError."},
+    {"id": "CR-010", "status": "resolved", "notes": "Housekeeping execs use _exec(interruptible=False), which backs off with time.sleep instead of the already-set stop event."}
+  ]
+}

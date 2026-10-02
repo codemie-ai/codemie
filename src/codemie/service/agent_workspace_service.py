@@ -38,6 +38,7 @@ from codemie.rest_api.models.agent_workspace import (
     WorkspaceGrepMatchResponse,
 )
 from codemie.rest_api.security.user import User
+from codemie.service.workspace_script_bridge import resolve_tool_calling_timeout
 from codemie_tools.base.file_object import FileObject
 from codemie_tools.data_management.workspace.execute_workspace_script_tool import (
     WorkspaceScriptRunner,
@@ -513,6 +514,7 @@ class AgentWorkspaceService:
             user_id=user.id,
             input_files=input_files,
             conversation_id=workspace.conversation_id,
+            tool_calling_timeout=resolve_tool_calling_timeout(),
         )
         output = executor.execute_script(script_path=script_path, export_files=export_files)
         synced_files = self._sync_execution_files(workspace.id, executor.last_execution_files)

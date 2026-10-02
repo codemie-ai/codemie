@@ -37,6 +37,11 @@ from kubernetes.stream import stream
 from langchain_core.tools import ToolException
 from tenacity import retry, retry_if_exception, stop_after_attempt
 
+from codemie_tools.data_management.code_executor.job_bridge import (
+    JobBridgeOptions,
+    JobToolCallBridge,
+    is_bridge_path,
+)
 from codemie_tools.data_management.code_executor.k8s_client_manager import (
     KubernetesClientManager,
 )
@@ -158,6 +163,8 @@ class BatchJobRunner:
         export_files: Optional[List[str]] = None,
         workdir: str = "/workspace",
         baseline_hashes: Optional[Dict[str, str]] = None,
+        *,
+        bridge: JobBridgeOptions | None = None,
     ) -> JobResult:
         """Submit a Job, upload inputs, wait, pull exports, return result.
 
@@ -166,26 +173,42 @@ class BatchJobRunner:
         baseline are pulled into `JobResult.changed_files`. This is what the
         workspace-script runner uses to populate `last_execution_files` so the
         agent_workspace service can sync writes back to the workspace.
+
+        `bridge` switches on script tool calls: its `tool_calling_timeout` widens the Job's
+        wall-clock budget (both `activeDeadlineSeconds` and the shared wait deadline), and a
+        `ToolCallChannel` bound to the Job pod answers the script's calls from the moment the pod
+        is Running until the done sentinel appears; it is stopped and its exchange folder removed
+        before any file is downloaded. `None` keeps the `execution_timeout` based budget.
         """
         self._acquire_slot()
         job_name = f"{self.config.pod_name_prefix}{uuid4().hex[:12]}"
+        tool_calling_timeout = None if bridge is None else bridge.tool_calling_timeout
+        active_bridge: JobToolCallBridge | None = None
         try:
-            self._create_job(job_name, workdir)
+            self._create_job(job_name, workdir, tool_calling_timeout)
             logger.info(
                 f"Sandbox Job created: {job_name} "
                 f"(capacity {self.max_capacity - self.semaphore._value}/{self.max_capacity})"
             )
-            deadline = time.monotonic() + self.config.execution_timeout + _DEADLINE_BUFFER_SECONDS
-            pod_name = self._wait_for_pod_running(job_name, deadline)
+            budget = self._budget_seconds(tool_calling_timeout)
+            deadline = time.monotonic() + budget
+            pod_name = self._wait_for_pod_running(job_name, deadline, budget_seconds=budget)
+            if bridge is not None:
+                active_bridge = JobToolCallBridge(
+                    bridge, namespace=self.config.namespace, kubeconfig_path=self.config.kubeconfig_path or None
+                )
+                active_bridge.start(pod_name, workdir)
             self._upload_payload(pod_name, workdir, code, input_files or {})
-            self._wait_for_sentinel(pod_name, f"{workdir}/{_DONE_SENTINEL}", deadline)
+            self._wait_for_sentinel(pod_name, f"{workdir}/{_DONE_SENTINEL}", deadline, budget_seconds=budget)
+            if active_bridge is not None:
+                active_bridge.close()
             exported = self._download_exports(pod_name, workdir, export_files or [])
             changed = (
                 self._download_changed_files(pod_name, workdir, baseline_hashes) if baseline_hashes is not None else {}
             )
             stderr_bytes = self._exec_tar_out(pod_name, workdir, _STDERR_FILE)
             self._signal_cleanup(pod_name, workdir)
-            exit_code = self._wait_for_completion(job_name, deadline)
+            exit_code = self._wait_for_completion(job_name, deadline, budget_seconds=budget)
             logs = self._read_pod_logs(job_name)
             return JobResult(
                 stdout=logs,
@@ -195,6 +218,8 @@ class BatchJobRunner:
                 changed_files=changed,
             )
         finally:
+            if active_bridge is not None:
+                active_bridge.close()
             self._delete_job(job_name)
             self.semaphore.release()
 
@@ -206,9 +231,13 @@ class BatchJobRunner:
                 f"Code executor is at capacity ({self.max_capacity}/{self.max_capacity} Jobs). Please retry."
             )
 
-    def _build_manifest(self, job_name: str, workdir: str) -> dict:
+    def _budget_seconds(self, tool_calling_timeout: float | None) -> float:
+        """Wall-clock budget for one Job: the larger of script and tool-calling timeouts, plus buffer."""
+        return max(self.config.execution_timeout, tool_calling_timeout or 0) + _DEADLINE_BUFFER_SECONDS
+
+    def _build_manifest(self, job_name: str, workdir: str, tool_calling_timeout: float | None = None) -> dict:
         cfg = self.config
-        active_deadline = int(cfg.execution_timeout) + int(_DEADLINE_BUFFER_SECONDS)
+        active_deadline = int(self._budget_seconds(tool_calling_timeout))
         return {
             "apiVersion": "batch/v1",
             "kind": "Job",
@@ -294,15 +323,15 @@ class BatchJobRunner:
             },
         }
 
-    def _create_job(self, job_name: str, workdir: str) -> None:
+    def _create_job(self, job_name: str, workdir: str, tool_calling_timeout: float | None = None) -> None:
         batch = self.client_manager.get_batch_client()
-        manifest = self._build_manifest(job_name, workdir)
+        manifest = self._build_manifest(job_name, workdir, tool_calling_timeout)
         try:
             batch.create_namespaced_job(namespace=self.config.namespace, body=manifest)
         except ApiException as e:
             raise ToolException(f"Failed to create sandbox Job {job_name}: {e}") from e
 
-    def _wait_for_pod_running(self, job_name: str, deadline: float) -> str:
+    def _wait_for_pod_running(self, job_name: str, deadline: float, *, budget_seconds: float | None = None) -> str:
         """Block until the Job's pod is Running, then return its name."""
         while time.monotonic() < deadline:
             pod = self._find_job_pod(job_name)
@@ -314,9 +343,12 @@ class BatchJobRunner:
                     raise ToolException(f"Sandbox Job {job_name} pod entered terminal phase '{phase}' before upload.")
             time.sleep(_POLL_INTERVAL_SECONDS)
         raise ToolException(
-            f"Sandbox Job {job_name} pod did not reach Running within "
-            f"{self.config.execution_timeout + _DEADLINE_BUFFER_SECONDS:.0f}s."
+            f"Sandbox Job {job_name} pod did not reach Running within " f"{self._reported_budget(budget_seconds):.0f}s."
         )
+
+    def _reported_budget(self, budget_seconds: float | None) -> float:
+        """Budget to quote in timeout messages; falls back to the `execution_timeout` based one."""
+        return self._budget_seconds(None) if budget_seconds is None else budget_seconds
 
     def _upload_payload(
         self,
@@ -332,7 +364,9 @@ class BatchJobRunner:
         payload[_READY_SENTINEL] = b""
         self._exec_tar_in(pod_name, workdir, payload)
 
-    def _wait_for_sentinel(self, pod_name: str, path: str, deadline: float) -> None:
+    def _wait_for_sentinel(
+        self, pod_name: str, path: str, deadline: float, *, budget_seconds: float | None = None
+    ) -> None:
         while time.monotonic() < deadline:
             try:
                 self._exec(pod_name, ["test", "-f", path])
@@ -341,7 +375,7 @@ class BatchJobRunner:
                 time.sleep(_POLL_INTERVAL_SECONDS)
         raise ToolException(
             f"Sandbox Job script did not complete within "
-            f"{self.config.execution_timeout + _DEADLINE_BUFFER_SECONDS:.0f}s "
+            f"{self._reported_budget(budget_seconds):.0f}s "
             f"(sentinel {path} never appeared)."
         )
 
@@ -350,6 +384,9 @@ class BatchJobRunner:
             return {}
         out: Dict[str, bytes] = {}
         for rel_path in paths:
+            if is_bridge_path(rel_path):
+                logger.warning(f"Skipping export of tool-call bridge path {rel_path}")
+                continue
             try:
                 content = self._exec_tar_out(pod_name, workdir, rel_path)
                 if content is not None:
@@ -363,7 +400,7 @@ class BatchJobRunner:
         changed_paths = [
             rel_path
             for rel_path, content_hash in sorted(snapshot.items())
-            if baseline_hashes.get(rel_path) != content_hash
+            if baseline_hashes.get(rel_path) != content_hash and not is_bridge_path(rel_path)
         ]
         return self._download_exports(pod_name, workdir, changed_paths)
 
@@ -408,12 +445,13 @@ class BatchJobRunner:
             # decide whether to time out.
             logger.warning(f"Failed to touch {_PULLED_SENTINEL} in pod {pod_name}: {e}")
 
-    def _wait_for_completion(self, job_name: str, deadline: float) -> int:
+    def _wait_for_completion(self, job_name: str, deadline: float, *, budget_seconds: float | None = None) -> int:
         """Wait for the Job to reach a terminal state, sharing the run-level budget.
 
         Receives the same `deadline` threaded through `_wait_for_pod_running` and
         `_wait_for_sentinel` so the total Python-side wait is bounded by a single
-        `execution_timeout + _DEADLINE_BUFFER_SECONDS` budget rather than 3x.
+        `_budget_seconds` budget (the larger of the script and tool-calling timeouts plus
+        `_DEADLINE_BUFFER_SECONDS`) rather than 3x. `budget_seconds` is only used in the timeout message.
         """
         batch = self.client_manager.get_batch_client()
         while time.monotonic() < deadline:
@@ -427,8 +465,7 @@ class BatchJobRunner:
             time.sleep(_POLL_INTERVAL_SECONDS)
 
         raise ToolException(
-            f"Sandbox Job {job_name} did not complete within "
-            f"{self.config.execution_timeout + _DEADLINE_BUFFER_SECONDS:.0f}s."
+            f"Sandbox Job {job_name} did not complete within " f"{self._reported_budget(budget_seconds):.0f}s."
         )
 
     @staticmethod

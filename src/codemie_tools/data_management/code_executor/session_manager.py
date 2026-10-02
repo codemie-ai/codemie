@@ -262,6 +262,7 @@ class SandboxSessionManager:
 
         Args:
             pod_name: Name of the pod to check for existing session
+            workdir: Working directory the session must be bound to
 
         Returns:
             SandboxSession if a healthy session exists, None otherwise

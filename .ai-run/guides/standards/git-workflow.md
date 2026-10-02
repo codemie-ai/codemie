@@ -52,6 +52,13 @@ glab mr create \
 
 Evidence: the current agent entrypoint requires explicit git operations at `AGENTS.md:82`.
 
+## MR Description
+
+Every MR description follows the default GitLab template,
+[`.gitlab/merge_request_templates/Default.md`](../../../.gitlab/merge_request_templates/Default.md). It is the single
+source for the sections and the rules for filling them; the instructions live in its comments, so do not restate them
+here. The web UI loads it automatically. With `glab`, pass the filled template via `--description`.
+
 ## Inline MR Comments via glab
 
 `glab mr note` = general comment only. For diff-anchored inline comments use the discussions API.

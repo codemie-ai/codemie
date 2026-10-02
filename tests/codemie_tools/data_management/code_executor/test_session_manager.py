@@ -14,6 +14,7 @@
 
 """Tests for SandboxSessionManager."""
 
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -267,6 +268,23 @@ class TestSandboxSessionManager(unittest.TestCase):
 
         assert reused is None
         assert not hasattr(session, "_codemie_workdir")
+
+    def _aged_session(self, manager: SandboxSessionManager, age_seconds: float) -> MagicMock:
+        session = MagicMock()
+        session._codemie_pod_name = "pod-1"
+        session._codemie_workdir = "/home/codemie/a"
+        manager._sessions["pod-1"] = session
+        manager._session_timestamps["pod-1"] = time.time() - age_seconds
+        return session
+
+    def test_try_reuse_session_reuses_aged_session(self):
+        manager = SandboxSessionManager(config=self.config)
+        session = self._aged_session(manager, 200)
+
+        reused = manager._try_reuse_session("pod-1", "/home/codemie/a")
+
+        assert reused is session
+        session.close.assert_not_called()
 
     @patch('codemie_tools.data_management.code_executor.session_factory.ArtifactSandboxSession')
     def test_connect_to_existing_pod(self, mock_session_class):

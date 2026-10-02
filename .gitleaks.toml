@@ -13,6 +13,8 @@ paths = [
   '''.keys/.*''',                      # Local dev keys (gitignored, never committed)
   '''.env_local''',                    # Local environment variables (gitignored, never committed)
   '''.env\.local''',                   # Local environment variables (gitignored, never committed)
+  '''\.elasticsearch_data/.*''',      # Local Elasticsearch data dir (gitignored, index segments contain indexed sample credentials)
+  '''(^|/)codemie-repos/.*''',         # Locally cloned demo repos (gitignored, third-party test fixtures with sample keys)
   '''(^|/)\.env$''',                   # Local environment variables (gitignored, never committed)
   '''htmlcov/.*''',                    # Coverage HTML output (gitignored, renders test source as HTML)
   '''.venv/.*''',

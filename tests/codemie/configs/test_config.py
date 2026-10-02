@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+from pathlib import Path
+from unittest.mock import patch
+
 import pytest
 from pydantic import ValidationError
 
-from codemie.configs.config import Config
+from codemie.configs.config import Config, load_env_files
 
 
 def test_is_local_local():
@@ -108,3 +112,34 @@ def test_analytics_ingest_config_defaults(monkeypatch):
     cfg = Config(_env_file=())
     assert cfg.ANALYTICS_INGEST_OTLP_HTTP_ENDPOINT == "http://otelcol:4318"
     assert cfg.ANALYTICS_INGEST_MAX_BODY_BYTES == 5_242_880
+
+
+class TestLoadEnvFiles:
+    def _write_env_files(self, root: Path) -> None:
+        (root / ".env").write_text("FROM_ENV_ONLY=env\nFROM_BOTH=env\nFROM_ALL=env\n")
+        (root / ".env.local").write_text("FROM_BOTH=local\nFROM_ALL=local\nFROM_LOCAL_ONLY=local\n")
+
+    def test_process_environment_beats_both_files(self, tmp_path: Path) -> None:
+        self._write_env_files(tmp_path)
+        with patch.dict(os.environ, {"FROM_ALL": "process"}):
+            load_env_files(tmp_path)
+            assert os.environ["FROM_ALL"] == "process"
+
+    def test_env_local_beats_env(self, tmp_path: Path) -> None:
+        self._write_env_files(tmp_path)
+        with patch.dict(os.environ):
+            os.environ.pop("FROM_BOTH", None)
+            load_env_files(tmp_path)
+            assert os.environ["FROM_BOTH"] == "local"
+
+    def test_variables_from_a_single_file_are_loaded(self, tmp_path: Path) -> None:
+        self._write_env_files(tmp_path)
+        with patch.dict(os.environ):
+            os.environ.pop("FROM_ENV_ONLY", None)
+            os.environ.pop("FROM_LOCAL_ONLY", None)
+            load_env_files(tmp_path)
+            assert os.environ["FROM_ENV_ONLY"] == "env"
+            assert os.environ["FROM_LOCAL_ONLY"] == "local"
+
+    def test_missing_files_are_ignored(self, tmp_path: Path) -> None:
+        load_env_files(tmp_path)

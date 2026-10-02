@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15401_script-tool-calls-sdk",
+  "head": "aeb1710fc6a213a67eb2b7171d79eacc432b4209",
+  "runner": "custom",
+  "started_at": "2026-09-30T11:51:32Z",
+  "completed_at": "2026-09-30T12:03:36Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {"id": "lint", "source": "guide", "status": "PASS", "duration_ms": 1203, "command": "make ruff", "exit_code": 0, "notes": "2598 files left unchanged; working tree stayed clean"},
+    {"id": "build", "source": "guide", "status": "PASS", "duration_ms": 72686, "command": "make build", "exit_code": 0},
+    {"id": "license-check", "source": "guide", "status": "PASS", "duration_ms": 599, "command": "make license-check", "exit_code": 0, "notes": "Checked 2312 files, 0 missing license headers"},
+    {"id": "gitleaks", "source": "guide", "status": "PASS", "duration_ms": 12497, "command": "make gitleaks", "exit_code": 0, "notes": "no leaks found (Docker available)"},
+    {"id": "unit", "source": "guide", "status": "PASS", "duration_ms": 113268, "command": "make test", "exit_code": 0, "notes": "16959 passed, 175 skipped"},
+    {"id": "sonar-local", "source": "guide", "status": "PASS", "duration_ms": 91000, "command": "make sonar-local", "exit_code": 0, "notes": "First verbatim run exited 2 (QUALITY GATE STATUS: FAILED) because SONAR_SKIP_TESTS is set in .env.local and the scan reused a stale coverage.xml (scanner: 'Line 884 is out of range in the file src/codemie/service/agent_workspace_service.py (lines: 882)'; make test does not regenerate coverage.xml). After the pre-push hook regenerated coverage.xml, the verbatim rerun reported QUALITY GATE STATUS: PASSED. Stale-coverage failure is an environment artifact, not a code finding. Local run only; server-side hotspot fetch returned 403 on the failed run."},
+    {"id": "commit-msg", "source": "hook", "status": "PASS", "duration_ms": 0, "command": "bash scripts/git-hooks/commit_msg.sh <msgfile> (for each commit in origin/main..HEAD)", "exit_code": 0, "notes": "All 45 commits carry the EPMCDME-<n>: prefix. Hook pre-commit checks (ruff, license, gitleaks) are covered by the guide gates lint, license-check, and gitleaks."},
+    {"id": "pre-push", "source": "hook", "status": "PASS", "duration_ms": 307000, "command": "CODEMIE_PREPUSH_ENABLED=true bash scripts/git-hooks/pre_push.sh", "exit_code": 0, "notes": "16044 passed, 175 skipped (tests/enterprise excluded); sonar QUALITY GATE STATUS: PASSED. Guide lists make test and make sonar-local only; hook adds coverage.xml generation and enterprise exclusion."},
+    {"id": "ci-pre-ci-guard", "source": "ci", "status": "N/A", "command": ".gitlab-ci.yml (pre-ci-guard templates: wait-ci-init)", "notes": "CI only waits on external contexts (ci-pipeline, compliance-report) from the remote codemie-gitlab-templates; no runnable local command. Only CI and the auto_epm-cdme_vcs bot settle these (MR description needs a '## Test harness' section). make test-harness and /sanity are MR-time items not run here."},
+    {"id": "test-harness", "source": "guide", "status": "N/A", "command": "make test-harness", "notes": "Skip if not opening a merge request; needs docker stack, superadmin fixtures and ~/.codemie/test-harness.json. Still owed before the MR."}
+  ],
+  "failures": {}
+}

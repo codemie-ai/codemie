@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "task": "Remove the pooled-mode script tool-call bridge wiring added in sub-task 1 and re-implement the bridge against BatchJobRunner's Kubernetes Job model, adding a new concurrency hook for side-channel polling alongside the currently fully-sequential job wait.",
+  "generated": "2026-09-30T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 4, "label": "L" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 4, "label": "L" },
+    "dependencies":         { "score": 1, "label": "XS" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 22,
+  "size": "L",
+  "size_legend": {
+    "XS": "6-9 — < half day — plan directly",
+    "S": "10-14 — 1 day — plan directly",
+    "M": "15-20 — 2-3 days — brainstorm first",
+    "L": "21-26 — 4-5 days — brainstorm first",
+    "XL": "27-31 — > 1 sprint — recommend splitting",
+    "XXL": "32-36 — > 1 sprint — must split"
+  },
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Spans BatchJobRunner (needs a genuinely new concurrency-hook abstraction — no such hook exists today), execute_workspace_script_tool.py (remove pooled branch, add jobs-mode bridge wiring), code_executor_tool.py (remove pod-lock/channel branch in _run_locked), and session_manager.py (remove the dead clamp) — 4 components across the Kubernetes execution and service-dispatch layers, with shared utilities (KubernetesClientManager, ExecRunner protocol, SandboxSessionManager's lock machinery which is also used by plain non-bridge pooled execution) involved throughout." },
+    { "dimension": "technical_risk", "reason": "No precedent exists anywhere in this codebase for 'poll a side channel while a separate blocking wait proceeds' — BatchJobRunner.run() is strictly sequential on one thread across steps 5-12. The redesign also surfaces an unreconciled activeDeadlineSeconds-vs-tool-calling-timeout mismatch (30s execution_timeout default vs 120s tool-calling default) and must be proven safe against concurrent execs into the same pod." },
+    { "dimension": "requirements_clarity", "reason": "The removal side is precisely enumerated (five call sites named exactly), but the addition side is explicitly undesigned: the concurrency interleaving mechanism, how activeDeadlineSeconds should size against the tool-calling limit, and how to disentangle bridge-only removal from SandboxSessionManager's continued use by plain (non-bridge) pooled execution are all open design decisions the technical analysis defers to Stage 3." },
+    { "dimension": "file_change_estimate", "reason": "Estimated ~9-11 modified files (batch_job_runner.py, execute_workspace_script_tool.py, code_executor_tool.py, session_manager.py, customer_config_declarations.py description text, README.md, plus test_batch_job_runner.py, test_sandbox_dispatch.py, test_execute_workspace_script_tool.py) across 3-4 directories (code_executor/, workspace/, service/, tests/), with likely 1 new test file for a fake/threaded Job-lifecycle double since no existing fixture models this interleaving." }
+  ],
+  "red_flags_applied": [
+    "Component Scope bumped from L to XL: touches core shared utilities — BatchJobRunner and SandboxSessionManager's pod-lock machinery are also used by plain (non-bridge) pooled code execution, so removal must be scoped carefully rather than deleted wholesale."
+  ],
+  "split_recommendation": null
+}

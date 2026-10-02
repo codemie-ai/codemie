@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15401_script-tool-calls-sdk",
+  "head": "5469c71d4f0c79d6f2d3993589a751614f2fd773",
+  "runner": "custom",
+  "started_at": "2026-09-29T18:40:11Z",
+  "completed_at": "2026-09-29T18:51:19Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {
+      "id": "lint",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 2000,
+      "command": "make ruff",
+      "exit_code": 0,
+      "notes": "ruff format left 2584 files unchanged; check clean"
+    },
+    {
+      "id": "build",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 70000,
+      "command": "make build",
+      "exit_code": 0
+    },
+    {
+      "id": "license-headers",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "make license-check",
+      "exit_code": 0,
+      "notes": "Checked 2298 files, 0 missing headers"
+    },
+    {
+      "id": "gitleaks",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 12000,
+      "command": "make gitleaks",
+      "exit_code": 0,
+      "notes": "Docker reachable; gitleaks v8.30.1 scanned ~155 MB working tree incl. local/, no leaks found with .gitleaks.toml allowlist"
+    },
+    {
+      "id": "unit",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 108000,
+      "command": "make test",
+      "exit_code": 0,
+      "notes": "16893 passed, 175 skipped"
+    },
+    {
+      "id": "sonar",
+      "source": "guide",
+      "status": "PASS",
+      "duration_ms": 81000,
+      "command": "make sonar-local",
+      "exit_code": 0,
+      "notes": "Quality gate PASSED on HEAD 5469c71d4. First attempt FAILED only because .env.local sets SONAR_SKIP_TESTS and no coverage.xml existed (scanner warned 'No report was found'); coverage.xml was then generated with the script's own pytest --cov command and make sonar-local rerun. SCA 'Dependency analysis skipped' is a server-side setting."
+    },
+    {
+      "id": "commit-msg",
+      "source": "hook",
+      "status": "PASS",
+      "duration_ms": 1000,
+      "command": "bash scripts/git-hooks/commit_msg.sh <msgfile> (per commit in origin/main..HEAD)",
+      "exit_code": 0,
+      "notes": "11 commits checked, all have EPMCDME-<n>: prefix. pre-commit hook steps (ruff, license, gitleaks staged) are covered by guide gates; pre-push (pytest + sonar-local) covered by unit and sonar."
+    },
+    {
+      "id": "ci-pipeline",
+      "source": "ci",
+      "status": "N/A",
+      "duration_ms": 0,
+      "command": ".gitlab-ci.yml",
+      "exit_code": null,
+      "notes": ".gitlab-ci.yml only runs the pre-ci-guard template (wait-ci-init for external contexts ci-pipeline, compliance-report); no local-runnable checks. MR compliance bot and /sanity are post-push."
+    }
+  ],
+  "failures": {}
+}

@@ -1,0 +1,84 @@
+{
+  "decision": "request-changes",
+  "rationale": "All four lenses and the standards audit ran (none failed or truncated), but two required security criteria are only partially met: bridge exclusion for explicit exports and guaranteed cleanup when stop() fails. Reachability of the unbounded tool-calling timeout (CR-004) could not be confirmed, so confidence is medium. 0 deferred, 10 dismissed as noise or intended pooled-mode removal; no deferred backlog written.",
+  "confidence": "medium",
+  "risk_flags": ["security", "public-api"],
+  "business_review": [
+    {"kind": "spec", "item": "S1: pooled-mode bridge wiring removed (_build_channel, _build_exec_runner, sweep hook, _run_locked channel branch, min_remaining_seconds, SESSION_HEADROOM_SECONDS)", "status": "pass", "notes": "All listed symbols deleted; session.run(code, timeout=timeout) inlined under the pod lock."},
+    {"kind": "spec", "item": "S1 keep-untouched: SandboxSessionManager pooling, _execute_code_sandbox pod-lock, customer-config lookup in _resolve_tool_calling_limit", "status": "pass", "notes": "Pod lock and TTL health check retained; only the JOBS hardcoded None and the SHARED clamp were removed."},
+    {"kind": "spec", "item": "S2: BatchJobRunner.run() gains keyword-only exchange_dir and tool_calling_timeout, JobResult unchanged", "status": "pass", "notes": "Signature confirmed in batch_job_runner.py."},
+    {"kind": "spec", "item": "S3: channel started after _wait_for_pod_running; order sentinel -> stop -> cleanup(kill=False) -> exports -> changed files", "status": "pass", "notes": "Ordering confirmed in run() and asserted by test."},
+    {"kind": "spec", "item": "S3: idempotent finally-style best-effort stop/cleanup safety net, catch + log only", "status": "partial", "notes": "_close_channel runs stop() and cleanup() in one try; a stop() failure skips cleanup. See CR-001."},
+    {"kind": "spec", "item": "S3b: drop bridge-folder paths from changed_paths in _download_changed_files; snapshot untouched", "status": "pass", "notes": "Filter on first path segment; unit test covers .codemie_bridge_other.txt kept."},
+    {"kind": "spec", "item": "S4: JOBS-mode limit from customer config; _execute_sandbox_script_jobs passes exchange_dir and tool_calling_timeout only when limit set", "status": "pass", "notes": "Covered by TestJobsModeToolCalling."},
+    {"kind": "spec", "item": "S5: activeDeadlineSeconds and shared deadline use max(execution_timeout, tool_calling_timeout or 0) + buffer", "status": "pass", "notes": "_budget_seconds used by manifest and deadline; three tests."},
+    {"kind": "spec", "item": "S6: sweep not called in jobs mode; kill=False always; ToolCallChannel, pod_scripts, SDK unchanged", "status": "pass", "notes": "No sweep call in run(); tests assert sweep not called."},
+    {"kind": "spec", "item": "S7: README bridge section and smoke-check drop pooled-only claims", "status": "pass", "notes": "README rewritten for jobs mode."},
+    {"kind": "spec", "item": "Typing constraint: full annotations, X | None, no Any on new/changed signatures", "status": "pass", "notes": "No Any introduced."},
+    {"kind": "spec", "item": "Non-goals respected: no change to SDK, ToolCallChannel core, pod_scripts, _snapshot_workdir, system-file filter", "status": "pass", "notes": "None of those files changed."},
+    {"kind": "spec", "item": "AC: pooled-mode bridge symbols no longer exist; plain pooled execution unchanged", "status": "pass", "notes": "Dispatch and signature tests confirm."},
+    {"kind": "spec", "item": "AC: run() with exchange_dir=None behaves as before (no channel, no widening)", "status": "pass", "notes": "Covered by two tests."},
+    {"kind": "spec", "item": "AC: channel bound to Job pod once Running; stop/cleanup guaranteed before Job deletion on success and failure paths", "status": "partial", "notes": "Holds unless channel.stop() raises, then cleanup is skipped. See CR-001."},
+    {"kind": "spec", "item": "AC: jobs-mode script with bridge enabled gets a real response from the echo handler", "status": "pending-stage-7", "notes": "Wired; needs a real Job run to prove."},
+    {"kind": "spec", "item": "AC: deadline and activeDeadlineSeconds widen only when a tool-calling timeout is resolved", "status": "pass", "notes": "Tests assert widened and unchanged cases."},
+    {"kind": "spec", "item": "AC: ordering test - stop and cleanup after sentinel, before exports and changed-files snapshot", "status": "pass", "notes": "Event-order test present."},
+    {"kind": "spec", "item": "AC: exchange folder never in changed_files or exports, tested with normal cleanup and simulated cleanup failure", "status": "partial", "notes": "Exports unfiltered and no cleanup-failure test inside run(). See CR-003."},
+    {"kind": "spec", "item": "AC: cleanup invoked with kill=False and sweep() not called in jobs mode", "status": "pass", "notes": "Asserted in test_batch_job_runner.py."},
+    {"kind": "spec", "item": "AC: README and WORKSPACE_SCRIPT_BRIDGE.description no longer claim pooled-mode-only support", "status": "pass", "notes": "Description trimmed and tested."}
+  ],
+  "standards_review": [
+    {"kind": "commit-format", "status": "pass", "notes": "all 9 commit subjects in the review range match the documented EPMCDME-####: Description format"},
+    {"kind": "code-quality", "status": "pass", "notes": "new code in batch_job_runner.py and execute_workspace_script_tool.py has full parameter and return annotations and uses X | None unions; no new source files so no license header concern; no new lines over the 120 char limit"},
+    {"kind": "security", "status": "pass", "notes": "no hardcoded or logged secrets; tool-call exchange dir comes from an internal name generator rather than user input; channel shutdown is idempotent and runs in finally; no lossy parsing of untrusted input introduced"}
+  ],
+  "findings": [
+    {
+      "id": "CR-001",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie_tools/data_management/code_executor/batch_job_runner.py",
+      "line": 236,
+      "title": "Cleanup skipped when channel.stop() raises",
+      "problem": "_close_channel calls channel.stop() and channel.cleanup(kill=False) inside one try block. If stop() raises, cleanup is never attempted. run() then sets channel = None, so the finally-block _close_channel retries nothing. The unit test test_close_channel_swallows_errors asserts cleanup is not called.",
+      "impact": "The task requires exchange-folder cleanup to complete before any export or changed-files snapshot. With stop() failing, the folder stays in the pod workdir through the download phase. ToolCallChannel.stop() has little that can raise today, so reachability is unconfirmed and severity is capped at major, but the guarantee is structurally absent and locked in by a test.",
+      "recommendation": "Use try/finally so cleanup(kill=False) always runs after stop(), each step logging its own failure. Invert the test to assert cleanup is still called when stop() raises."
+    },
+    {
+      "id": "CR-002",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie_tools/data_management/code_executor/batch_job_runner.py",
+      "line": 366,
+      "title": "Timeout messages report wrong widened budget",
+      "problem": "_wait_for_pod_running, _wait_for_sentinel and _wait_for_completion still format execution_timeout + _DEADLINE_BUFFER_SECONDS in their timeout errors, although the deadline is now _budget_seconds(tool_calling_timeout). The _wait_for_completion docstring still describes the old budget. No test checks the message text.",
+      "impact": "When a tool-calling run times out, users and agents are told it exceeded e.g. 65s although the Job was allowed 180s, which misleads diagnosis.",
+      "recommendation": "Compute the budget once in run() and pass it (or the formatted value) to the wait helpers, or derive it from the deadline. Add a test with tool_calling_timeout above execution_timeout that asserts the widened number in the message."
+    },
+    {
+      "id": "CR-003",
+      "kind": "code",
+      "severity": "critical",
+      "triage": "patch",
+      "file": "src/codemie_tools/data_management/code_executor/batch_job_runner.py",
+      "line": 398,
+      "title": "Bridge folder not excluded from explicit exports",
+      "problem": "Bridge-folder filtering exists only in _download_changed_files. _download_exports, which serves JobResult.exported_files, filters nothing, and the caller's _validate_export_paths only checks for workdir escape and blocked system prefixes, not BRIDGE_DIR_NAME. No test makes channel.cleanup fail inside run() or covers a normal-cleanup case.",
+      "impact": "The required criterion says the bridge folder must never appear in changed_files or exports even if cleanup fails. If cleanup fails, a requested export_files entry under .codemie_bridge is downloaded and stored. The criterion is partial and unproven by tests.",
+      "recommendation": "Skip or reject any path whose first segment is BRIDGE_DIR_NAME in _download_exports (and/or _validate_export_paths). Add run()-level tests where channel.cleanup raises or fails and bridge paths appear in the snapshot and in export_files, asserting neither reaches JobResult."
+    },
+    {
+      "id": "CR-004",
+      "kind": "code",
+      "severity": "major",
+      "triage": "patch",
+      "file": "src/codemie_tools/data_management/workspace/execute_workspace_script_tool.py",
+      "line": 147,
+      "title": "Tool-calling timeout has no upper bound",
+      "problem": "With the session-lifetime clamp removed, _resolve_tool_calling_limit rejects only values <= 0. The admin pattern ^[1-9][0-9]*$ accepts arbitrarily large values, and the result flows into int(_budget_seconds(...)) for activeDeadlineSeconds, the shared wait deadline and the held Job semaphore slot.",
+      "impact": "An oversized value can exceed the Kubernetes int64 field, so Job creation is rejected and every tool-calling run fails. Otherwise it pins a capacity slot for a very long time. Reachability depends on admin-supplied config and on validation outside the read window, so it was not confirmed.",
+      "recommendation": "Clamp to a documented maximum (for example MAX_TOOL_CALLING_SECONDS) in _resolve_tool_calling_limit and log a warning when clamped. Treat non-finite values as disabled."
+    }
+  ]
+}

@@ -79,6 +79,7 @@ docs/superpowers/tasks/**
 !docs/superpowers/tasks/*/**/*.py
 !docs/superpowers/tasks/*/**/actual-complexity.json
 !docs/superpowers/tasks/*/**/code-review-final.json
+!docs/superpowers/tasks/*/**/code-review-check.json
 !docs/superpowers/tasks/*/**/code-review-findings.json
 !docs/superpowers/tasks/*/**/complexity.json
 !docs/superpowers/tasks/*/**/complexity-assessment.json
@@ -90,6 +91,7 @@ docs/superpowers/tasks/**
 !docs/superpowers/tasks/*/**/work-item-events.jsonl
 # ...minus the documents the Factory generates around a run rather than as its record
 docs/superpowers/tasks/*/**/lens-*.md
+docs/superpowers/tasks/*/**/task-*-report.md
 docs/superpowers/tasks/*/**/code-review-brief.md
 docs/superpowers/tasks/*/**/mr-body.md
 docs/superpowers/tasks/*/**/mr-title.txt

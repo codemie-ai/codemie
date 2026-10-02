@@ -2,7 +2,9 @@
 # Licensed under the Apache License, Version 2.0
 """Dispatch tests for CodeExecutorTool._sandbox_session."""
 
+import inspect
 import json
+import threading
 import unittest
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
@@ -38,6 +40,22 @@ class TestSandboxSessionDispatch(unittest.TestCase):
                 assert session is fake_session
 
             acquire.assert_called_once_with("/home/codemie/u")
+
+    def test_sandbox_helpers_take_no_min_remaining_seconds(self):
+        for helper in (CodeExecutorTool._sandbox_session, CodeExecutorTool._acquire_session):
+            with self.subTest(helper=helper.__name__):
+                assert "min_remaining_seconds" not in inspect.signature(helper).parameters
+
+    def test_acquire_session_does_not_pass_min_remaining_seconds_to_get_session(self):
+        tool = _make_tool(SandboxMode.SHARED)
+        fake_session = MagicMock(name="session")
+
+        with patch("codemie_tools.data_management.code_executor.code_executor_tool.SandboxSessionManager") as manager:
+            manager.return_value.get_session.return_value = fake_session
+            session, _ = tool._acquire_session("/home/codemie/u")
+
+        assert session is fake_session
+        assert "min_remaining_seconds" not in manager.return_value.get_session.call_args.kwargs
 
 
 class TestExecuteSandboxIntegration(unittest.TestCase):
@@ -385,9 +403,56 @@ class TestWorkspaceScriptRunnerJobsMode(unittest.TestCase):
             "export_files": None,
             "workdir": "/home/codemie/conv",
             "baseline_hashes": {},
+            "bridge": None,
         }
         sb.assert_not_called()
         assert out == "ok"
+
+    def test_workspace_script_jobs_mode_with_tool_calling_passes_bridge_options(self):
+        from codemie_tools.data_management.code_executor.models import CodeExecutorConfig
+        from codemie_tools.data_management.workspace.execute_workspace_script_tool import (
+            WorkspaceScriptRunner,
+        )
+
+        config = CodeExecutorConfig(
+            execution_mode=ExecutionMode.SANDBOX,
+            sandbox_mode=SandboxMode.JOBS,
+        )
+        runner = WorkspaceScriptRunner.__new__(WorkspaceScriptRunner)
+        object.__setattr__(runner, "__pydantic_fields_set__", set())
+        object.__setattr__(runner, "__pydantic_extra__", None)
+        object.__setattr__(runner, "__pydantic_private__", {"_custom_pod_manifest": None})
+        object.__setattr__(runner, "config", config)
+        object.__setattr__(runner, "input_files", [])
+        object.__setattr__(runner, "security_policy", MagicMock())
+        object.__setattr__(runner, "last_execution_files", [])
+        object.__setattr__(runner, "file_repository", MagicMock())
+        object.__setattr__(runner, "user_id", "u")
+        object.__setattr__(runner, "conversation_id", "conv")
+        object.__setattr__(runner, "tool_calling_timeout", 120.0)
+
+        fake_result = MagicMock(stdout="ok\n", stderr="", exit_code=0, exported_files={}, changed_files={})
+
+        with (
+            patch("codemie_tools.data_management.workspace.execute_workspace_script_tool.BatchJobRunner") as runner_cls,
+            patch.object(WorkspaceScriptRunner, "_get_user_workdir", return_value="/home/codemie/conv"),
+            patch.object(WorkspaceScriptRunner, "_get_script_content", return_value="print('x')"),
+            patch.object(WorkspaceScriptRunner, "_validate_code_security_policy", return_value=None),
+            patch.object(WorkspaceScriptRunner, "_get_input_file_hashes", return_value={}),
+            patch.object(WorkspaceScriptRunner, "_read_input_file_bytes", return_value={}),
+            patch.object(WorkspaceScriptRunner, "_format_execution_result", return_value="ok"),
+            patch.object(WorkspaceScriptRunner, "_store_exported_bytes", return_value=[]),
+            patch.object(WorkspaceScriptRunner, "_log_execution_timing", return_value=None),
+            patch.object(WorkspaceScriptRunner, "_sandbox_session") as sb,
+        ):
+            runner_cls.return_value.run.return_value = fake_result
+            runner._execute_sandbox_script("script.py")
+
+        run_kwargs = runner_cls.return_value.run.call_args.kwargs
+        assert run_kwargs["bridge"].exchange_dir.startswith(".codemie_bridge/")
+        assert run_kwargs["bridge"].tool_calling_timeout == 120.0
+        assert {"input_files", "export_files", "workdir", "baseline_hashes"} <= set(run_kwargs)
+        sb.assert_not_called()
 
     def test_workspace_script_shared_mode_still_uses_sandbox_session(self):
         from codemie_tools.data_management.code_executor.models import CodeExecutorConfig
@@ -433,3 +498,52 @@ class TestWorkspaceScriptRunnerJobsMode(unittest.TestCase):
         assert "runpy.run_path" in executed_code
         assert "script.py" in executed_code
         assert out == "ok"
+
+
+class TestExecuteCodeSandbox(unittest.TestCase):
+    """_execute_code_sandbox: serial execution under the per-pod lock with the configured timeout."""
+
+    def test_signature_has_no_channel_pre_run_or_timeout(self):
+        parameters = inspect.signature(CodeExecutorTool._execute_code_sandbox).parameters
+
+        assert list(parameters) == ["self", "session", "code"]
+
+    def test_runs_under_the_pod_lock_with_config_timeout(self):
+        tool = _make_tool(SandboxMode.SHARED)
+        session = MagicMock(name="session")
+        session._codemie_pod_name = "pod-1"
+        lock = threading.Lock()
+        locked_during_run: list[bool] = []
+
+        def fake_run(code: str, timeout: float | None = None) -> MagicMock:
+            locked_during_run.append(lock.locked())
+            return MagicMock(exit_code=0)
+
+        session.run.side_effect = fake_run
+
+        with patch("codemie_tools.data_management.code_executor.session_manager.SandboxSessionManager") as manager_cls:
+            manager_cls.return_value._get_or_create_lock.return_value = lock
+            tool._execute_code_sandbox(session, "print(1)")
+
+        manager_cls.return_value._get_or_create_lock.assert_called_once_with("pod-1")
+        assert locked_during_run == [True]
+        assert not lock.locked()
+        assert session.run.call_args.kwargs == {"timeout": tool.config.execution_timeout}
+
+    def test_timeout_raises_tool_exception_reporting_config_timeout(self):
+        from langchain_core.tools import ToolException
+        from llm_sandbox.exceptions import SandboxTimeoutError
+
+        tool = _make_tool(SandboxMode.SHARED)
+        session = MagicMock(name="session")
+        session._codemie_pod_name = "pod-1"
+        session.run.side_effect = SandboxTimeoutError("boom")
+        lock = threading.Lock()
+
+        with patch("codemie_tools.data_management.code_executor.session_manager.SandboxSessionManager") as manager_cls:
+            manager_cls.return_value._get_or_create_lock.return_value = lock
+            with self.assertRaises(ToolException) as ctx:
+                tool._execute_code_sandbox(session, "print(1)")
+
+        assert f"timed out after {tool.config.execution_timeout:g} seconds" in str(ctx.exception)
+        assert not lock.locked()

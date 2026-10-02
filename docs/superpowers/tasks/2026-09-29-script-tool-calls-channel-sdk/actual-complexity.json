@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generated": "2026-09-29T00:00:00Z",
+  "dimensions": {
+    "component_scope":      { "score": 5, "label": "XL" },
+    "requirements_clarity": { "score": 3, "label": "M" },
+    "technical_risk":       { "score": 5, "label": "XL" },
+    "file_change_estimate": { "score": 6, "label": "XXL" },
+    "dependencies":         { "score": 2, "label": "S" },
+    "affected_layers":      { "score": 3, "label": "M" }
+  },
+  "total": 24,
+  "size": "L",
+  "band_range": "21-26",
+  "files_changed": 22,
+  "routing": "brainstorming",
+  "key_reasoning": [
+    { "dimension": "component_scope", "reason": "Two new modules (tool_call_channel backend poller with exec runner and handler registry, and the standalone runtime SDK) plus edits to sandbox_guard (SDK bootstrap injection), session_manager, code_executor_tool, execute_workspace_script_tool, agent_workspace_service and the customer-config component. New abstractions (ExecRunner protocol, handler registry, file-based request/response protocol) span several subsystems." },
+    { "dimension": "technical_risk", "reason": "No exact precedent: a file-based request/response bridge between a sandboxed script and the backend over Kubernetes exec, with polling, retries, exec timeouts, payload caps, oversize and bad-encoding handling, pod-side pid/start_time markers and a threaded channel lifecycle. It sits inside the sandbox guard (security-sensitive: SDK executed in guarded exec, filesystem policy interplay). The enumerated edge and error cases were covered by dedicated test files, and a review round (10 findings) and one live-verification bug (pod name) confirm the risk." },
+    { "dimension": "file_change_estimate", "reason": "22 files changed (3330 insertions, 25 deletions): 12 source, config and README files and 8 test files, including new modules and new test files, across src/codemie, src/codemie_tools, config, tests and tooling. 3 files are unrelated tooling (.gitleaks.toml, run-local-sonar.js, tests/conftest.py); even excluding them the count stays at 16 or more, XXL per the diffstat mapping." }
+  ],
+  "red_flags_applied": [
+    "Technical Risk at XL: security-sensitive sandbox execution path and no exact precedent for the exec-based file bridge",
+    "Component Scope at XL: affects multiple workflows (code executor tool, workspace script tool, workspace service)"
+  ],
+  "split_recommendation": null
+}

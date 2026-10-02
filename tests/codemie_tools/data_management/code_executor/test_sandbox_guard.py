@@ -81,6 +81,99 @@ def test_build_guarded_workspace_script_runs_workspace_script(tmp_path: Path) ->
     assert result.stdout.strip() == "workspace-script-ok"
 
 
+_EXCHANGE_DIR = ".codemie_bridge/1700000000-abc123"
+_PROC_STAT_AVAILABLE = Path("/proc/self/stat").exists()
+
+
+def _run_wrapper(wrapper: str, workspace_root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-c", wrapper],
+        cwd=workspace_root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _make_workspace(tmp_path: Path, script_source: str) -> Path:
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "script.py").write_text(script_source)
+    return workspace_root
+
+
+def test_workspace_wrapper_with_exchange_dir_exposes_configured_sdk(tmp_path: Path) -> None:
+    workspace_root = _make_workspace(
+        tmp_path,
+        "import os\n"
+        "import codemie_runtime_sdk\n"
+        "print(os.getpid())\n"
+        "print(codemie_runtime_sdk._state)\n"
+        "print(codemie_runtime_sdk.PROTOCOL_VERSION)\n",
+    )
+    wrapper = build_guarded_workspace_script(
+        "script.py", workspace_root=str(workspace_root), exchange_dir=_EXCHANGE_DIR
+    )
+
+    result = _run_wrapper(wrapper, workspace_root)
+
+    assert result.returncode == 0, result.stderr
+    child_pid, state, version = result.stdout.split()
+    assert state == _EXCHANGE_DIR
+    assert version == "1"
+    assert (workspace_root / _EXCHANGE_DIR / "pid").read_text().strip() == child_pid
+
+
+@pytest.mark.skipif(not _PROC_STAT_AVAILABLE, reason="requires /proc")
+def test_workspace_wrapper_writes_process_start_time(tmp_path: Path) -> None:
+    workspace_root = _make_workspace(tmp_path, "print('ok')\n")
+    wrapper = build_guarded_workspace_script(
+        "script.py", workspace_root=str(workspace_root), exchange_dir=_EXCHANGE_DIR
+    )
+
+    result = _run_wrapper(wrapper, workspace_root)
+
+    assert result.returncode == 0, result.stderr
+    start_time = (workspace_root / _EXCHANGE_DIR / "start_time").read_text().strip()
+    assert start_time.isdigit()
+
+
+def test_workspace_wrapper_without_exchange_dir_leaves_sdk_unconfigured(tmp_path: Path) -> None:
+    workspace_root = _make_workspace(
+        tmp_path,
+        "import codemie_runtime_sdk as sdk\n"
+        "try:\n"
+        "    sdk.call('x', {})\n"
+        "except sdk.ToolCallError as exc:\n"
+        "    print(exc.code)\n",
+    )
+    wrapper = build_guarded_workspace_script("script.py", workspace_root=str(workspace_root))
+
+    result = _run_wrapper(wrapper, workspace_root)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "unavailable"
+    assert not (workspace_root / ".codemie_bridge").exists()
+
+
+def test_workspace_wrapper_stdout_carries_only_script_output(tmp_path: Path) -> None:
+    workspace_root = _make_workspace(tmp_path, "print('only-this')\n")
+    wrapper = build_guarded_workspace_script(
+        "script.py", workspace_root=str(workspace_root), exchange_dir=_EXCHANGE_DIR
+    )
+
+    result = _run_wrapper(wrapper, workspace_root)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "only-this\n"
+
+
+def test_guarded_python_script_does_not_embed_sdk() -> None:
+    script = build_guarded_python_script("print('hello')", workspace_root="/home/codemie/u")
+
+    assert "codemie_runtime_sdk" not in script
+
+
 def test_format_execution_result_hides_denial_markers_from_stderr() -> None:
     tool = CodeExecutorTool(file_repository=MagicMock(), user_id="test_user")
     result = MagicMock(
