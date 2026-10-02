@@ -538,7 +538,7 @@ GROUP BY session_id;
 
 
 -- ---------------------------------------------------------------
--- mv_lines_daily — routes claude_code/cursor lines_of_code.count metrics into daily rollup.
+-- mv_lines_daily — routes claude_code.lines_of_code.count metrics into daily rollup.
 -- ---------------------------------------------------------------
 CREATE MATERIALIZED VIEW IF NOT EXISTS codemie_analytics.mv_lines_daily ON CLUSTER default
 TO codemie_analytics.coding_agent_lines_daily
@@ -551,11 +551,11 @@ SELECT
     if(Attributes['type'] = 'added',   toUInt64(Value), 0)  AS lines_added,
     if(Attributes['type'] = 'removed', toUInt64(Value), 0)  AS lines_removed
 FROM codemie_analytics.coding_agent_metrics_sum
-WHERE MetricName IN ('claude_code.lines_of_code.count', 'cursor.lines_of_code.count');
+WHERE MetricName = 'claude_code.lines_of_code.count';
 
 
 -- ---------------------------------------------------------------
--- mv_active_time_daily — routes claude_code/cursor active_time.total metrics into daily rollup.
+-- mv_active_time_daily — routes claude_code.active_time.total metrics into daily rollup.
 -- Value is in seconds (SDK); multiplied by 1000 to store as milliseconds.
 -- ---------------------------------------------------------------
 CREATE MATERIALIZED VIEW IF NOT EXISTS codemie_analytics.mv_active_time_daily ON CLUSTER default
@@ -568,7 +568,7 @@ SELECT
     if(Attributes['type'] = 'user', toUInt64(Value * 1000), 0)   AS active_ms_user,
     if(Attributes['type'] = 'cli',  toUInt64(Value * 1000), 0)   AS active_ms_cli
 FROM codemie_analytics.coding_agent_metrics_sum
-WHERE MetricName IN ('claude_code.active_time.total', 'cursor.active_time.total');
+WHERE MetricName = 'claude_code.active_time.total';
 
 
 -- ---------------------------------------------------------------
@@ -606,7 +606,7 @@ GROUP BY session_id;
 
 
 -- ---------------------------------------------------------------
--- mv_turns_daily — routes claude_code/cursor interaction spans into daily turns rollup.
+-- mv_turns_daily — routes claude_code.interaction spans into daily turns rollup.
 -- ---------------------------------------------------------------
 CREATE MATERIALIZED VIEW IF NOT EXISTS codemie_analytics.mv_turns_daily ON CLUSTER default
 TO codemie_analytics.coding_agent_turns_daily AS
@@ -615,13 +615,13 @@ SELECT
     session_id,
     count()           AS turns
 FROM codemie_analytics.coding_agent_traces
-WHERE SpanName IN ('claude_code.interaction', 'cursor.interaction')
+WHERE SpanName = 'claude_code.interaction'
   AND session_id != ''
 GROUP BY day, session_id;
 
 
 -- ---------------------------------------------------------------
--- mv_file_facts_daily — routes claude_code/cursor tool spans into daily file/tool fact rollup.
+-- mv_file_facts_daily — routes claude_code.tool spans into daily file/tool fact rollup.
 -- ---------------------------------------------------------------
 CREATE MATERIALIZED VIEW IF NOT EXISTS codemie_analytics.mv_file_facts_daily ON CLUSTER default
 TO codemie_analytics.coding_agent_file_facts_daily AS
@@ -638,7 +638,7 @@ SELECT
         file_path != '' AND tool_name IN ('Edit', 'MultiEdit', 'NotebookEdit')
     )                                                                              AS files_edited
 FROM codemie_analytics.coding_agent_traces
-WHERE SpanName IN ('claude_code.tool', 'cursor.tool')
+WHERE SpanName = 'claude_code.tool'
   AND session_id != ''
 GROUP BY day, session_id;
 

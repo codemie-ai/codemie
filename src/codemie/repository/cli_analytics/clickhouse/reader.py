@@ -28,8 +28,7 @@ Source mapping (this backend, NOT the reference implementation's tables):
 
 Design decisions (see ANALYTICS_DISCOVERY/local_analytics_implementation_plan.md §3):
   D1 session universe = sessions that made a priced API call (coding_agent_cost_daily).
-  D2 repository key   = the git remote (owner/repo) when available, otherwise the
-                        directory the session STARTED in.
+  D2 repository key   = the directory the session STARTED in, basename-normalised.
   D3 turns            = claude_code.interaction spans.
 
 Kept on purpose (PostgreSQL parity, public port/API): the `is_unattributed` repository filter of
@@ -57,9 +56,9 @@ RAW_TTL_DAYS = 90
 
 # Collapses a stored `cwd` to a bare folder name. Handles both separators and the
 # historical full-path rows written before ingest_router started normalising cwd
-_TOOL_SPAN = "SpanName IN ('claude_code.tool', 'cursor.tool')"
-_EXEC_SPAN = "SpanName IN ('claude_code.tool.execution', 'cursor.tool.execution')"
-_INTERACTION_SPAN = "SpanName IN ('claude_code.interaction', 'cursor.interaction')"
+_TOOL_SPAN = "SpanName = 'claude_code.tool'"
+_EXEC_SPAN = "SpanName = 'claude_code.tool.execution'"
+_INTERACTION_SPAN = "SpanName = 'claude_code.interaction'"
 
 # A session is in scope iff it started inside the window (bounds inclusive). Applied once, in `sel`.
 _STARTED_IN_WINDOW = "started_at BETWEEN {start_dt:DateTime64(3)} AND {end_dt:DateTime64(3)}"
@@ -131,7 +130,7 @@ class ClickHouseCliAnalyticsReader:
             FROM (
                 SELECT
                     d.session_id                                                  AS session_id,
-                    coalesce(nullIf(d.repo_remote, ''), nullIf(d.repository, '')) AS repository,
+                    d.repository                                                  AS repository,
                     d.branch                                                      AS branch,
                     d.repo_remote                                                 AS repo_remote,
                     d.project_name                                                AS project_name,
@@ -587,7 +586,7 @@ class ClickHouseCliAnalyticsReader:
         SELECT
             c.session_id                                                   AS session_id,
             coalesce(nullIf(e.resolved_email, ''), nullIf(d.developer_name, ''), 'unknown') AS developer_name,
-            coalesce(nullIf(d.repo_remote, ''), nullIf(d.repository, ''))   AS repository,
+            nullIf(d.repository, '')                                        AS repository,
             nullIf(d.branch, '')                                           AS branch,
             nullIf(d.project_name, '')                                     AS project_name,
             nullIf(d.first_prompt, '')                                     AS prompt,
@@ -661,7 +660,7 @@ class ClickHouseCliAnalyticsReader:
                  AND LogAttributes['skill_name'] NOT IN (
                      SELECT span_skill_name
                      FROM codemie_analytics.coding_agent_traces
-                     WHERE SpanName IN ('claude_code.tool', 'cursor.tool')
+                     WHERE SpanName = 'claude_code.tool'
                        AND session_id = {session_id:String}
                        AND span_skill_name != ''
                  ))                                                            AS skill_count
@@ -677,14 +676,14 @@ class ClickHouseCliAnalyticsReader:
         FROM (
             SELECT tool_name, tool_use_id
             FROM codemie_analytics.coding_agent_traces
-            WHERE SpanName IN ('claude_code.tool', 'cursor.tool')
+            WHERE SpanName = 'claude_code.tool'
               AND session_id = {session_id:String}
               AND tool_name != ''
         ) t
         LEFT JOIN (
             SELECT tool_use_id, anyLast(SpanAttributes['success']) AS success
             FROM codemie_analytics.coding_agent_traces
-            WHERE SpanName IN ('claude_code.tool.execution', 'cursor.tool.execution')
+            WHERE SpanName = 'claude_code.tool.execution'
               AND session_id = {session_id:String}
               AND tool_use_id != ''
             GROUP BY tool_use_id
@@ -730,7 +729,7 @@ class ClickHouseCliAnalyticsReader:
             tool_name        AS tool_name
         FROM codemie_analytics.coding_agent_traces
         WHERE session_id = {session_id:String}
-          AND SpanName IN ('claude_code.tool', 'cursor.tool')
+          AND SpanName = 'claude_code.tool'
           AND tool_name != ''
         )
         ORDER BY timestamp, event_type, tool_name, model_name
@@ -773,14 +772,14 @@ class ClickHouseCliAnalyticsReader:
                 Timestamp                        AS span_start,
                 ParentSpanId                     AS parent_span_id
             FROM codemie_analytics.coding_agent_traces
-            WHERE SpanName IN ('claude_code.tool', 'cursor.tool')
+            WHERE SpanName = 'claude_code.tool'
               AND session_id = {session_id:String}
               AND (subagent_type != '' OR span_skill_name != '')
         ) t
         LEFT JOIN (
             SELECT tool_use_id, anyLast(intDiv(Duration, 1000000)) AS duration_ms
             FROM codemie_analytics.coding_agent_traces
-            WHERE SpanName IN ('claude_code.tool.execution', 'cursor.tool.execution')
+            WHERE SpanName = 'claude_code.tool.execution'
               AND session_id = {session_id:String}
               AND tool_use_id != ''
             GROUP BY tool_use_id
@@ -788,7 +787,7 @@ class ClickHouseCliAnalyticsReader:
         LEFT JOIN (
             SELECT SpanId, anyLast(Timestamp) AS Timestamp, anyLast(Duration) AS Duration
             FROM codemie_analytics.coding_agent_traces
-            WHERE SpanName IN ('claude_code.interaction', 'cursor.interaction')
+            WHERE SpanName = 'claude_code.interaction'
               AND session_id = {session_id:String}
             GROUP BY SpanId
         ) ia ON ia.SpanId = t.parent_span_id
@@ -809,7 +808,7 @@ class ClickHouseCliAnalyticsReader:
             JOIN (
                 SELECT ParentSpanId, min(Timestamp) AS min_span_start
                 FROM codemie_analytics.coding_agent_traces
-                WHERE SpanName IN ('claude_code.tool', 'cursor.tool')
+                WHERE SpanName = 'claude_code.tool'
                   AND session_id = {session_id:String}
                   AND (subagent_type != '' OR span_skill_name != '')
                 GROUP BY ParentSpanId
@@ -859,7 +858,7 @@ class ClickHouseCliAnalyticsReader:
               AND LogAttributes['skill_name'] NOT IN (
                   SELECT span_skill_name
                   FROM codemie_analytics.coding_agent_traces
-                  WHERE SpanName IN ('claude_code.tool', 'cursor.tool')
+                  WHERE SpanName = 'claude_code.tool'
                     AND session_id = {session_id:String}
                     AND span_skill_name != ''
               )
