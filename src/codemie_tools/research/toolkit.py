@@ -15,7 +15,6 @@
 from typing import List, Dict, Any, Optional
 
 from langchain_community.utilities.wikipedia import WikipediaAPIWrapper
-from langchain_google_community import GoogleSearchAPIWrapper
 from pydantic import BaseModel
 
 from codemie.configs.logger import logger
@@ -29,7 +28,7 @@ from codemie_tools.research.tools import (
     GooglePlacesTool,
     GooglePlacesFindNearTool,
     TavilySearchTool,
-    ThreadSafeGoogleSearchAPIWrapper,
+    build_thread_safe_google_search_wrapper,
 )
 from codemie_tools.research.tools_vars import (
     GOOGLE_SEARCH_RESULTS_TOOL,
@@ -82,7 +81,7 @@ class ResearchToolkit(BaseToolkit):
         return tools
 
     def google_search_tool(self):
-        api_wrapper = ThreadSafeGoogleSearchAPIWrapper(
+        api_wrapper = build_thread_safe_google_search_wrapper(
             google_api_key=self.research_config.google_search_api_key,
             google_cse_id=self.research_config.google_search_cde_id,
         )

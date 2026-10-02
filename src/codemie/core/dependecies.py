@@ -432,6 +432,12 @@ def get_vertex_llm(
     # Add headers to client_options if they exist
     if merged_headers:
         base_args['client_options'] = {"additional_headers": merged_headers}
+
+    # Deferred to the first Vertex AI model construction: importing
+    # langchain_google_vertexai costs ~400 MB RSS and several seconds per process.
+    from codemie.agents.tools.schema_compatibility import patch_langchain_google_vertexai_schema
+
+    patch_langchain_google_vertexai_schema()
     if llm_service.is_gemini_models(llm_model_details.base_name):
         from langchain_google_vertexai import ChatVertexAI
 

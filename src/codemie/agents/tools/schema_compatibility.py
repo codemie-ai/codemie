@@ -179,47 +179,78 @@ def sanitize_tool_response_for_gcp(content: str) -> str:
         return sanitized
 
 
-def patch_langchain_google_vertexai():
-    """
-    Monkey patch langchain_google_vertexai to apply GCP compatibility fixes.
+_vertexai_schema_patch_applied: bool = False
+_message_sanitizer_patch_applied: bool = False
 
-    This patches:
-    1. Schema conversion for tool definitions
-    2. Tool/Function message content sanitization to remove schema references
+
+def patch_langchain_google_vertexai_schema() -> None:
     """
+    Monkey patch ``langchain_google_vertexai`` tool-schema conversion for GCP compatibility.
+
+    Importing ``langchain_google_vertexai`` pulls in ``google.cloud.aiplatform``
+    (roughly 400 MB of RSS and several seconds per process), so this is applied
+    lazily, right before a Vertex AI chat model is constructed, instead of at
+    package import time. Idempotent.
+    """
+    global _vertexai_schema_patch_applied
+    if _vertexai_schema_patch_applied:
+        return
     try:
         import langchain_google_vertexai.functions_utils as functions_utils
-        from langchain_core.messages import FunctionMessage, ToolMessage
-
-        # Patch 1: Schema conversion for tool definitions
-        original_dict_to_gapic_schema = functions_utils._dict_to_gapic_schema
-
-        def patched_dict_to_gapic_schema(json_schema: Dict[str, Any], **kwargs):
-            """Patched version that applies GCP compatibility transforms."""
-            transformed_schema = transform_schema_for_gcp_compatibility(json_schema)
-            return original_dict_to_gapic_schema(transformed_schema, **kwargs)
-
-        functions_utils._dict_to_gapic_schema = patched_dict_to_gapic_schema
-
-        # Patch 2: Tool response message content sanitization
-        original_tool_init = ToolMessage.__init__
-        original_function_init = FunctionMessage.__init__
-
-        def patched_tool_init(self, *args, **kwargs):
-            """Patched ToolMessage.__init__ that sanitizes content for GCP."""
-            original_tool_init(self, *args, **kwargs)
-            if isinstance(self.content, str):
-                self.content = sanitize_tool_response_for_gcp(self.content)
-
-        def patched_function_init(self, *args, **kwargs):
-            """Patched FunctionMessage.__init__ that sanitizes content for GCP."""
-            original_function_init(self, *args, **kwargs)
-            if isinstance(self.content, str):
-                self.content = sanitize_tool_response_for_gcp(self.content)
-
-        ToolMessage.__init__ = patched_tool_init
-        FunctionMessage.__init__ = patched_function_init
-
     except ImportError:
         # langchain_google_vertexai not available, skip patching
-        pass
+        return
+
+    original_dict_to_gapic_schema = functions_utils._dict_to_gapic_schema
+
+    def patched_dict_to_gapic_schema(json_schema: Dict[str, Any], **kwargs: Any) -> Any:
+        """Patched version that applies GCP compatibility transforms."""
+        transformed_schema = transform_schema_for_gcp_compatibility(json_schema)
+        return original_dict_to_gapic_schema(transformed_schema, **kwargs)
+
+    functions_utils._dict_to_gapic_schema = patched_dict_to_gapic_schema
+    _vertexai_schema_patch_applied = True
+
+
+def patch_langchain_core_messages() -> None:
+    """
+    Monkey patch ``ToolMessage`` / ``FunctionMessage`` to sanitize tool responses for GCP.
+
+    Only touches ``langchain_core``, which is always loaded, so it is cheap enough to
+    apply eagerly at package import. Idempotent.
+    """
+    global _message_sanitizer_patch_applied
+    if _message_sanitizer_patch_applied:
+        return
+    from langchain_core.messages import FunctionMessage, ToolMessage
+
+    original_tool_init = ToolMessage.__init__
+    original_function_init = FunctionMessage.__init__
+
+    def patched_tool_init(self: ToolMessage, *args: Any, **kwargs: Any) -> None:
+        """Patched ToolMessage.__init__ that sanitizes content for GCP."""
+        original_tool_init(self, *args, **kwargs)
+        if isinstance(self.content, str):
+            self.content = sanitize_tool_response_for_gcp(self.content)
+
+    def patched_function_init(self: FunctionMessage, *args: Any, **kwargs: Any) -> None:
+        """Patched FunctionMessage.__init__ that sanitizes content for GCP."""
+        original_function_init(self, *args, **kwargs)
+        if isinstance(self.content, str):
+            self.content = sanitize_tool_response_for_gcp(self.content)
+
+    ToolMessage.__init__ = patched_tool_init
+    FunctionMessage.__init__ = patched_function_init
+    _message_sanitizer_patch_applied = True
+
+
+def patch_langchain_google_vertexai() -> None:
+    """
+    Apply both GCP compatibility patches (tool-schema conversion and message sanitization).
+
+    Kept for callers that want the previous all-in-one behaviour; the package
+    import applies only the cheap message patch and defers the Vertex AI import
+    to :func:`patch_langchain_google_vertexai_schema`.
+    """
+    patch_langchain_core_messages()
+    patch_langchain_google_vertexai_schema()

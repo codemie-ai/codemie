@@ -23,6 +23,6 @@ __all__ = [
     "KBToolkit",
 ]
 
-from .schema_compatibility import patch_langchain_google_vertexai
+from .schema_compatibility import patch_langchain_core_messages
 
-patch_langchain_google_vertexai()
+patch_langchain_core_messages()

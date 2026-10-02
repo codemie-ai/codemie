@@ -780,6 +780,7 @@ class TestMCPConnectClientListTools:
             with pytest.raises(httpx.HTTPStatusError):
                 await client.invoke_tool(server_config, tool_name, tool_args)
 
+    @pytest.mark.asyncio
     async def test_invoke_tool_raises_auth_required_for_recoverable_insufficient_scope(self, server_config):
         """Post-auth 403 insufficient_scope is converted to auth-required recovery before generic wrapping."""
         client = MCPConnectClient()

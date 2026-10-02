@@ -13,14 +13,14 @@
 # limitations under the License.
 
 import re
+from functools import cache
 from time import time
-from typing import Any, Type, Optional
+from typing import Any, Protocol, Type, Optional, runtime_checkable
 
 import httplib2
 import requests
 from bs4 import BeautifulSoup
 from langchain_community.utilities import WikipediaAPIWrapper
-from langchain_google_community import GoogleSearchAPIWrapper
 from langchain_tavily import TavilySearch
 from markdownify import markdownify as md
 from pydantic import BaseModel, Field
@@ -163,21 +163,48 @@ class WebScrapperTool(CodeMieTool):
         return content
 
 
-class ThreadSafeGoogleSearchAPIWrapper(GoogleSearchAPIWrapper):
-    """GoogleSearchAPIWrapper that creates a fresh httplib2.Http per call.
+@runtime_checkable
+class GoogleSearchClient(Protocol):
+    """The slice of ``GoogleSearchAPIWrapper`` that :class:`GoogleSearchResults` relies on.
+
+    Declared as a protocol so this module does not import ``langchain_google_community``
+    at load time: that package (and the Google API client it drags in) costs ~100 MB of
+    RSS and about a second per process, while it is only needed when a Google search
+    tool is actually built.
+    """
+
+    def results(self, query: str, num_results: int) -> list[dict[str, Any]]: ...
+
+
+@cache
+def _thread_safe_google_search_wrapper_cls() -> type[Any]:
+    """Build (once) the GoogleSearchAPIWrapper subclass that uses a fresh httplib2.Http per call.
 
     The default GoogleSearchAPIWrapper shares one httplib2.Http instance across all calls.
     httplib2.Http is not thread-safe, so parallel tool calls block each other and eventually
     hit a 60s read timeout. Passing a fresh Http() to execute() isolates each call.
     """
+    from langchain_google_community import GoogleSearchAPIWrapper
 
-    def _google_search_results(self, search_term: str, **kwargs: Any) -> list[dict]:
-        cse = self.search_engine.cse()
-        if self.siterestrict:
-            cse = cse.siterestrict()
-        # Fresh Http per call fixes httplib2 thread-safety issue; timeout matches googleapiclient default
-        res = cse.list(q=search_term, cx=self.google_cse_id, **kwargs).execute(http=httplib2.Http(timeout=60))
-        return res.get("items", [])
+    class ThreadSafeGoogleSearchAPIWrapper(GoogleSearchAPIWrapper):
+        def _google_search_results(self, search_term: str, **kwargs: Any) -> list[dict[str, Any]]:
+            cse = self.search_engine.cse()
+            if self.siterestrict:
+                cse = cse.siterestrict()
+            # Fresh Http per call fixes httplib2 thread-safety issue; timeout matches googleapiclient default
+            res = cse.list(q=search_term, cx=self.google_cse_id, **kwargs).execute(http=httplib2.Http(timeout=60))
+            return res.get("items", [])
+
+    return ThreadSafeGoogleSearchAPIWrapper
+
+
+def build_thread_safe_google_search_wrapper(
+    *, google_api_key: str | None, google_cse_id: str | None
+) -> GoogleSearchClient:
+    """Instantiate the thread-safe Google search wrapper, importing its dependency lazily."""
+    wrapper_cls = _thread_safe_google_search_wrapper_cls()
+    wrapper: GoogleSearchClient = wrapper_cls(google_api_key=google_api_key, google_cse_id=google_cse_id)
+    return wrapper
 
 
 class GoogleSearchResultsInput(BaseModel):
@@ -200,7 +227,7 @@ class GoogleSearchResults(CodeMieTool):
     name: str = GOOGLE_SEARCH_RESULTS_TOOL.name
     description: str = GOOGLE_SEARCH_RESULTS_TOOL.description
     num_results: int = 10
-    api_wrapper: GoogleSearchAPIWrapper
+    api_wrapper: GoogleSearchClient
     args_schema: Type[BaseModel] = GoogleSearchResultsInput
 
     def is_safe(self, args: dict) -> bool:
