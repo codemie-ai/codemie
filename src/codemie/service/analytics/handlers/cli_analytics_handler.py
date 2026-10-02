@@ -85,7 +85,11 @@ def _s(value: Any) -> str:
 
 
 def _iso(value: Any) -> str:
-    if isinstance(value, (datetime, date)):
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    if isinstance(value, date):
         return value.isoformat()
     return _s(value)
 

@@ -13,11 +13,11 @@
 # limitations under the License.
 
 import pytest
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 from codemie.repository.cli_analytics.filters import LocalAnalyticsFilter
-from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler
+from codemie.service.analytics.handlers.cli_analytics_handler import LocalAnalyticsHandler, _iso
 
 
 def make_handler(cost_facts=None):
@@ -304,3 +304,36 @@ def test_agent_dispatch_uses_tool_execution_duration_ms():
     result = LocalAnalyticsHandler._build_dispatches(rows, datetime(2026, 1, 1, 0, 0, 0), 160000, 1.0)
     agent = next(d for d in result if d["kind"] == "agent")
     assert agent["duration_ms"] == 53235
+
+
+def test_iso_attaches_utc_to_naive_datetime():
+    """A naive datetime must serialize with an explicit UTC offset, same wall-clock value."""
+    result = _iso(datetime(2026, 9, 30, 12, 28, 8, 937211))
+    assert result == "2026-09-30T12:28:08.937211+00:00"
+
+
+def test_iso_leaves_aware_datetime_unchanged():
+    """An already-aware datetime (including a non-UTC offset) must not be re-converted."""
+    aware = datetime(2026, 9, 30, 14, 28, 8, tzinfo=timezone(timedelta(hours=2)))
+    result = _iso(aware)
+    assert result == aware.isoformat() == "2026-09-30T14:28:08+02:00"
+
+
+def test_iso_date_passthrough_unaffected():
+    """A plain date value (day buckets) has no time-of-day — it must serialize unchanged."""
+    assert _iso(date(2026, 9, 30)) == "2026-09-30"
+
+
+def test_iso_none_still_returns_empty_string():
+    """None must keep falling through to the non-datetime/date branch, unchanged by this fix."""
+    assert _iso(None) == ""
+
+
+@pytest.mark.asyncio
+async def test_get_sessions_start_time_carries_utc_offset_for_naive_started_at():
+    """Sessions-list start_time must carry an explicit UTC offset even when the repository returns a naive started_at."""
+    row = {**BASE_COST_ROW, "repository": "my-repo", "branch": "main"}
+    handler = make_handler(cost_facts=[row])
+    data, _, _ = await handler.get_sessions(make_filter(), page=0, per_page=20, sort_by="start_time", search=None)
+    session = data["sessions"][0]
+    assert session["start_time"] == "2026-01-01T00:00:00+00:00"
