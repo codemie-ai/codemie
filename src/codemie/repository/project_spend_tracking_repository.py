@@ -285,6 +285,47 @@ class ProjectSpendTrackingRepository:
             all_results.update({(row.project_name, row.budget_id, row.user_id): row for row in result.scalars().all()})
         return all_results
 
+    async def get_latest_project_budget_rows_by_category(
+        self,
+        session: AsyncSession,
+        project_names: list[str],
+    ) -> list[ProjectSpendTracking]:
+        """Return the most recent project_budget row per (project_name, budget_category).
+
+        Rows of removed category budgets are included; callers decide which ones still count.
+        Of two rows sharing a spend_date, the one inserted last wins.
+
+        Args:
+            session: Async database session
+            project_names: Projects to read
+
+        Returns:
+            At most one row per project and category
+        """
+        if not project_names:
+            return []
+        ranked = (
+            select(
+                ProjectSpendTracking.id.label("row_id"),
+                func.row_number()
+                .over(
+                    partition_by=[ProjectSpendTracking.project_name, ProjectSpendTracking.budget_category],
+                    order_by=(ProjectSpendTracking.spend_date.desc(), ProjectSpendTracking.created_at.desc()),
+                )
+                .label("row_rank"),
+            )
+            .where(ProjectSpendTracking.project_name.in_(project_names))
+            .where(ProjectSpendTracking.spend_subject_type == "project_budget")
+            .subquery()
+        )
+        stmt = (
+            select(ProjectSpendTracking)
+            .join(ranked, ProjectSpendTracking.id == ranked.c.row_id)
+            .where(ranked.c.row_rank == 1)
+        )
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
+
     async def insert_key_entries(
         self,
         session: AsyncSession,

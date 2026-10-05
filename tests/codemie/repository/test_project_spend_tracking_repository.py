@@ -703,3 +703,41 @@ class TestGetProjectResetCutoffs:
         assert "project_budget" in sql
         assert "epm-aisa" in sql
         assert "ORDER BY" in sql.upper()
+
+
+class TestLatestProjectBudgetRowsByCategory:
+    """Latest project_budget row per project and category, whatever its budget_id."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_for_no_projects(self):
+        session = AsyncMock()
+
+        result = await ProjectSpendTrackingRepository().get_latest_project_budget_rows_by_category(session, [])
+
+        assert result == []
+        session.execute.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_partitions_by_category_not_budget_id(self):
+        rows = [SimpleNamespace(project_name="project-3", budget_category="premium_models")]
+        execute_result = MagicMock()
+        execute_result.scalars.return_value.all.return_value = rows
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=execute_result)
+
+        result = await ProjectSpendTrackingRepository().get_latest_project_budget_rows_by_category(
+            session, ["project-3"]
+        )
+
+        assert result == rows
+        sql = _compile_sql(session.execute.await_args.args[0])
+        assert (
+            "PARTITION BY project_spend_tracking.project_name, project_spend_tracking.budget_category ORDER BY" in sql
+        )
+        assert "'project_budget'" in sql
+        assert "'project-3'" in sql
+        assert (
+            "ORDER BY project_spend_tracking.spend_date DESC, project_spend_tracking.created_at DESC) AS row_rank"
+            in sql
+        )
+        assert sql.rstrip().endswith("WHERE anon_1.row_rank = 1")

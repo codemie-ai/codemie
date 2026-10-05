@@ -1,0 +1,3 @@
+# Deferred from code review — 2026-09-30-removed-project-budget-spend (2026-09-30)
+
+- **List per-budget spend misses pre-collector re-add row** — `src/codemie/repository/project_budget_repository.py:220` — `_attach_assigned_budget_summaries` (include_budgets) reads current_spending via a join on budget_id == assigned budget_id, so a category re-added before the collector runs shows no spend on its list budget card while the list spending summary now counts the earlier row under that budget. Pre-existing: the budget_id join and its pre-collector blank are unchanged by this change; the ticket and spec scope the re-add attribution rule to the detail widget and spending summaries only.

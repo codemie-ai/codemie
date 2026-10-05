@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "branch": "EPMCDME-15048-removed-budget-spend",
+  "head": "6f9bbca1088ba296c00c9270b7428358d63e51c2",
+  "runner": "custom",
+  "started_at": "2026-09-30T10:50:50Z",
+  "completed_at": "2026-09-30T11:08:50Z",
+  "status": "PASSED",
+  "drift_detected": false,
+  "gates": [
+    {"id": "lint", "source": "guide", "status": "PASS", "duration_ms": 5111, "command": "make ruff", "exit_code": 0, "notes": "2572 files left unchanged; ruff check all passed"},
+    {"id": "build", "source": "guide", "status": "PASS", "duration_ms": 16351, "command": "make build", "exit_code": 0},
+    {"id": "license-check", "source": "guide", "status": "PASS", "duration_ms": 2449, "command": "make license-check", "exit_code": 0, "notes": "Checked 2286 files, 0 missing license headers"},
+    {"id": "gitleaks", "source": "guide", "status": "SKIPPED", "command": "make gitleaks", "notes": "Skip if: Docker unavailable (only podman installed). Substitute evidence: podman gitleaks v8.30.1 'git --log-opts=b91c5cc..HEAD' over the 3 branch commits -> 'no leaks found', exit 0. Full working-tree dir scan still owed to a Docker host."},
+    {"id": "codemie-gitleaks", "source": "hook", "status": "PASS", "duration_ms": 3323, "command": "bash scripts/git-hooks/validate_secrets.sh", "exit_code": 0, "notes": "Verbatim run under Git Bash exited 125 ('invalid option type \\Users\\...\\.git', MSYS path conversion of the podman -v mount; script: NOT a secret finding). Rerun with MSYS_NO_PATHCONV=1 -> 'no leaks found'. Scans staged files only, not branch commits."},
+    {"id": "test", "source": "guide", "status": "N/A", "command": "make test", "exit_code": 2, "notes": "Out of scope per user instruction 'dont run full suites of unrelated tests'. An earlier full run was interrupted at collection: tests/codemie/migrations/test_credentialtypes_enum_migrations.py UnicodeDecodeError cp1252 (Path.read_text without encoding on Windows; unrelated to diff). PYTHONUTF8=1 rerun was stopped."},
+    {"id": "affected", "source": "guide", "status": "PASS", "duration_ms": 39224, "command": "PYTHONUTF8=1 poetry run pytest -o addopts=\"--import-mode=importlib\" -q -p no:cacheprovider tests/codemie/repository/test_project_spend_tracking_repository.py tests/codemie/rest_api/routers/test_projects_router.py tests/codemie/rest_api/routers/test_projects_router_auditor.py", "exit_code": 0, "notes": "150 passed. addopts override because pytest-xdist is missing locally."},
+    {"id": "coverage", "source": "guide", "status": "N/A", "command": "make coverage", "notes": "Skip if: coverage not requested."},
+    {"id": "sonar-local", "source": "guide", "status": "SKIPPED", "command": "make sonar-local", "notes": "SONAR_TOKEN not set; run-local-sonar.js exits 0 with 'Skipping Sonar scan because SONAR_TOKEN is not set.' Set SONAR_TOKEN to run locally."},
+    {"id": "verify", "source": "guide", "status": "N/A", "command": "make verify", "notes": "Composite of ruff, license, gitleaks, test; components recorded individually."},
+    {"id": "test-harness", "source": "guide", "status": "N/A", "command": "make test-harness", "notes": "Not opening an MR in this run; needs docker compose stack, superadmin fixtures, ~/.codemie/test-harness.json. Required before MR for the '## Test harness' section."},
+    {"id": "commit-msg", "source": "hook", "status": "PASS", "command": "bash scripts/git-hooks/commit_msg.sh <msgfile> (per commit in merge_base..HEAD)", "exit_code": 0, "notes": "All 3 branch commits match ^EPMCDME-[0-9]+:"},
+    {"id": "pre-push", "source": "hook", "status": "N/A", "command": "bash scripts/git-hooks/pre_push.sh", "notes": "Opt-in (CODEMIE_PREPUSH_ENABLED); its steps are full pytest (out of scope per user) and sonar-local (SKIPPED, no SONAR_TOKEN)."},
+    {"id": "ci-pre-ci-guard", "source": "ci", "status": "N/A", "command": ".gitlab-ci.yml wait-ci-init", "notes": "Waits on external ci-pipeline and compliance-report contexts; not runnable locally. Mismatch: quality-gates.md says no pipeline config exists, but .gitlab-ci.yml is present."}
+  ],
+  "failures": {}
+}

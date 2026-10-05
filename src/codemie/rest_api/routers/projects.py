@@ -31,13 +31,17 @@ from codemie.core.models import Application
 from codemie.repository.application_repository import application_repository
 from codemie.repository.budget_repository import budget_repository
 from codemie.repository.cost_center_repository import cost_center_repository
-from codemie.repository.project_budget_repository import project_budget_assignment_repository
+from codemie.repository.project_budget_repository import (
+    ProjectAssignedBudgetSummaryRow,
+    project_budget_assignment_repository,
+)
 from codemie.repository.project_spend_tracking_repository import ProjectSpendTrackingRepository
 from codemie.rest_api.security.authentication import authenticate
 from codemie.rest_api.security.user import User
 from codemie.service.budget.budget_enums import BudgetCategory
 from codemie.service.budget.budget_models import Budget
 from codemie.service.budget.provider_registry import get_active_provider
+from codemie.service.spend_tracking.spend_models import ProjectSpendTracking
 from codemie.service.project.project_service import project_service
 from codemie.service.project.project_visibility_service import project_visibility_service
 from codemie.service.settings.settings import SettingsService
@@ -107,6 +111,8 @@ class SpendingWidgetColumn(BaseModel):
 
 class SpendingWidgetRow(BaseModel):
     budget_id: str
+    budget_category: str | None = None
+    is_assigned: bool = True
     current_spending: float
     budget_reset_at: Optional[datetime] = None
     time_until_reset: Optional[str] = None
@@ -459,6 +465,22 @@ def _parse_budget_reset_at(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _is_budget_period_open(budget: Budget | None, now: datetime) -> bool:
+    """Return True when ``budget`` has a ``budget_reset_at`` later than ``now``.
+
+    Active budgets are refreshed by the daily reset reconciliation, so the answer can be off by
+    up to a day around a reset. Removed budgets keep the value they had when they were removed.
+    """
+    if budget is None:
+        return False
+    reset_at = _parse_budget_reset_at(budget.budget_reset_at)
+    if reset_at is None:
+        return False
+    if reset_at.tzinfo is None:
+        reset_at = reset_at.replace(tzinfo=timezone.utc)
+    return reset_at > now
+
+
 def _budget_info(budgets_by_id: dict[str, Budget], budget_id: str | None) -> tuple[float | None, datetime | None]:
     """Return (max_budget, budget_reset_at) for a given budget_id, or (None, None)."""
     if budget_id is None:
@@ -469,15 +491,32 @@ def _budget_info(budgets_by_id: dict[str, Budget], budget_id: str | None) -> tup
     return budget.max_budget, _parse_budget_reset_at(budget.budget_reset_at)
 
 
-def _drop_unassigned_budget_rows(budget_rows: list, assigned_budgets: list) -> list:
-    """Keep only spend rows whose budget is still assigned to the project.
+def _select_category_rows(
+    budget_rows: list[ProjectSpendTracking],
+    assigned_budgets: list[ProjectAssignedBudgetSummaryRow],
+    budgets_by_id: dict[str, Budget],
+    now: datetime,
+) -> list[tuple[ProjectSpendTracking, ProjectAssignedBudgetSummaryRow | None]]:
+    """Pick the latest project_budget row per category that counts toward the current budget period.
 
-    Snapshot rows outlive the budget they were taken for, so an empty assignment list
-    drops every row. Callers apply this to project_budget rows only; personal projects
-    have no assignments to check against.
+    A category with an active budget keeps its row when the row belongs to that budget or to an
+    earlier budget whose period is still open. A category without one keeps its row only while
+    the row's budget period is open and its spend is above zero.
+
+    Returns:
+        (row, active assigned budget or None) pairs
     """
-    live_budget_ids = {row.budget_id for row in assigned_budgets}
-    return [row for row in budget_rows if row.budget_id in live_budget_ids]
+    assigned_by_category = {assigned.budget_category: assigned for assigned in assigned_budgets}
+    selected: list[tuple[ProjectSpendTracking, ProjectAssignedBudgetSummaryRow | None]] = []
+    for row in budget_rows:
+        assigned = assigned_by_category.get(row.budget_category)
+        period_open = _is_budget_period_open(budgets_by_id.get(row.budget_id), now)
+        if assigned is not None:
+            if row.budget_id == assigned.budget_id or period_open:
+                selected.append((row, assigned))
+        elif period_open and float(row.budget_period_spend) > 0:
+            selected.append((row, None))
+    return selected
 
 
 def _aggregate_budget_window(
@@ -527,6 +566,39 @@ def _build_widget_rows(
         rows.append(
             SpendingWidgetRow(
                 budget_id=row.budget_id if row.budget_id else "Default",
+                current_spending=current,
+                budget_reset_at=budget_reset_at,
+                time_until_reset=_format_time_until_reset(budget_reset_at),
+                budget_limit=budget_limit,
+                total=total_pct,
+            )
+        )
+    return rows
+
+
+def _build_category_widget_rows(
+    selected: list[tuple[ProjectSpendTracking, ProjectAssignedBudgetSummaryRow | None]],
+    budgets_by_id: dict[str, Budget],
+) -> list[SpendingWidgetRow]:
+    """Build widget rows for project categories; rows without an active budget carry no limit."""
+    rows = []
+    for spend_row, assigned in selected:
+        current = float(spend_row.budget_period_spend)
+        if assigned is not None:
+            budget_id = assigned.budget_id
+            budget_limit = float(assigned.max_budget)
+            budget_reset_at = _parse_budget_reset_at(assigned.budget_reset_at)
+            total_pct = round((current / budget_limit * 100) if budget_limit else 0.0, 2)
+        else:
+            budget_id = spend_row.budget_id
+            budget_limit = None
+            _, budget_reset_at = _budget_info(budgets_by_id, spend_row.budget_id)
+            total_pct = 0.0
+        rows.append(
+            SpendingWidgetRow(
+                budget_id=budget_id,
+                budget_category=spend_row.budget_category,
+                is_assigned=assigned is not None,
                 current_spending=current,
                 budget_reset_at=budget_reset_at,
                 time_until_reset=_format_time_until_reset(budget_reset_at),
@@ -689,22 +761,25 @@ async def _attach_project_spending_summaries(
         budget_rows = await _spend_repo.get_latest_spending_by_project(
             async_session, manageable_names, spend_subject_type="budget"
         )
-        project_budget_rows = await _spend_repo.get_latest_spending_by_project(
-            async_session, manageable_names, spend_subject_type="project_budget"
+        project_budget_rows = await _spend_repo.get_latest_project_budget_rows_by_category(
+            async_session, manageable_names
         )
         budgets_map = await budget_repository.get_all_keyed_by_id(async_session)
         assigned_by_project = await project_budget_assignment_repository.get_assigned_budget_summaries_for_projects(
             async_session, manageable_names
         )
 
+    now = datetime.now(timezone.utc)
     latest_key_by_project = _latest_key_rows_by_project(key_rows)
     budget_rows_by_project = _budget_rows_grouped_by_project(budget_rows)
-    project_budget_rows_by_project = _budget_rows_grouped_by_project(project_budget_rows)
+    project_budget_rows_by_project: dict[str, list[ProjectSpendTracking]] = {}
+    for row in project_budget_rows:
+        project_budget_rows_by_project.setdefault(row.project_name, []).append(row)
     for item in items:
         assigned_budgets = assigned_by_project.get(item.name, [])
         project_rows = project_budget_rows_by_project.get(item.name)
         rows = (
-            _drop_unassigned_budget_rows(project_rows, assigned_budgets)
+            [row for row, _ in _select_category_rows(project_rows, assigned_budgets, budgets_map, now)]
             if project_rows
             else budget_rows_by_project.get(item.name, [])
         )
@@ -916,9 +991,7 @@ async def _attach_project_detail_spending(
     async with get_async_session() as async_session:
         key_row = await _spend_repo.get_latest_key_spending_for_project(async_session, project_name)
         subject_type = "project_budget"
-        budget_rows = await _spend_repo.get_latest_budget_rows_for_project(
-            async_session, project_name, rows_limit=spending_rows_limit, spend_subject_type=subject_type
-        )
+        budget_rows = await _spend_repo.get_latest_project_budget_rows_by_category(async_session, [project_name])
         if not budget_rows:
             subject_type = "budget"
             budget_rows = await _spend_repo.get_latest_budget_rows_for_project(
@@ -936,7 +1009,11 @@ async def _attach_project_detail_spending(
 
     assigned_budgets = assigned_by_project.get(project_name, [])
     if subject_type == "project_budget":
-        budget_rows = _drop_unassigned_budget_rows(budget_rows, assigned_budgets)
+        selected = _select_category_rows(budget_rows, assigned_budgets, budgets_map, datetime.now(timezone.utc))
+        budget_rows = [row for row, _ in selected]
+        widget_rows = _build_category_widget_rows(selected, budgets_map)
+    else:
+        widget_rows = _build_widget_rows(budget_rows, project_name, budgets_by_id=budgets_map)
     if budget_rows:
         key_row = None
 
@@ -950,9 +1027,8 @@ async def _attach_project_detail_spending(
     )
     _populate_project_spending_widget(
         response=response,
-        project_name=project_name,
+        widget_rows=widget_rows,
         key_row=key_row,
-        budget_rows=budget_rows,
         budgets_map=budgets_map,
     )
 
@@ -989,14 +1065,12 @@ def _populate_project_spending_summary(
 def _populate_project_spending_widget(
     *,
     response: ProjectDetailResponse,
-    project_name: str,
+    widget_rows: list[SpendingWidgetRow],
     key_row,
-    budget_rows: list,
     budgets_map: dict,
 ) -> None:
-    widget_rows = _build_widget_rows(budget_rows, project_name, budgets_by_id=budgets_map)
     if key_row is not None:
-        widget_rows.append(_key_row_to_widget(key_row, budgets_by_id=budgets_map))
+        widget_rows = [*widget_rows, _key_row_to_widget(key_row, budgets_by_id=budgets_map)]
     if widget_rows:
         response.spending_widget = ProjectSpendingWidget(
             data=SpendingWidgetData(columns=_WIDGET_COLUMNS, rows=widget_rows)

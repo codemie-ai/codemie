@@ -228,6 +228,7 @@ class TestProjectsRouterAuditorRouteLevel:
         key_row = MagicMock(budget_period_spend=100.0, cumulative_spend=500.0, budget_id=None)
         mock_spend_repo.get_latest_key_spending_for_project = AsyncMock(return_value=key_row)
         mock_spend_repo.get_latest_budget_rows_for_project = AsyncMock(return_value=[])
+        mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(return_value=[])
         mock_spend_repo.get_lifetime_spend = AsyncMock(return_value=500.0)
 
         response = await get_project_detail(

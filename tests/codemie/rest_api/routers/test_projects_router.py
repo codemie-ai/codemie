@@ -15,7 +15,7 @@
 """Unit tests for /v1/projects visibility, creation, assignment, delete, and update endpoints."""
 
 from contextlib import asynccontextmanager
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from datetime import date as date_type
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -29,6 +29,7 @@ from codemie.core.exceptions import ExtendedHTTPException
 from codemie.rest_api.routers.projects import (
     router as projects_router,
     _authorize_project_access,
+    _is_budget_period_open,
     _build_project_detail_response,
     _raise_project_not_found,
     ProjectAssignmentRequest,
@@ -374,6 +375,10 @@ class TestProjectsVisibilityEndpoints:
     @patch("codemie.rest_api.routers.projects.config")
     @patch("codemie.rest_api.routers.projects.budget_repository.get_all_keyed_by_id", new_callable=AsyncMock)
     @patch("codemie.rest_api.routers.projects._spend_repo.get_lifetime_spend", new_callable=AsyncMock)
+    @patch(
+        "codemie.rest_api.routers.projects._spend_repo.get_latest_project_budget_rows_by_category",
+        new_callable=AsyncMock,
+    )
     @patch("codemie.rest_api.routers.projects._spend_repo.get_latest_budget_rows_for_project", new_callable=AsyncMock)
     @patch("codemie.rest_api.routers.projects._spend_repo.get_latest_key_spending_for_project", new_callable=AsyncMock)
     @patch("codemie.rest_api.routers.projects.get_async_session")
@@ -385,6 +390,7 @@ class TestProjectsVisibilityEndpoints:
         mock_get_async_session,
         mock_get_latest_key_spending,
         mock_get_latest_budget_rows,
+        mock_get_category_rows,
         mock_get_lifetime_spend,
         mock_get_all_keyed_by_id,
         mock_config,
@@ -405,6 +411,7 @@ class TestProjectsVisibilityEndpoints:
         }
         mock_get_latest_key_spending.return_value = None
         mock_get_latest_budget_rows.return_value = []
+        mock_get_category_rows.return_value = []
         mock_get_lifetime_spend.return_value = 0.0
         mock_get_all_keyed_by_id.return_value = {}
         mock_get_async_session.return_value = _mock_session_ctx(AsyncMock())
@@ -426,8 +433,9 @@ class TestProjectsVisibilityEndpoints:
 
         assert isinstance(result, ProjectDetailResponse)
         mock_get_latest_key_spending.assert_awaited_once()
-        assert mock_get_latest_budget_rows.await_count == 2
-        assert mock_get_latest_budget_rows.await_args_list[0].kwargs["spend_subject_type"] == "project_budget"
+        mock_get_category_rows.assert_awaited_once()
+        assert mock_get_category_rows.await_args.args[1] == ["proj-a"]
+        assert mock_get_latest_budget_rows.await_count == 1
 
     @patch("codemie.rest_api.routers.projects.config")
     @patch("codemie.rest_api.routers.projects.SettingsService.get_enforce_member_spend_limits")
@@ -778,8 +786,9 @@ class TestProjectsVisibilityEndpoints:
             spend_date=datetime(2026, 4, 10, tzinfo=UTC),
         )
         mock_spend_repo.get_latest_spending_by_project = AsyncMock(
-            side_effect=[[stale_key_row, latest_key_row], [stale_budget_row, latest_budget_row], []]
+            side_effect=[[stale_key_row, latest_key_row], [stale_budget_row, latest_budget_row]]
         )
+        mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(return_value=[])
         mock_budget = MagicMock()
         mock_budget.max_budget = 16.0
         mock_budget.budget_reset_at = None
@@ -2135,6 +2144,7 @@ class TestPersonalProjectSpending:
                 [budget_row] if spend_subject_type == 'budget' else []
             )
         )
+        mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(return_value=[])
         mock_budget_obj = MagicMock()
         mock_budget_obj.max_budget = 50.0
         mock_budget_obj.budget_reset_at = None
@@ -2205,6 +2215,7 @@ class TestPersonalProjectSpending:
         )
         mock_async_session.return_value = AsyncMock()
         mock_spend_repo.get_latest_key_spending_for_project = AsyncMock(return_value=None)
+        mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(return_value=[])
         mock_spend_repo.get_latest_budget_rows_for_project = AsyncMock(
             side_effect=lambda session, name, rows_limit=50, spend_subject_type='budget': (
                 [budget_row] if spend_subject_type == 'budget' else []
@@ -2275,6 +2286,7 @@ class TestPersonalProjectSpending:
         ]
         mock_async_session.return_value = AsyncMock()
         mock_spend_repo.get_latest_key_spending_for_project = AsyncMock(return_value=None)
+        mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(return_value=[])
         mock_spend_repo.get_latest_budget_rows_for_project = AsyncMock(
             side_effect=lambda session, name, rows_limit=50, spend_subject_type='budget': (
                 rows if spend_subject_type == 'budget' else []
@@ -3354,3 +3366,279 @@ class TestProjectDescriptionOptional:
         errors = exc_info.value.errors()
         assert any(e["loc"] == ("name",) for e in errors), "Expected name field error"
         assert not any("description" in str(e["loc"]) for e in errors), "Description error must not appear"
+
+
+class TestIsBudgetPeriodOpen:
+    _NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+
+    def test_future_reset_is_open(self):
+        assert _is_budget_period_open(SimpleNamespace(budget_reset_at="2026-10-01T00:00:00Z"), self._NOW) is True
+
+    def test_past_reset_is_closed(self):
+        assert _is_budget_period_open(SimpleNamespace(budget_reset_at="2026-09-30T00:00:00Z"), self._NOW) is False
+
+    def test_missing_budget_or_reset_is_closed(self):
+        assert _is_budget_period_open(None, self._NOW) is False
+        assert _is_budget_period_open(SimpleNamespace(budget_reset_at=None), self._NOW) is False
+
+
+def _category_row(budget_id: str, category: str, spend: float) -> SimpleNamespace:
+    return SimpleNamespace(
+        project_name="project-3",
+        budget_id=budget_id,
+        budget_category=category,
+        budget_period_spend=spend,
+        cumulative_spend=spend,
+        spend_date=datetime(2026, 9, 30, 7, 15, tzinfo=UTC),
+    )
+
+
+def _category_budget(budget_id: str, max_budget: float, reset_at: datetime, deleted: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        budget_id=budget_id,
+        max_budget=max_budget,
+        budget_reset_at=reset_at.isoformat(),
+        deleted_at=datetime(2026, 9, 30, 7, 15, tzinfo=UTC) if deleted else None,
+    )
+
+
+def _assigned(budget_id: str, category: str, max_budget: float, reset_at: datetime) -> SimpleNamespace:
+    return SimpleNamespace(
+        budget_id=budget_id,
+        budget_category=category,
+        max_budget=max_budget,
+        budget_reset_at=reset_at.isoformat(),
+    )
+
+
+class TestUnassignedCategorySpend:
+    _ACTIVE_RESET = datetime.now(UTC) + timedelta(days=5)
+    _PLATFORM_ID = "project-3-platform-3b1d0290"
+    _REMOVED_ID = "project-3-premium_models-8ebdcd4c"
+    _READDED_ID = "project-3-premium_models-2559cf02"
+
+    async def _detail(self, *, rows, budgets, assigned, lifetime=0.18):
+        with (
+            patch("codemie.rest_api.routers.projects.config") as mock_config,
+            patch("codemie.rest_api.routers.projects._get_project_detail_sync") as mock_detail,
+            patch("codemie.rest_api.routers.projects.get_async_session") as mock_session,
+            patch("codemie.rest_api.routers.projects._spend_repo") as mock_spend_repo,
+            patch("codemie.rest_api.routers.projects.budget_repository") as mock_budget_repo,
+            patch(
+                "codemie.rest_api.routers.projects.project_budget_assignment_repository."
+                "get_assigned_budget_summaries_for_projects",
+                new=AsyncMock(return_value={"project-3": assigned}),
+            ),
+        ):
+            mock_config.ENABLE_USER_MANAGEMENT = True
+            mock_detail.return_value = {
+                "name": "project-3",
+                "description": "",
+                "project_type": "shared",
+                "created_by": "owner-1",
+                "created_at": datetime(2026, 9, 1, tzinfo=UTC),
+                "user_count": 1,
+                "admin_count": 1,
+                "members": [],
+                "is_project_admin": True,
+            }
+            mock_session.return_value = _mock_session_ctx(AsyncMock())
+            mock_spend_repo.get_latest_key_spending_for_project = AsyncMock(return_value=None)
+            mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(return_value=rows)
+            mock_spend_repo.get_latest_budget_rows_for_project = AsyncMock(return_value=[])
+            mock_spend_repo.get_lifetime_spend = AsyncMock(return_value=lifetime)
+            mock_budget_repo.get_all_keyed_by_id = AsyncMock(return_value=budgets)
+            return await get_project_detail(
+                request=MagicMock(method="GET", url=SimpleNamespace(path="/v1/projects/project-3")),
+                project_name="project-3",
+                include_spending=True,
+                spending_rows_limit=50,
+                user=User(
+                    id="user-1",
+                    username="user1",
+                    email="user1@example.com",
+                    is_admin=False,
+                    admin_project_names=["project-3"],
+                    project_names=["project-3"],
+                ),
+            )
+
+    @pytest.mark.anyio
+    async def test_removed_category_spend_counts_and_is_flagged_unassigned(self):
+        result = await self._detail(
+            rows=[
+                _category_row(self._PLATFORM_ID, "platform", 0.0355),
+                _category_row(self._REMOVED_ID, "premium_models", 0.1444),
+            ],
+            budgets={
+                self._PLATFORM_ID: _category_budget(self._PLATFORM_ID, 55.0, self._ACTIVE_RESET),
+                self._REMOVED_ID: _category_budget(self._REMOVED_ID, 100.0, self._ACTIVE_RESET, deleted=True),
+            },
+            assigned=[_assigned(self._PLATFORM_ID, "platform", 55.0, self._ACTIVE_RESET)],
+        )
+
+        assert result.spending.current_spending == pytest.approx(0.18)
+        assert result.spending.budget_limit == pytest.approx(55.0)
+        rows = {row.budget_category: row for row in result.spending_widget.data.rows}
+        assert rows["platform"].is_assigned is True
+        premium = rows["premium_models"]
+        assert premium.is_assigned is False
+        assert premium.budget_id == self._REMOVED_ID
+        assert premium.current_spending == pytest.approx(0.1444)
+        assert premium.budget_limit is None
+        assert premium.total == 0
+
+    @pytest.mark.anyio
+    async def test_removed_category_is_dropped_after_its_period_ends(self):
+        result = await self._detail(
+            rows=[
+                _category_row(self._PLATFORM_ID, "platform", 0.0355),
+                _category_row(self._REMOVED_ID, "premium_models", 0.1444),
+            ],
+            budgets={
+                self._PLATFORM_ID: _category_budget(self._PLATFORM_ID, 55.0, self._ACTIVE_RESET),
+                self._REMOVED_ID: _category_budget(
+                    self._REMOVED_ID, 100.0, datetime.now(UTC) - timedelta(hours=1), deleted=True
+                ),
+            },
+            assigned=[_assigned(self._PLATFORM_ID, "platform", 55.0, self._ACTIVE_RESET)],
+        )
+
+        assert result.spending.current_spending == pytest.approx(0.04)
+        assert [row.budget_category for row in result.spending_widget.data.rows] == ["platform"]
+
+    @pytest.mark.anyio
+    async def test_removed_category_without_spend_is_dropped(self):
+        result = await self._detail(
+            rows=[
+                _category_row(self._PLATFORM_ID, "platform", 0.0355),
+                _category_row(self._REMOVED_ID, "premium_models", 0.0),
+            ],
+            budgets={
+                self._PLATFORM_ID: _category_budget(self._PLATFORM_ID, 55.0, self._ACTIVE_RESET),
+                self._REMOVED_ID: _category_budget(self._REMOVED_ID, 100.0, self._ACTIVE_RESET, deleted=True),
+            },
+            assigned=[_assigned(self._PLATFORM_ID, "platform", 55.0, self._ACTIVE_RESET)],
+        )
+
+        assert [row.budget_category for row in result.spending_widget.data.rows] == ["platform"]
+
+    @pytest.mark.anyio
+    async def test_readded_category_yields_one_row_under_the_new_budget(self):
+        result = await self._detail(
+            rows=[_category_row(self._READDED_ID, "premium_models", 0.1444)],
+            budgets={self._READDED_ID: _category_budget(self._READDED_ID, 220.0, self._ACTIVE_RESET)},
+            assigned=[_assigned(self._READDED_ID, "premium_models", 220.0, self._ACTIVE_RESET)],
+        )
+
+        (row,) = result.spending_widget.data.rows
+        assert row.budget_id == self._READDED_ID
+        assert row.is_assigned is True
+        assert row.budget_limit == pytest.approx(220.0)
+
+    @pytest.mark.anyio
+    async def test_readded_category_before_collector_reports_previous_row_under_active_budget(self):
+        result = await self._detail(
+            rows=[_category_row(self._REMOVED_ID, "premium_models", 0.1444)],
+            budgets={
+                self._REMOVED_ID: _category_budget(self._REMOVED_ID, 100.0, self._ACTIVE_RESET, deleted=True),
+                self._READDED_ID: _category_budget(self._READDED_ID, 220.0, self._ACTIVE_RESET),
+            },
+            assigned=[_assigned(self._READDED_ID, "premium_models", 220.0, self._ACTIVE_RESET)],
+        )
+
+        (row,) = result.spending_widget.data.rows
+        assert row.budget_id == self._READDED_ID
+        assert row.is_assigned is True
+        assert row.current_spending == pytest.approx(0.1444)
+        assert row.budget_limit == pytest.approx(220.0)
+        assert result.spending.current_spending == pytest.approx(0.14)
+
+    @pytest.mark.anyio
+    async def test_stale_row_of_previous_budget_is_not_counted_after_readd_past_reset(self):
+        result = await self._detail(
+            rows=[
+                _category_row(self._PLATFORM_ID, "platform", 0.0355),
+                _category_row(self._REMOVED_ID, "premium_models", 0.1444),
+            ],
+            budgets={
+                self._PLATFORM_ID: _category_budget(self._PLATFORM_ID, 55.0, self._ACTIVE_RESET),
+                self._REMOVED_ID: _category_budget(
+                    self._REMOVED_ID, 100.0, datetime.now(UTC) - timedelta(days=3), deleted=True
+                ),
+                self._READDED_ID: _category_budget(self._READDED_ID, 220.0, self._ACTIVE_RESET),
+            },
+            assigned=[
+                _assigned(self._PLATFORM_ID, "platform", 55.0, self._ACTIVE_RESET),
+                _assigned(self._READDED_ID, "premium_models", 220.0, self._ACTIVE_RESET),
+            ],
+        )
+
+        assert result.spending.current_spending == pytest.approx(0.04)
+        assert [row.budget_category for row in result.spending_widget.data.rows] == ["platform"]
+
+    @pytest.mark.anyio
+    async def test_project_list_counts_removed_category_spend(self, super_admin_user):
+        with (
+            patch("codemie.rest_api.routers.projects.config") as mock_config,
+            patch("codemie.rest_api.routers.projects.get_session") as mock_get_session,
+            patch("codemie.rest_api.routers.projects.project_visibility_service") as mock_visibility,
+            patch("codemie.rest_api.routers.projects.get_async_session") as mock_async_session,
+            patch("codemie.rest_api.routers.projects._spend_repo") as mock_spend_repo,
+            patch("codemie.rest_api.routers.projects.budget_repository") as mock_budget_repo,
+            patch(
+                "codemie.rest_api.routers.projects.project_budget_assignment_repository."
+                "get_assigned_budget_summaries_for_projects",
+                new=AsyncMock(
+                    return_value={"project-3": [_assigned(self._PLATFORM_ID, "platform", 55.0, self._ACTIVE_RESET)]}
+                ),
+            ),
+        ):
+            mock_config.ENABLE_USER_MANAGEMENT = True
+            mock_get_session.return_value.__enter__.return_value = MagicMock()
+            mock_visibility.list_visible_projects_paginated.return_value = (
+                [
+                    {
+                        "name": "project-3",
+                        "description": "",
+                        "project_type": "shared",
+                        "created_by": "owner-1",
+                        "created_at": datetime(2026, 9, 1, tzinfo=UTC),
+                        "user_count": 1,
+                        "admin_count": 1,
+                        "is_project_admin": True,
+                    }
+                ],
+                1,
+            )
+            mock_async_session.return_value = AsyncMock()
+            mock_spend_repo.get_latest_spending_by_project = AsyncMock(return_value=[])
+            mock_spend_repo.get_latest_project_budget_rows_by_category = AsyncMock(
+                return_value=[
+                    _category_row(self._PLATFORM_ID, "platform", 0.0355),
+                    _category_row(self._REMOVED_ID, "premium_models", 0.1444),
+                ]
+            )
+            mock_budget_repo.get_all_keyed_by_id = AsyncMock(
+                return_value={
+                    self._PLATFORM_ID: _category_budget(self._PLATFORM_ID, 55.0, self._ACTIVE_RESET),
+                    self._REMOVED_ID: _category_budget(self._REMOVED_ID, 100.0, self._ACTIVE_RESET, deleted=True),
+                }
+            )
+
+            result = await list_projects(
+                search=None,
+                page=0,
+                per_page=20,
+                include_counters=False,
+                include_spending=True,
+                include_budgets=False,
+                has_assigned_budgets=False,
+                budget_category=None,
+                sort_by=None,
+                sort_order="asc",
+                user=super_admin_user,
+            )
+
+        assert result.data[0].spending.current_spending == pytest.approx(0.18)
+        assert result.data[0].spending.budget_limit == pytest.approx(55.0)
