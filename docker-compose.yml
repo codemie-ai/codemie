@@ -115,7 +115,7 @@ services:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
 
   litellm:
-    image: ghcr.io/berriai/litellm-database:1.96.2
+    image: ghcr.io/berriai/litellm:1.99.2
     volumes:
       - ./litellm_config.yaml:/app/config.yaml
       - ./credentials.json:/app/credentials.json
